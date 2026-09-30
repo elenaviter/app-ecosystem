@@ -128,7 +128,7 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     },
     "review.return": {
         "description": (
-            "Return reviewed work to todo for rework, recording the reason. The "
+            "Return reviewed work to working for rework, recording the reason. The "
             "assignee keeps the assignment and its ownership version advances, so "
             "the rework has its own reports."
         ),

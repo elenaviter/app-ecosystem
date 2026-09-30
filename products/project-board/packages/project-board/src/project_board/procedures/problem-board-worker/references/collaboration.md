@@ -453,42 +453,69 @@ it, what you touched (Rule 3), and what you are waiting on.
   command. A successor reads it before its first edit (Rule 8). Team
   decision 2026-09-23 (P2, four yes votes after the derived-versus-typed
   split was drawn).
-- Report `completed` only when the change request is merged, or when the item
-  says otherwise, with the merged ref and the evidence you ran. The report
-  names a commit and the integration ref that contains it, the merge commit
-  on the pushed `main`, and you have fetched and run `git merge-base
-  --is-ancestor <commit> origin/main` first, not before the merge and not
-  from memory. The acceptor runs the same command on their own clone before
-  accepting, because the report is a claim and the clone is the evidence. A
-  journal entry that says landed names that merge commit and is written
-  after it is fetched, never from the intention to merge (finding eighteen:
-  three reviewed commits journaled as landed sat in no branch for two days).
+- **A `completed` report submits the source for review.** It names the
+  exact head and the change request, and labels the submitted phase as
+  source-ready: its could-not-verify lists what is still to come, the merge
+  and, where there is one, the activation. That is the ordinary path for
+  every item, with no per-item exception. Approval, merge, activation and
+  whole-item acceptance are later milestones, and each carries its own
+  durable evidence when it happens: the merge is a commit on the pushed
+  `main` that you fetched and checked with `git merge-base --is-ancestor
+  <commit> origin/main`, not from memory, and the acceptor runs the same
+  command on their own clone, because the report is a claim and the clone is
+  the evidence. A journal entry that says landed names that merge commit and
+  is written after it is fetched, never from the intention to merge (finding
+  eighteen: three reviewed commits journaled as landed sat in no branch for
+  two days). Why source-ready: the earlier rule, report only when merged,
+  deadlocked with review, which reads the source before it merges (W403 C6,
+  2026-09-29, four yes votes).
   Each report cites as its source event the event that prompted it: the assignment notice
   for the first, and for a later one the later mail that carried the news,
   the merge notice for a completion when earlier progress reports spent the
   assignment notice (W267, 2026-09-22 22:17Z). A source event is spent once.
-- **When a review returns your item**, you keep it: the assignment stays
-  yours with a new ownership version, the branch stays, the change request
-  stays open, and your next report cites the returned-work notice as its
-  source event, never the review, which the return itself already spent
-  (W245 blocker three, refused live as a duplicate event until the notice
-  said what to cite). Push the rework to the same branch.
+- **When a review returns your item**, you keep it and you start again: the
+  assignment stays yours with a new ownership version, the branch stays, the
+  change request stays open, and the return is work to begin now, like an
+  assignment notice (SKILL.md, Receive Assigned Work). Your terminal report
+  under the old version stays final, and your next report goes under the new
+  version and cites the returned-work notice as its source event, never the
+  review, which the return itself already spent (W245 blocker three, refused
+  live as a duplicate event until the notice said what to cite). Push the
+  rework to the same branch. A reviewer who returns an item names who acts
+  next and on what (W403 C5, 2026-09-29).
 
-- **In review, the reviewer is who must act** (W326, operator 2026-09-25).
-  An item always has an assignee and a status, and the assignee is who must
-  act now: the worker while it is Working, **the reviewer** while it is in
-  Review. There is no new status. Name the reviewer on the completed report
-  with `--reviewer <stable worker name>` or `--reviewer operator`; with none
-  named, the acting coordinator reviews and routes it (`review.assign`). The
-  operator is named only once the work is integrated: `--merged <commits>`
-  and `--deploy "<window>: <check>"`, or `--nothing-to-deploy`; otherwise the
-  report is refused with `work_review_operator_evidence_missing`, naming what
-  is missing, and nothing is applied. The item keeps you as its assignee
-  ("worked by"), so a return comes back to you. Why: the operator's review
-  list held every item in Review, most with nothing for the operator to look
-  at (W314, W287, W300 on 2026-09-25); a list of what is really the
-  operator's needs a named reviewer on every item, and work reaches the
-  operator only when it is merged and deployed.
+- **The assignee is the current owner, in every status.** `item.assignee`
+  names who holds the item now, Review and Done included, and every
+  current-work list and filter reads that one field, with a status filter
+  to tell reviews from implementation. Only an ownership act changes it:
+  `assignment.assign`, a release, a reassignment, an explicit assignee edit,
+  or routing a review. Routing a review (`--reviewer` on the completed
+  report, or `review.assign`) sets the assignee to the reviewer, an agent or
+  the operator, in the same act, and notifies them: no second edit is
+  needed. The reviewer field records who decides the result and is not a
+  second task list. A status change never selects, substitutes or clears
+  anyone. Earlier implementers and reviewers stay in the item's history. The
+  work-item review documentation owns the save and history semantics (W403
+  C4 with the operator's direct-assignee rule, 2026-09-29; the product
+  delivers it with W398). Name the reviewer on the completed
+  report with `--reviewer <stable worker name>` or `--reviewer operator`;
+  with none named, the acting coordinator reviews and routes it
+  (`review.assign`). The operator is named only once the work is integrated:
+  `--merged <commits>` and `--deploy "<window>: <check>"`, or
+  `--nothing-to-deploy`; otherwise the report is refused with
+  `work_review_operator_evidence_missing`, naming what is missing, and
+  nothing is applied. Why: a list derived from the reviewer could not show
+  one worker's own work and its reviews apart, and the operator's review
+  list held items with nothing for the operator to look at (W314, W287, W300
+  on 2026-09-25, W326).
+- **Only a durably authorized reviewer decides.** A review decision (accept,
+  return) comes from the reviewer the board names for that item, against the
+  exact head under review, through the existing authorization and revision
+  fences. Anyone else's opinion, however sound, is evidence for that reviewer
+  to weigh, posted as a note on the item, and it moves nothing by itself.
+  Why: unsolicited evidence is not authority, and two agents that both
+  believe they decide an item is the collision Rule 8 exists to fence (W403
+  C7, 2026-09-29, four yes votes).
 
 Why: the operator's measure for this procedure includes "their info reflects
 where they are and what they work on". A status that lags reality is a

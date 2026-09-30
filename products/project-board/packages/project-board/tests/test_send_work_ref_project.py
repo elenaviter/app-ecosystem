@@ -49,3 +49,23 @@ def test_a_work_ref_without_a_project_ref_is_refused_naming_the_flag(tmp_path):
     assert refused.value.code == "field_mail_work_ref_requires_project"
     assert "--project-ref" in str(refused.value)
     assert refused.value.details["argument"] == "--project-ref"
+
+
+def test_the_send_help_and_the_skill_say_item_mail_carries_its_project():
+    # W403, 2026-09-29: the help said to omit --project-ref for operator mail,
+    # and an item-scoped operator mail then failed with
+    # field_mail_work_ref_requires_project.
+    import contextlib
+    import io
+    from pathlib import Path
+
+    from project_board.client import cli
+
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), pytest.raises(SystemExit):
+        cli.main(["worker", "send", "--help"])
+    help_text = " ".join(out.getvalue().split())
+    assert "Mail that names a plan item (--work-ref) always carries it" in help_text
+    assert "Omit when writing directly to the operator" not in help_text
+    skill = " ".join((Path(cli.__file__).resolve().parents[1] / "procedures" / "problem-board-worker" / "SKILL.md").read_text(encoding="utf-8").split())
+    assert "Mail about a plan item carries `--work-ref` with its `--project-ref`; only direct operator mail that names no item leaves both out." in skill

@@ -117,33 +117,6 @@ narrow command with `--format json` and read the full envelope directly. Do
 not replace a fresh targeted read with local `jq`, a hand-written parser, or a
 large cached snapshot.
 
-## Refresh the evidence you decide from
-
-Freshness belongs to the decision boundary, not to the session. Immediately
-before routing, review, hand-over, merge ordering, or a client/runtime choice,
-rerun the smallest read that supplies that decision's facts. A result from an
-earlier boundary, a compacted conversation, or private memory is not current
-evidence.
-
-- Refresh the project, holder, team, quotas, repositories and workspace with
-  `pb worker context --project-ref <project-ref> --format brief`.
-- Search only the named subject in the journal with
-  `pb worker journal-search --project-ref <project-ref> --query <subject>
-  --limit <small-number> --format brief`.
-- Use `project.plan.search` with the subject and a small `limit`, then
-  `project.plan.item` for the exact returned key or ref. Do not page or assemble
-  the plan to make a decision about one subject.
-- Use `assignment.list` with the worker plus the narrow refs, status or query
-  that the ownership decision needs; keep its `limit` small.
-- Run `pb source status --format brief` immediately before deciding which
-  client or relay source is actually selected and running.
-
-These brief reads keep every displayed ref, cursor and commit copyable whole.
-If a decision needs a field or prose omitted by the summary, rerun that same
-narrow command with `--format json` and read the full envelope directly. Do
-not replace a fresh targeted read with local `jq`, a hand-written parser, or a
-large cached snapshot.
-
 ## Accept, return, cancel
 
 1. The submission is read against the item's acceptance lines, one by one, and
@@ -164,12 +137,16 @@ large cached snapshot.
    a reason. The service refuses the worker that submitted the work from
    deciding on it (`work_review_self_forbidden`), for all three decisions.
 5. The item is the record. After the decision, read the item back: status
-   `done` for accept, `todo` with the same assignee for return (the worker
-   keeps the assignment, its ownership version advances, and it reworks
-   against the new version), `cancelled` for cancel, and the assignment state
-   beside it. To hand returned work to someone else, release it with
-   `assignment.return` and its reason, then assign. Mail about the decision is
-   commentary.
+   `done` for accept, `working` with the same assignee for `review.return`
+   (the worker keeps the assignment, its ownership version advances, and it
+   reworks against the new version), `cancelled` for cancel, and the
+   assignment state beside it. Selecting Todo for an item in Review is a
+   different edit: it records a return that leaves the item in Todo, as
+   [Review](repo:app-ecosystem/products/project-board/docs/review.md) says. To hand returned work to someone else, change its assignee: that
+   one edit notifies the new assignee and makes the item theirs, in any status
+   and with the status left as it is. Assignee and status are independent
+   edits in either order, and neither needs a review command first (operator,
+   2026-09-29, delivered by W398). Mail about the decision is commentary.
 
 6. **Route reviews (W326). Route a review in the turn it arrives.** An item
    that enters Review with no reviewer named comes to you as the acting
@@ -279,6 +256,10 @@ environment page:
   pool, with its reset time when known. Their limits are coupled, not
   independent capacity. Record `Not known yet` instead of assuming that two
   workers have independent limits.
+- each pool's plan, as the operator states it. Plans differ in the size of
+  their windows, so the same used percent is a different amount of work left
+  on two plans: compare a pool's remaining room, never its percent against
+  another pool's.
 
 Use only this routing heuristic:
 
@@ -289,7 +270,11 @@ Use only this routing heuristic:
 2. **Independent quota available?** Route portable work, including review,
    research and planning, to another host or an independent quota pool first,
    subject to the skills and access the work needs.
-3. **Reset soon enough?** When a host-local worker or its quota pool is running
+3. **Reset soon enough?** At each routing decision read the pool's current
+   five-hour use and its reset, with the observation time, and weigh them
+   against the size of the task: a large task goes to a pool with room left
+   in its five-hour window, and a smaller plan's window runs out sooner.
+   When a host-local worker or its quota pool is running
    short and the reset is not soon enough for the work, replan before
    exhaustion. Move unstarted portable work, leave the scarce worker only the
    cheap or locality-required steps it can finish, and hand over the exact
@@ -297,7 +282,12 @@ Use only this routing heuristic:
    instead of churning ownership.
 
 Do not build a scheduler or assign token scores. The routing inventory and
-these three questions are the whole rule.
+these three questions are the whole rule. Usage belongs to the account and
+its pool, not to one worker: a shared pool's consumption is not charged to
+the worker you happen to read it from, and a plan's price says nothing about
+its window size. How fast a pool is spending is read from successive
+observations of the same account, window and reset, each with its observed
+time.
 
 **The coordinator routes implementation** (operator, 2026-09-29). A
 coordinator investigates, diagnoses and designs. Once an implementable
@@ -470,7 +460,8 @@ keeps one, accumulates beside them from the first day.
 ## Check a silent worker, do not wait for it
 
 When a reply you are waiting for is overdue (a `ready`, a change request
-head, a result), check the worker's state yourself. Do this after about ten
+head, a result), or an assignment or a review has no reported start, check
+the worker's state yourself. Do this after about ten
 minutes, or at once when a window or a merge waits on that one worker:
 
 1. **The wake:** the relay log's `Problem Board wake pushed` and
@@ -483,6 +474,10 @@ minutes, or at once when a window or a merge waits on that one worker:
    the session is in a long turn or is not running.
 3. **Its board state:** `pb worker list` (heartbeat) and its assignments
    (latest report, estimate).
+4. **What stops it:** its info line and its current usage with the reset
+   time (`pb worker context` team rows, where missing usage is unknown), and
+   any `blocked` report or blocker it named. A worker out of quota or
+   restricted is rerouted or waited for with that reason, not woken again.
 
 Then act on what you found:
 
@@ -499,6 +494,17 @@ Codex worker's wake sat queued for 41 minutes during one long turn, and a
 window waited on another idle worker until the operator noticed. The operator's ruling:
 "you every time are calm while the workers might be idle for a long time and
 you even do not check their status."
+
+**Ten minutes means reconcile, not reroute.** The ten minutes above trigger
+this check and nothing more. An overdue reply is not a verdict that the worker
+is gone, not a reason to reroute its work, and not a polling loop: act on the
+cause the check found. When the evidence does call for moving the work, do it
+as a reassignment, which advances the ownership version so the former owner's
+reports are fenced, and name in it the checkpoint the successor starts from
+(the resume record, [collaboration](collaboration.md) Rules 6 and 8). Why: a
+worker in a long turn and a worker that is gone look the same for ten
+minutes, and moving live work on silence alone makes two owners (W403 C9,
+2026-09-29, four yes votes).
 
 ## Stay reachable through every window
 

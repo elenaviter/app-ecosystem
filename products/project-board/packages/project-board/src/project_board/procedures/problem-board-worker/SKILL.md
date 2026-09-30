@@ -213,11 +213,13 @@ Do not settle an item that did not arrive with a complete body and lease. Do
 not repeat a side effect because a wake repeats: check prior handling and the
 correlated conversation first.
 
-## Receive An Assignment
+## Receive Assigned Work
 
-An assignment arrives as one inbox notice of kind `assign` from
-`control-plane`. It is work to begin, not a notification to acknowledge. Every
-value in it comes from the durable assignment row, not from prose:
+Assigned work arrives as one notice from `control-plane`: kind `assign` to
+implement an item, or a `request` titled `Review W…` to review one. Either is
+work to begin now, not a notification to acknowledge: no other message or
+permission is needed, and settling the notice is not progress. Every
+value in an `assign` notice comes from the durable assignment row, not from prose:
 `payload.work_ref`, `payload.assignment_ref`, `payload.ownership_version` and
 `payload.expected_reaction` (`begin_work`), each with its source and use in
 [ownership](references/identity-and-authorization.md).
@@ -257,6 +259,8 @@ prompted it: the assignment notice for the first, and for each later one,
 completion included, the later mail, item revision or result event, never
 that notice again. Progress to completion needs no reissued assignment. An
 accepted terminal report is final for that ownership version.
+
+A review is begun the same way: read the item and the exact head the notice names, publish that you started (`pb worker busy-until` with the review as its note), settle, review, and decide as [collaboration](references/collaboration.md) Rule 6 says. When you cannot start either kind, say so at the first safe boundary: `blocked` (or your info line, for a review) naming the reason, the actor or event that clears it and the next decision time, and tell the coordinator. Silence is never a state.
 
 Do not acknowledge an assignment and stop. Do not guess an ownership version
 when several notices are open: if a notice does not name its item, ask, because
@@ -301,8 +305,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   detach. A relay heartbeat proves transport, a watch
   heartbeat proves availability checks, and only `pb worker receive` and
   settlement prove model handling.
-- An empty inbox is not evidence that there is no work. For an assignment or
-  idle decision use durable assignment state, checked once, not inbox silence.
+- An empty inbox is not evidence that there is no work. At session start, on resume and before `pb worker idle`, read your responsibilities once: `pb coordinate assignment.list` for your implementation work, `project.plan.index` with `{"assignee": "<your stable name>"}` for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those), and `pb worker outbox-status` for each outbox id whose outcome you do not know. You are idle only when each is done, started, or deferred with its reason, clearing actor or event and next decision time. A read that fails leaves you unknown, not idle.
 - A correction that must survive an unread inbox belongs in the assigned plan
   item. The coordinator updates the item and sends a short notice naming the
   same stable work ref. Mail wakes the worker; the item retains the corrected
@@ -310,7 +313,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   mutation when its version changed.
 - Report against the exact assignment ref and ownership version with
   `pb worker report`, citing as `--source-event-ref` the event that prompted
-  this report (Receive An Assignment states the identity rule). A queued
+  this report (Receive Assigned Work states the identity rule). A queued
   control is intent; only the service's receipt proves a transition. The
   command waits and exits 0 only when the service accepted the report. A
   refusal exits nonzero with the service's code and message. A deadline exits
@@ -388,11 +391,11 @@ revised one rehearsal round at a time. What every worker does, from it:
   states the exact head, the files the change request lists and the files you
   read, and suite inputs (interpreter, dependencies, overlays, variables), so
   the counts can be compared at all.
-- **Reporting an item complete means its change request is merged** into the
-  integration ref, and the report names the merge commit after you fetched
-  and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor
-  runs it on their own clone. A journal entry that says landed names that
-  merge commit and is written after it is fetched, never from the intention
+- **A `completed` report submits the source for review** at an exact head and
+  change request, and its could-not-verify names what is still to come (merge,
+  activation). Approval, merge, activation and whole-item acceptance are
+  separate milestones ([collaboration](references/collaboration.md) Rule 6). The merge milestone names the merge commit after you fetched and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor runs it on their own clone. A
+  journal entry that says landed names that merge commit and is written after it is fetched, never from the intention
   to merge. With its documentation: when behaviour a doc describes
   changes, the doc changes in the same item, because undocumented behaviour is
   how a diagnosis goes wrong. One home per concept, one-line pointers
@@ -415,7 +418,7 @@ Mail to the operator takes one of these kinds and nothing else:
 
 `progress`, `update`, `reply` and `result` stay on the board; only `question`, `decision`,
 `blocked`, `delivery_failed` reach their Telegram. Ask for their input this way, never in a terminal prompt
-(collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`.
+(collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`. Mail about a plan item carries `--work-ref` with its `--project-ref`; only direct operator mail that names no item leaves both out.
 
 ## Runtime Actions And Test Windows
 

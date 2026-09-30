@@ -144,7 +144,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.30.1"
+    assert package["revision"] == "2026.09.30.2"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -508,6 +508,9 @@ def test_read_heavy_evidence_is_fresh_targeted_and_explicitly_expandable() -> No
     assert "Every displayed ref, id, key, cursor, commit and path stays whole" in skill
     assert "A result retained from an earlier decision boundary is not current evidence" in brief
     assert "## Refresh the evidence you decide from" in _read("references/coordinator.md")
+    # One authoritative copy: a repeated section passed the presence check (W403 review).
+    assert coordinator.count("## Refresh the evidence you decide from") == 1
+    assert coordinator.count("A result from an earlier boundary, a compacted conversation, or private memory is not current evidence") == 1
     assert "A result from an earlier boundary, a compacted conversation, or private memory is not current evidence" in coordinator
     assert "Do not page or assemble the plan to make a decision about one subject" in coordinator
     assert "Do not replace a fresh targeted read with local `jq`" in coordinator
@@ -545,7 +548,7 @@ def test_receive_handle_and_settle_rules() -> None:
 def test_assignment_rules() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
-    assert "It is work to begin, not a notification to acknowledge" in words
+    assert "Either is work to begin now, not a notification to acknowledge" in words
     for field in ("payload.work_ref", "payload.assignment_ref", "payload.ownership_version", "payload.expected_reaction"):
         assert f"`{field}`" in skill
     assert "work_assignment_version_conflict" in skill
@@ -660,7 +663,8 @@ def test_repository_sharing_rules() -> None:
     assert "regression written for a finding fails without the fix" in words
     assert "list every place the rule you changed is enforced" in words
     assert "Approval is a board mail naming the head, quoted on the change request" in words
-    assert "Reporting an item complete means its change request is merged" in words
+    assert "A `completed` report submits the source for review" in words
+    assert "Reporting an item complete means its change request is merged" not in words
     # Documentation is part of the item that changes the behaviour it describes (operator, 2026-09-21 09:39Z).
     assert "when behaviour a doc describes changes, the doc changes in the same item" in words
     assert "because undocumented behaviour is how a diagnosis goes wrong" in words
@@ -1947,3 +1951,163 @@ def test_a_shared_name_is_settled_in_one_exchange() -> None:
     assert 'ends with "do not reply"' in collaboration
     assert "when it is not clear who owns it, the coordinator decides" in collaboration
     assert "is settled without a reply" in collaboration
+
+
+def test_assigned_work_includes_reviews_and_one_read_before_idle() -> None:
+    # W403 C1, C2, C3 (Rule 7 result, 2026-09-29): a review request is work to
+    # begin like an assignment, an inability to start is said at the first safe
+    # boundary, and idle is decided by one responsibility read, not by silence.
+    skill = _read("SKILL.md")
+    words = _words(skill)
+    assert "## Receive Assigned Work" in skill
+    assert "## Receive An Assignment" not in skill
+    assert "Receive An Assignment" not in _read("references/signals.md")
+    assert "kind `assign` to implement an item, or a `request` titled `Review W…` to review one" in words
+    assert "settling the notice is not progress" in words
+    assert "A review is begun the same way" in words
+    assert "When you cannot start either kind, say so at the first safe boundary" in words
+    assert "the actor or event that clears it and the next decision time" in words
+    assert "Silence is never a state" in words
+    assert "An empty inbox is not evidence that there is no work" in words
+    assert "read your responsibilities once" in words
+    assert "`pb coordinate assignment.list`" in skill
+    assert 'with `{"assignee": "<your stable name>"}`' in skill
+    assert 'for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those)' in skill
+    assert "whose `reviewer` names you" not in skill
+    assert "`pb worker outbox-status` for each outbox id whose outcome you do not know" in words
+    assert "A read that fails leaves you unknown, not idle" in words
+
+
+def test_a_completed_report_submits_source_for_review() -> None:
+    # W403 C6: report-only-when-merged deadlocked with review, which reads the
+    # source before it merges. Completed is source-ready, the later milestones
+    # carry their own evidence.
+    skill = _words(_read("SKILL.md"))
+    collaboration = _words(_read("references/collaboration.md"))
+    signals = _words(_read("references/signals.md"))
+    assert "its could-not-verify names what is still to come (merge, activation)" in skill
+    assert "Approval, merge, activation and whole-item acceptance are separate milestones" in skill
+    assert "labels the submitted phase as source-ready" in collaboration
+    assert "That is the ordinary path for every item, with no per-item exception" in collaboration
+    assert "Report `completed` only when the change request is merged" not in collaboration
+    assert "the report is a claim and the clone is the evidence" in collaboration
+    assert "`completed` submits the source for review" in signals
+    assert "complete means merged" not in signals
+
+
+def test_the_implementer_and_the_reviewer_are_two_responsibilities() -> None:
+    # W403 C4, C5, C7: the implementer persists through Review, a return is a
+    # new start, and only the reviewer the board names decides.
+    collaboration = _words(_read("references/collaboration.md"))
+    # W403 acceptance 5 with the operator's direct-assignee rule (codex-main, 2026-09-29 21:28Z).
+    assert "**The assignee is the current owner, in every status.**" in collaboration
+    assert "every current-work list and filter reads that one field" in collaboration
+    assert "A status change never selects, substitutes or clears anyone" in collaboration
+    # Routing a review is an ownership act (codex-main, 2026-09-29 21:47Z).
+    assert "sets the assignee to the reviewer, an agent or the operator, in the same act, and notifies them: no second edit is needed" in collaboration
+    assert "The reviewer field records who decides the result and is not a second task list" in collaboration
+    assert "does not rewrite the assignee" not in collaboration
+    assert "acting assignee" not in collaboration
+    assert "(W391)" not in collaboration
+    assert "In review, the reviewer is who must act" not in collaboration
+    assert "the return is work to begin now, like an assignment notice" in collaboration
+    assert "Your terminal report under the old version stays final" in collaboration
+    assert "A reviewer who returns an item names who acts next and on what" in collaboration
+    assert "**Only a durably authorized reviewer decides.**" in collaboration
+    assert "is evidence for that reviewer to weigh, posted as a note on the item, and it moves nothing by itself" in collaboration
+
+
+def test_the_coordinator_reconciles_an_overdue_worker_before_rerouting() -> None:
+    # W403 C9: ten minutes triggers the check, not a reroute; moving work is a
+    # reassignment that fences the former owner and names the checkpoint.
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "**Ten minutes means reconcile, not reroute.**" in coordinator
+    assert "not a reason to reroute its work, and not a polling loop" in coordinator
+    assert "advances the ownership version so the former owner's reports are fenced" in coordinator
+    assert "name in it the checkpoint the successor starts from" in coordinator
+    # W403 acceptance 4: the check covers unstarted work, quota and blockers.
+    assert "or an assignment or a review has no reported start" in coordinator
+    assert "its info line and its current usage with the reset time" in coordinator
+    assert "A worker out of quota or restricted is rerouted or waited for with that reason, not woken again" in coordinator
+    # Assignee and status are independent edits (operator, via codex-main 2026-09-29 22:00Z).
+    assert "To hand returned work to someone else, change its assignee: that one edit notifies the new assignee and makes the item theirs" in coordinator
+    assert "Assignee and status are independent edits in either order, and neither needs a review command first" in coordinator
+    assert "release it with `assignment.return` and its reason, then assign" not in coordinator
+    # Plans and pools (operator, relayed by codex-main 2026-09-29 23:19Z).
+    assert "each pool's plan, as the operator states it" in coordinator
+    assert "compare a pool's remaining room, never its percent against another pool's" in coordinator
+    assert "read the pool's current five-hour use and its reset, with the observation time, and weigh them against the size of the task" in coordinator
+    assert "a shared pool's consumption is not charged to the worker you happen to read it from" in coordinator
+    assert "a plan's price says nothing about its window size" in coordinator
+
+
+def test_no_procedure_file_repeats_a_heading() -> None:
+    """A section pasted twice passes every presence check (W403 review).
+
+    Each procedure file states each section once, so a reader and a later
+    edit meet one authoritative rule. Code blocks are skipped: a shell
+    comment there is not a heading.
+    """
+
+    repeated: dict[str, list[str]] = {}
+    for path in sorted(OPERATIONAL_PROCEDURE_ROOT.rglob("*.md")):
+        seen: set[str] = set()
+        in_code = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.lstrip().startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code or not line.startswith("#"):
+                continue
+            heading = line.strip()
+            if heading in seen:
+                repeated.setdefault(str(path.relative_to(OPERATIONAL_PROCEDURE_ROOT)), []).append(heading)
+            seen.add(heading)
+    assert repeated == {}, f"procedure files repeat these headings: {repeated}"
+
+
+# W403 review, 2026-09-30: the coordinator page said review.return lands in
+# Todo while the service returns to Working, and one signals row gave a review
+# request the implementation reports. Both passed presence checks.
+_RETURN_TO_TODO = re.compile(
+    r"review\.return[^.\n|]{0,60}\btodo\b"
+    r"|return[^.\n|]{0,20}(?:\bto\b|-->)\s*`?todo\b"
+    r"|`todo` with the same assignee for (?:`review\.return`|return)",
+    re.I,
+)
+
+
+def test_review_return_lands_in_working_in_every_owning_text() -> None:
+    docs_root = PACKAGE_ROOT.parents[1] / "docs"
+    sources = [
+        *sorted(OPERATIONAL_PROCEDURE_ROOT.rglob("*.md")),
+        *(sorted(docs_root.glob("*.md")) if docs_root.is_dir() else []),
+        PACKAGE_ROOT / "src" / "project_board" / "contract" / "worker_operation_contract.py",
+        PACKAGE_ROOT / "src" / "project_board" / "contract" / "operation_shapes.py",
+    ]
+    stale = [
+        f"{path.name}: {match.group(0)}"
+        for path in sources
+        for match in _RETURN_TO_TODO.finditer(path.read_text(encoding="utf-8"))
+    ]
+    assert stale == [], f"these texts still send review.return to Todo: {stale}"
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "`working` with the same assignee for `review.return`" in coordinator
+
+
+def test_review_and_implementation_signals_stay_distinct() -> None:
+    rows = [
+        line for line in _read("references/signals.md").splitlines()
+        if line.startswith("| Receive Assigned Work |")
+    ]
+    [implementation] = [row for row in rows if "`assign` notice" in row]
+    [review] = [row for row in rows if "`Review W…` request" in row]
+    assert "Review W" not in implementation
+    assert "report `working`" in implementation and "`blocked` report" in implementation
+    # A reviewer holds no implementation assignment or version to report against.
+    assert "report `working`" not in review and "`blocked`" not in review
+    assert "`busy-until`" in review and "info line" in review
+    # The owning SKILL sequence says the same.
+    skill = _words(_read("SKILL.md"))
+    assert "A review is begun the same way: read the item and the exact head the notice names, publish that you started (`pb worker busy-until`" in skill
+    assert "`blocked` (or your info line, for a review)" in skill
