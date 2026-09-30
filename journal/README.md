@@ -86,6 +86,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-29 | Coherent work-item status and assignee saves | Review and Done accept real ownership edits without a Working detour, combined saves are atomic, and stable worker identity comparison prevents historical implementation or review state from inventing a reassignment. |
 | 2026-09-29 | Current responsibility and Review field regressions corrected | The mounted Review editor retains its direct Assignee field, selected Todo preserves the assignment period, explicit review routing moves current responsibility, and Card defaults keep contributor history opt-in; corrective source verification and remaining integration boundaries are recorded. |
 | 2026-09-29 | Retained relay sockets permit fenced foreground recovery | Unknown delivery preserves periodic retry evidence while ready operations may recover on the same currently connected, Card-bound session; unavailable transport, authorization, replacement, and host rate-limit fences remain enforced. |
+| 2026-09-29 | Problem Board test runner: portable dependency receipt and cross-workspace reuse | |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
