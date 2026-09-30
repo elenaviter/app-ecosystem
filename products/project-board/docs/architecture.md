@@ -175,6 +175,24 @@ bounded error stating both sizes. A claimed request keeps its identity
 across a relay interruption, so replaying it reaches the board as the same
 transport operation. Mutations also carry their own domain idempotency key.
 
+A missing acknowledgement or terminal result does not by itself mean the
+transport disconnected. When the relay retains a connected session after an
+unknown outcome, its pacing record is **degraded**, not **reconnecting**.
+It retains the failure, attempt count and next periodic reconciliation time;
+an elapsed retry time is not evidence of recovery. Foreground operations and
+ready outbox rows may use that retained socket before the periodic backoff
+expires, but only while the relay sees a currently connected session for the
+exact active channel and bound Card. Disconnect, closing or replaced sessions,
+changed or unreadable Cards, pending authorization and host rate limits still
+prevent that early drain. A relay restart discards the retained-socket marker.
+An earlier unknown mutation keeps its transport identity and domain
+idempotency key; allowing foreground work never creates a new retry identity.
+
+Status and inspect retain the degraded connection observation beside the
+configured active channel. That observation is not current socket liveness,
+successful delivery, or model handling. Only the corresponding receipt and,
+for addressed mail, receive and settlement establish those later states.
+
 **Outcomes the session can see:**
 
 | Outcome | What it means |

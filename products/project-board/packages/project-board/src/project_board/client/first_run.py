@@ -284,11 +284,12 @@ def first_run_status(
             inspector = profile_inspector
         session = _session(loaded, identity, reader, inspector)
         if session.get("channel_state") == CHANNEL_ACTIVE:
-            # The config says active; the relay's pacing record says whether
-            # the channel is actually open now.
+            # Pacing distinguishes unavailable transport from uncertainty on
+            # a retained socket. Neither observation proves current liveness.
             reconnect = channel_reconnect_state(config_path, identity.worker_name)
             if reconnect is not None:
-                session["channel_state"] = "reconnecting"
+                if reconnect.get("state") != "degraded":
+                    session["channel_state"] = "reconnecting"
                 session["connection"] = reconnect
 
     if loaded is None or not relay.get("installed"):

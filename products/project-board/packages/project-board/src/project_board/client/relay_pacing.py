@@ -21,6 +21,10 @@ Four rules, all enforced here:
                 handshake times out under load after relay restarts, and
                 the doubling pushed the next attempt more than 20 minutes out
                 while the worker could not reach the board.
+                Unknown delivery on a retained connected socket keeps that
+                periodic backoff and its evidence, but foreground work may
+                recover through the live session/Card fences. The persisted
+                marker is scheduling evidence, not proof of a live socket.
     runtime     a failure that says the runtime is not there (the MCP
                 endpoint answering 404, a connection refused, a 502 or 504)
                 is a state of the world, not a refusal. The channel retries
@@ -195,6 +199,11 @@ class RelayPacing:
         quiet = float(self._state["host_quiet_until"]) > now
         decisions: dict[str, tuple[str, str]] = {}
         changed = False
+        # A retained socket is process-local. A replacement relay has none;
+        # persisted uncertainty must not authorize its foreground drains.
+        for record in self._state["channels"].values():
+            if record.pop("retained_connected", None) is not None:
+                changed = True
         for name, record in list(self._state["pending"].items()):
             if not record.get("permanent"):
                 continue
@@ -298,6 +307,21 @@ class RelayPacing:
         record = self._state["channels"].get(name)
         return record is None or float(record.get("next_at") or 0.0) <= self._clock()
 
+    def channel_request_due(self, name: str, *, connected: bool) -> bool:
+        """Foreground work may recover an uncertain, still-connected channel.
+
+        Periodic reconciliation keeps its backoff. This is only scheduling:
+        the caller still checks the live channel, session and Card before any
+        request is claimed. A quiet host or pending authorization stays fenced.
+        """
+
+        if self.host_quiet_seconds() > 0 or name in self._state["pending"]:
+            return False
+        record = self._state["channels"].get(name) or {}
+        return self.channel_due(name) or bool(
+            connected and record.get("retained_connected") is True
+        )
+
     def record_failure(
         self,
         name: str,
@@ -306,6 +330,7 @@ class RelayPacing:
         handshake_timeout: bool = False,
         runtime_unavailable: bool = False,
         credential: bool = False,
+        retained_connected: bool = False,
     ) -> float:
         """Back ``name`` off after a transient failure; return the delay.
 
@@ -315,6 +340,9 @@ class RelayPacing:
         ``runtime_unavailable`` marks a runtime that is not there. It retries
         on the runtime schedule for as long as the streak lasts, and its
         attempts never feed the doubling.
+        ``retained_connected`` distinguishes an unknown outcome on a socket
+        the relay kept from a transport failure; it grants no authority and
+        never clears the failed request or its retry identity.
         """
 
         now = self._clock()
@@ -365,6 +393,13 @@ class RelayPacing:
             schedule=schedule,
             failed_at=now,
             credential=bool(credential),
+            retained_connected=bool(
+                retained_connected
+                and reason == "data_bus_outcome_unknown"
+                and not credential
+                and not runtime_unavailable
+                and not handshake_timeout
+            ),
         )
         if runtime_since is None:
             record.pop("runtime_since", None)
@@ -477,6 +512,7 @@ class RelayPacing:
 
 def _channel_view(record: Mapping[str, Any], now: float) -> dict[str, Any]:
     return {
+        "state": "degraded" if record.get("retained_connected") is True else "reconnecting",
         "attempts": int(record.get("attempts") or 0),
         "reason": str(record.get("reason") or ""),
         "schedule": str(record.get("schedule") or "backoff"),
@@ -490,12 +526,14 @@ def channel_reconnect_state(
     *,
     clock: Callable[[], float] = time.time,
 ) -> dict[str, Any] | None:
-    """Read, without writing, whether the relay is reconnecting ``worker_name``.
+    """Read the relay's recorded failure, not a live transport-health verdict.
 
-    The relay keeps a channel record only while that channel is failing, and
-    removes it on the first success. A record therefore means the channel is
-    not open now: the answer carries the last error, the attempt count and the
-    next attempt time. ``None`` means the relay has no failure on record.
+    A failure on a retained connected socket is ``degraded``: delivery is
+    uncertain, but foreground work may recover through the relay's live
+    session/Card fences. Other failures remain ``reconnecting`` and block
+    admission. Both retain the error, attempts and periodic retry time; an
+    elapsed retry time alone proves neither recovery nor an open socket.
+    ``None`` means the relay has no failure on record.
     A channel waiting for authorization is reported by its channel state, not
     here.
     """
@@ -517,7 +555,6 @@ def channel_reconnect_state(
     if not isinstance(record, Mapping):
         return None
     view = _channel_view(record, clock())
-    view["state"] = "reconnecting"
     return view
 
 
