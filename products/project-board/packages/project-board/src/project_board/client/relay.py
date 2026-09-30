@@ -166,6 +166,8 @@ HEARTBEAT_SESSION_FIELDS = (
     "runtime_model",
     # W334: the wake the relay holds for a limited agent, {since, until, pending}.
     "wake_hold",
+    # W405: the explicit recovery of this session's stranded wake, or {}.
+    "wake_recovery",
 )
 HEARTBEAT_SUBSCRIPTION_FIELDS = (
     "adapter",
@@ -198,6 +200,32 @@ def session_with_wake_hold(
         }
     else:
         row["wake_hold"] = {}
+    return row
+
+
+WAKE_RECOVERY_HEARTBEAT_FIELDS = ("wake_id", "state", "requested_at", "recorded_at", "submission_id")
+
+
+def session_with_wake_recovery(session: Mapping[str, Any]) -> dict[str, Any]:
+    """The session row with the recovery of its stranded wake (W405).
+
+    ``wake_recovery`` is the recovery recorded for the session's outstanding
+    wake, and ``{}`` otherwise, so every heartbeat states it and a missed one
+    is corrected by the next. A matching receive clears the outstanding wake,
+    and with it this field.
+    """
+
+    row = dict(session)
+    subscription = row.get("subscription") if isinstance(row.get("subscription"), Mapping) else {}
+    recovery = subscription.get("wake_recovery")
+    outstanding = str(subscription.get("outstanding_wake_id") or "")
+    if isinstance(recovery, Mapping) and outstanding and str(recovery.get("wake_id") or "") == outstanding:
+        row["wake_recovery"] = {
+            field: str(recovery.get(field) or "")
+            for field in WAKE_RECOVERY_HEARTBEAT_FIELDS
+        }
+    else:
+        row["wake_recovery"] = {}
     return row
 
 
@@ -3962,6 +3990,8 @@ class ProblemBoardHostRelayAdapter:
             hold=hold,
             pending=self.field.pending_worker_mail_count_snapshot(self.config.worker_name) if hold else 0,
         )
+        # W405: the recovery of a stranded wake, on the same heartbeat.
+        row = session_with_wake_recovery(row)
         # Codex: what the rollout said is the last known value, so a later
         # read that misses keeps it. Written only when it changes.
         model = row.get("runtime_model")
