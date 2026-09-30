@@ -48,17 +48,57 @@ def _json_array(value: Any) -> list[Any]:
     return list(value) if isinstance(value, (list, tuple)) else []
 
 
+# W408: how long after a lost refresh response a retry of that same refresh
+# is recognised. The relay's channel backoff retries at 60, 180, 420 and 900 s
+# after a failure (cumulative, doubling from 60 s), and each retry can wait up
+# to one 60 s relay cycle more. 1200 s covers the fourth retry at 900 s plus
+# four cycles (1140 s) with slack. The live retry came 105 s after the loss.
+REFRESH_RETRY_WINDOW_SECONDS = 1200
+
+# W408 review: how many times one attempt may be retried. Each retry replaces
+# the previous unused successor, so repeated post-send losses (a flaky tunnel)
+# do not end the family. The cap bounds what one attempt id can mint.
+MAX_REFRESH_RETRIES = 5
+
+
+def refresh_request_fingerprint(
+    *,
+    refresh_attempt: str,
+    client_id: str,
+    resource: str,
+    scope: str,
+) -> str:
+    """What binds a refresh retry to the request it retries, or empty (W408).
+
+    The client's attempt id together with the client, resource and requested
+    scope of the request. Only this hash is stored, never the attempt id.
+    """
+
+    attempt = str(refresh_attempt or "").strip()
+    if not attempt or len(attempt) > 256:
+        return ""
+    return bearer_sha256(
+        json.dumps(
+            [attempt, str(client_id or ""), str(resource or ""), str(scope or "")],
+            separators=(",", ":"),
+        )
+    )
+
+
 @dataclass(frozen=True)
 class RefreshTokenState:
     """Live refresh generation resolved from an authority store.
 
     ``raw`` is a store-owned compare token. Redis uses the encoded record;
     PostgreSQL uses the immutable generation id. It never contains the bearer.
+    ``retry_of`` names the unused successor a retried refresh replaces
+    (W408), and is empty for an ordinary live generation.
     """
 
     token: str
     raw: Any
     record: dict[str, Any]
+    retry_of: str = ""
 
 
 class RefreshTokenReuseDetected(RuntimeError):
@@ -71,7 +111,7 @@ class OAuthAuthorityStore(Protocol):
     ) -> str: ...
 
     async def get_refresh_token_state(
-        self, refresh_token: str
+        self, refresh_token: str, *, refresh_request_fingerprint: str = ""
     ) -> RefreshTokenState | None: ...
 
     async def rotate_refresh_token(
@@ -81,6 +121,7 @@ class OAuthAuthorityStore(Protocol):
         *,
         ttl_seconds: int,
         expected_generation: Any = None,
+        refresh_request_fingerprint: str = "",
     ) -> str | None: ...
 
     async def rollback_refresh_token_rotation(
@@ -190,6 +231,62 @@ class PostgresOAuthAuthorityStore:
             family_id,
         )
 
+    async def _retried_successor(
+        self,
+        connection: Any,
+        *,
+        family_id: str,
+        presented_generation: str,
+        fingerprint: str,
+    ) -> tuple[str, int]:
+        """The unused successor a retried refresh may replace, and its retry count (W408).
+
+        A refresh whose response was lost leaves the client holding the
+        generation it sent, now consumed. Presenting it again is a retry of
+        that same refresh only when every one of these holds: the request
+        carries the fingerprint of the request that minted the family's
+        current generation, that generation's parent is the presented one,
+        it was never used, fewer than ``MAX_REFRESH_RETRIES`` retries minted
+        it, the family is live, and the presented generation was consumed
+        within ``REFRESH_RETRY_WINDOW_SECONDS``. The window runs from that
+        first consumption, so retries never extend it. Anything else is reuse.
+        Returns ``("", 0)`` when it is not a retry.
+        """
+
+        if not fingerprint:
+            return "", 0
+        row = await connection.fetchrow(
+            f"""
+            SELECT successor.generation_id,
+                   COALESCE((successor.record->>'refresh_retry_count')::int, 0) AS retries
+            FROM {self.schema}.{TABLE_FAMILIES} AS family
+            JOIN {self.schema}.{TABLE_REFRESH_GENERATIONS} AS successor
+              ON successor.generation_id = family.current_generation_id
+            JOIN {self.schema}.{TABLE_REFRESH_GENERATIONS} AS presented
+              ON presented.generation_id = $2
+             AND presented.family_id = family.family_id
+            WHERE family.family_id = $1
+              AND family.state = 'active'
+              AND family.expires_at > now()
+              AND successor.state = 'active'
+              AND successor.expires_at > now()
+              AND successor.record->>'parent_generation_id' = $2
+              AND successor.record->>'refresh_request_sha256' = $3
+              AND COALESCE((successor.record->>'refresh_retry_count')::int, 0) < $5
+              AND presented.state = 'consumed'
+              AND presented.consumed_at > now() - ($4 * interval '1 second')
+            FOR UPDATE OF successor
+            """,
+            family_id,
+            presented_generation,
+            fingerprint,
+            REFRESH_RETRY_WINDOW_SECONDS,
+            MAX_REFRESH_RETRIES,
+        )
+        if row is None:
+            return "", 0
+        return str(row["generation_id"] or ""), int(row["retries"] or 0)
+
     async def create_refresh_token(
         self,
         record: Mapping[str, Any],
@@ -246,10 +343,14 @@ class PostgresOAuthAuthorityStore:
     async def get_refresh_token_state(
         self,
         refresh_token: str,
+        *,
+        refresh_request_fingerprint: str = "",
     ) -> RefreshTokenState | None:
         token = str(refresh_token or "").strip()
         if not token:
             return None
+        fingerprint = str(refresh_request_fingerprint or "")
+        retry_of = ""
         reuse_detected = False
         async with self._pool.acquire() as connection:
             async with connection.transaction():
@@ -277,8 +378,15 @@ class PostgresOAuthAuthorityStore:
                         and str(value.get("family_state") or "") == "active"
                     ):
                         family_id = str(value.get("family_id") or "")
-                        await self._revoke_refresh_family(connection, family_id)
-                        reuse_detected = True
+                        retry_of, _retries = await self._retried_successor(
+                            connection,
+                            family_id=family_id,
+                            presented_generation=str(value.get("generation_id") or ""),
+                            fingerprint=fingerprint,
+                        )
+                        if not retry_of:
+                            await self._revoke_refresh_family(connection, family_id)
+                            reuse_detected = True
         if reuse_detected:
             raise RefreshTokenReuseDetected(
                 "consumed refresh generation was presented again"
@@ -287,9 +395,9 @@ class PostgresOAuthAuthorityStore:
             return None
         raw = dict(row)
         if (
-            str(raw.get("generation_state") or "") != "active"
+            (str(raw.get("generation_state") or "") != "active" and not retry_of)
             or str(raw.get("family_state") or "") != "active"
-            or not bool(raw.get("generation_live"))
+            or (not bool(raw.get("generation_live")) and not retry_of)
             or not bool(raw.get("family_live"))
         ):
             return None
@@ -301,6 +409,7 @@ class PostgresOAuthAuthorityStore:
             token=token,
             raw=generation_id,
             record=record,
+            retry_of=retry_of,
         )
 
     async def rotate_refresh_token(
@@ -310,10 +419,12 @@ class PostgresOAuthAuthorityStore:
         *,
         ttl_seconds: int,
         expected_generation: Any = None,
+        refresh_request_fingerprint: str = "",
     ) -> str | None:
         token = str(refresh_token or "").strip()
         if not token:
             return None
+        fingerprint = str(refresh_request_fingerprint or "")
         new_token = secrets.token_urlsafe(40)
         generation_id = f"ogen_{uuid.uuid4().hex}"
         reuse_detected = False
@@ -343,12 +454,39 @@ class PostgresOAuthAuthorityStore:
                     current.get("generation_id") or ""
                 ).strip()
                 family_id = str(current.get("family_id") or "").strip()
+                retry_of = ""
+                retries = 0
                 if (
                     str(current.get("generation_state") or "") == "consumed"
                     and str(current.get("family_state") or "") == "active"
                 ):
-                    await self._revoke_refresh_family(connection, family_id)
-                    reuse_detected = True
+                    retry_of, retries = await self._retried_successor(
+                        connection,
+                        family_id=family_id,
+                        presented_generation=current_generation,
+                        fingerprint=fingerprint,
+                    )
+                    if not retry_of:
+                        await self._revoke_refresh_family(connection, family_id)
+                        reuse_detected = True
+                    elif (
+                        expected_generation is not None
+                        and str(expected_generation) != current_generation
+                    ):
+                        return None
+                    else:
+                        # W408: the retried refresh replaces its own unused
+                        # successor, and a new successor is minted below.
+                        await connection.execute(
+                            f"""
+                            UPDATE {self.schema}.{TABLE_REFRESH_GENERATIONS}
+                            SET state = 'revoked',
+                                revision = revision + 1,
+                                revoked_at = now()
+                            WHERE generation_id = $1 AND state = 'active'
+                            """,
+                            retry_of,
+                        )
                 elif (
                     str(current.get("generation_state") or "") != "active"
                     or str(current.get("family_state") or "") != "active"
@@ -371,6 +509,7 @@ class PostgresOAuthAuthorityStore:
                         """,
                         current_generation,
                     )
+                if not reuse_detected:
                     await connection.execute(
                         f"""
                         INSERT INTO {self.schema}.{TABLE_REFRESH_GENERATIONS} (
@@ -385,7 +524,17 @@ class PostgresOAuthAuthorityStore:
                         family_id,
                         bearer_sha256(new_token),
                         json.dumps(
-                            dict(replacement),
+                            {
+                                **dict(replacement),
+                                # W408: which generation and which client
+                                # attempt minted this one, so a retry of a
+                                # refresh whose response was lost is known.
+                                "parent_generation_id": current_generation,
+                                "refresh_request_sha256": fingerprint,
+                                # How many retries of this attempt minted it,
+                                # capped by MAX_REFRESH_RETRIES.
+                                "refresh_retry_count": (retries + 1) if retry_of else 0,
+                            },
                             sort_keys=True,
                             separators=(",", ":"),
                         ),
