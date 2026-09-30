@@ -268,8 +268,10 @@ Its path to Done:
 1. The worker submits. Its `review.could_not_verify` names the outstanding
    proof.
 2. The source reviewer gives its verdict on the change request and records it
-   as an item note naming the exact heads and what is still outstanding. It
-   does not decide the review; an agent's accept, return or cancel of an
+   as an item note in one findable shape, so the coordinator and the person
+   find it without reading prose:
+   `Source approved: <repository> <head> [<repository> <head> ...]. Outstanding: <proof>.`
+   It does not decide the review; an agent's accept, return or cancel of an
    operator-final item is refused with `work_review_operator_required`.
 3. After the verified deploy, the coordinator routes the Review to the final
    acceptor with `review.assign` (`operator` or `operator:<user id>`),

@@ -37,6 +37,7 @@ def test_the_review_page_owns_source_approval_versus_final_acceptance():
     assert "an agent's accept, return or cancel of an operator-final item is refused with `work_review_operator_required`" in review
     assert "the coordinator routes the Review to the final acceptor with `review.assign`" in review
     assert "A worker's `completed` report is never final acceptance." in review
+    assert "`Source approved: <repository> <head> [<repository> <head> ...]. Outstanding: <proof>.`" in review
 
 
 def test_the_coordinator_and_the_reviewer_apply_it():

@@ -204,8 +204,8 @@ exchanged as a change request against the integration ref.
   review, because the path is bound to one machine and one user.
 - **A source verdict is not final acceptance.** When an item's acceptance
   still needs a deploy, a live test or the operator's proof, the reviewer
-  approves the source on the change request and in an item note, naming the
-  heads and what is outstanding. It does not accept the item: on an
+  approves the source on the change request and in an item note,
+  `Source approved: <repository> <head> .... Outstanding: <proof>.` It does not accept the item: on an
   operator-final item (`review_requirement.kind` operator) the service
   refuses that, and on a `qualified` item an accept closes it as Done. So ask
   the coordinator to make such an item operator-final (W414, 2026-09-30).

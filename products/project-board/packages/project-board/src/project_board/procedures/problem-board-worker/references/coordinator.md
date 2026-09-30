@@ -134,7 +134,8 @@ large cached snapshot.
 4. An item whose acceptance needs a deploy, a live test or the operator's
    proof is operator-final: set `review_requirement` to `{"kind": "operator"}`
    when you create or route it (`plan.item.update`). Its source reviewer
-   records source approval as a change-request verdict and an item note, not
+   records source approval as a change-request verdict and an item note
+   (`Source approved: <repository> <head> .... Outstanding: <proof>.`), not
    as a review decision, which the service refuses to an agent. After the
    verified deploy, route the Review to the person with `review.assign`
    (`operator` or `operator:<user id>`, with the merged commits and the
