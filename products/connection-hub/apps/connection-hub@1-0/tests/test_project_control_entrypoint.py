@@ -164,13 +164,19 @@ def test_linked_control_card_explains_composed_authority() -> None:
 
     # A person's Control Card is named, never by raw id (2026-09-26): the
     # issuer label goes through controlIssuerLabel.
-    assert "const label = controlIssuerLabel(binding, issuerViewer);" in source
+    # W424: a My Card's project-held link is named "Control Card"; other
+    # links keep the issuer label from controlIssuerLabel.
+    assert "const label = linkedControlOpenTarget(item, binding)?.targetSubject" in source
+    assert ": controlIssuerLabel(binding, issuerViewer);" in source
     assert "if (!binding) return null;" in source
     assert "`Card composed with ${label} (${mode})`" in source
     assert "`${label}${/Control Card$/.test(label) ? '' : ' Control Card'} unavailable`" in source
     assert "Operations governed by this link are closed." in source
-    assert "dispatch(loadControlCard({ controlId: cleanControlId })).unwrap()" in source
-    assert "if (result.access) switchEdit(result.access);" in source
+    # W424: the linked Card is read through whoever holds it, and opened only
+    # when it is the Card the binding names.
+    assert "dispatch(loadControlCard(target)).unwrap()" in source
+    assert "if (!result.access || !isLinkedControlCard(result.access, target)) {" in source
+    assert "switchEdit(result.access);" in source
     assert "<a href={binding.manage_url}" not in source
     assert "Open {label}" in source
     assert "The linked card applies at every guarded operation." in source
