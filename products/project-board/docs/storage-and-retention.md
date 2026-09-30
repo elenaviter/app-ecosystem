@@ -349,7 +349,10 @@ pretending the earlier row never ended.
 
 Retirement is represented by a retained worker tombstone rather than row
 deletion. It records the stable worker and native-session identity, owner,
-machine, retirement actor, time, and bounded reason. The active pool omits that
+machine, retirement actor, time, and bounded reason, and where revoking the
+session's own Connection Hub Card stands (`card_revocation_state`: `pending`,
+`revoked`, `failed` with the reason and attempt count, `no_card`, or empty for
+a worker retired before this was recorded). The active pool omits that
 worker, its project attendance and access are removed, undelivered controls are
 withdrawn, and unfinished assignment ownership is advanced before closure.
 Conversation turns, delivery and settlement evidence, project events, and Git

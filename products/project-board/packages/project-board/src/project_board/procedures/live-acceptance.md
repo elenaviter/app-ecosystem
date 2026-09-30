@@ -484,8 +484,10 @@ machine, then confirm. Prove all of the following:
    rename, or rebind it. A new native session joins as a distinct worker.
 6. Historical conversations, control settlements, project events, journal
    refs, and the local mailbox remain attributable to the retired worker.
-7. The Connection Hub Card remains visible until the owner separately revokes
-   it; revoking it does not change the retained Problem Board tombstone.
+7. The retirement receipt reports `card_revocation.state` `revoked`, and the
+   session's Connection Hub Card shows revoked. When Connection Hub refused,
+   the state is `failed` with its reason; retiring again revokes the same Card
+   and changes nothing else in the retained tombstone.
 
 ## Evidence To Retain
 
