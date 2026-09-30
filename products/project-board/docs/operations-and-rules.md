@@ -146,6 +146,8 @@ The board's own page calls these for a signed-in person; no Card holds them.
 | `timeline.list` | Membership (`project_membership`) | Inbox rows only for the people who read the inbox; a private thread only for its person. |
 | `workers.list` | Membership (`project_membership`) |  |
 | `workers.archive` | Membership (`project_membership`) | Your own retired agents, read-only; a platform admin may ask for everyone's. |
+| `workers.card_reconciliation` | Identity rule `worker_pool_is_its_grantors` | Proposes retired agents whose Card is still live; revokes only the exact agents whose confirmation token is sent back. |
+| `worker.delete` | Identity rule `worker_pool_is_its_grantors` | Permanent; only a retired agent whose Card is revoked, with its name and "delete permanently" typed back. Leaves an attributable tombstone. |
 | `workers.search` | Identity rule `operator_inbox_people_only` |  |
 | `inbox.list` | Identity rule `operator_inbox_people_only` |  |
 | `inbox.summary` | Identity rule `operator_inbox_people_only` |  |
