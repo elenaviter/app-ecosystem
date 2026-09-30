@@ -330,6 +330,37 @@ every item and note back through governed PostgreSQL operations, and removes
 local plan storage only after exact comparison. The Git export is regenerated
 from PostgreSQL with `pb plan sync` after the cutover succeeds.
 
+## Runtime-Window Database Backups
+
+A runtime window's database backup lives in one folder per host and project,
+`<backup root>/<project id>`, readable only by the host user. The operator sets
+the root with `pb host configure --backup-root <path>`. It must lie outside
+every Git working tree, and until it is set nothing is created. A
+`manifest.json` in the folder lists each backup the coordinator recorded: the
+file, its format, size and SHA-256, a label, who recorded it, and its check.
+
+| Command | What it does |
+| --- | --- |
+| `pb worker backup --project-ref P --new --dump-format F` | prints the file to write the next backup to (coordinator) |
+| `pb worker backup --project-ref P --record FILE --dump-format F --label L` | checks the file and adds it to the manifest (coordinator) |
+| `pb worker backup --project-ref P --prune --all-clear E [--apply]` | after a verified ALL CLEAR, keeps the newest backup and deletes the older manifest entries (coordinator) |
+| `pb worker backup --project-ref P` | lists the backups, newest first, and files the manifest does not list (anyone) |
+
+The check depends on the format:
+
+- **`plain-sql-gzip`** (`pg_dump | gzip`): the whole gzip stream is read, so its
+  CRC and length are checked. The dump must carry pg_dump's header, its
+  completion marker (a truncated dump has none) and at least one table.
+- **`pg-custom`** (`pg_dump -Fc`): the `PGDMP` header is checked, and
+  `pg_restore --list` must read the table of contents.
+
+Both record `restore_proof: false`. Only restoring into a scratch database
+proves a backup restores.
+
+Pruning refuses without the ALL CLEAR evidence, and refuses when the newest
+backup failed its check or no longer matches its recorded hash. It deletes
+only files the manifest lists, and never a symbolic link.
+
 ## Continuation And Growth
 
 Worker identity is runtime provider plus native resumable session ID. The

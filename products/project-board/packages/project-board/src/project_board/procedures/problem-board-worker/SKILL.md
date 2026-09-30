@@ -353,7 +353,7 @@ Several agents work on the same repositories at once. The rules that keep
 them apart are the collaboration procedure, [collaboration](references/collaboration.md),
 revised one rehearsal round at a time. What every worker does, from it:
 
-- **One working tree per agent.** Develop in your own clone or `git worktree`.
+- **One working tree per agent, registered.** Register every tree you create (`pb worker workspace --path ... [--kind review]`); a sweep removes finished, clean, fully pushed trees at session start, on idle and after a review decision ([project workspace](references/project-workspace.md), section 6). Develop in your own clone or `git worktree`.
   Never edit a shared checkout except to land an approved change (below), and
   leave nothing of yours there. Why: a branch does not separate files on disk,
   and on a machine where the shared checkout is also the live `pb` runtime an

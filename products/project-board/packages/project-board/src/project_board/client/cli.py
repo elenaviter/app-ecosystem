@@ -414,6 +414,31 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
     )
     command.add_argument(
+        "--workspace-sweep-auto-apply",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Let the automatic workspace sweep (session start, idle, review decision) remove "
+            "finished, clean, fully pushed trees on this host. Off by default: it only reports "
+            "what it would remove. The operator's decision per host."
+        ),
+    )
+    command.add_argument(
+        "--workspace-sweep-protect",
+        action="append",
+        default=None,
+        help="An absolute path the workspace sweep never removes (repeat for several; replaces the list).",
+    )
+    command.add_argument(
+        "--backup-root",
+        default=None,
+        help=(
+            "Absolute LOCAL folder, outside every Git tree, holding runtime-window database "
+            "backups: one private folder per project with its manifest (pb worker backup). "
+            "An empty value clears it. The operator's choice per host."
+        ),
+    )
+    command.add_argument(
         "--agent-workspace-root",
         default=None,
         help=(
@@ -1083,6 +1108,33 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--path", default="", help="The worktree directory on this host.")
     command.add_argument("--clear", action="store_true", help="Forget the declaration(s) for --assignment-ref (and --repository when given).")
     command.add_argument("--list", action="store_true", help="Show this session's declared worktrees.")
+    # W423: every tree is registered against its job and swept when the job ends.
+    command.add_argument("--kind", default="implementation", choices=["implementation", "review"], help="What the tree serves; a review tree names the reviewed item's work ref as --assignment-ref.")
+    command.add_argument("--item", default="", help="The item key the tree serves, for the sweep report.")
+    command.add_argument("--end", action="store_true", help="Record that the job of --path (or of --assignment-ref) ended, so the sweep may remove it.")
+    command.add_argument("--reason", default="", help="With --end: why the job ended (change request closed, released, ...).")
+    command.add_argument("--sweep", action="store_true", help="List every tree in this agent's workspace with its state and what --apply would remove.")
+    command.add_argument("--apply", action="store_true", help="With --sweep: remove the trees whose job ended and that are clean and fully pushed; never with force.")
+
+    command = worker_commands.add_parser(
+        "backup",
+        help=(
+            "Runtime-window database backups in this host's managed folder for one project: "
+            "--new names where to write the next one, --record verifies it and adds it to the "
+            "manifest, --prune keeps only the newest after the ALL CLEAR. Without a mode, lists them."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True, help="The project whose backups these are.")
+    command.add_argument("--new", action="store_true", help="Print the path to write the next backup of --dump-format to (creates the private folder).")
+    command.add_argument("--record", default="", metavar="FILE", help="Verify a backup written into the folder and add it to the manifest.")
+    command.add_argument("--dump-format", dest="backup_format", default="plain-sql-gzip", choices=["plain-sql-gzip", "pg-custom"], help="plain-sql-gzip (pg_dump | gzip) or pg-custom (pg_dump -Fc). Not --format, which every pb command reads as its output form.")
+    command.add_argument("--label", default="", help="With --record: what the backup precedes (the window and its source head).")
+    command.add_argument("--pg-restore", default="pg_restore", help="With --record of a pg-custom backup: the pg_restore command; the archive is read on stdin (for example \"docker exec -i <container> pg_restore\").")
+    command.add_argument("--prune", action="store_true", help="Keep only the newest backup, which must have passed verification; report only unless --apply.")
+    command.add_argument("--all-clear", default="", help="With --prune: the evidence that the window's ALL CLEAR was verified (its receipt or message).")
+    command.add_argument("--apply", action="store_true", help="With --prune: delete the older backups the manifest lists.")
 
     command = worker_commands.add_parser(
         "idle",
@@ -1969,6 +2021,11 @@ def _host_view(config: HostRelayConfig) -> dict[str, Any]:
             "source_repository_urls": dict(config.source_repository_urls),
             "create_missing_home": config.create_missing_journal_home,
         },
+        "workspace_sweep": {
+            "auto_apply": config.workspace_sweep_auto_apply,
+            "protected_paths": list(config.workspace_sweep_protected),
+        },
+        "backups": {"root": config.backup_root},
         "workers": [worker.to_mapping() for worker in config.workers],
     }
 
@@ -2120,6 +2177,9 @@ def _host_command(args: Any) -> dict[str, Any]:
             idle_reconcile_ceiling_seconds=args.idle_poll_interval,
             create_missing_journal_home=args.create_missing_journal_home,
             agent_workspace_root=args.agent_workspace_root,
+            workspace_sweep_auto_apply=getattr(args, "workspace_sweep_auto_apply", None),
+            workspace_sweep_protected=getattr(args, "workspace_sweep_protect", None),
+            backup_root=getattr(args, "backup_root", None),
             remove_disabled_channels=bool(getattr(args, "remove_disabled_channels", False)),
         )
         view = _host_view(updated)
@@ -2484,13 +2544,28 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
                 recovery, channel.worker_name, key, exc, request_id=request_id
             )
         raise
-    return _finish_coordinate_response(
+    result = _finish_coordinate_response(
         response,
         recovery=recovery,
         worker_name=channel.worker_name,
         key=key,
         request_id=request_id,
     )
+    if action in REVIEW_DECISION_ACTIONS and str(result.get("state") or "applied") == "applied":
+        # W423: the reviewer's decision ends that item's review trees; the
+        # sweep removes the ones that are safe to lose, never others.
+        field = SharedFieldStore(config.field_root)
+        ended = field.end_workspace(
+            identity.worker_name,
+            reason=f"review decision recorded ({action})",
+            assignment_ref=str(payload.get("work_ref") or ""),
+        )
+        if ended:
+            result = {**result, "workspace_sweep": _automatic_sweep(field, identity, args, "review_decision")}
+    return result
+
+
+REVIEW_DECISION_ACTIONS = frozenset({"review.accept", "review.return", "review.cancel"})
 
 
 def _settle_interrupted_publication(
@@ -4650,6 +4725,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             # First thing to do: the skill this session runs by is not the
             # package this host's client carries (W304 U8).
             result["next"] = {"install_procedure": procedure["install"], **result["next"]}
+        # W423: at session start or resume, trees whose job ended go.
+        result["workspace_sweep"] = _automatic_sweep(field, identity, args, "session_start")
         return result
     if channel is None:
         raise DomainError(
@@ -4759,7 +4836,21 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 else "The board shows this until it passes or you set or clear it again."
             ),
         }
+    if args.worker_command == "backup":
+        return _worker_backup(field, identity, args)
     if args.worker_command == "workspace":
+        if getattr(args, "sweep", False):
+            return _workspace_sweep(field, identity, args, apply=bool(getattr(args, "apply", False)))
+        if getattr(args, "end", False):
+            if not (str(args.path or "").strip() or str(args.assignment_ref or "").strip()):
+                raise ValueError("--end needs --path or --assignment-ref")
+            ended = field.end_workspace(
+                identity.worker_name,
+                reason=str(args.reason or "ended by the agent"),
+                path=args.path,
+                assignment_ref=args.assignment_ref,
+            )
+            return {"worker": identity.worker_name, "ended": ended, "workspaces": field.workspaces(identity.worker_name)}
         if args.list:
             return {"worker": identity.worker_name, "workspaces": field.workspaces(identity.worker_name)}
         if args.clear:
@@ -4778,6 +4869,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             assignment_ref=args.assignment_ref,
             repository_ref=args.repository,
             path=args.path,
+            kind=getattr(args, "kind", "implementation"),
+            item=getattr(args, "item", ""),
         )
         return {"worker": identity.worker_name, "declared": declared, "workspaces": field.workspaces(identity.worker_name)}
     if args.worker_command == "idle":
@@ -4821,7 +4914,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
             },
             idempotency_key=f"idle:{identity.worker_name}:{declared['since']}",
         )
-        return {"worker": identity.worker_name, "idle": declared, "notice": notice}
+        # W423: out of work is when finished trees go.
+        return {"worker": identity.worker_name, "idle": declared, "notice": notice,
+                "workspace_sweep": _automatic_sweep(field, identity, args, "idle")}
     if args.worker_command == "inspect":
         quarantined = list_quarantine(field, identity.worker_name, limit=20)
         worker = field.read_worker(identity.worker_name)
@@ -6328,3 +6423,120 @@ if __name__ == "__main__":
 
 
 __all__ = ["build_parser", "main"]
+
+
+
+def _sweep_host(args: argparse.Namespace) -> tuple[Path | None, Any]:
+    """This agent's workspace (its channel's working directory) and the host config."""
+
+    try:
+        config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
+        channel = config.worker(_identity(args))
+    except Exception:  # noqa: BLE001 - no channel means nothing to sweep
+        return None, None
+    directory = str(getattr(channel, "working_directory", "") or "")
+    return (Path(directory) if directory else None), config
+
+
+def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, apply: bool, only_ended: bool = False) -> dict[str, Any]:
+    """W423: list, or remove, the trees in this agent's workspace whose job ended.
+
+    Never removes uncommitted, untracked, unpushed, linked or protected trees;
+    each is named with its reason. The installed pb client itself is protected.
+    """
+
+    from . import workspace_sweep
+
+    workspace, config = _sweep_host(args)
+    if workspace is None or not workspace.is_dir():
+        return {"worker": identity.worker_name, "workspace": str(workspace or ""), "state": "no_workspace"}
+    registrations = field.workspaces(identity.worker_name)
+    protected = [Path(__file__).resolve().parents[1]]
+    protected += [Path(item) for item in getattr(config, "workspace_sweep_protected", ()) or ()]
+    trees = workspace_sweep.inspect_workspace(workspace, registrations, protected=protected, measure=not only_ended)
+    if only_ended:
+        trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]
+    if not apply:
+        return {"worker": identity.worker_name, "workspace": str(workspace), **workspace_sweep.sweep_report(trees)}
+    result = workspace_sweep.apply_sweep(
+        trees, forget=lambda path: field.forget_workspace_path(identity.worker_name, str(path))
+    )
+    return {"worker": identity.worker_name, "workspace": str(workspace), **result}
+
+
+def _worker_backup(field: Any, identity: Any, args: argparse.Namespace) -> dict[str, Any]:
+    """W423: runtime-window backups in the host's managed folder, the coordinator's manifest.
+
+    Listing is open to any agent on the host; naming, recording and pruning
+    are the coordinator's, because the coordinator runs the window.
+    """
+
+    from . import backups
+
+    parsed = parse_ref(args.project_ref)
+    if parsed.kind != "project":
+        raise ValueError("--project-ref must name a project (work:project:...)")
+    config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
+    writes = bool(args.new or str(args.record or "").strip() or args.prune)
+    if writes:
+        coordinator = field.read_project_coordinator(parsed.object_id)
+        holders = {str((coordinator.get("holder") or {}).get("worker_name") or "").lower()}
+        holders |= {
+            str(member.get("worker_name") or "").lower()
+            for member in field.read_project_team(parsed.object_id)
+            if str(member.get("role") or "") == "coordinator"
+        }
+        if identity.worker_name.lower() not in holders - {""}:
+            raise DomainError(
+                "backup_manifest_coordinator_owned",
+                "The backup folder and its manifest are the coordinator's: the coordinator takes, "
+                "records and prunes runtime-window backups. Listing is open (omit --new, --record and --prune).",
+                status=403,
+                details={"coordinator": sorted(holders - {""})},
+            )
+    directory = backups.backup_directory(config.backup_root, parsed.object_id, create=bool(args.new))
+    if args.new:
+        path = backups.new_backup_path(directory, args.backup_format)
+        return {"directory": str(directory), "format": args.backup_format, "write_to": str(path),
+                "next": f"pb worker backup --project-ref {args.project_ref} --record {path} --dump-format {args.backup_format} --label <window and head>"}
+    if str(args.record or "").strip():
+        entry = backups.record_backup(
+            directory,
+            args.record,
+            args.backup_format,
+            label=args.label,
+            recorded_by=identity.worker_name,
+            pg_restore=backups.pg_restore_command(args.pg_restore),
+        )
+        return {"directory": str(directory), "recorded": entry}
+    if args.prune:
+        return backups.prune_backups(
+            directory, all_clear=args.all_clear, pruned_by=identity.worker_name, apply=bool(args.apply)
+        )
+    return backups.backup_report(directory)
+
+
+def _automatic_sweep(field: Any, identity: Any, args: argparse.Namespace, trigger: str) -> dict[str, Any]:
+    """The sweep that runs without agent memory (W423): never fails the command it follows."""
+
+    try:
+        _workspace, config = _sweep_host(args)
+        # W423: the first real sweep on a host is the operator's decision. Until
+        # the host turns auto-apply on, the triggers only report.
+        auto_apply = bool(getattr(config, "workspace_sweep_auto_apply", False))
+        result = _workspace_sweep(field, identity, args, apply=auto_apply, only_ended=True)
+    except Exception as exc:  # noqa: BLE001 - housekeeping must not break the real command
+        return {"trigger": trigger, "state": "failed", "reason": f"{type(exc).__name__}: {exc}"[:300]}
+    if not auto_apply:
+        return {
+            "trigger": trigger,
+            "state": "report_only",
+            "would_remove": list(result.get("would_remove") or []),
+            "enable": "pb host configure --workspace-sweep-auto-apply (the operator's decision for this host)",
+        }
+    return {
+        "trigger": trigger,
+        "removed": [row["path"] for row in result.get("removed") or []],
+        "kept": [{"path": row["path"], "keep": row["keep"]} for row in result.get("kept") or [] if row.get("ended")],
+        "failed": result.get("failed") or [],
+    }

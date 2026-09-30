@@ -274,6 +274,17 @@ class HostRelayConfig:
     # (``pb host configure --agent-workspace-root``); unset, the first approved
     # work root. See ``agent_workspace_root``.
     agent_workspace_root: str = ""
+    # W423: whether the automatic workspace sweep (session start, idle, review
+    # decision) removes finished trees on this host, or only reports what it
+    # would remove. Off until the operator turns it on for the host
+    # (``pb host configure --workspace-sweep-auto-apply``).
+    workspace_sweep_auto_apply: bool = False
+    # Paths the sweep never removes, beyond the installed pb client.
+    workspace_sweep_protected: tuple[str, ...] = ()
+    # W423: where runtime-window database backups live on this host, one
+    # folder per project with its manifest (``pb host configure
+    # --backup-root``). Unset, nothing is created: the operator chooses it.
+    backup_root: str = ""
 
     @property
     def effective_agent_workspace_root(self) -> str:
@@ -457,6 +468,13 @@ class HostRelayConfig:
                 )
             ),
             agent_workspace_root=_agent_root(agent_root_value, roots),
+            workspace_sweep_auto_apply=bool((value.get("workspace_sweep") or {}).get("auto_apply", False)),
+            workspace_sweep_protected=tuple(
+                str(Path(str(item)).expanduser())
+                for item in (value.get("workspace_sweep") or {}).get("protected_paths") or ()
+                if str(item).strip()
+            ),
+            backup_root=str((value.get("backups") or {}).get("root") or ""),
         )
         approved_roots = [Path(root) for root in result.allowed_roots]
         for alias, repository in (
@@ -735,6 +753,9 @@ def update_host_config(
     idle_reconcile_ceiling_seconds: int | None = None,
     create_missing_journal_home: bool | None = None,
     agent_workspace_root: str | Path | None = None,
+    workspace_sweep_auto_apply: bool | None = None,
+    workspace_sweep_protected: Sequence[str] | None = None,
+    backup_root: str | Path | None = None,
     remove_disabled_channels: bool = False,
 ) -> HostRelayConfig:
     """Apply one explicit, non-secret host configuration revision."""
@@ -843,6 +864,34 @@ def update_host_config(
                         details={"agent_workspace_root": str(chosen)},
                     )
                 value["agent_workspace"] = {"root": str(chosen)}
+        if workspace_sweep_auto_apply is not None or workspace_sweep_protected is not None:
+            sweep = dict(value.get("workspace_sweep") or {})
+            if workspace_sweep_auto_apply is not None:
+                sweep["auto_apply"] = bool(workspace_sweep_auto_apply)
+            if workspace_sweep_protected is not None:
+                sweep["protected_paths"] = [
+                    str(_absolute(str(item), "workspace_sweep.protected_paths"))
+                    for item in workspace_sweep_protected
+                    if str(item).strip()
+                ]
+            value["workspace_sweep"] = sweep
+        if backup_root is not None:
+            if str(backup_root).strip():
+                chosen = _absolute(str(backup_root), "backups.root")
+                from .backups import _inside_git_tree
+
+                tree = _inside_git_tree(chosen)
+                if tree is not None:
+                    raise DomainError(
+                        "backup_root_in_git_tree",
+                        f"The backup root {chosen} lies inside the Git working tree {tree}; "
+                        "a backup must never be committed. Choose a folder outside every clone.",
+                        status=400,
+                        details={"backup_root": str(chosen), "git_tree": str(tree)},
+                    )
+                value["backups"] = {**dict(value.get("backups") or {}), "root": str(chosen)}
+            else:
+                value.pop("backups", None)
         value["updated_at"] = utc_now()
         updated = HostRelayConfig.from_mapping(value, path=path)
         atomic_write_json(path, value)

@@ -3,7 +3,7 @@ id: project-board.worker-reference.runtime-actions
 title: "Runtime Actions: Project Runtimes And Problem Board Host Actions"
 summary: How a project's runtimes and their profiles carry the commands for a runtime action, which Problem Board host action makes a pb change live (client source, relay restart, procedure install), and how to verify it in the running process rather than the checkout.
 tags: [procedure, problem-board, worker, runtime, deploy]
-keywords: [project runtimes, runtime profile, local_profile, releases, pb source use-release, pb source use-code, relay restart, procedure install, what loaded, ready with a constraint, verify the artifact]
+keywords: [runtime-window backup, pb worker backup, backup manifest, keep the newest backup, project runtimes, runtime profile, local_profile, releases, pb source use-release, pb source use-code, relay restart, procedure install, what loaded, ready with a constraint, verify the artifact]
 see_also: []
 ---
 
@@ -56,6 +56,50 @@ Copying a file into a container and restarting a container are not actions
 this team has: a container-local patch is invisible to everyone, vanishes
 without warning, and makes the running system disagree with the repository
 while every test still passes.
+
+## Runtime-Window Database Backups
+
+The coordinator who runs a runtime window backs up the tables the action can
+change before it, into the host's managed backup folder, never an agent's
+scratch folder, and keeps only the newest once the window's ALL CLEAR is
+verified.
+
+1. **Name the file.** `pb worker backup --project-ref <project> --new --dump-format plain-sql-gzip`
+   prints where to write it: `<backup root>/<project id>/pb-backup-<UTC time>.sql.gz`,
+   in a folder only the host user can read. Write the dump there with the
+   runtime profile's dump command.
+2. **Record and verify it before the action.**
+   `pb worker backup --project-ref <project> --record <file> --dump-format plain-sql-gzip --label "<action> at <commit>"`
+   checks the file and adds it to the folder's manifest. A plain SQL gzip dump
+   is checked by reading the whole gzip stream (CRC and length) and requiring
+   pg_dump's header, its completion marker and at least one `CREATE TABLE`;
+   `pg_restore --list` cannot read a plain dump. A custom-format dump
+   (`pg_dump -Fc`, `--dump-format pg-custom`) is checked with `pg_restore --list`
+   (`--pg-restore "docker exec -i <container> pg_restore"` when PostgreSQL
+   runs in a container). A failed check stops the window before the action.
+   Either check proves integrity, never that the backup restores: report
+   "integrity verified", and call something a restore test only after
+   restoring it into a scratch database.
+3. **Prune after the ALL CLEAR.** Once the window's ALL CLEAR is verified,
+   `pb worker backup --project-ref <project> --prune --all-clear "<its receipt or message ref>"`
+   shows what would go, and `--apply` keeps only the newest backup and deletes
+   the older ones the manifest lists. It refuses when the newest one failed
+   its check or changed since it was recorded, so the copy kept is always a
+   verified one.
+
+The operator chooses the backup root per host
+(`pb host configure --backup-root <absolute path outside every Git tree>`);
+until then `--new` refuses and nothing is created. The manifest is the
+coordinator's: any agent may list it (`pb worker backup --project-ref <project>`),
+only the coordinator names, records and prunes backups. Pruning never touches
+a file the manifest does not list; the listing names such files, and older
+dumps in agents' scratch folders stay their owners' until the operator decides
+how to clear them.
+
+Why: every window left a table dump in the scratch folder of whichever agent
+ran it, and nothing removed them. On 2026-09-30 one host held 24 dumps in one
+agent's scratch folder and 9 in another's, and its disk filled. The operator's
+rule: keep the newest one.
 
 ## Develop Without Moving The Host Source
 
