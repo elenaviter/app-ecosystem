@@ -508,6 +508,9 @@ def test_read_heavy_evidence_is_fresh_targeted_and_explicitly_expandable() -> No
     assert "Every displayed ref, id, key, cursor, commit and path stays whole" in skill
     assert "A result retained from an earlier decision boundary is not current evidence" in brief
     assert "## Refresh the evidence you decide from" in _read("references/coordinator.md")
+    # One authoritative copy: a repeated section passed the presence check (W403 review).
+    assert coordinator.count("## Refresh the evidence you decide from") == 1
+    assert coordinator.count("A result from an earlier boundary, a compacted conversation, or private memory is not current evidence") == 1
     assert "A result from an earlier boundary, a compacted conversation, or private memory is not current evidence" in coordinator
     assert "Do not page or assemble the plan to make a decision about one subject" in coordinator
     assert "Do not replace a fresh targeted read with local `jq`" in coordinator
@@ -2036,3 +2039,28 @@ def test_the_coordinator_reconciles_an_overdue_worker_before_rerouting() -> None
     assert "read the pool's current five-hour use and its reset, with the observation time, and weigh them against the size of the task" in coordinator
     assert "a shared pool's consumption is not charged to the worker you happen to read it from" in coordinator
     assert "a plan's price says nothing about its window size" in coordinator
+
+
+def test_no_procedure_file_repeats_a_heading() -> None:
+    """A section pasted twice passes every presence check (W403 review).
+
+    Each procedure file states each section once, so a reader and a later
+    edit meet one authoritative rule. Code blocks are skipped: a shell
+    comment there is not a heading.
+    """
+
+    repeated: dict[str, list[str]] = {}
+    for path in sorted(OPERATIONAL_PROCEDURE_ROOT.rglob("*.md")):
+        seen: set[str] = set()
+        in_code = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.lstrip().startswith("```"):
+                in_code = not in_code
+                continue
+            if in_code or not line.startswith("#"):
+                continue
+            heading = line.strip()
+            if heading in seen:
+                repeated.setdefault(str(path.relative_to(OPERATIONAL_PROCEDURE_ROOT)), []).append(heading)
+            seen.add(heading)
+    assert repeated == {}, f"procedure files repeat these headings: {repeated}"
