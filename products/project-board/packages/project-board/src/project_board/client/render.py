@@ -1239,8 +1239,9 @@ def _runtime_account_brief(worker: Mapping[str, Any]) -> str:
 
 # W310: the session's account against the host's current login, in plain words.
 _ACCOUNT_STATE_NOTES = {
-    "bound": "the session's account, first read from the host login, and the host is still logged in to it",
-    "mismatch": "the session's account, first read from the host login, and the host is now logged in to another account",
+    "bound": "the session's account, proven from the session",
+    "inferred": "inferred from the host login when the board first saw the session, not proven for the session",
+    "mismatch": "first read from the host login, and the host is now logged in to another account",
     "unknown": "not known: the host login is unread, or an earlier board replaced the session's account with a later login",
     "unreported": "not reported",
 }
@@ -1254,6 +1255,7 @@ def _session_account_note(worker: Mapping[str, Any]) -> str:
 
 # W310: whose usage a sample is. Only the session's own account is capacity.
 _ATTRIBUTION_NOTES = {
+    "inferred": "not confirmed capacity: read under the host login, inferred as this session's",
     "host_login": "not this session's capacity: read under the host's other login",
     "unverified": "not this session's capacity: the account it was read under is not known",
 }

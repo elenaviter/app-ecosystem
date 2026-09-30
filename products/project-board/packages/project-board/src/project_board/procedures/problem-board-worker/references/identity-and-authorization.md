@@ -56,10 +56,13 @@ first account the board reads for a session is that session's account, shown
 with where it came from (the host's login when the session was first seen). A
 later, different login is shown beside it as the host login, and the session's
 account stays (W310). `pb worker authorize` authorizes a Card: it is not a
-provider login, and it does not change the session's account. The board reads
-each session's account as `bound` (the host is still logged in to it),
-`mismatch`, `unknown` or `unreported`. A usage sample counts as the session's
-capacity only when it names the session's account.
+provider login, and it does not change the session's account. The host login
+is evidence about the host, never proof of the account a running session uses:
+a session first seen after the host moved to another login takes that login
+as its first reading. So the board reads each session's account as `inferred`
+(the host is still on the first reading), `mismatch`, `unknown` or
+`unreported`, and no usage read under a host login counts as the session's
+confirmed capacity.
 
 `pb worker listen` is idempotent for the same target and native session. It may
 reattach that worker; it must not silently create a replacement identity.
