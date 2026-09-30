@@ -224,6 +224,23 @@ The journal-index lock files follow their operation. Housekeeping removes a
 lock after the operation's retained record expires. A migration never deletes
 an unreadable record.
 
+### Disk and workspace size
+
+Finished worktrees filled a host disk before anyone saw it (2026-09-30). The
+relay's heartbeat carries `disk_usage`: the host's free and total bytes for
+the file system that holds the agent's workspace (one `statvfs` per beat) and
+the workspace's own size, which walks the tree and is re-measured at most every
+15 minutes, off the relay's event loop. The board keeps the latest report per
+agent, shows it on the agent card ("disk … free (…%) · workspace …") and in
+the project team context, and drops a malformed report with a
+`worker.disk_usage_dropped` event instead of failing the heartbeat.
+
+When a host crosses below the alert threshold (default 10% free; the board's
+`PROBLEM_BOARD_DISK_ALERT_FREE_PERCENT` changes it), the operator gets a
+`decision` mail and the acting coordinator a mail naming the machine, its
+largest agent workspaces and `pb worker workspace --sweep`. One alert per
+crossing: the host must recover above the threshold before it alerts again.
+
 ## Owner And Worker Conversation
 
 Every enrolled worker has one conversation with its owner. The worker may be

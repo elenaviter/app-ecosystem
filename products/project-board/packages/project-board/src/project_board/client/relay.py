@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import shutil
 import time
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
@@ -147,6 +148,22 @@ JOURNAL_NOTICE_KIND = "worker.journal"
 # read controls; wake histories remain in the local shared field and never ride
 # every heartbeat through the Data Bus stream.
 HEARTBEAT_CONTROL_REF_LIMIT = 20
+# W423: how often the relay re-walks an agent's workspace to size it.
+DISK_USAGE_REMEASURE_SECONDS = 900
+
+
+def directory_bytes(root: Path) -> int:
+    """Bytes under ``root``, never following links, skipping what cannot be read."""
+
+    total = 0
+    for current, _dirs, files in os.walk(root, followlinks=False):
+        for name in files:
+            try:
+                total += (Path(current) / name).lstat().st_size
+            except OSError:
+                pass
+    return total
+
 HEARTBEAT_SESSION_FIELDS = (
     "session_id",
     "state",
@@ -3644,6 +3661,7 @@ class ProblemBoardHostRelayAdapter:
             self._add_alias_request(heartbeat_payload, alias_request)
             self._add_project_record(heartbeat_payload, project_ref)
             self._add_workspace_report(heartbeat_payload, project_ref, workspace_report)
+            await self._add_disk_usage(heartbeat_payload)
             await self._add_runtime_account(heartbeat_payload)
             try:
                 with self._trace_stage(
@@ -3886,6 +3904,34 @@ class ProblemBoardHostRelayAdapter:
             and entry.get("sent_signature") != signature
         )
         return entry, pending
+
+    async def _add_disk_usage(self, payload: dict[str, Any]) -> None:
+        """The host's free disk and this agent's workspace size (W423).
+
+        A host disk filled with finished worktrees before anyone saw it. Free
+        and total bytes of the workspace's file system are read every beat
+        (one statvfs); the workspace's own size walks the tree, so it is
+        measured at most every DISK_USAGE_REMEASURE_SECONDS, off the event loop.
+        """
+
+        workspace = str(getattr(self.config, "workspace", "") or getattr(self.config, "working_directory", "") or "")
+        if not workspace or not Path(workspace).is_dir():
+            return
+        try:
+            usage = shutil.disk_usage(workspace)
+        except OSError:
+            return
+        now = time.monotonic()
+        measured_at = getattr(self, "_workspace_bytes_measured", None)
+        if measured_at is None or now - measured_at >= DISK_USAGE_REMEASURE_SECONDS:
+            self._workspace_bytes = await asyncio.to_thread(directory_bytes, Path(workspace))
+            self._workspace_bytes_measured = now
+        payload["disk_usage"] = {
+            "host_free_bytes": int(usage.free),
+            "host_total_bytes": int(usage.total),
+            "workspace_path": workspace,
+            "workspace_bytes": int(getattr(self, "_workspace_bytes", 0) or 0),
+        }
 
     def _add_workspace_report(self, payload: dict[str, Any], project_ref: str, entry: Mapping[str, Any]) -> None:
         report = entry.get("report") if entry else None
