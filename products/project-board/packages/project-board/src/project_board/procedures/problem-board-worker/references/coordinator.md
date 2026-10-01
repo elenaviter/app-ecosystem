@@ -524,8 +524,9 @@ long idle period, before it gets substantive work the coordinator:
    published revision.
 2. Starts the update or reinstall the host's policy allows (runtime actions,
    Client Source Selection, and `pb procedure install`).
-3. Asks the worker to reread the complete current skill, and the worker
-   confirms the revision before it begins.
+3. Asks the worker to load the complete current skill when its loaded
+   revision differs from the installed one, and the worker confirms the
+   revision before it begins.
 
 A worker whose info line says paused, restricted or do not use is left
 asleep until it is legitimately resumed: waking it only to update spends its

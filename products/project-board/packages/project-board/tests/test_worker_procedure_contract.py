@@ -897,7 +897,7 @@ def test_a_returning_worker_starts_from_the_current_procedure() -> None:
     assert "an installed skill copy stays at the revision it was installed with" in coordinator
     assert "Compares the host's selected source (`pb source status`) and installed procedure revision (`pb procedure verify`)" in coordinator
     assert "Starts the update or reinstall the host's policy allows" in coordinator
-    assert "Asks the worker to reread the complete current skill, and the worker confirms the revision before it begins" in coordinator
+    assert "Asks the worker to load the complete current skill when its loaded revision differs from the installed one, and the worker confirms the revision before it begins" in coordinator
     assert "A worker whose info line says paused, restricted or do not use is left asleep until it is legitimately resumed" in coordinator
     assert "A project that consumes Problem Board follows its published-release policy" in coordinator
 
@@ -2304,6 +2304,11 @@ def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
     assert "with `review.assign` naming yourself, so that you are the item's assignee" in coordinator
     assert "An item in Review whose assignee is still its author is an unrouted review" in coordinator
     assert "you never schedule your own acceptance" in collaboration
+    # Review return at 0e28848f (claude-app@e-home): without a specific reviewer the
+    # completion names the acting coordinator, so it never stays on its author.
+    assert "With no specific reviewer, name the acting coordinator's stable worker name in `--reviewer`" in collaboration
+    assert "with no specific reviewer, name the acting coordinator's stable worker name, so the review lands on it and not on you" in skill
+    assert "else the coordinator does (collaboration Rule 6)" not in skill
     # A14: reconcile assignments and ask when one is unclear.
     assert "**Reconcile your assignments, and ask when one is unclear.**" in collaboration
     assert "never an idle wait, an invented role or a kept stale tree" in collaboration

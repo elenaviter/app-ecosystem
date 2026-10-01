@@ -507,12 +507,15 @@ it, what you touched (Rule 3), and what you are waiting on.
   work-item review documentation owns the save and history semantics (W403
   C4 with the operator's direct-assignee rule, 2026-09-29; the product
   delivers it with W398). Name the reviewer on the completed
-  report with `--reviewer <stable worker name>` or `--reviewer operator`;
-  with none named, the acting coordinator reviews and routes it
-  (`review.assign`). You may propose a qualified reviewer in the report; you
-  never schedule your own acceptance. When an item you completed is still
-  assigned to you in Review, the review is not routed: tell the coordinator,
-  naming the item, and do not explain it as a state (W446, W449).
+  report with `--reviewer <stable worker name>` or `--reviewer operator`.
+  With no specific reviewer, name the acting coordinator's stable worker
+  name in `--reviewer`: the item then lands on the coordinator, who reviews
+  it or routes it on (`review.assign`). Sending work for review must never
+  leave it on you (operator, 2026-10-01). You may propose a qualified
+  reviewer in the summary; you never schedule your own acceptance. When an
+  item you completed is still assigned to you in Review, the review is not
+  routed: tell the coordinator, naming the item, and do not explain it as a
+  state (W446, W449).
 - **Reconcile your assignments, and ask when one is unclear.** After a resume
   or a compaction, and at your safe checkpoints, list your current
   assignments and compare them with the work you remember, before acting on
