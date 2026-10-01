@@ -179,7 +179,7 @@ The board's own page calls these for a signed-in person; no Card holds them.
 | `session.resume.close` | Identity rule `person_views_people_only` |  |
 | `work.cancel` | Their project Card | A review decision: review.cancel on the person's Card, with its rules. |
 | `work.command.get` | Identity rule `person_views_people_only` |  |
-| `work.item.save` | Their project Card | Each step is checked for its own operation: the fields, the assignment and the status. |
+| `work.item.save` | Membership (`project_membership`) | People and agents supply status, assignee, or both; omitted fields stay unchanged and both supplied fields commit or neither does. There is no composite Card grant: each supplied step needs its existing operation (work.status.set, assignment.assign or assignment.return; plan.item.update for labels). |
 | `work.note.append` | Their project Card | plan.note.append on the person's Card. |
 | `work.notes.request` | Membership (`project_membership`) |  |
 | `work.notes.get` | Identity rule `person_views_people_only` |  |
