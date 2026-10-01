@@ -2395,8 +2395,10 @@ def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
     assert "otherwise mail the coordinator (kind `decision`) naming the item and the gates, and it routes the item in its turn" not in collaboration
     assert "Today the assignee of an item in Review is set with `review.assign`; W451 makes it the ordinary assignee set." in collaboration
     # Root, 14:44Z: old queued input is answered with the current state, not replayed.
-    assert "Old input is answered with the current state." in skill
-    assert "neither restart superseded work nor repeat a reply or side effect already given" in skill
+    delivery = _words(_read("references/delivery-and-recovery.md"))
+    assert "## Old input" in _read("references/delivery-and-recovery.md")
+    assert "neither restart superseded work nor repeat a reply or side effect already given" in delivery
+    assert 'Old input is answered with the current state ([delivery and recovery](references/delivery-and-recovery.md), "Old input")' in skill
     # Operator, 14:41Z: trees are not a buffer.
     workspace = _words(_read("references/project-workspace.md"))
     assert "**Trees are not a buffer.**" in workspace

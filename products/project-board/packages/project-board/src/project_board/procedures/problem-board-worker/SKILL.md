@@ -211,16 +211,7 @@ For every returned item:
 
 Do not settle an item that did not arrive with a complete body and lease. Do
 not repeat a side effect because a wake repeats: check prior handling and the
-correlated conversation first.
-
-Old input is answered with the current state. Compare each item's creation time
-with now. When the item, its assignment or an operator ruling has moved on
-since it was written, act on the current state, settle the old item naming
-what superseded it, and neither restart superseded work nor repeat a reply or
-side effect already given. Why a message arrived late (a queued wake, a
-transport fault) is a separate finding: report it with the wake's provenance
-and do not assume a cause. Why: on 2026-10-01 a request written at 12:18Z
-reached its reader at 14:39Z and was answered as if new (W455).
+correlated conversation first. Old input is answered with the current state ([delivery and recovery](references/delivery-and-recovery.md), "Old input").
 
 ## Receive Assigned Work
 

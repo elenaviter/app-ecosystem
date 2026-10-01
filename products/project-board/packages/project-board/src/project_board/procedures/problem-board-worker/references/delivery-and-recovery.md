@@ -308,3 +308,14 @@ If the board says relay online while no message reaches the model, report each
 observed stage separately: remote acceptance, local materialization, outstanding
 wake, receive evidence, visible response, and settlement. "Online" is not an
 end-to-end delivery claim.
+
+## Old input
+
+Old input is answered with the current state. Compare each item's creation time
+with now. When the item, its assignment or an operator ruling has moved on
+since it was written, act on the current state, settle the old item naming
+what superseded it, and neither restart superseded work nor repeat a reply or
+side effect already given. Why a message arrived late (a queued wake, a
+transport fault) is a separate finding: report it with the wake's provenance
+and do not assume a cause. Why: on 2026-10-01 a request written at 12:18Z
+reached its reader at 14:39Z and was answered as if new (W455).
