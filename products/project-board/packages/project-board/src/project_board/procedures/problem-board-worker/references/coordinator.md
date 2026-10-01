@@ -638,8 +638,11 @@ the recovery step awaits the operator's ruling on poll candidate A3).
 
 **An unclear assignment is a question, not an idle state.** A worker
 reconciles its current assignments with the work it remembers after a resume
-or a compaction and periodically while it works ([collaboration](collaboration.md)
-Rule 6, about every 30 minutes, not at every step). When an item stays on it and its
+or a compaction, once per native wake batch, and periodically while it works
+([collaboration](collaboration.md) Rule 6, about every 30 minutes, not at every
+step). An instruction you put only in an assignment's task is invisible in the
+brief item view and the assign notice: mirror it in a note on the item and in
+the mail that routes it (W455, 2026-10-01). When an item stays on it and its
 purpose or next action is unclear, it asks you, naming the item, the ownership
 version and its last checkpoint. Answer with a durable decision on the item
 (the next section): continue, release, reroute or close (W449).

@@ -554,12 +554,15 @@ it, what you touched (Rule 3), and what you are waiting on.
   At session start or resume and after a compaction, read your assignments
   fresh (`project.plan.index` with your stable worker name as assignee, by
   status, and `assignment.list`) and compare them with the work you remember,
-  before acting on old mail. While you work, read them again periodically:
+  before acting on old mail. Read them again once per native wake batch (the
+  addressed mail one wake delivers, received together) and, while you work,
   once about 30 minutes of active work have passed since the last full read,
   at the next safe boundary. The cadence needs no timer and no idle polling,
-  and a step, a command, an ordinary wake, a guard prompt or a work boundary is
-  not a reason for a full read. An addressed change to one assignment or its
-  ownership, or a doubt about one item, reads only that item. Listing them is
+  and a command, a leased message within a batch, a guard prompt or a work
+  boundary is not a reason for a full read. An addressed change to one
+  assignment or its ownership, or a doubt about one item, reads only that
+  item, including the assignment's own task (`project.plan.item` with
+  `--format json`, `assignment.task`), which the brief view does not show. Listing them is
   not the act. For each item read its
   current state (the item, its change request and exact head), name the next
   gate, the actor who clears it and the next decision time, and do the step
