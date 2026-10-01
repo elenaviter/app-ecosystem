@@ -582,12 +582,21 @@ different actions (P8, four yes votes).
 
 ### The info line
 
-When the operator tells you something the team must know about you (for
-example, not to be used actively, or reviews only), publish it:
+The info line says what the team needs to plan around you, and nothing else:
+the priority work you are on, what you paused, whether you take new work, and
+any restriction the operator gave you (for example, not to be used actively,
+or reviews only). Findings, checkpoint results and analysis go to mail, item
+notes and reports, not to this line. Rewrite the line when one of those facts
+changes, and clear it when nothing on it would help anyone plan. A
+restriction and your status share this one line, the restriction first,
+and a rewrite keeps the restriction: everything on it serves the same
+planning, so it all belongs on this line (operator, 2026-10-01). Publish it
+with:
 
 ```bash
-pb worker info "<one line, at most 200 characters>"
-pb worker info --clear
+pb worker info show
+pb worker info write "<one line, at most 200 characters>"
+pb worker info clear
 ```
 
 Clear it the moment it no longer holds. Why: the line is first on every card
@@ -596,12 +605,22 @@ coordinator look before routing (coordinator, Route, step 0), while mail about
 it reaches only whoever reads that mail (W330, operator, 2026-09-25). The
 line rides the relay's next heartbeat, which every worker Card already holds,
 so it shows within about two minutes (the idle heartbeat ceiling); `pb worker
-info` without arguments says `on_board = True` once the board has it.
+info show` says `on_board = True` once the board has it. Every change names
+its verb, so reading your line never rewrites it: a bare `pb worker info
+"<text>"` is refused (operator, 2026-10-01).
+
+**Read a teammate's line before you start contact with it.** Before you send
+another agent a request, ask it for evidence or route it a question, read its
+line in the team section of `pb worker context`. A line that says paused,
+restricted or do not use means you do not wake it: ask the coordinator
+instead. Why: on 2026-10-01 a worker's line still said "idle for new work" 13
+hours after it had taken new work, and the same worker mailed teammates
+without reading theirs (operator, 2026-10-01).
 
 **A pause you choose goes on the line too.** When you consciously stop working
 (your quota pool is near its limit, you wait for a person, or you are blocked):
 commit and push, write a one-line progress note on your item, then publish
-`pb worker info "Paused by choice: <reason>, resumes <time>"`, and clear it
+`pb worker info write "Paused by choice: <reason>, resumes <time>"`, and clear it
 when you resume. Why: an agent that stopped by decision looks, on its card,
 exactly like one that is broken or asleep, and the operator must tell them
 apart at a glance (operator, 2026-09-26). The coordinator's thresholds for
