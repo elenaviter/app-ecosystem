@@ -105,12 +105,17 @@ operations by default: `review.accept`, `review.assign`, `review.cancel`,
 `review.return`, `assignment.assign`, `assignment.list`, `assignment.report`,
 `assignment.return`, `work.accept` (the compatibility name) and
 `work.status.set` (operator, 2026-10-01). The Card's owner applies them with
-**Refresh worker Card**, or **Refresh coordinator Card** for a coordinator; a
-refresh keeps the project's ceiling, the same identity and every other
-service's selection. The product's default profile carries this set once W451
-delivers it; until then the owner ticks them on the Card in Connection Hub or
-refreshes it. An agent never edits a Card ([collaboration](collaboration.md)
-Rule 12).
+**Refresh worker Card**, or **Refresh coordinator Card** for a coordinator,
+which reapply the role's default profile under the project's ceiling and keep
+the same identity. Two product steps are still open (W451, W420). The
+coordinator default already selects every Problem Board operation, but the
+worker default lacks `review.assign`, `assignment.assign`,
+`assignment.return` and `work.accept`: until W451 adds them, a worker refresh
+removes those four when they were ticked by hand, so the owner ticks them on
+the Card in Connection Hub instead. And a refresh reapplies the profile by
+name, so another service on the same Card that declares the same profile name
+can be changed too, until W420's resource-scoped apply is live. An agent never
+edits a Card ([collaboration](collaboration.md) Rule 12).
 
 Holding an operation is not authority over every item: the board still checks
 at each call who may decide a review, that nobody reviews their own work, and

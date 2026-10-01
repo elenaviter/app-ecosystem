@@ -2387,6 +2387,9 @@ def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
                       "assignment.list", "assignment.report", "assignment.return", "work.accept", "work.status.set"):
         assert f"`{operation}`" in identity
     assert "Holding an operation is not authority over every item" in identity
+    # The product gaps are named, not claimed (codex-app mapping, 14:39Z).
+    assert "a worker refresh removes those four when they were ticked by hand" in identity
+    assert "until W420's resource-scoped apply is live" in identity
     # Scheduling table: ownership age and reason, next action, utilization from receipts.
     assert "how long it has been with its assignee and why, and the next action with who takes it" in coordinator
     assert "Count utilization from receipts (a STARTED, a report, a review verdict), never from mail you queued" in coordinator
