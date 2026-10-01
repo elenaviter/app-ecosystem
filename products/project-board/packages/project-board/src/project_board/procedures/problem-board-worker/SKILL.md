@@ -324,11 +324,10 @@ move status ([ownership](references/identity-and-authorization.md)).
   have applied. Read that row, then retry the same report unchanged. Changed
   content or an invented source event is a different report, not recovery.
 - A `project.report` request reaches only the coordinator: before answering one, read [project-report](references/project-report.md).
-- Journal every completed move only when the project declares role `journal`; no role means no journal work. The role is repository agnostic and every change is item-scoped: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
-- Author the complete journal Markdown, front matter included, at the configured relative path in the current item's worktree. Keep the operator's exact
-  ruling, artifact refs, failure text, alternatives, blast radius, verification
-  and next action when they matter; manufacture no empty sections or generic
-  tags. The front matter needs a unique
+- Journal what the work taught the project (why this and not that, failures and their mechanism, wrong assumptions, limits) only when the project declares role `journal`; where the work stands goes on the item, not in the journal; no role means no journal work. The role is repository agnostic and every change is item-scoped: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
+- Author the complete journal Markdown, front matter included, at the configured relative path in the current item's worktree. Lead with the lesson; keep the
+  mechanism, the rejected alternatives and why, the operator's exact ruling and
+  the evidence that proves it ([journaling](references/journaling.md)); no empty sections or generic tags. The front matter needs a unique
   `work:journal:<created-at>:<entry-id>:<semantic-name>` `entry_ref` (semantic
   name at most 64 characters of `a-z0-9-`, else `journal_entry_ref_invalid`)
   and this exact `project_ref`; `title`, `summary`, `keywords`, `see_also`,

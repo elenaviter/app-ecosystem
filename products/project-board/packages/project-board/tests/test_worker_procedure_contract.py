@@ -1129,12 +1129,15 @@ def test_the_project_journal_accumulates_everything_from_day_one() -> None:
         )
     )
 
-    assert "Keep everything known in the project journal" in coordinator
-    assert "project journal home is the team's complete shared history" in coordinator
+    # W453 (operator, 2026-10-01): the journal accumulates reasoning and lessons,
+    # not a ledger of where the work stands.
+    assert "Keep what the project learned in the journal" in coordinator
+    assert "project journal home is where the team's reasoning accumulates" in coordinator
     assert "The project files are the team's current truth, and every project has them" in coordinator
     assert "operator rulings with their reasons" in coordinator
-    assert "runtime-window outcomes" in coordinator
-    assert "Whoever learns a project-wide fact writes a journal entry" in coordinator
+    assert "lives on the work item, not in the journal" in coordinator
+    assert "complete shared history" not in coordinator
+    assert "Whoever learns a project-wide lesson writes a journal entry" in coordinator
     assert "a successor coordinator begins by searching the journal" in coordinator
     assert "Starting a project" in coordinator
     # W370: the project files replace the journal pages; the coordinator creates what the card lists.
@@ -2259,3 +2262,25 @@ def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
     signals = _words(_read("references/signals.md"))
     assert "again only when `pb procedure verify` shows the installed revision changed by a regular upgrade" in signals
     assert "compaction lost its text" not in signals
+
+
+def test_the_journal_keeps_what_the_project_learned_not_a_release_ledger() -> None:
+    # W453 (operator, 2026-10-01): the journal accumulates reasoning, failures,
+    # rejected alternatives and limits; where the work stands lives on the item.
+    raw = _read("references/journaling.md")
+    journaling = _words(raw)
+    skill = _words(_read("SKILL.md"))
+    assert "# Journal What The Project Learned" in raw
+    assert "Journal Every Completed Move" not in raw
+    assert "one entry per move" not in journaling.lower()
+    assert "Write one entry for each completed move" not in journaling
+    assert "why it chose this and not that, what failed and through which mechanism" in journaling
+    assert "something which improves later the understandgin why we did this and not that way not to repeat the mistakes we made" in journaling
+    assert "A status, a head, a merge, an install or an approval is not a reason for an entry" in journaling
+    assert "progress and the release ledger live on the work item" in journaling
+    assert "**the lesson**, first" in journaling
+    assert "**the alternatives**: what was tried or considered, and why each was rejected" in journaling
+    assert "| Progress, heads, approvals, gates, merges, installs: where the work stands | The work item's notes and reports |" in journaling
+    assert "it becomes a procedure or documentation change so that every agent follows it" in journaling
+    assert "Journal every completed move" not in skill
+    assert "where the work stands goes on the item, not in the journal" in skill
