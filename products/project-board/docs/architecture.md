@@ -211,8 +211,9 @@ for addressed mail, receive and settlement establish those later states.
 | Outcome | What it means |
 | --- | --- |
 | `work_worker_channel_missing` | This session has no enrolled channel on the machine. Nothing was queued. |
-| `work_worker_channel_not_active` | The channel exists but is not active. Nothing was queued. |
-| `work_coordinate_channel_reconnecting` | The relay is reconnecting this channel and names when it retries. Nothing reached the board. |
+| `work_worker_reauthorization_required` | The relay parked this channel because the server refused its credential (its own `credential_refused` check). The details name the reason, `refused_at`, `who_acts: operator` and the exact `pb worker authorize <profile> --device`. Retrying does not help. Nothing was queued. |
+| `work_worker_channel_not_active` | The channel exists but is not active: waiting for a first authorization, parked permanently without proof that the credential was refused, or disabled by the operator. The details say who acts. Nothing was queued. |
+| `work_coordinate_channel_reconnecting` | The relay is reconnecting this channel, or retrying a transient failure on a channel waiting for authorization (`channel_state` says which), and names when it retries. Nothing reached the board. Retryable; this error does not indicate that re-authorization is needed. |
 | `work_coordinate_relay_unavailable` | The relay did not pick the request up before the deadline (for example, it is stopped). |
 | `work_coordinate_outcome_unknown` | The relay claimed the request but no result arrived in time. Retry a mutation with the same idempotency key. |
 | a domain refusal | The board answered. The refusal keeps its own code, status and details. |

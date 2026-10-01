@@ -205,8 +205,11 @@ and only the handshake timed out, which the relay retries within seconds.
 `work_coordinate_relay_unavailable` still means the relay process did not pick
 the request up at all (for example, it is stopped).
 
-`pb worker send` to a remote recipient refuses the same way, with
-`work_send_channel_reconnecting`. Its details carry `delivered: false` and the
+Neither error indicates that re-authorization is needed; a refused credential
+has its own code, `work_worker_reauthorization_required` ([identity and
+authorization](identity-and-authorization.md), "Authorization States").
+`pb worker send` to a remote recipient, or with `--work-ref`, refuses the same
+way before its item check, with `work_send_channel_reconnecting`. Its details carry `delivered: false` and the
 `idempotency_key` you gave: the message was not delivered. Retry after
 `next_attempt_at` with the same key, which replays a delivered message and
 sends a lost one. A send counts as delivered only when it returns a receipt,

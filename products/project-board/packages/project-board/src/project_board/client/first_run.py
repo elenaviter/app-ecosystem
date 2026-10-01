@@ -26,7 +26,7 @@ from .host_config import (
     resolve_host_config_path,
 )
 from .io import read_json
-from .relay_pacing import channel_reconnect_state
+from .relay_pacing import channel_pending_refusal, channel_reconnect_state
 from .relay_source import describe_source
 from .relay_service import CLIENT_SOURCE_PATHS
 from ..contract.errors import DomainError
@@ -179,7 +179,8 @@ def _next_step(state: str, *, config: str, relay: Mapping[str, Any], session: Ma
                 f"{connection.get('reason') or 'a failure'} (attempt "
                 f"{connection.get('attempts') or 0}). It retries on its own at "
                 f"{connection.get('next_attempt_at') or 'its next cycle'}. Until then "
-                "pb coordinate refuses at once with work_coordinate_channel_reconnecting."
+                "pb coordinate refuses at once with work_coordinate_channel_reconnecting. "
+                "This does not indicate that re-authorization is needed."
             ),
         }
     if state == RELAY_STOPPED:
@@ -221,11 +222,23 @@ def _next_step(state: str, *, config: str, relay: Mapping[str, Any], session: Ma
         session.get("authorization") != AUTHORIZED
         or session.get("channel_state") == "pending_authorization"
     ):
+        refusal = dict(session.get("refusal") or {})
+        if refusal.get("credential") is True:
+            when = f" at {refusal.get('refused_at')}" if refusal.get("refused_at") else ""
+            explain = (
+                "The server refused this agent's Card credential "
+                f"({refusal.get('reason') or 'credential refused'}{when}). Retrying "
+                "will not help. Only the operator can fix it: ask them to run this "
+                "command in this agent's session and open the printed link on "
+                "their own device (W457)."
+            )
+        else:
+            explain = "procedures/first-time-setup.md, section 6. Authorize That Worker's Profile"
         return {
             "step": "authorize_profile",
             "command": f"pb worker authorize {session.get('profile') or '<profile>'} --device",
             "approval": "user",
-            "explain": "procedures/first-time-setup.md, section 6. Authorize That Worker's Profile",
+            "explain": explain,
         }
     if state == SESSION_NOT_ATTENDING:
         return {
@@ -283,6 +296,10 @@ def first_run_status(
         else:
             inspector = profile_inspector
         session = _session(loaded, identity, reader, inspector)
+        if session.get("channel_state") == "pending_authorization":
+            refusal = channel_pending_refusal(config_path, identity.worker_name)
+            if refusal is not None:
+                session["refusal"] = refusal
         if session.get("channel_state") == CHANNEL_ACTIVE:
             # Pacing distinguishes unavailable transport from uncertainty on
             # a retained socket. Neither observation proves current liveness.
