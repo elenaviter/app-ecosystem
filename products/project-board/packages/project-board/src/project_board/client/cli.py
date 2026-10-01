@@ -6447,6 +6447,46 @@ def _sweep_host(args: argparse.Namespace) -> tuple[Path | None, Any]:
     return (Path(directory) if directory else None), config
 
 
+def _sweep_own_folder(config: Any, args: argparse.Namespace) -> str:
+    """This agent's own folder under the host's agent workspace root, or empty."""
+
+    try:
+        identity = _identity(args)
+        recorded = config.worker(identity)
+        return default_working_directory(
+            [str(getattr(config, "effective_agent_workspace_root", "") or "")],
+            alias=str(getattr(recorded, "worker_alias", "") or ""),
+            worker_name=identity.worker_name,
+        )
+    except Exception:  # noqa: BLE001 - no proof of ownership means no removal
+        return ""
+
+
+def _sweep_apply_refusal(workspace: Path, config: Any, args: argparse.Namespace) -> str:
+    """Why --apply may not remove anything in ``workspace``; empty when it may (W423)."""
+
+    root = str(getattr(config, "effective_agent_workspace_root", "") or "")
+    fix = "Nothing was removed; the operator sets the root with pb host configure --agent-workspace-root <path>."
+    if not root:
+        return f"The host has no agent workspace root, so {workspace} is not provably this agent's. {fix}"
+    own = _sweep_own_folder(config, args)
+    if not own:
+        return f"No own folder for this agent can be named under {root}, so nothing is provably its own. {fix}"
+    own_path = Path(own)
+    if workspace.is_symlink() or own_path.is_symlink():
+        return f"{workspace} is reached through a link, so its owner is not proved. Nothing was removed."
+    try:
+        same = workspace.resolve(strict=True) == own_path.resolve(strict=True)
+    except OSError:
+        same = False
+    if not same:
+        return (
+            f"{workspace} is not this agent's own folder ({own}): it may be the root or another "
+            "agent's folder. Nothing was removed."
+        )
+    return ""
+
+
 def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, apply: bool, only_ended: bool = False) -> dict[str, Any]:
     """W423: list, or remove, the trees in this agent's workspace whose job ended.
 
@@ -6467,21 +6507,17 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
         trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]
     if not apply:
         return {"worker": identity.worker_name, "workspace": str(workspace), **workspace_sweep.sweep_report(trees)}
-    # W423: removal needs a workspace whose ownership is proved, one folder
-    # under the host's agent workspace root. Without a root the workspace is
-    # whatever folder the session started in, which may be shared.
-    root = str(getattr(config, "effective_agent_workspace_root", "") or "")
-    if not root or not is_inside(str(workspace), root):
+    # W423: removal needs a workspace whose ownership is proved: exactly this
+    # agent's own folder, <root>/<alias or name>, reached without a link.
+    # Being inside the root is not enough: the root itself, another agent's
+    # folder or an in-root link to one would pass a containment check.
+    refusal = _sweep_apply_refusal(workspace, config, args)
+    if refusal:
         return {
             "worker": identity.worker_name,
             "workspace": str(workspace),
             "state": "apply_refused",
-            "reason": (
-                f"{workspace} is not inside the host's agent workspace root "
-                f"({root or 'not configured'}), so its trees are not provably this agent's. "
-                "Nothing was removed; the operator sets the root with "
-                "pb host configure --agent-workspace-root <path>."
-            ),
+            "reason": refusal,
             **workspace_sweep.sweep_report(trees),
         }
     result = workspace_sweep.apply_sweep(
@@ -6553,6 +6589,14 @@ def _automatic_sweep(field: Any, identity: Any, args: argparse.Namespace, trigge
         result = _workspace_sweep(field, identity, args, apply=auto_apply, only_ended=True)
     except Exception as exc:  # noqa: BLE001 - housekeeping must not break the real command
         return {"trigger": trigger, "state": "failed", "reason": f"{type(exc).__name__}: {exc}"[:300]}
+    if result.get("state") in {"apply_refused", "no_workspace"}:
+        # W423: a refusal is reported as one, never as an empty successful sweep.
+        return {
+            "trigger": trigger,
+            "state": result["state"],
+            "reason": str(result.get("reason") or "no workspace to sweep"),
+            "would_remove": list(result.get("would_remove") or []),
+        }
     if not auto_apply:
         return {
             "trigger": trigger,

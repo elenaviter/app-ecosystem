@@ -343,10 +343,8 @@ def test_the_sweep_scans_the_workspace_context_names_not_a_shared_recorded_folde
     assert swept == own and str(swept) == named
 
 
-def test_apply_refuses_a_workspace_outside_the_agent_workspace_root(workspace, monkeypatch):
-    """W423 ownership 4: removal needs a workspace whose ownership is proved.
-    A host without an agent workspace root, or a workspace outside it, is
-    swept as a report only; --apply removes nothing and says why."""
+def _guard_case(workspace, monkeypatch, *, root, swept, own):
+    """Run --apply with the sweep root, host root and this agent's own folder given."""
 
     from types import SimpleNamespace
 
@@ -358,25 +356,92 @@ def test_apply_refuses_a_workspace_outside_the_agent_workspace_root(workspace, m
         def forget_workspace_path(self, _worker, _path):
             pass
 
+    config = SimpleNamespace(effective_agent_workspace_root=str(root), workspace_sweep_protected=())
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (swept, config))
+    monkeypatch.setattr(cli, "_sweep_own_folder", lambda _config, _args: str(own))
     identity = SimpleNamespace(worker_name="claude-code-guard")
-    args = SimpleNamespace(config=None)
+    return cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=True)  # noqa: SLF001
 
-    def host(root: str):
-        config = SimpleNamespace(effective_agent_workspace_root=root, workspace_sweep_protected=())
-        monkeypatch.setattr(cli, "_sweep_host", lambda _args: (workspace["ws"], config))
 
-    for root in ("", str(workspace["ws"].parent / "elsewhere")):
-        host(root)
-        result = cli._workspace_sweep(Field(), identity, args, apply=True)  # noqa: SLF001
-        assert result["state"] == "apply_refused", root
-        assert "not inside the host's agent workspace root" in result["reason"]
-        assert "pb host configure --agent-workspace-root" in result["reason"]
-        assert result["would_remove"] == [str(workspace["review"])]
-        assert workspace["review"].exists()
+def test_apply_removes_only_in_the_agents_own_folder(workspace, monkeypatch):
+    """W423 ownership 4 (Spark review of AE #407): containment is not ownership.
+    The root itself, another agent's folder, an in-root link to one, and a host
+    without a root are reported only; --apply removes nothing and says why.
+    Only the agent's own folder, reached without a link, is swept for real."""
 
-    # Inside the root, the same ended review tree is removed.
-    host(str(workspace["ws"].parent))
-    result = cli._workspace_sweep(Field(), identity, args, apply=True)  # noqa: SLF001
-    assert "state" not in result or result["state"] != "apply_refused"
+    root = workspace["ws"].parent
+    own = workspace["ws"]  # <root>/workspace stands for <root>/<alias>
+    other = root / "other-agent"
+    other.mkdir()
+    link = root / "linked-agent"
+    link.symlink_to(own, target_is_directory=True)
+
+    refused = {
+        "no root configured": dict(root="", swept=own, own=own),
+        "the root itself": dict(root=root, swept=root, own=own),
+        "another agent's folder": dict(root=root, swept=other, own=own),
+        "an in-root link to the workspace": dict(root=root, swept=link, own=own),
+        "own folder is a link": dict(root=root, swept=own, own=link),
+    }
+    for case, kwargs in refused.items():
+        result = _guard_case(workspace, monkeypatch, **kwargs)
+        assert result["state"] == "apply_refused", case
+        assert result["reason"] and "Nothing was removed" in result["reason"], case
+        assert workspace["review"].exists(), case
+    assert "pb host configure --agent-workspace-root" in _guard_case(
+        workspace, monkeypatch, root="", swept=own, own=own)["reason"]
+
+    # The agent's own folder: the ended review tree is removed.
+    result = _guard_case(workspace, monkeypatch, root=root, swept=own, own=own)
+    assert result.get("state") != "apply_refused"
     assert [entry["path"] for entry in result["removed"]] == [str(workspace["review"])]
     assert not workspace["review"].exists()
+
+
+def test_an_automatic_refusal_is_reported_never_an_empty_success(monkeypatch):
+    """Spark review of AE #407: the idle trigger dropped apply_refused and its
+    reason, so a refused sweep looked like a successful empty one."""
+
+    from types import SimpleNamespace
+
+    refusal = {"worker": "w", "workspace": "/root", "state": "apply_refused",
+               "reason": "/root is not this agent's own folder", "would_remove": ["/root/wt/x"], "trees": []}
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (Path("/root"), SimpleNamespace(workspace_sweep_auto_apply=True)))
+    monkeypatch.setattr(cli, "_workspace_sweep", lambda *_a, **_k: refusal)
+    report = cli._automatic_sweep(object(), object(), object(), "idle")  # noqa: SLF001
+    assert report["state"] == "apply_refused"
+    assert report["reason"] == refusal["reason"]
+    assert report["would_remove"] == ["/root/wt/x"]
+    assert "removed" not in report
+
+    monkeypatch.setattr(cli, "_workspace_sweep", lambda *_a, **_k: {"worker": "w", "workspace": "", "state": "no_workspace"})
+    report = cli._automatic_sweep(object(), object(), object(), "session_start")  # noqa: SLF001
+    assert report["state"] == "no_workspace" and report["reason"]
+
+
+def test_the_own_folder_comes_from_the_host_config_not_the_recorded_folder(tmp_path):
+    """The folder --apply requires is <root>/<alias>, named from the host config,
+    whatever folder the session recorded at enrollment."""
+
+    from project_board.client import host_config
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+
+    root = tmp_path / "agents"
+    root.mkdir()
+    config = host_config.initialize_host_config(
+        target_id="target", endpoint="https://runtime.example/mcp", tenant="tenant",
+        platform_project="project", host_id="host-one", allowed_roots=[str(root)],
+        source_repositories={}, config_path=tmp_path / "relay.json", state_root=tmp_path / "state",
+    )
+    session = "00000003-0000-4000-8000-000000000000"
+    identity = WorkerSessionIdentity.create("claude-code", session)
+    host_config.enroll_worker_channel(
+        config.path, identity=identity, profile=f"problem-board-claude-{session[:8]}",
+        worker_alias="main@host", authorized=True, working_directory=str(root / "someone-else"),
+    )
+    args = cli.build_parser().parse_args([
+        "worker", "workspace", "--config", str(config.path),
+        "--runtime-kind", "claude-code", "--runtime-session-id", session, "--sweep",
+    ])
+    loaded = host_config.HostRelayConfig.load(config.path)
+    assert cli._sweep_own_folder(loaded, args) == str(root / "main@host")  # noqa: SLF001
