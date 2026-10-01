@@ -52,7 +52,7 @@ todo --working status--> working --assignment.completed--> review
 | `todo` | Work has not started. The item may already have an assignee. |
 | `working` | Work has started. The assignee may be empty; assignment and status are independent. A released item keeps this status until a status edit changes it. A blocked assignment stays `working` and records its reason separately. |
 | `review` | A versioned result is ready for a qualified reviewer. Work completed under an assignment carries its assignment evidence; work managed by a person carries the immutable item version as evidence. |
-| `done` | A qualified reviewer accepted the submitted result and its evidence. |
+| `done` | The item is marked finished. A qualified acceptance is evidenced by its separate review record, not by this field alone. |
 | `cancelled` | Work ended without acceptance. Who cancelled it, when, and why stay on the record. |
 
 ## Assignment and status are separate facts
@@ -277,11 +277,10 @@ Refusals are named: a revision conflict, an item not in `review`, self-review,
 or an unmet requirement for a person. A retired contributor row is not a
 prerequisite for editing the item's current fields.
 
-On the board a person changes the Status field; the record still names the
-decision. Review to Done records `review.accept`, Review to Todo records
-`review.return`, and Review to Cancelled records `review.cancel`. Selecting
-Todo persists Todo and preserves the current assignee and assignment period;
-it does not invoke the dedicated action's rework ownership behavior.
+An ordinary Status field edit records `work.status.set`, including Review to
+Done, Todo or Cancelled. It preserves the current assignee and assignment
+period and writes no review verdict. A qualified review decision requires the
+dedicated action and its authority; selecting a status never invokes it.
 
 ## Returns
 
@@ -337,10 +336,12 @@ report is never final acceptance.
 
 ## What done means
 
-`done` says that a qualified reviewer accepted the submitted result and its
-evidence. It makes no claim about deployment or runtime state. Where an
-acceptance line is about behaviour, the reviewer checks it against the
-deployed result before accepting; the status itself does not record that.
+In the review workflow, `review.accept` records that a qualified reviewer
+accepted the submitted result and its evidence, and marks the item `done`.
+An ordinary field edit can also select `done`, but the status alone proves
+neither acceptance nor deployment. Where an acceptance line is about behaviour,
+the reviewer checks it against the deployed result and records that evidence
+in the review verdict; the status itself does not record that.
 
 A done or cancelled item can receive a new assignment from someone whose
 Card holds `assignment.assign`. That ownership act does not change its status;
