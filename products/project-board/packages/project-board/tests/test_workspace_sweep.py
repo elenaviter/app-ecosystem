@@ -258,6 +258,36 @@ def test_the_automatic_sweep_never_fails_the_command_it_follows(monkeypatch):
     assert result["state"] == "failed" and "disk unreadable" in result["reason"]
 
 
+def test_a_sweep_edit_keeps_the_adjacent_backup_command_operational(tmp_path, monkeypatch):
+    """A structural sweep rewrite must leave the intervening backup command usable."""
+
+    from types import SimpleNamespace
+
+    class Field:
+        def read_project_coordinator(self, _project_id):
+            return {"holder": {"worker_name": "coordinator-one"}}
+
+        def read_project_team(self, _project_id):
+            return []
+
+    config = SimpleNamespace(
+        field_root=str(tmp_path / "field"), backup_root=str(tmp_path / "backups"),
+        worker=lambda _identity: object(),
+    )
+    monkeypatch.setattr(cli.HostRelayConfig, "load", classmethod(lambda _cls, _path: config))
+    monkeypatch.setattr(cli, "SharedFieldStore", lambda _root: Field())
+    monkeypatch.setattr(cli, "_identity", lambda _args: SimpleNamespace(worker_name="coordinator-one"))
+
+    parser = cli.build_parser()
+    command = ["worker", "backup", "--config", str(tmp_path / "relay.json"),
+               "--project-ref", "work:project:demo-project"]
+    listed = cli._worker_command(parser.parse_args(command))
+    assert listed["backups"] == []
+    named = cli._worker_command(parser.parse_args([*command, "--new"]))
+    assert Path(named["write_to"]).parent == tmp_path / "backups" / "demo-project"
+    assert named["format"] == "plain-sql-gzip"
+
+
 def test_the_three_triggers_run_the_sweep_without_agent_memory():
     source = Path(cli.__file__).read_text(encoding="utf-8")
     assert '_automatic_sweep(field, identity, args, "session_start")' in source

@@ -262,6 +262,13 @@ every agent can read it, and read what the others have published.
   signal for a teammate deciding where to start. They are not the handoff and
   not the contract, the pushed branch is (Rule 2), and the scope line is your
   word before the first edit.
+- **Inspect what the edit removes before validating it.** Read the affected
+  source, make a bounded edit with a unique match, and inspect the actual
+  removed lines at each coherent edit boundary before tests or handoff. For a
+  scripted rewrite between structural anchors, verify that required definitions
+  between them remain present and behave as before. Preserve unrelated work;
+  never reset a whole file to make a patch fit. Then run the relevant Rule 5
+  gates. A syntax check or focused test does not excuse an unexpected removal.
 
 Why: two agents should not discover the same file at merge time. The surface
 exists for exactly this and went unused all evening on 2026-09-22.
