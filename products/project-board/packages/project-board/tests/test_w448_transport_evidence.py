@@ -14,9 +14,17 @@ import asyncio
 import logging
 import time
 
+import pytest
+from app_foundation.data_bus import DataBusIngressRejected, DataBusOutcomeUnknown
+
 from project_board.client import relay_trace
+from project_board.client.mcp_client import ProblemBoardDataBusClient
 from project_board.client.relay import ProblemBoardRelaySupervisor
-from project_board.client.relay_trace import RelayActivityTrace, process_memory
+from project_board.client.relay_trace import (
+    RelayActivityTrace,
+    memory_log_fields,
+    process_memory,
+)
 from project_board.client.store import SharedFieldStore
 from project_board.contract.errors import DomainError
 
@@ -48,6 +56,43 @@ NEW_KEYS = (
     "timeout_seconds",
     "timer_overrun_seconds",
 )
+
+
+class _RaisingBus:
+    connected = True
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    async def request(self, **_kwargs: object) -> object:
+        raise self.error
+
+
+def _domain_error(error: BaseException) -> DomainError:
+    client = ProblemBoardDataBusClient(_RaisingBus(error), partition_ref="work:worker-stream:abc")
+    with pytest.raises(DomainError) as captured:
+        asyncio.run(client.action(object_ref="work:worker:self", action="worker.heartbeat"))
+    return captured.value
+
+
+def test_a_lost_acknowledgement_never_reads_as_a_refusal() -> None:
+    # ingress_accepted=false is a real refusal; ingress_ack_received=false only
+    # says the acknowledgement did not arrive, and the write may have applied.
+    lost = _domain_error(
+        DataBusOutcomeUnknown(message_id="m-1", accepted=False, evidence={"timer_overrun_seconds": 7.0})
+    )
+    assert lost.code == "data_bus_outcome_unknown"
+    assert lost.details["ingress_ack_received"] is False
+    assert "ingress_accepted" not in lost.details
+    assert lost.details["transport_phase"] == "ingress.ack"
+    assert "ingress_accepted" not in ProblemBoardRelaySupervisor._failure_evidence(lost)
+
+    refused = _domain_error(
+        DataBusIngressRejected("data_bus_ingress_rejected", "refused", details={"status": 403})
+    )
+    assert refused.details["ingress_accepted"] is False
+    assert "ingress_ack_received" not in refused.details
+    assert refused.details["transport_phase"] == "ingress.rejected"
 
 
 class _Clock:
@@ -145,6 +190,7 @@ def test_the_cycle_summary_and_slow_cycle_line_carry_the_largest_loop_lag(caplog
     assert "loop_lag_max_seconds=0.900" in slow
     for key in process_memory():
         assert f" {key}=" in slow, key
+    assert " rss_source=" in slow
     # The window restarts with each cycle.
     cycle = trace.start_cycle()
     assert trace.finish_cycle(cycle, outcome="succeeded")["loop_lag_max_seconds"] == 0.0
@@ -172,3 +218,36 @@ def test_process_memory_reports_only_what_the_platform_gives() -> None:
     memory = process_memory()
     assert set(memory) <= {"rss_bytes", "rss_peak_bytes"}
     assert all(isinstance(value, int) and value > 0 for value in memory.values())
+
+
+def test_memory_fields_name_their_source(monkeypatch) -> None:
+    monkeypatch.setattr(relay_trace, "process_memory", lambda: {"rss_peak_bytes": 5})
+    assert memory_log_fields() == " rss_peak_bytes=5 rss_source=peak_only"
+    monkeypatch.setattr(
+        relay_trace, "process_memory", lambda: {"rss_bytes": 3, "rss_peak_bytes": 5}
+    )
+    assert memory_log_fields() == " rss_bytes=3 rss_peak_bytes=5 rss_source=current"
+    monkeypatch.setattr(relay_trace, "process_memory", lambda: {})
+    assert memory_log_fields() == " rss_source=unavailable"
+
+
+def test_a_failed_sampler_is_logged_before_it_restarts(tmp_path, caplog) -> None:
+    from relay_helpers import make_supervisor
+
+    host, _identity, _channel = make_host(tmp_path)
+    supervisor = make_supervisor(host)
+
+    async def broken() -> None:
+        raise RuntimeError("sampler broke")
+
+    async def run() -> None:
+        supervisor._loop_lag_task = asyncio.create_task(broken())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        supervisor._ensure_loop_lag_sampler()
+        await supervisor.stop_loop_lag_sampler()
+
+    caplog.set_level(logging.WARNING)
+    asyncio.run(run())
+
+    assert "relay loop-lag sampler ended error=RuntimeError; restarting" in caplog.text

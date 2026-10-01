@@ -6397,6 +6397,15 @@ class ProblemBoardRelaySupervisor:
         """Run the trace's event-loop lag sampler beside the channel cycle (W448)."""
 
         task = self._loop_lag_task
+        if task is not None and task.done() and not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                # Without this line, no stall lines would read the same as
+                # no sampler at all.
+                logger.warning(
+                    "Problem Board relay loop-lag sampler ended error=%s; restarting",
+                    type(error).__name__,
+                )
         if task is None or task.done():
             self._loop_lag_task = asyncio.create_task(
                 self._trace.sample_loop_lag(),

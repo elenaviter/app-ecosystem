@@ -51,6 +51,23 @@ def process_memory() -> dict[str, int]:
     return memory
 
 
+def memory_log_fields() -> str:
+    """The memory fields for a log line, naming which source they came from.
+
+    Without ``/proc`` (macOS) only the lifetime peak is known, and a peak
+    never falls, so the line says ``rss_source=peak_only`` rather than let it
+    pass for current memory.
+    """
+
+    memory = process_memory()
+    source = "current" if "rss_bytes" in memory else (
+        "peak_only" if memory else "unavailable"
+    )
+    return "".join(
+        f" {key}={value}" for key, value in sorted(memory.items())
+    ) + f" rss_source={source}"
+
+
 class RelayActivityTrace:
     """Track active and recent relay work without retaining request payloads."""
 
@@ -96,14 +113,13 @@ class RelayActivityTrace:
             and now - self._stall_logged_at < LOOP_STALL_LOG_EVERY_SECONDS
         ):
             return
-        memory = process_memory()
         self._log.warning(
             "Problem Board relay loop stalled max_lag_seconds=%.3f stalls=%d "
             "threshold_seconds=%.3f%s",
             self._stall_max,
             self._stall_count,
             LOOP_STALL_SECONDS,
-            "".join(f" {key}={value}" for key, value in sorted(memory.items())),
+            memory_log_fields(),
         )
         self._stall_logged_at = now
         self._stall_count = 0
@@ -146,7 +162,6 @@ class RelayActivityTrace:
         if self._active_cycle == cycle:
             self._active_cycle = 0
         if total_seconds >= self.slow_seconds:
-            memory = process_memory()
             self._log.warning(
                 "Problem Board relay slow cycle cycle=%d outcome=%s "
                 "total_seconds=%.3f threshold_seconds=%.3f "
@@ -156,7 +171,7 @@ class RelayActivityTrace:
                 total_seconds,
                 self.slow_seconds,
                 summary["loop_lag_max_seconds"],
-                "".join(f" {key}={value}" for key, value in sorted(memory.items())),
+                memory_log_fields(),
                 json.dumps(stages, separators=(",", ":"), sort_keys=True),
             )
         self._prune(ended_at)
@@ -308,4 +323,9 @@ class RelayActivityTrace:
             self._history.popleft()
 
 
-__all__ = ["RelayActivityTrace", "SLOW_RELAY_SECONDS", "process_memory"]
+__all__ = [
+    "RelayActivityTrace",
+    "SLOW_RELAY_SECONDS",
+    "memory_log_fields",
+    "process_memory",
+]

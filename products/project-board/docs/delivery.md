@@ -221,7 +221,9 @@ the fields as follows:
 
 - `ingress_ack_received: false` means only that the ingress acknowledgement
   did not arrive. The server may still have accepted and applied the
-  operation. A retry keeps the same identity.
+  operation. A retry keeps the same identity. It is not
+  `ingress_accepted: false`, which appears only on a real ingress refusal
+  (`transport_phase` `ingress.rejected`).
 - `connection_generation`, `socket_id` and `connection_active` describe the
   socket **when the request began**. The `..._at_failure` fields describe it
   when the wait ended. `disconnected_during_request: true` means the transport
@@ -233,9 +235,13 @@ the fields as follows:
 The relay also measures its own loop. A sampler sleeps one second and records
 how late it wakes. The slow-cycle log line carries the cycle's largest lag
 (`loop_lag_max_seconds`) and the process memory (`rss_bytes` where the
-platform reports it, and `rss_peak_bytes`). A lag of a second or more logs
+platform reports it, and `rss_peak_bytes`), with `rss_source` naming the
+source. On macOS there is no current figure, and `rss_source=peak_only`
+marks a lifetime peak that never falls. A lag of a second or more logs
 `relay loop stalled` at once, and then at most once every 30 seconds, with the
-stalls counted in between. The relay writes nothing else to files.
+stalls counted in between. A sampler that fails logs `relay loop-lag sampler
+ended` before it restarts, so no stall lines never hide a missing sampler.
+The relay writes nothing else to files.
 
 A polling handshake that answers quickly proves that the ingress accepts new
 sessions. It does not prove that an existing WebSocket, its acknowledgements
