@@ -129,6 +129,9 @@ LOCAL_JOURNAL_MAPPING_CODES = frozenset(
         "journal_repository_root_invalid",
         "journal_repository_alias_invalid",
         "journal_workspace_link_conflict",
+        "journal_index_refresh_failed",
+        "journal_index_unavailable",
+        "journal_source_changed",
     }
 )
 # Attendance adapters are rebuilt every cycle, so the once-per-gap log line
@@ -1551,7 +1554,7 @@ class ProblemBoardHostRelayAdapter:
             repository = str(details.get("repository") or details.get("alias") or "")
             path = str(details.get("path") or "")
             gap = {
-                "state": "unmapped",
+                "state": "index_unavailable" if exc.code.startswith(("journal_index_", "journal_source_")) else "unmapped",
                 "project_ref": project_ref,
                 "journal_home_ref": str(binding.get("journal_home_ref") or ""),
                 "error_code": exc.code,

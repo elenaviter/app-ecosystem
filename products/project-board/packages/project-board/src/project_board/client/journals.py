@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import re
@@ -496,12 +497,12 @@ class JournalWorkspace:
                 binding["journal_home_ref"], create=create_home
             )
         except DomainError as exc:
-            if exc.code != "journal_repository_root_missing":
-                raise
             # W343: the binding is kept while the worker's clone is missing, so
             # `pb worker context` names the missing clone and its step instead
             # of calling the project unbound.
-            self._record_binding(binding)
+            if exc.code == "journal_repository_root_missing":
+                self._record_binding(binding)
+            self._record_refresh_failure(exc)
             raise
         artifact_target: Path | None = None
         if binding.get("project_artifact_ref"):
@@ -525,7 +526,12 @@ class JournalWorkspace:
             )
             if artifact_link is None:
                 self._remove_link(binding, group="workspaces")
-        indexed = self.rebuild_index() if rebuild and (changed or not self.index.path.exists()) else None
+        freshness = self.ensure_index_fresh() if rebuild else None
+        indexed = (
+            freshness["indexed_entries"]
+            if freshness and freshness["refreshed"]
+            else None
+        )
         return {
             **binding,
             "local_home": str(target),
@@ -842,7 +848,7 @@ class JournalWorkspace:
                     raise
                 issues.append(exc.to_dict())
                 continue
-            for path in sorted((home / "journal").glob("**/*.md")):
+            for path in self._journal_paths(home):
                 try:
                     document = self._document_from_path(
                         project_ref=project_ref,
@@ -861,9 +867,22 @@ class JournalWorkspace:
                 issues.extend(dict(issue) for issue in document.index_issues)
         return documents, issues, exclusions
 
-    def index_status(self) -> dict[str, Any]:
+    def index_status(self, *, verify_sources: bool = True) -> dict[str, Any]:
         status = read_json(self.index_status_path, required=False)
         if status:
+            if (verify_sources and status.get("state") in {"ready", "ready_with_issues", "partial"}
+                    and status.get("freshness") != "current_local_source"):
+                status = {**status, "state": "stale", "freshness": "unverified"}
+            if verify_sources and status.get("freshness") == "current_local_source":
+                try:
+                    if not self.index.path.exists() or self._source_stamps() != status.get("sources"):
+                        status = {**status, "state": "stale", "freshness": "unverified"}
+                except (DomainError, OSError) as exc:
+                    status = {**status, "state": "stale", "freshness": "unverified",
+                              "refresh_error": {
+                                  "code": getattr(exc, "code", "journal_source_unavailable"),
+                                  "message": "The current journal source cannot be verified.",
+                              }}
             return {
                 **status,
                 "excluded_count": int(status.get("excluded_count") or 0),
@@ -880,22 +899,164 @@ class JournalWorkspace:
             "recorded_at": "",
         }
 
+    def _source_stamps(self) -> dict[str, Any]:
+        """Cheap LOCAL freshness evidence; do not read journal bodies here.
+
+        HEAD catches ordinary clone advances, while file metadata catches
+        additions, removals and local edits (also in non-Git test/mapped homes).
+        No fetch, host checkout or another worker's index is consulted.
+        """
+
+        sources = {}
+        for project_ref, binding in sorted(self.catalog().get("bindings", {}).items()):
+            home_ref, home = self.repositories.resolve(binding["journal_home_ref"])
+            journal = home / "journal"
+            if home not in journal.resolve().parents:
+                raise DomainError(
+                    "journal_repository_ref_escape",
+                    "The journal directory resolves outside its bound home.",
+                    details={"journal_home_ref": str(home_ref)},
+                )
+            files = []
+            for path in self._journal_paths(home):
+                self._check_document_path(home, path)
+                metadata = path.stat()
+                files.append((path.relative_to(home).as_posix(), metadata.st_size,
+                              metadata.st_mtime_ns, metadata.st_ctime_ns))
+            clone = self.repositories.clone(home_ref.repository)
+            commit = head_commit(clone)
+            sources[project_ref] = {
+                "journal_home_ref": str(home_ref),
+                "binding_revision": binding.get("revision", 0),
+                "commit": commit,
+                "version_basis": "git_head_and_file_metadata" if commit else "file_metadata",
+                "content_signature": hashlib.sha256(
+                    json.dumps(files, separators=(",", ":")).encode("utf-8")
+                ).hexdigest(),
+                # A changed LOCAL mapping must not reuse the previous index.
+                "source_identity": hashlib.sha256(str(home).encode("utf-8")).hexdigest(),
+                "clone": clone_state(home_ref.repository, clone)
+                if self.repositories.workspace is not None else {},
+            }
+        return sources
+
+    def _journal_paths(self, home: Path) -> list[Path]:
+        """Unlike glob, a failed directory read must not look like no entries."""
+
+        journal = home / "journal"
+        if not journal.exists():
+            return []
+
+        def failed_walk(error: OSError) -> None:
+            raise error
+
+        paths = []
+        for current, directories, files in os.walk(
+            journal, followlinks=False, onerror=failed_walk
+        ):
+            for name in directories:
+                self._check_document_path(home, Path(current) / name)
+            paths.extend(Path(current) / name for name in files if name.endswith(".md"))
+        return sorted(paths)
+
+    @staticmethod
+    def _check_document_path(home: Path, path: Path) -> None:
+        if home not in path.resolve().parents:
+            raise DomainError(
+                "journal_repository_ref_escape",
+                "A journal entry resolves outside its bound home.",
+            )
+
+    def _record_refresh_failure(self, error: DomainError) -> None:
+        previous = self.index_status(verify_sources=False)
+        atomic_write_json(self.index_status_path, {
+            **previous,
+            "state": "stale" if self.index.path.exists() else "unavailable",
+            "freshness": "unverified",
+            "refresh_error": error.to_dict(),
+            "last_refresh_attempt_at": utc_now(),
+        })
+
+    def _refresh_index_locked(self, *, force: bool = False) -> dict[str, Any]:
+        try:
+            sources = self._source_stamps()
+            previous = self.index_status(verify_sources=False)
+            if (not force and self.index.path.exists()
+                    and previous.get("freshness") == "current_local_source"
+                    and previous.get("sources") == sources):
+                return {**previous, "refreshed": False}
+            # A process interrupted during incremental writes cannot leave the
+            # previous ready receipt certifying a partially updated index.
+            atomic_write_json(self.index_status_path, {
+                **previous, "schema": JOURNAL_INDEX_STATUS_SCHEMA,
+                "state": "indexing", "freshness": "unverified",
+                "target_sources": sources, "last_refresh_attempt_at": utc_now(),
+            })
+            documents, issues, exclusions = self._scan_documents()
+            # Never certify a mixed generation if a clone changed during scan.
+            if self._source_stamps() != sources:
+                raise DomainError(
+                    "journal_source_changed",
+                    "The journal source changed during indexing. Retry the search.",
+                    status=409,
+                )
+            indexed_entries = self.index.sync(documents)
+            if self._source_stamps() != sources:
+                raise DomainError(
+                    "journal_source_changed",
+                    "The journal source changed during indexing. Retry the search.",
+                    status=409,
+                )
+            status = self._record_index_status(
+                indexed_entries=indexed_entries, issues=issues,
+                exclusions=exclusions, sources=sources,
+            )
+            return {**status, "refreshed": True}
+        except DomainError as exc:
+            self._record_refresh_failure(exc)
+            raise
+        except Exception as exc:
+            # Error text may contain journal content or machine paths; keep
+            # only the type in the observable diagnostic, never its body.
+            error = DomainError(
+                "journal_index_refresh_failed",
+                "The journal index could not be refreshed; results are not current.",
+                status=503, details={"error_type": type(exc).__name__},
+            )
+            self._record_refresh_failure(error)
+            raise error from exc
+
+    def ensure_index_fresh(self) -> dict[str, Any]:
+        """Serialize relay/CLI refreshes and certify the current LOCAL source."""
+
+        with exclusive_lock(self.control / "locks" / "index.lock"):
+            return self._refresh_index_locked()
+
     def _record_index_status(
         self,
         *,
         indexed_entries: int,
         issues: Sequence[Mapping[str, Any]],
         exclusions: Sequence[Mapping[str, Any]],
+        sources: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
+        compatibility_codes = {
+            "journal_entry_metadata_missing", "journal_entry_ref_legacy",
+            "journal_entry_ref_invalid", "journal_entry_frontmatter_invalid",
+        }
+        partial = any(issue.get("code") not in compatibility_codes for issue in issues)
         status = {
             "schema": JOURNAL_INDEX_STATUS_SCHEMA,
-            "state": "ready_with_issues" if issues else "ready",
+            "state": "partial" if partial else "ready_with_issues" if issues else "ready",
+            "complete": not partial,
             "indexed_entries": int(indexed_entries),
             "issue_count": len(issues),
             "issues": [dict(issue) for issue in issues],
             "excluded_count": len(exclusions),
             "exclusions": [dict(exclusion) for exclusion in exclusions],
             "recorded_at": utc_now(),
+            "freshness": "current_local_source" if sources is not None else "unverified",
+            "sources": dict(sources or {}),
         }
         atomic_write_json(self.index_status_path, status)
         return status
@@ -909,6 +1070,7 @@ class JournalWorkspace:
         path: Path,
         allow_legacy: bool = False,
     ) -> JournalDocument | JournalIndexExclusion:
+        self._check_document_path(home, path)
         text = path.read_text(encoding="utf-8")
         relative = PurePosixPath(path.relative_to(home).as_posix())
         repository_journal_ref = self._portable_child(home_ref, relative)
@@ -1091,17 +1253,22 @@ class JournalWorkspace:
         journal the project has ever had.
         """
 
-        documents, issues, exclusions = self._scan_documents()
-        indexed_entries = self.index.sync(documents)
-        self._record_index_status(
-            indexed_entries=indexed_entries,
-            issues=issues,
-            exclusions=exclusions,
-        )
-        return indexed_entries
+        with exclusive_lock(self.control / "locks" / "index.lock"):
+            return self._refresh_index_locked(force=True)["indexed_entries"]
 
     def search(self, query: str, **filters: Any) -> list[dict[str, Any]]:
-        return self.index.search(query, **filters)
+        with exclusive_lock(self.control / "locks" / "index.lock"):
+            self._refresh_index_locked()
+            try:
+                return self.index.search(query, **filters)
+            except Exception as exc:
+                error = DomainError(
+                    "journal_index_unavailable",
+                    "The journal index cannot be searched; results are unavailable.",
+                    status=503, details={"error_type": type(exc).__name__},
+                )
+                self._record_refresh_failure(error)
+                raise error from exc
 
     def view_catalog(
         self, *, project_ref: str, query: str = "", limit: int = 100
@@ -1238,18 +1405,27 @@ class JournalWorkspace:
                 "index_exclusions": page_exclusions,
             }
 
-        all_documents, index_issues, index_exclusions = self._scan_documents()
-        indexed_entries = self.index.sync(all_documents)
-        self._record_index_status(
-            indexed_entries=indexed_entries,
-            issues=index_issues,
-            exclusions=index_exclusions,
-        )
-        documents = [
-            document
-            for document in all_documents
-            if document.project_ref == project_ref
-        ]
+        # A view must not bypass the same lock/generation certificate used by
+        # CLI and heartbeat refreshes. Cursor content and rows are one snapshot.
+        with exclusive_lock(self.control / "locks" / "index.lock"):
+            freshness = self._refresh_index_locked()
+            all_documents, index_issues, index_exclusions = self._scan_documents()
+            if self._source_stamps() != freshness["sources"]:
+                error = DomainError(
+                    "journal_source_changed",
+                    "The journal source changed during search. Retry the search.",
+                    status=409,
+                )
+                self._record_refresh_failure(error)
+                raise error
+            documents = [
+                document for document in all_documents
+                if document.project_ref == project_ref
+            ]
+            rows = self.index.search(
+                clean_query, project_ref=project_ref, worker_name=clean_worker,
+                limit=max(1, len(documents)), weights=rank_weights,
+            )
         generation = hashlib.sha256(
             "\n".join(
                 f"{document.entry_ref}:{document.content_hash}"
@@ -1280,13 +1456,6 @@ class JournalWorkspace:
                     "The journal search cursor does not contain a valid offset.",
                 )
             offset = cursor_offset
-        rows = self.index.search(
-            clean_query,
-            project_ref=project_ref,
-            worker_name=clean_worker,
-            limit=max(1, len(documents)),
-            weights=rank_weights,
-        )
         rows = [
             row
             for row in rows

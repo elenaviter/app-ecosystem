@@ -158,6 +158,29 @@ coordinator included, and for every read and write of project state:
   host's journal root in `workers/<worker-name>/`; and a journal view the
   board asks a worker's relay for is read from that clone, with its commit and
   clone state beside the result.
+- **Search freshness follows the local source, not only the binding.** CLI
+  journal search and ordinary relay reconciliation share a locked freshness
+  check. Clone HEAD, binding revision, source identity and journal file
+  metadata identify the indexed generation. An unchanged generation does not
+  reread journal bodies; a clone advance, edit, addition or removal refreshes
+  the disposable index automatically. No panel-open request or manual reindex
+  is needed after an ordinary merge and clone update. This check never fetches:
+  `current_local_source` certifies the worker's local source only, and the
+  accompanying clone state compares the last fetched remote ref, not live
+  upstream availability.
+- **An empty result is not a freshness diagnosis.** Search returns an `index`
+  status with its source commits, recording time, compatibility issues and
+  exclusions. A skipped invalid entry makes the index `partial`; historical
+  compatibility warnings remain `ready_with_issues`. A changed source is
+  `stale` until refresh succeeds. An unavailable source, a source changing
+  during refresh or an index failure refuses the search with an explicit
+  error and records unverified freshness. An inaccessible source is not synced
+  as an empty collection; the previous source receipt remains diagnostic
+  evidence, and an interrupted or failed write is never certified as ready.
+  It never borrows another worker's checkout. These are LOCAL
+  diagnostics; they do not publish journal bodies or absolute source paths to
+  the board. A restart reuses the persisted generation check rather than
+  trusting an old `ready` label.
 - **A relay channel never depends on a clone.** A missing clone is reported
   for the project whose journal needs it; controls keep flowing.
 
@@ -173,4 +196,3 @@ configurations keep loading; the relay's housekeeping still advances a
 configured read root, which nothing reads any more. Its removal is tracked as
 a separate change. `source_repository_urls`, which lets the board link
 portable `repo:` refs, is unaffected.
-

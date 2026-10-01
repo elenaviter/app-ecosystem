@@ -18,14 +18,18 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from project_board.client import cli, host_config, relay
+from project_board.client.journals import JournalWorkspace
+from project_board.client.journal_search import JournalSearchIndex
 from project_board.client.project_setup import PROJECT_SETUP_FILE, PROJECT_SETUP_SCHEMA
 from project_board.client.store import SharedFieldStore
 from project_board.contract.worker_identity import WorkerSessionIdentity
+from project_board.contract.errors import DomainError
 
 PROJECT = "work:project:project-one"
 HOME = "projects/project-one"
@@ -198,6 +202,7 @@ def host(tmp_path: Path) -> dict:
         "stale": stale,
         "first": first,
         "second": second,
+        "upstream": upstream,
     }
 
 
@@ -297,3 +302,257 @@ def test_each_relay_serves_the_journal_of_its_own_clone(host):
     assert stamp["journal_home_commit"] == host["first"]
     assert stamp["journal_clone"]["state"] == "behind"
     assert current.clone_stamp(PROJECT)["journal_clone"]["state"] == "current"
+
+
+MERGED_ENTRY = "work:journal:20260930T143800Z:journal_20260930w407source:history-source-prs-and-final-verification"
+
+
+def advance_journal(host):
+    upstream = host["upstream"]
+    (upstream / HOME / "journal" / "merged-verification.md").write_text(
+        "---\n"
+        f"entry_ref: {MERGED_ENTRY}\n"
+        f"project_ref: {PROJECT}\n"
+        "title: W407 source verification\n"
+        "summary: Durable feature rationale and final verification\n"
+        "status: in-progress\n"
+        f"worker_name: {host['workers']['current']['identity'].worker_name}\n"
+        "---\n\n"
+        "W407 preserves legacy unknowns rather than inventing history.\n",
+        encoding="utf-8",
+    )
+    git(upstream, "add", "-A")
+    git(upstream, "commit", "--quiet", "-m", "Merge journal verification")
+    git(upstream, "push", "--quiet", "origin", "HEAD:main")
+    checkout = host["workers"]["current"]["workspace"] / "journals"
+    git(checkout, "fetch", "--quiet", "origin")
+    git(checkout, "merge", "--ff-only", "origin/main")
+    return git(checkout, "rev-parse", "HEAD")
+
+
+def test_cli_search_automatically_finds_merged_entry_after_clone_advance(host):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+    assert workspace.search("W407", project_ref=PROJECT) == []
+    head = advance_journal(host)
+    identity = host["workers"]["current"]["identity"]
+    args = cli.build_parser().parse_args([
+        "worker", "journal-search", "--config", str(host["config"].path),
+        "--runtime-kind", identity.runtime_kind,
+        "--runtime-session-id", identity.runtime_session_id,
+        "--project-ref", PROJECT, "--query", "legacy unknowns",
+    ])
+
+    result = cli._worker_command(args)
+
+    assert [row["entry_ref"] for row in result["entries"]] == [MERGED_ENTRY]
+    assert result["index"]["sources"][PROJECT]["commit"] == head
+    assert result["index"]["freshness"] == "current_local_source"
+
+
+def test_heartbeat_refreshes_content_with_unchanged_binding(host):
+    adapter = host["workers"]["current"]["relay"]
+    workspace = adapter.journal_workspace
+    assert workspace.index.inspect(MERGED_ENTRY)["state"] == "entry_absent"
+    advance_journal(host)
+
+    result = adapter._reconcile_journal_binding(BINDING)
+
+    assert result["changed"] is False
+    assert workspace.index.inspect(MERGED_ENTRY)["state"] == "indexed"
+    assert result["indexed_entries"] == 2
+
+
+def test_restart_does_not_trust_existing_ready_index(host):
+    old = host["workers"]["current"]["relay"].journal_workspace
+    advance_journal(host)
+    restarted = JournalWorkspace(old.root, old.repositories)
+
+    assert restarted.index_status()["state"] == "stale"
+    assert [row["entry_ref"] for row in restarted.search("legacy unknowns", project_ref=PROJECT)] == [MERGED_ENTRY]
+    assert restarted.index_status()["freshness"] == "current_local_source"
+
+
+def test_fresh_worker_search_reconstructs_from_its_own_clone(host):
+    advance_journal(host)
+    worker = host["workers"]["fresh"]
+    clone(host["upstream"].parent / "remote.git", worker["workspace"] / "journals")
+    workspace = worker["relay"].journal_workspace
+
+    assert [row["entry_ref"] for row in workspace.search("legacy unknowns", project_ref=PROJECT)] == [MERGED_ENTRY]
+    assert str(host["stale"]) not in json.dumps(workspace.index_status())
+    assert all(Path(row["source_path"]).is_relative_to(worker["workspace"])
+               for row in workspace.search("W407", project_ref=PROJECT))
+
+
+def test_unchanged_search_and_heartbeat_do_not_reread_bodies(host, monkeypatch):
+    adapter = host["workers"]["current"]["relay"]
+    workspace = adapter.journal_workspace
+    stamp = workspace.index_status()["recorded_at"]
+
+    def unexpected_scan():
+        raise AssertionError("unchanged generation must not reread journal bodies")
+
+    monkeypatch.setattr(workspace, "_scan_documents", unexpected_scan)
+    assert len(workspace.search("decision", project_ref=PROJECT)) == 1
+    assert adapter._reconcile_journal_binding(BINDING)["indexed_entries"] is None
+    assert workspace.index_status()["recorded_at"] == stamp
+
+
+def test_local_edit_and_removal_refresh_without_a_commit(host):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+    advance_journal(host)
+    assert workspace.search("W407", project_ref=PROJECT)
+    entry = host["workers"]["current"]["workspace"] / "journals" / HOME / "journal" / "merged-verification.md"
+    entry.write_text(entry.read_text().replace("legacy unknowns", "bounded provenance"), encoding="utf-8")
+    assert workspace.search("legacy unknowns", project_ref=PROJECT) == []
+    assert workspace.search("bounded provenance", project_ref=PROJECT)
+    entry.unlink()
+    assert workspace.search("W407", project_ref=PROJECT) == []
+    assert workspace.index.inspect(MERGED_ENTRY)["state"] == "entry_absent"
+
+
+def test_offline_clone_refuses_search_and_preserves_previous_index(host):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+    checkout = host["workers"]["current"]["workspace"] / "journals"
+    checkout.rename(checkout.with_name("temporarily-unavailable"))
+
+    with pytest.raises(DomainError) as caught:
+        workspace.search("decision", project_ref=PROJECT)
+
+    assert caught.value.code == "journal_repository_root_missing"
+    assert workspace.index_status()["state"] == "stale"
+    assert workspace.index_status()["freshness"] == "unverified"
+    assert workspace.index.inspect("work:journal:20260926T160000Z:journal_0123456789abcdef:decision")["state"] == "indexed"
+
+
+def test_refresh_failure_is_explicit_private_and_retryable(host, monkeypatch):
+    adapter = host["workers"]["current"]["relay"]
+    workspace = adapter.journal_workspace
+    advance_journal(host)
+    sync = workspace.index.sync
+
+    def fail(_documents):
+        raise RuntimeError("sensitive journal body must not appear in a diagnostic")
+
+    monkeypatch.setattr(workspace.index, "sync", fail)
+    with pytest.raises(DomainError) as caught:
+        workspace.search("W407", project_ref=PROJECT)
+    assert caught.value.code == "journal_index_refresh_failed"
+    assert "sensitive journal body" not in json.dumps(caught.value.to_dict())
+    assert workspace.index_status()["state"] == "stale"
+    assert workspace.index.inspect(MERGED_ENTRY)["state"] == "entry_absent"
+    assert adapter._reconcile_journal_binding(BINDING)["state"] == "index_unavailable"
+    monkeypatch.setattr(workspace.index, "sync", sync)
+    assert [row["entry_ref"] for row in workspace.search("W407", project_ref=PROJECT)] == [MERGED_ENTRY]
+
+
+def test_source_change_during_scan_cannot_be_certified(host, monkeypatch):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+    advance_journal(host)
+    scan = workspace._scan_documents
+    entry = host["workers"]["current"]["workspace"] / "journals" / ENTRY
+
+    def moving_source():
+        result = scan()
+        entry.write_text(entry.read_text() + "\nA concurrent change.\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(workspace, "_scan_documents", moving_source)
+    with pytest.raises(DomainError) as caught:
+        workspace.search("W407", project_ref=PROJECT)
+    assert caught.value.code == "journal_source_changed"
+    assert workspace.index_status()["state"] == "stale"
+    monkeypatch.setattr(workspace, "_scan_documents", scan)
+    assert workspace.search("W407", project_ref=PROJECT)
+
+
+def test_skipped_invalid_entry_has_explicit_partial_status(host):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+    entry = host["workers"]["current"]["workspace"] / "journals" / HOME / "journal" / "wrong-project.md"
+    entry.write_text("---\nproject_ref: work:project:other-project\n---\n\nWrong project body.\n", encoding="utf-8")
+
+    assert workspace.search("decision", project_ref=PROJECT)
+    # Ranking may include recency hits; the invalid entry itself and its body
+    # must never be among the results.
+    rows = workspace.search("Wrong project body", project_ref=PROJECT)
+    assert all(not row["repository_journal_ref"].endswith("wrong-project.md") for row in rows)
+    assert "Wrong project body" not in json.dumps(rows)
+    status = workspace.index_status()
+    assert status["state"] == "partial"
+    assert status["complete"] is False
+    assert any(issue["code"] == "journal_entry_project_mismatch" for issue in status["issues"])
+
+
+def test_journal_symlink_cannot_index_another_workers_content(host):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+    journal = host["workers"]["current"]["workspace"] / "journals" / HOME / "journal"
+    (journal / "foreign.md").symlink_to(host["stale"] / ENTRY)
+
+    with pytest.raises(DomainError) as caught:
+        workspace.search("host-checkout-runtime", project_ref=PROJECT)
+    assert caught.value.code == "journal_repository_ref_escape"
+    assert workspace.index_status()["state"] == "stale"
+
+
+def test_concurrent_cli_and_relay_refresh_share_one_generation(host, monkeypatch):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+    advance_journal(host)
+    second = JournalWorkspace(workspace.root, workspace.repositories)
+    original = JournalSearchIndex.sync
+    calls = []
+
+    def counted_sync(self, documents):
+        calls.append(self.path)
+        return original(self, documents)
+
+    monkeypatch.setattr(JournalSearchIndex, "sync", counted_sync)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(workspace.search, "W407", project_ref=PROJECT)
+        other = pool.submit(second.search, "W407", project_ref=PROJECT)
+        assert [row["entry_ref"] for row in first.result(timeout=10)] == [MERGED_ENTRY]
+        assert [row["entry_ref"] for row in other.result(timeout=10)] == [MERGED_ENTRY]
+    assert len(calls) == 1
+
+
+def test_directory_read_error_is_not_an_empty_success(host, monkeypatch):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+
+    def denied_walk(path, *, followlinks, onerror):
+        onerror(PermissionError("private details"))
+        return iter(())
+
+    monkeypatch.setattr("project_board.client.journals.os.walk", denied_walk)
+    with pytest.raises(DomainError) as caught:
+        workspace.search("decision", project_ref=PROJECT)
+    assert caught.value.code == "journal_index_refresh_failed"
+    assert caught.value.details["error_type"] == "PermissionError"
+    assert "private details" not in json.dumps(caught.value.to_dict())
+    assert workspace.index_status()["state"] == "stale"
+
+
+def test_interrupted_refresh_is_reconciled_after_restart(host, monkeypatch):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+
+    def interrupted(_documents):
+        raise KeyboardInterrupt("simulate process interruption")
+
+    monkeypatch.setattr(workspace.index, "sync", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        workspace.rebuild_index()
+    assert workspace.index_status()["state"] == "indexing"
+    assert workspace.index_status()["freshness"] == "unverified"
+    restarted = JournalWorkspace(workspace.root, workspace.repositories)
+    assert restarted.search("decision", project_ref=PROJECT)
+    assert restarted.index_status()["freshness"] == "current_local_source"
+
+
+def test_automatic_refresh_preserves_author_and_status_filters(host):
+    workspace = host["workers"]["current"]["relay"].journal_workspace
+    advance_journal(host)
+    assert workspace.search("W407", project_ref=PROJECT, status="closed") == []
+    assert workspace.search("W407", project_ref=PROJECT, worker_name="codex-another-worker") == []
+    author = host["workers"]["current"]["identity"].worker_name
+    assert [row["entry_ref"] for row in workspace.search(
+        "W407", project_ref=PROJECT, status="in-progress", worker_name=author
+    )] == [MERGED_ENTRY]
+    assert workspace.index_status()["freshness"] == "current_local_source"
