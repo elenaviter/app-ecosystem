@@ -30,9 +30,21 @@ from connection_hub.server_side_login.protocols import IdTokenVerifier, Upstream
 
 DISCOVERY_PATH = "/.well-known/openid-configuration"
 DEFAULT_SCOPES = ("openid", "email", "profile")
+_RESERVED_AUTHORIZE_PARAMS = frozenset({
+    "response_type", "client_id", "redirect_uri", "scope", "state", "nonce",
+    "code_challenge", "code_challenge_method", "client_secret",
+})
 
 TokenExchanger = Callable[[str, Mapping[str, str], Mapping[str, str]], Awaitable[Mapping[str, Any]]]
 Discoverer = Callable[[str], Awaitable[Mapping[str, Any]]]
+
+
+def _authorize_extras(values: Mapping[str, str]) -> dict[str, str]:
+    extras = {str(key): str(value) for key, value in values.items()}
+    collisions = _RESERVED_AUTHORIZE_PARAMS.intersection(extras)
+    if collisions:
+        raise ValueError(f"reserved authorization parameter: {', '.join(sorted(collisions))}")
+    return extras
 
 
 def pkce_challenge(code_verifier: str) -> str:
@@ -85,6 +97,7 @@ class OidcClientConfig:
         for name in ("issuer", "client_id", "redirect_uri"):
             if not str(getattr(self, name) or "").strip():
                 raise ValueError(f"oidc client config needs {name}")
+        object.__setattr__(self, "extra_authorize_params", _authorize_extras(self.extra_authorize_params))
 
     @classmethod
     def cognito(
@@ -96,6 +109,7 @@ class OidcClientConfig:
         client_secret: str = "",
         hosted_ui_domain: str = "",
         scopes: tuple[str, ...] = DEFAULT_SCOPES,
+        extra_authorize_params: Mapping[str, str] | None = None,
     ) -> "OidcClientConfig":
         """A Cognito user pool. ``hosted_ui_domain`` (``https://<domain>``)
         names the hosted UI whose ``/logout`` ends the upstream session; the
@@ -107,6 +121,7 @@ class OidcClientConfig:
             redirect_uri=redirect_uri,
             client_secret=client_secret,
             scopes=scopes,
+            extra_authorize_params=extra_authorize_params or {},
             provider="cognito",
             logout_redirect_param="logout_uri",
             end_session_endpoint=f"{domain}/logout" if domain else "",
@@ -186,8 +201,7 @@ class OidcCodeFlow:
             "code_challenge": pkce_challenge(attempt.code_verifier),
             "code_challenge_method": "S256",
         }
-        for key, value in dict(self._config.extra_authorize_params).items():
-            params.setdefault(str(key), str(value))
+        params.update(_authorize_extras(self._config.extra_authorize_params))
         separator = "&" if "?" in endpoints.authorization_endpoint else "?"
         return f"{endpoints.authorization_endpoint}{separator}{urlencode(params)}"
 
