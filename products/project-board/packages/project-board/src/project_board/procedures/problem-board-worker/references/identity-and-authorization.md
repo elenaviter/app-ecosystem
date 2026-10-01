@@ -98,6 +98,31 @@ missing":
 - missing coding-harness filesystem authority: the user starts or resumes the
   session with the approved roots. Host `allowed_roots` cannot grant it.
 
+## The Review And Work Operations On Every Agent's Card
+
+Every agent's Card offers all of the board's current Review and Work
+operations by default: `review.accept`, `review.assign`, `review.cancel`,
+`review.return`, `assignment.assign`, `assignment.list`, `assignment.report`,
+`assignment.return`, `work.accept` (the compatibility name) and
+`work.status.set` (operator, 2026-10-01). The Card's owner applies them with
+**Refresh worker Card**, or **Refresh coordinator Card** for a coordinator,
+which reapply the role's default profile under the project's ceiling and keep
+the same identity. Two product steps are still open (W451, W420). The
+coordinator default already selects every Problem Board operation, but the
+worker default lacks `review.assign`, `assignment.assign`,
+`assignment.return` and `work.accept`: until W451 adds them, a worker refresh
+removes those four when they were ticked by hand, so the owner ticks them on
+the Card in Connection Hub instead. And a refresh reapplies the profile by
+name, so another service on the same Card that declares the same profile name
+can be changed too, until W420's resource-scoped apply is live. An agent never
+edits a Card ([collaboration](collaboration.md) Rule 12).
+
+Holding an operation is not authority over every item: the board still checks
+at each call who may decide a review, that nobody reviews their own work, and
+the actor. When your Card lacks one of these operations, tell the coordinator,
+who asks the Card's owner to refresh it; never work around a refused
+permission.
+
 ## Attendance, Assignment, And Revocation
 
 An assignment notice (kind `assign`, from `control-plane`) carries these
