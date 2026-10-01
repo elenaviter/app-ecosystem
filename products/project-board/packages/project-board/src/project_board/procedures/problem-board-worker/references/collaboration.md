@@ -551,11 +551,16 @@ it, what you touched (Rule 3), and what you are waiting on.
   make the change, ask the coordinator, naming the item and the change; never
   work around a refused permission.
 - **Reconcile your assignments, act on each, and ask when one is unclear.**
-  At session start or resume, after a compaction, at every work boundary and
-  at least on each guard prompt or wake, read your assignments fresh
-  (`project.plan.index` with your stable worker name as assignee, by status,
-  and `assignment.list`) and compare them with the work you remember, before
-  acting on old mail. Listing them is not the act. For each item read its
+  At session start or resume and after a compaction, read your assignments
+  fresh (`project.plan.index` with your stable worker name as assignee, by
+  status, and `assignment.list`) and compare them with the work you remember,
+  before acting on old mail. While you work, read them again periodically:
+  once about 30 minutes of active work have passed since the last full read,
+  at the next safe boundary. The cadence needs no timer and no idle polling,
+  and a step, a command, an ordinary wake, a guard prompt or a work boundary is
+  not a reason for a full read. An addressed change to one assignment or its
+  ownership, or a doubt about one item, reads only that item. Listing them is
+  not the act. For each item read its
   current state (the item, its change request and exact head), name the next
   gate, the actor who clears it and the next decision time, and do the step
   when it is yours. A remembered approval is not proof until you have checked
@@ -570,7 +575,9 @@ it, what you touched (Rule 3), and what you are waiting on.
   coordinator that stays on you is hidden from it (operator, 2026-10-01: "if
   you wait for coordinator you assign it to it"). Why: an assignment's notice is sent once, so the
   board is the record; on 2026-10-01 an agent listed nine items in Review as
-  waiting on others without checking one (operator, 2026-10-01; W449, W455).
+  waiting on others without checking one. And a full read at every step costs
+  more than it finds, so the cadence is periodic (operator, 2026-10-01; W449,
+  W455).
 - **Only a durably authorized reviewer decides.** A review decision (accept,
   return) comes from the reviewer the board names for that item, against the
   exact head under review, through the existing authorization and revision
