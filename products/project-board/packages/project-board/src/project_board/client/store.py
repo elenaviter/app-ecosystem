@@ -18,6 +18,7 @@ from ..contract.delivery_failures import (
     resolve_delivery_failure_target,
 )
 from ..contract.errors import DomainError
+from ..contract.assignment_reopen import validated_reopen_evidence
 from ..contract.mail_addresses import resolve_mail_recipient
 from ..contract.mailbox_reconciliation_contract import (
     MAILBOX_RECONCILIATION_RECEIPT_SCHEMA,
@@ -1373,6 +1374,12 @@ class SharedFieldStore:
             "state": "assigned",
             "received_at": utc_now(),
         }
+        # This entry is fed by authenticated board controls/heartbeat views,
+        # not a mail payload or task text. Keep only matching active evidence.
+        proof = validated_reopen_evidence(assignment)
+        if proof:
+            row["reopen_evidence"] = proof
+            row["item_assignee"] = str(assignment.get("item_assignee") or "")
         returned = assignment.get("returned")
         if isinstance(returned, Mapping):
             # A review return keeps the worker under a new ownership version
@@ -1401,6 +1408,11 @@ class SharedFieldStore:
                     status=409,
                 )
             if current_version == ownership_version:
+                if proof and str(current.get("state") or "") not in {"routing", "assigned", "working", "blocked"}:
+                    # A delayed same-version control cannot resurrect a
+                    # locally settled period, even with genuine old evidence.
+                    row.pop("reopen_evidence", None)
+                    row["state"] = str(current.get("state") or "assigned")
                 current_assignment_id = self._assignment_object_id(current)
                 current_identity = {
                     "assignment_id": current_assignment_id,
@@ -1453,7 +1465,9 @@ class SharedFieldStore:
         ``item_status`` is the item's committed status as the board sent it
         (W406). It decides what the notice asks: Todo or Working is work to
         begin, Review waits for the review, Done or Cancelled is information
-        only. A board that sends none gets the notice it always got.
+        only. Validated explicit-reopen evidence on the current active ownership
+        instead asks the owner to begin work without a preliminary status edit.
+        A board that sends neither status nor evidence gets its legacy notice.
         """
 
         parsed_assignment = parse_ref(str(assignment.get("assignment_ref") or ""))
@@ -1476,6 +1490,14 @@ class SharedFieldStore:
                 "The assignment ownership version must be positive.",
             )
         assignment_id = parsed_assignment.object_id
+        current = self._assignments(component(project_id, field="project_id")).read(
+            assignment_id, worker_name=recipient.lower(),
+        ) or {}
+        proof = validated_reopen_evidence(current, recipient=recipient)
+        if (int(current.get("ownership_version") or 0) != ownership_version
+                or str(current.get("assignment_ref") or "") != assignment_ref
+                or proof != assignment.get("reopen_evidence")):
+            proof = {}
         legacy_assignment_ref = f"work:assignment:{assignment_id}"
         # The notice must say WHICH work the assignment is for. It carried the
         # assignment ref three times and the work ref not at all, so a worker
@@ -1527,6 +1549,7 @@ class SharedFieldStore:
                 work_ref=notice_work_ref,
                 assignment_ref=assignment_ref,
                 ownership_version=ownership_version,
+                explicit_reopen=bool(proof),
             )
             payload = {
                 "assignment_id": assignment_id,
@@ -1537,6 +1560,8 @@ class SharedFieldStore:
             }
             if item_status:
                 payload["item_status"] = item_status
+            if proof:
+                payload["reopen_evidence"] = proof
         return self.send_mail(
             project_id,
             sender="control-plane",

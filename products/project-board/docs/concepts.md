@@ -155,6 +155,11 @@ An explicit authorized `assignment.assign(reopen=true)` is a separate act:
 it creates a new ownership period without changing status or `started_at`.
 The new owner's first working report then follows the normal report contract;
 the former period remains fenced, including when the selected worker is unchanged.
+The Board records this explicit act as ownership-bound `reopen_evidence`.
+The client validates it against the current active assignment and selected
+owner before emitting `expected_reaction=begin_work`; mail text alone is not
+authority. Ordinary Review notices still await review, and Done/Cancelled
+notices remain informational. A later closure or ownership change wins.
 Releasing an assignment (`assignment.return`) clears the owner
 and leaves the status as it is. Status moves by the owner's reports (`working`
 moves the item to Working, `completed` to Review), by a review decision, or by

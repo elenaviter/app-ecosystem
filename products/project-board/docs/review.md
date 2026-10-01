@@ -73,6 +73,12 @@ todo --working status--> working --assignment.completed--> review
   working report follows the usual status/start-time contract; old-period
   controls and new reports remain fenced, while recorded retries replay.
   This uses the existing assignment authorization, not either field grant.
+  Its trusted Board evidence, bound to the current active assignment and
+  ownership, makes the notice `begin_work` even while the old status remains.
+  Ordinary Review/terminal notices and review-return semantics are unchanged.
+  Evidence is durable for heartbeat recovery after control acknowledgement;
+  legacy assignments without it retain status-based notices. Release testing
+  must verify server/client compatibility and a fresh worker's first report.
 - **Ownership moves only by explicit assignee/ownership acts:** `work.assignee.set`,
   `assignment.assign`, or `assignment.return` (release). A review decision may
   settle assignment history. The dedicated `review.return` action routes
