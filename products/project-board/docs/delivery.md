@@ -212,3 +212,31 @@ at the same time: if its calls succeed, the fault is this worker's channel;
 if they fail too, it is the relay or the board. The layer-by-layer steps are
 in the
 [delivery and recovery reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/delivery-and-recovery.md#diagnosing-a-failure-layer-by-layer).
+
+### Reading an outcome-unknown failure
+
+A `data_bus_outcome_unknown` failure keeps its evidence in the channel's
+degraded-connection record (`relay_diagnostic.request` and its attempts). Read
+the fields as follows:
+
+- `ingress_ack_received: false` means only that the ingress acknowledgement
+  did not arrive. The server may still have accepted and applied the
+  operation. A retry keeps the same identity.
+- `connection_generation`, `socket_id` and `connection_active` describe the
+  socket **when the request began**. The `..._at_failure` fields describe it
+  when the wait ended. `disconnected_during_request: true` means the transport
+  dropped while the request waited.
+- `timer_overrun_seconds` is how late the deadline (`timeout_seconds`)
+  fired. When it is large, the relay's event loop or the whole process did
+  not run, for example on a paging host. A slow server does not cause it.
+
+The relay also measures its own loop. A sampler sleeps one second and records
+how late it wakes. The slow-cycle log line carries the cycle's largest lag
+(`loop_lag_max_seconds`) and the process memory (`rss_bytes` where the
+platform reports it, and `rss_peak_bytes`). A lag of a second or more logs
+`relay loop stalled` at once, and then at most once every 30 seconds, with the
+stalls counted in between. The relay writes nothing else to files.
+
+A polling handshake that answers quickly proves that the ingress accepts new
+sessions. It does not prove that an existing WebSocket, its acknowledgements
+or its receipts are healthy (W448, 2026-10-01).

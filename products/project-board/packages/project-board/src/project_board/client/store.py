@@ -2977,6 +2977,7 @@ class SharedFieldStore:
                 ("transport_phase", 64),
                 ("request_scope", 512),
                 ("socket_id", 128),
+                ("socket_id_at_failure", 128),
             ):
                 selected = bounded_text(
                     raw_request.get(key),
@@ -2989,23 +2990,25 @@ class SharedFieldStore:
                 "ingress_accepted",
                 "transport_replayed",
                 "connection_active",
+                "ingress_ack_received",
+                "connection_active_at_failure",
+                "disconnected_during_request",
             ):
                 if isinstance(raw_request.get(key), bool):
                     selected_request[key] = raw_request[key]
-            try:
-                if raw_request.get("connection_generation") is not None:
-                    selected_request["connection_generation"] = max(
-                        0, int(raw_request["connection_generation"])
-                    )
-            except (TypeError, ValueError):
-                pass
+            for key in ("connection_generation", "connection_generation_at_failure"):
+                try:
+                    if raw_request.get(key) is not None:
+                        selected_request[key] = max(0, int(raw_request[key]))
+                except (TypeError, ValueError):
+                    pass
             try:
                 status = int(raw_request.get("status"))
             except (TypeError, ValueError):
                 status = 0
             if status:
                 selected_request["status"] = status
-            for key in ("elapsed_seconds", "timeout_seconds"):
+            for key in ("elapsed_seconds", "timeout_seconds", "timer_overrun_seconds"):
                 try:
                     if raw_request.get(key) is not None:
                         selected_request[key] = round(
@@ -3019,7 +3022,10 @@ class SharedFieldStore:
                     "operation", "target", "transport_message_id",
                     "transport_phase", "ingress_accepted", "transport_replayed",
                     "request_scope", "elapsed_seconds", "connection_generation",
-                    "socket_id", "connection_active",
+                    "socket_id", "connection_active", "timeout_seconds",
+                    "timer_overrun_seconds", "ingress_ack_received",
+                    "disconnected_during_request", "connection_active_at_failure",
+                    "connection_generation_at_failure", "socket_id_at_failure",
                 )
                 if key in selected_request
             }

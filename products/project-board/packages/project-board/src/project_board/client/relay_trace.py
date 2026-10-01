@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import os
+import sys
 import time
 from collections import deque
 from contextlib import contextmanager
@@ -14,6 +17,38 @@ SLOW_RELAY_SECONDS = 5.0
 TRACE_HISTORY_SECONDS = 300.0
 TRACE_HISTORY_LIMIT = 1024
 WAIT_CONTEXT_LIMIT = 32
+# W448: the relay serves every channel on one event loop. A sampler sleeps
+# this long and measures how late it wakes; a late wake means the loop or the
+# whole process did not run (a blocking call, a paging host), which no
+# transport timeout can tell apart from a slow server.
+LOOP_LAG_INTERVAL_SECONDS = 1.0
+LOOP_STALL_SECONDS = 1.0
+LOOP_STALL_LOG_EVERY_SECONDS = 30.0
+
+
+def process_memory() -> dict[str, int]:
+    """This process's resident memory, where the platform reports it.
+
+    ``rss_bytes`` is the current resident set (Linux ``/proc``);
+    ``rss_peak_bytes`` is the lifetime peak from ``getrusage`` (bytes on
+    macOS, kilobytes on Linux). A missing source leaves its key out.
+    """
+
+    memory: dict[str, int] = {}
+    try:
+        with open("/proc/self/statm", encoding="ascii") as statm:
+            pages = int(statm.read().split()[1])
+        memory["rss_bytes"] = pages * int(os.sysconf("SC_PAGE_SIZE"))
+    except (OSError, ValueError, IndexError):
+        pass
+    try:
+        import resource
+
+        peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        memory["rss_peak_bytes"] = peak if sys.platform == "darwin" else peak * 1024
+    except (ImportError, OSError, ValueError):
+        pass
+    return memory
 
 
 class RelayActivityTrace:
@@ -39,6 +74,51 @@ class RelayActivityTrace:
         self._history: deque[dict[str, Any]] = deque(
             maxlen=TRACE_HISTORY_LIMIT
         )
+        # Largest loop lag since the last finished cycle, and the stalls not
+        # yet logged.
+        self._loop_lag_max = 0.0
+        self._stall_count = 0
+        self._stall_max = 0.0
+        self._stall_logged_at: float | None = None
+
+    def record_loop_lag(self, lag_seconds: float) -> None:
+        """Keep one sampler measurement; log stalls at most every 30 s."""
+
+        lag = max(0.0, float(lag_seconds))
+        self._loop_lag_max = max(self._loop_lag_max, lag)
+        if lag < LOOP_STALL_SECONDS:
+            return
+        self._stall_count += 1
+        self._stall_max = max(self._stall_max, lag)
+        now = self._monotonic()
+        if (
+            self._stall_logged_at is not None
+            and now - self._stall_logged_at < LOOP_STALL_LOG_EVERY_SECONDS
+        ):
+            return
+        memory = process_memory()
+        self._log.warning(
+            "Problem Board relay loop stalled max_lag_seconds=%.3f stalls=%d "
+            "threshold_seconds=%.3f%s",
+            self._stall_max,
+            self._stall_count,
+            LOOP_STALL_SECONDS,
+            "".join(f" {key}={value}" for key, value in sorted(memory.items())),
+        )
+        self._stall_logged_at = now
+        self._stall_count = 0
+        self._stall_max = 0.0
+
+    async def sample_loop_lag(
+        self, interval_seconds: float = LOOP_LAG_INTERVAL_SECONDS
+    ) -> None:
+        """Measure, until cancelled, how late the event loop wakes a sleeper."""
+
+        interval = max(0.01, float(interval_seconds))
+        while True:
+            started = time.monotonic()
+            await asyncio.sleep(interval)
+            self.record_loop_lag(time.monotonic() - started - interval)
 
     def start_cycle(self) -> int:
         if self._active_cycle:
@@ -59,18 +139,24 @@ class RelayActivityTrace:
             "cycle": cycle,
             "outcome": str(outcome or "unknown"),
             "total_seconds": round(total_seconds, 3),
+            "loop_lag_max_seconds": round(self._loop_lag_max, 3),
             "stages": stages,
         }
+        self._loop_lag_max = 0.0
         if self._active_cycle == cycle:
             self._active_cycle = 0
         if total_seconds >= self.slow_seconds:
+            memory = process_memory()
             self._log.warning(
                 "Problem Board relay slow cycle cycle=%d outcome=%s "
-                "total_seconds=%.3f threshold_seconds=%.3f stages=%s",
+                "total_seconds=%.3f threshold_seconds=%.3f "
+                "loop_lag_max_seconds=%.3f%s stages=%s",
                 cycle,
                 summary["outcome"],
                 total_seconds,
                 self.slow_seconds,
+                summary["loop_lag_max_seconds"],
+                "".join(f" {key}={value}" for key, value in sorted(memory.items())),
                 json.dumps(stages, separators=(",", ":"), sort_keys=True),
             )
         self._prune(ended_at)
@@ -222,4 +308,4 @@ class RelayActivityTrace:
             self._history.popleft()
 
 
-__all__ = ["RelayActivityTrace", "SLOW_RELAY_SECONDS"]
+__all__ = ["RelayActivityTrace", "SLOW_RELAY_SECONDS", "process_memory"]
