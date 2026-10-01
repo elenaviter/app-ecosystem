@@ -10,6 +10,7 @@ the workspace root, and trees in every state.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -281,3 +282,62 @@ def test_the_procedure_owns_registration_the_sweep_and_its_triggers():
     assert "Never `rm -rf` a worktree folder" in workspace
     skill = (procedures / "SKILL.md").read_text(encoding="utf-8")
     assert skill.count("a sweep removes finished, clean, fully pushed trees at session start, on idle and after a review decision") == 1
+
+
+def test_the_sweep_scans_the_workspace_context_names_not_a_shared_recorded_folder(tmp_path):
+    """spark1, 2026-10-01: a session started in a shared folder outside the
+    host's agent workspace root. The sweep scanned that folder (134 trees of
+    other sessions) and none of the agent's own trees. It now scans the
+    workspace ``context`` names (agent_workspace), like every other command."""
+
+    from project_board.client import host_config
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+
+    root = tmp_path / "agents"
+    shared = tmp_path / "shared"
+    root.mkdir()
+    shared.mkdir()
+    config = host_config.initialize_host_config(
+        target_id="target",
+        endpoint="https://runtime.example/mcp",
+        tenant="tenant",
+        platform_project="project",
+        host_id="host-one",
+        allowed_roots=[str(root)],
+        source_repositories={},
+        config_path=tmp_path / "relay.json",
+        state_root=tmp_path / "state",
+    )
+
+    def sweep_root(session: str, working_directory: str, alias: str = "") -> tuple:
+        identity = WorkerSessionIdentity.create("claude-code", session)
+        host_config.enroll_worker_channel(
+            config.path, identity=identity, profile=f"problem-board-claude-{session[:8]}",
+            worker_alias=alias, authorized=True, working_directory=working_directory,
+        )
+        # A channel enrolled before the workspace root existed keeps the raw
+        # folder its session started in (spark1's did); write it as found.
+        raw = json.loads(config.path.read_text(encoding="utf-8"))
+        for worker in raw["workers"]:
+            if worker["worker_name"] == identity.worker_name:
+                worker["working_directory"] = working_directory
+        config.path.write_text(json.dumps(raw), encoding="utf-8")
+        args = cli.build_parser().parse_args([
+            "worker", "workspace", "--config", str(config.path),
+            "--runtime-kind", "claude-code", "--runtime-session-id", session, "--sweep",
+        ])
+        workspace, _config = cli._sweep_host(args)  # noqa: SLF001 - the resolution under test
+        loaded = host_config.HostRelayConfig.load(config.path)
+        named = cli._agent_workspace_for(loaded, identity)  # noqa: SLF001 - what context names
+        return workspace, named
+
+    # A recorded folder outside the root is not swept; the agent's own folder is.
+    swept, named = sweep_root("00000001-0000-4000-8000-000000000000", str(shared), alias="ops@host")
+    assert swept is not None and swept != shared
+    assert str(swept) == named and Path(named).is_relative_to(root)
+
+    # A recorded folder inside the root, still there, is the workspace for both.
+    own = root / "docs@host"
+    own.mkdir()
+    swept, named = sweep_root("00000002-0000-4000-8000-000000000000", str(own), alias="docs@host")
+    assert swept == own and str(swept) == named

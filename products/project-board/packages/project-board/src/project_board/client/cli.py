@@ -6427,14 +6427,23 @@ __all__ = ["build_parser", "main"]
 
 
 def _sweep_host(args: argparse.Namespace) -> tuple[Path | None, Any]:
-    """This agent's workspace (its channel's working directory) and the host config."""
+    """This agent's workspace and the host config.
+
+    The workspace is the one ``listen``, ``context`` and ``workspace-report``
+    name (agent_workspace): a recorded folder outside the host's agent
+    workspace root is not the workspace (W423, spark1 2026-10-01: a session
+    that started in a shared folder swept 134 trees of other sessions there
+    and none of its own).
+    """
 
     try:
         config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
-        channel = config.worker(_identity(args))
+        identity = _identity(args)
+        if config.worker(identity) is None:
+            return None, config
+        directory = _agent_workspace_for(config, identity)
     except Exception:  # noqa: BLE001 - no channel means nothing to sweep
         return None, None
-    directory = str(getattr(channel, "working_directory", "") or "")
     return (Path(directory) if directory else None), config
 
 
