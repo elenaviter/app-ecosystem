@@ -51,7 +51,10 @@ def test_worker_context_keeps_coordinates_and_bounds_repeated_sections() -> None
                     {
                         "name": "seven_day",
                         "used_percent": 42,
-                        "resets_at": "2026-10-01T10:00:00Z",
+                        # A reset still ahead: a fixed date that has passed adds a
+                        # "reset passed" line per member and breaks the bound
+                        # from that moment on (it did on 2026-10-01 10:00Z).
+                        "resets_at": "2099-01-01T00:00:00Z",
                     }
                 ],
             },
