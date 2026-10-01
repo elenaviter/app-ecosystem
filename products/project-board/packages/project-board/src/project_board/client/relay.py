@@ -42,7 +42,7 @@ from ..contract.plan_nodes import parse_plan_node_ref
 from ..contract.refs import parse_ref
 from ..contract.worker_identity import WorkerSessionIdentity, normalize_worker_alias
 from ..contract.runtime_account import normalize_runtime_account
-from .io import content_hash, new_id, parse_utc, read_json, utc_now
+from .io import FileLockBusy, content_hash, new_id, parse_utc, read_json, utc_now
 from .journals import (
     JournalWorkspace,
     RepositoryMap,
@@ -804,6 +804,8 @@ class ProblemBoardHostRelayAdapter:
         )
         self._monotonic = monotonic or time.monotonic
         self._trace = trace or RelayActivityTrace(log=logger)
+        # Outbox settles running on after a cancelled turn, kept referenced.
+        self._outbox_finishes: set[asyncio.Future] = set()
         self._runtime_account_reader = runtime_account_reader
         self._runtime_account_error_state = (
             runtime_account_error_state
@@ -3022,6 +3024,58 @@ class ProblemBoardHostRelayAdapter:
                     project_ref=project_ref,
                 )
 
+    # W456: the outbox lock is also held by the local-state maintenance thread
+    # and by pb commands in other processes. Waiting for it on the event loop
+    # stalled every channel (3.8 s, 2026-10-01 22:18:35Z), so the relay's
+    # outbox calls never wait on it.
+    OUTBOX_LOCK_RETRY_FIRST_SECONDS = 0.05
+    OUTBOX_LOCK_RETRY_MAX_SECONDS = 0.5
+
+    def _outbox_store(self, call, *, finish: bool = False):
+        """An outbox store call that takes the outbox lock without blocking the loop.
+
+        The call runs with ``wait=False``; while another holder has the lock it
+        is retried after an awaited, capped backoff. Nothing runs in a thread
+        (W321): the store refuses a busy lock before it reads or moves a row,
+        so a claim cancelled while waiting leaves nothing claimed. A settle or
+        retry of a row already sent (``finish=True``) runs as its own task on
+        the loop, awaited through a shield, so a cancelled turn still records
+        the delivery instead of leaving the row leased for a resend.
+        """
+
+        async def attempt(*args, **kwargs):
+            delay = self.OUTBOX_LOCK_RETRY_FIRST_SECONDS
+            while True:
+                try:
+                    return call(*args, wait=False, **kwargs)
+                except FileLockBusy:
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, self.OUTBOX_LOCK_RETRY_MAX_SECONDS)
+
+        if not finish:
+            return attempt
+
+        async def finished(*args, **kwargs):
+            task = asyncio.ensure_future(attempt(*args, **kwargs))
+            self._outbox_finishes.add(task)
+            task.add_done_callback(self._outbox_finishes.discard)
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # The turn ended; the settle goes on and reports only here.
+                task.add_done_callback(self._outbox_finish_after_cancel)
+                raise
+
+        return finished
+
+    @staticmethod
+    def _outbox_finish_after_cancel(task: asyncio.Future) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning(
+                "Problem Board relay outbox settle failed after its turn ended",
+                exc_info=task.exception(),
+            )
+
     async def _flush_outbox_unlocked(
         self,
         *,
@@ -3035,7 +3089,7 @@ class ProblemBoardHostRelayAdapter:
             "outbox_retried": 0,
             "reconciliation_publications_refused": 0,
         }
-        for row in self.field.pull_outbox(
+        for row in await self._outbox_store(self.field.pull_outbox)(
             relay_id=self.config.relay_id,
             worker_name=self.config.worker_name,
             project_ref=(
@@ -3126,7 +3180,7 @@ class ProblemBoardHostRelayAdapter:
                         payload=payload,
                     )
                 else:
-                    self.field.settle_outbox(
+                    await self._outbox_store(self.field.settle_outbox, finish=True)(
                         str(row.get("outbox_id") or ""),
                         relay_id=self.config.relay_id,
                         outcome="refused",
@@ -3136,7 +3190,7 @@ class ProblemBoardHostRelayAdapter:
                     continue
             except DomainError as exc:
                 if exc.status >= 500:
-                    self.field.retry_outbox(
+                    await self._outbox_store(self.field.retry_outbox, finish=True)(
                         str(row.get("outbox_id") or ""),
                         relay_id=self.config.relay_id,
                         error_code=exc.code,
@@ -3198,7 +3252,7 @@ class ProblemBoardHostRelayAdapter:
                         # Do not turn a sender-notification failure into silent
                         # terminal loss. The original payload stays leased only
                         # until this bounded retry returns it to pending.
-                        self.field.retry_outbox(
+                        await self._outbox_store(self.field.retry_outbox, finish=True)(
                             str(row.get("outbox_id") or ""),
                             relay_id=self.config.relay_id,
                             error_code="field_delivery_failure_notice_failed",
@@ -3223,7 +3277,7 @@ class ProblemBoardHostRelayAdapter:
                     )
                     if details.get(key)
                 )
-                self.field.settle_outbox(
+                await self._outbox_store(self.field.settle_outbox, finish=True)(
                     str(row.get("outbox_id") or ""),
                     relay_id=self.config.relay_id,
                     outcome="refused",
@@ -3298,7 +3352,7 @@ class ProblemBoardHostRelayAdapter:
                     "plan_revision": int(remote.get("plan_revision") or 0),
                     "content_hash": str(remote.get("content_hash") or ""),
                 }
-            self.field.settle_outbox(
+            await self._outbox_store(self.field.settle_outbox, finish=True)(
                 str(row.get("outbox_id") or ""),
                 relay_id=self.config.relay_id,
                 outcome=outcome,
@@ -6171,14 +6225,24 @@ class ProblemBoardRelaySupervisor:
         *,
         worker_names: Sequence[str] = (),
     ) -> bool:
-        """Wake on work raised on this machine, the way push wakes on the board."""
+        """Wake on work raised on this machine, the way push wakes on the board.
+
+        Every signature here is a pure directory read with no lock and no
+        claim, and it runs in a worker thread: the scans blocked the event loop
+        for 3.2 s on 2026-10-01 (W456). A cancelled wait lets at most one scan
+        finish, which leaves nothing behind (W321).
+        """
 
         coordinate_queue = CoordinateQueue(field_root)
         outbox = OutboxStore(field_root / ".problem-board")
-        if coordinate_queue.has_ready_work(worker_names=worker_names):
+        if await asyncio.to_thread(
+            coordinate_queue.has_ready_work, worker_names=worker_names
+        ):
             return True
         outbox_key = str(field_root.expanduser().resolve())
-        ready_signature = outbox.ready_signature(worker_names=worker_names)
+        ready_signature = await asyncio.to_thread(
+            outbox.ready_signature, worker_names=worker_names
+        )
         if (
             ready_signature
             and self._local_outbox_ready_signatures.get(outbox_key, ())
@@ -6186,13 +6250,16 @@ class ProblemBoardRelaySupervisor:
         ):
             self._local_outbox_ready_signatures[outbox_key] = ready_signature
             return True
-        initial = self._local_work_signature(
+        initial = await asyncio.to_thread(
+            self._local_work_signature,
             field_root,
             worker_names=worker_names,
         )
         # Close the check-to-baseline race: a row that became the baseline is
         # already work and must not wait for a second change.
-        ready_signature = outbox.ready_signature(worker_names=worker_names)
+        ready_signature = await asyncio.to_thread(
+            outbox.ready_signature, worker_names=worker_names
+        )
         if (
             ready_signature
             and self._local_outbox_ready_signatures.get(outbox_key, ())
@@ -6207,12 +6274,15 @@ class ProblemBoardRelaySupervisor:
             if remaining <= 0:
                 return False
             await asyncio.sleep(min(0.25, remaining))
-            if self._local_work_signature(
+            if await asyncio.to_thread(
+                self._local_work_signature,
                 field_root,
                 worker_names=worker_names,
             ) != initial:
                 self._local_outbox_ready_signatures[outbox_key] = (
-                    outbox.ready_signature(worker_names=worker_names)
+                    await asyncio.to_thread(
+                        outbox.ready_signature, worker_names=worker_names
+                    )
                 )
                 return True
 
