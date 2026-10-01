@@ -36,7 +36,12 @@ releasable.
    made in the set's packages.
 
    It sets the version in every file of the set and checks that no file
-   still names the old one. It builds and `twine check`s every distribution.
+   still names the old one. The managed procedure package
+   (`project_board/procedures/`) is left alone: its own revision ledger
+   versions it, and a version named there is the release a behaviour came
+   with. The gate runs with `PB_REQUIRE_REVISION_RECORDED=1`, so procedure
+   content that is not recorded under its revision fails the release instead
+   of skipping. It builds and `twine check`s every distribution.
    Then it runs each package's gate the way the publish workflow does: a fresh
    environment, `pip install -e "<path>[test]"` with the set's own packages
    from the wheels just built, no source overlay, the tests, the import

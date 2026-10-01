@@ -353,3 +353,27 @@ def test_the_release_guide_names_the_governed_route_and_the_release_tree() -> No
                    "pb worker gh", "pb worker push", "`deploykey` remote", "HTTPS"):
         assert phrase in first_section, phrase
     assert "throwaway worktree" not in first_section
+
+
+def test_a_release_leaves_the_procedure_package_and_its_digest_alone(tmp_path: Path) -> None:
+    """The 2026-10-01 dry run rewrote a version named in project-workspace.md.
+
+    The procedure is versioned by its revision ledger; a changed digest under
+    a recorded revision makes `pb procedure verify` fail on every host. The
+    gate now requires the recorded revision, so such a change fails it.
+    """
+
+    root = _copy_of_the_set(tmp_path)
+    procedures = root / release_pb.VERSION_EXCLUDED[0]
+    current = release_pb.read_version(root)
+    # A procedure page that names the release a behaviour came with.
+    (procedures / "named-release.md").write_text(f"Since {current}.\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "a page names the release")
+    before = {path: path.read_bytes() for path in procedures.rglob("*") if path.is_file()}
+
+    changed = release_pb.apply_version(root, current, "2099.01.02.0304", "What changed.")
+
+    assert not [path for path in changed if str(path).startswith(str(procedures))]
+    assert {path: path.read_bytes() for path in procedures.rglob("*") if path.is_file()} == before
+    assert release_pb.clean_env()["PB_REQUIRE_REVISION_RECORDED"] == "1"

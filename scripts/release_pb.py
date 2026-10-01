@@ -95,6 +95,12 @@ VERSION_ROOTS = (
     "products/project-board/packages/project-board",
 )
 
+# The managed procedure package is versioned by its own revision ledger, not
+# by the set: a version named there is the release a behaviour came with, and
+# rewriting it would change the package's digest under its recorded revision,
+# so every host's `pb procedure verify` would fail on the release (W454).
+VERSION_EXCLUDED = ("products/project-board/packages/project-board/src/project_board/procedures/",)
+
 # Each record's `description: |` block becomes the release notes.
 RELEASE_RECORDS = (
     "packages/app-foundation/release.yaml",
@@ -253,11 +259,16 @@ def drop_scratch(folder: Path, keep: bool) -> None:
 
 
 def clean_env() -> dict[str, str]:
-    """The environment without a source overlay: the 2026-09-26 lesson."""
+    """The environment without a source overlay: the 2026-09-26 lesson.
+
+    A release also requires the procedure package's content to be recorded
+    under its revision: without this the revision tests skip instead of fail.
+    """
 
     env = dict(os.environ)
     for name in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PIP_REQUIRE_VIRTUALENV"):
         env.pop(name, None)
+    env["PB_REQUIRE_REVISION_RECORDED"] = "1"
     return env
 
 
@@ -292,6 +303,8 @@ def version_files(root: Path, version: str) -> list[Path]:
     listed = run(["git", "ls-files", "-z", "--", *VERSION_ROOTS], cwd=root, capture=True).stdout
     files = []
     for name in filter(None, listed.split("\0")):
+        if name.startswith(VERSION_EXCLUDED):
+            continue
         path = root / name
         try:
             if version in path.read_text(encoding="utf-8"):
