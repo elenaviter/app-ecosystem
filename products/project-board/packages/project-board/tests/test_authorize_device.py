@@ -41,8 +41,12 @@ def test_pb_status_suggests_device_login() -> None:
 
 def test_the_refusals_suggest_device_login() -> None:
     assert replace_card_command("dev-main-worker") == "pb worker authorize dev-main-worker --device --replace-card"
+    # A channel refusal names its command through authorization_command, so
+    # the refusal and pb worker inspect cannot drift apart (W457).
+    assert " ".join(authorization_command("dev-main-worker")) == "pb worker authorize dev-main-worker --device"
     source = Path(cli.__file__).read_text(encoding="utf-8")
-    assert '"required_action": f"pb worker authorize {channel.profile} --device"' in source
+    assert 'authorize = " ".join(authorization_command(channel.profile))' in source
+    assert '"required_action": authorize' in source
 
 
 def _pages() -> list[Path]:

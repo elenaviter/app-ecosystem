@@ -238,6 +238,11 @@ how late it wakes.
 - **Slow-cycle line:** carries the cycle's largest lag (`loop_lag_max_seconds`).
 - **Stall line:** a lag of a second or more logs `relay loop stalled` at once,
   then at most once every 30 seconds, with the stalls in between counted.
+- **Blocked-loop line:** while the loop has not run for three seconds, a
+  watchdog thread reads the loop thread's stack and logs `relay loop blocked`
+  with `blocked_seconds` and `frames`, the innermost twelve frames as
+  `file:line:function` (no values). It names the call that held every
+  channel, once per stall and at most every 30 seconds.
 - **Paging and memory:** both lines carry `major_faults_delta`, the major page
   faults since the previous line, which shows whether the relay itself was
   paging. They also carry the current resident size `rss_bytes` (from `/proc`

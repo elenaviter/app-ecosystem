@@ -145,7 +145,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.10.01.1"
+    assert package["revision"] == "2026.10.01.2"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -2316,6 +2316,9 @@ def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
     assert "**Reconcile your assignments, act on each, and ask when one is unclear.**" in collaboration
     assert "never an idle wait, an invented role or a kept stale tree" in collaboration
     assert "**An unclear assignment is a question, not an idle state.**" in coordinator
+    assert "after a resume or a compaction, once per native wake batch, and periodically while it works" in coordinator
+    assert "mirror it in a note on the item and in the mail that routes it" in coordinator
+    assert "and at its safe checkpoints" not in coordinator
     # Operator, 13:07Z: a fresh scheduling table before dispatch and on exhaustion.
     assert "## Read the scheduling table before you dispatch" in _read("references/coordinator.md")
     assert "Dispatch from that table, not from memory." in coordinator

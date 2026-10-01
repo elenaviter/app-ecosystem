@@ -43,6 +43,7 @@ from .host_config import (
     initialize_host_config,
     resolve_host_config_path,
     update_host_config,
+    WorkerChannelConfig,
 )
 from .diagnostics import host_relay_diagnostics
 from .journals import (
@@ -60,7 +61,7 @@ from .prose_arguments import (
     refuse_unresolved_slots,
 )
 from .commands import load_json
-from .relay_pacing import channel_reconnect_state
+from .relay_pacing import channel_pending_refusal, channel_reconnect_state
 from .coordinate_contract import coordinate_contract, require_coordinate_shape
 from .coordinate_recovery import (
     CoordinateRecovery,
@@ -1062,6 +1063,14 @@ def build_parser() -> argparse.ArgumentParser:
     _host_config(command)
     _agent_identity(command)
     command.add_argument("--project-ref", default="", help="The project, when this agent attends several.")
+    command.add_argument(
+        "--owner-key-only",
+        action="store_true",
+        help=(
+            "Push with the owner's GitHub key or not at all: the named remote must push over HTTPS, "
+            "and a failed push is never retried through the deploy key. A release uses it."
+        ),
+    )
     command.add_argument("git_args", nargs=argparse.REMAINDER, help="git push's own arguments, after --.")
 
     command = worker_commands.add_parser(
@@ -2352,6 +2361,134 @@ def _coordinate_response(response: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+# A channel the relay is reconnecting failed on transport, metadata, a lock or
+# an outcome it could not confirm. None of these is evidence about the grant,
+# and none proves it is alive either: the agent is told only that this error
+# does not call for re-authorization (W457).
+_NO_REAUTHORIZATION_INDICATED = (
+    "This error does not indicate that re-authorization is needed: do not ask "
+    "the operator to re-authorize because of it."
+)
+
+
+def _channel_not_usable_error(
+    config_path: Any,
+    channel: WorkerChannelConfig,
+    *,
+    sending: bool = False,
+    idempotency_key: str = "",
+) -> DomainError | None:
+    """Why this session's channel cannot carry board work, and who acts.
+
+    Read from what the relay recorded: the channel state in the host config and,
+    for a parked channel, the refusal in the relay's pacing file. Only the
+    relay's own credential predicate (``credential_refused``) turns a parked
+    channel into ``work_worker_reauthorization_required``; a parked channel
+    without that proof keeps ``work_worker_channel_not_active``. Local work
+    (receive, settle, leases, status) does not call this.
+    """
+
+    if channel.state == "active":
+        return None
+    authorize = " ".join(authorization_command(channel.profile))
+    base = {
+        "worker_name": channel.worker_name,
+        "profile": channel.profile,
+        "channel_state": channel.state,
+    }
+    if sending:
+        base["delivered"] = False
+        base["idempotency_key"] = str(idempotency_key or "")
+    if channel.state == "disabled":
+        return DomainError(
+            "work_worker_channel_not_active",
+            "This session's worker channel was disabled by the operator on this "
+            "machine. Retrying will not help: ask the operator whether it should "
+            "be enabled again.",
+            status=409,
+            details={**base, "who_acts": "operator", "retryable": False},
+        )
+    refusal = channel_pending_refusal(config_path, channel.worker_name)
+    if refusal is not None and not refusal["permanent"]:
+        # The relay is still retrying a transient failure on this channel (an
+        # unreachable endpoint, a lock timeout, a transport fault): the
+        # outcome stays retryable and says nothing about the grant.
+        retry = dict(refusal.get("retry") or {})
+        reconnect = {
+            "reason": refusal["reason"],
+            "attempts": retry.get("attempts") or 0,
+            "schedule": retry.get("schedule") or "backoff",
+            "next_attempt_at": retry.get("next_attempt_at") or "",
+        }
+        error = (
+            _send_channel_reconnecting_error(
+                channel.worker_name, reconnect, idempotency_key=idempotency_key
+            )
+            if sending
+            else _channel_reconnecting_error(channel.worker_name, reconnect)
+        )
+        error.details["channel_state"] = channel.state
+        error.details["retryable"] = True
+        return error
+    if refusal is not None and refusal["credential"]:
+        reason = refusal["reason"] or "the credential was refused"
+        when = f" at {refusal['refused_at']}" if refusal["refused_at"] else ""
+        return DomainError(
+            "work_worker_reauthorization_required",
+            (
+                f"The server refused this agent's Card credential ({reason}{when}). "
+                "Retrying will not help, and nothing this agent sends reaches the "
+                "board until the credential is replaced. Ask the operator to "
+                f"re-authorize this agent: `{authorize}`, run in this agent's "
+                "session; they open the printed link on their own device and "
+                "enter the code."
+            ),
+            status=401,
+            details={
+                **base,
+                "reason": refusal["reason"],
+                "refused_at": refusal["refused_at"],
+                "credential_refused": True,
+                "who_acts": "operator",
+                "required_action": authorize,
+                "retryable": False,
+            },
+        )
+    reason = (refusal or {}).get("reason") or ""
+    recorded = f" The relay recorded {reason}, which does not prove the grant was refused." if reason else ""
+    return DomainError(
+        "work_worker_channel_not_active",
+        (
+            "This session's worker channel is waiting for authorization." + recorded
+            + " Read `pb worker inspect`; if it reports this profile unauthorized, "
+            f"ask the operator to run `{authorize}` in this agent's session."
+        ),
+        status=409,
+        details={
+            **base,
+            "reason": reason,
+            "credential_refused": False,
+            "who_acts": "operator",
+            "required_action": authorize,
+            "retryable": False,
+        },
+    )
+
+
+def _raise_if_channel_not_usable(
+    config_path: Any,
+    channel: WorkerChannelConfig,
+    *,
+    sending: bool = False,
+    idempotency_key: str = "",
+) -> None:
+    error = _channel_not_usable_error(
+        config_path, channel, sending=sending, idempotency_key=idempotency_key
+    )
+    if error is not None:
+        raise error
+
+
 def _channel_reconnecting_error(
     worker_name: str, reconnect: Mapping[str, Any]
 ) -> DomainError:
@@ -2361,7 +2498,8 @@ def _channel_reconnecting_error(
             "This worker's channel is not open: the relay is reconnecting it "
             f"after {reconnect.get('reason') or 'a failure'} "
             f"(attempt {reconnect.get('attempts') or 0}, next attempt "
-            f"{reconnect.get('next_attempt_at') or 'unknown'}). Retry after that time."
+            f"{reconnect.get('next_attempt_at') or 'unknown'}). Retry after that time. "
+            + _NO_REAUTHORIZATION_INDICATED
         ),
         status=503,
         details={
@@ -2371,6 +2509,7 @@ def _channel_reconnecting_error(
             "attempts": int(reconnect.get("attempts") or 0),
             "retry_schedule": str(reconnect.get("schedule") or ""),
             "next_attempt_at": str(reconnect.get("next_attempt_at") or ""),
+            "reauthorization_indicated": False,
             "inspect": ["pb", "status"],
         },
     )
@@ -2393,7 +2532,8 @@ def _send_channel_reconnecting_error(
             f"(attempt {reconnect.get('attempts') or 0}, next attempt "
             f"{reconnect.get('next_attempt_at') or 'unknown'}). The message was "
             "not delivered. Retry after that time with the same idempotency key: "
-            "a delivered message replays, a lost one goes through."
+            "a delivered message replays, a lost one goes through. "
+            + _NO_REAUTHORIZATION_INDICATED
         ),
         status=503,
         details={
@@ -2403,6 +2543,7 @@ def _send_channel_reconnecting_error(
             "attempts": int(reconnect.get("attempts") or 0),
             "retry_schedule": str(reconnect.get("schedule") or ""),
             "next_attempt_at": str(reconnect.get("next_attempt_at") or ""),
+            "reauthorization_indicated": False,
             "delivered": False,
             "idempotency_key": str(idempotency_key or ""),
         },
@@ -2462,17 +2603,7 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             status=409,
             details={"worker_name": identity.worker_name},
         )
-    if channel.state != "active":
-        raise DomainError(
-            "work_worker_channel_not_active",
-            "This session's worker relay channel is not active.",
-            status=409,
-            details={
-                "worker_name": identity.worker_name,
-                "channel_state": channel.state,
-                "required_action": f"pb worker authorize {channel.profile} --device",
-            },
-        )
+    _raise_if_channel_not_usable(path, channel)
     if str(getattr(args, "route", "relay") or "relay") == "direct":
         return asyncio.run(
             _coordinate_direct(
@@ -4281,14 +4412,18 @@ def _push_command(args: Any) -> int:
     same push through the `deploykey` remote connect-project kept, and says
     so. A refusal (not_attending, card_denies, github_not_linked...) never
     falls back.
+
+    `--owner-key-only` (W454) pushes with the owner's key or not at all, and
+    decides before anything is written: the first positional argument must
+    name a remote whose every push URL is HTTPS, which only the owner key's
+    credential helper answers (an SSH URL would push with whatever key the
+    machine has), and a failed push is returned as it is, never retried
+    through the deploy key.
     """
 
     push_args = list(args.git_args or [])
     if push_args[:1] == ["--"]:
         push_args = push_args[1:]
-    first = subprocess.call(["git", "push", *push_args])
-    if first == 0:
-        return 0
 
     def git_out(*command: str) -> str:
         try:
@@ -4296,6 +4431,27 @@ def _push_command(args: Any) -> int:
         except (OSError, subprocess.TimeoutExpired):
             return ""
         return found.stdout.strip() if found.returncode == 0 else ""
+
+    if getattr(args, "owner_key_only", False):
+        named = next((arg for arg in push_args if not arg.startswith("-")), "")
+        if not named or named not in set(git_out("remote").split()):
+            print("pb GitHub key: --owner-key-only needs the remote named first, for example "
+                  "`pb worker push --owner-key-only -- origin <branch>`; nothing was pushed", file=sys.stderr)
+            return 2
+        urls = git_out("remote", "get-url", "--push", "--all", named).split()
+        if not urls or not all(url.startswith("https://") for url in urls):
+            print(f"pb GitHub key: --owner-key-only pushes over HTTPS only; {named} pushes to "
+                  f"{', '.join(urls) or 'nothing'}; nothing was pushed", file=sys.stderr)
+            return 2
+        owned = subprocess.call(["git", "push", *push_args])
+        if owned != 0:
+            print("pb GitHub key: --owner-key-only: the push failed and is not retried through the deploy key",
+                  file=sys.stderr)
+        return owned
+
+    first = subprocess.call(["git", "push", *push_args])
+    if first == 0:
+        return 0
 
     remotes = set(git_out("remote").split())
     if DEPLOY_KEY_REMOTE not in remotes:
@@ -4736,6 +4892,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 "authorize": authorize,
                 "after_authorization": "No second enrollment is required.",
                 "relay_status": ["pb", "relay-service", "status"],
+                # What the relay recorded when it parked this channel; only
+                # credential_refused proves the server refused the grant (W457).
+                "refusal": channel_pending_refusal(path, channel.worker_name),
                 "rule": (
                     "This session requested authorization. The user grants it in "
                     "an interactive terminal; the login relay keeps credential "
@@ -4923,6 +5082,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
         return {"worker": identity.worker_name, "declared": declared, "workspaces": field.workspaces(identity.worker_name)}
     if args.worker_command == "idle":
         idle_project = parse_ref(args.project_ref).object_id
+        if channel is not None and str(args.work_ref or "").strip():
+            _raise_if_channel_not_usable(path, channel)
+            _raise_if_channel_reconnecting(path, identity.worker_name)
         require_plan_item(
             field,
             project_id=idle_project,
@@ -5157,6 +5319,16 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 "field_mail_content_required",
                 "Mail requires text or at least one attachment.",
             )
+        if channel is not None and (route == "remote" or str(args.work_ref or "").strip()):
+            # Remote mail and the --work-ref check both ride this session's
+            # channel: a dead or reconnecting channel is named now, before the
+            # item check waits out its deadline (W457).
+            _raise_if_channel_not_usable(
+                path, channel, sending=True, idempotency_key=args.idempotency_key
+            )
+            _raise_if_send_channel_reconnecting(
+                path, identity.worker_name, idempotency_key=args.idempotency_key
+            )
         require_plan_item(
             field,
             project_id=project_id,
@@ -5219,6 +5391,11 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 "field_project_ref_required",
                 "Reporting assigned work requires a project ref.",
             )
+        if channel is not None:
+            # A report rides the channel to the board; say why it cannot
+            # before it waits for a receipt that will not come (W457).
+            _raise_if_channel_not_usable(path, channel)
+            _raise_if_channel_reconnecting(path, identity.worker_name)
         return submit_assignment_report(
             field,
             project_id,
@@ -5960,6 +6137,9 @@ async def _relay(args: Any) -> Any:
         connect_profile_tools,
         resolve_profile_bearer,
     )
+    from connection_hub.caller.authorization.profile_session import (
+        drain_pending_refreshes,
+    )
     from connection_hub.caller.services import build_caller_services
     from service_foundation.host_relay import HostRelayPolicy, HostRelayRuntime
 
@@ -6162,6 +6342,13 @@ async def _relay(args: Any) -> Any:
             connector=connector,
             retryable=retryable,
         )
+        if args.once:
+            # A one-shot probe reports each channel's finished turn. The
+            # service cycle waits for no turn (W456).
+            adapter.CHANNEL_TURN_CYCLE_GRACE_SECONDS = (
+                adapter.CHANNEL_TURN_DEADLINE_SECONDS
+                + adapter.CHANNEL_TURN_CLEANUP_SECONDS
+            )
         # The effective descriptor ceiling, once per start. A relay begun
         # before the service definition carried a limit runs under the
         # session default until it is reinstalled, and this line is how a
@@ -6199,6 +6386,17 @@ async def _relay(args: Any) -> Any:
             await runtime.run()
         finally:
             await adapter.aclose()
+            # A token refresh still in its round trip or commit is finished,
+            # bounded, before the loop closes and would cancel it (W456).
+            left = await drain_pending_refreshes(
+                timeout_seconds=adapter.CHANNEL_TURN_CLEANUP_SECONDS
+            )
+            if left:
+                logging.getLogger(__name__).warning(
+                    "Problem Board relay stopped with token refreshes still "
+                    "committing count=%d",
+                    left,
+                )
         return {"stopped": True}
 
     config = RelayConfig.load(config_path)

@@ -200,6 +200,43 @@ def test_the_worker_rereads_its_assignments_periodically():
     root = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker"
     skill = " ".join((root / "SKILL.md").read_text(encoding="utf-8").split())
     collaboration = " ".join((root / "references" / "collaboration.md").read_text(encoding="utf-8").split())
-    assert "Read the same list again while you work, at every work boundary and on each guard prompt or wake" in skill
-    assert "at every work boundary and at least on each guard prompt or wake, read your assignments fresh" in collaboration
+    # Operator correction, 2026-10-01: periodic, never per step, wake or guard prompt.
+    # Ownership 6: once per native wake batch, plus about every 30 minutes; never per command, message or guard.
+    assert "Read it again once per native wake batch and, while you work, about every 30 minutes at the next safe boundary, never per command, per leased message or per guard prompt" in skill
+    assert "Read them again once per native wake batch (the addressed mail one wake delivers, received together)" in collaboration
+    assert "once about 30 minutes of active work have passed since the last full read, at the next safe boundary" in collaboration
+    assert "a command, a leased message within a batch, a guard prompt or a work boundary is not a reason for a full read" in collaboration
+    assert "`assignment.task`), which the brief view does not show" in collaboration
+    assert "An addressed change to one assignment or its ownership, or a doubt about one item, reads only that item, including the assignment's own task" in collaboration
+    for text in (skill, collaboration):
+        assert "at every work boundary and on each guard prompt or wake" not in text
+        assert "at every work boundary and at least on each guard prompt or wake" not in text
     assert "an assignment's notice is sent once, so the board is the record" in collaboration
+
+
+def test_the_wake_lifecycle_scenarios_name_rules_that_exist():
+    """W455 ownership 6: four scenarios for an independent forward test (loaded
+    unchanged wake, fresh session, changed revision, coordinator wait). Each
+    names the rule that governs it, and that rule must be in the procedure."""
+
+    import json
+    from pathlib import Path
+
+    import project_board
+
+    root = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker"
+    fixture = Path(__file__).resolve().parent / "fixtures" / "w455_wake_lifecycle_scenarios.json"
+    data = json.loads(fixture.read_text(encoding="utf-8"))
+    ids = {scenario["id"] for scenario in data["scenarios"]}
+    assert ids == {"loaded-unchanged-wake", "fresh-session", "changed-revision", "active-assignment-coordinator-wait"}
+    for scenario in data["scenarios"]:
+        assert scenario["expected"] and scenario["forbidden"], scenario["id"]
+        for name, quote in scenario["governing"]:
+            text = " ".join((root / name).read_text(encoding="utf-8").split())
+            assert quote in text, (scenario["id"], name, quote)
+    skill = " ".join((root / "SKILL.md").read_text(encoding="utf-8").split())
+    # The lifecycle sits at the entrypoint, before step 1 of Start Or Resume.
+    assert skill.index("**Which session this is.**") < skill.index("1. Read the repository instructions of the folder you are in.")
+    assert "replay no enrollment, startup read or full skill load" in skill
+    assert "nothing here overrides it" in skill
+
