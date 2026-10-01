@@ -244,18 +244,42 @@ async function refreshProfile(reason = 'profile') {
   return profile
 }
 
+// The identity provider's sign-out the platform logout answers with, when the
+// platform hosts the sign-in. Only an http(s) address is followed.
+function upstreamSignOutUrl(answer) {
+  const value = String(asObject(answer).upstreamLogoutUrl || '').trim()
+  if (!value) return ''
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : ''
+  } catch (_error) {
+    return ''
+  }
+}
+
+// The same order as the platform chat, the board and "Switch account": end
+// the platform session, then send the page to the provider's sign-out, which
+// returns through the platform's signed-out route to `next`. Without that
+// step the provider's live session signs the next sign-in straight back in
+// as the same account. Back on the site, the sign-in card waits for a click.
 async function signOut() {
   const logoutUrl = String(platformConfig?.auth?.logoutUrl || '/api/platform/logout')
+  let upstream = ''
   try {
-    await fetchJson(logoutUrl, {
+    upstream = upstreamSignOutUrl(await fetchJson(logoutUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({ next: siteHomePath() }).toString(),
-    })
-  } finally {
-    markSignInAttempt(true)
-    await refreshProfile('logout')
+    }))
+  } catch (_error) {
+    upstream = ''
   }
+  markSignInAttempt(true)
+  if (upstream) {
+    window.location.assign(upstream)
+    return
+  }
+  await refreshProfile('logout')
 }
 
 async function bootstrap() {
