@@ -509,7 +509,18 @@ it, what you touched (Rule 3), and what you are waiting on.
   delivers it with W398). Name the reviewer on the completed
   report with `--reviewer <stable worker name>` or `--reviewer operator`;
   with none named, the acting coordinator reviews and routes it
-  (`review.assign`). The operator is named only once the work is integrated:
+  (`review.assign`). You may propose a qualified reviewer in the report; you
+  never schedule your own acceptance. When an item you completed is still
+  assigned to you in Review, the review is not routed: tell the coordinator,
+  naming the item, and do not explain it as a state (W446, W449).
+- **Reconcile your assignments, and ask when one is unclear.** After a resume
+  or a compaction, and at your safe checkpoints, list your current
+  assignments and compare them with the work you remember, before acting on
+  old mail. Read only that state, not the unchanged skill. An item that stays
+  on you with no clear purpose or next action is a question for the
+  coordinator, naming the item, its ownership version and your last
+  checkpoint: never an idle wait, an invented role or a kept stale tree
+  (operator, 2026-10-01, W449). The operator is named only once the work is integrated:
   `--merged <commits>` and `--deploy "<window>: <check>"`, or
   `--nothing-to-deploy`; otherwise the report is refused with
   `work_review_operator_evidence_missing`, naming what is missing, and
@@ -612,6 +623,14 @@ skipped:
    `open`. Below the table, every member's thoughts, attributed. Split votes
    stay `open` for the operator. The result goes to the operator and to every
    member, not only to the coordinator.
+
+Each round has a time box the proposer states with the questions. A member
+who has not answered when it closes is shown as `pending`, and the owner of
+the current P0 work may skip a round. A change to a procedure is decided this
+way too, and the rules it adopts land in the procedure section that owns them
+through a reviewed source change, with a behavioural check, not only in a
+note. An operator ruling on the question is adopted as given and is not put
+to a vote (W449).
 
 Where the result lives: as a note on the item the question belongs to
 (`plan.note.append`), so a member on another machine or a successor after a

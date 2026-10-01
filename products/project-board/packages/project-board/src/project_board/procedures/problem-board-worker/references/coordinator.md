@@ -11,10 +11,14 @@ see_also:
 
 # Accept, Route, Reload, Refresh
 
-Read this when you are about to accept, return or cancel a submission, merge a
-change request, release a stalled assignment, route an item, or reload, refresh or restart the runtime. Each list is the order of
-the act, and it sits here rather than in the skill because a rule read at
-onboarding was skipped at the moment of acting with the rule already written.
+Read the section for an act when you are about to do it: accept, return or
+cancel a submission, merge a change request, release a stalled assignment,
+route an item, or reload, refresh or restart the runtime. Each list is the
+order of the act, and it sits here rather than in the skill because a rule
+read at onboarding was skipped at the moment of acting with the rule already
+written. A section still in your context is not read again, and the file is
+reloaded only with the skill, when `pb procedure verify` names a new installed
+revision (W449).
 
 ## What the coordinator is for
 
@@ -41,6 +45,10 @@ successor inherits none of that.
   not watching your terminal (operator, 2026-09-23).
 - Answer every message the operator sends through the board with a correlated reply before
   continuing. Why: "you must always send the response."
+- A send of yours counts only once it returns a receipt. Check an outcome-unknown
+  send by its idempotency key before you report it as sent, and never resend it
+  under a new key. Keep the original correlation on a reply, so an answer to a
+  message that came from Telegram goes back there (W449).
 - Report a finding as situation, then verdict (wrong or not, and for which case),
   then the action or who owns it. Why: "if this is the situation now whether its
   wrong or no, and what to do about it" (2026-09-15).
@@ -58,6 +66,9 @@ successor inherits none of that.
   (2026-09-23).
 - Ask the worker; do not infer from files. Decide what is yours to decide; hand
   the operator only what is theirs. Why: "cant you ask?" (2026-09-15).
+- File what you find. A problem you notice becomes an item, or a note on the
+  item it belongs to ([collaboration](collaboration.md) Rule 14), and is routed
+  to a worker. A finding kept only in mail is lost to the next reader (W449).
 - Before routing, discuss the need with the candidates, then decide, then route.
   A brief carries the intention and the need; the worker derives the constraints.
 - Before editing durable implementation work, route it to an available suitable
@@ -75,12 +86,16 @@ successor inherits none of that.
      each candidate's last heartbeat and last delivered and acknowledged mail.
      A worker is available when its session is live, its quota covers the next
      bounded task before its reset, it reports no blocker, and it acknowledged
-     its last mail. An idle mark on its card alone is not availability.
+     its last mail. An idle mark on its card alone is not availability. Read
+     your own pool the same way: a long operation of yours needs your own
+     quota to cover it.
   2. Hand each available worker one bounded task or review with a checkpoint
      it reports, highest priority first.
   3. Confirm each allocation: the worker's `working` report or an explicit
      `blocked` report, not the queued mail alone. Reroute what stays
      unconfirmed ([Check a silent worker](#check-a-silent-worker-do-not-wait-for-it)).
+     The same confirmation applies to every assignment and routed review, not
+     only before a long operation ([Confirm that work started](#confirm-that-work-started)).
   4. Only then start the long operation.
 
   While a suitable worker is available, do not implement features, write their
@@ -124,8 +139,28 @@ successor inherits none of that.
 - Help a new teammate set up: prepare what it needs (procedure, pages, access) and
   tell it the team is there. Put project knowledge in the journal, not in mail.
 
+**Communication comes first.** A failing channel, relay or delivery path is
+the project's first priority, unless the operator has set another. Hand it to
+a named owner as a P0 item with a checkpoint, and publish a `blocker`
+announcement with the cause known so far and the next probe. While it lasts:
+
+- Pause uncertain product writes. Keep supported status and evidence replies
+  going, with their identities preserved and their receipts checked.
+- Recover an uncertain write only under its original identity and key.
+  Missing acknowledgement is not proof that nothing was applied.
+- Collect bounded evidence from more than one actor and stage (time, request
+  id, socket, source, host) before naming a cause.
+- A longer timeout, a retry loop, a restart, a reauthorization or a host action
+  is not a fix. Each needs the operator, and none replaces the causal proof a
+  fix is reviewed against (W448, W449).
+
 **The runtime is the operator's; the mechanics are yours.**
 
+- Before you suggest a host action (quitting an application, restarting a host
+  or service, changing a watcher or indexer, a cleanup), name what runs on that
+  host: the agents and their consoles, the relay, the runtimes and the data,
+  and what the action would interrupt or lose. The operator decides, and the
+  action does not prove a product fix (W449).
 - No runtime window (reload, refresh, client switch) without the operator's go.
   Once the operator gives it, you run the whole window yourself: announce, collect ready,
   back up the board tables into the host's backup folder, execute, verify, report,
@@ -195,6 +230,17 @@ large cached snapshot.
    deploy check) and a `decision` mail; their accept is final. Never accept
    such an item as done on source alone (W414, 2026-09-30). [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
    owns the rule.
+
+   Name a change's delivery state with one of these words, each with its own
+   evidence. No state implies the next (W449):
+
+   | State | Evidence |
+   | --- | --- |
+   | source-approved | a review verdict at the exact head |
+   | integrated | the head is on `main` and the merged tree is proven (Merge, step 3) |
+   | installed | per host and provider, the `pb source status` and `pb procedure verify` receipts |
+   | live | the activation receipt and its verification |
+   | operator-accepted | the operator's decision on the item |
 5. `review.accept`, `review.return` and `review.cancel` take the item
    `work_ref` looked up from `project.plan.item`, its `expected_revision`, and
    an `idempotency_key` you generate for this decision. Return and cancel take
@@ -216,7 +262,8 @@ large cached snapshot.
    that enters Review with no reviewer named comes to you as the acting
    coordinator, with a review request in your inbox. Handle it in the turn it
    arrives and decide who reviews:
-   - **yourself**, when you can check everything the item asks;
+   - **yourself**, when you can check everything the item asks, with
+     `review.assign` naming yourself, so that you are the item's assignee;
    - **another agent** linked to the project, other than the one who did the
      work, with `review.assign` (`pb coordinate review.assign --object-ref
      <project> --payload-json '{"work_ref": "<item ref>", "reviewer":
@@ -233,6 +280,10 @@ large cached snapshot.
      Also send the operator a board mail of kind `decision`, so it reaches
      their Telegram, naming the item, the exact check, and where it now
      appears (Review Assignments).
+
+   An item in Review whose assignee is still its author is an unrouted review,
+   not a state to explain: route it in the same turn (W446, 2026-10-01: a
+   completion without a reviewer stayed on its author for about 70 minutes).
 
    Never leave a review on the operator by default: the operator's review
    list is exactly the items that name the operator. If you cannot route it
@@ -283,6 +334,16 @@ it, in the order of the act.
    is not recorded. Why:
    on 2026-09-26 #207 and #208, then #228 and #229, each claimed the same
    revision (operator, 2026-09-26 20:45Z).
+5. **Close what landed.** When a change request's content reaches `main` other
+   than through its own merge (an integration branch, a merge train, a stack
+   merged as one), prove that its exact head is an ancestor of `main`, or for a
+   squash prove an equivalent tree. Then retarget the change requests based on
+   it, close it with a comment naming the integrating commit, and keep any
+   unique conflict resolution. Reconcile the change-request ledger with the
+   plan, review and deployment state at the same time, and declare a real
+   parent, base or deploy dependency in that ledger. A head on `main` is not a
+   deployment. Why: on 2026-10-01 eight change requests whose content was
+   already on `main` were still open (W442, W449).
 
 ## Release a stalled assignment
 
@@ -524,6 +585,30 @@ commits them. The first host, repository, environment and operator ruling
 update those files as soon as each becomes known. A journal, when the project
 keeps one, accumulates beside them from the first day.
 
+## Confirm that work started
+
+STARTED is the worker's `working` report at the current ownership version.
+Queued mail, a settled notice and a heartbeat are not STARTED. Count from the
+dispatch receipt (the applied assignment, review routing or send), not from
+when the mail was written. With no STARTED 10 minutes after that receipt
+(3 minutes for P0 work):
+
+1. Check delivery and the lease once, as in
+   [Check a silent worker](#check-a-silent-worker-do-not-wait-for-it).
+2. Recover only when that check shows the dispatch was lost, and only under
+   the same identity and key. Never infer that work started, and never create
+   a second owner.
+
+A gap in replies is not proof that a worker is offline (W449; the wording of
+the recovery step awaits the operator's ruling on poll candidate A3).
+
+**An unclear assignment is a question, not an idle state.** A worker
+reconciles its current assignments with the work it remembers after a resume
+or a compaction and at its safe checkpoints. When an item stays on it and its
+purpose or next action is unclear, it asks you, naming the item, the ownership
+version and its last checkpoint. Answer with a durable decision on the item
+(the next section): continue, release, reroute or close (W449).
+
 ## Check a silent worker, do not wait for it
 
 When a reply you are waiting for is overdue (a `ready`, a change request
@@ -586,7 +671,9 @@ pb coordinate project.announcement.publish --object-ref <project-ref> \
   --payload-json '{"kind":"progress","text":"<one or two plain sentences>","idempotency_key":"<stable key>"}'
 ```
 
-- **What to say:** `status` (where the project stands), `progress` (what moved
+- **What to say:** `status` (where the project stands, the current focus, and
+  the next deployment: what, in which window and by whom, or "no confirmed
+  window" when none is evidenced), `progress` (what moved
   since the last one), `blocker` (what stops work and who clears it), `notice`
   (anything the team must know, such as a new procedure). At most 600
   characters, plain words, no secrets, refs for detail (`detail_ref` names one
@@ -759,6 +846,26 @@ section says.
    2026-09-25 six items (W318 to W323) went out with none, and the order
    (W322 needs W323, W318 needs W313) lived only in one coordinator's head,
    which a context reset or a hand-over loses.
+
+### Record each dispatch on the item
+
+When you dispatch work or change its phase (an assignment, a review routing,
+a poll, a handoff between agents), append one note to the item
+(`plan.note.append`). It names:
+
+- the recipient's full alias and stable worker name;
+- the phase and its scope;
+- the assignment or control reference and its ownership version;
+- the evidence state, one of requested, queued, applied or STARTED, never
+  merged into one;
+- the source and job constraints;
+- the next checkpoint, or that it is unknown;
+- the expected deliverable and the next owner and action.
+
+Link journal and source evidence instead of copying it into mail. The
+assignment stays authoritative; the note explains the handoff. After a long
+gap, read the item, its assignment and the latest handoff note before old
+mail, and say which earlier instructions are superseded (W449).
 
 ### Route through Problem Board's worker CLI, with the complete assignment payload
 
