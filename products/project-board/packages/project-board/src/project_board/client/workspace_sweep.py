@@ -279,7 +279,14 @@ def inspect_workspace(
                 tree.keep.append(f"pinned by {', '.join(tree.pinned_by)}")
             if consumers is not None:
                 item = str((registration or {}).get("item") or "")
-                found = consumers(item) if item else None
+                if item:
+                    found = consumers(item)
+                elif registration and registration.get("ended_at"):
+                    # An end its owner recorded by path names no item: there is
+                    # no item to wait for. Every other check above still applies.
+                    found = []
+                else:
+                    found = None
                 if found is None:
                     tree.consumers = [f"item {item or '(none recorded)'}: state unknown"]
                     tree.keep.append(

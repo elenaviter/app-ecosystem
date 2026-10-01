@@ -217,7 +217,7 @@ def test_a_run_has_an_atomic_manifest_inside_the_workspace(ws):
 
 def test_a_closed_published_run_is_removable_and_every_gap_keeps_it(ws):
     run = make_run(ws)
-    (run / "report.md").write_text("summary", encoding="utf-8")
+    (run / "report.md").write_text("the finding", encoding="utf-8")
     (run / "pytest.log").write_text("log", encoding="utf-8")
     scratch.record(ws["ws"], run, worker_name=OWNER, file="report.md", published=published_ref(ws))
     scratch.record(ws["ws"], run, worker_name=OWNER, file="pytest.log", generated_by="pytest -q tests/test_x.py")
@@ -237,7 +237,7 @@ def test_a_closed_published_run_is_removable_and_every_gap_keeps_it(ws):
     (run / "extra.txt").unlink()
     (run / "report.md").write_text("edited after recording", encoding="utf-8")
     assert any("changed since it was recorded: report.md" in r for r in judge(ws)[str(run)].keep)
-    (run / "report.md").write_text("summary", encoding="utf-8")
+    (run / "report.md").write_text("the finding", encoding="utf-8")
     (run / "link").symlink_to(ws["clone"])
     assert any("link inside the run" in r for r in judge(ws)[str(run)].keep)
     (run / "link").unlink()
@@ -277,7 +277,7 @@ def test_unpublished_disproved_and_foreign_runs_are_kept(ws):
 
 def test_apply_writes_the_receipt_first_and_keeps_a_run_changed_since_the_dry_run(ws):
     run = make_run(ws)
-    (run / "report.md").write_text("summary", encoding="utf-8")
+    (run / "report.md").write_text("the finding", encoding="utf-8")
     scratch.record(ws["ws"], run, worker_name=OWNER, file="report.md", published=published_ref(ws))
     scratch.close(ws["ws"], run, worker_name=OWNER, reason="item done", findings=published_ref(ws))
 
@@ -286,9 +286,10 @@ def test_apply_writes_the_receipt_first_and_keeps_a_run_changed_since_the_dry_ru
     assert result["removed"] == [] and run.exists()
 
     planned = {str(r.path): r.fingerprint for r in scratch.inspect_runs(ws["ws"], worker_name=OWNER) if r.removable}
-    # The run is re-recorded with new content between dry run and apply: kept.
-    (run / "report.md").write_text("summary v2", encoding="utf-8")
-    scratch.record(ws["ws"], run, worker_name=OWNER, file="report.md", published=published_ref(ws))
+    # The run's record changes between dry run and apply (a consumer came and
+    # went): the dry run did not see this state, so it is kept.
+    scratch.record(ws["ws"], run, worker_name=OWNER, consumer="review:W423")
+    scratch.record(ws["ws"], run, worker_name=OWNER, consumer_done="review:W423")
     result = scratch.apply_runs(ws["ws"], worker_name=OWNER, planned=planned)
     assert result["removed"] == [] and run.exists()
 
@@ -313,7 +314,7 @@ def test_loose_root_entries_are_named_and_never_removed(ws):
 
 def test_a_run_whose_item_is_open_or_unknown_is_kept(ws):
     run = make_run(ws)
-    (run / "report.md").write_text("summary", encoding="utf-8")
+    (run / "report.md").write_text("the finding", encoding="utf-8")
     scratch.record(ws["ws"], run, worker_name=OWNER, file="report.md", published=published_ref(ws))
     scratch.close(ws["ws"], run, worker_name=OWNER, reason="item done", findings=published_ref(ws))
     assert judge(ws, consumers=lambda _item: [])[str(run)].removable
@@ -378,7 +379,7 @@ def test_the_cli_sweep_lists_then_applies_only_what_it_listed(ws, monkeypatch):
     finished = tree(ws, "w10-finished")
     still_open = tree(ws, "w11-open")
     run = make_run(ws, item="W10")
-    (run / "report.md").write_text("summary", encoding="utf-8")
+    (run / "report.md").write_text("the finding", encoding="utf-8")
     scratch.record(ws["ws"], run, worker_name=OWNER, file="report.md", published=published_ref(ws))
     scratch.close(ws["ws"], run, worker_name=OWNER, reason="item done", findings=published_ref(ws))
 
@@ -411,4 +412,54 @@ def test_the_cli_sweep_lists_then_applies_only_what_it_listed(ws, monkeypatch):
     assert [row["path"] for row in result["removed"]] == [str(finished)]
     assert [row["path"] for row in result["scratch"]["removed"]] == [str(run)]
     assert still_open.exists() and not finished.exists() and not run.exists()
+
+
+def test_a_published_reference_must_hold_the_same_content(ws):
+    """Ops review of #409: a reference proves a path, not the content. A file
+    recorded as published at a commit whose blob differs is kept."""
+
+    run = make_run(ws)
+    (run / "report.md").write_text("a different, unique report", encoding="utf-8")
+    scratch.record(ws["ws"], run, worker_name=OWNER, file="report.md", published=published_ref(ws))
+    scratch.close(ws["ws"], run, worker_name=OWNER, reason="item done", findings=published_ref(ws))
+    found = judge(ws)[str(run)]
+    assert any("publication disproved: report.md" in r for r in found.keep)
+    # The findings reference stays an existence check: it points at a summary, not a copy.
+    assert not any("findings publication" in r for r in found.keep)
+
+
+def test_an_owner_ended_tree_without_an_item_is_judged_on_everything_else(ws, monkeypatch):
+    """Ops review of #409: `--end --path` records no item, and the board lookup
+    then kept every such tree as unknown, so the existing pile could never go."""
+
+    from types import SimpleNamespace
+
+    from project_board.client import cli
+
+    old = tree(ws, "w12-old")
+    unended = tree(ws, "w13-unended")
+
+    class Field:
+        def __init__(self):
+            self.rows = [{"path": str(old), "ended_at": "2026-10-01T10:00:00Z", "end_reason": "made before registration"},
+                         {"path": str(unended), "kind": "implementation"}]
+
+        def workspaces(self, _worker):
+            return [row for row in self.rows if Path(row["path"]).exists()]
+
+        def forget_workspace_path(self, _worker, path):
+            self.rows = [row for row in self.rows if row["path"] != path]
+
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (ws["ws"], SimpleNamespace(workspace_sweep_protected=())))
+    monkeypatch.setattr(cli, "_sweep_item_consumers", lambda *_a: (lambda item: None))  # board unreachable
+    identity = SimpleNamespace(worker_name=OWNER)
+    report = cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=False)  # noqa: SLF001
+    rows = {row["path"]: row for row in report["trees"]}
+    assert rows[str(old)]["action"] == "remove", rows[str(old)]["keep"]
+    assert rows[str(unended)]["action"] == "keep"
+    # Every other check still applies to the item-less ended tree.
+    (old / "probe.txt").write_text("only copy", encoding="utf-8")
+    report = cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=False)  # noqa: SLF001
+    rows = {row["path"]: row for row in report["trees"]}
+    assert rows[str(old)]["action"] == "keep" and any("untracked" in r for r in rows[str(old)]["keep"])
 

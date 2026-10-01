@@ -57,7 +57,7 @@ GIT_TIMEOUT_SECONDS = 20
 _ITEM = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _REPOSITORY_REF = re.compile(r"^repo:(?P<alias>[A-Za-z0-9._-]+)/(?P<path>[^@]+)@(?P<commit>[0-9a-fA-F]{7,64})$")
 
-Verifier = Callable[[str], "bool | None"]
+Verifier = Callable[..., "bool | None"]
 Consumers = Callable[[str], "Sequence[str] | None"]
 
 
@@ -232,9 +232,11 @@ def close(
 def repository_verifier(workspace: Path | str) -> Verifier:
     """Verify ``repo:<alias>/<path>@<commit>``: the file at that commit, in the clone's default branch.
 
-    Returns True when proved, False when disproved, None when this host cannot
-    tell (no clone, no default branch, git unreadable). Board references are
-    not verified here and return None, so they keep the run.
+    With ``sha256``, the published blob must also hash to it: a reference to
+    another version of the file, or to another file, does not cover the
+    content. Returns True when proved, False when disproved, None when this
+    host cannot tell (no clone, no default branch, git unreadable). Board
+    references are not verified here and return None, so they keep the run.
     """
 
     base = Path(workspace).expanduser()
@@ -249,7 +251,17 @@ def repository_verifier(workspace: Path | str) -> Verifier:
         except (OSError, subprocess.TimeoutExpired):
             return -1
 
-    def verify(ref: str) -> bool | None:
+    def blob_sha256(clone: Path, spec: str) -> str | None:
+        try:
+            completed = subprocess.run(
+                ["git", "--no-optional-locks", "-C", str(clone), "cat-file", "blob", spec],
+                capture_output=True, timeout=GIT_TIMEOUT_SECONDS, check=False, stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return hashlib.sha256(completed.stdout).hexdigest() if completed.returncode == 0 else None
+
+    def verify(ref: str, sha256: str = "") -> bool | None:
         match = _REPOSITORY_REF.fullmatch(str(ref or "").strip())
         if not match:
             return None
@@ -268,7 +280,12 @@ def repository_verifier(workspace: Path | str) -> Verifier:
             return False
         if git(clone, "merge-base", "--is-ancestor", commit, default) != 0:
             return False
-        return git(clone, "cat-file", "-e", f"{commit}:{match['path']}") == 0
+        if git(clone, "cat-file", "-e", f"{commit}:{match['path']}") != 0:
+            return False
+        if not sha256:
+            return True
+        published = blob_sha256(clone, f"{commit}:{match['path']}")
+        return None if published is None else published == sha256
 
     return verify
 
@@ -392,7 +409,8 @@ def _judge(
             continue
         published = str(entry.get("published") or "")
         if published:
-            proved = verify(published)
+            # A copy must be the same content, not only a file at that path.
+            proved = verify(published, sha256=digest)
             fingerprint_parts.append(f"{relative}:published:{published}:{proved}")
             if proved is not True:
                 run.keep.append(f"publication {'disproved' if proved is False else 'not verifiable here'}: {relative} -> {published}")
