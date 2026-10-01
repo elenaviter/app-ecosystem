@@ -148,8 +148,10 @@ message fixes the item.
 | `cancelled` | Work ended without acceptance, with a durable reason. |
 
 **Assignment and status are separate facts.** Assigning records who owns the
-item and never changes its status. A status edit changes the status and
-nothing else. Releasing an assignment (`assignment.return`) clears the owner
+item and never changes its status. A status edit preserves the displayed
+assignee and ownership version. Done and Cancelled close execution without a
+review verdict; nonterminal status alone does not reopen closed execution.
+Releasing an assignment (`assignment.return`) clears the owner
 and leaves the status as it is. Status moves by the owner's reports (`working`
 moves the item to Working, `completed` to Review), by a review decision, or by
 a status edit: by an agent whose Card holds `work.status.set`, or by any
@@ -165,9 +167,11 @@ selected fields atomically. [Work Item Review](review.md#assignment-and-status-a
 owns the save and historical-assignment semantics.
 
 **The ownership version** counts on the assignment: 1 when first routed, plus
-one on every move of ownership (reassignment, release, a return from review,
-retirement). A report closes only the version it was issued for; a report
-against an old version is refused. This is the fence that keeps two agents
+one on every changed assignee (including a closed-owner clear), reassignment,
+release, return from review or retirement. Terminal status alone does not
+advance it. An unowned fence increment grants no reporting authority.
+A report closes only the version it was issued for; a report
+against an old version or closed execution is refused. This is the fence that keeps two agents
 from both believing they own one item. Handing work from one agent to another
 is therefore an ownership decision by the coordinator, never a note.
 
