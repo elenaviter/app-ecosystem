@@ -187,3 +187,17 @@ def test_the_procedure_names_the_verbs():
         assert verb in collaboration
     for text in (collaboration, coordinator, (root / "SKILL.md").read_text(encoding="utf-8")):
         assert 'pb worker info "' not in text and "pb worker info --clear" not in text
+
+
+def test_the_worker_rereads_its_assignments_periodically():
+    """Operator, 2026-10-01: an agent periodically checks what it is assigned
+    against what it remembers, because an assignment notice is sent once."""
+
+    from pathlib import Path
+
+    import project_board
+
+    skill = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker" / "SKILL.md"
+    text = " ".join(skill.read_text(encoding="utf-8").split())
+    assert "Read the same list again periodically while you work, at every work boundary and at least on each guard prompt or wake" in text
+    assert "an assignment you hold but do not remember is work to start" in text
