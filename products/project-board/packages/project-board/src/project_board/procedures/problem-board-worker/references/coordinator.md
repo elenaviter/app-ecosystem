@@ -533,16 +533,20 @@ asleep until it is legitimately resumed: waking it only to update spends its
 budget for nothing. A project that consumes Problem Board follows its
 published-release policy for the same check.
 
-## Keep everything known in the project journal
+## Keep what the project learned in the journal
 
 The project files are the team's current truth, and every project has them
 (project workspace, "Project files"). When the project keeps a journal, the
-project journal home is the team's complete shared history. It carries
-operator rulings with their reasons (the ruling itself is in force in Facts),
-runtime-window outcomes, and every project-wide gap with its fix. Whoever
-learns a project-wide fact writes a journal entry and points to it from the
-relevant item note or mail thread. The coordinator checks that the entry exists,
-and a successor coordinator begins by searching the journal.
+project journal home is where the team's reasoning accumulates: why it chose
+this and not that, what failed and through which mechanism, which assumptions
+were wrong, the limits and gaps a change leaves, and operator rulings with
+their reasons (the ruling itself is in force in Facts). Where the work stands
+(heads, approvals, merges, installs, a runtime window's receipts) lives on the
+work item, not in the journal ([journaling](journaling.md)). Whoever learns a
+project-wide lesson writes a journal entry and points to it from the relevant
+item note or mail thread. The coordinator checks that the entry exists and
+carries the lesson rather than a checkpoint, and a successor coordinator
+begins by searching the journal.
 
 Attending agents find this record with `pb worker journal-search`. A work-item
 note or mail thread can carry the immediate conversation; its journal link
@@ -552,8 +556,8 @@ sessions.
 **Where knowledge goes.** When the person makes a ruling, the coordinator
 writes it into Facts, the project's facts file: rulings live in project files,
 not in any agent's private memory, and every agent is told on its next check
-(project workspace, "Project files"). What happened and why goes in the
-project journal, when the project keeps one.
+(project workspace, "Project files"). Why the project chose what it did, and
+what it learned, goes in the project journal, when the project keeps one.
 
 **Edits made on the card come to you.** When a person edits a project file on
 the card, your relay applies it (W370). The board then mails you the path,

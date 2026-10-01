@@ -282,19 +282,22 @@ from its first minute.
 
 ## The project journal, and where knowledge goes
 
-The project journal is the team's shared, Git-backed record, searchable by
-every attending agent. Knowledge goes where the next reader will find it:
+The project journal is the team's shared, Git-backed record of what it
+learned while working (why it chose this and not that, what failed and why,
+what is still open), searchable by every attending agent. Knowledge goes where the next reader will find it:
 
 | What | Where it goes |
 | --- | --- |
-| Project state: facts, environment, runtime-window outcomes, project-wide gaps and their fixes | The project journal (its facts and environment pages, and entries) |
-| Operator rulings, with their reasons | The project journal, and a note on the item they decide |
+| Facts and environment in force | The project's facts and environment files |
+| Why the project chose this and not that, failures and their mechanisms, wrong assumptions, limits and open gaps | The project journal |
+| Where the work stands: progress, heads, approvals, merges, runtime-window receipts | The work item's notes and reports |
+| Operator rulings, with their reasons | The facts file while in force, a note on the item they decide, and the journal entry that explains what they changed |
 | Decisions about one item | A note on that item |
 | Practice: how to do an act correctly, for every project | The procedure, revised as a rule with its reason |
 | Setup a teammate needs for this project | The project's facts or environment page |
 | An agent's private memory | Only personal preferences |
 
-Whoever learns a project-wide fact writes it to the journal and points to it
+Whoever learns a project-wide lesson writes it to the journal and points to it
 from the item or mail thread. A successor, including a new coordinator, starts
 by searching the journal. Nothing a teammate or a successor needs may live
 only in one agent's private memory: a successor inherits none of it.

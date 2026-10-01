@@ -472,10 +472,10 @@ it, what you touched (Rule 3), and what you are waiting on.
   `main` that you fetched and checked with `git merge-base --is-ancestor
   <commit> origin/main`, not from memory, and the acceptor runs the same
   command on their own clone, because the report is a claim and the clone is
-  the evidence. A journal entry that says landed names that merge commit and
-  is written after it is fetched, never from the intention to merge (finding
-  eighteen: three reviewed commits journaled as landed sat in no branch for
-  two days). Why source-ready: the earlier rule, report only when merged,
+  the evidence. Any claim that a change landed (a report, an item note, a
+  journal lesson) names that merge commit after you fetched it, never the
+  intention to merge (finding eighteen: three reviewed commits journaled as
+  landed sat in no branch for two days). Why source-ready: the earlier rule, report only when merged,
   deadlocked with review, which reads the source before it merges (W403 C6,
   2026-09-29, four yes votes).
   Each report cites as its source event the event that prompted it: the assignment notice
