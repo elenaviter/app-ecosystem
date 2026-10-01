@@ -445,3 +445,63 @@ def test_the_own_folder_comes_from_the_host_config_not_the_recorded_folder(tmp_p
     ])
     loaded = host_config.HostRelayConfig.load(config.path)
     assert cli._sweep_own_folder(loaded, args) == str(root / "main@host")  # noqa: SLF001
+
+
+def test_the_own_folder_honours_the_enrolled_folder_and_refuses_a_shared_one(tmp_path):
+    """Spark review of AE #407 at 71706e54: codex-app@spark1 is enrolled at
+    <root>/codex-app, which the alias-derived <root>/codex-app@spark1 refused.
+    The folder a channel records counts when it sits directly under the root
+    and no other agent's channel claims it."""
+
+    from project_board.client import host_config
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+
+    root = tmp_path / "agents"
+    root.mkdir()
+    config = host_config.initialize_host_config(
+        target_id="target", endpoint="https://runtime.example/mcp", tenant="tenant",
+        platform_project="project", host_id="host-one", allowed_roots=[str(root)],
+        source_repositories={}, config_path=tmp_path / "relay.json", state_root=tmp_path / "state",
+    )
+
+    def enroll(session: str, alias: str, folder: Path):
+        identity = WorkerSessionIdentity.create("claude-code", session)
+        host_config.enroll_worker_channel(
+            config.path, identity=identity, profile=f"problem-board-claude-{session[:8]}",
+            worker_alias=alias, authorized=True, working_directory=str(folder),
+        )
+        raw = json.loads(config.path.read_text(encoding="utf-8"))
+        for worker in raw["workers"]:
+            if worker["worker_name"] == identity.worker_name:
+                worker["working_directory"] = str(folder)
+        config.path.write_text(json.dumps(raw), encoding="utf-8")
+        return cli.build_parser().parse_args([
+            "worker", "workspace", "--config", str(config.path),
+            "--runtime-kind", "claude-code", "--runtime-session-id", session, "--sweep",
+        ])
+
+    def own(args) -> str:
+        return cli._sweep_own_folder(host_config.HostRelayConfig.load(config.path), args)  # noqa: SLF001
+
+    spark = root / "codex-app"
+    spark.mkdir()
+    spark_args = enroll("00000010-0000-4000-8000-000000000000", "codex-app@spark1", spark)
+    assert own(spark_args) == str(spark)
+
+    # Another session of the same agent (same alias) is the same owner.
+    same = enroll("00000011-0000-4000-8000-000000000000", "codex-app@spark1", spark)
+    assert own(same) == str(spark) and own(spark_args) == str(spark)
+
+    # A different agent records the same folder: nobody may apply there.
+    other = enroll("00000012-0000-4000-8000-000000000000", "ops@spark1", spark)
+    assert own(other) == "" and own(spark_args) == ""
+
+    # The root itself, a deeper folder and a link are not an enrolled own folder:
+    # the alias-derived folder is used instead.
+    deeper = root / "docs@host" / "applications"
+    deeper.mkdir(parents=True)
+    link = root / "linked"
+    link.symlink_to(root / "docs@host", target_is_directory=True)
+    for index, folder in enumerate((root, deeper, link)):
+        args = enroll(f"0000002{index}-0000-4000-8000-000000000000", "docs@host", folder)
+        assert own(args) == str(root / "docs@host"), folder

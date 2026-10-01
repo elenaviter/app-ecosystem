@@ -6448,16 +6448,47 @@ def _sweep_host(args: argparse.Namespace) -> tuple[Path | None, Any]:
 
 
 def _sweep_own_folder(config: Any, args: argparse.Namespace) -> str:
-    """This agent's own folder under the host's agent workspace root, or empty."""
+    """This agent's own folder under the agent workspace root, or empty.
+
+    The folder its channel records counts when it is a real folder directly
+    under the root (spark1: codex-app@spark1 is enrolled at <root>/codex-app);
+    otherwise <root>/<alias or name>. Either way no other agent's channel on
+    this host may record or derive the same folder: a folder two agents claim
+    is nobody's proof. Another session of the same agent (same alias) is the
+    same owner.
+    """
 
     try:
         identity = _identity(args)
-        recorded = config.worker(identity)
-        return default_working_directory(
-            [str(getattr(config, "effective_agent_workspace_root", "") or "")],
-            alias=str(getattr(recorded, "worker_alias", "") or ""),
-            worker_name=identity.worker_name,
-        )
+        channel = config.worker(identity)
+        root = str(getattr(config, "effective_agent_workspace_root", "") or "")
+        if channel is None or not root:
+            return ""
+        base = Path(root).expanduser().resolve()
+        alias = str(getattr(channel, "worker_alias", "") or "")
+        candidate = ""
+        recorded = str(getattr(channel, "working_directory", "") or "").strip()
+        if recorded:
+            folder = Path(recorded).expanduser()
+            if not folder.is_symlink() and folder.is_dir() and folder.resolve().parent == base:
+                candidate = str(folder)
+        candidate = candidate or default_working_directory([root], alias=alias, worker_name=identity.worker_name)
+        if not candidate:
+            return ""
+        mine = Path(candidate).expanduser().resolve()
+        for other in getattr(config, "workers", ()) or ():
+            if getattr(other, "worker_name", "") == identity.worker_name:
+                continue
+            other_alias = str(getattr(other, "worker_alias", "") or "")
+            if alias and other_alias == alias:
+                continue
+            claims = (
+                str(getattr(other, "working_directory", "") or "").strip(),
+                default_working_directory([root], alias=other_alias, worker_name=str(getattr(other, "worker_name", "") or "")),
+            )
+            if any(claim and Path(claim).expanduser().resolve() == mine for claim in claims):
+                return ""
+        return candidate
     except Exception:  # noqa: BLE001 - no proof of ownership means no removal
         return ""
 
