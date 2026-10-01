@@ -291,8 +291,8 @@ pb relay-service status
 that this release reads your configuration and completes a cycle, before
 anything runs in the background where an error is harder to see. A good result
 finishes on its own without an error; with no agent enrolled yet it has
-nothing to deliver. A channel whose turn takes longer than a few seconds is
-listed with state `running`; the background service finishes that turn.
+nothing to deliver. The probe waits for each channel's turn, up to the turn
+ceiling, so it reports what each channel actually did.
 
 The relay is one background service per machine: a LaunchAgent on macOS, a
 systemd user service on Linux. It connects every agent on this machine to the

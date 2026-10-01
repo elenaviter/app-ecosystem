@@ -96,12 +96,12 @@ machine that hosts agents. It ships the worker procedure and skill.
   Claude Code session keeps one background `pb worker watch`.
 - **One turn per channel.** Each channel runs its own turn: open or reopen,
   reconnect grace, its queued `pb coordinate` calls, attendance and its own
-  session wake. A relay cycle starts the turns that are due and waits a few
-  seconds at most for them, so a slow or hung channel delays only itself.
-  A turn has a 300 s ceiling and then fails alone as
-  `work_relay_channel_turn_deadline_exceeded` and backs off. A turn that ends
-  after its cycle wakes the next cycle, so a channel whose socket dropped
-  reopens at once.
+  session wake. A relay cycle starts the turns that are due and waits half a
+  second at most for them, never again for a turn still running, so a slow or
+  hung channel delays only itself. A turn that ends later reports in the next
+  cycle, and a failed one wakes that cycle at once. The whole turn has a
+  300 s ceiling and then fails alone as
+  `work_relay_channel_turn_deadline_exceeded` and backs off.
 - **Credential custody.** When a person approves an agent in the browser,
   the credential for that agent's Card is stored in the machine's native
   credential store. The relay proves it and uses it. The coding-agent process

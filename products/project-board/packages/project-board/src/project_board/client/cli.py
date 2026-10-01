@@ -6162,6 +6162,13 @@ async def _relay(args: Any) -> Any:
             connector=connector,
             retryable=retryable,
         )
+        if args.once:
+            # A one-shot probe reports each channel's finished turn. The
+            # service cycle waits for no turn (W456).
+            adapter.CHANNEL_TURN_CYCLE_GRACE_SECONDS = (
+                adapter.CHANNEL_TURN_DEADLINE_SECONDS
+                + adapter.CHANNEL_TURN_CLEANUP_SECONDS
+            )
         # The effective descriptor ceiling, once per start. A relay begun
         # before the service definition carried a limit runs under the
         # session default until it is reinstalled, and this line is how a

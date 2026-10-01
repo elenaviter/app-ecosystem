@@ -63,8 +63,9 @@ def _two_channel_host(tmp_path):
 class _Attendance:
     """Each channel's attendance poll: the slow one waits for its gate."""
 
-    def __init__(self, slow_name: str) -> None:
+    def __init__(self, slow_name: str, *, slow_fails: bool = False) -> None:
         self.slow_name = slow_name
+        self.slow_fails = slow_fails
         self.gate = asyncio.Event()
         self.polls: dict[str, int] = {}
         self.polled = asyncio.Event()
@@ -74,12 +75,15 @@ class _Attendance:
         self.polled.set()
         if worker_name == self.slow_name:
             await self.gate.wait()
+            if self.slow_fails:
+                raise ConnectionError("the slow channel's socket dropped")
         return {"worker_name": worker_name, "state": "attending"}
 
 
-def _supervisor_with_fake_channels(host, attendance: _Attendance, *, grace: float):
+def _supervisor_with_fake_channels(host, attendance: _Attendance):
+    """The production supervisor with fake sessions; its turn timings stay default."""
+
     supervisor = make_supervisor(host)
-    supervisor.CHANNEL_TURN_CYCLE_GRACE_SECONDS = grace
     opened: list[str] = []
 
     async def open_session(host_, channel):
@@ -128,21 +132,36 @@ def _rows(result: dict) -> dict[str, dict]:
     return {row["worker_name"]: row for row in result["workers"]}
 
 
-def test_a_hung_channel_does_not_hold_another_channels_turns(tmp_path):
+async def _cycle(supervisor, *, settle: float = 0.05) -> dict:
+    """One relay cycle, then the short pause the host runtime takes."""
+
+    result = await asyncio.wait_for(supervisor.poll_once(), timeout=2)
+    await asyncio.sleep(settle)
+    return result
+
+
+def test_a_hung_turn_costs_other_channels_at_most_one_short_grace(tmp_path):
     host, fast, slow = _two_channel_host(tmp_path)
 
     async def scenario():
         attendance = _Attendance(slow.worker_name)
-        supervisor, _opened = _supervisor_with_fake_channels(
-            host, attendance, grace=0.05
-        )
+        supervisor, _opened = _supervisor_with_fake_channels(host, attendance)
+        grace = supervisor.CHANNEL_TURN_CYCLE_GRACE_SECONDS
+        assert 0 < grace <= 0.5
         try:
+            started = time.monotonic()
             first = await asyncio.wait_for(supervisor.poll_once(), timeout=2)
+            first_seconds = time.monotonic() - started
+            started = time.monotonic()
             second = await asyncio.wait_for(supervisor.poll_once(), timeout=2)
+            second_seconds = time.monotonic() - started
+            await _cycle(supervisor)
         finally:
             attendance.gate.set()
             await supervisor.aclose()
-        assert attendance.polls[fast.worker_name] == 2
+        assert first_seconds < grace + 0.3, f"the first cycle took {first_seconds:.2f}s"
+        assert second_seconds < 0.3, "a later cycle never waits for the hung turn"
+        assert attendance.polls[fast.worker_name] >= 2
         assert attendance.polls[slow.worker_name] == 1, "a running turn is not started twice"
         for result in (first, second):
             rows = _rows(result)
@@ -158,12 +177,11 @@ def test_a_turn_past_its_deadline_fails_alone_with_a_named_outcome(tmp_path):
 
     async def scenario():
         attendance = _Attendance(slow.worker_name)
-        supervisor, _opened = _supervisor_with_fake_channels(
-            host, attendance, grace=2.0
-        )
+        supervisor, _opened = _supervisor_with_fake_channels(host, attendance)
         supervisor.CHANNEL_TURN_DEADLINE_SECONDS = 0.2
         try:
-            result = await asyncio.wait_for(supervisor.poll_once(), timeout=3)
+            # The deadline ends inside the cycle's grace, so this cycle reports it.
+            result = await _cycle(supervisor)
         finally:
             attendance.gate.set()
             await supervisor.aclose()
@@ -180,42 +198,82 @@ def test_a_turn_past_its_deadline_fails_alone_with_a_named_outcome(tmp_path):
     asyncio.run(scenario())
 
 
-def test_a_turn_that_ends_after_its_cycle_wakes_the_next_cycle(tmp_path):
-    host, _fast, slow = _two_channel_host(tmp_path)
+def test_the_deadline_covers_the_turns_own_finishing(tmp_path):
+    """A wake that hangs after a quick poll is cut by the turn's deadline."""
+
+    host, fast, slow = _two_channel_host(tmp_path)
 
     async def scenario():
         attendance = _Attendance(slow.worker_name)
-        supervisor, _opened = _supervisor_with_fake_channels(
-            host, attendance, grace=0.05
-        )
+        attendance.gate.set()
+        supervisor, _opened = _supervisor_with_fake_channels(host, attendance)
+        supervisor.CHANNEL_TURN_DEADLINE_SECONDS = 0.05
+        hung_wake = asyncio.Event()
+
+        async def notify(_host, channel):
+            if channel.worker_name == fast.worker_name:
+                await hung_wake.wait()
+            return None
+
+        supervisor._notify_available_input = notify
         try:
-            first = await asyncio.wait_for(supervisor.poll_once(), timeout=2)
-            assert _rows(first)[slow.worker_name]["state"] == "running"
+            # The deadline ends inside the cycle's grace, so this cycle reports it.
+            result = await _cycle(supervisor)
+            turn = supervisor._channel_turns.get(fast.worker_name)
+            assert turn is None or turn.done(), "the turn outlived its deadline"
+        finally:
+            hung_wake.set()
+            await supervisor.aclose()
+        rows = _rows(result)
+        assert rows[fast.worker_name]["error_code"] == (
+            "work_relay_channel_turn_deadline_exceeded"
+        )
+        assert rows[slow.worker_name]["state"] == "attending"
+        assert not supervisor._notify_lock(fast.worker_name).locked()
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_late_turn_wakes_the_next_cycle_and_a_success_does_not(tmp_path):
+    host, _fast, slow = _two_channel_host(tmp_path)
+
+    async def scenario():
+        attendance = _Attendance(slow.worker_name, slow_fails=True)
+        supervisor, _opened = _supervisor_with_fake_channels(host, attendance)
+        try:
+            await _cycle(supervisor)
+            started = time.monotonic()
+            quiet = await supervisor.wait_for_wakeup(0.3)
+            quiet_seconds = time.monotonic() - started
+            await _cycle(supervisor)
             attendance.gate.set()
             started = time.monotonic()
             stopping = await asyncio.wait_for(
                 supervisor.wait_for_wakeup(30.0), timeout=5
             )
             woke_after = time.monotonic() - started
-            second = await asyncio.wait_for(supervisor.poll_once(), timeout=2)
+            result = await _cycle(supervisor)
         finally:
             await supervisor.aclose()
+        assert quiet is False and quiet_seconds >= 0.25, (
+            "successful turns do not wake the loop"
+        )
         assert stopping is False
-        assert woke_after < 2.0, f"the late turn woke the loop after {woke_after:.2f}s"
-        assert _rows(second)[slow.worker_name]["state"] == "attending"
+        assert woke_after < 2.0, f"the failed turn woke the loop after {woke_after:.2f}s"
+        assert _rows(result)[slow.worker_name]["state"] == "error"
 
     asyncio.run(scenario())
 
 
 def test_a_dropped_channel_reopens_and_serves_its_calls_while_another_hangs(tmp_path):
+    """At production defaults, with the host runtime's own loop around poll_once."""
+
     host, fast, slow = _two_channel_host(tmp_path)
     queue = coordinate_queue.CoordinateQueue(host.field_root)
 
     async def scenario():
         attendance = _Attendance(slow.worker_name)
-        supervisor, opened = _supervisor_with_fake_channels(
-            host, attendance, grace=0.05
-        )
+        supervisor, opened = _supervisor_with_fake_channels(host, attendance)
 
         async def run_relay():
             # What the host relay runtime does: a cycle, a short wait, again.
@@ -250,5 +308,26 @@ def test_a_dropped_channel_reopens_and_serves_its_calls_while_another_hangs(tmp_
         assert served_after < 2.0
         assert opened.count(fast.worker_name) >= 2, "the dropped channel reopened"
         assert attendance.polls[slow.worker_name] == 1
+
+    asyncio.run(scenario())
+
+
+def test_a_one_shot_cycle_reports_its_finished_turns(tmp_path):
+    """`pb relay --once` waits for its turns, so the probe shows real outcomes."""
+
+    host, fast, slow = _two_channel_host(tmp_path)
+
+    async def scenario():
+        attendance = _Attendance(slow.worker_name)
+        attendance.gate.set()
+        supervisor, _opened = _supervisor_with_fake_channels(host, attendance)
+        supervisor.CHANNEL_TURN_CYCLE_GRACE_SECONDS = 2.0
+        try:
+            result = await asyncio.wait_for(supervisor.poll_once(), timeout=3)
+        finally:
+            await supervisor.aclose()
+        rows = _rows(result)
+        assert rows[fast.worker_name]["state"] == "attending"
+        assert rows[slow.worker_name]["state"] == "attending"
 
     asyncio.run(scenario())

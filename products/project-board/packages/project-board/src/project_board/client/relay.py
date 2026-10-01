@@ -4514,6 +4514,9 @@ class ProblemBoardRelaySupervisor:
         # A running turn's own wake and the cycle's wake for that channel take
         # turns; the cycle skips a wake the turn is giving right now.
         self._notify_locks: dict[str, asyncio.Lock] = {}
+        # The cycle's own session wake for a channel without a finished turn
+        # runs as a task too, so a hung wake never holds the cycle.
+        self._beside_notifies: dict[str, asyncio.Task] = {}
         # One drain per worker at a time, whichever path starts it. The
         # queue's claim is exclusive per request and released before the
         # request runs, so without this a side drain executing an earlier
@@ -6037,6 +6040,8 @@ class ProblemBoardRelaySupervisor:
         await self.stop_loop_lag_sampler()
         for worker_name in list(self._channel_turns):
             await self._cancel_channel_turn(worker_name)
+        for worker_name in list(self._beside_notifies):
+            await self._cancel_notify_beside_turn(worker_name)
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
 
@@ -6621,14 +6626,22 @@ class ProblemBoardRelaySupervisor:
 
     # -- one channel's turn, independent of every other channel (W456) --------
 
-    # How long a cycle waits for the turns it started before it reports the
-    # rest as running. A running turn goes on by itself and wakes the next
-    # cycle when it ends, so this bounds the cycle, not the turn.
-    CHANNEL_TURN_CYCLE_GRACE_SECONDS = 5.0
-    # The ceiling on one channel's whole turn. Each network call inside it has
-    # its own transport timeout; this bounds a turn that hangs beyond them, so
-    # a hung channel fails alone with a named outcome and backs off.
+    # How long a cycle waits for the turns it started. Half a second reports
+    # a prompt outcome in the cycle that started it, so the cycle still says
+    # when every channel failed (the host runtime's degraded state and retry
+    # rest on it), while a hung new turn costs the other channels at most this
+    # once: later cycles never wait for it. A turn that ends later reports in
+    # the next cycle, and a failed one wakes that cycle at once. A one-shot
+    # `pb relay --once` sets this to the whole turn ceiling.
+    CHANNEL_TURN_CYCLE_GRACE_SECONDS = 0.5
+    # The ceiling on one channel's whole turn: poll, retirements and its own
+    # finishing. Each network call inside has its own transport timeout; this
+    # bounds a turn that hangs beyond them, so a hung channel fails alone with
+    # a named outcome and backs off.
     CHANNEL_TURN_DEADLINE_SECONDS = 300.0
+    # How long a cancelled turn and its session drop are awaited. Past it the
+    # relay goes on and logs the leftover, so cleanup never holds a channel.
+    CHANNEL_TURN_CLEANUP_SECONDS = 10.0
 
     def _start_channel_turn(
         self,
@@ -6651,9 +6664,26 @@ class ProblemBoardRelaySupervisor:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-    def _late_turn_done(self, _task: asyncio.Task) -> None:
-        if self._late_turn_finished is not None:
-            self._late_turn_finished.set()
+    def _late_turn_done(self, task: asyncio.Task) -> None:
+        """Wake the next cycle for a late turn that needs a prompt report.
+
+        A failed, refused, activated or retiring turn is reported at once. A
+        successful poll waits for the ordinary interval, so turns that end
+        quickly never make the cycle spin.
+        """
+
+        if self._late_turn_finished is None or task.cancelled():
+            return
+        if task.exception() is None:
+            outcome = task.result()
+            if not (
+                outcome["failure"] is not None
+                or outcome["pending_row"] is not None
+                or outcome["promoted"]
+                or outcome["retired"]
+            ):
+                return
+        self._late_turn_finished.set()
 
     def _turn_outcome(
         self, worker_name: str, task: asyncio.Task
@@ -6695,47 +6725,177 @@ class ProblemBoardRelaySupervisor:
         *,
         fingerprint: str | None,
     ) -> dict[str, Any]:
-        """One channel's poll and its own finishing, under its own deadline.
+        """One channel's whole turn under its own deadline.
 
-        ``fingerprint`` is set for a channel waiting on authorization. Nothing
-        here awaits another channel: a slow, hung or failing channel delays
-        only its own next turn.
+        ``fingerprint`` is set for a channel waiting on authorization. The
+        deadline covers the poll, retirements and the channel's own finishing.
+        Past it the turn is cancelled, its cleanup is awaited for a bounded
+        time, and the deadline outcome is recorded without awaiting anything
+        that can hang. Nothing here awaits another channel.
         """
 
         started = time.monotonic()
-        poll = asyncio.ensure_future(self._poll_channel(host, channel))
+        body = asyncio.ensure_future(
+            self._channel_turn_body(
+                host, channel, fingerprint=fingerprint, started=started
+            )
+        )
         try:
             done, _ = await asyncio.wait(
-                {poll}, timeout=self.CHANNEL_TURN_DEADLINE_SECONDS
+                {body}, timeout=self.CHANNEL_TURN_DEADLINE_SECONDS
             )
         except asyncio.CancelledError:
-            poll.cancel()
-            await asyncio.gather(poll, return_exceptions=True)
+            body.cancel()
+            await asyncio.wait({body}, timeout=self.CHANNEL_TURN_CLEANUP_SECONDS)
             raise
-        result: object
-        if poll in done:
-            error = poll.exception()
-            if error is not None and not isinstance(error, Exception):
-                raise error
-            result = error if error is not None else poll.result()
-        else:
-            poll.cancel()
-            await asyncio.gather(poll, return_exceptions=True)
-            await self._drop_session(channel.worker_name)
-            elapsed = time.monotonic() - started
-            result = RelayStageError(
-                "work_relay_channel_turn_deadline_exceeded",
-                f"The channel's turn did not finish within "
-                f"{self.CHANNEL_TURN_DEADLINE_SECONDS:.0f}s; only this channel "
-                "backs off and reopens.",
-                details={
-                    "worker_name": channel.worker_name,
-                    "operation": "channel.turn",
-                    "elapsed_seconds": round(elapsed, 3),
-                    "deadline_seconds": self.CHANNEL_TURN_DEADLINE_SECONDS,
-                },
-                retryable=True,
+        if body in done:
+            return body.result()
+        body.cancel()
+        await asyncio.wait({body}, timeout=self.CHANNEL_TURN_CLEANUP_SECONDS)
+        await self._bounded_drop_session(channel.worker_name)
+        elapsed = time.monotonic() - started
+        failure = RelayStageError(
+            "work_relay_channel_turn_deadline_exceeded",
+            f"The channel's turn did not finish within "
+            f"{self.CHANNEL_TURN_DEADLINE_SECONDS:.0f}s; only this channel "
+            "backs off and reopens.",
+            details={
+                "worker_name": channel.worker_name,
+                "operation": "channel.turn",
+                "elapsed_seconds": round(elapsed, 3),
+                "deadline_seconds": self.CHANNEL_TURN_DEADLINE_SECONDS,
+            },
+            retryable=True,
+        )
+        outcome = self._deadline_outcome(host, channel, fingerprint, failure)
+        self._log_slow_turn(channel, failure, elapsed)
+        return outcome
+
+    async def _bounded_drop_session(self, worker_name: str) -> None:
+        drop = asyncio.ensure_future(self._drop_session(worker_name))
+        done, _ = await asyncio.wait(
+            {drop}, timeout=self.CHANNEL_TURN_CLEANUP_SECONDS
+        )
+        if drop in done:
+            if not drop.cancelled() and drop.exception() is not None:
+                logger.warning(
+                    "Problem Board relay session drop after a turn deadline failed "
+                    "worker=%s",
+                    worker_name,
+                    exc_info=drop.exception(),
+                )
+            return
+        # Retrieve the eventual result so a late failure is logged once.
+        drop.add_done_callback(
+            lambda task: task.cancelled() or task.exception()
+        )
+        logger.warning(
+            "Problem Board relay session drop still running after its bound "
+            "worker=%s bound_seconds=%.1f",
+            worker_name,
+            self.CHANNEL_TURN_CLEANUP_SECONDS,
+        )
+
+    def _deadline_outcome(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        fingerprint: str | None,
+        failure: RelayStageError,
+    ) -> dict[str, Any]:
+        """The outcome of a turn cut at its deadline: records only, no awaits."""
+
+        pacing = self._pacing
+        outcome = self._empty_turn_outcome()
+        code = self._failure_code(failure)
+        pacing.observe(failure)
+        if fingerprint is not None:
+            pacing.record_pending_refusal(
+                channel.worker_name,
+                fingerprint=fingerprint,
+                permanent=False,
+                reason=code,
+                credential=False,
             )
+        self._record_channel_failure(pacing, channel.worker_name, failure)
+        try:
+            self._record_relay_channel_degraded(host, channel, failure)
+        except Exception:  # noqa: BLE001 - the outcome stands without the record
+            logger.warning(
+                "Problem Board relay degraded record failed worker=%s",
+                channel.worker_name,
+                exc_info=True,
+            )
+        logger.warning(
+            "Problem Board worker channel failed worker=%s profile=%s "
+            "error_type=%s error_code=%s retryable=True message=%s",
+            channel.worker_name,
+            channel.profile,
+            failure_type(failure),
+            code,
+            failure_message(failure),
+        )
+        if fingerprint is not None:
+            observation = self._authorization_failure_observation(failure)
+            try:
+                self._record_authorization(host, channel, observation)
+            except Exception:  # noqa: BLE001 - the outcome stands without the record
+                logger.warning(
+                    "Problem Board relay authorization record failed worker=%s",
+                    channel.worker_name,
+                    exc_info=True,
+                )
+            outcome["pending_row"] = {
+                **channel.to_mapping(),
+                "observation": observation,
+            }
+            return outcome
+        outcome["failure"] = failure
+        outcome["worker_row"] = {
+            "worker_name": channel.worker_name,
+            "worker_alias": channel.worker_alias,
+            "state": "error",
+            "error_type": failure_type(failure),
+            "error_code": code,
+            "retryable": True,
+            "message": failure_message(failure),
+            "needed": {},
+        }
+        return outcome
+
+    def _log_slow_turn(
+        self, channel: WorkerChannelConfig, result: object, elapsed: float
+    ) -> None:
+        if elapsed < self._trace.slow_seconds:
+            return
+        logger.warning(
+            "Problem Board relay slow channel turn worker=%s outcome=%s "
+            "seconds=%.3f threshold_seconds=%.3f",
+            channel.worker_name,
+            (
+                f"failed:{self._failure_code(result)}"
+                if isinstance(result, BaseException)
+                else "succeeded"
+            ),
+            elapsed,
+            self._trace.slow_seconds,
+        )
+
+    async def _channel_turn_body(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        fingerprint: str | None,
+        started: float,
+    ) -> dict[str, Any]:
+        """The turn itself: the poll, retirements, then the channel's finishing."""
+
+        result: object
+        try:
+            result = await self._poll_channel(host, channel)
+        except Exception as exc:  # noqa: BLE001 - a failed poll is this turn's result
+            result = exc
         retired = await self._apply_host_retirements(host, [result])
         for row in retired:
             if row["worker_name"] != channel.worker_name:
@@ -6749,21 +6909,45 @@ class ProblemBoardRelaySupervisor:
                 host, channel, fingerprint, result
             )
         outcome["retired"] = [*retired, *outcome["retired"]]
-        elapsed = time.monotonic() - started
-        if elapsed >= self._trace.slow_seconds:
-            logger.warning(
-                "Problem Board relay slow channel turn worker=%s outcome=%s "
-                "seconds=%.3f threshold_seconds=%.3f",
-                channel.worker_name,
-                (
-                    f"failed:{self._failure_code(result)}"
-                    if isinstance(result, BaseException)
-                    else "succeeded"
-                ),
-                elapsed,
-                self._trace.slow_seconds,
-            )
+        self._log_slow_turn(channel, result, time.monotonic() - started)
         return outcome
+
+    def _start_notify_beside_turn(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        operation: str,
+    ) -> dict[str, Any] | None:
+        """Start the session wake for a channel without a finished turn; never wait.
+
+        The wake runs as its own task, one per channel at a time, so a wake
+        that hangs holds only that channel. Returns the delivery of the wake
+        the previous cycle started, when it has finished.
+        """
+
+        name = channel.worker_name
+        delivery: dict[str, Any] | None = None
+        previous = self._beside_notifies.get(name)
+        if previous is not None:
+            if not previous.done():
+                return None
+            del self._beside_notifies[name]
+            if not previous.cancelled() and previous.exception() is None:
+                delivery = previous.result()
+        if not self._notify_lock(name).locked():
+            self._beside_notifies[name] = asyncio.create_task(
+                self._notify_beside_turn(host, channel, operation=operation),
+                name=f"problem-board-session-wake-{name}",
+            )
+        return delivery
+
+    async def _cancel_notify_beside_turn(self, worker_name: str) -> None:
+        task = self._beside_notifies.pop(worker_name, None)
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.wait({task}, timeout=self.CHANNEL_TURN_CLEANUP_SECONDS)
 
     async def _notify_beside_turn(
         self,
@@ -6775,7 +6959,7 @@ class ProblemBoardRelaySupervisor:
         """The local session wake for a channel the cycle did not finish a turn for.
 
         A turn that is notifying this channel right now holds its notify lock;
-        the wake is then that turn's, and the cycle does not wait for it.
+        the wake is then that turn's, and this one is skipped.
         """
 
         lock = self._notify_lock(channel.worker_name)
@@ -7102,6 +7286,9 @@ class ProblemBoardRelaySupervisor:
         for worker_name in list(self._channel_turns):
             if worker_name not in active_names:
                 await self._cancel_channel_turn(worker_name)
+        for worker_name in list(self._beside_notifies):
+            if worker_name not in active_names:
+                await self._cancel_notify_beside_turn(worker_name)
         for worker_name in list(self._sessions):
             if worker_name not in active_names:
                 with self._trace.stage(
@@ -7159,7 +7346,7 @@ class ProblemBoardRelaySupervisor:
                 started[worker.worker_name] = self._start_channel_turn(
                     host, worker, fingerprint=fingerprints[worker.worker_name]
                 )
-        if started:
+        if started and self.CHANNEL_TURN_CYCLE_GRACE_SECONDS > 0:
             with self._trace.stage(
                 "channels.turns",
                 operation="channel.turn_grace",
@@ -7212,7 +7399,7 @@ class ProblemBoardRelaySupervisor:
         ]
         for channel in unreported_channels:
             running = channel.worker_name in running_names
-            delivery = await self._notify_beside_turn(
+            delivery = self._start_notify_beside_turn(
                 host,
                 channel,
                 operation=(
