@@ -99,6 +99,16 @@ the project's other operators. A Board-origin or legacy-unknown response
 stays on the board; a matching correlation alone never turns it into a
 Telegram notification.
 
+The server binds that exact `reply_to` to the origin's addressed control and
+the local-message reference retained in its relay delivery receipt. An
+unrelated nonempty reference is refused before any canonical reply or channel
+post. If a running worker replies before the relay has acknowledged local
+materialization, `work_operator_origin_delivery_pending` is a retryable
+pending outcome: the durable outbox retries the same message and idempotency
+key after the receipt arrives. It does not send before the binding is known
+or treat a pending reply as accepted. Erasing the delivered control body does
+not erase this binding.
+
 Return routing rechecks that person's project role, linked account and
 original topic. An unlinked or changed account, missing topic, unconfigured
 channel or failed SDK send is an explicit channel failure, not a claim that
