@@ -11685,10 +11685,17 @@ class SharedFieldStore:
         limit: int = 20,
         lease_seconds: int = 300,
         kinds: set[str] | None = None,
+        wait: bool = True,
     ) -> list[dict[str, Any]]:
+        """Claim pending outbox rows for this relay under the outbox lock.
+
+        ``wait=False`` raises ``FileLockBusy`` when the lock is held, before
+        any row is read or claimed, so a busy lock never leaves a claim behind.
+        """
+
         claimed: list[dict[str, Any]] = []
         outbox = self._outbox
-        with exclusive_lock(outbox.lock):
+        with exclusive_lock(outbox.lock, wait=wait):
             now_dt = datetime.now(timezone.utc)
             # Rows in flight only: pending/ and leased/ per agent, never the
             # settled history (W287 2b, LS3).
@@ -11754,11 +11761,16 @@ class SharedFieldStore:
         relay_id: str,
         error_code: str,
         error_summary: str,
+        wait: bool = True,
     ) -> dict[str, Any]:
-        """Return a transiently failed delivery to pending with bounded backoff."""
+        """Return a transiently failed delivery to pending with bounded backoff.
+
+        ``wait=False`` raises ``FileLockBusy`` instead of blocking on the outbox
+        lock, before anything is read or moved.
+        """
 
         clean_id = component(outbox_id, field="outbox_id")
-        with exclusive_lock(self._outbox.lock):
+        with exclusive_lock(self._outbox.lock, wait=wait):
             source = self._leased_outbox_path(clean_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
@@ -11809,9 +11821,10 @@ class SharedFieldStore:
         remote_ref: str = "",
         remote_disposition: str = "",
         remote_result: Mapping[str, Any] | None = None,
+        wait: bool = True,
     ) -> dict[str, Any]:
         clean_id = component(outbox_id, field="outbox_id")
-        with exclusive_lock(self._outbox.lock):
+        with exclusive_lock(self._outbox.lock, wait=wait):
             source = self._leased_outbox_path(clean_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}

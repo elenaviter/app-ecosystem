@@ -119,6 +119,15 @@ repositories on the project card, and in nothing else. Deleting the key in a rep
 takes that machine's access to it away and changes nothing else. Merging into
 the main branch still goes through review.
 
+**When the deploy key is used:** agents push with `pb worker push`, which uses
+the project owner's GitHub key. Only when that key is unavailable (Connection
+Hub unreachable, a server error or a timeout in the last ten minutes) does it
+retry the same push through this machine's deploy key, and say so on one line.
+A refusal never falls back. A push that must not use the deploy key, such as a
+release, runs `pb worker push --owner-key-only`: the remote must push over
+HTTPS, and a failed push is returned as it is, never retried through the
+deploy key.
+
 ## 3. Log the coding agent in
 
 Once per runtime, in your own SSH session on that machine.

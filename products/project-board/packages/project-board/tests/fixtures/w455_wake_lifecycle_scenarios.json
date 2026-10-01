@@ -1,0 +1,71 @@
+{
+  "schema": "problem-board.procedure-scenarios.v1",
+  "purpose": "W455 forward test: give each situation, with the installed worker skill, to an agent that has not seen the expected answer, and compare its first actions with expected and forbidden. A reviewer runs it; the contract test only checks that each governing rule is present.",
+  "scenarios": [
+    {
+      "id": "loaded-unchanged-wake",
+      "situation": "A running, enrolled Claude Code session loaded skill revision R an hour ago. Its watch reports problem_board.inbox_available with one pending message. pb procedure verify still names revision R.",
+      "expected": [
+        "run pb worker receive at once",
+        "read its own Todo, Working and Review assignments once for this wake batch",
+        "handle and settle each lease"
+      ],
+      "forbidden": [
+        "reload the full skill",
+        "rerun enrollment, whoami, listen or the startup reads",
+        "read the assignment list once per leased message"
+      ],
+      "governing": [
+        ["SKILL.md", "An addressed wake in a running, enrolled session is not a start: it continues this session."],
+        ["SKILL.md", "Read it again once per native wake batch"]
+      ]
+    },
+    {
+      "id": "fresh-session",
+      "situation": "A newly started Claude Code session the user selected for Problem Board has never loaded the skill.",
+      "expected": [
+        "load the skill and what the harness requires",
+        "run Start Or Resume from step 1",
+        "read its responsibilities once"
+      ],
+      "forbidden": [
+        "skip enrollment because a wake is expected later"
+      ],
+      "governing": [
+        ["SKILL.md", "A new session, or one that lost this skill's text, runs these steps from 1 and loads what the harness requires."]
+      ]
+    },
+    {
+      "id": "changed-revision",
+      "situation": "A running session loaded revision R. After an install, pb procedure verify names revision R+1. A wake arrives.",
+      "expected": [
+        "load the new skill revision fully once",
+        "quote the loaded marker when acknowledging",
+        "then receive and handle"
+      ],
+      "forbidden": [
+        "keep working from revision R",
+        "reload again on the next wake while the revision stays R+1"
+      ],
+      "governing": [
+        ["SKILL.md", "A changed installed revision means one full load of the new skill."]
+      ]
+    },
+    {
+      "id": "active-assignment-coordinator-wait",
+      "situation": "On its wake-batch read the worker finds an item it authored, source-approved, whose next step is the coordinator's merge, still assigned to the worker.",
+      "expected": [
+        "assign the item to the acting coordinator with a note naming the reason, the next action and the time",
+        "mail the coordinator"
+      ],
+      "forbidden": [
+        "list the item as waiting and stop",
+        "keep the item assigned to itself"
+      ],
+      "governing": [
+        ["references/collaboration.md", "When the next action is the coordinator's (a decision, a routing, an integration), assign the item to the acting coordinator"],
+        ["references/collaboration.md", "Listing them is not the act."]
+      ]
+    }
+  ]
+}

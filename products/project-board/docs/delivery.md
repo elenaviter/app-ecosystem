@@ -238,6 +238,11 @@ how late it wakes.
 - **Slow-cycle line:** carries the cycle's largest lag (`loop_lag_max_seconds`).
 - **Stall line:** a lag of a second or more logs `relay loop stalled` at once,
   then at most once every 30 seconds, with the stalls in between counted.
+- **Blocked-loop line:** while the loop has not run for three seconds, a
+  watchdog thread reads the loop thread's stack and logs `relay loop blocked`
+  with `blocked_seconds` and `frames`, the innermost twelve frames as
+  `file:line:function` (no values). It names the call that held every
+  channel, once per stall and at most every 30 seconds.
 - **Paging and memory:** both lines carry `major_faults_delta`, the major page
   faults since the previous line, which shows whether the relay itself was
   paging. They also carry the current resident size `rss_bytes` (from `/proc`
@@ -246,6 +251,14 @@ how late it wakes.
   `unavailable`), because a peak never falls.
 - **Sampler failure:** a sampler that fails logs `relay loop-lag sampler ended`
   before it restarts. So when no stall lines appear, the sampler was running.
+
+The loop itself waits on neither the outbox lock nor a directory scan.
+Claiming, settling and retrying outbox rows try the lock without waiting
+and, while another holder (the local-state maintenance thread, a `pb`
+command) has it, retry after a short awaited pause. A claim that is
+cancelled while waiting has claimed nothing. The scans that detect work
+raised on this machine run in a worker thread (W456, 2026-10-01: these two
+held every channel for 3.8 and 3.2 seconds).
 
 The relay writes nothing else to files.
 
