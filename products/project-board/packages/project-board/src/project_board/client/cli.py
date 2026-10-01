@@ -1067,7 +1067,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Push with the owner's GitHub key or not at all: the named remote must push over HTTPS, "
-            "and a failed push is never retried through the deploy key (W454; a release uses it)."
+            "and a failed push is never retried through the deploy key. A release uses it."
         ),
     )
     command.add_argument("git_args", nargs=argparse.REMAINDER, help="git push's own arguments, after --.")
