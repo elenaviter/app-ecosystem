@@ -395,8 +395,8 @@ revised one rehearsal round at a time. What every worker does, from it:
 - **A `completed` report submits the source for review** at an exact head and
   change request, and its could-not-verify names what is still to come (merge,
   activation). Approval, merge, activation and whole-item acceptance are
-  separate milestones ([collaboration](references/collaboration.md) Rule 6). The merge milestone names the merge commit after you fetched and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor runs it on their own clone. A
-  journal entry that says landed names that merge commit and is written after it is fetched, never from the intention
+  separate milestones ([collaboration](references/collaboration.md) Rule 6). The merge milestone names the merge commit after you fetched and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor runs it on their own clone. Any
+  claim that a change landed (a report, an item note, a journal lesson) names that merge commit after you fetched it, never the intention
   to merge. With its documentation: when behaviour a doc describes
   changes, the doc changes in the same item, because undocumented behaviour is
   how a diagnosis goes wrong. One home per concept, one-line pointers

@@ -690,7 +690,7 @@ def test_repository_sharing_rules() -> None:
     assert "the files the change request lists and the files you read" in words
     assert "git merge-base --is-ancestor <commit> origin/main" in words
     assert "The acceptor runs it on their own clone" in words
-    assert "A journal entry that says landed names that merge commit and is written after it is fetched" in words
+    assert "Any claim that a change landed (a report, an item note, a journal lesson) names that merge commit after you fetched it" in words
     assert "settled by installing it into a fresh environment at the named commit" in words
     # Retired with the ruling: pushing a work branch is the author's act.
     assert "Pushing is the operator's decision" not in words
@@ -2284,3 +2284,7 @@ def test_the_journal_keeps_what_the_project_learned_not_a_release_ledger() -> No
     assert "it becomes a procedure or documentation change so that every agent follows it" in journaling
     assert "Journal every completed move" not in skill
     assert "where the work stands goes on the item, not in the journal" in skill
+    # Review return at 4cb5b5b1: no text keeps the merged-checkpoint entry as a pattern.
+    assert "journal entry that says landed" not in skill
+    assert "journal entry that says landed" not in _words(_read("references/collaboration.md"))
+    assert "as they stand now, updated in the same change; why, and the history of what was tried, go to the journal" in journaling
