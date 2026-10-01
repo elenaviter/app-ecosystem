@@ -89,6 +89,16 @@ missing":
 - `pending_authorization`: present the exact authorize command returned by
   `listen`, `pb worker authorize <profile> --device`; the person who approves
   opens its link on their own device and account and enters the code.
+- `work_worker_reauthorization_required` on any board command: the server
+  refused this agent's credential, and only the operator can replace it. Tell
+  the user in this session at once, quoting the command from the error's
+  `required_action` and its `reason` and `refused_at`, and stop retrying board
+  commands until they say it is done. Your board mail cannot leave while the
+  channel is parked (`pb worker send` refuses with the same code), so never
+  say it reached the operator or Telegram; the board shows the parked channel
+  to the coordinator. A `…_channel_reconnecting` error, a metadata or token
+  request that could not be reached, or a profile-lock timeout is not this
+  case: never ask for re-authorization because of one (W457).
 - `credential_expired_or_invalid`: reauthorize the same profile after the user
   confirms; do not create a second worker.
 - metadata or authority mismatch: correlate the worker, profile, Card, resource,
