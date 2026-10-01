@@ -197,7 +197,9 @@ def test_the_worker_rereads_its_assignments_periodically():
 
     import project_board
 
-    skill = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker" / "SKILL.md"
-    text = " ".join(skill.read_text(encoding="utf-8").split())
-    assert "Read the same list again periodically while you work, at every work boundary and at least on each guard prompt or wake" in text
-    assert "an assignment you hold but do not remember is work to start" in text
+    root = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker"
+    skill = " ".join((root / "SKILL.md").read_text(encoding="utf-8").split())
+    collaboration = " ".join((root / "references" / "collaboration.md").read_text(encoding="utf-8").split())
+    assert "Read the same list again while you work, at every work boundary and on each guard prompt or wake" in skill
+    assert "at every work boundary and at least on each guard prompt or wake, read your assignments fresh" in collaboration
+    assert "an assignment's notice is sent once, so the board is the record" in collaboration

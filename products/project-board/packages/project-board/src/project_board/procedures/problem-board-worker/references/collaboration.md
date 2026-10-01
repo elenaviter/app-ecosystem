@@ -522,15 +522,7 @@ it, what you touched (Rule 3), and what you are waiting on.
   reviewer in the summary; you never schedule your own acceptance. When an
   item you completed is still assigned to you in Review, the review is not
   routed: tell the coordinator, naming the item, and do not explain it as a
-  state (W446, W449).
-- **Reconcile your assignments, and ask when one is unclear.** After a resume
-  or a compaction, and at your safe checkpoints, list your current
-  assignments and compare them with the work you remember, before acting on
-  old mail. Read only that state, not the unchanged skill. An item that stays
-  on you with no clear purpose or next action is a question for the
-  coordinator, naming the item, its ownership version and your last
-  checkpoint: never an idle wait, an invented role or a kept stale tree
-  (operator, 2026-10-01, W449). The operator is named only once the work is integrated:
+  state (W446, W449). The operator is named only once the work is integrated:
   `--merged <commits>` and `--deploy "<window>: <check>"`, or
   `--nothing-to-deploy`; otherwise the report is refused with
   `work_review_operator_evidence_missing`, naming what is missing, and
@@ -538,6 +530,40 @@ it, what you touched (Rule 3), and what you are waiting on.
   one worker's own work and its reviews apart, and the operator's review
   list held items with nothing for the operator to look at (W314, W287, W300
   on 2026-09-25, W326).
+- **Status and assignee are two fields, set by two permissions.** Setting the
+  status and setting the assignee are independent acts, in any status: a
+  status change never selects, substitutes or clears the assignee, and an
+  assignee change never moves the status. When both must change together (close
+  and assign to someone, or Review and assign to a reviewer), change both in
+  one save, so both apply or neither does. The rule is two permissions, one
+  per field, and an ordinary handoff needs no special one such as
+  `review.assign` (operator, 2026-10-01: "its 2 permissions. set status and
+  set assignee"). With today's commands: `work.status.set` sets the status,
+  `assignment.assign` sets the assignee and `assignment.return` clears it, and
+  the board's edit save (`work.item.save`) applies the supplied fields in one
+  transaction, for people now and for agents once W451 delivers it. Until
+  then two differences remain in the product (W451): clearing is its own
+  operation, and a status that leaves Review (to Todo, Done or Cancelled) is a
+  review decision that needs that authority. Sending work for review is one
+  such pair: the `completed` report with `--reviewer` names the recipient,
+  else the acting coordinator (above). Where a command your Card holds cannot
+  make the change, ask the coordinator, naming the item and the change; never
+  work around a refused permission.
+- **Reconcile your assignments, act on each, and ask when one is unclear.**
+  At session start or resume, after a compaction, at every work boundary and
+  at least on each guard prompt or wake, read your assignments fresh
+  (`project.plan.index` with your stable worker name as assignee, by status,
+  and `assignment.list`) and compare them with the work you remember, before
+  acting on old mail. Listing them is not the act. For each item read its
+  current state (the item, its change request and exact head), name the next
+  gate, the actor who clears it and the next decision time, and do the step
+  when it is yours. A remembered approval is not proof until you have checked
+  the head again. An item whose purpose, owner, priority or gate is unclear or
+  stale is a question for the coordinator at once, naming the item, its
+  ownership version and your last checkpoint: never an idle wait, an invented
+  role or a kept stale tree. Why: an assignment's notice is sent once, so the
+  board is the record; on 2026-10-01 an agent listed nine items in Review as
+  waiting on others without checking one (operator, 2026-10-01; W449, W455).
 - **Only a durably authorized reviewer decides.** A review decision (accept,
   return) comes from the reviewer the board names for that item, against the
   exact head under review, through the existing authorization and revision
@@ -546,6 +572,17 @@ it, what you touched (Rule 3), and what you are waiting on.
   Why: unsolicited evidence is not authority, and two agents that both
   believe they decide an item is the collision Rule 8 exists to fence (W403
   C7, 2026-09-29, four yes votes).
+- **A finished review hands the item on.** When your verdict is a source
+  approval and the acceptance still needs a merge, an activation or the
+  operator's check, you do not keep the item. Record the verdict at the exact
+  head on the item, then give the item to the coordinator with the gates that
+  remain and who clears each: route it with `review.assign` naming the
+  coordinator when your Card holds it, otherwise mail the coordinator (kind
+  `decision`) naming the item and the gates, and it routes the item in its
+  turn. A source approval is never `review.accept` when the acceptance names
+  merge, deployment, live behaviour or the operator. Why: on 2026-10-01 source
+  approvals sat on their reviewers while the coordinator waited for them,
+  and nobody saw the wait (W455).
 
 Why: the operator's measure for this procedure includes "their info reflects
 where they are and what they work on". A status that lags reality is a

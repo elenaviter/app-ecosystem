@@ -307,7 +307,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   detach. A relay heartbeat proves transport, a watch
   heartbeat proves availability checks, and only `pb worker receive` and
   settlement prove model handling.
-- An empty inbox is not evidence that there is no work. At session start, on resume and before `pb worker idle`, read your responsibilities once: `pb coordinate assignment.list` for your implementation work, `project.plan.index` with `{"assignee": "<your stable name>"}` for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those), and `pb worker outbox-status` for each outbox id whose outcome you do not know. You are idle only when each is done, started, or deferred with its reason, clearing actor or event and next decision time. A read that fails leaves you unknown, not idle. Read the same list again periodically while you work, at every work boundary and at least on each guard prompt or wake, and compare what the board assigns you with what you remember: the board is the record, and an assignment you hold but do not remember is work to start. Why: an assignment's notice is sent once, so a lost notice leaves only the board telling you (operator, 2026-10-01).
+- An empty inbox is not evidence that there is no work. At session start, on resume and before `pb worker idle`, read your responsibilities once: `pb coordinate assignment.list` for your implementation work, `project.plan.index` with `{"assignee": "<your stable name>"}` for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those), and `pb worker outbox-status` for each outbox id whose outcome you do not know. You are idle only when each is done, started, or deferred with its reason, clearing actor or event and next decision time. A read that fails leaves you unknown, not idle. Read the same list again while you work, at every work boundary and on each guard prompt or wake, and act on each item or ask: [collaboration](references/collaboration.md) Rule 6, "Reconcile your assignments".
 - A correction that must survive an unread inbox belongs in the assigned plan
   item. The coordinator updates the item and sends a short notice naming the
   same stable work ref. Mail wakes the worker; the item retains the corrected
@@ -418,7 +418,7 @@ Mail to the operator takes one of these kinds and nothing else:
     progress   reply     update     result
 
 `progress`, `update`, `reply` and `result` stay on the board; only `question`, `decision`,
-`blocked`, `delivery_failed` reach their Telegram, and a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there. Ask for their input this way, never in a terminal prompt
+`blocked`, `delivery_failed` reach their Telegram, and a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there. A board send is in the operator's board inbox; say it reached Telegram only when its kind or correlation sends it there and its receipt says delivered. Ask for their input this way, never in a terminal prompt
 (collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`. Mail about a plan item carries `--work-ref` with its `--project-ref`; only direct operator mail that names no item leaves both out.
 
 ## Runtime Actions And Test Windows

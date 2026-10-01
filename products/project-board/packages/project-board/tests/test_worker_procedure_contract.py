@@ -2313,7 +2313,7 @@ def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
     assert "with no specific reviewer, name the acting coordinator's stable worker name, so the review lands on it and not on you" in skill
     assert "else the coordinator does (collaboration Rule 6)" not in skill
     # A14: reconcile assignments and ask when one is unclear.
-    assert "**Reconcile your assignments, and ask when one is unclear.**" in collaboration
+    assert "**Reconcile your assignments, act on each, and ask when one is unclear.**" in collaboration
     assert "never an idle wait, an invented role or a kept stale tree" in collaboration
     assert "**An unclear assignment is a question, not an idle state.**" in coordinator
     # Operator, 13:07Z: a fresh scheduling table before dispatch and on exhaustion.
@@ -2347,3 +2347,47 @@ def test_the_journal_keeps_what_the_project_learned_not_a_release_ledger() -> No
     assert "journal entry that says landed" not in skill
     assert "journal entry that says landed" not in _words(_read("references/collaboration.md"))
     assert "as they stand now, updated in the same change; why, and the history of what was tried, go to the journal" in journaling
+
+
+def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
+    # W455 (operator, 2026-10-01): one owning rule each, in its owning file.
+    collaboration = _words(_read("references/collaboration.md"))
+    coordinator = _words(_read("references/coordinator.md"))
+    identity = _words(_read("references/identity-and-authorization.md"))
+    journaling = _words(_read("references/journaling.md"))
+    skill = _words(_read("SKILL.md"))
+
+    # Reconcile: listing is not the act; one rule, a pointer from the skill.
+    assert "Listing them is not the act." in collaboration
+    assert "A remembered approval is not proof until you have checked the head again." in collaboration
+    assert "name the next gate, the actor who clears it and the next decision time" in collaboration
+    assert 'Rule 6, "Reconcile your assignments"' in skill
+    assert "Read the same list again periodically while you work" not in skill
+    # The operator-evidence sentences sit on the reviewer bullet, not on the reconcile rule.
+    assert "state (W446, W449). The operator is named only once the work is integrated" in collaboration
+    # Status and assignee: two fields, two permissions, combined save, no special handoff permission.
+    assert "**Status and assignee are two fields, set by two permissions.**" in collaboration
+    assert "a status change never selects, substitutes or clears the assignee, and an assignee change never moves the status" in collaboration
+    assert "an ordinary handoff needs no special one such as `review.assign`" in collaboration
+    assert "never work around a refused permission" in collaboration
+    # A finished review hands the item on to the coordinator.
+    assert "**A finished review hands the item on.**" in collaboration
+    assert "A source approval is never `review.accept` when the acceptance names merge, deployment, live behaviour or the operator." in collaboration
+    # Quota: expired samples, redeemable resets.
+    assert "**A usage sample expires with its window.**" in coordinator
+    assert "never infer that a worker recovered from an expired sample or an idle label" in coordinator
+    assert "**A redeemable reset is the operator's.**" in coordinator
+    # Telegram: a board send is in the inbox unless its kind or correlation sends it on.
+    assert "A board send is in the operator's board inbox; say it reached Telegram only when its kind or correlation sends it there and its receipt says delivered." in skill
+    # Knowledge routing: a project's own practice goes to its files.
+    assert "| A practice or fact of one project: its machines, conventions, how it tests and deploys | That project's files (instructions, facts, environment), which every agent there reads |" in journaling
+    # Default Card operations.
+    assert "## The Review And Work Operations On Every Agent's Card" in _read("references/identity-and-authorization.md")
+    for operation in ("review.accept", "review.assign", "review.cancel", "review.return", "assignment.assign",
+                      "assignment.list", "assignment.report", "assignment.return", "work.accept", "work.status.set"):
+        assert f"`{operation}`" in identity
+    assert "Holding an operation is not authority over every item" in identity
+    # Scheduling table: ownership age and reason, next action, utilization from receipts.
+    assert "how long it has been with its assignee and why, and the next action with who takes it" in coordinator
+    assert "Count utilization from receipts (a STARTED, a report, a review verdict), never from mail you queued" in coordinator
+

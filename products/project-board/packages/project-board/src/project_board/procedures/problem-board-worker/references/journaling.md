@@ -88,6 +88,7 @@ a template: a short entry with one real lesson beats a long checkpoint.
 | Progress, heads, approvals, gates, merges, installs: where the work stands | The work item's notes and reports |
 | An operator ruling, with its reason | The project's facts file while it is in force, a note on the item it decides, and the journal entry that explains what it changed |
 | A practice useful to any coordinator or worker, on any project | This procedure, through a change request |
+| A practice or fact of one project: its machines, conventions, how it tests and deploys | That project's files (instructions, facts, environment), which every agent there reads |
 | A behaviour of Problem Board itself | The public documentation, in the same change as the code (collaboration, rule 13) |
 | How an app feature works now: its contract, nuances, rejected approaches and open gaps | The feature's owning doc, as they stand now, updated in the same change; why, and the history of what was tried, go to the journal; the journal entry links the doc, and the doc links the item |
 | A unique finding from a scratch run (a review result, a probe's outcome) | An applied note on the item, or a tracked file, before the run is closed; the run records that reference ([project workspace](project-workspace.md), section 6) |
@@ -96,7 +97,8 @@ a template: a short entry with one real lesson beats a long checkpoint.
 Knowledge kept only in one agent's private memory is lost to every other
 agent and to that agent's successor. A finding about how the team works, or
 about Problem Board itself, is never private memory: it becomes a procedure
-or documentation change so that every agent follows it.
+or documentation change so that every agent follows it, and a project's own
+practice becomes a change to that project's files (operator, 2026-10-01).
 
 ## Finding what the project already knows
 

@@ -417,6 +417,19 @@ its window size. How fast a pool is spending is read from successive
 observations of the same account, window and reset, each with its observed
 time.
 
+**A usage sample expires with its window.** A `used_percent` observed before
+its window's `resets_at`, or older than the decision it informs, says nothing
+about the pool now: read a fresh one before routing, and never infer that a
+worker recovered from an expired sample or an idle label. **A redeemable
+reset is the operator's.** When the operator has approved redeeming a pool's
+weekly reset early (a spark1 pool, for example), ask the operator to redeem it
+before the waiting work stalls, by board mail of kind `decision` so it reaches
+Telegram, naming the pool, its used percent with the observation time, and
+the work waiting on it. After the operator says it is redeemed, ping each
+agent of that pool, and route to it only when its fresh limit state shows the
+new window and it answers with a receipt or a STARTED (operator, 2026-10-01,
+W455; the client side is W438).
+
 **The coordinator routes implementation** (operator, 2026-09-29). A
 coordinator investigates, diagnoses and designs. Once an implementable
 deliverable exists, it routes the implementation to a capable, usable worker
@@ -596,9 +609,12 @@ Before you dispatch or reroute work, whenever a worker reaches its usage
 limit, and at each work boundary while work is active (at least every
 announcement interval), read a fresh table of the project's Todo, Working and Review items
 joined with each assignee's full alias, machine, current usage and reset,
-and presence (`pb worker context --format brief` for the team and pools,
+presence and blocker, and for each item its status, how long it has been
+with its assignee and why, and the next action with who takes it
+(`pb worker context --format brief` for the team and pools,
 `assignment.list` and the plan for the items). Dispatch from that table, not
-from memory. A worker at its limit, or whose wakes are held, does not keep an
+from memory. Count utilization from receipts (a STARTED, a report, a review
+verdict), never from mail you queued (W455). A worker at its limit, or whose wakes are held, does not keep an
 actionable review or other work someone waits on: reroute it with the reason,
 and give it back after the reset only by a new routing (operator, 2026-10-01,
 W449).

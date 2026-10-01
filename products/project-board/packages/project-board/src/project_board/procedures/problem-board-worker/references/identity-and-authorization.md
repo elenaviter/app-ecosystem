@@ -98,6 +98,26 @@ missing":
 - missing coding-harness filesystem authority: the user starts or resumes the
   session with the approved roots. Host `allowed_roots` cannot grant it.
 
+## The Review And Work Operations On Every Agent's Card
+
+Every agent's Card offers all of the board's current Review and Work
+operations by default: `review.accept`, `review.assign`, `review.cancel`,
+`review.return`, `assignment.assign`, `assignment.list`, `assignment.report`,
+`assignment.return`, `work.accept` (the compatibility name) and
+`work.status.set` (operator, 2026-10-01). The Card's owner applies them with
+**Refresh worker Card**, or **Refresh coordinator Card** for a coordinator; a
+refresh keeps the project's ceiling, the same identity and every other
+service's selection. The product's default profile carries this set once W451
+delivers it; until then the owner ticks them on the Card in Connection Hub or
+refreshes it. An agent never edits a Card ([collaboration](collaboration.md)
+Rule 12).
+
+Holding an operation is not authority over every item: the board still checks
+at each call who may decide a review, that nobody reviews their own work, and
+the actor. When your Card lacks one of these operations, tell the coordinator,
+who asks the Card's owner to refresh it; never work around a refused
+permission.
+
 ## Attendance, Assignment, And Revocation
 
 An assignment notice (kind `assign`, from `control-plane`) carries these
