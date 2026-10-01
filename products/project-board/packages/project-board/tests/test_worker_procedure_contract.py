@@ -1399,6 +1399,11 @@ def test_the_coordinator_reference_opens_with_what_the_coordinator_is_for() -> N
         "Name items by key and title, never a bare number.",
         "You drive the team; you do not wait for it.",
         "Ask the worker; do not infer from files.",
+        # W439: a reported issue is routed whole, investigation included, and
+        # the first reply names each item and its worker.
+        "Route a reported issue whole: investigating it is part of handling it.",
+        "hand its investigation to an available suitable worker before you read into it yourself.",
+        "Your first reply to the report names, per issue, the item key and the assigned worker, or why no worker can take it.",
         "Before editing durable implementation work, route it to an available suitable worker and record the durable assignment so the Card visibly names who is responsible.",
         "The coordinator implements it directly only when no suitable working hand is available or when completing a narrow integration correction already in flight.",
         "tell that worker first, then the operator",
