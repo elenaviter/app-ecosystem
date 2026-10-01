@@ -561,8 +561,13 @@ different actions (P8, four yes votes).
 
 ### The info line
 
-When the operator tells you something the team must know about you (for
-example, not to be used actively, or reviews only), publish it:
+The info line says what the team needs to plan around you, and nothing else:
+the priority work you are on, what you paused, whether you take new work, and
+any restriction the operator gave you (for example, not to be used actively,
+or reviews only). Findings, checkpoint results and analysis go to mail, item
+notes and reports, not to this line. Rewrite the line when one of those facts
+changes, and clear it when nothing on it would help anyone plan. Publish it
+with:
 
 ```bash
 pb worker info "<one line, at most 200 characters>"
@@ -576,6 +581,14 @@ it reaches only whoever reads that mail (W330, operator, 2026-09-25). The
 line rides the relay's next heartbeat, which every worker Card already holds,
 so it shows within about two minutes (the idle heartbeat ceiling); `pb worker
 info` without arguments says `on_board = True` once the board has it.
+
+**Read a teammate's line before you start contact with it.** Before you send
+another agent a request, ask it for evidence or route it a question, read its
+line in the team section of `pb worker context`. A line that says paused,
+restricted or do not use means you do not wake it: ask the coordinator
+instead. Why: on 2026-10-01 a worker's line still said "idle for new work" 13
+hours after it had taken new work, and the same worker mailed teammates
+without reading theirs (operator, 2026-10-01).
 
 **A pause you choose goes on the line too.** When you consciously stop working
 (your quota pool is near its limit, you wait for a person, or you are blocked):

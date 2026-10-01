@@ -145,3 +145,21 @@ def test_a_board_without_the_field_gets_one_forced_heartbeat_per_line_not_one_pe
         baseline = heartbeats_over_ten_cycles(linked=linked, line=None)
         with_line = heartbeats_over_ten_cycles(linked=linked, line=LINE)
         assert with_line <= baseline + 1, (linked, baseline, with_line)
+
+
+def test_the_procedure_says_what_the_line_is_for_and_when_to_read_a_teammates():
+    """Operator, 2026-10-01: the line carries what others need to plan around
+    this agent, kept current or cleared, and a teammate's line is read before
+    starting contact with it. Every PB agent in any project follows this."""
+
+    from pathlib import Path
+
+    import project_board
+
+    reference = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker" / "references" / "collaboration.md"
+    text = " ".join(reference.read_text(encoding="utf-8").split())
+    assert "The info line says what the team needs to plan around you, and nothing else" in text
+    assert "Findings, checkpoint results and analysis go to mail, item notes and reports, not to this line." in text
+    assert "clear it when nothing on it would help anyone plan" in text
+    assert "**Read a teammate's line before you start contact with it.**" in text
+    assert "A line that says paused, restricted or do not use means you do not wake it" in text
