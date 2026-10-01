@@ -4,19 +4,24 @@
 One version for the whole set (W322), cut, gated, tagged, published and
 verified by one command in three steps (W364):
 
-    scripts/release-pb prepare <YYYY.MM.DD.HHMM> --notes <file> [--dry-run]
-    scripts/release-pb publish <YYYY.MM.DD.HHMM> [--dry-run]
-    scripts/release-pb verify  <YYYY.MM.DD.HHMM>
+    scripts/release-pb prepare <YYYY.MM.DD.HHMM> --notes <file> --scratch <run> [--dry-run] [route]
+    scripts/release-pb publish <YYYY.MM.DD.HHMM> --scratch <run> [--dry-run] [route]
+    scripts/release-pb verify  <YYYY.MM.DD.HHMM> --scratch <run>
 
-`prepare` runs from a clean checkout of origin/main. It sets the version in
+    route: --project-ref <project> --github-login <login>
+           [--runtime-kind <kind> --runtime-session-id <id>]
+
+`prepare` runs in the release's own worktree, made from origin/main
+(`git -C <clone> worktree add <workspace>/wt/release-<version> origin/main`),
+never in a clone's main checkout that other work reads. It sets the version in
 every file of the set, writes the release notes into each release record,
 runs each package's gate the way the publish workflow does (a fresh virtual
 environment, `pip install -e "<path>[test]"`, no source overlay; the set's
 own packages come from the wheels just built, since the index does not have
 them yet), builds and checks every distribution, smoke-installs every wheel,
 then commits the release on `release/<version>` and opens its pull request.
-`--dry-run` does all of that in a throwaway worktree and stops before the
-commit.
+`--dry-run` does all of that in the same tree and stops before the commit,
+then puts back the files it changed.
 
 `publish` runs after that pull request is merged. It tags the release merge
 commit, dispatches `publish-python-package.yml` with `package=pb-set` (the
@@ -25,19 +30,25 @@ failure), waits for the run, then runs `verify`.
 
 `verify` checks each version on PyPI, installs `project-board==<version>` in a
 clean environment, checks `pb --version`, and prints the line hosts run.
+
+Every GitHub operation goes through the agent's governed route, `pb worker gh`
+and `pb worker push` for one named project (W454): never an ambient `gh`
+login, and never the deploy key. Environments and built distributions go in
+the `--scratch` folder the caller names (a `pb worker scratch --new` run), and
+the script removes only the subfolder it made there.
 """
 
 from __future__ import annotations
 
 import argparse
 import calendar
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -49,6 +60,8 @@ WORKFLOW = "publish-python-package.yml"
 SET_INPUT = "pb-set"
 VERSION_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.\d{4}$")
 INDEX_WAIT_SECONDS = 20 * 60
+# The remote `pb worker connect-project` adds for this machine's deploy key.
+DEPLOY_KEY_REMOTE = "deploykey"
 
 
 @dataclass(frozen=True)
@@ -116,6 +129,127 @@ def run(args: list[str], *, cwd: Path | None = None, env: dict[str, str] | None 
 
 def git(*args: str, cwd: Path = REPOSITORY, check: bool = True) -> str:
     return run(["git", *args], cwd=cwd, capture=True, check=check).stdout.strip()
+
+
+@dataclass(frozen=True)
+class GitHubRoute:
+    """GitHub through the agent's governed route for one project (W454).
+
+    `pb worker gh` runs gh with the project owner's GitHub key for one command,
+    and `pb worker push` pushes with it. A push fails closed before it writes:
+    the remote must be HTTPS, which only the owner key's credential helper
+    answers (an SSH remote would push with whatever key the machine has), and
+    the clone must not have the `deploykey` remote, because `pb worker push`
+    retries through that remote when the owner key is unavailable. Then the
+    route asks GitHub who it answers as and stops unless that is `login`. A
+    push that still reports the deploy key stops the release.
+    """
+
+    project_ref: str
+    login: str
+    runtime: tuple[str, ...] = ()
+    pb: str = "pb"
+
+    def command(self, verb: str, args: list[str]) -> list[str]:
+        return [self.pb, "worker", verb, "--project-ref", self.project_ref, *self.runtime, "--", *args]
+
+    def gh(self, args: list[str], *, cwd: Path, capture: bool = True, check: bool = True) -> subprocess.CompletedProcess:
+        return run(self.command("gh", args), cwd=cwd, capture=capture, check=check)
+
+    def check_actor(self, *, cwd: Path) -> None:
+        answer = self.gh(["api", "user", "--jq", ".login"], cwd=cwd, check=False)
+        if answer.returncode != 0:
+            raise ReleaseError(f"the owner's GitHub key did not answer; nothing was pushed:\n{answer.stderr.strip()}")
+        if answer.stdout.strip() != self.login:
+            raise ReleaseError(f"GitHub answers as {answer.stdout.strip()!r}, not {self.login!r}; nothing was pushed")
+
+    def check_push_target(self, remote: str, *, cwd: Path) -> None:
+        remotes = git("remote", cwd=cwd).split()
+        if DEPLOY_KEY_REMOTE in remotes:
+            raise ReleaseError(
+                f"this clone has the {DEPLOY_KEY_REMOTE!r} remote, which `pb worker push` falls back to "
+                "when the owner key is unavailable; a release pushes only with the owner key, so it does not push from here"
+            )
+        url = git("remote", "get-url", "--push", remote, cwd=cwd)
+        if not url.startswith("https://"):
+            raise ReleaseError(f"remote {remote!r} pushes to {url!r}; a release pushes over HTTPS with the owner key only")
+
+    def push(self, remote: str, refs: list[str], *, cwd: Path) -> None:
+        self.check_push_target(remote, cwd=cwd)
+        self.check_actor(cwd=cwd)
+        args = ["--quiet", remote, *refs]
+        result = run(self.command("push", args), cwd=cwd, capture=True, check=False)
+        if "deploy key" in result.stderr:
+            raise ReleaseError(
+                "the push reported the deploy-key fallback, which a release may not use; "
+                f"stop and report it, do not retry through another route:\n{result.stderr.strip()}"
+            )
+        if result.returncode != 0:
+            raise ReleaseError(f"push failed ({result.returncode}): {' '.join(args)}\n{result.stderr.strip()}")
+
+
+def github_route(args: argparse.Namespace) -> GitHubRoute:
+    if not args.project_ref or not args.github_login:
+        raise ReleaseError("name the governed GitHub route: --project-ref <project> --github-login <owner's login>")
+    runtime: tuple[str, ...] = ()
+    if args.runtime_kind:
+        runtime += ("--runtime-kind", args.runtime_kind)
+    if args.runtime_session_id:
+        runtime += ("--runtime-session-id", args.runtime_session_id)
+    return GitHubRoute(args.project_ref, args.github_login, runtime)
+
+
+def require_own_worktree(root: Path = REPOSITORY) -> None:
+    """The release changes files and switches branches: only in its own linked worktree."""
+
+    git_dir = (root / git("rev-parse", "--git-dir", cwd=root)).resolve()
+    common = (root / git("rev-parse", "--git-common-dir", cwd=root)).resolve()
+    if git_dir == common:
+        raise ReleaseError(
+            f"{root} is a clone's main checkout; run from the release's own worktree: "
+            "git -C <clone> worktree add <workspace>/wt/release-<version> origin/main"
+        )
+
+
+def ignored_paths(root: Path) -> set[str]:
+    listed = git("status", "--porcelain", "-z", "--ignored", cwd=root)
+    return {entry[3:] for entry in listed.split("\0") if entry.startswith("!! ")}
+
+
+def remove_new_ignored(root: Path, before: set[str]) -> list[str]:
+    """Remove the ignored build outputs the run made in the set's packages, nothing else."""
+
+    removed = []
+    for name in sorted(ignored_paths(root) - before):
+        if not any(name.startswith(prefix.rstrip("/") + "/") for prefix in VERSION_ROOTS):
+            continue
+        path = root / name
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        elif path.exists() or path.is_symlink():
+            path.unlink()
+        removed.append(name)
+    return removed
+
+
+def scratch_folder(args: argparse.Namespace, step: str) -> Path:
+    """The run's own subfolder of the caller's scratch folder; never one that exists."""
+
+    base = Path(args.scratch).expanduser().resolve()
+    if not base.is_dir():
+        raise ReleaseError(f"--scratch {base} is not a folder; make one with `pb worker scratch --new`")
+    folder = base / f"release-pb-{step}-{args.version}"
+    if folder.exists():
+        raise ReleaseError(f"{folder} exists from an earlier run; read it, then remove it or name another --scratch")
+    folder.mkdir()
+    return folder
+
+
+def drop_scratch(folder: Path, keep: bool) -> None:
+    if keep:
+        say(f"kept {folder}")
+    else:
+        shutil.rmtree(folder, ignore_errors=True)
 
 
 def clean_env() -> dict[str, str]:
@@ -267,19 +401,40 @@ def gate(root: Path, version: str, python: str, scratch: Path) -> list[str]:
             if printed != f"problem-board {canonical(version)}":
                 raise ReleaseError(f"pb --version printed {printed!r}")
         report.append(f"{package.name}: {'tests passed, ' if package.tested else ''}build, twine check and wheel smoke passed")
+    # The distributions go with the scratch folder; their hashes stay in the report.
+    for package in SET:
+        for artifact in sorted((dist / package.name).iterdir()):
+            report.append(f"sha256 {hashlib.sha256(artifact.read_bytes()).hexdigest()}  {artifact.name}")
     return report
 
 
-def require_clean_main() -> None:
-    if git("status", "--porcelain"):
-        raise ReleaseError("the working tree is not clean; run from a clean checkout of origin/main")
-    git("fetch", "--quiet", "--tags", "origin")
-    if git("rev-parse", "HEAD") != git("rev-parse", "origin/main"):
-        raise ReleaseError("HEAD is not origin/main; check out origin/main first")
+def require_clean(root: Path = REPOSITORY) -> None:
+    if git("status", "--porcelain", cwd=root):
+        raise ReleaseError("the working tree is not clean; the release runs in a clean tree of its own")
+
+
+def require_clean_main(root: Path = REPOSITORY) -> None:
+    require_clean(root)
+    git("fetch", "--quiet", "--tags", "origin", cwd=root)
+    if git("rev-parse", "HEAD", cwd=root) != git("rev-parse", "origin/main", cwd=root):
+        raise ReleaseError("HEAD is not origin/main; make the release tree from origin/main")
 
 
 def tag_exists(version: str) -> bool:
     return bool(git("ls-remote", "--tags", "origin", f"refs/tags/{version}"))
+
+
+def open_release_pull_request(github: GitHubRoute, version: str, body: str, *, root: Path = REPOSITORY) -> str:
+    """Open the release pull request and check GitHub holds the commit that was gated."""
+
+    branch = f"release/{version}"
+    url = github.gh(["pr", "create", "--base", "main", "--head", branch,
+                     "--title", f"Release the pb set {version}", "--body", body], cwd=root).stdout.strip()
+    shown = json.loads(github.gh(["pr", "view", url, "--json", "headRefName,baseRefName,headRefOid"], cwd=root).stdout)
+    expected = {"headRefName": branch, "baseRefName": "main", "headRefOid": git("rev-parse", "HEAD", cwd=root)}
+    if {key: shown.get(key) for key in expected} != expected:
+        raise ReleaseError(f"{url} is not the gated release: GitHub shows {shown}, expected {expected}")
+    return url
 
 
 def prepare(args: argparse.Namespace) -> int:
@@ -287,23 +442,23 @@ def prepare(args: argparse.Namespace) -> int:
     notes = notes_path.read_text(encoding="utf-8").strip()
     if not notes:
         raise ReleaseError(f"{notes_path} is empty; the release records need the changes")
-    if not args.dry_run:
+    github = None if args.dry_run else github_route(args)
+    require_own_worktree()
+    if args.dry_run:
+        require_clean()
+    else:
         require_clean_main()
     current = read_version(REPOSITORY)
     check_new_version(current, args.version)
     if tag_exists(args.version):
         raise ReleaseError(f"tag {args.version} already exists on origin")
     python = pick_python(args.python)
-    scratch = Path(tempfile.mkdtemp(prefix=f"release-pb-{args.version}-"))
-    worktree = scratch / "tree"
+    root = REPOSITORY
+    built_before = ignored_paths(root)
+    scratch = scratch_folder(args, "prepare")
     try:
-        if args.dry_run:
-            git("worktree", "add", "--quiet", "--detach", str(worktree), "HEAD")
-            root = worktree
-        else:
-            branch = f"release/{args.version}"
-            git("switch", "--quiet", "-c", branch)
-            root = REPOSITORY
+        if not args.dry_run:
+            git("switch", "--quiet", "-c", f"release/{args.version}")
         changed = apply_version(root, current, args.version, notes)
         say(f"{current} -> {args.version} in {len(changed)} files")
         report = [] if args.skip_gate else gate(root, args.version, python, scratch)
@@ -316,7 +471,7 @@ def prepare(args: argparse.Namespace) -> int:
         git("add", "--", *[str(path.relative_to(REPOSITORY)) for path in changed])
         message = f"Release the pb set {args.version}\n\n{notes}\n"
         subprocess.run(["git", "commit", "--quiet", "-F", "-"], cwd=REPOSITORY, input=message, text=True, check=True)
-        git("push", "--quiet", "-u", "origin", f"release/{args.version}")
+        github.push("origin", [f"release/{args.version}"], cwd=root)
         body = "\n".join([
             f"Releases app-foundation, service-foundation, connection-hub and project-board {args.version} (connection-hub-cli carries the version).",
             "",
@@ -327,15 +482,19 @@ def prepare(args: argparse.Namespace) -> int:
             "",
             f"After merge: `scripts/release-pb publish {args.version}`.",
         ])
-        url = run(["gh", "pr", "create", "--base", "main", "--head", f"release/{args.version}",
-                   "--title", f"Release the pb set {args.version}", "--body", body], capture=True).stdout.strip()
+        url = open_release_pull_request(github, args.version, body, root=root)
         say(f"release pull request: {url}")
         say(f"after it is merged: scripts/release-pb publish {args.version}")
         return 0
     finally:
-        if args.dry_run and worktree.exists():
-            git("worktree", "remove", "--force", str(worktree), check=False)
-        shutil.rmtree(scratch, ignore_errors=True)
+        if args.dry_run:
+            # The tree was clean when the run started, so every change in it is this run's.
+            written = [name for name in git("diff", "--name-only", "-z", cwd=root).split("\0") if name]
+            if written:
+                git("restore", "--source=HEAD", "--worktree", "--", *written, cwd=root)
+        for name in remove_new_ignored(root, built_before):
+            say(f"removed build output {name}")
+        drop_scratch(scratch, args.keep_scratch)
 
 
 def release_commit(version: str, *, cwd: Path = REPOSITORY, ref: str = "origin/main") -> str:
@@ -358,28 +517,35 @@ def release_commit(version: str, *, cwd: Path = REPOSITORY, ref: str = "origin/m
     return found
 
 
-def dispatch_and_wait(version: str) -> None:
+def dispatch_and_wait(github: GitHubRoute, version: str, commit: str, *, root: Path = REPOSITORY) -> None:
     started = time.time()
-    run(["gh", "workflow", "run", WORKFLOW, "--ref", version,
-         "-f", f"package={SET_INPUT}", "-f", f"expected_version={version}"])
+    github.gh(["workflow", "run", WORKFLOW, "--ref", version,
+               "-f", f"package={SET_INPUT}", "-f", f"expected_version={version}"], cwd=root)
     run_id = ""
     for _ in range(30):
         time.sleep(5)
-        listed = json.loads(run(["gh", "run", "list", "--workflow", WORKFLOW, "--limit", "10",
-                                 "--json", "databaseId,headBranch,event,createdAt"], capture=True).stdout)
-        for row in listed:
-            created = calendar.timegm(time.strptime(row["createdAt"], "%Y-%m-%dT%H:%M:%SZ"))
-            if row["headBranch"] == version and row["event"] == "workflow_dispatch" and created >= started - 60:
-                run_id = str(row["databaseId"])
-                break
+        listed = json.loads(github.gh(["run", "list", "--workflow", WORKFLOW, "--limit", "10",
+                                       "--json", "databaseId,headBranch,headSha,event,createdAt"], cwd=root).stdout)
+        run_id = matching_run(listed, version, commit, started)
         if run_id:
             break
     if not run_id:
         raise ReleaseError("the publish run did not appear; check the Actions tab")
     say(f"publish run {run_id}: waiting")
-    result = run(["gh", "run", "watch", run_id, "--exit-status", "--interval", "30"], check=False)
+    result = github.gh(["run", "watch", run_id, "--exit-status", "--interval", "30"], cwd=root, capture=False, check=False)
     if result.returncode != 0:
         raise ReleaseError(f"publish run {run_id} failed; the packages after the failed one were not published")
+
+
+def matching_run(listed: list[dict], version: str, commit: str, started: float) -> str:
+    """The run this dispatch started: the tag, the tagged commit, a dispatch, and not older than the request."""
+
+    for row in listed:
+        created = calendar.timegm(time.strptime(row["createdAt"], "%Y-%m-%dT%H:%M:%SZ"))
+        if (row["headBranch"] == version and row.get("headSha") == commit
+                and row["event"] == "workflow_dispatch" and created >= started - 60):
+            return str(row["databaseId"])
+    return ""
 
 
 def publish(args: argparse.Namespace) -> int:
@@ -391,9 +557,10 @@ def publish(args: argparse.Namespace) -> int:
     if args.dry_run:
         say(f"dry run: would tag {args.version} at {commit[:12]}, dispatch {WORKFLOW} package={SET_INPUT}, wait, then verify")
         return 0
+    github = github_route(args)
     git("tag", "-a", args.version, "-m", f"pb set {args.version}", commit)
-    git("push", "--quiet", "origin", f"refs/tags/{args.version}")
-    dispatch_and_wait(args.version)
+    github.push("origin", [f"refs/tags/{args.version}"], cwd=REPOSITORY)
+    dispatch_and_wait(github, args.version, commit)
     return verify(args)
 
 
@@ -412,7 +579,7 @@ def verify(args: argparse.Namespace) -> int:
         raise ReleaseError(f"not on PyPI at {canonical(version)}: {', '.join(missing)}")
     say(f"PyPI has all four at {canonical(version)}")
     python = pick_python(getattr(args, "python", None))
-    scratch = Path(tempfile.mkdtemp(prefix=f"release-pb-verify-{version}-"))
+    scratch = scratch_folder(args, "verify")
     try:
         bin_dir = venv(python, scratch / "venv")
         deadline = time.monotonic() + INDEX_WAIT_SECONDS
@@ -434,9 +601,24 @@ def verify(args: argparse.Namespace) -> int:
                 raise ReleaseError(f"a clean install resolved another {package.name}:\n{frozen}")
         say(f"a clean install of project-board=={version} resolves the set and prints {printed!r}")
     finally:
-        shutil.rmtree(scratch, ignore_errors=True)
+        drop_scratch(scratch, getattr(args, "keep_scratch", False))
     print(f"\nHosts move to it with:\n\n  pb source use-release --expect-version {version}\n")
     return 0
+
+
+def add_scratch(step: argparse.ArgumentParser) -> None:
+    step.add_argument("--scratch", required=True,
+                      help="folder for the environments and distributions, e.g. a `pb worker scratch --new` run; "
+                           "the run makes and removes only its own subfolder there")
+    step.add_argument("--keep-scratch", action="store_true", help="leave the run's subfolder for inspection")
+
+
+def add_github_route(step: argparse.ArgumentParser) -> None:
+    route = step.add_argument_group("governed GitHub route (pb worker gh / pb worker push; required unless --dry-run)")
+    route.add_argument("--project-ref", help="the project whose owner GitHub key the release uses")
+    route.add_argument("--github-login", help="the login that key must answer as; checked before every push")
+    route.add_argument("--runtime-kind", help="passed to pb worker (Claude Code: claude-code)")
+    route.add_argument("--runtime-session-id", help="passed to pb worker (Claude Code: this session's id)")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -445,18 +627,24 @@ def main(argv: list[str] | None = None) -> int:
     step = commands.add_parser("prepare", help="set the version, run the gate, open the release pull request")
     step.add_argument("version")
     step.add_argument("--notes", required=True, help="file with the changes, written into each release record")
-    step.add_argument("--dry-run", action="store_true", help="do everything in a throwaway worktree; commit nothing")
+    step.add_argument("--dry-run", action="store_true",
+                      help="do everything in the release tree, then put its files back; commit nothing")
     step.add_argument("--skip-gate", action="store_true", help=argparse.SUPPRESS)
     step.add_argument("--python", help="interpreter for the gate environments (default: python3.11)")
+    add_scratch(step)
+    add_github_route(step)
     step.set_defaults(handler=prepare)
     step = commands.add_parser("publish", help="after the release pull request is merged: tag, publish, verify")
     step.add_argument("version")
     step.add_argument("--dry-run", action="store_true", help="find the release commit and say what would happen")
     step.add_argument("--python", help="interpreter for the verification environment")
+    add_scratch(step)
+    add_github_route(step)
     step.set_defaults(handler=publish)
     step = commands.add_parser("verify", help="check PyPI and a clean install of project-board==<version>")
     step.add_argument("version")
     step.add_argument("--python", help="interpreter for the verification environment")
+    add_scratch(step)
     step.set_defaults(handler=verify)
     args = parser.parse_args(argv)
     try:
