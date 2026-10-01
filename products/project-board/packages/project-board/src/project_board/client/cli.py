@@ -2290,13 +2290,21 @@ async def _coordinate_direct(
         )
 
 
-def _coordinate_response(response: Mapping[str, Any]) -> dict[str, Any]:
+def _coordinate_response(
+    response: Mapping[str, Any], *, expected_action: str = "",
+) -> dict[str, Any]:
     if bool(response.get("ok")):
         result = response.get("result")
         if not isinstance(result, Mapping):
             raise DomainError(
                 "work_coordinate_response_invalid",
                 "The worker relay returned no governed operation result.",
+                status=502,
+            )
+        if expected_action and str(result.get("operation") or "") != expected_action:
+            raise DomainError(
+                "work_coordinate_response_invalid",
+                "The recovered receipt does not name the original governed operation.",
                 status=502,
             )
         require_successful_operation_envelope(
@@ -2464,13 +2472,23 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             "work_coordinate_timeout_invalid",
             "timeout_seconds must be between 1 and 600.",
         )
-    # A channel the relay is reconnecting cannot carry this request. Say so at
-    # once, with what the relay knows, instead of waiting out the deadline
-    # behind "the relay did not claim the operation".
-    _raise_if_channel_reconnecting(path, channel.worker_name)
     queue = CoordinateQueue(config.field_root)
     key = mutation_idempotency_key(payload)
     recovery = CoordinateRecovery(config.field_root) if key else None
+    if recovery is not None:
+        # A completed exact receipt is local proof, not a new channel request.
+        # Never reserve a new key merely to inspect it while reconnecting.
+        prior = recovery.lookup_existing(
+            channel.worker_name, key, action=action, object_ref=object_ref, payload=payload,
+        )
+        if prior is not None:
+            recovered = _recover_prior_mutation(
+                queue, recovery, prior, worker_name=channel.worker_name, key=key,
+            )
+            if recovered is not None:
+                return recovered
+    # Unknown outcomes and new work still require transport admission.
+    _raise_if_channel_reconnecting(path, channel.worker_name)
     if recovery is not None:
         # The key is held for this exact request before the relay can see it.
         prior, created = recovery.reserve(
@@ -2671,17 +2689,25 @@ def _finish_coordinate_response(
     worker_name: str,
     key: str,
     request_id: str,
+    expected_action: str = "",
+    expected_request_hash: str = "",
 ) -> dict[str, Any]:
     """The service's answer; the ledger records it against its own attempt."""
 
     try:
-        result = _coordinate_response(response)
+        result = _coordinate_response(response, expected_action=expected_action)
     except DomainError as exc:
         if recovery is not None:
-            _record_unfinished_mutation(recovery, worker_name, key, exc, request_id=request_id)
+            _record_unfinished_mutation(
+                recovery, worker_name, key, exc, request_id=request_id,
+                expected_request_hash=expected_request_hash,
+            )
         raise
     if recovery is not None:
-        recovery.settle_attempt(worker_name, key, request_id, "applied", receipt=result)
+        recovery.settle_attempt(
+            worker_name, key, request_id, "applied", receipt=result,
+            expected_request_hash=expected_request_hash,
+        )
     return result
 
 
@@ -2692,6 +2718,7 @@ def _record_unfinished_mutation(
     error: DomainError,
     *,
     request_id: str,
+    expected_request_hash: str = "",
 ) -> None:
     """Record what this error proves about its own attempt, and say how to retry.
 
@@ -2701,7 +2728,8 @@ def _record_unfinished_mutation(
     """
 
     record = recovery.settle_attempt(
-        worker_name, key, request_id, error_outcome(error)
+        worker_name, key, request_id, error_outcome(error),
+        expected_request_hash=expected_request_hash,
     )
     if record is None:
         return
@@ -2734,27 +2762,43 @@ def _recover_prior_mutation(
     """
 
     receipt = prior.get("receipt")
-    if prior.get("state") == "applied" and isinstance(receipt, Mapping):
-        result = dict(receipt)
+    if prior.get("state") == "applied":
+        result = _coordinate_response(
+            {"ok": True, "result": receipt}, expected_action=str(prior.get("action") or ""),
+        )
         result["recovery"] = recovery_identity(prior, source="local_receipt")
         return result
     applied: dict[str, Any] | None = None
+    refusal: DomainError | None = None
     for request_id in reversed([str(value) for value in prior.get("request_ids") or []]):
         late = queue.take_response(worker_name=worker_name, request_id=request_id)
         if late is None:
             continue
         try:
             result = _finish_coordinate_response(
-                late, recovery=recovery, worker_name=worker_name, key=key, request_id=request_id
+                late, recovery=recovery, worker_name=worker_name, key=key,
+                request_id=request_id, expected_action=str(prior.get("action") or ""),
+                expected_request_hash=str(prior.get("request_hash") or ""),
             )
-        except DomainError:
+        except DomainError as exc:
+            refusal = exc
             continue
         applied = applied or result
-    record = recovery.read(worker_name, key)
+    record = recovery.lookup_existing(
+        worker_name, key, action=str(prior.get("action") or ""),
+        object_ref=str(prior.get("object_ref") or ""), payload=prior.get("payload") or {},
+    )
     if record is not None and record.get("state") == "applied":
-        result = dict(applied or record.get("receipt") or {})
+        result = _coordinate_response(
+            {"ok": True, "result": applied or record.get("receipt")},
+            expected_action=str(prior.get("action") or ""),
+        )
         result["recovery"] = recovery_identity(record, source="late_relay_response")
         return result
+    if record is None and refusal is not None:
+        # Only settlement proving every attempt had no effect releases a key.
+        # A refusal beside an earlier unknown is not a completed failure.
+        raise refusal
     return None
 
 
