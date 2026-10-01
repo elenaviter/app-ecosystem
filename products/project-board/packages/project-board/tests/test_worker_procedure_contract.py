@@ -2308,3 +2308,7 @@ def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
     assert "**Reconcile your assignments, and ask when one is unclear.**" in collaboration
     assert "never an idle wait, an invented role or a kept stale tree" in collaboration
     assert "**An unclear assignment is a question, not an idle state.**" in coordinator
+    # Operator, 13:07Z: a fresh scheduling table before dispatch and on exhaustion.
+    assert "## Read the scheduling table before you dispatch" in _read("references/coordinator.md")
+    assert "Dispatch from that table, not from memory." in coordinator
+    assert "A worker at its limit, or whose wakes are held, does not keep an actionable review or other work someone waits on" in coordinator
