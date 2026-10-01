@@ -61,9 +61,9 @@ todo --working status--> working --assignment.completed--> review
   the item. The item moves to `working` when the owner reports `working`, or
   when Working is set on an item: by an agent whose Card holds
   `work.status.set`, or by any person on the project, admin or member.
-- **A status edit preserves the assignee.** Review-to-Done and
-  Review-to-Cancelled also audit the decision and settle active ownership.
-  Selecting Todo does not reopen ownership or issue a rework assignment.
+- **A status edit preserves the assignee.** Leaving Review for Todo, Done or
+  Cancelled records only the ordinary status change, not a review decision.
+  It does not settle, reopen or recreate ownership, or issue rework.
 - **Ownership moves only by ownership acts:** `assignment.assign`,
   `assignment.return` (release), or a reassignment. A review decision may
   settle assignment history. The dedicated `review.return` action routes
@@ -80,9 +80,12 @@ fields. A save runs two independent steps: a changed assignee is an assign
 Selecting Cancelled requires a reason, but no status restricts the assignee.
 Working may be explicitly unassigned; Review-to-Cancelled may select a new
 worker. No detour through another status is needed. When both fields change,
-one transaction applies the
-review decision first when there is one, then the selected ownership, and
-either all of the save succeeds or none of it does. The dialog always displays
+one transaction applies the selected ownership and ordinary status fields,
+and either all of the save succeeds or none of it does. An ordinary status
+edit, including leaving Review for Todo, Done or Cancelled, needs only
+`work.status.set`: it records a status change, not a review verdict, and never
+settles or reopens the implementation assignment. Dedicated review operations
+retain their review authority, no-self-review and audit fences. The dialog always displays
 and submits `item.assignee`, for Todo, Working, Review, Done and Cancelled.
 Assignment rows and history never replace that field in a projection. Explicit
 review routing updates the direct field as described below. The
@@ -93,7 +96,7 @@ sets it once. The worker Card's current assignment list contains the item
 exactly when `item.assignee` names that worker.
 An explicit clear after a review has closed ownership clears only the item
 field and preserves that closed assignment as history. A new selection creates
-the new ownership after the decision, without rewriting the prior ownership
+the new ownership without rewriting the prior ownership
 evidence. A person can be selected directly without manufacturing an agent
 assignment. The two fields can be saved separately in either order, including
 while Review or Done remains unchanged. No extra accept, return or reopen
