@@ -66,6 +66,13 @@ todo --working status--> working --assignment.completed--> review
   Done/Cancelled close execution as `accepted`/`cancelled` under ordinary
   status authority, without recording review approval or advancing ownership.
   Nonterminal status does not reopen closed execution or issue rework.
+- **Explicit authorized reopen is separate from ordinary fields.**
+  `assignment.assign(reopen=true)` establishes a new ownership period at an
+  unchanged Review, Done or Cancelled status, leaving `started_at` unchanged.
+  No preliminary nonterminal status save is required. The new owner's first
+  working report follows the usual status/start-time contract; old-period
+  controls and new reports remain fenced, while recorded retries replay.
+  This uses the existing assignment authorization, not either field grant.
 - **Ownership moves only by explicit assignee/ownership acts:** `work.assignee.set`,
   `assignment.assign`, or `assignment.return` (release). A review decision may
   settle assignment history. The dedicated `review.return` action routes
@@ -83,7 +90,8 @@ The field permissions are `work.assignee.set` and `work.status.set`; a combined
 save checks those two, with no third permission. At a nonterminal status a newly
 selected assignee does the next work immediately if their existing Card and repository scope allow it.
 At Done/Cancelled the chosen display owner persists, but execution is closed
-and no assignment control or work wake is created.
+and the ordinary field edit creates no assignment control or work wake. This
+does not prohibit a later explicit authorized assignment reopen.
 Selection grants no new authority or credentials and requires no second handoff.
 Applied report history continues to name the contributor for review decisions.
 Selecting Cancelled requires a reason, but no status restricts the assignee.

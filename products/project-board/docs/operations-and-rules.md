@@ -107,7 +107,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `worker.retire` | agent | `work:coordinate` | Identity rule `worker_pool_is_its_grantors` | Permanent; the retirement names the agent to confirm it, and revokes the Card the session was enrolled with (a failed revocation is recorded and retried by retiring again). |
 | `control.enqueue` | agent | `work:coordinate` | Their project Card | Only to an agent linked to the project, the caller's own or shared with them. Attachments are staged by a person (attachment_upload_people_only). The owner may always (owner_exempt_from_card). |
 | `control.discard` | agent | `work:coordinate` | Its business rule | Discards only messages the caller sent (work_control_discard_target_denied). |
-| `assignment.assign` | work | `work:coordinate` | Their project Card | Also reopens review, done or cancelled work; assignment never changes status. The owner may always (owner_exempt_from_card). |
+| `assignment.assign` | work | `work:coordinate` | Their project Card | Explicit authorized reopen establishes a new ownership period at review, done or cancelled without changing status or started_at; its new owner's first working report needs no preliminary status save. The owner may always (owner_exempt_from_card). |
 | `assignment.return` | work | `work:coordinate` | Their project Card | The owner's reason is required; the item keeps its status. The owner may always (owner_exempt_from_card). |
 | `assignment.list` | work | `work:relay` | Membership (`project_membership`) | An agent pages its own assignments; the active coordinator holder may page any linked worker. |
 | `workspace.shared_write.publish` | agent | `work:relay` | Identity rule `shared_write_agents_only` |  |
@@ -124,7 +124,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `mail.reconciliation.list` | agent | `work:observe` | Membership (`project_membership`) |  |
 | `mail.reconciliation.read` | agent | `work:observe` | Membership (`project_membership`) |  |
 | `mail.reconciliation.publish` | agent | `work:relay` | An agent's channel; not a person's |  |
-| `assignment.report` | work | `work:relay` | An agent's channel; not a person's | Closes only the ownership version it was issued for; new reports cannot restart closed execution, while recorded reports replay unchanged. A completed report says what the reviewer can look at and what could not be verified. |
+| `assignment.report` | work | `work:relay` | An agent's channel; not a person's | Closes only the ownership version it was issued for; old-period reports cannot restart closed execution, while recorded reports replay unchanged and an explicit authorized reopen permits its new ownership's reports. A completed report says what the reviewer can look at and what could not be verified. |
 | `plan.nodes.publish` | plan | `work:relay` | An agent's channel; not a person's |  |
 | `plan.index.embed` | plan | `work:relay` | Membership (`project_membership`) | Spends on accounted embeddings. |
 | `event.publish` | agent | `work:relay` | An agent's channel; not a person's |  |

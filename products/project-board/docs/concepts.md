@@ -151,6 +151,10 @@ message fixes the item.
 item and never changes its status. A status edit preserves the displayed
 assignee and ownership version. Done and Cancelled close execution without a
 review verdict; nonterminal status alone does not reopen closed execution.
+An explicit authorized `assignment.assign(reopen=true)` is a separate act:
+it creates a new ownership period without changing status or `started_at`.
+The new owner's first working report then follows the normal report contract;
+the former period remains fenced, including when the selected worker is unchanged.
 Releasing an assignment (`assignment.return`) clears the owner
 and leaves the status as it is. Status moves by the owner's reports (`working`
 moves the item to Working, `completed` to Review), by a review decision, or by
