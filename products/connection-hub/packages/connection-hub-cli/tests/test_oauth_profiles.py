@@ -1349,3 +1349,98 @@ async def test_a_store_lock_wait_during_the_commit_does_not_drop_the_rotation(
     assert len(attempts) == 2
     assert oauth.refresh_calls == 1, "the commit is retried, never a second refresh"
     assert credentials.values[profile.credential_ref].refresh_token == "rotated-refresh"
+
+
+def _timing_out_commits(service, monkeypatch, *, timeouts: int) -> list[int]:
+    """The store lock is busy for the first ``timeouts`` commit attempts."""
+
+    commit = service._commit_refreshed_token
+    attempts: list[int] = []
+
+    async def busy_store(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) <= timeouts:
+            raise AuthorizationError(
+                "oauth_profile_lock_timeout",
+                "Timed out waiting for the OAuth profile lock.",
+            )
+        return await commit(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_commit_refreshed_token", busy_store)
+    return attempts
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_whose_commit_attempts_all_time_out_stays_pending(
+    tmp_path, monkeypatch
+) -> None:
+    oauth = _OAuth()
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token(expires_at=1))
+    limit = service.REFRESH_COMMIT_ATTEMPTS
+    attempts = _timing_out_commits(service, monkeypatch, timeouts=limit + 1)
+
+    with pytest.raises(AuthorizationError) as raised:
+        await service.access_token(profile.name)
+    assert raised.value.code == "oauth_profile_lock_timeout"
+    assert len(attempts) == limit
+    assert credentials.values[profile.credential_ref].refresh_token == "refresh-secret"
+
+    # The next read commits the replacement the server already issued; it
+    # never presents the spent refresh token again.
+    assert await service.access_token(profile.name) == "refreshed-access"
+    assert oauth.refresh_calls == 1
+    assert credentials.values[profile.credential_ref].refresh_token == "rotated-refresh"
+    assert await service.access_token(profile.name) == "refreshed-access"
+    assert oauth.refresh_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_reopened_channel_commits_the_replacement_its_predecessor_received(
+    tmp_path, monkeypatch
+) -> None:
+    """The relay builds a new service for each channel open."""
+
+    oauth = _OAuth()
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token(expires_at=1))
+    _timing_out_commits(service, monkeypatch, timeouts=service.REFRESH_COMMIT_ATTEMPTS)
+    with pytest.raises(AuthorizationError):
+        await service.access_token(profile.name)
+
+    reopened_oauth = _OAuth()
+    reopened = OAuthProfileSessionService(
+        profiles=ProfileStore(tmp_path / "profiles.json"),
+        credentials=credentials,
+        endpoint_discovery=_EndpointDiscovery(),
+        discovery=_Discovery(),
+        authorization=_Authorization(),
+        oauth=reopened_oauth,
+        probe=service._probe,
+    )
+    assert await reopened.access_token(profile.name) == "refreshed-access"
+    assert reopened_oauth.refresh_calls == 0, "the spent token is never presented"
+    assert credentials.values[profile.credential_ref].refresh_token == "rotated-refresh"
+
+
+@pytest.mark.asyncio
+async def test_a_stopping_process_drains_a_refresh_in_flight(tmp_path) -> None:
+    from connection_hub_cli.authorization.profile_session import drain_pending_refreshes
+
+    oauth = _HangingOAuth(hang_for="refresh-secret")
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token(expires_at=1))
+
+    caller = asyncio.create_task(service.access_token(profile.name))
+    await asyncio.wait_for(oauth.hanging.wait(), 1.0)
+    caller.cancel()  # the channel is closed first, as on relay stop
+    asyncio.get_running_loop().call_later(0.1, oauth.release.set)
+
+    assert await drain_pending_refreshes(timeout_seconds=2.0) == 0
+    assert credentials.values[profile.credential_ref].refresh_token == "rotated-refresh"

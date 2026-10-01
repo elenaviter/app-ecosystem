@@ -5960,6 +5960,9 @@ async def _relay(args: Any) -> Any:
         connect_profile_tools,
         resolve_profile_bearer,
     )
+    from connection_hub.caller.authorization.profile_session import (
+        drain_pending_refreshes,
+    )
     from connection_hub.caller.services import build_caller_services
     from service_foundation.host_relay import HostRelayPolicy, HostRelayRuntime
 
@@ -6206,6 +6209,17 @@ async def _relay(args: Any) -> Any:
             await runtime.run()
         finally:
             await adapter.aclose()
+            # A token refresh still in its round trip or commit is finished,
+            # bounded, before the loop closes and would cancel it (W456).
+            left = await drain_pending_refreshes(
+                timeout_seconds=adapter.CHANNEL_TURN_CLEANUP_SECONDS
+            )
+            if left:
+                logging.getLogger(__name__).warning(
+                    "Problem Board relay stopped with token refreshes still "
+                    "committing count=%d",
+                    left,
+                )
         return {"stopped": True}
 
     config = RelayConfig.load(config_path)

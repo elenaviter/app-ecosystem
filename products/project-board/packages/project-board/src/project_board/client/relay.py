@@ -6752,6 +6752,17 @@ class ProblemBoardRelaySupervisor:
             return body.result()
         body.cancel()
         await asyncio.wait({body}, timeout=self.CHANNEL_TURN_CLEANUP_SECONDS)
+        if not body.done():
+            # Retrieve the eventual result so a late failure is not lost.
+            body.add_done_callback(
+                lambda task: task.cancelled() or task.exception()
+            )
+            logger.warning(
+                "Problem Board relay turn still running after its cancel bound "
+                "worker=%s bound_seconds=%.1f",
+                channel.worker_name,
+                self.CHANNEL_TURN_CLEANUP_SECONDS,
+            )
         await self._bounded_drop_session(channel.worker_name)
         elapsed = time.monotonic() - started
         failure = RelayStageError(
