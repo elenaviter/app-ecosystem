@@ -588,8 +588,9 @@ keeps one, accumulates beside them from the first day.
 
 ## Read the scheduling table before you dispatch
 
-Before you dispatch or reroute work, and whenever a worker reaches its usage
-limit, read a fresh table of the project's Todo, Working and Review items
+Before you dispatch or reroute work, whenever a worker reaches its usage
+limit, and at each work boundary while work is active (at least every
+announcement interval), read a fresh table of the project's Todo, Working and Review items
 joined with each assignee's full alias, machine, current usage and reset,
 and presence (`pb worker context --format brief` for the team and pools,
 `assignment.list` and the plan for the items). Dispatch from that table, not
