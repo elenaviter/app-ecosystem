@@ -775,7 +775,7 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "the reload returns before that build finishes" in _words(profile)
     assert "Ask what it released" in runtime
     coordinator = _words(_read("references/coordinator.md"))
-    assert "Read this when you are about to accept, return or cancel a submission" in coordinator
+    assert "Read the section for an act when you are about to do it: accept, return or cancel a submission" in coordinator
     assert "work_review_self_forbidden" in coordinator
     assert "an `idempotency_key` you generate for this decision" in coordinator
     assert "Read the dashboard first" in coordinator
@@ -897,7 +897,7 @@ def test_a_returning_worker_starts_from_the_current_procedure() -> None:
     assert "an installed skill copy stays at the revision it was installed with" in coordinator
     assert "Compares the host's selected source (`pb source status`) and installed procedure revision (`pb procedure verify`)" in coordinator
     assert "Starts the update or reinstall the host's policy allows" in coordinator
-    assert "Asks the worker to reread the complete current skill, and the worker confirms the revision before it begins" in coordinator
+    assert "Asks the worker to load the complete current skill when its loaded revision differs from the installed one, and the worker confirms the revision before it begins" in coordinator
     assert "A worker whose info line says paused, restricted or do not use is left asleep until it is legitimately resumed" in coordinator
     assert "A project that consumes Problem Board follows its published-release policy" in coordinator
 
@@ -2259,3 +2259,62 @@ def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
     signals = _words(_read("references/signals.md"))
     assert "again only when `pb procedure verify` shows the installed revision changed by a regular upgrade" in signals
     assert "compaction lost its text" not in signals
+
+
+def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
+    # W449 (operator mandate and team poll, 2026-10-01): durable coordinator
+    # habits in their owning sections, not a separate checklist.
+    coordinator = _words(_read("references/coordinator.md"))
+    collaboration = _words(_read("references/collaboration.md"))
+    skill = _words(_read("SKILL.md"))
+
+    # A1: a section still in context is not reread; reload only on a new revision.
+    assert "A section still in your context is not read again, and the file is reloaded only with the skill, when `pb procedure verify` names a new installed revision" in coordinator
+    assert "tell active workers the new revision: each loads it once, when `pb procedure verify` names it." in skill
+    assert "tell active workers to re-read it" not in skill
+    # A2: communication comes first, without crutches.
+    assert "**Communication comes first.**" in coordinator
+    assert "Pause uncertain product writes. Keep supported status and evidence replies going" in coordinator
+    assert "A longer timeout, a retry loop, a restart, a reauthorization or a host action is not a fix." in coordinator
+    # A3: STARTED is a working report, timed from the dispatch receipt.
+    assert "## Confirm that work started" in _read("references/coordinator.md")
+    assert "STARTED is the worker's `working` report at the current ownership version." in coordinator
+    assert "Count from the dispatch receipt" in coordinator
+    assert "Never infer that work started, and never create a second owner." in coordinator
+    # A4: one dispatch note on the item.
+    assert "### Record each dispatch on the item" in _read("references/coordinator.md")
+    assert "the evidence state, one of requested, queued, applied or STARTED, never merged into one" in coordinator
+    # A5, A6: file findings; a send counts by its receipt; replies go back where they came from.
+    assert "File what you find." in coordinator
+    assert "A send of yours counts only once it returns a receipt." in coordinator
+    assert "a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there" in skill
+    # A7, A8: focus and next deployment; one delivery-state vocabulary.
+    assert "the current focus, and the next deployment" in coordinator
+    assert "| source-approved | a review verdict at the exact head |" in coordinator
+    assert "No state implies the next" in coordinator
+    # A9: close what landed.
+    assert "5. **Close what landed.**" in coordinator
+    assert "A head on `main` is not a deployment." in coordinator
+    # A10: host-action preflight.
+    assert "Before you suggest a host action" in coordinator
+    # A11: bounded rounds; adopted rules land in their owning section.
+    assert "Each round has a time box the proposer states with the questions." in collaboration
+    assert "An operator ruling on the question is adopted as given and is not put to a vote" in collaboration
+    # A13 (routing part; the product transition is W451): the coordinator routes in the turn.
+    assert "with `review.assign` naming yourself, so that you are the item's assignee" in coordinator
+    assert "An item in Review whose assignee is still its author is an unrouted review" in coordinator
+    assert "you never schedule your own acceptance" in collaboration
+    # Review return at 0e28848f (claude-app@e-home): without a specific reviewer the
+    # completion names the acting coordinator, so it never stays on its author.
+    assert "With no specific reviewer, name the acting coordinator's stable worker name in `--reviewer`" in collaboration
+    assert "with no specific reviewer, name the acting coordinator's stable worker name, so the review lands on it and not on you" in skill
+    assert "else the coordinator does (collaboration Rule 6)" not in skill
+    # A14: reconcile assignments and ask when one is unclear.
+    assert "**Reconcile your assignments, and ask when one is unclear.**" in collaboration
+    assert "never an idle wait, an invented role or a kept stale tree" in collaboration
+    assert "**An unclear assignment is a question, not an idle state.**" in coordinator
+    # Operator, 13:07Z: a fresh scheduling table before dispatch and on exhaustion.
+    assert "## Read the scheduling table before you dispatch" in _read("references/coordinator.md")
+    assert "Dispatch from that table, not from memory." in coordinator
+    assert "and at each work boundary while work is active (at least every announcement interval), read a fresh table" in coordinator
+    assert "A worker at its limit, or whose wakes are held, does not keep an actionable review or other work someone waits on" in coordinator

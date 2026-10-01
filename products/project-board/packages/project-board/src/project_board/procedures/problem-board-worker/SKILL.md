@@ -250,7 +250,7 @@ The `begin_work` reaction, in order:
    An item already in Review without the submission marker remains reviewable;
    leaving and re-entering Review requires both statements.
 5. Report `completed` with `pb worker report` against the exact
-   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names who reviews, else the coordinator does (collaboration Rule 6).
+   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names who reviews; with no specific reviewer, name the acting coordinator's stable worker name, so the review lands on it and not on you (operator, 2026-10-01; collaboration Rule 6).
 
 `working` and `blocked` are progress reports; `completed` and `refused` are
 terminal. State plus `source_event_ref` identifies one immutable report: an
@@ -419,7 +419,7 @@ Mail to the operator takes one of these kinds and nothing else:
     progress   reply     update     result
 
 `progress`, `update`, `reply` and `result` stay on the board; only `question`, `decision`,
-`blocked`, `delivery_failed` reach their Telegram. Ask for their input this way, never in a terminal prompt
+`blocked`, `delivery_failed` reach their Telegram, and a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there. Ask for their input this way, never in a terminal prompt
 (collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`. Mail about a plan item carries `--work-ref` with its `--project-ref`; only direct operator mail that names no item leaves both out.
 
 ## Runtime Actions And Test Windows
@@ -507,7 +507,7 @@ repeat a mistake, resolve the gap: with clear evidence and a clear owning rule,
 re-read the complete package, find every statement of the concept, rewrite the
 owning rule so no vague, duplicate, or contradictory guidance remains, test the
 contract, leave the revision to the merger, reinstall it, and tell active workers
-to re-read it. With uncertain ownership or policy, create a work item with the
+the new revision: each loads it once, when `pb procedure verify` names it. With uncertain ownership or policy, create a work item with the
 evidence and ask. A procedure update is a semantic revision of the affected
 contract, never an append-only note, and it carries the rule with one clause of
 reason. Incidents go to the journal, where search finds them when they are
