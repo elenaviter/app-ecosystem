@@ -91,6 +91,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-30 | Unchanged wakes reuse loaded skill instructions | A wake asks for receive and handling. An existing session reloads the worker skill only when its installed revision changed through a regular upgrade, never for mail, a turn or a compaction. Installed releases keep their source copy as SKILL.source.md, so a skill catalog shows one entry per install. |
 
 | 2026-09-30 | Operator replies retain trusted channel origin | Controls retain a safe channel label and opaque origin reference; normal local reply outboxes forward that reference while private return routes remain server-owned and fenced to the addressed worker, project and person. Source verification and remaining acceptance gates are recorded. |
+| 2026-10-01 | Origin replies bind the exact delivered operator message | Server admission checks the retained delivery receipt, rejects unrelated reply references, and leaves early replies retryable without inbox or notification side effects; red-green source evidence and pending acceptance boundaries are recorded. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
