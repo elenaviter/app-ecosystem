@@ -28,7 +28,11 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 
 from .card_refusal import actionable_card_refusal
-from .limit_state import session_with_limit_state, wake_deferred_until
+from .limit_state import (
+    qualify_limit_state,
+    session_with_limit_state,
+    wake_deferred_until,
+)
 from .runtime_model import session_with_runtime_model
 from .worktree_files import (
     MAX_OBSERVED_PATHS as MAX_OBSERVED_PATHS_DEFAULT,
@@ -61,7 +65,7 @@ from .host_config import (
     set_worker_channel_state,
 )
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
-from .runtime_account import read_runtime_account
+from .runtime_account import read_host_login, read_runtime_account
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
@@ -4067,6 +4071,13 @@ class ProblemBoardHostRelayAdapter:
             runtime_session_id=self.config.runtime_session_id,
             recorded=recorded_model,
         )
+        # W310: a Codex sample names the host login it was read under, when
+        # the login predates it. Claude Code's recorder names it when it
+        # records (``pb worker limit-state``).
+        if str(self.config.runtime_kind or "").strip().lower() == "codex" and row.get("limit_state"):
+            row["limit_state"] = qualify_limit_state(
+                row["limit_state"], read_host_login("codex")
+            )
         # W334: the wake the relay holds for this agent, on every attended
         # project's heartbeat. With no mail left there is nothing held, even
         # before the delivery loop runs again.

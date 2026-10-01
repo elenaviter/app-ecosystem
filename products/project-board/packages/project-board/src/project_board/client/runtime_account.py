@@ -11,6 +11,7 @@ import asyncio
 import base64
 import json
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -180,4 +181,38 @@ async def read_runtime_account(
     return await asyncio.to_thread(_read_runtime_account, runtime_kind, home=root)
 
 
-__all__ = ["read_runtime_account"]
+def _login_file(runtime_kind: str, *, home: Path) -> Path | None:
+    kind = str(runtime_kind or "").strip().lower()
+    if kind == "codex":
+        return home / ".codex" / "auth.json"
+    if kind in {"claude", "claude-code"}:
+        return home / ".claude.json"
+    return None
+
+
+def read_host_login(runtime_kind: str, *, home: Path | None = None) -> dict[str, str]:
+    """The host's current login account id and when its file last changed (W310).
+
+    Empty when the login cannot be read. ``changed_at`` is the login file's
+    modification time: a usage sample is known to be read under this login
+    only when the file had not changed since the sample was taken.
+    """
+
+    root = (home or Path.home()).expanduser()
+    path = _login_file(runtime_kind, home=root)
+    if path is None:
+        return {}
+    try:
+        changed = path.stat().st_mtime
+        account = _read_runtime_account(runtime_kind, home=root)
+    except (DomainError, OSError):
+        return {}
+    changed_at = (
+        datetime.fromtimestamp(changed, tz=timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    return {"account_id": account["account_id"], "changed_at": changed_at}
+
+
+__all__ = ["read_host_login", "read_runtime_account"]

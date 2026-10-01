@@ -1234,7 +1234,31 @@ def _runtime_account_brief(worker: Mapping[str, Any]) -> str:
     return (
         f"provider account: {identity} · state {state} · source {source} "
         f"· observed {observed}"
-    )
+    ) + _session_account_note(carrier if carrier is not worker else worker)
+
+
+# W310: the session's account against the host's current login, in plain words.
+_ACCOUNT_STATE_NOTES = {
+    "bound": "the session's account, proven from the session",
+    "inferred": "inferred from the host login when the board first saw the session, not proven for the session",
+    "mismatch": "first read from the host login, and the host is now logged in to another account",
+    "unknown": "not known: the host login is unread, or an earlier board replaced the first reading with a later login",
+    "unreported": "not reported",
+}
+
+
+def _session_account_note(worker: Mapping[str, Any]) -> str:
+    state = str(worker.get("account_state") or "").strip()
+    note = _ACCOUNT_STATE_NOTES.get(state)
+    return f" · {note}" if note else ""
+
+
+# W310: whose usage a sample is. Only the session's own account is capacity.
+_ATTRIBUTION_NOTES = {
+    "inferred": "not confirmed capacity: read under the host login, inferred as this session's",
+    "host_login": "not this session's capacity: read under the host's other login",
+    "unverified": "not this session's capacity: the account it was read under is not known",
+}
 
 
 def _render_worker_list(result: Mapping[str, Any]) -> list[str]:
@@ -1496,6 +1520,9 @@ def _team_usage_lines(team: Sequence[Any], *, now: datetime | None = None) -> li
             observed = str(state.get("observed_at") or "").strip()
             status += f" · source {source or 'not reported'}"
             status += f" · observed {observed or 'not reported'}"
+            attribution = _ATTRIBUTION_NOTES.get(str(state.get("attribution") or ""))
+            if attribution:
+                status += f" · {attribution}"
             passed = _passed_reset_windows(state, moment)
             if passed:
                 status += (
