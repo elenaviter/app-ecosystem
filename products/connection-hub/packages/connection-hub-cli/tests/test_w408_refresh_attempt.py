@@ -23,9 +23,21 @@ def _lost_response() -> AuthorizationError:
 
 
 def _refused() -> AuthorizationError:
+    # The token endpoint's own refusal: a 4xx with a registered OAuth error
+    # code, which the transport records as details["oauth_error"].
     error = AuthorizationError("oauth_token_request_failed", "The OAuth server rejected refresh.")
     error.status = 400
-    error.details = {"status": 400}
+    error.details = {"status": 400, "oauth_error": "invalid_grant"}
+    return error
+
+
+def _answered_without_a_grant_decision(status: int) -> AuthorizationError:
+    # A gateway, proxy or tunnel status, or a 4xx with no OAuth error body.
+    error = AuthorizationError(
+        "oauth_token_request_failed", f"OAuth token POST returned HTTP {status}."
+    )
+    error.status = status
+    error.details = {"status": status}
     return error
 
 
@@ -178,3 +190,22 @@ async def test_the_client_sends_the_attempt_only_when_it_is_well_formed() -> Non
     assert transport.forms[0]["refresh_attempt"] == "attempt-" + "d" * 40
     assert "refresh_attempt" not in transport.forms[1]
     assert "refresh_attempt" not in transport.forms[2]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [502, 503, 504, 408, 429, 400])
+async def test_an_answer_that_is_not_the_endpoint_s_refusal_keeps_the_attempt(
+    tmp_path, status
+) -> None:
+    """W408 review: a proxy's 5xx after the endpoint rotated must not drop the
+    attempt, or the next refresh sends a new one and is judged reuse."""
+
+    service, profile, credentials, oauth = _setup(tmp_path)
+    oauth.refresh_error = _answered_without_a_grant_decision(status)
+    with pytest.raises(AuthorizationError):
+        await service.refresh_access_token(profile.name)
+    first = oauth.refresh_kwargs[0]["refresh_attempt"]
+    assert credentials.values[profile.credential_ref].refresh_attempt == first
+    oauth.refresh_error = None
+    assert await service.refresh_access_token(profile.name) == "refreshed-access"
+    assert oauth.refresh_kwargs[1]["refresh_attempt"] == first, "the retry carries the same attempt"

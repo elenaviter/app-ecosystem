@@ -947,7 +947,8 @@ async def test_refresh_access_token_refused_by_the_server_keeps_the_stored_token
         "The OAuth server rejected refresh.",
     )
     refused.status = 400
-    refused.details = {"status": 400}
+    # The token endpoint's own refusal carries its OAuth error code (W408).
+    refused.details = {"status": 400, "oauth_error": "invalid_grant"}
     oauth.refresh_error = refused
     service, profiles, credentials = _service(tmp_path, oauth=oauth)
     profile = _profile()
