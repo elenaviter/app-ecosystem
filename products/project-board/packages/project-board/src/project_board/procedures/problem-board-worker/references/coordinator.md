@@ -98,6 +98,14 @@ accountability (operator, 2026-10-03).
   to a worker. A finding kept only in mail is lost to the next reader (W449).
 - Before routing, discuss the need with the candidates, then decide, then route.
   A brief carries the intention and the need; the worker derives the constraints.
+- Route a reported issue whole: investigating it is part of handling it. When
+  the operator reports issues, file each one and hand its investigation to an
+  available suitable worker before you read into it yourself. Your own reading
+  before routing is what the brief needs. Your first reply to the report names,
+  per issue, the item key and the assigned worker, or why no worker can take
+  it. Why: on 2026-10-01 the coordinator ran source searches and a
+  documentation lookup on four reported issues before routing them ("investigation
+  is also handle these issues", "you have 2 agents that do nothing", operator).
 - Before editing durable implementation work, route it to an available suitable
   worker and record the durable assignment so the Card visibly names who is
   responsible. The coordinator implements it directly only when no suitable
