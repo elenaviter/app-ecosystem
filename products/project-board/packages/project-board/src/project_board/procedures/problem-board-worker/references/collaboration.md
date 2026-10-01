@@ -566,7 +566,10 @@ the priority work you are on, what you paused, whether you take new work, and
 any restriction the operator gave you (for example, not to be used actively,
 or reviews only). Findings, checkpoint results and analysis go to mail, item
 notes and reports, not to this line. Rewrite the line when one of those facts
-changes, and clear it when nothing on it would help anyone plan. Publish it
+changes, and clear it when nothing on it would help anyone plan. A
+restriction and your status share this one line, the restriction first,
+and a rewrite keeps the restriction: everything on it serves the same
+planning, so it all belongs on this line (operator, 2026-10-01). Publish it
 with:
 
 ```bash

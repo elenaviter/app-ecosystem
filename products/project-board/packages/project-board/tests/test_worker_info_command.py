@@ -167,6 +167,7 @@ def test_the_procedure_says_what_the_line_is_for_and_when_to_read_a_teammates():
     assert "The info line says what the team needs to plan around you, and nothing else" in text
     assert "Findings, checkpoint results and analysis go to mail, item notes and reports, not to this line." in text
     assert "clear it when nothing on it would help anyone plan" in text
+    assert "A restriction and your status share this one line, the restriction first, and a rewrite keeps the restriction" in text
     assert "**Read a teammate's line before you start contact with it.**" in text
     assert "A line that says paused, restricted or do not use means you do not wake it" in text
 
