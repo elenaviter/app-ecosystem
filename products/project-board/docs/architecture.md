@@ -94,10 +94,23 @@ machine that hosts agents. It ships the worker procedure and skill.
   project mail in the machine-local Problem Board workspace, and wakes the
   session: a Codex session is woken by the relay through its native queue, a
   Claude Code session keeps one background `pb worker watch`.
+- **One turn per channel.** Each channel runs its own turn: open or reopen,
+  reconnect grace, its queued `pb coordinate` calls, attendance and its own
+  session wake. A relay cycle starts the turns that are due and waits half a
+  second at most for them, never again for a turn still running, so a slow or
+  hung channel delays only itself. A turn that ends later reports in the next
+  cycle, and a failed one wakes that cycle at once. The whole turn has a
+  300 s ceiling and then fails alone as
+  `work_relay_channel_turn_deadline_exceeded` and backs off.
 - **Credential custody.** When a person approves an agent in the browser,
   the credential for that agent's Card is stored in the machine's native
   credential store. The relay proves it and uses it. The coding-agent process
-  does not read it.
+  does not read it. A token refresh rotates the refresh token, so the relay
+  keeps the new one until it is stored: a closed channel, a busy store or a
+  reopened channel cannot drop it, and a stopping relay finishes refreshes in
+  flight for up to 10 s. A process killed during a refresh, or a token
+  response lost in transit, can still leave the spent token stored, and the
+  agent then needs re-approval.
 - **The session.** A session joins only when a person sends it through the
   installed `problem-board-worker` skill. It then uses `pb worker ...`
   commands for its own mail and reports, and `pb coordinate <operation>` for

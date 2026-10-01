@@ -9,8 +9,11 @@ import json
 import logging
 import os
 import sys
+import threading
 import time
+import traceback
 from collections import deque
+from pathlib import Path
 from contextlib import contextmanager
 from typing import Any, Callable, Iterator
 
@@ -26,6 +29,14 @@ WAIT_CONTEXT_LIMIT = 32
 LOOP_LAG_INTERVAL_SECONDS = 1.0
 LOOP_STALL_SECONDS = 1.0
 LOOP_STALL_LOG_EVERY_SECONDS = 30.0
+# W456: a stalled loop reports its stall only after it runs again, and then
+# only the length. A watchdog thread reads the loop thread's Python stack
+# while the stall is happening, so the line names the code holding the loop.
+# The sampler beats every LOOP_LAG_INTERVAL_SECONDS, so a beat older than this
+# means the loop has not run for at least two seconds.
+LOOP_BLOCKED_SECONDS = 3.0
+LOOP_WATCHDOG_INTERVAL_SECONDS = 0.5
+LOOP_BLOCKED_FRAMES = 12
 
 
 # libproc's PROC_PIDTASKINFO and the size of struct proc_taskinfo: six
@@ -114,6 +125,101 @@ def memory_log_fields() -> str:
     ) + f" rss_source={source}"
 
 
+class LoopStallWatchdog:
+    """Name the Python frames holding the relay's event loop during a stall.
+
+    The loop records a beat; a daemon thread checks it. When the beat is older
+    than ``blocked_seconds`` the thread reads the loop thread's current stack
+    and logs its innermost frames (file name, line, function; never locals),
+    once per stall and at most every ``log_every_seconds``.
+    """
+
+    def __init__(
+        self,
+        *,
+        log: logging.Logger,
+        blocked_seconds: float = LOOP_BLOCKED_SECONDS,
+        interval_seconds: float = LOOP_WATCHDOG_INTERVAL_SECONDS,
+        log_every_seconds: float = LOOP_STALL_LOG_EVERY_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._log = log
+        self.blocked_seconds = max(0.001, float(blocked_seconds))
+        self.interval_seconds = max(0.01, float(interval_seconds))
+        self.log_every_seconds = max(0.0, float(log_every_seconds))
+        self._monotonic = monotonic
+        self._beat = monotonic()
+        self._loop_thread_id: int | None = None
+        self._reported_beat: float | None = None
+        self._logged_at: float | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def beat(self) -> None:
+        self._beat = self._monotonic()
+
+    def start(self) -> None:
+        """Watch the calling thread, which runs the loop."""
+
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._loop_thread_id = threading.get_ident()
+        self.beat()
+        self._stop.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name="problem-board-relay-loop-watchdog",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval_seconds):
+            try:
+                self.check_once()
+            except Exception:  # noqa: BLE001 - diagnostics never stop the relay
+                self._log.debug("Problem Board relay loop watchdog check failed", exc_info=True)
+
+    def check_once(self) -> dict[str, Any] | None:
+        """Log and return the loop thread's frames when the loop is blocked now."""
+
+        beat = self._beat
+        now = self._monotonic()
+        blocked = now - beat
+        if blocked < self.blocked_seconds or self._reported_beat == beat:
+            return None
+        if (
+            self._logged_at is not None
+            and now - self._logged_at < self.log_every_seconds
+        ):
+            return None
+        thread_id = self._loop_thread_id
+        frame = sys._current_frames().get(thread_id) if thread_id is not None else None
+        if frame is None:
+            return None
+        frames = [
+            f"{Path(entry.filename).name}:{entry.lineno}:{entry.name}"
+            for entry in traceback.extract_stack(frame)[-LOOP_BLOCKED_FRAMES:]
+        ]
+        self._reported_beat = beat
+        self._logged_at = now
+        self._log.warning(
+            "Problem Board relay loop blocked blocked_seconds=%.3f "
+            "threshold_seconds=%.3f frames=%s",
+            blocked,
+            self.blocked_seconds,
+            json.dumps(frames, separators=(",", ":")),
+        )
+        return {"blocked_seconds": round(blocked, 3), "frames": frames}
+
+
 class RelayActivityTrace:
     """Track active and recent relay work without retaining request payloads."""
 
@@ -146,6 +252,7 @@ class RelayActivityTrace:
         # Major page faults at the previous stall or slow-cycle line: the
         # delta says whether the relay itself was paging (W448).
         self._major_faults_at_line = major_faults()
+        self.watchdog = LoopStallWatchdog(log=self._log)
 
     def _paging_log_fields(self) -> str:
         current = major_faults()
@@ -190,6 +297,7 @@ class RelayActivityTrace:
 
         interval = max(0.01, float(interval_seconds))
         while True:
+            self.watchdog.beat()
             started = time.monotonic()
             await asyncio.sleep(interval)
             self.record_loop_lag(time.monotonic() - started - interval)
@@ -382,6 +490,7 @@ class RelayActivityTrace:
 
 
 __all__ = [
+    "LoopStallWatchdog",
     "RelayActivityTrace",
     "SLOW_RELAY_SECONDS",
     "major_faults",
