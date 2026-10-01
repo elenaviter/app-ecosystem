@@ -430,6 +430,16 @@ def test_an_automatic_refusal_is_reported_never_an_empty_success(monkeypatch):
     assert report["would_remove"] == ["/root/wt/x"]
     assert "removed" not in report
 
+    # Report-only (auto-apply off): a dry run in a folder this agent does not own
+    # says so, rather than listing removals an apply would refuse (Ops, #409).
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (Path("/root"), SimpleNamespace(workspace_sweep_auto_apply=False)))
+    monkeypatch.setattr(cli, "_workspace_sweep", lambda *_a, **_k: {
+        "worker": "w", "workspace": "/root", "would_remove": ["/root/wt/x"],
+        "apply_refused": "/root is not provably this agent's. Nothing was removed.",
+    })
+    report = cli._automatic_sweep(object(), object(), object(), "idle")  # noqa: SLF001
+    assert report["state"] == "apply_refused" and "Nothing was removed" in report["reason"]
+
     monkeypatch.setattr(cli, "_workspace_sweep", lambda *_a, **_k: {"worker": "w", "workspace": "", "state": "no_workspace"})
     report = cli._automatic_sweep(object(), object(), object(), "session_start")  # noqa: SLF001
     assert report["state"] == "no_workspace" and report["reason"]

@@ -6788,12 +6788,13 @@ def _automatic_sweep(field: Any, identity: Any, args: argparse.Namespace, trigge
         result = _workspace_sweep(field, identity, args, apply=auto_apply, only_ended=True)
     except Exception as exc:  # noqa: BLE001 - housekeeping must not break the real command
         return {"trigger": trigger, "state": "failed", "reason": f"{type(exc).__name__}: {exc}"[:300]}
-    if result.get("state") in {"apply_refused", "no_workspace"}:
-        # W423: a refusal is reported as one, never as an empty successful sweep.
+    if result.get("state") in {"apply_refused", "no_workspace"} or result.get("apply_refused"):
+        # W423: a refusal is reported as one, never as an empty successful sweep,
+        # and a dry run in a folder this agent does not own is that refusal too.
         return {
             "trigger": trigger,
-            "state": result["state"],
-            "reason": str(result.get("reason") or "no workspace to sweep"),
+            "state": "apply_refused" if result.get("apply_refused") else result["state"],
+            "reason": str(result.get("reason") or result.get("apply_refused") or "no workspace to sweep"),
             "would_remove": list(result.get("would_remove") or []),
         }
     if not auto_apply:
