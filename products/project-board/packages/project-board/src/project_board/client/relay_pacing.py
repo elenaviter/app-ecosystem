@@ -558,7 +558,44 @@ def channel_reconnect_state(
     return view
 
 
+def channel_pending_refusal(
+    config_path: str | Path,
+    worker_name: str,
+) -> dict[str, Any] | None:
+    """Read the refusal the relay recorded when it parked a channel.
+
+    ``credential`` is true only when the relay's own predicate found that the
+    server refused the credential itself (``credential_refused``); a parked
+    channel without that proof says nothing about the grant. ``None`` means
+    the relay recorded no refusal for this channel, for example a profile that
+    was never authorized.
+    """
+
+    path = Path(config_path).expanduser().parent / PACING_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    pending = data.get("pending") if isinstance(data, Mapping) else None
+    record = pending.get(worker_name) if isinstance(pending, Mapping) else None
+    if not isinstance(record, Mapping):
+        return None
+    try:
+        refused_at = float(record.get("refused_at") or 0.0)
+    except (TypeError, ValueError):
+        refused_at = 0.0
+    return {
+        "permanent": record.get("permanent") is True,
+        "credential": record.get("credential") is True,
+        "reason": str(record.get("reason") or ""),
+        "refused_at": _iso(refused_at) if refused_at else "",
+    }
+
+
 __all__ = [
+    "channel_pending_refusal",
     "channel_reconnect_state",
     "RESTART_ATTEMPTED",
     "RESTART_KEPT_BACKOFF",
