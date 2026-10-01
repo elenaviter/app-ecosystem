@@ -2316,7 +2316,8 @@ def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
     assert "**Reconcile your assignments, act on each, and ask when one is unclear.**" in collaboration
     assert "never an idle wait, an invented role or a kept stale tree" in collaboration
     assert "**An unclear assignment is a question, not an idle state.**" in coordinator
-    assert "after a resume or a compaction and periodically while it works" in coordinator
+    assert "after a resume or a compaction, once per native wake batch, and periodically while it works" in coordinator
+    assert "mirror it in a note on the item and in the mail that routes it" in coordinator
     assert "and at its safe checkpoints" not in coordinator
     # Operator, 13:07Z: a fresh scheduling table before dispatch and on exhaustion.
     assert "## Read the scheduling table before you dispatch" in _read("references/coordinator.md")
