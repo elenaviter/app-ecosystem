@@ -21,6 +21,7 @@ from connection_hub.delegated_credentials.oauth.authority_store import (
     PostgresOAuthAuthorityStore,
     refresh_request_fingerprint,
 )
+from connection_hub.delegated_credentials.oauth.bearers import bearer_sha256
 from connection_hub.delegated_credentials.oauth.store import (
     GrantStore,
     RefreshTokenReuseDetected,
@@ -240,3 +241,54 @@ async def test_a_legacy_refresh_without_an_attempt_is_unchanged():
         with pytest.raises(RefreshTokenReuseDetected):
             await _refresh(store, held, "")
         assert await _family(pool, authority) == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_a_retry_racing_a_refresh_of_its_successor_never_deadlocks():
+    """W408 review: a retry locked the presented generation then the successor,
+    while an ordinary refresh of the successor locked successor then family,
+    and PostgreSQL aborted one side as a deadlock. Both now lock the family
+    first, so every round ends in one of the two outcomes the design allows."""
+
+    async with _authority() as (pool, authority, store, _held):
+        outcomes = []
+        for round_index in range(40):
+            held = await store.create_refresh_token(
+                client_id=CLIENT, sub=f"user-race-{round_index}", scopes=["records:read"],
+                registry_access_id=f"aut_race_{round_index}", card_kind="automation",
+            )
+            successor = await _lost(store, held)
+
+            async def attempt(token, fingerprint):
+                try:
+                    return ("rotated", await _refresh(store, token, fingerprint))
+                except RefreshTokenReuseDetected:
+                    return ("reuse", None)
+                except Exception as exc:  # noqa: BLE001 - a deadlock surfaces here
+                    return ("error", repr(exc))
+
+            retry, ordinary = await asyncio.gather(
+                attempt(held, _fingerprint()),
+                attempt(successor, _fingerprint(OTHER_ATTEMPT)),
+            )
+            assert retry[0] != "error" and ordinary[0] != "error", (retry, ordinary)
+            async with pool.acquire() as connection:
+                family_state = await connection.fetchval(
+                    f"SELECT family.state FROM {authority.schema}.connection_hub_oauth_credential_families AS family "
+                    f"JOIN {authority.schema}.connection_hub_oauth_refresh_generations AS generation "
+                    "ON generation.family_id = family.family_id "
+                    "WHERE generation.token_sha256 = $1",
+                    bearer_sha256(held),
+                )
+            if ordinary[0] == "rotated" and ordinary[1]:
+                # The successor was used: the retry is reuse and the family ends.
+                assert retry[0] == "reuse", (retry, ordinary)
+                assert family_state == "revoked"
+                outcomes.append("successor-first")
+            else:
+                # The retry won: the unused successor is refused, the family lives.
+                assert retry[0] == "rotated" and retry[1], (retry, ordinary)
+                assert ordinary[1] is None
+                assert family_state == "active"
+                outcomes.append("retry-first")
+        assert len(outcomes) == 40
