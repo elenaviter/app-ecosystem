@@ -212,3 +212,43 @@ at the same time: if its calls succeed, the fault is this worker's channel;
 if they fail too, it is the relay or the board. The layer-by-layer steps are
 in the
 [delivery and recovery reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/delivery-and-recovery.md#diagnosing-a-failure-layer-by-layer).
+
+### Reading an outcome-unknown failure
+
+A `data_bus_outcome_unknown` failure keeps its evidence in the channel's
+degraded-connection record (`relay_diagnostic.request` and its attempts). Read
+the fields as follows:
+
+- `ingress_ack_received: false` means only that the ingress acknowledgement
+  did not arrive. The server may still have accepted and applied the
+  operation. A retry keeps the same identity. It is not
+  `ingress_accepted: false`, which appears only on a real ingress refusal
+  (`transport_phase` `ingress.rejected`).
+- `connection_generation`, `socket_id` and `connection_active` describe the
+  socket **when the request began**. The `..._at_failure` fields describe it
+  when the wait ended. `disconnected_during_request: true` means the transport
+  dropped while the request waited.
+- `timer_overrun_seconds` is how late the deadline (`timeout_seconds`)
+  fired. When it is large, the relay's event loop or the whole process did
+  not run, for example on a paging host. A slow server does not cause it.
+
+The relay also measures its own loop. A sampler sleeps one second and records
+how late it wakes.
+
+- **Slow-cycle line:** carries the cycle's largest lag (`loop_lag_max_seconds`).
+- **Stall line:** a lag of a second or more logs `relay loop stalled` at once,
+  then at most once every 30 seconds, with the stalls in between counted.
+- **Paging and memory:** both lines carry `major_faults_delta`, the major page
+  faults since the previous line, which shows whether the relay itself was
+  paging. They also carry the current resident size `rss_bytes` (from `/proc`
+  on Linux, libproc on macOS) and the lifetime peak `rss_peak_bytes`.
+  `rss_source` names where the figures came from (`current`, `peak_only` or
+  `unavailable`), because a peak never falls.
+- **Sampler failure:** a sampler that fails logs `relay loop-lag sampler ended`
+  before it restarts. So when no stall lines appear, the sampler was running.
+
+The relay writes nothing else to files.
+
+A polling handshake that answers quickly proves that the ingress accepts new
+sessions. It does not prove that an existing WebSocket, its acknowledgements
+or its receipts are healthy (W448, 2026-10-01).

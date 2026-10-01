@@ -4502,6 +4502,7 @@ class ProblemBoardRelaySupervisor:
         # proportion to history, so it runs in a thread beside the cycle, never
         # inside it (W287, rule LS5 in storage-and-retention.md).
         self._maintenance_task: asyncio.Task | None = None
+        self._loop_lag_task: asyncio.Task | None = None
         # One drain per worker at a time, whichever path starts it. The
         # queue's claim is exclusive per request and released before the
         # request runs, so without this a side drain executing an earlier
@@ -5174,20 +5175,24 @@ class ProblemBoardRelaySupervisor:
         for key in (
             "method", "url", "server_reason", "failure_kind", "operation", "target",
             "transport_message_id", "transport_phase", "request_scope", "socket_id",
+            "socket_id_at_failure",
         ):
             value = str(details.get(key) or "").strip()
             if value:
                 evidence[key] = value
-        for key in ("ingress_accepted", "transport_replayed", "connection_active"):
+        for key in (
+            "ingress_accepted", "transport_replayed", "connection_active",
+            "ingress_ack_received", "connection_active_at_failure",
+            "disconnected_during_request",
+        ):
             if isinstance(details.get(key), bool):
                 evidence[key] = details[key]
-        try:
-            if details.get("connection_generation") is not None:
-                evidence["connection_generation"] = max(
-                    0, int(details["connection_generation"])
-                )
-        except (TypeError, ValueError):
-            pass
+        for key in ("connection_generation", "connection_generation_at_failure"):
+            try:
+                if details.get(key) is not None:
+                    evidence[key] = max(0, int(details[key]))
+            except (TypeError, ValueError):
+                pass
         status = details.get("status") if isinstance(error, RelayStageError) else details.get(
             "status", getattr(error, "status", None)
         )
@@ -5196,7 +5201,7 @@ class ProblemBoardRelaySupervisor:
                 evidence["status"] = int(status)
         except (TypeError, ValueError):
             pass
-        for key in ("elapsed_seconds", "timeout_seconds"):
+        for key in ("elapsed_seconds", "timeout_seconds", "timer_overrun_seconds"):
             try:
                 if details.get(key) is not None:
                     evidence[key] = round(max(0.0, float(details[key])), 3)
@@ -6018,6 +6023,7 @@ class ProblemBoardRelaySupervisor:
         await self.stop_coordinate_server()
         await self.stop_outbox_server()
         await self.stop_local_state_maintenance()
+        await self.stop_loop_lag_sampler()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
 
@@ -6387,6 +6393,32 @@ class ProblemBoardRelaySupervisor:
     LOCAL_STATE_MAINTENANCE_FIRST_DELAY_SECONDS = 30.0
     LOCAL_STATE_MAINTENANCE_INTERVAL_SECONDS = 300.0
 
+    def _ensure_loop_lag_sampler(self) -> None:
+        """Run the trace's event-loop lag sampler beside the channel cycle (W448)."""
+
+        task = self._loop_lag_task
+        if task is not None and task.done() and not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                # Without this line, no stall lines would read the same as
+                # no sampler at all.
+                logger.warning(
+                    "Problem Board relay loop-lag sampler ended error=%s; restarting",
+                    type(error).__name__,
+                )
+        if task is None or task.done():
+            self._loop_lag_task = asyncio.create_task(
+                self._trace.sample_loop_lag(),
+                name="problem-board-relay-loop-lag",
+            )
+
+    async def stop_loop_lag_sampler(self) -> None:
+        task = self._loop_lag_task
+        self._loop_lag_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     def _ensure_local_state_maintenance(self, field_root: Path) -> None:
         task = self._maintenance_task
         if task is None or task.done():
@@ -6585,6 +6617,7 @@ class ProblemBoardRelaySupervisor:
         with self._trace.stage("host.load", operation="relay.config"):
             host = HostRelayConfig.load(self.config_path)
         self._ensure_local_state_maintenance(host.field_root)
+        self._ensure_loop_lag_sampler()
         with self._trace.stage(
             "channels.retire_local",
             operation="terminal_listener.reconcile",
