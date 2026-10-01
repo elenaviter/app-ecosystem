@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 from pathlib import Path
 
 import pytest
 
-from project_board.client import codex_quota
+from project_board.client import codex_quota, limit_state as limit_module
 from project_board.client.limit_state import merge_codex_quota, limit_state_line
 from project_board.contract.errors import DomainError
 from test_w438_quota_redemption import _capacity, EMAIL, NOW, REFUSED
@@ -25,6 +26,9 @@ class NativeProcess:
         self.stdin = self
         self.stdout = self
         self.returncode = None
+        self.pid = 12345
+        self.signals = []
+        self.child_alive = True
         self.calls = []
         self.closed = False
         self.stopped = False
@@ -80,6 +84,15 @@ def _native(monkeypatch, **kwargs):
         return process
 
     monkeypatch.setattr(codex_quota.asyncio, "create_subprocess_exec", launch)
+
+    def stop_group(pid, sig):
+        assert pid == process.pid
+        process.signals.append(sig)
+        process.terminate()
+        if sig == signal.SIGKILL:
+            process.child_alive = False
+
+    monkeypatch.setattr(codex_quota.os, "killpg", stop_group)
     return process, launches
 
 
@@ -117,6 +130,14 @@ def test_timeout_is_bounded_and_stops_only_its_temporary_reader(monkeypatch):
     assert refused.value.code == "work_codex_quota_timeout"
     assert process.stopped and process.closed
     assert [row["method"] for row in process.calls] == ["initialize"]
+
+
+def test_promptly_exiting_shim_does_not_leave_its_native_child(monkeypatch):
+    process, _ = _native(monkeypatch)
+    asyncio.run(codex_quota.read_codex_quota(expected_email=EMAIL,
+        runtime_session_id=SESSION, executable=Path("/synthetic/codex")))
+    assert process.signals == [signal.SIGTERM, signal.SIGKILL]
+    assert not process.child_alive, "only the reader's owned process group is stopped"
 
 
 def test_wrong_initial_account_never_reads_its_quota(monkeypatch):
@@ -172,6 +193,15 @@ def test_new_positive_capacity_keeps_receive_pending_not_working():
     assert merged["reached"] == "capacity_available_receive_pending"
     assert limit_state_line(merged) == "capacity available; same-session receive pending"
     assert merged["observed_at"] == NOW and merged["limit_id"] == "codex"
+
+
+def test_receive_after_clear_compares_instants_not_timestamp_spelling(monkeypatch):
+    monkeypatch.setattr(limit_module, "codex_limit_state", lambda *_args, **_kwargs: _old())
+    row = limit_module.session_with_limit_state({
+        "last_inbox_result_at": "2026-10-01T00:41:00.000001Z"},
+        runtime_kind="codex", runtime_session_id=SESSION,
+        now="2026-10-01T00:41:01Z", recorded=_capacity(SESSION))
+    assert row["limit_state"]["reached"] == "capacity_available_receive_observed"
 
 
 @pytest.mark.parametrize("change", [

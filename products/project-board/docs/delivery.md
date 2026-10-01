@@ -178,8 +178,13 @@ session and observation time are retained locally. A newer positive reading
 must cover the exhausted bucket and window; partial, stale, other-session or
 different-account data cannot clear it. All returned buckets are checked, so
 one healthy bucket does not hide another exhausted bucket. A newer provider
-refusal still wins. A failed, unmeasured or still-exhausted read submits no
-model turn and waits for a later bounded check, without discarding pending mail.
+refusal still wins. Before the recorded reset, a failed, unmeasured or
+still-exhausted read submits no model turn and waits for a later bounded check,
+without discarding pending mail. Once the runtime's recorded reset ends the
+refusal, the ordinary one-wake reset recovery does not depend on this optional
+reader or its cached errors. A newer native exhausted measurement retains its
+own hold. The reader's temporary process group is stopped on every exit,
+including a shim that exits before its native child.
 An expired positive reading is unknown, not proof of capacity or a return to an
 older exhausted measurement.
 

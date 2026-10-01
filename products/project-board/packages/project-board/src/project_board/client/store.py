@@ -4943,7 +4943,15 @@ class SharedFieldStore:
         clean_cleared = str(cleared_at or "").strip()
         clean_refused = str(refused_at or "").strip()
         now = utc_now()
-        if not clean_cleared or not clean_refused or clean_cleared > now:
+        if not clean_cleared or not clean_refused:
+            return False
+        try:
+            cleared_time = parse_utc(clean_cleared)
+            refused_time = parse_utc(clean_refused)
+            now_time = parse_utc(now)
+        except DomainError:
+            return False
+        if cleared_time > now_time:
             return False
         path = self._worker_path(clean_name)
         with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
@@ -4953,7 +4961,8 @@ class SharedFieldStore:
                 sample = row.get("runtime_limit_state") or {}
                 account = (row.get("board_record") or {}).get("runtime_account") or {}
                 try:
-                    sample_age = (parse_utc(now) - parse_utc(quota_observed_at)).total_seconds()
+                    observed_time = parse_utc(quota_observed_at)
+                    sample_age = (now_time - observed_time).total_seconds()
                 except DomainError:
                     return False
                 if (sample.get("source") != SOURCE_CODEX_APP_SERVER or sample.get("kind") != "ok"
@@ -4961,7 +4970,7 @@ class SharedFieldStore:
                     or sample.get("runtime_session_id") != runtime_session_id
                     or row.get("runtime_session_id") != runtime_session_id
                     or sample.get("account_email_sha256") != account_fingerprint(account.get("email"))
-                    or quota_observed_at <= clean_refused
+                    or observed_time <= refused_time
                     or not 0 <= sample_age <= QUOTA_FRESH_SECONDS):
                     return False
             listener = listener_without_legacy_fields(row.get("listener"))
@@ -4977,7 +4986,11 @@ class SharedFieldStore:
             if str(subscription.get("wake_limit_rearmed_for") or "") == clean_cleared:
                 return False
             first_attempt = str(subscription.get("wake_first_attempt_at") or "")
-            if first_attempt and clean_refused < first_attempt:
+            try:
+                refused_before_attempt = bool(first_attempt and refused_time < parse_utc(first_attempt))
+            except DomainError:
+                return False
+            if refused_before_attempt:
                 # The refusal came before this wake: the wake itself was
                 # taken by a session that could run, and the ceiling stands.
                 return False

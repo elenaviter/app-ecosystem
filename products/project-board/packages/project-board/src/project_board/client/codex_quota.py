@@ -148,22 +148,26 @@ async def read_codex_quota(*, expected_email: str, runtime_session_id: str,
         if process is not None:
             if process.stdin is not None:
                 process.stdin.close()
-            if process.returncode is None:
+            # The npm shim may exit promptly while its native child remains.
+            # This new process group belongs solely to the temporary reader;
+            # stop the group even when the leader already exited, never the
+            # operator's existing console or another session's process.
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(process.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
+            finally:
+                # A child can ignore TERM even though the shim has exited.
                 try:
-                    process.terminate()
+                    os.killpg(process.pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass
-                try:
-                    await asyncio.wait_for(process.wait(), timeout=2)
-                except asyncio.TimeoutError:
-                    try:
-                        # The npm shim may have a native child. This process
-                        # group was created solely for our temporary reader;
-                        # never signal the operator's existing console.
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    await process.wait()
+            if process.returncode is None:
+                await process.wait()
 
 
 __all__ = ["read_codex_quota", "quota_state", "account_fingerprint"]

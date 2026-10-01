@@ -45,6 +45,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from ..contract.errors import DomainError
+from .io import parse_utc
+
 CODEX_SESSIONS_ROOT = Path("~/.codex/sessions")
 CODEX_TAIL_BYTES = 256 * 1024
 
@@ -687,9 +690,14 @@ def session_with_limit_state(
     current = limit_state_at(state, now=now)
     if current is not None:
         if (current.get("source") == "codex-app-server"
-            and current.get("reached") == "capacity_available_receive_pending"
-            and str(session.get("last_inbox_result_at") or "") > str(current.get("cleared_at") or "")):
-            current["reached"] = "capacity_available_receive_observed"
+            and current.get("reached") == "capacity_available_receive_pending"):
+            try:
+                received = parse_utc(str(session.get("last_inbox_result_at") or ""))
+                cleared = parse_utc(str(current.get("cleared_at") or ""))
+                if received > cleared:
+                    current["reached"] = "capacity_available_receive_observed"
+            except DomainError:
+                pass  # Missing/invalid receive evidence cannot establish handling.
         row["limit_state"] = current
     else:
         row.pop("limit_state", None)

@@ -7,7 +7,7 @@ import hashlib
 import pytest
 from types import SimpleNamespace
 
-from project_board.client import relay, store as store_module
+from project_board.client import relay, limit_state as limit_module, store as store_module
 from project_board.client.limit_state import limit_state_from_codex
 from project_board.contract.errors import DomainError
 from relay_helpers import make_supervisor
@@ -55,9 +55,16 @@ def _held(tmp_path, monkeypatch):
         return None
 
     async def notify(_host, _channel, **kwargs):
+        try:
+            field.prepare_worker_session_wake(identity.worker_name,
+                message_refs=kwargs["message_refs"], wake_id=kwargs["wake_id"], retry=True)
+        except DomainError as exc:
+            if exc.code != "field_worker_wake_conflict" or exc.details.get("reason") not in {
+                "wake_still_queued", "wake_consumed_retry_exhausted",
+            }:
+                raise
+            return {"delivered": False, "reason": exc.details["reason"]}
         pushes.append(kwargs)
-        field.prepare_worker_session_wake(identity.worker_name,
-            message_refs=kwargs["message_refs"], wake_id=kwargs["wake_id"], retry=True)
         field.record_worker_session_delivery(identity.worker_name,
             adapter="codex-queue", state="attached", event_kind="input.available",
             delivered=True, message_refs=kwargs["message_refs"], wake_id=kwargs["wake_id"],
@@ -109,6 +116,108 @@ def test_still_exhausted_and_read_errors_submit_no_model_turn(tmp_path, monkeypa
     result = asyncio.run(supervisor._notify_available_input(host, channel))
     assert result["wake_deferred"] and pushes == []
     assert result["reason"] == "work_codex_quota_account_mismatch"
+
+
+@pytest.mark.parametrize("kind", ["unknown", "rate_limited"])
+@pytest.mark.parametrize("cached_error", [False, True])
+@pytest.mark.parametrize("recorded_percent", [0, 100])
+def test_passed_reset_survives_optional_reader_failure_once_across_restart(
+    tmp_path, monkeypatch, kind, cached_error, recorded_percent,
+):
+    host, identity, channel, field, supervisor, pushes = _held(tmp_path, monkeypatch)
+    ended = {"kind": kind, "source": "codex-rollout", "observed_at": REFUSED,
+             "refusal": "usage_limit_exceeded", "resets_at": "",
+             "cleared_at": "2026-10-01T00:40:59Z"}
+    monkeypatch.setattr(relay, "session_with_limit_state",
+                        lambda listener, **_: {**listener, "limit_state": ended})
+    monkeypatch.setattr(relay, "codex_limit_state", lambda *_args, **_kwargs: ended)
+    field.record_runtime_limit_state(identity.worker_name, {
+        **_capacity(identity.runtime_session_id, percent=recorded_percent),
+        "observed_at": "2026-10-01T00:39:59Z"})
+    monkeypatch.setattr(store_module, "_future", lambda _: "2020-01-01T00:00:00Z")
+    reads = []
+
+    async def unavailable(**_kwargs):
+        reads.append(1)
+        raise DomainError("work_codex_quota_unavailable", "Synthetic reader failure.")
+
+    supervisor._codex_quota_reader = unavailable
+    if cached_error:
+        supervisor._codex_quota_refresh_at[identity.worker_name] = float("inf")
+        supervisor._codex_quota_errors[identity.worker_name] = "work_codex_quota_unavailable"
+    result = asyncio.run(supervisor._notify_available_input(host, channel))
+    assert len(pushes) == 1, "the recorded reset must retain the ordinary one-wake recovery"
+    assert pushes[0]["wake_id"] == WAKE and pushes[0]["retried"] is True
+    assert not result.get("wake_deferred") and not field.wake_hold(identity.worker_name)
+    assert reads == [], "an optional native reader must not gate an already-ended limit"
+    assert _subscription(field, identity.worker_name)["wake_limit_rearmed_for"] == ended["cleared_at"]
+    assert not _subscription(field, identity.worker_name).get("wake_quota_rearmed_for")
+
+    asyncio.run(supervisor._notify_available_input(host, channel))
+    # Consume that single retry without receiving; restarting must not grant
+    # another allowance for the same ended limit and outstanding wake.
+    for _ in range(3):
+        field.record_worker_session_queue_reconciliation(identity.worker_name,
+            expected_wake_id=WAKE, result={"reconciled": True, "queued_submission_ids": []})
+    assert _subscription(field, identity.worker_name).get("wake_retry_exhausted_since")
+    restarted = make_supervisor(host)
+    restarted._codex_quota_reader = unavailable
+    monkeypatch.setattr(restarted, "_reconcile_session_queue", supervisor._reconcile_session_queue)
+    monkeypatch.setattr(restarted, "_notify_session", supervisor._notify_session)
+    asyncio.run(restarted._notify_available_input(host, channel))
+    assert len(pushes) == 1 and reads == []
+
+
+def test_native_sample_before_microsecond_refusal_cannot_rearm(tmp_path, monkeypatch):
+    _host, identity, _channel, field, _supervisor, _pushes = _held(tmp_path, monkeypatch)
+    observed = "2026-10-01T00:40:01Z"
+    field.record_runtime_limit_state(identity.worker_name, {
+        **_capacity(identity.runtime_session_id), "observed_at": observed})
+    assert not field.rearm_limit_consumed_wake(identity.worker_name, wake_id=WAKE,
+        refused_at="2026-10-01T00:40:01.000001Z", cleared_at=observed,
+        quota_observed_at=observed, runtime_session_id=identity.runtime_session_id)
+    assert _subscription(field, identity.worker_name).get("wake_retry_exhausted_since")
+
+
+def test_projected_native_exhausted_sample_reset_uses_rollout_time_recovery(tmp_path, monkeypatch):
+    host, identity, channel, field, supervisor, pushes = _held(tmp_path, monkeypatch)
+    ended = {"kind": "rate_limited", "source": "codex-rollout", "observed_at": REFUSED,
+             "refusal": "usage_limit_exceeded", "resets_at": "",
+             "cleared_at": "2026-10-01T00:40:59Z"}
+    sample = {**_capacity(identity.runtime_session_id, percent=100),
+              "observed_at": "2026-10-01T00:40:30Z", "resets_at": ended["cleared_at"]}
+    field.record_runtime_limit_state(identity.worker_name, sample)
+    monkeypatch.setattr(limit_module, "codex_limit_state", lambda *_args, **_kwargs: ended)
+    monkeypatch.setattr(relay, "codex_limit_state", lambda *_args, **_kwargs: ended)
+    monkeypatch.setattr(relay, "session_with_limit_state", limit_module.session_with_limit_state)
+
+    async def unavailable(**_kwargs):
+        raise DomainError("work_codex_quota_unavailable", "Synthetic reader failure.")
+
+    supervisor._codex_quota_reader = unavailable
+    result = asyncio.run(supervisor._notify_available_input(host, channel))
+    assert len(pushes) == 1 and not result.get("wake_deferred")
+    assert _subscription(field, identity.worker_name)["wake_limit_rearmed_for"] == ended["cleared_at"]
+
+
+def test_newer_native_exhaustion_keeps_its_hold_after_old_rollout_reset(tmp_path, monkeypatch):
+    host, identity, channel, field, supervisor, pushes = _held(tmp_path, monkeypatch)
+    ended = {"kind": "rate_limited", "source": "codex-rollout", "observed_at": REFUSED,
+             "refusal": "usage_limit_exceeded", "resets_at": "",
+             "cleared_at": "2026-10-01T00:40:59Z"}
+    sample = _capacity(identity.runtime_session_id, percent=100)
+    field.record_runtime_limit_state(identity.worker_name, sample)
+    monkeypatch.setattr(limit_module, "codex_limit_state", lambda *_args, **_kwargs: ended)
+    monkeypatch.setattr(relay, "codex_limit_state", lambda *_args, **_kwargs: ended)
+    monkeypatch.setattr(relay, "session_with_limit_state", limit_module.session_with_limit_state)
+
+    async def unavailable(**_kwargs):
+        raise DomainError("work_codex_quota_unavailable", "Synthetic reader failure.")
+
+    supervisor._codex_quota_reader = unavailable
+    result = asyncio.run(supervisor._notify_available_input(host, channel))
+    assert result["wake_deferred"] and pushes == []
+    assert result["reason"] == "work_codex_quota_unavailable"
 
 
 def test_no_pending_work_never_submits_a_turn(tmp_path, monkeypatch):

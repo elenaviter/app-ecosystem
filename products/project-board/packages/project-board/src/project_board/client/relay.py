@@ -4829,6 +4829,15 @@ class ProblemBoardRelaySupervisor:
         worker = field.read_worker(channel.worker_name)
         if worker.get("runtime_session_id") != channel.runtime_session_id:
             return state, "work_codex_quota_session_mismatch"
+        if (_limit_ended_after_refusal(base_state)
+            and not (state.get("source") == SOURCE_CODEX_APP_SERVER
+                     and state.get("kind") in {"rate_limited", "out_of_tokens"})):
+            # The recorded reset already ended this refusal. An optional
+            # early-redemption reader (including its cached failure) cannot
+            # disable the ordinary, durable one-wake reset recovery. A newer
+            # native exhausted measurement still keeps its own hold.
+            self._codex_quota_errors.pop(channel.worker_name, None)
+            return base_state, ""
         account = field.worker_board_record(channel.worker_name).get("runtime_account") or {}
         email = str(account.get("email") or "")
         if not email:
