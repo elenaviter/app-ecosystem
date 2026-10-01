@@ -222,8 +222,20 @@ def atomic_write_text(path: Path, value: str) -> None:
             pass
 
 
+class FileLockBusy(BlockingIOError):
+    """A non-waiting ``exclusive_lock`` found the lock held by another holder."""
+
+
 @contextmanager
-def exclusive_lock(path: Path) -> Iterator[None]:
+def exclusive_lock(path: Path, *, wait: bool = True) -> Iterator[None]:
+    """Hold the exclusive advisory lock on ``path`` for the block.
+
+    ``wait=False`` never blocks: when another holder has the lock it raises
+    :class:`FileLockBusy` before the block runs. An event-loop caller uses it
+    to retry with an awaited backoff instead of stalling every channel while
+    a thread or another process holds the lock (W456).
+    """
+
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:
@@ -245,7 +257,13 @@ def exclusive_lock(path: Path) -> Iterator[None]:
             os.close(descriptor)
         raise
     with handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        if wait:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        else:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise FileLockBusy(f"The lock is held: {path}") from None
         try:
             yield
         finally:
@@ -294,6 +312,7 @@ def newest_json_records(
 
 
 __all__ = [
+    "FileLockBusy",
     "new_keyed_id",
     "atomic_write_json",
     "atomic_write_text",

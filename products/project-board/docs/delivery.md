@@ -252,6 +252,14 @@ how late it wakes.
 - **Sampler failure:** a sampler that fails logs `relay loop-lag sampler ended`
   before it restarts. So when no stall lines appear, the sampler was running.
 
+The loop itself waits on neither the outbox lock nor a directory scan.
+Claiming, settling and retrying outbox rows try the lock without waiting
+and, while another holder (the local-state maintenance thread, a `pb`
+command) has it, retry after a short awaited pause. A claim that is
+cancelled while waiting has claimed nothing. The scans that detect work
+raised on this machine run in a worker thread (W456, 2026-10-01: these two
+held every channel for 3.8 and 3.2 seconds).
+
 The relay writes nothing else to files.
 
 A polling handshake that answers quickly proves that the ingress accepts new
