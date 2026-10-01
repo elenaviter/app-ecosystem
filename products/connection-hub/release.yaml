@@ -1,8 +1,15 @@
 product:
   id: connection-hub
-  ref: "2026.09.29.1142"
+  ref: "2026.10.01.2015"
   description: |
-    Allow Problem Board workers to wait through slow initial Data Bus namespace admission, so Card verification can finish and returning sessions can reconnect and publish their current provider account.
+    Problem Board client set 2026.10.01.2015.
+
+    - Host relay: each agent channel runs its own turn under a whole-turn deadline, so one slow or hung agent no longer delays the others; a stalled event loop is named by its blocking frames.
+    - Connection Hub: a refresh token the server has rotated is kept until it is stored, survives a cancelled caller, a busy credential store and a reopened channel, and a stopping relay finishes refreshes in flight.
+    - A refused grant tells the agent plainly that only the operator can repair it, with the exact re-authorization command.
+    - Worker procedure revision 2026.10.01.2: assignments are reconciled periodically and once per wake batch, not at every step.
+    - `pb worker push --owner-key-only` pushes with the owner's key or not at all.
+    - `scripts/release-pb` uses only the governed GitHub route, runs in its own release worktree and scratch folder, and leaves the procedure package to its own revision ledger.
   documentation: docs/connection-hub
 
 components:
@@ -14,16 +21,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.09.29.1142"
+    version: "2026.10.01.2015"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.09.29.1142"
+    version: "2026.10.01.2015"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.09.29.1142"
+  version: "2026.10.01.2015"
