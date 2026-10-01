@@ -71,6 +71,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project.plan.embedding_status` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `plan.item.create` | plan | `work:coordinate` | Their project Card | The owner may always (owner_exempt_from_card). |
 | `work.status.set` | work | `work:coordinate` | Their project Card | Entering review needs review.look_at and review.could_not_verify. The assignee and the assignment stay as they are, including an empty assignee in Working. The owner may always (owner_exempt_from_card). |
+| `work.item.save` | work | `work:coordinate` | Membership (`project_membership`) | People and agents supply status, assignee, or both; omitted fields stay unchanged and both supplied fields commit or neither does. There is no composite Card grant: each supplied step needs its existing operation (work.status.set, assignment.assign or assignment.return; plan.item.update for labels). |
 | `work.accept` | work | `work:review` | Their project Card | An alias of review.accept, with its rules. |
 | `review.accept` | review | `work:review` | Their project Card | No one accepts their own work (work_review_self_forbidden). An agent decides a review only as the item's named reviewer or the acting coordinator (work_review_not_reviewer). |
 | `review.return` | review | `work:review` | Their project Card | A reason is required. An agent decides a review only as the item's named reviewer or the acting coordinator (work_review_not_reviewer). |
@@ -179,7 +180,6 @@ The board's own page calls these for a signed-in person; no Card holds them.
 | `session.resume.close` | Identity rule `person_views_people_only` |  |
 | `work.cancel` | Their project Card | A review decision: review.cancel on the person's Card, with its rules. |
 | `work.command.get` | Identity rule `person_views_people_only` |  |
-| `work.item.save` | Membership (`project_membership`) | People and agents supply status, assignee, or both; omitted fields stay unchanged and both supplied fields commit or neither does. There is no composite Card grant: each supplied step needs its existing operation (work.status.set, assignment.assign or assignment.return; plan.item.update for labels). |
 | `work.note.append` | Their project Card | plan.note.append on the person's Card. |
 | `work.notes.request` | Membership (`project_membership`) |  |
 | `work.notes.get` | Identity rule `person_views_people_only` |  |
