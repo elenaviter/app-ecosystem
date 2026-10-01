@@ -320,3 +320,70 @@ def test_status_reconnecting_says_reauthorization_is_not_indicated():
 
     assert step["step"] == "wait_for_reconnect"
     assert "does not indicate that re-authorization is needed" in step["explain"]
+
+
+# -- a pending channel the relay keeps retrying: still retryable ---------------
+
+
+def _pending_retrying(host, identity, reason: str) -> None:
+    """What the relay's pending loop records for a retryable failure."""
+
+    state = _pacing(host.path)
+    state.record_pending_refusal(
+        identity.worker_name,
+        fingerprint="fingerprint",
+        permanent=False,
+        reason=reason,
+        credential=False,
+    )
+    state.record_failure(identity.worker_name, reason)
+    host_config.set_worker_channel_state(
+        host.path, identity=identity, state="pending_authorization", expected_state="active"
+    )
+
+
+TRANSIENT_REASONS = (
+    "oauth_mcp_endpoint_unreachable",
+    "oauth_token_request_failed",
+    "oauth_profile_lock_timeout",
+)
+
+
+@pytest.mark.parametrize("reason", TRANSIENT_REASONS)
+def test_a_pending_channel_retrying_a_transient_failure_stays_retryable(tmp_path, reason):
+    host, identity, _channel = _host(tmp_path)
+    _pending_retrying(host, identity, reason)
+
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_coordinate_args(host, identity))
+
+    error = refused.value
+    assert error.code == "work_coordinate_channel_reconnecting"
+    assert error.details["retryable"] is True
+    assert error.details["reauthorization_indicated"] is False
+    assert error.details["channel_state"] == "pending_authorization"
+    assert error.details["last_error"] == reason
+    assert error.details["next_attempt_at"]
+    assert "required_action" not in error.details
+    assert "who_acts" not in error.details
+    assert "does not indicate that re-authorization is needed" in str(error)
+
+
+@pytest.mark.parametrize("reason", TRANSIENT_REASONS)
+def test_a_linked_send_on_a_retrying_pending_channel_is_retryable_before_the_item_check(
+    tmp_path, no_item_check, reason
+):
+    host, identity, _channel = _host(tmp_path)
+    _pending_retrying(host, identity, reason)
+
+    with pytest.raises(DomainError) as refused:
+        cli._worker_command(
+            _send_args(host, identity, project_ref=PROJECT_REF, work_ref=WORK_REF)
+        )
+
+    error = refused.value
+    assert error.code == "work_send_channel_reconnecting"
+    assert error.details["retryable"] is True
+    assert error.details["delivered"] is False
+    assert error.details["reauthorization_indicated"] is False
+    assert "required_action" not in error.details

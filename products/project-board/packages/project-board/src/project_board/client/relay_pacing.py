@@ -562,13 +562,15 @@ def channel_pending_refusal(
     config_path: str | Path,
     worker_name: str,
 ) -> dict[str, Any] | None:
-    """Read the refusal the relay recorded when it parked a channel.
+    """Read the refusal the relay recorded for a channel waiting for authorization.
 
     ``credential`` is true only when the relay's own predicate found that the
     server refused the credential itself (``credential_refused``); a parked
-    channel without that proof says nothing about the grant. ``None`` means
-    the relay recorded no refusal for this channel, for example a profile that
-    was never authorized.
+    channel without that proof says nothing about the grant. ``permanent`` is
+    false when the relay keeps retrying a transient failure (an unreachable
+    endpoint, a lock timeout); then ``retry`` carries its attempts and next
+    attempt time. ``None`` means the relay recorded no refusal for this
+    channel, for example a profile that was never authorized.
     """
 
     path = Path(config_path).expanduser().parent / PACING_FILENAME
@@ -586,11 +588,14 @@ def channel_pending_refusal(
         refused_at = float(record.get("refused_at") or 0.0)
     except (TypeError, ValueError):
         refused_at = 0.0
+    channels = data.get("channels")
+    backoff = channels.get(worker_name) if isinstance(channels, Mapping) else None
     return {
         "permanent": record.get("permanent") is True,
         "credential": record.get("credential") is True,
         "reason": str(record.get("reason") or ""),
         "refused_at": _iso(refused_at) if refused_at else "",
+        "retry": _channel_view(backoff, time.time()) if isinstance(backoff, Mapping) else None,
     }
 
 

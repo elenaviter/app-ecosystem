@@ -2401,6 +2401,27 @@ def _channel_not_usable_error(
             details={**base, "who_acts": "operator", "retryable": False},
         )
     refusal = channel_pending_refusal(config_path, channel.worker_name)
+    if refusal is not None and not refusal["permanent"]:
+        # The relay is still retrying a transient failure on this channel (an
+        # unreachable endpoint, a lock timeout, a transport fault): the
+        # outcome stays retryable and says nothing about the grant.
+        retry = dict(refusal.get("retry") or {})
+        reconnect = {
+            "reason": refusal["reason"],
+            "attempts": retry.get("attempts") or 0,
+            "schedule": retry.get("schedule") or "backoff",
+            "next_attempt_at": retry.get("next_attempt_at") or "",
+        }
+        error = (
+            _send_channel_reconnecting_error(
+                channel.worker_name, reconnect, idempotency_key=idempotency_key
+            )
+            if sending
+            else _channel_reconnecting_error(channel.worker_name, reconnect)
+        )
+        error.details["channel_state"] = channel.state
+        error.details["retryable"] = True
+        return error
     if refusal is not None and refusal["credential"]:
         reason = refusal["reason"] or "the credential was refused"
         when = f" at {refusal['refused_at']}" if refusal["refused_at"] else ""
