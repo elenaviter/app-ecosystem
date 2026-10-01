@@ -6430,8 +6430,12 @@ class ProblemBoardRelaySupervisor:
                 self._trace.sample_loop_lag(),
                 name="problem-board-relay-loop-lag",
             )
+            # The sampler's beat feeds the watchdog thread, which names the
+            # frames holding the loop while a stall is happening (W456).
+            self._trace.watchdog.start()
 
     async def stop_loop_lag_sampler(self) -> None:
+        self._trace.watchdog.stop()
         task = self._loop_lag_task
         self._loop_lag_task = None
         if task is not None and not task.done():
