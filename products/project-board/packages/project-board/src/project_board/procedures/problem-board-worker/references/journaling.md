@@ -70,6 +70,8 @@ Leave out what nobody will need. Do not invent sections to fill a template.
 | An operator ruling, with its reason | The project journal, and a note on the item it decides |
 | A practice useful to any coordinator or worker, on any project | This procedure, through a change request |
 | A behaviour of Problem Board itself | The public documentation, in the same change as the code (collaboration, rule 13) |
+| How an app feature works now: its contract, nuances, rejected approaches and open gaps | The feature's owning doc, updated in the same change; the journal entry links the doc, and the doc links the item |
+| A unique finding from a scratch run (a review result, a probe's outcome) | An applied note on the item, or a tracked file, before the run is closed; the run records that reference ([project workspace](project-workspace.md), section 6) |
 | A personal preference of one agent's user | That agent's private memory, and nothing else |
 
 Knowledge kept only in one agent's private memory is lost to every other

@@ -322,6 +322,7 @@ disturb the work in hand, and a disk does not fill with forgotten copies
 | `<workspace>/<alias>` | **the clean clone** from step 2. It stays on its declared branch, is clean, and is fetched and fast-forwarded (`git merge --ff-only origin/<branch>`), not only fetched. Step 5, the relay's journal views and every test overlay read its working tree. A work branch, a work in progress or a tool's commit here would change what they read. If the fast-forward refuses, the clone is not clean: stop and report it, never reset it. |
 | `<workspace>/wt/<item>-<alias>` | one worktree per assignment and repository, on the assignment's work branch: `git -C <workspace>/<alias> worktree add <workspace>/wt/<item>-<alias> -b <branch> origin/<base>`. A change pair across repositories is one worktree in each. A journal edit reuses this worktree when the item already binds the journal repository; otherwise it gets `<workspace>/wt/<item>-<journal-alias>` and a feature-bound branch and change request of its own. No per-agent journal worktree or branch spans unrelated items. |
 | `<workspace>/rv/<item>-<alias>-<short sha>` | one worktree per review, returned-item check or tested merge, **detached** at the exact commit you examine: `git -C <workspace>/<alias> worktree add --detach <path> <sha>`. A review never moves anyone's branch. |
+| `<workspace>/scratch/<item>/<run>` | work files that are not git trees (reports, probes, payloads, logs), one run folder per job, made by `pb worker scratch --new`. Nothing else sits loose at the workspace root. |
 
 - **Nothing goes to a temporary or hidden folder outside the workspace.** A
   copy there is invisible to the person, and nothing cleans it up.
@@ -346,23 +347,55 @@ pb worker workspace --assignment-ref <assignment> --repository <repo> --path <wo
 pb worker workspace --kind review --assignment-ref <reviewed item work_ref> --repository <repo> --path <workspace>/rv/<item>-<alias>-<sha> --item <Wn>
 ```
 
-A tree's job ends when its review decision is recorded through
-`pb coordinate review.*`, when its branch moved past the head it was registered
-at and is merged, or when you say so with
+A tree's job ends only when its end is recorded: its review decision through
+`pb coordinate review.*`, or your own
 `pb worker workspace --end --path <path> --reason "<change request closed | released>"`.
-Ancestry alone never ends a job: a tree whose head is in main may be work just
-started. An unregistered tree (one made before this rule) therefore ends only
-by `--end --path`.
+Being merged never ends a job: a merged tree may still serve a pending review
+or a release.
 `pb worker workspace --sweep` lists every tree in your workspace, registered or
-not, with its state, size and what `--apply` would do. `--apply` removes a tree
-only when its job ended **and** nothing could be lost: no uncommitted change,
-no untracked file, no commit that no remote has, no other tree linking into it
-(a shared `node_modules`), and not a protected path. It uses
-`git worktree remove` without force, `git branch -d` for a merged branch and
-`git worktree prune`, and names every tree it keeps with the reason. The clean
-clone is never removed. Gitignored files (build output, `node_modules`,
-ignored test results or screenshots) go with a removed tree: keep evidence in a
-tracked file or a scratch path outside it.
+not, with its state, size and what `--apply` would do, and records that list.
+`--apply` removes a tree only when its job ended **and** nothing could be lost,
+and the last `--sweep` listed it in the same state:
+
+- nothing unique in it: no uncommitted change, no untracked file, no commit
+  that no remote has, and no gitignored file you did not declare regenerable.
+  Ignored test results, screenshots and captures can be the only copy of a
+  finding, and a folder name (`build`, `dist`, a cache) proves nothing. Declare
+  what a command makes again:
+  `pb worker workspace --path <tree> --generated node_modules --generated-by "npm ci"`;
+- nothing still needs it: its item is Done or Cancelled on the board (an open
+  item, or a state the sweep cannot read, keeps it), no consumer pinned it
+  (`pb worker workspace --path <tree> --pin "<release or review>"`, cleared
+  with `--unpin`), no other tree links into it, and it is not a protected path.
+
+It uses `git worktree remove` without force, `git branch -d` for a merged
+branch and `git worktree prune`, and names every tree it keeps with the reason.
+The clean clone is never removed.
+
+**Work files live in a scratch run, and go only after their content is safe
+(W423).** Reports, probes, payloads and logs that are not part of a tree go
+into one run folder per job:
+
+```bash
+pb worker scratch --new --item <Wn> --purpose "<why this run exists>"
+pb worker scratch --record --run <run> --file <file> --published "repo:<alias>/<path>@<commit>"
+pb worker scratch --record --run <run> --file <file> --generated-by "<command that makes it again>"
+pb worker scratch --close --run <run> --reason "<why the job is over>" --findings "repo:<alias>/<path>@<commit>"
+```
+
+Record each file as you finish it: where its content now lives, or the command
+that makes it again. `--consumer` names a review, change request or release
+that still needs the run, and `--consumer-done` clears it. Close the run when
+the job is over, naming where its findings are published. Publish a unique
+finding first, in an applied item note or a tracked file, then record it.
+The sweep removes a run only when you closed it, its item is Done or Cancelled
+on the board, every file is recorded, unchanged, not a link and published or
+regenerable, the published references verify in your clone's default branch,
+no consumer is open, and the last `--sweep` listed it unchanged. A receipt of
+what was removed is written first, under `.problem-board/scratch-receipts/`.
+Anything unknown, unreadable, changed or offline keeps the run, and age only
+flags it for review. Files loose at the workspace root are listed by the sweep
+and never removed: move them into a run.
 
 The sweep also runs without anyone remembering: at session start
 (`pb worker listen`), on `pb worker idle`, and after a review decision recorded
@@ -374,9 +407,10 @@ automatic runs only report what they would remove
   every worktree's Git data. A tree the sweep keeps is yours to finish, push or
   remove by hand with `git worktree remove`.
 - Remote branches are the merger's to delete.
-- A review tree goes as soon as the verdict is recorded. Its installed packages
-  (for example a widget's `node_modules`) go with it, unless another tree still
-  links into them.
+- A review tree goes as soon as the verdict is recorded and its item is
+  closed. Its installed packages (for example a widget's `node_modules`) go with it
+  when you declared them with `--generated`, unless another tree still links
+  into them.
 - The first real sweep on a host with an existing pile is the operator's
   decision, and so is turning automatic removal on; until then, `--sweep`
   without `--apply` shows what would go.

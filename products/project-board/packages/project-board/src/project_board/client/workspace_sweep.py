@@ -12,29 +12,33 @@ tree whose job ended and that is safe to lose.
 A tree is removed only when all of these hold:
 
 - its job ended: its registration recorded an end (a review decision, the
-  agent's own ``--end``), or it is a registered tree whose head moved past the
-  head it was registered at and is already in the clone's default branch on
-  origin (merged);
-- nothing is lost: no uncommitted change, no untracked file, no commit that no
-  remote has;
-- nothing depends on it: no other tree's symlink points into it, and it is not
-  a protected (runtime-mounted) path.
+  agent's own ``--end``). Being merged is reported, and never ends a job: a
+  merged tree can still serve a pending review or a release;
+- nothing is lost: no uncommitted change, no untracked file (nested ones
+  included), no ignored file its owner did not declare regenerable for this
+  tree (``--generated <path> --generated-by <command>``; a folder name such as
+  build or dist proves nothing), no commit that no remote has;
+- nothing depends on it: its item is Done or Cancelled on the board (an item
+  still open, or a state that cannot be read, keeps it), no consumer pinned it
+  (``--pin``), no other tree's symlink points into it, and it is not a
+  protected (runtime-mounted) path;
+- the last dry run listed it with the same head, status and ignored files.
 
 Everything else is kept and named with its reason. Removal is ``git worktree
 remove`` without force, then ``git branch -d`` for a merged local branch, then
 ``git worktree prune``. A clone at the workspace root is never removed.
 
-Ancestry alone never ends a job: a fresh tree cut from main is an ancestor of
-main, and so is an active tree whose agent has not committed yet. A registered
-tree counts as merged only after its head moved past the head it was registered
-at, and an unregistered tree ends only when its end is recorded by path
-(``pb worker workspace --end --path``). Gitignored files (build output, ``node_modules``,
-ignored test results) are not "untracked" to git and go with a removed tree,
-so evidence belongs in a tracked file or a scratch path outside the tree.
+Ancestry never ends a job: a fresh tree cut from main is an ancestor of main,
+and a merged tree may still be what a review or a release reads. A tree ends
+only when its end is recorded: the review decision for a review tree, or
+``pb worker workspace --end --path`` by its owner. Gitignored files (test
+results, captures) can be the only copy of a finding, so they keep the tree
+unless its owner declared that path regenerable with the command that makes it.
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -90,6 +94,9 @@ class Tree:
     registration: dict[str, Any] | None = None
     dirty: list[str] = field(default_factory=list)
     untracked: list[str] = field(default_factory=list)
+    ignored: list[str] = field(default_factory=list)
+    pinned_by: list[str] = field(default_factory=list)
+    consumers: list[str] = field(default_factory=list)
     unpushed: int = 0
     merged: bool = False
     ended: str = ""
@@ -99,6 +106,14 @@ class Tree:
     @property
     def removable(self) -> bool:
         return self.kind not in {"clone", "orphan"} and bool(self.ended) and not self.keep
+
+    @property
+    def fingerprint(self) -> str:
+        """What the dry run judged: --apply removes the tree only if this is unchanged."""
+
+        parts = [self.head, self.ended, str(self.unpushed), *sorted(self.dirty), *sorted(self.untracked),
+                 *sorted(self.ignored), *sorted(self.pinned_by), *sorted(self.consumers)]
+        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -111,6 +126,10 @@ class Tree:
             "ended": self.ended,
             "dirty": list(self.dirty),
             "untracked": list(self.untracked),
+            "ignored": list(self.ignored),
+            "pinned_by": list(self.pinned_by),
+            "consumers": list(self.consumers),
+            "merged": self.merged,
             "unpushed_commits": self.unpushed,
             "keep": list(self.keep),
             "action": "remove" if self.removable else "keep",
@@ -181,8 +200,19 @@ def inspect_workspace(
     *,
     protected: Sequence[Path | str] = (),
     measure: bool = True,
+    pins: Mapping[str, Sequence[str]] | None = None,
+    generated: Mapping[str, Mapping[str, str]] | None = None,
+    consumers: Callable[[str], Sequence[str] | None] | None = None,
 ) -> list[Tree]:
-    """Every tree in one agent's workspace, with its state and the decision."""
+    """Every tree in one agent's workspace, with its state and the decision.
+
+    ``pins`` maps a tree's resolved path to the consumers that still need it;
+    the key ``*`` pins every tree (an unreadable pin record). ``generated``
+    maps a tree's resolved path to the ignored paths its owner declared
+    regenerable. ``consumers`` answers, for an item key, what still needs that
+    item's trees: an empty list when the item is Done or Cancelled, None when
+    its state cannot be read (the tree is then kept).
+    """
 
     root = Path(workspace).expanduser()
     registered = {
@@ -219,26 +249,45 @@ def inspect_workspace(
                 continue
             code, out = _git(path, "status", "--porcelain", "--untracked-files=no")
             tree.dirty = [line[3:] for line in out.splitlines() if line.strip()] if not code else ["<status unreadable>"]
-            code, out = _git(path, "status", "--porcelain", "--untracked-files=normal")
-            tree.untracked = [line[3:] for line in out.splitlines() if line.startswith("?? ")] if not code else []
+            code, out = _git(path, "status", "--porcelain", "--untracked-files=all")
+            tree.untracked = [line[3:] for line in out.splitlines() if line.startswith("?? ")] if not code else ["<status unreadable>"]
+            code, out = _git(path, "ls-files", "--others", "--ignored", "--exclude-standard", "--directory")
+            if code:
+                tree.ignored = ["<ignored files unreadable>"]
+            else:
+                declared = [rel.strip("/") for rel in ((generated or {}).get(key) or {})]
+                tree.ignored = [
+                    line for line in (entry.strip() for entry in out.splitlines())
+                    if line and not any(line.rstrip("/") == rel or line.startswith(rel + "/") for rel in declared)
+                ]
+            tree.pinned_by = sorted({*((pins or {}).get(key) or ()), *((pins or {}).get("*") or ())})
             code, out = _git(path, "rev-list", "--count", "HEAD", "--not", "--remotes")
             tree.unpushed = int(out.strip()) if not code and out.strip().isdigit() else -1
             if default:
                 tree.merged = _git(path, "merge-base", "--is-ancestor", "HEAD", default)[0] == 0
-            # Ancestry alone never ends a job (a fresh or not-yet-committed
-            # tree is an ancestor of main). A registered tree is finished by
-            # merge only once it moved past the head it was registered at; an
-            # unregistered tree only by a recorded end.
-            base_head = str((registration or {}).get("base_head") or "")
-            moved_and_merged = bool(tree.merged and base_head and full_head and full_head != base_head)
+            # Only a recorded end finishes a job. Being merged is a fact the
+            # report shows; a merged tree may still serve a review or a release.
             if registration and registration.get("ended_at"):
                 tree.ended = str(registration.get("end_reason") or "ended")
-            elif moved_and_merged:
-                tree.ended = f"merged into {default}"
             if tree.dirty:
                 tree.keep.append(f"uncommitted changes: {', '.join(tree.dirty[:5])}")
             if tree.untracked:
                 tree.keep.append(f"untracked files (evidence?): {', '.join(tree.untracked[:5])}")
+            if tree.ignored:
+                tree.keep.append(f"ignored files outside regenerable folders (evidence?): {', '.join(tree.ignored[:5])}")
+            if tree.pinned_by:
+                tree.keep.append(f"pinned by {', '.join(tree.pinned_by)}")
+            if consumers is not None:
+                item = str((registration or {}).get("item") or "")
+                found = consumers(item) if item else None
+                if found is None:
+                    tree.consumers = [f"item {item or '(none recorded)'}: state unknown"]
+                    tree.keep.append(
+                        f"consumer state unknown (item {item or 'not recorded'}; offline or unreadable)"
+                    )
+                elif found:
+                    tree.consumers = list(found)
+                    tree.keep.append(f"still needed: {', '.join(found)}")
             if tree.unpushed:
                 tree.keep.append("commits no remote has" if tree.unpushed > 0 else "push state unreadable")
             if any(_is_inside(path, guard) or _is_inside(guard, path) for guard in protected_roots):
@@ -246,7 +295,9 @@ def inspect_workspace(
             if not tree.ended and registration is None:
                 tree.keep.append("unregistered: job end unknown; record it with pb worker workspace --end --path <tree>")
             elif not tree.ended:
-                tree.keep.append("job not ended (no recorded end, no merged commit since registration)")
+                tree.keep.append(
+                    "job not ended (no recorded end" + ("; merged, which alone never ends a job)" if tree.merged else ")")
+                )
             trees.append(tree)
     # Directories under wt/ and rv/ that no clone knows are leftovers to name.
     for folder in TREE_FOLDERS:
@@ -282,13 +333,20 @@ def apply_sweep(
     trees: Sequence[Tree],
     *,
     forget: Callable[[Path], None] | None = None,
+    planned: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Remove the removable trees, never with force; name what was kept and why."""
+    """Remove the removable trees, never with force; name what was kept and why.
+
+    With ``planned`` (path -> fingerprint from the last dry run), a tree is
+    removed only when the dry run listed it with the same fingerprint.
+    """
 
     removed: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
     clones: set[Path] = set()
     for tree in trees:
+        if tree.removable and planned is not None and planned.get(str(tree.path)) != tree.fingerprint:
+            tree.keep.append("not listed with this state by the last dry run: run --sweep first")
         if not tree.removable or tree.clone is None:
             continue
         code, out = _git(tree.clone, "worktree", "remove", str(tree.path))

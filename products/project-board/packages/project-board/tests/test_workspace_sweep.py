@@ -93,7 +93,8 @@ def by_path(trees):
 def test_only_ended_clean_pushed_unlinked_trees_are_removed(workspace):
     registrations = [
         {"path": str(workspace["merged"]), "kind": "implementation", "item": "W2",
-         "base_head": workspace["base"]},
+         "base_head": workspace["base"], "ended_at": "2026-09-30T19:00:00Z",
+         "end_reason": "change request merged"},
         {"path": str(workspace["review"]), "kind": "review", "item": "W6",
          "ended_at": "2026-09-30T19:00:00Z", "end_reason": "review decision recorded (review.accept)"},
         {"path": str(workspace["unpushed"]), "kind": "implementation", "item": "W4",
@@ -209,14 +210,20 @@ def test_a_fresh_registered_tree_is_not_finished_work(workspace):
     # Without a base head, a registered tree ends only by a recorded end.
     rows = by_path(inspect_workspace(workspace["ws"], [{"path": str(fresh), "kind": "implementation"}]))
     assert not rows[str(fresh)].removable
-    # Once it moved past its base and that head is merged, it is finished.
+    # W423 o5: moving past its base and being merged still does not end the
+    # job: a merged tree may serve a pending review or a release. Only a
+    # recorded end does.
     commit(fresh, "w900")
     git(fresh, "push", "-q", "origin", "work/w900")
     git(clone, "merge", "-q", "--ff-only", "origin/work/w900")
     git(clone, "push", "-q", "origin", "main")
     git(clone, "fetch", "-q", "origin")
     rows = by_path(inspect_workspace(workspace["ws"], [registration]))
-    assert rows[str(fresh)].removable and rows[str(fresh)].ended.startswith("merged into")
+    assert rows[str(fresh)].merged and not rows[str(fresh)].removable
+    assert any("merged, which alone never ends a job" in reason for reason in rows[str(fresh)].keep)
+    ended = {**registration, "ended_at": "2026-10-01T09:00:00Z", "end_reason": "change request merged"}
+    rows = by_path(inspect_workspace(workspace["ws"], [ended]))
+    assert rows[str(fresh)].removable and rows[str(fresh)].ended == "change request merged"
 
 
 def test_automatic_apply_is_off_until_the_host_turns_it_on(monkeypatch):
@@ -274,10 +281,13 @@ def test_the_procedure_owns_registration_the_sweep_and_its_triggers():
     workspace = " ".join((procedures / "references" / "project-workspace.md").read_text(encoding="utf-8").split())
     assert "**Register every tree, and let the sweep remove what is finished (W423).**" in workspace
     assert "pb worker workspace --kind review --assignment-ref <reviewed item work_ref>" in workspace
-    assert "`--apply` removes a tree only when its job ended **and** nothing could be lost" in workspace
+    assert "`--apply` removes a tree only when its job ended **and** nothing could be lost, and the last `--sweep` listed it in the same state" in workspace
     assert "at session start (`pb worker listen`), on `pb worker idle`, and after a review decision recorded through `pb coordinate`" in workspace
     assert "Until the operator turns it on for the host, these automatic runs only report what they would remove (`pb host configure --workspace-sweep-auto-apply`" in workspace
-    assert "Gitignored files (build output, `node_modules`, ignored test results or screenshots) go with a removed tree" in workspace
+    # W423 o5: ignored files keep a tree unless declared; only a recorded end ends a job.
+    assert "Being merged never ends a job" in workspace
+    assert "a folder name (`build`, `dist`, a cache) proves nothing" in workspace
+    assert "its item is Done or Cancelled on the board (an open item, or a state the sweep cannot read, keeps it)" in workspace
     assert "The first real sweep on a host with an existing pile is the operator's decision" in workspace
     assert "Never `rm -rf` a worktree folder" in workspace
     skill = (procedures / "SKILL.md").read_text(encoding="utf-8")
