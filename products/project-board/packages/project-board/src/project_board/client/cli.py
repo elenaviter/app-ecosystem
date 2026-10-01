@@ -958,14 +958,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Publish one line about this agent that everyone on its projects "
             "must know, for example that the operator told it not to be used "
             "actively. It shows first on every card of the agent and in the "
-            "team of pb worker context. Clear it with --clear when it no longer "
-            "holds. Without arguments, show the current line."
+            "team of pb worker context. `show` prints the current line, "
+            "`write \"<line>\"` replaces it, `clear` removes it when it no "
+            "longer holds."
         ),
     )
     _host_config(command)
     _agent_identity(command)
-    command.add_argument("text", nargs="?", default=None, help="The line, at most 200 characters.")
-    command.add_argument("--clear", action="store_true", help="Remove the line from every card.")
+    command.add_argument(
+        "action", nargs="?", default=None, metavar="{show,write,clear}",
+        help="show (the default) prints the line, write replaces it, clear removes it from every card.",
+    )
+    command.add_argument("text", nargs="?", default=None, help="With write: the line, at most 200 characters.")
 
     command = worker_commands.add_parser(
         "workspace-report",
@@ -4462,18 +4466,28 @@ def _review_routing(args: Any) -> dict[str, Any]:
 
 
 def _worker_info_command(args: Any, field: Any, identity: Any) -> dict[str, Any]:
-    """pb worker info: record the agent's one-line note for the relay's next heartbeat (W330)."""
+    """pb worker info show|write|clear: the agent's one-line note, sent on the relay's next heartbeat (W330).
 
-    if args.clear and args.text:
-        raise DomainError("field_worker_info_arguments", "--clear takes no text.")
-    if args.text is not None and not args.clear:
-        if not str(args.text).strip():
+    Each change names its verb, so a command that reads the line never writes
+    it: a bare argument is refused, not taken as a new line (operator, 2026-10-01).
+    """
+
+    action = args.action or "show"
+    if action not in {"show", "write", "clear"}:
+        raise DomainError(
+            "field_worker_info_arguments",
+            "Name the action: pb worker info show, pb worker info write \"<line>\", or pb worker info clear.",
+        )
+    if action in {"show", "clear"} and args.text is not None:
+        raise DomainError("field_worker_info_arguments", f"pb worker info {action} takes no text.")
+    if action == "write":
+        if args.text is None or not str(args.text).strip():
             raise DomainError(
                 "field_worker_info_arguments",
-                "Give the line in quotes, or --clear to remove it.",
+                "Give the line in quotes: pb worker info write \"<line>\".",
             )
         info = field.set_worker_info(identity.worker_name, args.text)
-    elif args.clear:
+    elif action == "clear":
         info = field.set_worker_info(identity.worker_name, "")
     else:
         info = field.worker_info(identity.worker_name)
@@ -4493,7 +4507,7 @@ def _worker_info_command(args: Any, field: Any, identity: Any) -> dict[str, Any]
                 if on_board
                 else (
                     "Recorded. The relay sends it with its next heartbeat, within about two minutes; "
-                    "run pb worker info again to see on_board = True."
+                    "run pb worker info show to see on_board = True."
                 )
             )
         ),

@@ -421,7 +421,7 @@ Deferring a step and pausing an agent are different. A step that neither fits be
 
 After the reset, it reads usage again before it resumes, then resumes by the plan.
 
-**A paused agent says so on its card.** An agent that consciously decides not to work, because of quota, waiting for a person, or a block, sets `pb worker info "Paused by choice: <reason>, resumes <time>"` and clears it with `pb worker info --clear` when it resumes. The coordinator checks that every paused agent shows the line.
+**A paused agent says so on its card.** An agent that consciously decides not to work, because of quota, waiting for a person, or a block, sets `pb worker info write "Paused by choice: <reason>, resumes <time>"` and clears it with `pb worker info clear` when it resumes. The coordinator checks that every paused agent shows the line.
 
 Weekly caps the operator sets per pool stay in force, and they live on the facts page. An agent gets an assignment when the task's next bounded phase fits the capacity it has before its reset, safely crosses the reset, or starts after it.
 

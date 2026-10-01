@@ -1,9 +1,9 @@
 """An agent publishes one line about itself on every card (W330).
 
-`pb worker info "<text>"` records the line locally; the relay carries it on
+`pb worker info write "<text>"` records the line locally; the relay carries it on
 its next heartbeat, which every worker Card already holds, so no Card is
 re-approved for it. The board answers with the stored line, and the command
-then says the line is on the board. `--clear` sends an empty line, which
+then says the line is on the board. `clear` sends an empty line, which
 removes it; a worker that never set one sends no key, so the board keeps what
 it has. Teammates read the line in the team of `pb worker context`.
 """
@@ -57,16 +57,16 @@ def test_set_publish_show_clear_and_the_team_reads_it(tmp_path, monkeypatch):
     # Never set: the heartbeat carries no key, so the board keeps its value.
     asyncio.run(adapter.poll_attendances_once())
     assert all("worker_info" not in payload for payload in _heartbeats(board))
-    assert _cli(identity, "info")["rule"].startswith("Never set")
+    assert _cli(identity, "info", "show")["rule"].startswith("Never set")
 
-    recorded = _cli(identity, "info", LINE)
+    recorded = _cli(identity, "info", "write", LINE)
     assert recorded["info_text"] == LINE
     assert recorded["on_board"] is False
     assert "within about two minutes" in recorded["rule"]
 
     asyncio.run(adapter.poll_attendances_once())
     assert _heartbeats(board)[-1]["worker_info"] == {"text": LINE}
-    shown = _cli(identity, "info")
+    shown = _cli(identity, "info", "show")
     assert shown["on_board"] is True and shown["info_text"] == LINE
 
     # Teammates read it in pb worker context.
@@ -76,23 +76,29 @@ def test_set_publish_show_clear_and_the_team_reads_it(tmp_path, monkeypatch):
     listed = cli._worker_command(cli.build_parser().parse_args(["worker", "list"]))  # noqa: SLF001
     assert [row["info"]["text"] for row in listed["workers"] if row.get("info")] == [LINE]
 
-    cleared = _cli(identity, "info", "--clear")
+    cleared = _cli(identity, "info", "clear")
     assert cleared["info_text"] == "" and cleared["on_board"] is False
     asyncio.run(adapter.poll_attendances_once())
     assert _heartbeats(board)[-1]["worker_info"] == {"text": ""}
     assert board.info_text == ""
+    # Bare info is show: it reads, never writes.
     assert _cli(identity, "info")["rule"] == "Cleared on the board."
 
 
 @pytest.mark.parametrize(
     ("arguments", "code"),
     [
-        (("info", "first\nsecond"), "field_worker_info_multiline"),
-        (("info", "x" * 201), "field_worker_info_too_long"),
-        (("info", "tab\there"), "field_worker_info_control_character"),
-        (("info", "nul\x00here"), "field_worker_info_control_character"),
-        (("info", "   "), "field_worker_info_arguments"),
-        (("info", "text", "--clear"), "field_worker_info_arguments"),
+        (("info", "write", "first\nsecond"), "field_worker_info_multiline"),
+        (("info", "write", "x" * 201), "field_worker_info_too_long"),
+        (("info", "write", "tab\there"), "field_worker_info_control_character"),
+        (("info", "write", "nul\x00here"), "field_worker_info_control_character"),
+        (("info", "write", "   "), "field_worker_info_arguments"),
+        (("info", "write"), "field_worker_info_arguments"),
+        (("info", "clear", "text"), "field_worker_info_arguments"),
+        (("info", "show", "text"), "field_worker_info_arguments"),
+        # A bare line is refused: every change names its verb (operator, 2026-10-01).
+        (("info", LINE), "field_worker_info_arguments"),
+        (("info", "claude-code-a7b7935d"), "field_worker_info_arguments"),
     ],
 )
 def test_a_bad_line_is_refused_before_anything_is_recorded(tmp_path, monkeypatch, arguments, code):
@@ -107,7 +113,7 @@ def test_a_bad_line_is_refused_before_anything_is_recorded(tmp_path, monkeypatch
 def test_two_hundred_characters_is_accepted(tmp_path, monkeypatch):
     host, identity, field, config = _fresh_host(tmp_path)
     monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(host.path))
-    assert _cli(identity, "info", "y" * 200)["info_text"] == "y" * 200
+    assert _cli(identity, "info", "write", "y" * 200)["info_text"] == "y" * 200
 
 
 def test_a_worker_on_no_project_publishes_it_on_the_discovery_heartbeat(tmp_path, monkeypatch):
@@ -118,10 +124,10 @@ def test_a_worker_on_no_project_publishes_it_on_the_discovery_heartbeat(tmp_path
     adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board)
     asyncio.run(adapter.poll_attendances_once())
 
-    _cli(identity, "info", LINE)
+    _cli(identity, "info", "write", LINE)
     asyncio.run(adapter.poll_attendances_once())
     assert _heartbeats(board)[-1]["worker_info"] == {"text": LINE}
-    assert _cli(identity, "info")["on_board"] is True
+    assert _cli(identity, "info", "show")["on_board"] is True
 
 
 def test_a_board_without_the_field_gets_one_forced_heartbeat_per_line_not_one_per_cycle(tmp_path, monkeypatch):
@@ -135,7 +141,7 @@ def test_a_board_without_the_field_gets_one_forced_heartbeat_per_line_not_one_pe
         adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board)
         asyncio.run(adapter.poll_attendances_once())
         if line is not None:
-            _cli(identity, "info", line)
+            _cli(identity, "info", "write", line)
         before = len(_heartbeats(board))
         for _ in range(10):
             asyncio.run(adapter.poll_attendances_once())
@@ -163,3 +169,20 @@ def test_the_procedure_says_what_the_line_is_for_and_when_to_read_a_teammates():
     assert "clear it when nothing on it would help anyone plan" in text
     assert "**Read a teammate's line before you start contact with it.**" in text
     assert "A line that says paused, restricted or do not use means you do not wake it" in text
+
+
+def test_the_procedure_names_the_verbs():
+    """Operator, 2026-10-01: an agent passed a teammate's name to `pb worker info`
+    to look it up and overwrote its own line. Reading and writing are separate verbs."""
+
+    from pathlib import Path
+
+    import project_board
+
+    root = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker"
+    collaboration = (root / "references" / "collaboration.md").read_text(encoding="utf-8")
+    coordinator = (root / "references" / "coordinator.md").read_text(encoding="utf-8")
+    for verb in ("pb worker info show", 'pb worker info write "', "pb worker info clear"):
+        assert verb in collaboration
+    for text in (collaboration, coordinator, (root / "SKILL.md").read_text(encoding="utf-8")):
+        assert 'pb worker info "' not in text and "pb worker info --clear" not in text

@@ -570,8 +570,9 @@ changes, and clear it when nothing on it would help anyone plan. Publish it
 with:
 
 ```bash
-pb worker info "<one line, at most 200 characters>"
-pb worker info --clear
+pb worker info show
+pb worker info write "<one line, at most 200 characters>"
+pb worker info clear
 ```
 
 Clear it the moment it no longer holds. Why: the line is first on every card
@@ -580,7 +581,9 @@ coordinator look before routing (coordinator, Route, step 0), while mail about
 it reaches only whoever reads that mail (W330, operator, 2026-09-25). The
 line rides the relay's next heartbeat, which every worker Card already holds,
 so it shows within about two minutes (the idle heartbeat ceiling); `pb worker
-info` without arguments says `on_board = True` once the board has it.
+info show` says `on_board = True` once the board has it. Every change names
+its verb, so reading your line never rewrites it: a bare `pb worker info
+"<text>"` is refused (operator, 2026-10-01).
 
 **Read a teammate's line before you start contact with it.** Before you send
 another agent a request, ask it for evidence or route it a question, read its
@@ -593,7 +596,7 @@ without reading theirs (operator, 2026-10-01).
 **A pause you choose goes on the line too.** When you consciously stop working
 (your quota pool is near its limit, you wait for a person, or you are blocked):
 commit and push, write a one-line progress note on your item, then publish
-`pb worker info "Paused by choice: <reason>, resumes <time>"`, and clear it
+`pb worker info write "Paused by choice: <reason>, resumes <time>"`, and clear it
 when you resume. Why: an agent that stopped by decision looks, on its card,
 exactly like one that is broken or asleep, and the operator must tell them
 apart at a glance (operator, 2026-09-26). The coordinator's thresholds for
