@@ -133,6 +133,29 @@ async def drain_pending_refreshes(timeout_seconds: float) -> int:
     return sum(1 for task in running if not task.done())
 
 
+# Statuses a client or an intermediary returns without the token endpoint
+# having decided the grant: a request timeout and a rate limit.
+_UNDECIDED_CLIENT_STATUSES = frozenset({408, 429})
+
+
+def _token_endpoint_refused(error: AuthorizationError) -> bool:
+    """True when the token endpoint itself refused the refresh (W408).
+
+    That is a 4xx answer carrying a registered OAuth error code, which the
+    transport records as ``details["oauth_error"]``. A 5xx, a 408 or 429, or a
+    status without an OAuth error body can come from a proxy or tunnel in
+    front of the endpoint, after the endpoint rotated the token.
+    """
+
+    status = getattr(error, "status", None)
+    if not isinstance(status, int) or not 400 <= status < 500:
+        return False
+    if status in _UNDECIDED_CLIENT_STATUSES:
+        return False
+    details = getattr(error, "details", None)
+    return isinstance(details, Mapping) and bool(details.get("oauth_error"))
+
+
 class OAuthProfileSessionService:
     """Own OAuth profile tokens without returning refresh credentials to callers."""
 
@@ -757,11 +780,15 @@ class OAuthProfileSessionService:
                 refresh_attempt=token.refresh_attempt,
             )
         except AuthorizationError as exc:
-            # An answer with an HTTP status is the server's decision: nothing
-            # was rotated, so no retry of this attempt can ever be needed. A
-            # failure without one (the request may have been processed) keeps
-            # the attempt with the token for the next refresh.
-            if getattr(exc, "status", None) is not None:
+            # Only the token endpoint's own refusal settles the attempt: a 4xx
+            # carrying a registered OAuth error code means nothing was rotated,
+            # so no retry of it can be needed. Anything else keeps the attempt
+            # with the token for the next refresh: no answer at all, a 408 or
+            # 429, or a 5xx, which a proxy or tunnel in front of the endpoint
+            # also writes when the endpoint did rotate and its answer was lost
+            # (W408 review, 2026-10-01). A kept attempt is harmless: a live
+            # token rotates normally and the server records the new fingerprint.
+            if _token_endpoint_refused(exc):
                 await self._clear_refresh_attempt(profile, token)
             raise
 
