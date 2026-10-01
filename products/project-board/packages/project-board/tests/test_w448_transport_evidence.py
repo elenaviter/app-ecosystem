@@ -11,7 +11,9 @@ transport dropped during the wait and whether the relay itself stalled.
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import logging
+import sys
 import time
 
 import pytest
@@ -251,3 +253,37 @@ def test_a_failed_sampler_is_logged_before_it_restarts(tmp_path, caplog) -> None
     asyncio.run(run())
 
     assert "relay loop-lag sampler ended error=RuntimeError; restarting" in caplog.text
+
+
+def test_each_stall_line_carries_the_major_faults_since_the_previous_line(
+    monkeypatch, caplog
+) -> None:
+    faults = iter([100, 160, 175])
+    monkeypatch.setattr(relay_trace, "major_faults", lambda: next(faults))
+    clock = _Clock()
+    trace = RelayActivityTrace(monotonic=clock.monotonic, log=logging.getLogger("t.w448"))
+    caplog.set_level(logging.WARNING, logger="t.w448")
+
+    trace.record_loop_lag(2.0)
+    clock.value = 40.0
+    trace.record_loop_lag(3.0)
+
+    lines = [record.message for record in caplog.records]
+    assert "major_faults_delta=60 " in lines[0]
+    assert "major_faults_delta=15 " in lines[1]
+
+
+def test_darwin_reads_the_current_resident_size_from_libproc(monkeypatch) -> None:
+    resident = 123_456_789
+
+    class _LibProc:
+        def proc_pidinfo(self, pid, flavor, arg, buffer, size):
+            assert flavor == 4 and size == 96
+            raw = (1).to_bytes(8, sys.byteorder) + resident.to_bytes(8, sys.byteorder)
+            ctypes.memmove(buffer, raw, len(raw))
+            return 96
+
+    monkeypatch.setattr(relay_trace.sys, "platform", "darwin")
+    monkeypatch.setattr(relay_trace, "_libproc", _LibProc())
+
+    assert process_memory()["rss_bytes"] == resident

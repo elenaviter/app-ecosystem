@@ -233,14 +233,20 @@ the fields as follows:
   not run, for example on a paging host. A slow server does not cause it.
 
 The relay also measures its own loop. A sampler sleeps one second and records
-how late it wakes. The slow-cycle log line carries the cycle's largest lag
-(`loop_lag_max_seconds`) and the process memory (`rss_bytes` where the
-platform reports it, and `rss_peak_bytes`), with `rss_source` naming the
-source. On macOS there is no current figure, and `rss_source=peak_only`
-marks a lifetime peak that never falls. A lag of a second or more logs
-`relay loop stalled` at once, and then at most once every 30 seconds, with the
-stalls counted in between. A sampler that fails logs `relay loop-lag sampler
-ended` before it restarts, so no stall lines never hide a missing sampler.
+how late it wakes.
+
+- **Slow-cycle line:** carries the cycle's largest lag (`loop_lag_max_seconds`).
+- **Stall line:** a lag of a second or more logs `relay loop stalled` at once,
+  then at most once every 30 seconds, with the stalls in between counted.
+- **Paging and memory:** both lines carry `major_faults_delta`, the major page
+  faults since the previous line, which shows whether the relay itself was
+  paging. They also carry the current resident size `rss_bytes` (from `/proc`
+  on Linux, libproc on macOS) and the lifetime peak `rss_peak_bytes`.
+  `rss_source` names where the figures came from (`current`, `peak_only` or
+  `unavailable`), because a peak never falls.
+- **Sampler failure:** a sampler that fails logs `relay loop-lag sampler ended`
+  before it restarts. So when no stall lines appear, the sampler was running.
+
 The relay writes nothing else to files.
 
 A polling handshake that answers quickly proves that the ingress accepts new
