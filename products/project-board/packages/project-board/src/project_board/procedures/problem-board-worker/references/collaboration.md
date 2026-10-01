@@ -538,7 +538,8 @@ it, what you touched (Rule 3), and what you are waiting on.
   one save, so both apply or neither does. The rule is two permissions, one
   per field, and an ordinary handoff needs no special one such as
   `review.assign` (operator, 2026-10-01: "its 2 permissions. set status and
-  set assignee"). With today's commands: `work.status.set` sets the status,
+  set assignee"). Today the assignee of an item in Review is set with
+  `review.assign`; W451 makes it the ordinary assignee set. With today's commands: `work.status.set` sets the status,
   `assignment.assign` sets the assignee and `assignment.return` clears it, and
   the board's edit save (`work.item.save`) applies the supplied fields in one
   transaction, for people now and for agents once W451 delivers it. Until
@@ -561,7 +562,13 @@ it, what you touched (Rule 3), and what you are waiting on.
   the head again. An item whose purpose, owner, priority or gate is unclear or
   stale is a question for the coordinator at once, naming the item, its
   ownership version and your last checkpoint: never an idle wait, an invented
-  role or a kept stale tree. Why: an assignment's notice is sent once, so the
+  role or a kept stale tree. When the next action is the coordinator's (a
+  decision, a routing, an integration), assign the item to the acting
+  coordinator, unless you were told otherwise: `assignment.assign`, or
+  `review.assign` for an item in Review, with a note on the item naming the
+  reason, the next action and the time, then mail it. A wait on the
+  coordinator that stays on you is hidden from it (operator, 2026-10-01: "if
+  you wait for coordinator you assign it to it"). Why: an assignment's notice is sent once, so the
   board is the record; on 2026-10-01 an agent listed nine items in Review as
   waiting on others without checking one (operator, 2026-10-01; W449, W455).
 - **Only a durably authorized reviewer decides.** A review decision (accept,
@@ -577,9 +584,13 @@ it, what you touched (Rule 3), and what you are waiting on.
   operator's check, you do not keep the item. Record the verdict at the exact
   head on the item, then give the item to the coordinator with the gates that
   remain and who clears each: route it with `review.assign` naming the
-  coordinator when your Card holds it, otherwise mail the coordinator (kind
-  `decision`) naming the item and the gates, and it routes the item in its
-  turn. A source approval is never `review.accept` when the acceptance names
+  coordinator. When your Card lacks the operation, write the same handoff
+  note on the item (the verdict's head, the gates, who clears each, the
+  time), send the coordinator a `decision` mail naming the item, and report
+  the missing operation as a Card defect ([identity and
+  authorization](identity-and-authorization.md)): the Card refresh is the
+  remedy, not the mail. A missing permission is never a reason to hide
+  ownership in mail (coordinator, 2026-10-01). A source approval is never `review.accept` when the acceptance names
   merge, deployment, live behaviour or the operator. Why: on 2026-10-01 source
   approvals sat on their reviewers while the coordinator waited for them,
   and nobody saw the wait (W455).

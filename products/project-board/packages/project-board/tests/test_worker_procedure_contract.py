@@ -2387,6 +2387,17 @@ def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
                       "assignment.list", "assignment.report", "assignment.return", "work.accept", "work.status.set"):
         assert f"`{operation}`" in identity
     assert "Holding an operation is not authority over every item" in identity
+    # Review return at 1c5e2979 (claude-app): a wait on the coordinator is assigned to it;
+    # a missing permission never hides ownership in mail; today vs target for review.assign.
+    assert "When the next action is the coordinator's (a decision, a routing, an integration), assign the item to the acting coordinator" in collaboration
+    assert "if you wait for coordinator you assign it to it" in collaboration
+    assert "A missing permission is never a reason to hide ownership in mail" in collaboration
+    assert "otherwise mail the coordinator (kind `decision`) naming the item and the gates, and it routes the item in its turn" not in collaboration
+    assert "Today the assignee of an item in Review is set with `review.assign`; W451 makes it the ordinary assignee set." in collaboration
+    # Operator, 14:41Z: trees are not a buffer.
+    workspace = _words(_read("references/project-workspace.md"))
+    assert "**Trees are not a buffer.**" in workspace
+    assert "the pushed commits are the copy: end a clean, fully pushed tree, paused change request included" in workspace
     # The product gaps are named, not claimed (codex-app mapping, 14:39Z).
     assert "a worker refresh removes those four when they were ticked by hand" in identity
     assert "until W420's resource-scoped apply is live" in identity

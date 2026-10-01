@@ -326,6 +326,16 @@ disturb the work in hand, and a disk does not fill with forgotten copies
 
 - **Nothing goes to a temporary or hidden folder outside the workspace.** A
   copy there is invisible to the person, and nothing cleans it up.
+- **Trees are not a buffer.** Keep only the trees work needs now: your current
+  item's tree in each repository it changes, an exact-head review in
+  progress, and a tree a runtime or a pinned release holds. Before you create
+  a tree, reuse one you have for that repository (check out the next branch
+  there) or read from the clean clone, and name the new tree's purpose when
+  you register it. Once a branch is pushed and its evidence published, the
+  pushed commits are the copy: end a clean, fully pushed tree, paused change
+  request included, and let the sweep remove it. Why: the shared host ran out
+  of storage on 2026-09-30 and again on 2026-10-01, with up to ten local trees
+  per repository kept just in case (operator, 2026-10-01).
 - **Suites name their trees.** A suite that overlays other repositories takes
   each tree as an argument or variable, defaulting to the clean clones (right
   for main against main). A change pair points each at its partner worktree,
