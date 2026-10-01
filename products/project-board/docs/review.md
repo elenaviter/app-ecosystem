@@ -64,8 +64,8 @@ todo --working status--> working --assignment.completed--> review
 - **A status edit preserves the assignee.** Leaving Review for Todo, Done or
   Cancelled records only the ordinary status change, not a review decision.
   It does not settle, reopen or recreate ownership, or issue rework.
-- **Ownership moves only by ownership acts:** `assignment.assign`,
-  `assignment.return` (release), or a reassignment. A review decision may
+- **Ownership moves only by explicit assignee/ownership acts:** `work.assignee.set`,
+  `assignment.assign`, or `assignment.return` (release). A review decision may
   settle assignment history. The dedicated `review.return` action routes
   rework to the contributor; it is distinct from selecting a status field.
 - **No status-dependent assignee restriction.** Any status can keep an empty
@@ -77,6 +77,11 @@ started, and moving work back to Todo says nothing about who holds it.
 In the board's work-item dialog a person edits the Status and Assignee
 fields. A save runs two independent steps: a changed assignee is an assign
 (or a release, when cleared), and a changed status is a status edit.
+The field permissions are `work.assignee.set` and `work.status.set`; a combined
+save checks those two, with no third permission. A newly selected assignee does
+the next work immediately if their existing Card and repository scope allow it.
+Selection grants no new authority or credentials and requires no second handoff.
+Applied report history continues to name the contributor for review decisions.
 Selecting Cancelled requires a reason, but no status restricts the assignee.
 Working may be explicitly unassigned; Review-to-Cancelled may select a new
 worker. No detour through another status is needed. When both fields change,
@@ -343,8 +348,9 @@ neither acceptance nor deployment. Where an acceptance line is about behaviour,
 the reviewer checks it against the deployed result and records that evidence
 in the review verdict; the status itself does not record that.
 
-A done or cancelled item can receive a new assignment from someone whose
-Card holds `assignment.assign`. That ownership act does not change its status;
+A done or cancelled item can receive a new assignee from someone whose
+Card holds `work.assignee.set`, or an explicit assignment using `assignment.assign`.
+That ownership act does not change its status;
 changing the status is a separate edit.
 
 ## Where the steps are

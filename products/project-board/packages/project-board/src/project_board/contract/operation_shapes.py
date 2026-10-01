@@ -16,6 +16,8 @@ import json
 import re
 from typing import Any, Mapping
 
+from .errors import DomainError
+from .plan_nodes import parse_plan_node_ref
 from .work_lifecycle import CANONICAL_WORK_STATUSES, canonical_work_status
 from .worker_operation_contract import PROBLEM_BOARD_OPERATIONS
 
@@ -248,6 +250,18 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                            'expected_revision': 'positive integer',
                                            'changes': PLAN_ITEM_CHANGE_FIELDS,
                                            'idempotency_key': 'stable retry key'}},
+    'work.assignee.set': {
+        'description': 'Set or clear the current assignee in any valid status; status stays unchanged and existing Card/repository scope checks still apply.',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {
+            'work_ref': 'canonical plan-node URI',
+            'assignee': 'stable worker name or operator:<user id>; empty string clears',
+            'expected_revision': 'positive integer',
+            'expected_ownership_version': 'integer; zero when never assigned',
+            'reason': 'optional durable reason',
+            'idempotency_key': 'stable retry key',
+        },
+    },
     'work.item.save': {
         'description': 'Save status only, assignee only, or both atomically. Omitted fields stay unchanged; empty assignee clears. Supplied steps need their existing permissions, never a separate composite grant.',
         'object_ref': 'work:project:<project_id>',
@@ -935,6 +949,7 @@ PROBLEM_BOARD_OPERATION_REQUIRED: dict[str, tuple[str, ...]] = {
     "project.references.migrate": ("idempotency_key",),
     "work.accept": ("idempotency_key",),
     "work.status.set": ("work_ref", "status", "expected_revision", "idempotency_key"),
+    "work.assignee.set": ("work_ref", "assignee", "expected_revision", "expected_ownership_version", "idempotency_key"),
     "work.item.save": ("work_ref", "expected_revision", "idempotency_key"),
 }
 
@@ -1017,6 +1032,11 @@ _EXAMPLE_PAYLOADS: dict[str, dict[str, Any]] = {
     },
     "work.item.save": {
         "work_ref": "<work_ref>", "status": "done", "assignee": "<worker_name>",
+        "expected_revision": 12, "expected_ownership_version": 2,
+        "idempotency_key": "<idempotency_key>",
+    },
+    "work.assignee.set": {
+        "work_ref": "<work_ref>", "assignee": "<worker_name>",
         "expected_revision": 12, "expected_ownership_version": 2,
         "idempotency_key": "<idempotency_key>",
     },
@@ -1143,6 +1163,8 @@ def operation_call_problems(
                 "message": "Carry exactly one of " + " and ".join(group) + " in the payload.",
             })
     for field in PROBLEM_BOARD_OPERATION_REQUIRED.get(operation, ()):
+        if operation == "work.assignee.set" and field == "assignee" and field in payload and payload[field] == "":
+            continue  # Explicit clear is present, not missing.
         if payload.get(field) in (None, "", [], {}):
             problems.append({
                 "field": field,
@@ -1156,8 +1178,13 @@ def operation_call_problems(
                 payload, described, path="", strict=_STRICT_OBJECTS.get(operation, frozenset())
             )
         )
-    if operation == "work.item.save":
-        if "status" not in payload and "assignee" not in payload:
+    if operation in {"work.item.save", "work.assignee.set"}:
+        if payload.get("work_ref"):
+            try:
+                parse_plan_node_ref(payload["work_ref"])
+            except DomainError:
+                problems.append({"field": "work_ref", "problem": "wrong_kind", "message": "Use the canonical plan-node URI returned by a current item read."})
+        if operation == "work.item.save" and "status" not in payload and "assignee" not in payload:
             problems.append({"field": "status | assignee", "problem": "missing", "message": "Supply status, assignee, or both."})
         if "assignee" in payload and "expected_ownership_version" not in payload:
             problems.append({"field": "expected_ownership_version", "problem": "missing", "message": "A supplied assignee needs expected_ownership_version; zero when never assigned."})

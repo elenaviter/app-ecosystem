@@ -254,6 +254,10 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:coordinate",),
     },
+    "work.assignee.set": {
+        "description": "Set or clear the current assignee in any valid status, preserving status and historical contributors. Existing Card and repository scopes still apply; no second ownership handoff is required.",
+        "grants": ("work:coordinate",),
+    },
     "work.item.save": {
         "description": "Atomically save supplied status and/or assignee; omitted fields stay unchanged. Each supplied field needs its existing operation, not a composite Card grant.",
         "grants": ("work:coordinate",),
@@ -505,6 +509,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "plan.item.create",
         "plan.item.update",
         "work.status.set",
+        "work.assignee.set",
         "work.item.save",
         "project.people.invite",
         "project.people.set_role",
@@ -633,7 +638,7 @@ def authorization_operations(operation: str, payload: Mapping[str, Any]) -> tupl
     if "status" in payload:
         steps.append("work.status.set")
     if "assignee" in payload:
-        steps.append("assignment.assign" if str(payload["assignee"] or "").strip() else "assignment.return")
+        steps.append("work.assignee.set")
     if "tags" in payload or "keywords" in payload:
         steps.append("plan.item.update")
     return tuple(steps)
