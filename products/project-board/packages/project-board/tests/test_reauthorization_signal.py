@@ -387,3 +387,100 @@ def test_a_linked_send_on_a_retrying_pending_channel_is_retryable_before_the_ite
     assert error.details["delivered"] is False
     assert error.details["reauthorization_indicated"] is False
     assert "required_action" not in error.details
+
+
+# -- producer to consumer: the relay's own cycle, then the agent's next command --
+
+
+def _refusing_supervisor(host, error: BaseException):
+    """A relay whose channel open fails the way Connection Hub refuses it."""
+
+    from contextlib import asynccontextmanager
+
+    from project_board.client import relay
+
+    @asynccontextmanager
+    async def connector(_host, _channel, *, replacement_epoch):
+        raise error
+        yield  # pragma: no cover - the open fails before a session exists
+
+    return relay.ProblemBoardRelaySupervisor(config_path=host.path, connector=connector)
+
+
+def _invalid_grant() -> DomainError:
+    return DomainError(
+        "oauth_token_request_failed",
+        "OAuth token POST returned HTTP 400: invalid_grant.",
+        status=400,
+        details={"oauth_error": "invalid_grant"},
+    )
+
+
+def _unreachable() -> DomainError:
+    return DomainError(
+        "oauth_mcp_endpoint_unreachable",
+        "The MCP endpoint could not be reached for OAuth discovery.",
+        status=503,
+    )
+
+
+def _cycle(supervisor) -> None:
+    """One relay cycle; a cycle where every channel failed ends the way the
+    relay's own loop expects, with a retryable error it catches."""
+
+    import asyncio
+
+    from service_foundation.host_relay.contracts import HostRelayRetryableError
+
+    try:
+        asyncio.run(supervisor.poll_once())
+    except HostRelayRetryableError:
+        pass
+
+
+def test_a_refused_grant_seen_by_the_relay_reaches_the_next_command(tmp_path):
+    host, identity, channel = _host(tmp_path)
+
+    _cycle(_refusing_supervisor(host, _invalid_grant()))
+
+    parked = host_config.HostRelayConfig.load(host.path).worker(identity)
+    assert parked.state == "pending_authorization"
+    refusal = pacing.channel_pending_refusal(host.path, identity.worker_name)
+    assert refusal["credential"] is True and refusal["permanent"] is True
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_coordinate_args(host, identity))
+    _assert_reauthorization_required(refused.value, channel)
+
+
+def test_an_unreachable_endpoint_seen_by_the_relay_stays_retryable(tmp_path):
+    host, identity, _channel = _host(tmp_path)
+
+    _cycle(_refusing_supervisor(host, _unreachable()))
+
+    assert host_config.HostRelayConfig.load(host.path).worker(identity).state == "active"
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_coordinate_args(host, identity))
+    assert refused.value.code == "work_coordinate_channel_reconnecting"
+    assert refused.value.details["reauthorization_indicated"] is False
+    assert "required_action" not in refused.value.details
+
+
+def test_a_parked_channel_retried_into_an_unreachable_endpoint_stays_retryable(tmp_path):
+    host, identity, _channel = _host(tmp_path)
+    _cycle(_refusing_supervisor(host, _invalid_grant()))
+    # The pending loop retries the parked channel later; this time the
+    # endpoint cannot be reached, which says nothing about the grant.
+    state = _pacing(host.path)
+    state._state["channels"].pop(identity.worker_name, None)
+    state._state["pending"][identity.worker_name]["fingerprint"] = "changed"
+    state._save()
+
+    _cycle(_refusing_supervisor(host, _unreachable()))
+
+    refusal = pacing.channel_pending_refusal(host.path, identity.worker_name)
+    assert refusal["permanent"] is False and refusal["credential"] is False
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_coordinate_args(host, identity))
+    assert refused.value.code == "work_coordinate_channel_reconnecting"
+    assert refused.value.details["channel_state"] == "pending_authorization"
+    assert refused.value.details["retryable"] is True
