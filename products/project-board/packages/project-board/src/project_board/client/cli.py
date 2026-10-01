@@ -6454,8 +6454,9 @@ def _sweep_own_folder(config: Any, args: argparse.Namespace) -> str:
     under the root (spark1: codex-app@spark1 is enrolled at <root>/codex-app);
     otherwise <root>/<alias or name>. Either way no other agent's channel on
     this host may record or derive the same folder: a folder two agents claim
-    is nobody's proof. Another session of the same agent (same alias) is the
-    same owner.
+    is nobody's proof. The stable worker name is the owner; a display alias is
+    not. Another session under the same alias is another claimant until it is
+    detached (state disabled).
     """
 
     try:
@@ -6479,9 +6480,9 @@ def _sweep_own_folder(config: Any, args: argparse.Namespace) -> str:
         for other in getattr(config, "workers", ()) or ():
             if getattr(other, "worker_name", "") == identity.worker_name:
                 continue
-            other_alias = str(getattr(other, "worker_alias", "") or "")
-            if alias and other_alias == alias:
+            if str(getattr(other, "state", "") or "").strip().lower() == "disabled":
                 continue
+            other_alias = str(getattr(other, "worker_alias", "") or "")
             claims = (
                 str(getattr(other, "working_directory", "") or "").strip(),
                 default_working_directory([root], alias=other_alias, worker_name=str(getattr(other, "worker_name", "") or "")),

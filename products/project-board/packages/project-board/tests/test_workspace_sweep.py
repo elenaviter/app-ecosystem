@@ -488,13 +488,22 @@ def test_the_own_folder_honours_the_enrolled_folder_and_refuses_a_shared_one(tmp
     spark_args = enroll("00000010-0000-4000-8000-000000000000", "codex-app@spark1", spark)
     assert own(spark_args) == str(spark)
 
-    # Another session of the same agent (same alias) is the same owner.
+    # A second live identity under the same alias is another claimant: a display
+    # alias never proves one owner, so neither may apply (W423 review, 2026-10-01).
     same = enroll("00000011-0000-4000-8000-000000000000", "codex-app@spark1", spark)
-    assert own(same) == str(spark) and own(spark_args) == str(spark)
+    assert own(same) == "" and own(spark_args) == ""
+
+    # Once the older session is detached (disabled), the new session owns the folder.
+    raw = json.loads(config.path.read_text(encoding="utf-8"))
+    for worker in raw["workers"]:
+        if worker["worker_name"] == WorkerSessionIdentity.create("claude-code", "00000010-0000-4000-8000-000000000000").worker_name:
+            worker["state"] = "disabled"
+    config.path.write_text(json.dumps(raw), encoding="utf-8")
+    assert own(same) == str(spark)
 
     # A different agent records the same folder: nobody may apply there.
     other = enroll("00000012-0000-4000-8000-000000000000", "ops@spark1", spark)
-    assert own(other) == "" and own(spark_args) == ""
+    assert own(other) == "" and own(same) == ""
 
     # The root itself, a deeper folder and a link are not an enrolled own folder:
     # the alias-derived folder is used instead.
@@ -502,6 +511,11 @@ def test_the_own_folder_honours_the_enrolled_folder_and_refuses_a_shared_one(tmp
     deeper.mkdir(parents=True)
     link = root / "linked"
     link.symlink_to(root / "docs@host", target_is_directory=True)
+    # Each case is its own agent (distinct alias): sessions sharing an alias
+    # would be rival claimants, which is the case above. Enrollment stores the
+    # link's resolved folder, a real folder directly under the root, so the
+    # link case keeps that folder.
+    expected = (root / "docs0@host", root / "docs1@host", root / "docs@host")
     for index, folder in enumerate((root, deeper, link)):
-        args = enroll(f"0000002{index}-0000-4000-8000-000000000000", "docs@host", folder)
-        assert own(args) == str(root / "docs@host"), folder
+        args = enroll(f"0000002{index}-0000-4000-8000-000000000000", f"docs{index}@host", folder)
+        assert own(args) == str(expected[index]), folder
