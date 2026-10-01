@@ -8,6 +8,7 @@ import mimetypes
 mimetypes.add_type("text/markdown", ".md")
 import logging
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -6436,6 +6437,7 @@ class SharedFieldStore:
         reply_to: str = "",
         idempotency_key: str,
         sender_identity: Mapping[str, Any] | None = None,
+        trusted_operator_control: bool = False,
         board_routed: bool = False,
         idempotency_identity: Mapping[str, Any] | None = None,
         idempotency_alias_keys: Sequence[str] = (),
@@ -6616,7 +6618,21 @@ class SharedFieldStore:
                 status = "ignored_sender_limbo"
             elif recipient_row and recipient_row.get("pool_status") == "limbo":
                 status = "ignored_recipient_limbo"
-            message_id = new_id("mail")
+            # Only materialize_control may assert this provenance. A worker's
+            # sender_identity is display metadata, not proof that its mail came
+            # from the operator. The sortable id keeps trusted controls ahead
+            # of random-ID worker mail without reading the whole inbox before
+            # each bounded receive. The timestamp orders controls among peers.
+            message_id = (
+                "mail-priority_"
+                + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                + "_"
+                + uuid.uuid4().hex
+                if trusted_operator_control
+                and identity.get("kind") == "user"
+                and clean_kind in {"request", "reply"}
+                else new_id("mail")
+            )
             now = utc_now()
             envelope = {
                 "schema": MAIL_SCHEMA,
@@ -8609,6 +8625,7 @@ class SharedFieldStore:
             reply_to=reply_to,
             idempotency_key=f"control:{command_ref}",
             sender_identity=sender_identity,
+            trusted_operator_control=control_kind in {"request", "reply"},
             board_routed=control_kind == "mail",
         )
         if control_kind == "mail" and kind == "delivery_failed":
