@@ -72,10 +72,18 @@ exists; receive returns it; settlement records that it was handled.
 
 - A receive returns a complete batch with exact leases, or returns every
   provisional lease to the inbox before reporting failure.
-- Within an addressed mailbox, a reply or request from a verified operator
-  control is selected before ordinary worker mail when the item limit is
-  small. Worker-supplied sender labels cannot grant that priority; mail not
-  selected stays pending for later receives.
+- Newly materialized operator `request` and `reply` controls carry a priority
+  mail ID derived from the server's human-sender identity. Within that mailbox,
+  they sort before ordinary worker mail when the item limit is small.
+  Worker-supplied sender labels cannot grant priority.
+- This does not reorder mail that was pending before the change. Older operator
+  controls keep their random IDs and can still be selected after worker mail;
+  existing queues are not migrated.
+- Priority applies within one mailbox. A receive reads direct mail before
+  project mail, so direct messages can exhaust the item limit before a project
+  approval. Continuing operator arrivals can keep worker mail pending under
+  strict priority; when that stream ends, the pending mail remains available
+  for later receives.
 - One size budget covers a receive. A message that would cross it stays
   pending and unleased for the next receive.
 - A session can always re-read what it already holds: it can page every
