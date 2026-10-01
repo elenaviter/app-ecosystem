@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 import time
@@ -127,6 +128,9 @@ class OAuthProfileSessionService:
         self._transaction_lock = profiles.path.with_suffix(
             f"{profiles.path.suffix}.oauth.transaction.lock"
         )
+        # Refreshes running on after their caller was cancelled, kept
+        # referenced until they commit.
+        self._unsplit_refreshes: set[asyncio.Future] = set()
 
     async def authorize(
         self,
@@ -424,12 +428,7 @@ class OAuthProfileSessionService:
         profile, token = await self._read_token(profile_name)
         if not token.is_expiring(leeway_seconds=60):
             return token.access_token
-        async with self._refresh_slot(profile_name):
-            profile, token = await self._read_token(profile_name)
-            if not token.is_expiring(leeway_seconds=60):
-                return token.access_token
-            replacement = await self._refresh(profile, token)
-            return await self._commit_refreshed_token(profile, token, replacement)
+        return await self._refresh_unsplit(profile_name, force=False)
 
     async def refresh_access_token(self, profile_name: str) -> str:
         """Mint a new access token now, whatever the local expiry says.
@@ -443,10 +442,64 @@ class OAuthProfileSessionService:
         refresh is then the card's answer and not a stale session's.
         """
 
+        return await self._refresh_unsplit(profile_name, force=True)
+
+    # A refresh the server answered has rotated the refresh token: the
+    # replacement is then the only copy of the new chain. Dropping it leaves the
+    # spent token stored, the next refresh is refused as reuse, and the Card
+    # needs re-approval (2026-10-01: a relay channel torn down 66 ms after its
+    # token response lost the replacement). So the refresh and its commit run
+    # as one task a caller's cancellation does not split, and the commit waits
+    # out store-lock timeouts instead of discarding the replacement.
+    REFRESH_COMMIT_ATTEMPTS = 12
+
+    async def _refresh_unsplit(self, profile_name: str, *, force: bool) -> str:
+        task = asyncio.ensure_future(
+            self._refresh_and_commit(profile_name, force=force)
+        )
+        self._unsplit_refreshes.add(task)
+        task.add_done_callback(self._unsplit_refresh_done)
+        return await asyncio.shield(task)
+
+    def _unsplit_refresh_done(self, task: asyncio.Future) -> None:
+        self._unsplit_refreshes.discard(task)
+        if not task.cancelled():
+            # Retrieved here so a refresh whose caller was cancelled does not
+            # log an unretrieved exception; a waiting caller still gets it.
+            task.exception()
+
+    async def _refresh_and_commit(self, profile_name: str, *, force: bool) -> str:
         async with self._refresh_slot(profile_name):
             profile, token = await self._read_token(profile_name)
+            if not force and not token.is_expiring(leeway_seconds=60):
+                return token.access_token
             replacement = await self._refresh(profile, token)
-            return await self._commit_refreshed_token(profile, token, replacement)
+            return await self._commit_until_stored(profile, token, replacement)
+
+    async def _commit_until_stored(
+        self,
+        profile: CallerProfile,
+        refreshed: OAuthTokenSet,
+        replacement: OAuthTokenSet,
+    ) -> str:
+        """Commit a server-issued replacement, retrying the store lock until it lands.
+
+        Each attempt waits the store lock's own 10 s. The per-profile refresh
+        slot stays held, so no second refresh of this chain starts meanwhile.
+        """
+
+        for attempt in range(1, self.REFRESH_COMMIT_ATTEMPTS + 1):
+            try:
+                return await self._commit_refreshed_token(
+                    profile, refreshed, replacement
+                )
+            except AuthorizationError as exc:
+                if (
+                    exc.code != "oauth_profile_lock_timeout"
+                    or attempt == self.REFRESH_COMMIT_ATTEMPTS
+                ):
+                    raise
+        raise AssertionError("unreachable")  # pragma: no cover
 
     async def _read_token(self, profile_name: str) -> tuple[CallerProfile, OAuthTokenSet]:
         """The profile record and its stored token, read under the store lock."""

@@ -1288,3 +1288,64 @@ async def test_a_reconnect_that_completes_during_a_refresh_is_not_overwritten_by
     )
     assert await service.access_token(profile.name) == "reconnected-access"
     assert oauth.refresh_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_caller_cancelled_during_a_refresh_still_commits_the_rotation(tmp_path) -> None:
+    """2026-10-01 17:25:31Z: the token endpoint answered a relay channel's
+    refresh with a rotated chain and the channel was torn down 66 ms later.
+    The replacement never reached the store, the spent refresh token was
+    presented at 19:05:40, and the server revoked the chain as reuse (W456)."""
+
+    oauth = _HangingOAuth(hang_for="refresh-secret")
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token(expires_at=1))
+
+    caller = asyncio.create_task(service.access_token(profile.name))
+    await asyncio.wait_for(oauth.hanging.wait(), 1.0)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    oauth.release.set()  # the server's answer arrives after the caller left
+
+    for _ in range(100):
+        if credentials.values[profile.credential_ref].refresh_token == "rotated-refresh":
+            break
+        await asyncio.sleep(0.01)
+    stored = credentials.values[profile.credential_ref]
+    assert stored.refresh_token == "rotated-refresh", "the rotated chain was dropped"
+    assert stored.access_id == "access-agent"
+    assert oauth.refresh_calls == 1
+    assert await service.access_token(profile.name) == "refreshed-access"
+    assert oauth.refresh_calls == 1, "the stored replacement is used, not refreshed again"
+
+
+@pytest.mark.asyncio
+async def test_a_store_lock_wait_during_the_commit_does_not_drop_the_rotation(
+    tmp_path, monkeypatch
+) -> None:
+    oauth = _OAuth()
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    profile = _profile()
+    profiles.add(profile)
+    credentials.put(profile.credential_ref, _token(expires_at=1))
+    commit = service._commit_refreshed_token
+    attempts: list[int] = []
+
+    async def busy_store_once(*args, **kwargs):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise AuthorizationError(
+                "oauth_profile_lock_timeout",
+                "Timed out waiting for the OAuth profile lock.",
+            )
+        return await commit(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_commit_refreshed_token", busy_store_once)
+
+    assert await service.access_token(profile.name) == "refreshed-access"
+    assert len(attempts) == 2
+    assert oauth.refresh_calls == 1, "the commit is retried, never a second refresh"
+    assert credentials.values[profile.credential_ref].refresh_token == "rotated-refresh"
