@@ -18,6 +18,10 @@ writes about itself:
   refused for usage ends in ``task_complete`` with
   ``error.codex_error_info = usage_limit_exceeded`` (a Spark session,
   2026-09-29). The state reads every bucket and the newest turn outcome.
+  A bounded native App Server account/rateLimits read can additionally prove
+  early quota redemption without a model turn. Its registered account/session,
+  bucket and freshness fences distinguish available capacity from receiving
+  work; an old rollout does not overrule a newer authenticated measurement.
 - **Claude Code** hands its status line command a JSON whose ``rate_limits``
   has ``five_hour`` and ``seven_day`` (``used_percentage``, ``resets_at`` in
   epoch seconds), and fires the ``StopFailure`` hook with matcher
@@ -641,6 +645,10 @@ def limit_state_line(state: Mapping[str, Any] | None) -> str:
         detail = " (" + window + ")" if window else ""
         return "rate limited" + detail + when
     if kind == KIND_OK:
+        if reached == "capacity_available_receive_pending":
+            return "capacity available; same-session receive pending"
+        if reached == "capacity_available_receive_observed":
+            return "capacity available; receive observed, handling separate"
         windows = limit_windows_line(state)
         return "usage ok (" + windows + ")" if windows else "usage ok"
     return "limit unknown"
@@ -657,7 +665,8 @@ def session_with_limit_state(
 ) -> dict[str, Any]:
     """The listener session row with the runtime's own limit state on it.
 
-    Codex is read from its rollout on this host. Claude Code has no file of its
+    Codex is read from its rollout and a newer native account observation on
+    this host. Claude Code has no file of its
     own, so its state is what ``pb worker limit-state`` recorded from the status
     line or the ``StopFailure`` hook (``recorded``). A runtime that reports
     nothing leaves the row without the field, which the board reads as "not
@@ -672,14 +681,71 @@ def session_with_limit_state(
             state = codex_limit_state(runtime_session_id, sessions_root=sessions_root, now=now)
         except Exception:  # noqa: BLE001 - a rollout that cannot be read is no state, not a failed cycle
             state = None
+        state = merge_codex_quota(state, recorded, runtime_session_id=runtime_session_id, now=now)
     elif isinstance(recorded, Mapping) and recorded:
         state = recorded
     current = limit_state_at(state, now=now)
     if current is not None:
+        if (current.get("source") == "codex-app-server"
+            and current.get("reached") == "capacity_available_receive_pending"
+            and str(session.get("last_inbox_result_at") or "") > str(current.get("cleared_at") or "")):
+            current["reached"] = "capacity_available_receive_observed"
         row["limit_state"] = current
     else:
         row.pop("limit_state", None)
     return row
+
+
+def merge_codex_quota(
+    rollout: Mapping[str, Any] | None, observation: Mapping[str, Any] | None,
+    *, runtime_session_id: str, now: str,
+) -> dict[str, Any] | None:
+    """A newer authenticated read may clear old exhaustion, not prove handling.
+
+    The local relay alone records these readings; the Claude status-line/prose
+    path does not produce them. Partial, stale or other-session evidence cannot
+    erase a known exhausted bucket. A later provider refusal wins again.
+    """
+    from .codex_quota import SOURCE_CODEX_APP_SERVER, QUOTA_FRESH_SECONDS
+
+    previous = dict(rollout) if isinstance(rollout, Mapping) else None
+    if not isinstance(observation, Mapping) or observation.get("source") != SOURCE_CODEX_APP_SERVER:
+        return previous
+    observed = _utc(observation.get("observed_at"))
+    current_time = _utc(now)
+    if (not observation.get("account_bound") or not observation.get("account_email_sha256")
+        or observation.get("runtime_session_id") != runtime_session_id or not observed or not current_time
+        or observed > current_time or observed <= _utc((previous or {}).get("observed_at"))):
+        return previous
+    age = (datetime.fromisoformat(current_time.replace("Z", "+00:00"))
+           - datetime.fromisoformat(observed.replace("Z", "+00:00"))).total_seconds()
+    if age > QUOTA_FRESH_SECONDS:
+        # Do not resurrect an older exhausted rollout as if it were the latest
+        # provider measurement. Stale positive capacity is unknown, not ok.
+        return {**observation, "kind": KIND_UNKNOWN, "reached": "quota_read_stale", "resets_at": ""}
+    candidate = dict(observation)
+    if candidate.get("kind") == KIND_OK and previous:
+        # The fresh read must actually measure the exhausted bucket/window.
+        buckets = candidate.get("buckets") or {}
+        bucket = str(previous.get("limit_id") or "codex")
+        measured = buckets.get(bucket) if isinstance(buckets, Mapping) else None
+        if previous.get("kind") in (KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS):
+            if not isinstance(measured, Mapping) or measured.get("kind") != KIND_OK:
+                return previous
+            windows = {w.get("name"): w.get("used_percent") for w in measured.get("windows") or []}
+            needed = [w.get("name") for w in previous.get("windows") or []
+                      if w.get("used_percent") is not None and w["used_percent"] >= 100]
+            if not needed:
+                needed = ["primary", "secondary"]
+            if any(windows.get(name) is None or windows[name] >= 100 for name in needed):
+                return previous
+        if previous.get("refusal"):
+            refused_at = str(previous.get("refused_at") or previous.get("observed_at") or "")
+            candidate.update(refusal=previous["refusal"], refused_at=refused_at,
+                             cleared_at=observed, reached="capacity_available_receive_pending")
+    if candidate.get("kind") not in (KIND_OK, KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS):
+        return previous
+    return candidate
 
 
 __all__ = [

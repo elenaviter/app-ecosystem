@@ -10,7 +10,7 @@ import shutil
 import time
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
@@ -29,6 +29,10 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 from .card_refusal import actionable_card_refusal
 from .limit_state import session_with_limit_state, wake_deferred_until
+from .limit_state import merge_codex_quota, codex_limit_state
+from .codex_quota import (
+    read_codex_quota, account_fingerprint, SOURCE_CODEX_APP_SERVER, QUOTA_REFRESH_SECONDS,
+)
 from .runtime_model import session_with_runtime_model
 from .worktree_files import (
     MAX_OBSERVED_PATHS as MAX_OBSERVED_PATHS_DEFAULT,
@@ -4484,6 +4488,9 @@ class ProblemBoardRelaySupervisor:
         # W26: per worker, the reset time a deferred wake was last logged for,
         # so a limit is said once per reset and not once per cycle.
         self._limit_wake_deferrals: dict[str, str] = {}
+        self._codex_quota_reader = read_codex_quota
+        self._codex_quota_refresh_at: dict[str, float] = {}
+        self._codex_quota_errors: dict[str, str] = {}
         self._listener_signature_cache: dict[
             str, tuple[tuple[int, int, int] | None, tuple]
         ] = {}
@@ -4793,6 +4800,75 @@ class ProblemBoardRelaySupervisor:
 
         await asyncio.gather(*(reconcile(channel) for channel in channels))
 
+    async def _refresh_codex_quota(
+        self, field: SharedFieldStore, channel: WorkerChannelConfig,
+        state: Mapping[str, Any] | None, *, now: str,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """Refresh a quota-held session at most once a minute, without a turn."""
+        if channel.runtime_kind != "codex":
+            return state, ""
+        recorded = field.runtime_limit_state(channel.worker_name)
+        if not state or (state.get("kind") not in {"rate_limited", "out_of_tokens"}
+                         and recorded.get("source") != SOURCE_CODEX_APP_SERVER):
+            return state, ""
+        if (state.get("source") == "codex-rollout" and state.get("kind") == "ok"
+            and str(state.get("observed_at") or "") >= str(recorded.get("observed_at") or "")):
+            # A served turn measured capacity again. Do not keep launching
+            # quota helpers for an already healthy session's ordinary mail.
+            self._codex_quota_errors.pop(channel.worker_name, None)
+            return state, ""
+        # Merge against the actual newest turn/buckets, not an already merged
+        # capacity projection whose age may have elapsed while a queue was held.
+        base_state = codex_limit_state(channel.runtime_session_id, now=now) or state
+        worker = field.read_worker(channel.worker_name)
+        if worker.get("runtime_session_id") != channel.runtime_session_id:
+            return state, "work_codex_quota_session_mismatch"
+        account = field.worker_board_record(channel.worker_name).get("runtime_account") or {}
+        email = str(account.get("email") or "")
+        if not email:
+            # Legacy registrations have no binding for this optional native
+            # reader. They retain their existing limit/time-reset behavior;
+            # an unbound read can never authorize an early release.
+            return state, ""
+        fingerprint = account_fingerprint(email)
+        if (recorded.get("source") == SOURCE_CODEX_APP_SERVER
+            and recorded.get("account_email_sha256") != fingerprint):
+            self._codex_quota_refresh_at.pop(channel.worker_name, None)
+        if time.monotonic() < self._codex_quota_refresh_at.get(channel.worker_name, 0):
+            return merge_codex_quota(base_state, recorded, runtime_session_id=channel.runtime_session_id,
+                                     now=now), self._codex_quota_errors.get(channel.worker_name, "")
+        self._codex_quota_refresh_at[channel.worker_name] = time.monotonic() + QUOTA_REFRESH_SECONDS
+        try:
+            observation = await self._codex_quota_reader(
+                expected_email=email, runtime_session_id=channel.runtime_session_id,
+            )
+            if (observation.get("source") != SOURCE_CODEX_APP_SERVER
+                or not observation.get("account_bound")
+                or observation.get("account_email_sha256") != fingerprint
+                or observation.get("runtime_session_id") != channel.runtime_session_id):
+                raise DomainError("work_codex_quota_account_mismatch", "Native quota account binding changed.")
+            if field.read_worker(channel.worker_name).get("runtime_session_id") != channel.runtime_session_id:
+                raise DomainError("work_codex_quota_session_mismatch", "The registered native session changed during the read.")
+            current_account = field.worker_board_record(channel.worker_name).get("runtime_account") or {}
+            if account_fingerprint(current_account.get("email")) != fingerprint:
+                raise DomainError("work_codex_quota_account_mismatch", "The registered native account changed during the read.")
+            field.record_runtime_limit_state(channel.worker_name, observation)
+            self._codex_quota_errors.pop(channel.worker_name, None)
+        except DomainError as exc:
+            self._codex_quota_errors[channel.worker_name] = exc.code
+            return state, exc.code
+        except Exception:  # a failed reader is unavailable, never permission to spend a turn
+            self._codex_quota_errors[channel.worker_name] = "work_codex_quota_unavailable"
+            return state, "work_codex_quota_unavailable"
+        merged = merge_codex_quota(base_state, observation, runtime_session_id=channel.runtime_session_id,
+                                   now=utc_now())
+        if (observation.get("kind") not in {"ok", "rate_limited", "out_of_tokens"}
+            or not merged or (merged.get("source") == SOURCE_CODEX_APP_SERVER and merged.get("kind") == "unknown")
+            or (observation.get("kind") == "ok" and merged.get("source") != SOURCE_CODEX_APP_SERVER)):
+            self._codex_quota_errors[channel.worker_name] = "work_codex_quota_unmeasured"
+            return merged, "work_codex_quota_unmeasured"
+        return merged, ""
+
     async def _notify_available_input(
         self, host: HostRelayConfig, channel: WorkerChannelConfig
     ) -> dict[str, Any] | None:
@@ -4835,6 +4911,26 @@ class ProblemBoardRelaySupervisor:
             now=now,
             recorded=field.runtime_limit_state(channel.worker_name),
         ).get("limit_state")
+        limit_state, quota_error = await self._refresh_codex_quota(
+            field, channel, limit_state, now=now,
+        )
+        # The bounded account read can yield. Do not wake a detached session or
+        # stale captured work that ceased to be pending while it was running.
+        pending_refs = field.pending_worker_mail_refs(channel.worker_name)
+        listener = field.worker_listener_session(channel.worker_name)
+        if not pending_refs or not listener or listener.get("state") == "detached":
+            field.clear_wake_hold(channel.worker_name)
+            return queue_reconciliation
+        if quota_error or (limit_state and limit_state.get("source") == SOURCE_CODEX_APP_SERVER
+                           and limit_state.get("kind") in {"rate_limited", "out_of_tokens"}
+                           and not limit_state.get("resets_at")):
+            # A failed/unmeasured read or continued exhaustion never spends a
+            # model turn. The next bounded read, not a tight native retry loop,
+            # can establish capacity. Pending mail remains untouched.
+            retry_at = (datetime.now(timezone.utc) + timedelta(seconds=QUOTA_REFRESH_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            field.record_wake_hold(channel.worker_name, until=retry_at, pending=len(pending_refs))
+            return {"wake_deferred": True, "wake_deferred_until": retry_at,
+                    "reason": quota_error or "agent_rate_limited"}
         deferred_until = wake_deferred_until(limit_state, now=now)
         if deferred_until:
             # W334: the card shows the hold from this same decision.
@@ -4905,8 +5001,11 @@ class ProblemBoardRelaySupervisor:
             if field.rearm_limit_consumed_wake(
                 channel.worker_name,
                 wake_id=outstanding_wake_id,
-                refused_at=str(limit_state.get("observed_at") or ""),
+                refused_at=str(limit_state.get("refused_at") or limit_state.get("observed_at") or ""),
                 cleared_at=str(limit_state.get("cleared_at") or ""),
+                quota_observed_at=(str(limit_state.get("observed_at") or "")
+                                   if limit_state.get("source") == SOURCE_CODEX_APP_SERVER else ""),
+                runtime_session_id=channel.runtime_session_id,
             ):
                 logger.warning(
                     "Problem Board wake re-armed worker=%s wake_id=%s reason=limit_ended "

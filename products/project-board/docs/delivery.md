@@ -147,7 +147,8 @@ wake one automatic retry. When the session takes both without running
 mail joins it and the relay submits nothing more on its own. The coordinator
 on that host then runs one explicit recovery of that exact wake. A wake the
 provider refused for usage is not stranded this way: the turn never ran, so
-once that limit's reset passes the relay pushes the wake once more itself,
+once that limit's reset passes, or a newer account-bound native reading
+proves early redemption, the relay may push the eligible wake once more,
 and a recovery is refused while the relay still holds the session for its
 limit. The steps are in the coordinator procedure,
 [Recover a stalled Codex delivery](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md#recover-a-stalled-codex-delivery).
@@ -157,6 +158,55 @@ the native queue accepted the prompt, and says nothing about whether the
 model read it. Only the worker's own `pb worker receive` of that wake
 resolves the recovery. That receive clears the outstanding wake and its
 recovery together, on the host, on the next heartbeat and on the Card.
+
+### Early quota redemption
+
+An operator can redeem quota before the reset recorded in a stopped Codex
+rollout. Waiting for another model turn to update that file would keep its
+addressed work held behind an obsolete reading. For a listening, registered
+session with pending input and a registered account email, the relay therefore
+checks the installed native App Server without starting a thread or model turn.
+It uses `account/read` with `refreshToken:false`, `account/rateLimits/read`,
+and a second account check; the account must match the worker's retained
+identity. It never consumes an earned reset, reads a credential file through
+this quota adapter, or uses the PB Card profile as a Codex configuration profile.
+These are the documented [Codex App Server account interfaces](https://learn.chatgpt.com/docs/app-server).
+
+The read has a bounded deadline and runs at most once a minute for a
+quota-held session with pending work. Native bucket, source, account fingerprint,
+session and observation time are retained locally. A newer positive reading
+must cover the exhausted bucket and window; partial, stale, other-session or
+different-account data cannot clear it. All returned buckets are checked, so
+one healthy bucket does not hide another exhausted bucket. A newer provider
+refusal still wins. A failed, unmeasured or still-exhausted read submits no
+model turn and waits for a later bounded check, without discarding pending mail.
+An expired positive reading is unknown, not proof of capacity or a return to an
+older exhausted measurement.
+
+Fresh capacity can end the old hold. If the provider refused an outstanding
+consumed wake, its recovery requires the same current session, a later matched
+reading, pending addressed input and normal queue/authorization fences. One
+durable allowance belongs to that wake, not to each newer quota reading; the
+ordinary consumed-wake ceiling remains. Input and listener state are checked
+again after the read. No pending work means no unsolicited model turn, and
+superseded assignments are not revived by recovery.
+
+`capacity available; same-session receive pending` is quota evidence, not
+working or restored-session proof. The heartbeat can carry fresh usage while
+the separately recorded receive and settlement timestamps remain old. Only
+a new receive establishes that the same session fetched addressed input;
+handling and Operator closure remain separate evidence. The existing status
+surface may show usage ok without a dedicated recovery badge; no new widget or
+notification policy is implied by this client change.
+
+The normal user check is `/status` in the existing Codex console. If it is
+running but still waiting, one normal message can ask it to receive Problem
+Board input and reread live assignments. If the console process has actually
+exited, the operator reopens the original thread with the native `codex resume`
+command and original configuration; PB does not launch a replacement worker.
+Resuming a thread alone is not proof of a model turn or inbox handling.
+Without a registered matching account, the client cannot authorize early
+release from this reader and retains its existing reset-time behavior.
 
 The relay states the recovery on every heartbeat in the session field
 `wake_recovery`: `{wake_id, state, requested_at, recorded_at, submission_id}`
