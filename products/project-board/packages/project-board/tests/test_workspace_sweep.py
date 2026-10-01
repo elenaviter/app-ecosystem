@@ -341,3 +341,42 @@ def test_the_sweep_scans_the_workspace_context_names_not_a_shared_recorded_folde
     own.mkdir()
     swept, named = sweep_root("00000002-0000-4000-8000-000000000000", str(own), alias="docs@host")
     assert swept == own and str(swept) == named
+
+
+def test_apply_refuses_a_workspace_outside_the_agent_workspace_root(workspace, monkeypatch):
+    """W423 ownership 4: removal needs a workspace whose ownership is proved.
+    A host without an agent workspace root, or a workspace outside it, is
+    swept as a report only; --apply removes nothing and says why."""
+
+    from types import SimpleNamespace
+
+    class Field:
+        def workspaces(self, _worker):
+            return [{"path": str(workspace["review"]), "kind": "review", "item": "W6",
+                     "ended_at": "2026-09-30T19:00:00Z", "end_reason": "review decision recorded"}]
+
+        def forget_workspace_path(self, _worker, _path):
+            pass
+
+    identity = SimpleNamespace(worker_name="claude-code-guard")
+    args = SimpleNamespace(config=None)
+
+    def host(root: str):
+        config = SimpleNamespace(effective_agent_workspace_root=root, workspace_sweep_protected=())
+        monkeypatch.setattr(cli, "_sweep_host", lambda _args: (workspace["ws"], config))
+
+    for root in ("", str(workspace["ws"].parent / "elsewhere")):
+        host(root)
+        result = cli._workspace_sweep(Field(), identity, args, apply=True)  # noqa: SLF001
+        assert result["state"] == "apply_refused", root
+        assert "not inside the host's agent workspace root" in result["reason"]
+        assert "pb host configure --agent-workspace-root" in result["reason"]
+        assert result["would_remove"] == [str(workspace["review"])]
+        assert workspace["review"].exists()
+
+    # Inside the root, the same ended review tree is removed.
+    host(str(workspace["ws"].parent))
+    result = cli._workspace_sweep(Field(), identity, args, apply=True)  # noqa: SLF001
+    assert "state" not in result or result["state"] != "apply_refused"
+    assert [entry["path"] for entry in result["removed"]] == [str(workspace["review"])]
+    assert not workspace["review"].exists()

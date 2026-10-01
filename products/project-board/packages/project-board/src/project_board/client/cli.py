@@ -6467,6 +6467,23 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
         trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]
     if not apply:
         return {"worker": identity.worker_name, "workspace": str(workspace), **workspace_sweep.sweep_report(trees)}
+    # W423: removal needs a workspace whose ownership is proved, one folder
+    # under the host's agent workspace root. Without a root the workspace is
+    # whatever folder the session started in, which may be shared.
+    root = str(getattr(config, "effective_agent_workspace_root", "") or "")
+    if not root or not is_inside(str(workspace), root):
+        return {
+            "worker": identity.worker_name,
+            "workspace": str(workspace),
+            "state": "apply_refused",
+            "reason": (
+                f"{workspace} is not inside the host's agent workspace root "
+                f"({root or 'not configured'}), so its trees are not provably this agent's. "
+                "Nothing was removed; the operator sets the root with "
+                "pb host configure --agent-workspace-root <path>."
+            ),
+            **workspace_sweep.sweep_report(trees),
+        }
     result = workspace_sweep.apply_sweep(
         trees, forget=lambda path: field.forget_workspace_path(identity.worker_name, str(path))
     )
