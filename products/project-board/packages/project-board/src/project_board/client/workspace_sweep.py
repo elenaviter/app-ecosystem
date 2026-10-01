@@ -84,6 +84,10 @@ def _size_bytes(path: Path) -> int:
     return total
 
 
+# An end reason that suspends a checkout without ending its job: the item
+# stays open and the tree is recreated from its pushed branch on resume.
+SUSPENDED_PREFIX = "suspended:"
+
 @dataclass
 class Tree:
     path: Path
@@ -279,11 +283,15 @@ def inspect_workspace(
                 tree.keep.append(f"pinned by {', '.join(tree.pinned_by)}")
             if consumers is not None:
                 item = str((registration or {}).get("item") or "")
-                if item:
+                suspended = str((registration or {}).get("end_reason") or "").startswith(SUSPENDED_PREFIX)
+                if item and not (registration and registration.get("ended_at") and suspended):
                     found = consumers(item)
                 elif registration and registration.get("ended_at"):
-                    # An end its owner recorded by path names no item: there is
-                    # no item to wait for. Every other check above still applies.
+                    # An end its owner recorded by path names no item, or names a
+                    # suspended checkout of a still-open item (operator, 2026-10-01:
+                    # an open PR is no reason to keep a pushed, clean tree). Either
+                    # way there is no item to wait for; every other check above
+                    # still applies, and the item and its assignment stay open.
                     found = []
                 else:
                     found = None

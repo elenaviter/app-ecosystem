@@ -369,7 +369,11 @@ def _guard_case(workspace, monkeypatch, *, root, swept, own):
     config = SimpleNamespace(effective_agent_workspace_root=str(root), workspace_sweep_protected=())
     monkeypatch.setattr(cli, "_sweep_host", lambda _args: (swept, config))
     monkeypatch.setattr(cli, "_sweep_own_folder", lambda _config, _args: str(own))
+    # The review item is decided on the board.
+    monkeypatch.setattr(cli, "_sweep_item_consumers", lambda *_a: (lambda _item: []))
     identity = SimpleNamespace(worker_name="claude-code-guard")
+    # --apply removes only what a dry run listed (W423 o5), so list first.
+    cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=False)  # noqa: SLF001
     return cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=True)  # noqa: SLF001
 
 
@@ -398,6 +402,8 @@ def test_apply_removes_only_in_the_agents_own_folder(workspace, monkeypatch):
         assert result["state"] == "apply_refused", case
         assert result["reason"] and "Nothing was removed" in result["reason"], case
         assert workspace["review"].exists(), case
+        # The dry run before it wrote no plan into a folder it does not own.
+        assert not (Path(kwargs["swept"]) / ".problem-board" / "sweep-plan.json").exists(), case
     assert "pb host configure --agent-workspace-root" in _guard_case(
         workspace, monkeypatch, root="", swept=own, own=own)["reason"]
 

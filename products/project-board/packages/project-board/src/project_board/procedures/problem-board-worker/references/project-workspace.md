@@ -352,6 +352,13 @@ A tree's job ends only when its end is recorded: its review decision through
 `pb worker workspace --end --path <path> --reason "<change request closed | released>"`.
 Being merged never ends a job: a merged tree may still serve a pending review
 or a release.
+A paused or suspended change request is no reason to keep its tree (operator,
+2026-10-01). When the branch is pushed, the tree is clean, its evidence is
+published and nothing runs from it, end the checkout with
+`pb worker workspace --end --path <tree> --reason "suspended: PR <n> pushed at <head>"`.
+The open item then no longer keeps the tree, and every other check below still
+does. Ending a tree this way never ends or releases the assignment and never
+closes the change request. To resume, recreate the tree from the pushed branch.
 `pb worker workspace --sweep` lists every tree in your workspace, registered or
 not, with its state, size and what `--apply` would do, and records that list.
 `--apply` removes a tree only when its job ended **and** nothing could be lost,

@@ -396,6 +396,8 @@ def test_the_cli_sweep_lists_then_applies_only_what_it_listed(ws, monkeypatch):
     states = {"W10": [], "W11": ["item W11 is review"]}
     monkeypatch.setattr(cli, "_sweep_host", lambda _args: (ws["ws"], SimpleNamespace(workspace_sweep_protected=())))
     monkeypatch.setattr(cli, "_sweep_item_consumers", lambda *_a: (lambda item: states.get(item)))
+    # Ownership of the folder is test_workspace_sweep's subject; here it is proved.
+    monkeypatch.setattr(cli, "_sweep_apply_refusal", lambda *_a: "")
     field = Field()
     identity = SimpleNamespace(worker_name=OWNER)
     args = SimpleNamespace(config=None)
@@ -462,4 +464,55 @@ def test_an_owner_ended_tree_without_an_item_is_judged_on_everything_else(ws, mo
     report = cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=False)  # noqa: SLF001
     rows = {row["path"]: row for row in report["trees"]}
     assert rows[str(old)]["action"] == "keep" and any("untracked" in r for r in rows[str(old)]["keep"])
+
+
+def test_a_suspended_checkout_of_an_open_item_can_go_and_a_released_one_cannot(ws, monkeypatch):
+    """Operator, 2026-10-01: an open PR is no reason to keep a pushed, clean tree.
+    `--end --reason "suspended: ..."` ends the checkout, not the job: the open
+    item no longer keeps the tree, every other check still does."""
+
+    from types import SimpleNamespace
+
+    from project_board.client import cli
+
+    suspended = tree(ws, "w14-suspended")
+    released = tree(ws, "w15-released")
+
+    class Field:
+        def __init__(self):
+            self.rows = [
+                {"path": str(suspended), "item": "W14", "ended_at": "2026-10-01T12:00:00Z",
+                 "end_reason": "suspended: PR 409 pushed at 73ddc06"},
+                {"path": str(released), "item": "W15", "ended_at": "2026-10-01T12:00:00Z", "end_reason": "released"},
+            ]
+
+        def workspaces(self, _worker):
+            return [row for row in self.rows if Path(row["path"]).exists()]
+
+        def forget_workspace_path(self, _worker, path):
+            self.rows = [row for row in self.rows if row["path"] != path]
+
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (ws["ws"], SimpleNamespace(workspace_sweep_protected=())))
+    # Both items are still open on the board.
+    monkeypatch.setattr(cli, "_sweep_item_consumers", lambda *_a: (lambda item: [f"item {item}: Working"]))
+    identity = SimpleNamespace(worker_name=OWNER)
+    report = cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=False)  # noqa: SLF001
+    rows = {row["path"]: row for row in report["trees"]}
+    assert rows[str(suspended)]["action"] == "remove", rows[str(suspended)]["keep"]
+    assert rows[str(released)]["action"] == "keep" and any("still needed" in r for r in rows[str(released)]["keep"])
+    # A suspended tree with something unique in it stays.
+    (suspended / "probe.txt").write_text("only copy", encoding="utf-8")
+    report = cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=False)  # noqa: SLF001
+    rows = {row["path"]: row for row in report["trees"]}
+    assert rows[str(suspended)]["action"] == "keep" and any("untracked" in r for r in rows[str(suspended)]["keep"])
+
+
+def test_the_procedure_names_the_suspended_end():
+    from pathlib import Path as _Path
+
+    import project_board
+
+    text = " ".join((_Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker" / "references" / "project-workspace.md").read_text(encoding="utf-8").split())
+    assert 'pb worker workspace --end --path <tree> --reason "suspended: PR <n> pushed at <head>"' in text
+    assert "Ending a tree this way never ends or releases the assignment" in text
 

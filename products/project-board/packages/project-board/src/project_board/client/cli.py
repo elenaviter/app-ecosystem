@@ -6584,12 +6584,13 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
     verify = scratch.repository_verifier(workspace)
     clones = [tree.path.name for tree in trees if tree.kind == "clone"]
     result: dict[str, Any] = {"worker": identity.worker_name, "workspace": str(workspace)}
+    # W423: removal needs a workspace whose ownership is proved: exactly this
+    # agent's own folder, <root>/<alias or name>, reached without a link.
+    # Being inside the root is not enough: the root itself, another agent's
+    # folder or an in-root link to one would pass a containment check. A dry
+    # run in such a folder reports, and writes no plan there either.
+    refusal = _sweep_apply_refusal(workspace, config, args)
     if apply:
-        # W423: removal needs a workspace whose ownership is proved: exactly this
-        # agent's own folder, <root>/<alias or name>, reached without a link.
-        # Being inside the root is not enough: the root itself, another agent's
-        # folder or an in-root link to one would pass a containment check.
-        refusal = _sweep_apply_refusal(workspace, config, args)
         if refusal:
             return {
                 "worker": identity.worker_name,
@@ -6618,6 +6619,9 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
     if not apply:
         result["scratch_runs"] = [run.to_mapping() for run in runs]
         result["loose"] = scratch.loose_entries(workspace, known=clones)
+    if refusal:
+        result["apply_refused"] = refusal
+        return result
     # The next --apply removes only what this dry run lists, unchanged.
     sweep_plan.write_plan(
         workspace,
