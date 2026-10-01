@@ -1062,6 +1062,14 @@ def build_parser() -> argparse.ArgumentParser:
     _host_config(command)
     _agent_identity(command)
     command.add_argument("--project-ref", default="", help="The project, when this agent attends several.")
+    command.add_argument(
+        "--owner-key-only",
+        action="store_true",
+        help=(
+            "Push with the owner's GitHub key or not at all: the named remote must push over HTTPS, "
+            "and a failed push is never retried through the deploy key (W454; a release uses it)."
+        ),
+    )
     command.add_argument("git_args", nargs=argparse.REMAINDER, help="git push's own arguments, after --.")
 
     command = worker_commands.add_parser(
@@ -4281,14 +4289,18 @@ def _push_command(args: Any) -> int:
     same push through the `deploykey` remote connect-project kept, and says
     so. A refusal (not_attending, card_denies, github_not_linked...) never
     falls back.
+
+    `--owner-key-only` (W454) pushes with the owner's key or not at all, and
+    decides before anything is written: the first positional argument must
+    name a remote whose every push URL is HTTPS, which only the owner key's
+    credential helper answers (an SSH URL would push with whatever key the
+    machine has), and a failed push is returned as it is, never retried
+    through the deploy key.
     """
 
     push_args = list(args.git_args or [])
     if push_args[:1] == ["--"]:
         push_args = push_args[1:]
-    first = subprocess.call(["git", "push", *push_args])
-    if first == 0:
-        return 0
 
     def git_out(*command: str) -> str:
         try:
@@ -4296,6 +4308,27 @@ def _push_command(args: Any) -> int:
         except (OSError, subprocess.TimeoutExpired):
             return ""
         return found.stdout.strip() if found.returncode == 0 else ""
+
+    if getattr(args, "owner_key_only", False):
+        named = next((arg for arg in push_args if not arg.startswith("-")), "")
+        if not named or named not in set(git_out("remote").split()):
+            print("pb GitHub key: --owner-key-only needs the remote named first, for example "
+                  "`pb worker push --owner-key-only -- origin <branch>`; nothing was pushed", file=sys.stderr)
+            return 2
+        urls = git_out("remote", "get-url", "--push", "--all", named).split()
+        if not urls or not all(url.startswith("https://") for url in urls):
+            print(f"pb GitHub key: --owner-key-only pushes over HTTPS only; {named} pushes to "
+                  f"{', '.join(urls) or 'nothing'}; nothing was pushed", file=sys.stderr)
+            return 2
+        owned = subprocess.call(["git", "push", *push_args])
+        if owned != 0:
+            print("pb GitHub key: --owner-key-only: the push failed and is not retried through the deploy key",
+                  file=sys.stderr)
+        return owned
+
+    first = subprocess.call(["git", "push", *push_args])
+    if first == 0:
+        return 0
 
     remotes = set(git_out("remote").split())
     if DEPLOY_KEY_REMOTE not in remotes:

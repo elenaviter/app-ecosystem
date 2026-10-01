@@ -221,18 +221,25 @@ def test_a_push_names_the_project_and_checks_the_actor_before_it_writes(tmp_path
     assert actor == ["worker", "gh", "--project-ref", "work:project:p", "--runtime-kind", "claude-code",
                      "--", "api", "user", "--jq", ".login"]
     assert push == ["worker", "push", "--project-ref", "work:project:p", "--runtime-kind", "claude-code",
-                    "--", "--quiet", "origin", "release/2099.01.02.0304"]
+                    "--owner-key-only", "--", "--quiet", "origin", "release/2099.01.02.0304"]
 
 
-def test_a_push_fails_closed_where_it_could_reach_the_deploy_key_or_an_ssh_key(tmp_path: Path) -> None:
+def test_a_push_uses_the_owner_key_only_mode_even_where_a_deploy_key_remote_exists(tmp_path: Path) -> None:
+    """`pb worker push --owner-key-only` never falls back, so the remote may stay."""
+
     fake, log = _fake_pb(tmp_path)
     route = release_pb.GitHubRoute("work:project:p", "owner", pb=fake)
-
     root = _clone(tmp_path, origin="https://github.com/o/r.git", deploykey="github-r:o/r.git")
-    with pytest.raises(release_pb.ReleaseError, match="'deploykey' remote"):
-        route.push("origin", ["x"], cwd=root)
-    _git(root, "remote", "remove", "deploykey")
-    _git(root, "remote", "set-url", "origin", "git@github.com:o/r.git")
+
+    route.push("origin", ["x"], cwd=root)
+
+    assert "--owner-key-only" in _calls(log)[-1]
+
+
+def test_a_push_fails_closed_on_a_remote_that_is_not_https(tmp_path: Path) -> None:
+    fake, log = _fake_pb(tmp_path)
+    route = release_pb.GitHubRoute("work:project:p", "owner", pb=fake)
+    root = _clone(tmp_path, origin="git@github.com:o/r.git")
     with pytest.raises(release_pb.ReleaseError, match="over HTTPS with the owner key only"):
         route.push("origin", ["x"], cwd=root)
     assert not log.exists(), "nothing ran, not even the actor check"
@@ -350,7 +357,7 @@ def test_the_release_guide_names_the_governed_route_and_the_release_tree() -> No
     guide = (REPOSITORY_ROOT / "docs" / "releases.md").read_text(encoding="utf-8")
     first_section = guide.split("\n## ", 2)[1]
     for phrase in ("wt/release-<version>", "--scratch", "--project-ref", "--github-login",
-                   "pb worker gh", "pb worker push", "`deploykey` remote", "HTTPS"):
+                   "pb worker gh", "pb worker push --owner-key-only", "HTTPS"):
         assert phrase in first_section, phrase
     assert "throwaway worktree" not in first_section
 

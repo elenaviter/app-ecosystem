@@ -54,14 +54,14 @@ releasable.
    `--project-ref`.
 
    **GitHub goes through the governed route only.** Every GitHub call is
-   `pb worker gh` or `pb worker push` for the named `--project-ref`. On Claude
-   Code, also pass `--runtime-kind claude-code --runtime-session-id <id>`.
-   There is no ambient `gh` login and no deploy key. Before each push the
-   script fails closed:
+   `pb worker gh` or `pb worker push --owner-key-only` for the named
+   `--project-ref`. On Claude Code, also pass
+   `--runtime-kind claude-code --runtime-session-id <id>`. There is no
+   ambient `gh` login and no deploy key: in `--owner-key-only` mode a failed
+   push is never retried through the deploy key, even when the clone has the
+   `deploykey` remote. Before each push the script fails closed:
    - the remote must be HTTPS, which only the owner key's credential helper
      answers;
-   - the clone must have no `deploykey` remote, because `pb worker push`
-     retries through it when the owner key is unavailable;
    - `pb worker gh -- api user` must answer as `--github-login`.
 3. **Review and merge the release pull request.** *The maintainer.* It
    changes versions and release notes only.

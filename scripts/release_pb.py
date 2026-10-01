@@ -60,8 +60,6 @@ WORKFLOW = "publish-python-package.yml"
 SET_INPUT = "pb-set"
 VERSION_RE = re.compile(r"^\d{4}\.\d{2}\.\d{2}\.\d{4}$")
 INDEX_WAIT_SECONDS = 20 * 60
-# The remote `pb worker connect-project` adds for this machine's deploy key.
-DEPLOY_KEY_REMOTE = "deploykey"
 
 
 @dataclass(frozen=True)
@@ -142,13 +140,11 @@ class GitHubRoute:
     """GitHub through the agent's governed route for one project (W454).
 
     `pb worker gh` runs gh with the project owner's GitHub key for one command,
-    and `pb worker push` pushes with it. A push fails closed before it writes:
-    the remote must be HTTPS, which only the owner key's credential helper
-    answers (an SSH remote would push with whatever key the machine has), and
-    the clone must not have the `deploykey` remote, because `pb worker push`
-    retries through that remote when the owner key is unavailable. Then the
-    route asks GitHub who it answers as and stops unless that is `login`. A
-    push that still reports the deploy key stops the release.
+    and `pb worker push --owner-key-only` pushes with it or not at all: it
+    refuses a remote that does not push over HTTPS and never retries through
+    the deploy key. Before each push the route also checks the remote is
+    HTTPS itself, then asks GitHub who it answers as and stops unless that is
+    `login`. A push that still mentions the deploy key stops the release.
     """
 
     project_ref: str
@@ -156,8 +152,9 @@ class GitHubRoute:
     runtime: tuple[str, ...] = ()
     pb: str = "pb"
 
-    def command(self, verb: str, args: list[str]) -> list[str]:
-        return [self.pb, "worker", verb, "--project-ref", self.project_ref, *self.runtime, "--", *args]
+    def command(self, verb: str, args: list[str], *, owner_key_only: bool = False) -> list[str]:
+        mode = ["--owner-key-only"] if owner_key_only else []
+        return [self.pb, "worker", verb, "--project-ref", self.project_ref, *self.runtime, *mode, "--", *args]
 
     def gh(self, args: list[str], *, cwd: Path, capture: bool = True, check: bool = True) -> subprocess.CompletedProcess:
         return run(self.command("gh", args), cwd=cwd, capture=capture, check=check)
@@ -170,12 +167,6 @@ class GitHubRoute:
             raise ReleaseError(f"GitHub answers as {answer.stdout.strip()!r}, not {self.login!r}; nothing was pushed")
 
     def check_push_target(self, remote: str, *, cwd: Path) -> None:
-        remotes = git("remote", cwd=cwd).split()
-        if DEPLOY_KEY_REMOTE in remotes:
-            raise ReleaseError(
-                f"this clone has the {DEPLOY_KEY_REMOTE!r} remote, which `pb worker push` falls back to "
-                "when the owner key is unavailable; a release pushes only with the owner key, so it does not push from here"
-            )
         url = git("remote", "get-url", "--push", remote, cwd=cwd)
         if not url.startswith("https://"):
             raise ReleaseError(f"remote {remote!r} pushes to {url!r}; a release pushes over HTTPS with the owner key only")
@@ -184,7 +175,7 @@ class GitHubRoute:
         self.check_push_target(remote, cwd=cwd)
         self.check_actor(cwd=cwd)
         args = ["--quiet", remote, *refs]
-        result = run(self.command("push", args), cwd=cwd, capture=True, check=False)
+        result = run(self.command("push", args, owner_key_only=True), cwd=cwd, capture=True, check=False)
         if "deploy key" in result.stderr:
             raise ReleaseError(
                 "the push reported the deploy-key fallback, which a release may not use; "

@@ -83,3 +83,57 @@ def test_a_refusal_or_a_stale_failure_never_falls_back(tmp_path, monkeypatch, ca
     assert _push() != 0
     assert _branch(deploy) == ""
     assert "deploy key" not in capsys.readouterr().err
+
+
+# W454: a release must push with the owner's key or not at all. The default
+# above stays as it is; `--owner-key-only` decides before anything is written.
+
+
+def _owner_only_push(*git_args: str):
+    return cli._push_command(SimpleNamespace(git_args=["--", *git_args], owner_key_only=True))  # noqa: SLF001
+
+
+def test_owner_key_only_never_falls_back_after_an_availability_failure(tmp_path, monkeypatch, capsys):
+    deploy, clone = _setup(tmp_path, monkeypatch, code="http_502", availability=True)
+    # An HTTPS origin that refuses the connection, as when the owner key's route is down.
+    _git("remote", "set-url", "origin", "https://127.0.0.1:9/example-org/app-ecosystem.git", cwd=clone)
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+
+    assert _owner_only_push("origin", "work/fallback") != 0
+    assert _branch(deploy) == "", "the deploy-key remote received nothing"
+    err = capsys.readouterr().err
+    assert "not retried through the deploy key" in err
+    assert "pushed with the deploy key" not in err
+
+
+@pytest.mark.parametrize("url", ["git@github.com:example-org/app-ecosystem.git", "LOCAL"])
+def test_owner_key_only_refuses_a_remote_that_does_not_push_over_https(tmp_path, monkeypatch, capsys, url):
+    deploy, clone = _setup(tmp_path, monkeypatch, code="http_502", availability=True)
+    if url == "LOCAL":
+        # A plain path pushes without any credential at all.
+        url = str(deploy)
+    _git("remote", "set-url", "origin", url, cwd=clone)
+
+    assert _owner_only_push("origin", "work/fallback") == 2
+    assert _branch(deploy) == "", "nothing was pushed, not even to the local path"
+    assert "pushes over HTTPS only" in capsys.readouterr().err
+
+
+def test_owner_key_only_checks_every_push_url_and_needs_the_remote_named(tmp_path, monkeypatch, capsys):
+    deploy, clone = _setup(tmp_path, monkeypatch, code="http_502", availability=True)
+    _git("remote", "set-url", "origin", "https://127.0.0.1:9/example-org/app-ecosystem.git", cwd=clone)
+    _git("remote", "set-url", "--add", "--push", "origin", "https://127.0.0.1:9/example-org/app-ecosystem.git", cwd=clone)
+    _git("remote", "set-url", "--add", "--push", "origin", str(deploy), cwd=clone)
+
+    assert _owner_only_push("origin", "work/fallback") == 2
+    assert _owner_only_push("work/fallback") == 2
+    assert _owner_only_push() == 2
+    assert _branch(deploy) == ""
+    assert "needs the remote named first" in capsys.readouterr().err
+
+
+def test_the_default_push_keeps_its_fallback_and_the_parser_offers_the_mode():
+    parser = cli.build_parser()
+    args = parser.parse_args(["worker", "push", "--owner-key-only", "--", "origin", "main"])
+    assert args.owner_key_only is True
+    assert parser.parse_args(["worker", "push", "--", "origin", "main"]).owner_key_only is False
