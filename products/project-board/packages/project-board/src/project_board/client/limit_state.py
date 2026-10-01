@@ -732,13 +732,21 @@ def merge_codex_quota(
         if previous.get("kind") in (KIND_RATE_LIMITED, KIND_OUT_OF_TOKENS):
             if not isinstance(measured, Mapping) or measured.get("kind") != KIND_OK:
                 return previous
-            windows = {w.get("name"): w.get("used_percent") for w in measured.get("windows") or []}
-            needed = [w.get("name") for w in previous.get("windows") or []
+            windows = list(measured.get("windows") or [])
+            needed = [w for w in previous.get("windows") or []
                       if w.get("used_percent") is not None and w["used_percent"] >= 100]
             if not needed:
-                needed = ["primary", "secondary"]
-            if any(windows.get(name) is None or windows[name] >= 100 for name in needed):
-                return previous
+                needed = [{"name": "primary"}, {"name": "secondary"}]
+            for exhausted in needed:
+                duration = exhausted.get("window_minutes")
+                covered = [w for w in windows if (
+                    w.get("window_minutes") == duration if duration is not None
+                    else w.get("name") == exhausted.get("name"))]
+                # The provider may move the weekly window between primary
+                # and secondary. Its period, when known, is the identity;
+                # a healthy five-hour window cannot stand in for the week.
+                if not covered or any(w.get("used_percent") is None or w["used_percent"] >= 100 for w in covered):
+                    return previous
         if previous.get("refusal"):
             refused_at = str(previous.get("refused_at") or previous.get("observed_at") or "")
             candidate.update(refusal=previous["refusal"], refused_at=refused_at,

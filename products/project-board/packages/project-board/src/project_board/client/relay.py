@@ -4075,6 +4075,12 @@ class ProblemBoardHostRelayAdapter:
         # project's heartbeat. With no mail left there is nothing held, even
         # before the delivery loop runs again.
         hold = self.field.wake_hold(self.config.worker_name)
+        limit = row.get("limit_state")
+        if isinstance(limit, Mapping) and limit.get("source") == SOURCE_CODEX_APP_SERVER and limit.get("kind") == "ok":
+            # cleared_at is local rearm evidence. The Board treats that field
+            # as an expired/unmeasured limit and omits it from current usage;
+            # this positive authenticated measurement is not expired evidence.
+            row["limit_state"] = {key: value for key, value in limit.items() if key != "cleared_at"}
         row = session_with_wake_hold(
             row,
             hold=hold,

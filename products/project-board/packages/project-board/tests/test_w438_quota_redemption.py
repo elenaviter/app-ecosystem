@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import pytest
+from types import SimpleNamespace
 
 from project_board.client import relay, store as store_module
 from project_board.client.limit_state import limit_state_from_codex
@@ -214,3 +215,21 @@ def test_recovery_receive_reads_current_assignment_and_old_ownership_stays_refus
         message_refs=[notice["message_ref"]], wake_id=WAKE)
     assert not _subscription(field, identity.worker_name).get("outstanding_wake_id")
     assert field.worker_listener_session(identity.worker_name)["last_inbox_result_at"] == "2026-10-01T00:41:01Z"
+
+
+def test_heartbeat_keeps_positive_quota_visible_without_claiming_receive(tmp_path, monkeypatch):
+    _host, identity, _channel, field, _supervisor, _pushes = _held(tmp_path, monkeypatch)
+    positive = {**_capacity(identity.runtime_session_id), "cleared_at": NOW,
+                "reached": "capacity_available_receive_pending"}
+    monkeypatch.setattr(relay, "session_with_limit_state", lambda listener, **_: {
+        **listener, "limit_state": positive})
+    monkeypatch.setattr(relay, "session_with_runtime_model", lambda listener, **_: listener)
+    adapter = relay.ProblemBoardHostRelayAdapter.__new__(relay.ProblemBoardHostRelayAdapter)
+    adapter.field = field
+    adapter.config = SimpleNamespace(worker_name=identity.worker_name, runtime_kind="codex",
+                                     runtime_session_id=identity.runtime_session_id)
+    row = adapter._listener_sessions()[0]
+    assert row["limit_state"]["kind"] == "ok" and "cleared_at" not in row["limit_state"]
+    assert row["limit_state"]["reached"] == "capacity_available_receive_pending"
+    assert not row.get("last_inbox_result_at"), "account reads never invent an actual receive"
+    assert positive["cleared_at"] == NOW, "local rearm evidence is retained separately"

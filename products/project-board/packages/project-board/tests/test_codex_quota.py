@@ -195,3 +195,20 @@ def test_new_provider_refusal_wins_over_an_earlier_native_positive_read():
     old = {**_old(), "observed_at": "2026-10-01T00:42:00Z"}
     assert merge_codex_quota(old, _capacity(SESSION), runtime_session_id=SESSION,
                               now="2026-10-01T00:43:00Z") == old
+
+
+def test_weekly_window_can_change_its_native_primary_secondary_label():
+    old = _old()
+    old["windows"][0]["window_minutes"] = 10080
+    candidate = codex_quota.quota_state({"rateLimits": {"limitId": "codex", "primary": {
+        **WINDOW, "windowDurationMins": 10080, "usedPercent": 46}}},
+        observed_at=NOW, runtime_session_id=SESSION, fingerprint="synthetic")
+    assert merge_codex_quota(old, candidate, runtime_session_id=SESSION, now=NOW)["kind"] == "ok"
+
+
+def test_five_hour_capacity_does_not_cover_an_unreported_exhausted_week():
+    old = _old()
+    old["windows"][0]["window_minutes"] = 10080
+    candidate = codex_quota.quota_state({"rateLimits": {"limitId": "codex", "primary": WINDOW}},
+        observed_at=NOW, runtime_session_id=SESSION, fingerprint="synthetic")
+    assert merge_codex_quota(old, candidate, runtime_session_id=SESSION, now=NOW) == old
