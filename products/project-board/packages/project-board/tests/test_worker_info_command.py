@@ -200,6 +200,12 @@ def test_the_worker_rereads_its_assignments_periodically():
     root = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker"
     skill = " ".join((root / "SKILL.md").read_text(encoding="utf-8").split())
     collaboration = " ".join((root / "references" / "collaboration.md").read_text(encoding="utf-8").split())
-    assert "Read the same list again while you work, at every work boundary and on each guard prompt or wake" in skill
-    assert "at every work boundary and at least on each guard prompt or wake, read your assignments fresh" in collaboration
+    # Operator correction, 2026-10-01: periodic, never per step, wake or guard prompt.
+    assert "While you work, read it again periodically, about every 30 minutes at the next safe boundary, never on each step, wake or guard prompt" in skill
+    assert "While you work, read them again periodically: once about 30 minutes of active work have passed since the last full read, at the next safe boundary." in collaboration
+    assert "a step, a command, an ordinary wake, a guard prompt or a work boundary is not a reason for a full read" in collaboration
+    assert "An addressed change to one assignment or its ownership, or a doubt about one item, reads only that item." in collaboration
+    for text in (skill, collaboration):
+        assert "at every work boundary and on each guard prompt or wake" not in text
+        assert "at every work boundary and at least on each guard prompt or wake" not in text
     assert "an assignment's notice is sent once, so the board is the record" in collaboration
