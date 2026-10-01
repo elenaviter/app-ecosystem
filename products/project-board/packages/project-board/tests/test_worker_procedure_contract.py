@@ -145,7 +145,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.09.30.9"
+    assert package["revision"] == "2026.10.01.1"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -690,7 +690,7 @@ def test_repository_sharing_rules() -> None:
     assert "the files the change request lists and the files you read" in words
     assert "git merge-base --is-ancestor <commit> origin/main" in words
     assert "The acceptor runs it on their own clone" in words
-    assert "A journal entry that says landed names that merge commit and is written after it is fetched" in words
+    assert "Any claim that a change landed (a report, an item note, a journal lesson) names that merge commit after you fetched it" in words
     assert "settled by installing it into a fresh environment at the named commit" in words
     # Retired with the ruling: pushing a work branch is the author's act.
     assert "Pushing is the operator's decision" not in words
@@ -775,7 +775,7 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "the reload returns before that build finishes" in _words(profile)
     assert "Ask what it released" in runtime
     coordinator = _words(_read("references/coordinator.md"))
-    assert "Read this when you are about to accept, return or cancel a submission" in coordinator
+    assert "Read the section for an act when you are about to do it: accept, return or cancel a submission" in coordinator
     assert "work_review_self_forbidden" in coordinator
     assert "an `idempotency_key` you generate for this decision" in coordinator
     assert "Read the dashboard first" in coordinator
@@ -897,7 +897,7 @@ def test_a_returning_worker_starts_from_the_current_procedure() -> None:
     assert "an installed skill copy stays at the revision it was installed with" in coordinator
     assert "Compares the host's selected source (`pb source status`) and installed procedure revision (`pb procedure verify`)" in coordinator
     assert "Starts the update or reinstall the host's policy allows" in coordinator
-    assert "Asks the worker to reread the complete current skill, and the worker confirms the revision before it begins" in coordinator
+    assert "Asks the worker to load the complete current skill when its loaded revision differs from the installed one, and the worker confirms the revision before it begins" in coordinator
     assert "A worker whose info line says paused, restricted or do not use is left asleep until it is legitimately resumed" in coordinator
     assert "A project that consumes Problem Board follows its published-release policy" in coordinator
 
@@ -1129,12 +1129,15 @@ def test_the_project_journal_accumulates_everything_from_day_one() -> None:
         )
     )
 
-    assert "Keep everything known in the project journal" in coordinator
-    assert "project journal home is the team's complete shared history" in coordinator
+    # W453 (operator, 2026-10-01): the journal accumulates reasoning and lessons,
+    # not a ledger of where the work stands.
+    assert "Keep what the project learned in the journal" in coordinator
+    assert "project journal home is where the team's reasoning accumulates" in coordinator
     assert "The project files are the team's current truth, and every project has them" in coordinator
     assert "operator rulings with their reasons" in coordinator
-    assert "runtime-window outcomes" in coordinator
-    assert "Whoever learns a project-wide fact writes a journal entry" in coordinator
+    assert "lives on the work item, not in the journal" in coordinator
+    assert "complete shared history" not in coordinator
+    assert "Whoever learns a project-wide lesson writes a journal entry" in coordinator
     assert "a successor coordinator begins by searching the journal" in coordinator
     assert "Starting a project" in coordinator
     # W370: the project files replace the journal pages; the coordinator creates what the card lists.
@@ -2259,3 +2262,151 @@ def test_an_unchanged_wake_reuses_loaded_instructions() -> None:
     signals = _words(_read("references/signals.md"))
     assert "again only when `pb procedure verify` shows the installed revision changed by a regular upgrade" in signals
     assert "compaction lost its text" not in signals
+
+
+def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
+    # W449 (operator mandate and team poll, 2026-10-01): durable coordinator
+    # habits in their owning sections, not a separate checklist.
+    coordinator = _words(_read("references/coordinator.md"))
+    collaboration = _words(_read("references/collaboration.md"))
+    skill = _words(_read("SKILL.md"))
+
+    # A1: a section still in context is not reread; reload only on a new revision.
+    assert "A section still in your context is not read again, and the file is reloaded only with the skill, when `pb procedure verify` names a new installed revision" in coordinator
+    assert "tell active workers the new revision: each loads it once, when `pb procedure verify` names it." in skill
+    assert "tell active workers to re-read it" not in skill
+    # A2: communication comes first, without crutches.
+    assert "**Communication comes first.**" in coordinator
+    assert "Pause uncertain product writes. Keep supported status and evidence replies going" in coordinator
+    assert "A longer timeout, a retry loop, a restart, a reauthorization or a host action is not a fix." in coordinator
+    # A3: STARTED is a working report, timed from the dispatch receipt.
+    assert "## Confirm that work started" in _read("references/coordinator.md")
+    assert "STARTED is the worker's `working` report at the current ownership version." in coordinator
+    assert "Count from the dispatch receipt" in coordinator
+    assert "Never infer that work started, and never create a second owner." in coordinator
+    # A4: one dispatch note on the item.
+    assert "### Record each dispatch on the item" in _read("references/coordinator.md")
+    assert "the evidence state, one of requested, queued, applied or STARTED, never merged into one" in coordinator
+    # A5, A6: file findings; a send counts by its receipt; replies go back where they came from.
+    assert "File what you find." in coordinator
+    assert "A send of yours counts only once it returns a receipt." in coordinator
+    assert "a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there" in skill
+    # A7, A8: focus and next deployment; one delivery-state vocabulary.
+    assert "the current focus, and the next deployment" in coordinator
+    assert "| source-approved | a review verdict at the exact head |" in coordinator
+    assert "No state implies the next" in coordinator
+    # A9: close what landed.
+    assert "5. **Close what landed.**" in coordinator
+    assert "A head on `main` is not a deployment." in coordinator
+    # A10: host-action preflight.
+    assert "Before you suggest a host action" in coordinator
+    # A11: bounded rounds; adopted rules land in their owning section.
+    assert "Each round has a time box the proposer states with the questions." in collaboration
+    assert "An operator ruling on the question is adopted as given and is not put to a vote" in collaboration
+    # A13 (routing part; the product transition is W451): the coordinator routes in the turn.
+    assert "with `review.assign` naming yourself, so that you are the item's assignee" in coordinator
+    assert "An item in Review whose assignee is still its author is an unrouted review" in coordinator
+    assert "you never schedule your own acceptance" in collaboration
+    # Review return at 0e28848f (claude-app@e-home): without a specific reviewer the
+    # completion names the acting coordinator, so it never stays on its author.
+    assert "With no specific reviewer, name the acting coordinator's stable worker name in `--reviewer`" in collaboration
+    assert "with no specific reviewer, name the acting coordinator's stable worker name, so the review lands on it and not on you" in skill
+    assert "else the coordinator does (collaboration Rule 6)" not in skill
+    # A14: reconcile assignments and ask when one is unclear.
+    assert "**Reconcile your assignments, act on each, and ask when one is unclear.**" in collaboration
+    assert "never an idle wait, an invented role or a kept stale tree" in collaboration
+    assert "**An unclear assignment is a question, not an idle state.**" in coordinator
+    # Operator, 13:07Z: a fresh scheduling table before dispatch and on exhaustion.
+    assert "## Read the scheduling table before you dispatch" in _read("references/coordinator.md")
+    assert "Dispatch from that table, not from memory." in coordinator
+    assert "and at each work boundary while work is active (at least every announcement interval), read a fresh table" in coordinator
+    assert "A worker at its limit, or whose wakes are held, does not keep an actionable review or other work someone waits on" in coordinator
+
+
+def test_the_journal_keeps_what_the_project_learned_not_a_release_ledger() -> None:
+    # W453 (operator, 2026-10-01): the journal accumulates reasoning, failures,
+    # rejected alternatives and limits; where the work stands lives on the item.
+    raw = _read("references/journaling.md")
+    journaling = _words(raw)
+    skill = _words(_read("SKILL.md"))
+    assert "# Journal What The Project Learned" in raw
+    assert "Journal Every Completed Move" not in raw
+    assert "one entry per move" not in journaling.lower()
+    assert "Write one entry for each completed move" not in journaling
+    assert "why it chose this and not that, what failed and through which mechanism" in journaling
+    assert "something which improves later the understandgin why we did this and not that way not to repeat the mistakes we made" in journaling
+    assert "A status, a head, a merge, an install or an approval is not a reason for an entry" in journaling
+    assert "progress and the release ledger live on the work item" in journaling
+    assert "**the lesson**, first" in journaling
+    assert "**the alternatives**: what was tried or considered, and why each was rejected" in journaling
+    assert "| Progress, heads, approvals, gates, merges, installs: where the work stands | The work item's notes and reports |" in journaling
+    assert "it becomes a procedure or documentation change so that every agent follows it" in journaling
+    assert "Journal every completed move" not in skill
+    assert "where the work stands goes on the item, not in the journal" in skill
+    # Review return at 4cb5b5b1: no text keeps the merged-checkpoint entry as a pattern.
+    assert "journal entry that says landed" not in skill
+    assert "journal entry that says landed" not in _words(_read("references/collaboration.md"))
+    assert "as they stand now, updated in the same change; why, and the history of what was tried, go to the journal" in journaling
+
+
+def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
+    # W455 (operator, 2026-10-01): one owning rule each, in its owning file.
+    collaboration = _words(_read("references/collaboration.md"))
+    coordinator = _words(_read("references/coordinator.md"))
+    identity = _words(_read("references/identity-and-authorization.md"))
+    journaling = _words(_read("references/journaling.md"))
+    skill = _words(_read("SKILL.md"))
+
+    # Reconcile: listing is not the act; one rule, a pointer from the skill.
+    assert "Listing them is not the act." in collaboration
+    assert "A remembered approval is not proof until you have checked the head again." in collaboration
+    assert "name the next gate, the actor who clears it and the next decision time" in collaboration
+    assert 'Rule 6, "Reconcile your assignments"' in skill
+    assert "Read the same list again periodically while you work" not in skill
+    # The operator-evidence sentences sit on the reviewer bullet, not on the reconcile rule.
+    assert "state (W446, W449). The operator is named only once the work is integrated" in collaboration
+    # Status and assignee: two fields, two permissions, combined save, no special handoff permission.
+    assert "**Status and assignee are two fields, set by two permissions.**" in collaboration
+    assert "a status change never selects, substitutes or clears the assignee, and an assignee change never moves the status" in collaboration
+    assert "an ordinary handoff needs no special one such as `review.assign`" in collaboration
+    assert "never work around a refused permission" in collaboration
+    # A finished review hands the item on to the coordinator.
+    assert "**A finished review hands the item on.**" in collaboration
+    assert "A source approval is never `review.accept` when the acceptance names merge, deployment, live behaviour or the operator." in collaboration
+    # Quota: expired samples, redeemable resets.
+    assert "**A usage sample expires with its window.**" in coordinator
+    assert "never infer that a worker recovered from an expired sample or an idle label" in coordinator
+    assert "**A redeemable reset is the operator's.**" in coordinator
+    # Telegram: a board send is in the inbox unless its kind or correlation sends it on.
+    assert "A board send is in the operator's board inbox; say it reached Telegram only when its kind or correlation sends it there and its receipt says delivered." in skill
+    # Knowledge routing: a project's own practice goes to its files.
+    assert "| A practice or fact of one project: its machines, conventions, how it tests and deploys | That project's files (instructions, facts, environment), which every agent there reads |" in journaling
+    # Default Card operations.
+    assert "## The Review And Work Operations On Every Agent's Card" in _read("references/identity-and-authorization.md")
+    for operation in ("review.accept", "review.assign", "review.cancel", "review.return", "assignment.assign",
+                      "assignment.list", "assignment.report", "assignment.return", "work.accept", "work.status.set"):
+        assert f"`{operation}`" in identity
+    assert "Holding an operation is not authority over every item" in identity
+    # Review return at 1c5e2979 (claude-app): a wait on the coordinator is assigned to it;
+    # a missing permission never hides ownership in mail; today vs target for review.assign.
+    assert "When the next action is the coordinator's (a decision, a routing, an integration), assign the item to the acting coordinator" in collaboration
+    assert "if you wait for coordinator you assign it to it" in collaboration
+    assert "A missing permission is never a reason to hide ownership in mail" in collaboration
+    assert "otherwise mail the coordinator (kind `decision`) naming the item and the gates, and it routes the item in its turn" not in collaboration
+    assert "Today the assignee of an item in Review is set with `review.assign`; W451 makes it the ordinary assignee set." in collaboration
+    # Root, 14:44Z: old queued input is answered with the current state, not replayed.
+    delivery = _words(_read("references/delivery-and-recovery.md"))
+    assert "## Old input" in _read("references/delivery-and-recovery.md")
+    assert "neither restart superseded work nor repeat a reply or side effect already given" in delivery
+    assert 'Old input is answered with the current state ([delivery and recovery](references/delivery-and-recovery.md), "Old input")' in skill
+    # Operator, 14:41Z: trees are not a buffer.
+    workspace = _words(_read("references/project-workspace.md"))
+    assert "**Trees are not a buffer.**" in workspace
+    assert "the pushed commits are the copy: end a clean, fully pushed tree, paused change request included" in workspace
+    # The product gaps are named, not claimed (codex-app mapping, 14:39Z).
+    assert "a worker refresh removes those four when they were ticked by hand" in identity
+    assert "until W420's resource-scoped apply is live" in identity
+    # Scheduling table: ownership age and reason, next action, utilization from receipts.
+    assert "how long it has been with its assignee and why, and the next action with who takes it" in coordinator
+    assert "Count utilization from receipts (a STARTED, a report, a review verdict), never from mail you queued" in coordinator
+

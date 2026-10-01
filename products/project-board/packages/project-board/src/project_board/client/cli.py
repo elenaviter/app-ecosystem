@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from ..contract.errors import DomainError
@@ -958,14 +958,18 @@ def build_parser() -> argparse.ArgumentParser:
             "Publish one line about this agent that everyone on its projects "
             "must know, for example that the operator told it not to be used "
             "actively. It shows first on every card of the agent and in the "
-            "team of pb worker context. Clear it with --clear when it no longer "
-            "holds. Without arguments, show the current line."
+            "team of pb worker context. `show` prints the current line, "
+            "`write \"<line>\"` replaces it, `clear` removes it when it no "
+            "longer holds."
         ),
     )
     _host_config(command)
     _agent_identity(command)
-    command.add_argument("text", nargs="?", default=None, help="The line, at most 200 characters.")
-    command.add_argument("--clear", action="store_true", help="Remove the line from every card.")
+    command.add_argument(
+        "action", nargs="?", default=None, metavar="{show,write,clear}",
+        help="show (the default) prints the line, write replaces it, clear removes it from every card.",
+    )
+    command.add_argument("text", nargs="?", default=None, help="With write: the line, at most 200 characters.")
 
     command = worker_commands.add_parser(
         "workspace-report",
@@ -1114,7 +1118,37 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--end", action="store_true", help="Record that the job of --path (or of --assignment-ref) ended, so the sweep may remove it.")
     command.add_argument("--reason", default="", help="With --end: why the job ended (change request closed, released, ...).")
     command.add_argument("--sweep", action="store_true", help="List every tree in this agent's workspace with its state and what --apply would remove.")
-    command.add_argument("--apply", action="store_true", help="With --sweep: remove the trees whose job ended and that are clean and fully pushed; never with force.")
+    command.add_argument("--apply", action="store_true", help="With --sweep: remove what the last dry run listed as removable and still is; never with force.")
+    command.add_argument("--pin", default="", metavar="CONSUMER", help="With --path: a review or release that still needs this tree; the sweep keeps it.")
+    command.add_argument("--unpin", default="", metavar="CONSUMER", help="With --path: that consumer no longer needs this tree.")
+    command.add_argument("--generated", default="", metavar="RELATIVE_PATH", help="With --path and --generated-by: an ignored path in this tree that a command makes again; the sweep may let it go.")
+    command.add_argument("--generated-by", dest="workspace_generated_by", default="", metavar="COMMAND", help="With --generated: the command that makes that path again.")
+
+    command = worker_commands.add_parser(
+        "scratch",
+        help=(
+            "Work files that are not git trees, in one run folder per item: "
+            "scratch/<item>/<run>/ with an owner, a purpose and a hash per file. "
+            "The sweep removes a run only after its owner closed it and its content is published."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    scratch_modes = command.add_mutually_exclusive_group(required=True)
+    scratch_modes.add_argument("--new", action="store_true", help="Make a run folder for --item with --purpose; prints its path.")
+    scratch_modes.add_argument("--record", action="store_true", help="Record --file (with --published or --generated-by), --consumer or --consumer-done in --run.")
+    scratch_modes.add_argument("--close", action="store_true", help="The job of --run is over: --reason, and --findings where its findings are published.")
+    scratch_modes.add_argument("--list", action="store_true", help="Every run and loose root entry, with what the sweep would do.")
+    command.add_argument("--item", default="", help="With --new: the item key the run serves.")
+    command.add_argument("--purpose", default="", help="With --new: why the run exists.")
+    command.add_argument("--run", default="", help="The run folder (path, or <item>/<run> under scratch/).")
+    command.add_argument("--file", default="", help="With --record: a file in the run, relative to it.")
+    command.add_argument("--published", default="", metavar="REF", help="With --record --file: where its content now lives, repo:<alias>/<path>@<commit>.")
+    command.add_argument("--generated-by", default="", metavar="COMMAND", help="With --record --file: the command that makes it again.")
+    command.add_argument("--consumer", default="", help="With --record: a review, PR or release that still needs this run.")
+    command.add_argument("--consumer-done", default="", help="With --record: that consumer no longer needs it.")
+    command.add_argument("--reason", default="", help="With --close: why the job is over.")
+    command.add_argument("--findings", default="", metavar="REF", help="With --close: where the run's findings are published, repo:<alias>/<path>@<commit>.")
 
     command = worker_commands.add_parser(
         "backup",
@@ -4462,18 +4496,28 @@ def _review_routing(args: Any) -> dict[str, Any]:
 
 
 def _worker_info_command(args: Any, field: Any, identity: Any) -> dict[str, Any]:
-    """pb worker info: record the agent's one-line note for the relay's next heartbeat (W330)."""
+    """pb worker info show|write|clear: the agent's one-line note, sent on the relay's next heartbeat (W330).
 
-    if args.clear and args.text:
-        raise DomainError("field_worker_info_arguments", "--clear takes no text.")
-    if args.text is not None and not args.clear:
-        if not str(args.text).strip():
+    Each change names its verb, so a command that reads the line never writes
+    it: a bare argument is refused, not taken as a new line (operator, 2026-10-01).
+    """
+
+    action = args.action or "show"
+    if action not in {"show", "write", "clear"}:
+        raise DomainError(
+            "field_worker_info_arguments",
+            "Name the action: pb worker info show, pb worker info write \"<line>\", or pb worker info clear.",
+        )
+    if action in {"show", "clear"} and args.text is not None:
+        raise DomainError("field_worker_info_arguments", f"pb worker info {action} takes no text.")
+    if action == "write":
+        if args.text is None or not str(args.text).strip():
             raise DomainError(
                 "field_worker_info_arguments",
-                "Give the line in quotes, or --clear to remove it.",
+                "Give the line in quotes: pb worker info write \"<line>\".",
             )
         info = field.set_worker_info(identity.worker_name, args.text)
-    elif args.clear:
+    elif action == "clear":
         info = field.set_worker_info(identity.worker_name, "")
     else:
         info = field.worker_info(identity.worker_name)
@@ -4493,7 +4537,7 @@ def _worker_info_command(args: Any, field: Any, identity: Any) -> dict[str, Any]
                 if on_board
                 else (
                     "Recorded. The relay sends it with its next heartbeat, within about two minutes; "
-                    "run pb worker info again to see on_board = True."
+                    "run pb worker info show to see on_board = True."
                 )
             )
         ),
@@ -4838,9 +4882,13 @@ def _worker_command(args: Any) -> dict[str, Any]:
         }
     if args.worker_command == "backup":
         return _worker_backup(field, identity, args)
+    if args.worker_command == "scratch":
+        return _worker_scratch(identity, args)
     if args.worker_command == "workspace":
         if getattr(args, "sweep", False):
             return _workspace_sweep(field, identity, args, apply=bool(getattr(args, "apply", False)))
+        if getattr(args, "pin", "") or getattr(args, "unpin", "") or getattr(args, "generated", ""):
+            return _workspace_pin(args)
         if getattr(args, "end", False):
             if not (str(args.path or "").strip() or str(args.assignment_ref or "").strip()):
                 raise ValueError("--end needs --path or --assignment-ref")
@@ -6427,25 +6475,110 @@ __all__ = ["build_parser", "main"]
 
 
 def _sweep_host(args: argparse.Namespace) -> tuple[Path | None, Any]:
-    """This agent's workspace (its channel's working directory) and the host config."""
+    """This agent's workspace and the host config.
+
+    The workspace is the one ``listen``, ``context`` and ``workspace-report``
+    name (agent_workspace): a recorded folder outside the host's agent
+    workspace root is not the workspace (W423, spark1 2026-10-01: a session
+    that started in a shared folder swept 134 trees of other sessions there
+    and none of its own).
+    """
 
     try:
         config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
-        channel = config.worker(_identity(args))
+        identity = _identity(args)
+        if config.worker(identity) is None:
+            return None, config
+        directory = _agent_workspace_for(config, identity)
     except Exception:  # noqa: BLE001 - no channel means nothing to sweep
         return None, None
-    directory = str(getattr(channel, "working_directory", "") or "")
     return (Path(directory) if directory else None), config
 
 
-def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, apply: bool, only_ended: bool = False) -> dict[str, Any]:
-    """W423: list, or remove, the trees in this agent's workspace whose job ended.
+def _sweep_own_folder(config: Any, args: argparse.Namespace) -> str:
+    """This agent's own folder under the agent workspace root, or empty.
 
-    Never removes uncommitted, untracked, unpushed, linked or protected trees;
-    each is named with its reason. The installed pb client itself is protected.
+    The folder its channel records counts when it is a real folder directly
+    under the root (spark1: codex-app@spark1 is enrolled at <root>/codex-app);
+    otherwise <root>/<alias or name>. Either way no other agent's channel on
+    this host may record or derive the same folder: a folder two agents claim
+    is nobody's proof. The stable worker name is the owner; a display alias is
+    not. Another session under the same alias is another claimant until it is
+    detached (state disabled).
     """
 
-    from . import workspace_sweep
+    try:
+        identity = _identity(args)
+        channel = config.worker(identity)
+        root = str(getattr(config, "effective_agent_workspace_root", "") or "")
+        if channel is None or not root:
+            return ""
+        base = Path(root).expanduser().resolve()
+        alias = str(getattr(channel, "worker_alias", "") or "")
+        candidate = ""
+        recorded = str(getattr(channel, "working_directory", "") or "").strip()
+        if recorded:
+            folder = Path(recorded).expanduser()
+            if not folder.is_symlink() and folder.is_dir() and folder.resolve().parent == base:
+                candidate = str(folder)
+        candidate = candidate or default_working_directory([root], alias=alias, worker_name=identity.worker_name)
+        if not candidate:
+            return ""
+        mine = Path(candidate).expanduser().resolve()
+        for other in getattr(config, "workers", ()) or ():
+            if getattr(other, "worker_name", "") == identity.worker_name:
+                continue
+            if str(getattr(other, "state", "") or "").strip().lower() == "disabled":
+                continue
+            other_alias = str(getattr(other, "worker_alias", "") or "")
+            claims = (
+                str(getattr(other, "working_directory", "") or "").strip(),
+                default_working_directory([root], alias=other_alias, worker_name=str(getattr(other, "worker_name", "") or "")),
+            )
+            if any(claim and Path(claim).expanduser().resolve() == mine for claim in claims):
+                return ""
+        return candidate
+    except Exception:  # noqa: BLE001 - no proof of ownership means no removal
+        return ""
+
+
+def _sweep_apply_refusal(workspace: Path, config: Any, args: argparse.Namespace) -> str:
+    """Why --apply may not remove anything in ``workspace``; empty when it may (W423)."""
+
+    root = str(getattr(config, "effective_agent_workspace_root", "") or "")
+    fix = "Nothing was removed; the operator sets the root with pb host configure --agent-workspace-root <path>."
+    if not root:
+        return f"The host has no agent workspace root, so {workspace} is not provably this agent's. {fix}"
+    own = _sweep_own_folder(config, args)
+    if not own:
+        return f"No own folder for this agent can be named under {root}, so nothing is provably its own. {fix}"
+    own_path = Path(own)
+    if workspace.is_symlink() or own_path.is_symlink():
+        return f"{workspace} is reached through a link, so its owner is not proved. Nothing was removed."
+    try:
+        same = workspace.resolve(strict=True) == own_path.resolve(strict=True)
+    except OSError:
+        same = False
+    if not same:
+        return (
+            f"{workspace} is not this agent's own folder ({own}): it may be the root or another "
+            "agent's folder. Nothing was removed."
+        )
+    return ""
+
+
+def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, apply: bool, only_ended: bool = False) -> dict[str, Any]:
+    """W423: list, or remove, what in this agent's workspace finished its job.
+
+    Trees and scratch runs. Never removes uncommitted, untracked, ignored
+    (outside regenerable folders), unpushed, pinned, linked, unpublished or
+    protected content; each is named with its reason. A dry run records what it
+    found removable, and --apply removes only what that dry run listed and is
+    still unchanged, then records the next dry run. The installed pb client
+    itself is protected.
+    """
+
+    from . import scratch, sweep_plan, workspace_sweep
 
     workspace, config = _sweep_host(args)
     if workspace is None or not workspace.is_dir():
@@ -6453,15 +6586,157 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
     registrations = field.workspaces(identity.worker_name)
     protected = [Path(__file__).resolve().parents[1]]
     protected += [Path(item) for item in getattr(config, "workspace_sweep_protected", ()) or ()]
-    trees = workspace_sweep.inspect_workspace(workspace, registrations, protected=protected, measure=not only_ended)
+    pins = sweep_plan.read_pins(workspace)
+    generated = sweep_plan.read_generated(workspace)
+    consumers = _sweep_item_consumers(field, identity, args)
+    trees = workspace_sweep.inspect_workspace(
+        workspace, registrations, protected=protected, measure=not only_ended, pins=pins,
+        generated=generated, consumers=consumers,
+    )
     if only_ended:
         trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]
+    verify = scratch.repository_verifier(workspace)
+    clones = [tree.path.name for tree in trees if tree.kind == "clone"]
+    result: dict[str, Any] = {"worker": identity.worker_name, "workspace": str(workspace)}
+    # W423: removal needs a workspace whose ownership is proved: exactly this
+    # agent's own folder, <root>/<alias or name>, reached without a link.
+    # Being inside the root is not enough: the root itself, another agent's
+    # folder or an in-root link to one would pass a containment check. A dry
+    # run in such a folder reports, and writes no plan there either.
+    refusal = _sweep_apply_refusal(workspace, config, args)
+    if apply:
+        if refusal:
+            return {
+                "worker": identity.worker_name,
+                "workspace": str(workspace),
+                "state": "apply_refused",
+                "reason": refusal,
+                **workspace_sweep.sweep_report(trees),
+            }
+        planned = sweep_plan.read_plan(workspace)
+        result.update(workspace_sweep.apply_sweep(
+            trees,
+            forget=lambda path: field.forget_workspace_path(identity.worker_name, str(path)),
+            planned=planned["trees"],
+        ))
+        result["scratch"] = scratch.apply_runs(
+            workspace, worker_name=identity.worker_name, planned=planned["runs"], verify=verify,
+            consumers=consumers, protected=protected,
+        )
+        trees = workspace_sweep.inspect_workspace(workspace, field.workspaces(identity.worker_name),
+                                                  protected=protected, measure=False, pins=pins,
+                                                  generated=generated, consumers=consumers)
+    else:
+        result.update(workspace_sweep.sweep_report(trees))
+    runs = scratch.inspect_runs(workspace, worker_name=identity.worker_name, verify=verify,
+                                consumers=consumers, protected=protected)
     if not apply:
-        return {"worker": identity.worker_name, "workspace": str(workspace), **workspace_sweep.sweep_report(trees)}
-    result = workspace_sweep.apply_sweep(
-        trees, forget=lambda path: field.forget_workspace_path(identity.worker_name, str(path))
+        result["scratch_runs"] = [run.to_mapping() for run in runs]
+        result["loose"] = scratch.loose_entries(workspace, known=clones)
+    if refusal:
+        result["apply_refused"] = refusal
+        return result
+    # The next --apply removes only what this dry run lists, unchanged.
+    sweep_plan.write_plan(
+        workspace,
+        trees={str(tree.path): tree.fingerprint for tree in trees if tree.removable},
+        runs={str(run.path): run.fingerprint for run in runs if run.removable},
     )
-    return {"worker": identity.worker_name, "workspace": str(workspace), **result}
+    return result
+
+
+def _workspace_pin(args: argparse.Namespace) -> dict[str, Any]:
+    """Record or clear a consumer of one tree, or declare one of its ignored paths regenerable (W423)."""
+
+    from . import sweep_plan
+
+    workspace, _config = _sweep_host(args)
+    if workspace is None or not workspace.is_dir():
+        raise ValueError("this agent has no workspace on this host")
+    if not str(getattr(args, "path", "") or "").strip():
+        raise ValueError("--pin, --unpin and --generated need --path <tree>")
+    result: dict[str, Any] = {"workspace": str(workspace), "path": str(Path(args.path).expanduser().resolve())}
+    if getattr(args, "generated", ""):
+        result["generated"] = sweep_plan.declare_generated(
+            workspace, args.path, args.generated, getattr(args, "workspace_generated_by", "")
+        )
+    if args.pin or args.unpin:
+        result["pins"] = sweep_plan.set_pin(workspace, args.path, str(args.pin or args.unpin), pinned=bool(args.pin))
+    return result
+
+
+_TERMINAL_ITEM_STATUSES = frozenset({"done", "cancelled"})
+
+
+def _sweep_item_consumers(field: Any, identity: Any, args: argparse.Namespace) -> Callable[[str], list[str] | None]:
+    """For an item key: [] when the item is Done or Cancelled, what still needs it otherwise, None when unknown.
+
+    Reads the item from the board in the attended project, once per sweep. Any
+    failure (offline, no project, unreadable answer) is None, which keeps the
+    trees and runs that serve the item.
+    """
+
+    cache: dict[str, list[str] | None] = {}
+    try:
+        project_ref = _attended_project_ref(field, identity.worker_name)
+    except Exception:  # noqa: BLE001 - no project means no proof
+        project_ref = ""
+
+    def consumers(item: str) -> list[str] | None:
+        key = str(item or "").strip()
+        if not key:
+            return None
+        if key not in cache:
+            try:
+                request = argparse.Namespace(
+                    action="project.plan.item",
+                    object_ref=project_ref,
+                    payload_json=json.dumps({"item_key": key}),
+                    payload_file="",
+                    runtime_kind=getattr(args, "runtime_kind", ""),
+                    runtime_session_id=getattr(args, "runtime_session_id", ""),
+                    config=getattr(args, "config", None),
+                )
+                answer = _coordinate_command(request).get("object") if project_ref else None
+                status = str((answer or {}).get("status") or "").strip().lower() if isinstance(answer, Mapping) else ""
+                if not status:
+                    cache[key] = None
+                elif status in _TERMINAL_ITEM_STATUSES:
+                    cache[key] = []
+                else:
+                    cache[key] = [f"item {key} is {status}"]
+            except Exception:  # noqa: BLE001 - unknown keeps the data
+                cache[key] = None
+        return cache[key]
+
+    return consumers
+
+
+def _worker_scratch(identity: Any, args: argparse.Namespace) -> dict[str, Any]:
+    """W423: managed scratch runs in this agent's own workspace."""
+
+    from . import scratch
+
+    workspace, config = _sweep_host(args)
+    if workspace is None or not workspace.is_dir():
+        raise ValueError("this agent has no workspace on this host")
+    if args.new:
+        return scratch.new_run(workspace, item=args.item, purpose=args.purpose,
+                               worker_name=identity.worker_name, session=str(getattr(identity, "runtime_session_id", "") or ""))
+    if args.record:
+        return scratch.record(workspace, args.run, worker_name=identity.worker_name, file=args.file,
+                              published=args.published, generated_by=args.generated_by,
+                              consumer=args.consumer, consumer_done=args.consumer_done)
+    if args.close:
+        return scratch.close(workspace, args.run, worker_name=identity.worker_name,
+                             reason=args.reason, findings=args.findings)
+    protected = [Path(item) for item in getattr(config, "workspace_sweep_protected", ()) or ()]
+    runs = scratch.inspect_runs(workspace, worker_name=identity.worker_name, protected=protected)
+    return {
+        "workspace": str(workspace),
+        "runs": [run.to_mapping() for run in runs],
+        "loose": scratch.loose_entries(workspace),
+    }
 
 
 def _worker_backup(field: Any, identity: Any, args: argparse.Namespace) -> dict[str, Any]:
@@ -6527,6 +6802,15 @@ def _automatic_sweep(field: Any, identity: Any, args: argparse.Namespace, trigge
         result = _workspace_sweep(field, identity, args, apply=auto_apply, only_ended=True)
     except Exception as exc:  # noqa: BLE001 - housekeeping must not break the real command
         return {"trigger": trigger, "state": "failed", "reason": f"{type(exc).__name__}: {exc}"[:300]}
+    if result.get("state") in {"apply_refused", "no_workspace"} or result.get("apply_refused"):
+        # W423: a refusal is reported as one, never as an empty successful sweep,
+        # and a dry run in a folder this agent does not own is that refusal too.
+        return {
+            "trigger": trigger,
+            "state": "apply_refused" if result.get("apply_refused") else result["state"],
+            "reason": str(result.get("reason") or result.get("apply_refused") or "no workspace to sweep"),
+            "would_remove": list(result.get("would_remove") or []),
+        }
     if not auto_apply:
         return {
             "trigger": trigger,

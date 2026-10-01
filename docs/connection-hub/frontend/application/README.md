@@ -379,6 +379,14 @@ What the shell owns, and what it does not:
   sign out, a link back to the platform) and the signed-out state. It
   bootstraps from `public/site_config`, then `/api/cp-frontend-config` and
   `/profile`, and re-probes on `kdcube-auth-changed`.
+- Sign out posts the platform logout, then follows the `upstreamLogoutUrl` it
+  answers (only an `http`/`https` address) to the identity provider's
+  sign-out, which returns through the platform's signed-out route to the site.
+  This is the same order as the platform chat, the board, and **Switch
+  account**: without the provider sign-out, the provider's live session signs
+  the next sign-in straight back in as the same account. With no provider
+  sign-out the shell shows its signed-out state at once. Either way the
+  sign-in card waits for a click and never signs in by itself.
 - It hosts the `connections_settings` widget in an iframe served from the
   widget's own bundle route, so the widget resolves tenant, project, and
   application from its URL exactly as in every other host. The shell passes

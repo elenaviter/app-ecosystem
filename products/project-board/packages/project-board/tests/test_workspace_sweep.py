@@ -10,6 +10,7 @@ the workspace root, and trees in every state.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -92,7 +93,8 @@ def by_path(trees):
 def test_only_ended_clean_pushed_unlinked_trees_are_removed(workspace):
     registrations = [
         {"path": str(workspace["merged"]), "kind": "implementation", "item": "W2",
-         "base_head": workspace["base"]},
+         "base_head": workspace["base"], "ended_at": "2026-09-30T19:00:00Z",
+         "end_reason": "change request merged"},
         {"path": str(workspace["review"]), "kind": "review", "item": "W6",
          "ended_at": "2026-09-30T19:00:00Z", "end_reason": "review decision recorded (review.accept)"},
         {"path": str(workspace["unpushed"]), "kind": "implementation", "item": "W4",
@@ -208,14 +210,20 @@ def test_a_fresh_registered_tree_is_not_finished_work(workspace):
     # Without a base head, a registered tree ends only by a recorded end.
     rows = by_path(inspect_workspace(workspace["ws"], [{"path": str(fresh), "kind": "implementation"}]))
     assert not rows[str(fresh)].removable
-    # Once it moved past its base and that head is merged, it is finished.
+    # W423 o5: moving past its base and being merged still does not end the
+    # job: a merged tree may serve a pending review or a release. Only a
+    # recorded end does.
     commit(fresh, "w900")
     git(fresh, "push", "-q", "origin", "work/w900")
     git(clone, "merge", "-q", "--ff-only", "origin/work/w900")
     git(clone, "push", "-q", "origin", "main")
     git(clone, "fetch", "-q", "origin")
     rows = by_path(inspect_workspace(workspace["ws"], [registration]))
-    assert rows[str(fresh)].removable and rows[str(fresh)].ended.startswith("merged into")
+    assert rows[str(fresh)].merged and not rows[str(fresh)].removable
+    assert any("merged, which alone never ends a job" in reason for reason in rows[str(fresh)].keep)
+    ended = {**registration, "ended_at": "2026-10-01T09:00:00Z", "end_reason": "change request merged"}
+    rows = by_path(inspect_workspace(workspace["ws"], [ended]))
+    assert rows[str(fresh)].removable and rows[str(fresh)].ended == "change request merged"
 
 
 def test_automatic_apply_is_off_until_the_host_turns_it_on(monkeypatch):
@@ -258,6 +266,36 @@ def test_the_automatic_sweep_never_fails_the_command_it_follows(monkeypatch):
     assert result["state"] == "failed" and "disk unreadable" in result["reason"]
 
 
+def test_a_sweep_edit_keeps_the_adjacent_backup_command_operational(tmp_path, monkeypatch):
+    """A structural sweep rewrite must leave the intervening backup command usable."""
+
+    from types import SimpleNamespace
+
+    class Field:
+        def read_project_coordinator(self, _project_id):
+            return {"holder": {"worker_name": "coordinator-one"}}
+
+        def read_project_team(self, _project_id):
+            return []
+
+    config = SimpleNamespace(
+        field_root=str(tmp_path / "field"), backup_root=str(tmp_path / "backups"),
+        worker=lambda _identity: object(),
+    )
+    monkeypatch.setattr(cli.HostRelayConfig, "load", classmethod(lambda _cls, _path: config))
+    monkeypatch.setattr(cli, "SharedFieldStore", lambda _root: Field())
+    monkeypatch.setattr(cli, "_identity", lambda _args: SimpleNamespace(worker_name="coordinator-one"))
+
+    parser = cli.build_parser()
+    command = ["worker", "backup", "--config", str(tmp_path / "relay.json"),
+               "--project-ref", "work:project:demo-project"]
+    listed = cli._worker_command(parser.parse_args(command))
+    assert listed["backups"] == []
+    named = cli._worker_command(parser.parse_args([*command, "--new"]))
+    assert Path(named["write_to"]).parent == tmp_path / "backups" / "demo-project"
+    assert named["format"] == "plain-sql-gzip"
+
+
 def test_the_three_triggers_run_the_sweep_without_agent_memory():
     source = Path(cli.__file__).read_text(encoding="utf-8")
     assert '_automatic_sweep(field, identity, args, "session_start")' in source
@@ -273,11 +311,267 @@ def test_the_procedure_owns_registration_the_sweep_and_its_triggers():
     workspace = " ".join((procedures / "references" / "project-workspace.md").read_text(encoding="utf-8").split())
     assert "**Register every tree, and let the sweep remove what is finished (W423).**" in workspace
     assert "pb worker workspace --kind review --assignment-ref <reviewed item work_ref>" in workspace
-    assert "`--apply` removes a tree only when its job ended **and** nothing could be lost" in workspace
+    assert "`--apply` removes a tree only when its job ended **and** nothing could be lost, and the last `--sweep` listed it in the same state" in workspace
     assert "at session start (`pb worker listen`), on `pb worker idle`, and after a review decision recorded through `pb coordinate`" in workspace
     assert "Until the operator turns it on for the host, these automatic runs only report what they would remove (`pb host configure --workspace-sweep-auto-apply`" in workspace
-    assert "Gitignored files (build output, `node_modules`, ignored test results or screenshots) go with a removed tree" in workspace
+    # W423 o5: ignored files keep a tree unless declared; only a recorded end ends a job.
+    assert "Being merged never ends a job" in workspace
+    assert "a folder name (`build`, `dist`, a cache) proves nothing" in workspace
+    assert "its item is Done or Cancelled on the board (an open item, or a state the sweep cannot read, keeps it)" in workspace
     assert "The first real sweep on a host with an existing pile is the operator's decision" in workspace
     assert "Never `rm -rf` a worktree folder" in workspace
     skill = (procedures / "SKILL.md").read_text(encoding="utf-8")
     assert skill.count("a sweep removes finished, clean, fully pushed trees at session start, on idle and after a review decision") == 1
+
+
+def test_the_sweep_scans_the_workspace_context_names_not_a_shared_recorded_folder(tmp_path):
+    """spark1, 2026-10-01: a session started in a shared folder outside the
+    host's agent workspace root. The sweep scanned that folder (134 trees of
+    other sessions) and none of the agent's own trees. It now scans the
+    workspace ``context`` names (agent_workspace), like every other command."""
+
+    from project_board.client import host_config
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+
+    root = tmp_path / "agents"
+    shared = tmp_path / "shared"
+    root.mkdir()
+    shared.mkdir()
+    config = host_config.initialize_host_config(
+        target_id="target",
+        endpoint="https://runtime.example/mcp",
+        tenant="tenant",
+        platform_project="project",
+        host_id="host-one",
+        allowed_roots=[str(root)],
+        source_repositories={},
+        config_path=tmp_path / "relay.json",
+        state_root=tmp_path / "state",
+    )
+
+    def sweep_root(session: str, working_directory: str, alias: str = "") -> tuple:
+        identity = WorkerSessionIdentity.create("claude-code", session)
+        host_config.enroll_worker_channel(
+            config.path, identity=identity, profile=f"problem-board-claude-{session[:8]}",
+            worker_alias=alias, authorized=True, working_directory=working_directory,
+        )
+        # A channel enrolled before the workspace root existed keeps the raw
+        # folder its session started in (spark1's did); write it as found.
+        raw = json.loads(config.path.read_text(encoding="utf-8"))
+        for worker in raw["workers"]:
+            if worker["worker_name"] == identity.worker_name:
+                worker["working_directory"] = working_directory
+        config.path.write_text(json.dumps(raw), encoding="utf-8")
+        args = cli.build_parser().parse_args([
+            "worker", "workspace", "--config", str(config.path),
+            "--runtime-kind", "claude-code", "--runtime-session-id", session, "--sweep",
+        ])
+        workspace, _config = cli._sweep_host(args)  # noqa: SLF001 - the resolution under test
+        loaded = host_config.HostRelayConfig.load(config.path)
+        named = cli._agent_workspace_for(loaded, identity)  # noqa: SLF001 - what context names
+        return workspace, named
+
+    # A recorded folder outside the root is not swept; the agent's own folder is.
+    swept, named = sweep_root("00000001-0000-4000-8000-000000000000", str(shared), alias="ops@host")
+    assert swept is not None and swept != shared
+    assert str(swept) == named and Path(named).is_relative_to(root)
+
+    # A recorded folder inside the root, still there, is the workspace for both.
+    own = root / "docs@host"
+    own.mkdir()
+    swept, named = sweep_root("00000002-0000-4000-8000-000000000000", str(own), alias="docs@host")
+    assert swept == own and str(swept) == named
+
+
+def _guard_case(workspace, monkeypatch, *, root, swept, own):
+    """Run --apply with the sweep root, host root and this agent's own folder given."""
+
+    from types import SimpleNamespace
+
+    class Field:
+        def workspaces(self, _worker):
+            return [{"path": str(workspace["review"]), "kind": "review", "item": "W6",
+                     "ended_at": "2026-09-30T19:00:00Z", "end_reason": "review decision recorded"}]
+
+        def forget_workspace_path(self, _worker, _path):
+            pass
+
+    config = SimpleNamespace(effective_agent_workspace_root=str(root), workspace_sweep_protected=())
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (swept, config))
+    monkeypatch.setattr(cli, "_sweep_own_folder", lambda _config, _args: str(own))
+    # The review item is decided on the board.
+    monkeypatch.setattr(cli, "_sweep_item_consumers", lambda *_a: (lambda _item: []))
+    identity = SimpleNamespace(worker_name="claude-code-guard")
+    # --apply removes only what a dry run listed (W423 o5), so list first.
+    cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=False)  # noqa: SLF001
+    return cli._workspace_sweep(Field(), identity, SimpleNamespace(config=None), apply=True)  # noqa: SLF001
+
+
+def test_apply_removes_only_in_the_agents_own_folder(workspace, monkeypatch):
+    """W423 ownership 4 (Spark review of AE #407): containment is not ownership.
+    The root itself, another agent's folder, an in-root link to one, and a host
+    without a root are reported only; --apply removes nothing and says why.
+    Only the agent's own folder, reached without a link, is swept for real."""
+
+    root = workspace["ws"].parent
+    own = workspace["ws"]  # <root>/workspace stands for <root>/<alias>
+    other = root / "other-agent"
+    other.mkdir()
+    link = root / "linked-agent"
+    link.symlink_to(own, target_is_directory=True)
+
+    refused = {
+        "no root configured": dict(root="", swept=own, own=own),
+        "the root itself": dict(root=root, swept=root, own=own),
+        "another agent's folder": dict(root=root, swept=other, own=own),
+        "an in-root link to the workspace": dict(root=root, swept=link, own=own),
+        "own folder is a link": dict(root=root, swept=own, own=link),
+    }
+    for case, kwargs in refused.items():
+        result = _guard_case(workspace, monkeypatch, **kwargs)
+        assert result["state"] == "apply_refused", case
+        assert result["reason"] and "Nothing was removed" in result["reason"], case
+        assert workspace["review"].exists(), case
+        # The dry run before it wrote no plan into a folder it does not own.
+        assert not (Path(kwargs["swept"]) / ".problem-board" / "sweep-plan.json").exists(), case
+    assert "pb host configure --agent-workspace-root" in _guard_case(
+        workspace, monkeypatch, root="", swept=own, own=own)["reason"]
+
+    # The agent's own folder: the ended review tree is removed.
+    result = _guard_case(workspace, monkeypatch, root=root, swept=own, own=own)
+    assert result.get("state") != "apply_refused"
+    assert [entry["path"] for entry in result["removed"]] == [str(workspace["review"])]
+    assert not workspace["review"].exists()
+
+
+def test_an_automatic_refusal_is_reported_never_an_empty_success(monkeypatch):
+    """Spark review of AE #407: the idle trigger dropped apply_refused and its
+    reason, so a refused sweep looked like a successful empty one."""
+
+    from types import SimpleNamespace
+
+    refusal = {"worker": "w", "workspace": "/root", "state": "apply_refused",
+               "reason": "/root is not this agent's own folder", "would_remove": ["/root/wt/x"], "trees": []}
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (Path("/root"), SimpleNamespace(workspace_sweep_auto_apply=True)))
+    monkeypatch.setattr(cli, "_workspace_sweep", lambda *_a, **_k: refusal)
+    report = cli._automatic_sweep(object(), object(), object(), "idle")  # noqa: SLF001
+    assert report["state"] == "apply_refused"
+    assert report["reason"] == refusal["reason"]
+    assert report["would_remove"] == ["/root/wt/x"]
+    assert "removed" not in report
+
+    # Report-only (auto-apply off): a dry run in a folder this agent does not own
+    # says so, rather than listing removals an apply would refuse (Ops, #409).
+    monkeypatch.setattr(cli, "_sweep_host", lambda _args: (Path("/root"), SimpleNamespace(workspace_sweep_auto_apply=False)))
+    monkeypatch.setattr(cli, "_workspace_sweep", lambda *_a, **_k: {
+        "worker": "w", "workspace": "/root", "would_remove": ["/root/wt/x"],
+        "apply_refused": "/root is not provably this agent's. Nothing was removed.",
+    })
+    report = cli._automatic_sweep(object(), object(), object(), "idle")  # noqa: SLF001
+    assert report["state"] == "apply_refused" and "Nothing was removed" in report["reason"]
+
+    monkeypatch.setattr(cli, "_workspace_sweep", lambda *_a, **_k: {"worker": "w", "workspace": "", "state": "no_workspace"})
+    report = cli._automatic_sweep(object(), object(), object(), "session_start")  # noqa: SLF001
+    assert report["state"] == "no_workspace" and report["reason"]
+
+
+def test_the_own_folder_comes_from_the_host_config_not_the_recorded_folder(tmp_path):
+    """The folder --apply requires is <root>/<alias>, named from the host config,
+    whatever folder the session recorded at enrollment."""
+
+    from project_board.client import host_config
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+
+    root = tmp_path / "agents"
+    root.mkdir()
+    config = host_config.initialize_host_config(
+        target_id="target", endpoint="https://runtime.example/mcp", tenant="tenant",
+        platform_project="project", host_id="host-one", allowed_roots=[str(root)],
+        source_repositories={}, config_path=tmp_path / "relay.json", state_root=tmp_path / "state",
+    )
+    session = "00000003-0000-4000-8000-000000000000"
+    identity = WorkerSessionIdentity.create("claude-code", session)
+    host_config.enroll_worker_channel(
+        config.path, identity=identity, profile=f"problem-board-claude-{session[:8]}",
+        worker_alias="main@host", authorized=True, working_directory=str(root / "someone-else"),
+    )
+    args = cli.build_parser().parse_args([
+        "worker", "workspace", "--config", str(config.path),
+        "--runtime-kind", "claude-code", "--runtime-session-id", session, "--sweep",
+    ])
+    loaded = host_config.HostRelayConfig.load(config.path)
+    assert cli._sweep_own_folder(loaded, args) == str(root / "main@host")  # noqa: SLF001
+
+
+def test_the_own_folder_honours_the_enrolled_folder_and_refuses_a_shared_one(tmp_path):
+    """Spark review of AE #407 at 71706e54: codex-app@spark1 is enrolled at
+    <root>/codex-app, which the alias-derived <root>/codex-app@spark1 refused.
+    The folder a channel records counts when it sits directly under the root
+    and no other agent's channel claims it."""
+
+    from project_board.client import host_config
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+
+    root = tmp_path / "agents"
+    root.mkdir()
+    config = host_config.initialize_host_config(
+        target_id="target", endpoint="https://runtime.example/mcp", tenant="tenant",
+        platform_project="project", host_id="host-one", allowed_roots=[str(root)],
+        source_repositories={}, config_path=tmp_path / "relay.json", state_root=tmp_path / "state",
+    )
+
+    def enroll(session: str, alias: str, folder: Path):
+        identity = WorkerSessionIdentity.create("claude-code", session)
+        host_config.enroll_worker_channel(
+            config.path, identity=identity, profile=f"problem-board-claude-{session[:8]}",
+            worker_alias=alias, authorized=True, working_directory=str(folder),
+        )
+        raw = json.loads(config.path.read_text(encoding="utf-8"))
+        for worker in raw["workers"]:
+            if worker["worker_name"] == identity.worker_name:
+                worker["working_directory"] = str(folder)
+        config.path.write_text(json.dumps(raw), encoding="utf-8")
+        return cli.build_parser().parse_args([
+            "worker", "workspace", "--config", str(config.path),
+            "--runtime-kind", "claude-code", "--runtime-session-id", session, "--sweep",
+        ])
+
+    def own(args) -> str:
+        return cli._sweep_own_folder(host_config.HostRelayConfig.load(config.path), args)  # noqa: SLF001
+
+    spark = root / "codex-app"
+    spark.mkdir()
+    spark_args = enroll("00000010-0000-4000-8000-000000000000", "codex-app@spark1", spark)
+    assert own(spark_args) == str(spark)
+
+    # A second live identity under the same alias is another claimant: a display
+    # alias never proves one owner, so neither may apply (W423 review, 2026-10-01).
+    same = enroll("00000011-0000-4000-8000-000000000000", "codex-app@spark1", spark)
+    assert own(same) == "" and own(spark_args) == ""
+
+    # Once the older session is detached (disabled), the new session owns the folder.
+    raw = json.loads(config.path.read_text(encoding="utf-8"))
+    for worker in raw["workers"]:
+        if worker["worker_name"] == WorkerSessionIdentity.create("claude-code", "00000010-0000-4000-8000-000000000000").worker_name:
+            worker["state"] = "disabled"
+    config.path.write_text(json.dumps(raw), encoding="utf-8")
+    assert own(same) == str(spark)
+
+    # A different agent records the same folder: nobody may apply there.
+    other = enroll("00000012-0000-4000-8000-000000000000", "ops@spark1", spark)
+    assert own(other) == "" and own(same) == ""
+
+    # The root itself, a deeper folder and a link are not an enrolled own folder:
+    # the alias-derived folder is used instead.
+    deeper = root / "docs@host" / "applications"
+    deeper.mkdir(parents=True)
+    link = root / "linked"
+    link.symlink_to(root / "docs@host", target_is_directory=True)
+    # Each case is its own agent (distinct alias): sessions sharing an alias
+    # would be rival claimants, which is the case above. Enrollment stores the
+    # link's resolved folder, a real folder directly under the root, so the
+    # link case keeps that folder.
+    expected = (root / "docs0@host", root / "docs1@host", root / "docs@host")
+    for index, folder in enumerate((root, deeper, link)):
+        args = enroll(f"0000002{index}-0000-4000-8000-000000000000", f"docs{index}@host", folder)
+        assert own(args) == str(expected[index]), folder
