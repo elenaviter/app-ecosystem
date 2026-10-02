@@ -5989,7 +5989,47 @@ class ProblemBoardRelaySupervisor:
                 )
                 continue
             try:
-                request = await run_off_loop(queue.mark_attempt, request, executor=store_executor)
+                request, card_now = await run_off_loop(
+                    self._mark_attempt_and_read_card, queue, request, host, channel,
+                    executor=store_executor,
+                )
+                # The session, its closing flag and the Card may have changed
+                # while the store thread ran: check them here, on the loop,
+                # with no await before the dispatch (W461 review). A request
+                # fenced off goes back to pending under its transport id, so
+                # the channel's current session carries it.
+                fence_reason = self._dispatch_fence_failure(channel, session, card_now)
+                if fence_reason:
+                    try:
+                        await run_off_loop(
+                            queue.defer_after_unknown,
+                            request,
+                            error=DomainError(
+                                "work_coordinate_session_changed",
+                                "The worker channel session changed before dispatch.",
+                                status=409,
+                            ),
+                            executor=store_executor,
+                        )
+                    except DomainError as queue_exc:
+                        if queue_exc.code == COORDINATE_LEASE_LOST:
+                            continue
+                        raise
+                    counts["deferred"] += 1
+                    logger.warning(
+                        "Problem Board coordinate dispatch fenced worker=%s request_id=%s reason=%s",
+                        channel.worker_name,
+                        str(request.get("request_id") or ""),
+                        fence_reason,
+                    )
+                    log_stages(
+                        request,
+                        outcome="session_changed_deferred",
+                        relay_started=relay_started,
+                        governed_action_seconds=governed_action_seconds,
+                        wait_context=wait_context,
+                    )
+                    continue
                 stable_action = getattr(
                     session.adapter.client,
                     "action_with_transport_identity",
@@ -6043,7 +6083,7 @@ class ProblemBoardRelaySupervisor:
                     outcome = "outcome_unknown_deferred"
                 else:
                     try:
-                        queue.fail(request, exc)
+                        await run_off_loop(queue.fail, request, exc, executor=store_executor)
                     except DomainError as queue_exc:
                         if queue_exc.code == COORDINATE_LEASE_LOST:
                             continue
@@ -7004,6 +7044,36 @@ class ProblemBoardRelaySupervisor:
     ) -> list[tuple[str, "_ChannelSession"]]:
         still = {name: session for name, session in self._coordinate_candidates(host)}
         return [(name, session) for name, session in ready if still.get(name) is session]
+
+    def _mark_attempt_and_read_card(
+        self,
+        queue: CoordinateQueue,
+        request: Mapping[str, Any],
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+    ) -> tuple[dict[str, Any], str]:
+        """Persist the attempt, then read the Card the dispatch must still match; store thread."""
+
+        marked = queue.mark_attempt(request)
+        return marked, self._card_fingerprint(host, channel)
+
+    def _dispatch_fence_failure(
+        self,
+        channel: WorkerChannelConfig,
+        session: "_ChannelSession",
+        card_now: str,
+    ) -> str:
+        """Why ``session`` may no longer carry a request now, or ``""``; loop state only."""
+
+        if self._sessions.get(channel.worker_name) is not session:
+            return "session_replaced"
+        if session.closing:
+            return "session_closing"
+        if session.profile != channel.profile or session.channel_identity != channel.worker_identity:
+            return "channel_changed"
+        if session.card_fingerprint != card_now:
+            return "card_changed"
+        return ""
 
     def _coordinate_cards_match(
         self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
