@@ -308,3 +308,59 @@ async def test_disconnect_revokes_and_retires_under_one_credential_lock(tmp_path
     await disconnecting
     assert oauth.events == ["server.revoke"]
     assert profiles.get("agent-a") is None and credentials.get(profile.credential_ref) is None
+
+
+# Infra on PR 446 d9f878c0: the CLI owns a started removal to completion.
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_cli_caller_waits_for_the_started_removal():
+    from connection_hub_cli.cli import _run_thread_to_completion
+
+    started, release = threading.Event(), threading.Event()
+    finished: list[str] = []
+
+    def removal():
+        started.set()
+        assert release.wait(5)
+        finished.append("removed")
+        return "done"
+
+    task = asyncio.create_task(_run_thread_to_completion(removal))
+    assert await asyncio.to_thread(started.wait, 3)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    assert not task.done(), "the cancelled caller still owns the running removal"
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished == ["removed"]
+
+
+@pytest.mark.asyncio
+async def test_a_removal_that_fails_after_the_cancel_is_carried_on_the_cancellation():
+    from connection_hub_cli.cli import RemovalCancelledAfterFailure, _run_thread_to_completion
+
+    started, release = threading.Event(), threading.Event()
+
+    def failing_removal():
+        started.set()
+        assert release.wait(5)
+        raise OSError("synthetic store failure")
+
+    task = asyncio.create_task(_run_thread_to_completion(failing_removal))
+    assert await asyncio.to_thread(started.wait, 3)
+    task.cancel()
+    release.set()
+    with pytest.raises(RemovalCancelledAfterFailure) as raised:
+        await task
+    assert isinstance(raised.value.failure, OSError)
+
+
+@pytest.mark.asyncio
+async def test_an_uncancelled_removal_returns_its_result():
+    from connection_hub_cli.cli import _run_thread_to_completion
+
+    assert await _run_thread_to_completion(lambda value: value * 2, 21) == 42
