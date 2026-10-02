@@ -449,7 +449,17 @@ class RelayPacing:
         changed = record is not None
         changed = (self._state["pending"].pop(name, None) is not None) or changed
         if record is not None and record.get("schedule") == RUNTIME_SCHEDULE:
+            now = self._clock()
             for other in self._runtime_channels():
+                # A peer whose own attempt is running keeps its record until
+                # that attempt succeeds, fails or is cancelled (W461 review,
+                # 2026-10-02). It is due like the others: should the attempt
+                # be cancelled, the next one is not held back.
+                running = self._state["channels"][other]
+                if _attempt_running(running, now):
+                    running["next_at"] = min(float(running.get("next_at") or now), now)
+                    changed = True
+                    continue
                 self._state["channels"].pop(other, None)
                 changed = True
         if changed:
@@ -542,6 +552,25 @@ class RelayPacing:
         }
 
 
+def _attempt_started_at(record: Mapping[str, Any], now: float) -> float | None:
+    """When the record's running attempt started; None when none is running."""
+
+    attempt = record.get("attempt")
+    if not isinstance(attempt, Mapping) or attempt.get("state") != ATTEMPT_IN_PROGRESS:
+        return None
+    try:
+        started = float(attempt.get("started_at") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if not started or now - started >= ATTEMPT_STALE_SECONDS:
+        return None
+    return started
+
+
+def _attempt_running(record: Mapping[str, Any], now: float) -> bool:
+    return _attempt_started_at(record, now) is not None
+
+
 def _channel_view(record: Mapping[str, Any], now: float) -> dict[str, Any]:
     view = {
         "state": "degraded" if record.get("retained_connected") is True else "reconnecting",
@@ -551,15 +580,10 @@ def _channel_view(record: Mapping[str, Any], now: float) -> dict[str, Any]:
         "next_attempt_at": _iso(float(record.get("next_at") or now)),
         "attempt_in_progress": False,
     }
-    attempt = record.get("attempt")
-    if isinstance(attempt, Mapping) and attempt.get("state") == ATTEMPT_IN_PROGRESS:
-        try:
-            started = float(attempt.get("started_at") or 0.0)
-        except (TypeError, ValueError):
-            started = 0.0
-        if started and now - started < ATTEMPT_STALE_SECONDS:
-            view["attempt_in_progress"] = True
-            view["attempt_started_at"] = _iso(started)
+    started = _attempt_started_at(record, now)
+    if started is not None:
+        view["attempt_in_progress"] = True
+        view["attempt_started_at"] = _iso(started)
     return view
 
 
