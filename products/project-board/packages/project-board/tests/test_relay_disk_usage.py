@@ -21,6 +21,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from project_board.client import relay
 from project_board.client.workspace_size import WorkspaceSizes, directory_bytes, walk_in_child_process
 from test_attendance_materializes_project import Board, _fresh_host
@@ -87,7 +89,63 @@ def test_the_size_is_remeasured_after_the_interval():
     assert walks == ["/w", "/w"]
 
 
-def test_walks_of_different_workspaces_run_one_at_a_time():
+class _HeldChild:
+    """A child process whose exit after SIGKILL the test controls."""
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.killed = False
+        self.exited = asyncio.Event()
+
+    async def communicate(self):
+        await asyncio.Event().wait()  # a walk that never finishes by itself
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        await self.exited.wait()
+        self.returncode = -9
+        return -9
+
+
+def test_a_cancelled_walk_keeps_its_slot_until_the_killed_child_is_reaped(monkeypatch):
+    """A second cancellation must not release the slot before the child exits."""
+
+    children: list[_HeldChild] = []
+
+    async def spawn(*_args, **_kwargs):
+        child = _HeldChild()
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    async def scenario():
+        walking = asyncio.create_task(walk_in_child_process("/held"))
+        for _ in range(20):
+            if children:
+                break
+            await asyncio.sleep(0)
+        walking.cancel()
+        for _ in range(20):
+            if children[0].killed:
+                break
+            await asyncio.sleep(0)
+        assert children[0].killed
+        walking.cancel()  # a second cancellation while the child is being reaped
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not walking.done(), "the walk waits for the killed child to be reaped"
+        children[0].exited.set()
+        with pytest.raises(asyncio.CancelledError):
+            await walking
+        assert children[0].returncode == -9
+
+    asyncio.run(scenario())
+
+
+def _peak_walks(sizes_kwargs: dict, count: int) -> int:
     active: list[int] = []
     peak: list[int] = []
 
@@ -98,15 +156,88 @@ def test_walks_of_different_workspaces_run_one_at_a_time():
         active.pop()
         return 1
 
-    sizes = WorkspaceSizes(walk=walk)
+    sizes = WorkspaceSizes(walk=walk, **sizes_kwargs)
 
     async def scenario():
-        tasks = [sizes.schedule(f"/w{index}", worker_name="w") for index in range(4)]
+        tasks = [sizes.schedule(f"/w{index}", worker_name="w") for index in range(count)]
         await asyncio.gather(*tasks)
 
     asyncio.run(scenario())
-    assert max(peak) == 1
-    assert all(sizes.last(f"/w{index}") == 1 for index in range(4))
+    assert all(sizes.last(f"/w{index}") == 1 for index in range(count))
+    return max(peak)
+
+
+def test_walks_of_different_workspaces_never_exceed_the_concurrency_bound():
+    assert _peak_walks({}, 6) == 2, "two child walks at once by default, never more"
+    assert _peak_walks({"max_concurrent_walks": 1}, 4) == 1
+    with pytest.raises(ValueError):
+        WorkspaceSizes(max_concurrent_walks=0)
+
+
+def test_a_long_walk_does_not_hold_back_the_next_workspace(caplog):
+    """W469: at relay startup every channel's walk is scheduled at once.
+
+    With one walk at a time, a short walk queued behind a long one waited for
+    all of it: on dev-main the walks behind an 87 s walk waited up to 142 s.
+    Here the long walk is held until the short one has finished, so the short
+    one can only finish if it is not queued behind the long one.
+    """
+
+    long_running = asyncio.Event()
+    release_long = asyncio.Event()
+    order: list[str] = []
+
+    async def walk(path: str) -> int:
+        if path == "/long":
+            long_running.set()
+            await release_long.wait()
+        order.append(path)
+        return 1
+
+    sizes = WorkspaceSizes(walk=walk)
+
+    async def scenario():
+        long_task = sizes.schedule("/long", worker_name="long")
+        await asyncio.wait_for(long_running.wait(), 1)
+        short_task = sizes.schedule("/short", worker_name="short")
+        await asyncio.wait_for(short_task, 1)  # times out when queued behind /long
+        assert not long_task.done(), "the long walk is still running"
+        release_long.set()
+        await long_task
+
+    with caplog.at_level(logging.INFO, logger="project_board.client.relay"):
+        asyncio.run(scenario())
+    assert order == ["/short", "/long"]
+    short_line = next(r.getMessage() for r in caplog.records if "worker=short " in r.getMessage())
+    assert "queue_wait_seconds=0.0" in short_line, short_line
+
+
+def test_a_cancelled_walk_frees_its_slot():
+    started: list[str] = []
+    never = asyncio.Event()
+
+    async def walk(path: str) -> int:
+        started.append(path)
+        if path.startswith("/stuck"):
+            await never.wait()
+        return 1
+
+    sizes = WorkspaceSizes(walk=walk)
+
+    async def scenario():
+        stuck = [sizes.schedule(f"/stuck{index}", worker_name="w") for index in range(2)]
+        await asyncio.sleep(0)
+        waiting = sizes.schedule("/next", worker_name="w")
+        await asyncio.sleep(0)
+        assert started == ["/stuck0", "/stuck1"], "both slots are held"
+        stuck[0].cancel()
+        await asyncio.wait_for(waiting, 1)
+        stuck[1].cancel()
+        await asyncio.gather(*stuck, return_exceptions=True)
+
+    asyncio.run(scenario())
+    assert started[-1] == "/next"
+    assert sizes.last("/next") == 1
 
 
 def test_a_slow_walk_never_delays_the_heartbeat(tmp_path: Path):

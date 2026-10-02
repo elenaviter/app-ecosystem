@@ -250,8 +250,11 @@ Finished worktrees filled a host disk before anyone saw it (2026-09-30). The
 relay's heartbeat carries `disk_usage`: the host's free and total bytes for
 the file system that holds the agent's workspace (one `statvfs` per beat) and
 the workspace's own size. The size walks the tree, which takes tens of seconds
-on a large workspace, so a background task re-measures it at most every 15
-minutes and the heartbeat never waits for it: each beat carries the last
+on a large workspace (time follows the file count more than the bytes). So a
+background task re-measures it at most every 15 minutes, in a child process,
+with at most two walks at once per relay, and the heartbeat never waits for
+it. Two slots, not one, let the other channels' walks pass a long one at
+relay startup: each beat carries the last
 measured size, or none until the first walk lands (the card then shows
 "measuring"). The board keeps the latest report per
 agent, shows it on the agent card ("disk … free (…%) · workspace …") and in
