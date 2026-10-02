@@ -312,8 +312,14 @@ Claiming, settling and retrying outbox rows try the lock without waiting
 and, while another holder (the local-state maintenance thread, a `pb`
 command) has it, retry after a short awaited pause. A claim that is
 cancelled while waiting has claimed nothing. The scans that detect work
-raised on this machine run in a worker thread (W456, 2026-10-01: these two
-held every channel for 3.8 and 3.2 seconds).
+raised on this machine run off the loop too (W456, 2026-10-01: these two
+held every channel for 3.8 and 3.2 seconds), in one scanner thread of the
+relay, one scan at a time. A wait that needs a scan already running joins
+it. A wait that ends early leaves its scan to finish and serve the next
+wait, so repeated waits never pile scans up beside each other (W459,
+2026-10-02: abandoned scans had filled all 20 threads of the default pool).
+Closing the relay closes the scanner for good: a wait still running ends at
+its next scan, and no scan starts after the close.
 
 The session wake reads and writes the agent's mailbox and listener record
 (pending mail with expired-lease recovery, the wake hold, the prepared and
