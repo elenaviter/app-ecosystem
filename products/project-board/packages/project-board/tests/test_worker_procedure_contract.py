@@ -2183,12 +2183,14 @@ def test_a_done_assignment_notice_is_information_not_work() -> None:
     assert "Either is work to begin" not in opening
     assert "every assign notice" not in opening.lower()
     assert "comes from the durable assignment row" not in opening
-    assert "the committed item gives `payload.item_status`, and the relay derives `payload.expected_reaction` from that status." in opening
+    assert "the committed item gives `payload.item_status`" in opening
+    assert "Ordinary assignment reactions are derived from that status" in opening
     assert "The `begin_work` reaction, in order:" in skill
     assert "The reaction, in order:" not in skill
     identity = _words(_read("references/identity-and-authorization.md"))
     assert "every one from the durable assignment row" not in identity
-    assert "`payload.item_status` from the committed item, and `payload.expected_reaction` is derived by the relay from that status" in identity
+    assert "`payload.item_status` from the committed item" in identity
+    assert "Ordinary assignment reactions are derived from that status" in identity
     assert "`acknowledge_only` (Done or Cancelled) is information." in identity
     assert "Starting implementation, reporting `working`, or reopening or changing its status because of this notice undoes the operator's decision." in identity
     assert "`await_review` (Review): the implementation waits for the reviewer." in identity
@@ -2196,6 +2198,45 @@ def test_a_done_assignment_notice_is_information_not_work() -> None:
     assert "`payload.item_status`" in identity
     signals = _read("references/signals.md")
     assert "`test_a_done_assignment_notice_is_information_not_work`" in signals
+
+
+def test_validated_explicit_reopen_is_begin_work_despite_terminal_status() -> None:
+    # Pin the exception to the actual trusted-reopen contract, not any mail's
+    # claim that a status/assignee edit means "resume". Behavioral validation
+    # lives in test_w451_reopen_notice.py and remains unchanged.
+    for relative in ("SKILL.md", "references/identity-and-authorization.md"):
+        words = _words(_read(relative))
+        assert "validated `payload.reopen_evidence`" in words
+        assert "`begin_work` while the item still shows Review, Done or Cancelled" in words
+        assert "until the first `working` report" in words
+        assert "Field edits and mail prose do not manufacture reopen evidence" in words
+    identity = _words(_read("references/identity-and-authorization.md"))
+    assert "assignment, project, worker and ownership version" in identity
+    signals = _read("references/signals.md")
+    [row] = [line for line in signals.splitlines() if line.startswith("| Receive Assigned Work |")
+             and "`test_validated_explicit_reopen_is_begin_work_despite_terminal_status`" in line]
+    assert "validated `payload.reopen_evidence`" in row and "`begin_work`" in row
+    assert "Field edits and mail prose do not manufacture reopen evidence" in row
+
+
+def test_terminal_assignee_information_is_update_not_assignment_work() -> None:
+    # The editor queues an informational mail, not an execution assignment.
+    skill = _words(_read("SKILL.md"))
+    assert "`terminal_assignee_information` arrives as kind `update` mail" in skill
+    assert "`expected_reaction=acknowledge_only`, never active execution" in skill
+    assert "read and settle, never start, report `working` or reopen" in skill
+    assert "Its metadata and the proof binding are in [ownership](references/identity-and-authorization.md)" in skill
+    identity = _words(_read("references/identity-and-authorization.md"))
+    assert "kind `update`" in identity
+    assert "`payload.notice_kind=terminal_assignee_information`" in identity
+    assert "`expected_reaction=acknowledge_only`" in identity
+    assert "not an `assign` control and grants no active execution" in identity
+    assert "Read it and settle; do not report `working`, start, resume or reopen" in identity
+    signals = _read("references/signals.md")
+    [row] = [line for line in signals.splitlines() if line.startswith("| Receive Assigned Work |")
+             and "`test_terminal_assignee_information_is_update_not_assignment_work`" in line]
+    assert "`update`" in row and "`acknowledge_only`" in row
+    assert "no active execution" in row
 
 
 def test_the_coordinator_keeps_the_project_announcement_current() -> None:
@@ -2412,4 +2453,3 @@ def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
     # Scheduling table: ownership age and reason, next action, utilization from receipts.
     assert "how long it has been with its assignee and why, and the next action with who takes it" in coordinator
     assert "Count utilization from receipts (a STARTED, a report, a review verdict), never from mail you queued" in coordinator
-
