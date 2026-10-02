@@ -111,6 +111,24 @@ def _exception_type(stderr: bytes) -> str:
     return name if name in _KNOWN_WALK_EXCEPTIONS else "unknown"
 
 
+async def _reap_through_cancellation(process: asyncio.subprocess.Process) -> None:
+    """Wait for a killed child to exit, even when the caller is cancelled again.
+
+    The walk slot is released when the walk returns. A second cancellation
+    while waiting for the killed child would otherwise release the slot while
+    the child was still unreaped (W469 review). The child was sent SIGKILL, so
+    the wait is short. Further cancellations are absorbed here, and the
+    caller's original exception is raised after.
+    """
+
+    reaped = asyncio.ensure_future(process.wait())
+    while not reaped.done():
+        try:
+            await asyncio.shield(reaped)
+        except asyncio.CancelledError:
+            continue
+
+
 async def walk_in_child_process(path: str, *, timeout_seconds: float = WALK_TIMEOUT_SECONDS) -> int:
     """``directory_bytes`` of ``path``, computed by a child Python process."""
 
@@ -128,7 +146,7 @@ async def walk_in_child_process(path: str, *, timeout_seconds: float = WALK_TIME
     except BaseException:
         if process.returncode is None:
             process.kill()
-            await process.wait()
+            await _reap_through_cancellation(process)
         raise
     if process.returncode != 0:
         raise WorkspaceWalkFailed(process.returncode, _exception_type(err))

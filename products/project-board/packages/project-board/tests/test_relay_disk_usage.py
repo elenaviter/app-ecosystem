@@ -89,6 +89,62 @@ def test_the_size_is_remeasured_after_the_interval():
     assert walks == ["/w", "/w"]
 
 
+class _HeldChild:
+    """A child process whose exit after SIGKILL the test controls."""
+
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.killed = False
+        self.exited = asyncio.Event()
+
+    async def communicate(self):
+        await asyncio.Event().wait()  # a walk that never finishes by itself
+
+    def kill(self) -> None:
+        self.killed = True
+
+    async def wait(self) -> int:
+        await self.exited.wait()
+        self.returncode = -9
+        return -9
+
+
+def test_a_cancelled_walk_keeps_its_slot_until_the_killed_child_is_reaped(monkeypatch):
+    """A second cancellation must not release the slot before the child exits."""
+
+    children: list[_HeldChild] = []
+
+    async def spawn(*_args, **_kwargs):
+        child = _HeldChild()
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+
+    async def scenario():
+        walking = asyncio.create_task(walk_in_child_process("/held"))
+        for _ in range(20):
+            if children:
+                break
+            await asyncio.sleep(0)
+        walking.cancel()
+        for _ in range(20):
+            if children[0].killed:
+                break
+            await asyncio.sleep(0)
+        assert children[0].killed
+        walking.cancel()  # a second cancellation while the child is being reaped
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert not walking.done(), "the walk waits for the killed child to be reaped"
+        children[0].exited.set()
+        with pytest.raises(asyncio.CancelledError):
+            await walking
+        assert children[0].returncode == -9
+
+    asyncio.run(scenario())
+
+
 def _peak_walks(sizes_kwargs: dict, count: int) -> int:
     active: list[int] = []
     peak: list[int] = []
