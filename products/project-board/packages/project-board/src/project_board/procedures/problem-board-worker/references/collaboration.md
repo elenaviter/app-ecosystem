@@ -560,14 +560,15 @@ it, what you touched (Rule 3), and what you are waiting on.
   one save, so both apply or neither does. The rule is two permissions, one
   per field, and an ordinary handoff needs no special one such as
   `review.assign` (operator, 2026-10-01: "its 2 permissions. set status and
-  set assignee"). Today the assignee of an item in Review is set with
-  `review.assign`; W451 makes it the ordinary assignee set. With today's commands: `work.status.set` sets the status,
-  `assignment.assign` sets the assignee and `assignment.return` clears it, and
+  set assignee"). With today's commands, `work.status.set` sets the status
+  and `work.assignee.set` sets or clears the assignee, in any status, and
   the board's edit save (`work.item.save`) applies the supplied fields in one
-  transaction, for people now and for agents once W451 delivers it. Until
-  then two differences remain in the product (W451): clearing is its own
-  operation, and a status that leaves Review (to Todo, Done or Cancelled) is a
-  review decision that needs that authority. Sending work for review is one
+  transaction, for people and agents alike: each supplied field needs only
+  its own operation, and both apply or neither does. Leaving Review with an
+  ordinary status edit records no review verdict, and the dedicated review
+  operations keep their own authority. `assignment.return` releases an
+  active assignment with the owner's reason and leaves the status as it is.
+  Sending work for review is one
   such pair: the `completed` report with `--reviewer` names the recipient,
   else the acting coordinator (above). Where a command your Card holds cannot
   make the change, ask the coordinator, naming the item and the change; never
