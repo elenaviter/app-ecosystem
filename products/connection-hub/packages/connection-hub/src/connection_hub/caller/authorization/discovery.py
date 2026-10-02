@@ -34,7 +34,13 @@ MAX_OAUTH_ERROR_REASON_CHARS = 512
 REQUEST_ID_HEADER = "X-Request-ID"
 
 
-def _record_probe(request_id: str, started: float, status: int | None, outcome: str) -> None:
+def _record_probe(
+    request_id: str,
+    started: float,
+    status: int | None,
+    outcome: str,
+    phases: request_records.RequestPhases,
+) -> None:
     """The MCP endpoint probe's request record; a 401 challenge is its expected answer."""
 
     request_records.record(
@@ -44,6 +50,7 @@ def _record_probe(request_id: str, started: float, status: int | None, outcome: 
         status=status,
         outcome=outcome,
         elapsed_seconds=time.monotonic() - started,
+        phases=phases,
     )
 
 
@@ -276,6 +283,7 @@ class HttpxOAuthTransport:
         form_payload: Mapping[str, str] | None,
         expected_statuses: set[int],
         failure_code: str,
+        phases: request_records.RequestPhases,
     ) -> tuple[bytearray, int]:
         """One HTTP exchange: the response body and status, or the classified failure."""
 
@@ -293,6 +301,7 @@ class HttpxOAuthTransport:
                     data=form_payload,
                     headers={"Accept": "application/json", REQUEST_ID_HEADER: request_id},
                     timeout=httpx2.Timeout(self._timeout_seconds),
+                    extensions={"trace": phases.trace},
                 ) as response,
             ):
                 content_length = response.headers.get("content-length")
@@ -361,6 +370,7 @@ class HttpxOAuthTransport:
         endpoint = validate_web_url(url, code="oauth_endpoint_invalid")
         request_id = new_request_id()
         started = time.monotonic()
+        phases = request_records.RequestPhases(started)
         status: int | None = None
         outcome = "ok"
         try:
@@ -372,6 +382,7 @@ class HttpxOAuthTransport:
                 form_payload=form_payload,
                 expected_statuses=expected_statuses,
                 failure_code=failure_code,
+                phases=phases,
             )
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -388,6 +399,7 @@ class HttpxOAuthTransport:
                 status=status if isinstance(status, int) else None,
                 outcome=outcome,
                 elapsed_seconds=time.monotonic() - started,
+                phases=phases,
             )
         try:
             value = json.loads(bytes(body))
@@ -545,6 +557,7 @@ class McpOAuthEndpointDiscovery:
         target = validate_web_url(endpoint, code="oauth_mcp_endpoint_invalid")
         request_id = new_request_id()
         probe_started = time.monotonic()
+        probe_phases = request_records.RequestPhases(probe_started)
         try:
             import httpx2
 
@@ -556,6 +569,7 @@ class McpOAuthEndpointDiscovery:
                     "POST",
                     target,
                     timeout=httpx2.Timeout(self._timeout_seconds),
+                    extensions={"trace": probe_phases.trace},
                     json={
                         "jsonrpc": "2.0",
                         "id": "connection-hub-oauth-discovery",
@@ -596,13 +610,13 @@ class McpOAuthEndpointDiscovery:
                             "The MCP endpoint response is too large.",
                         )
         except AuthorizationError as exc:
-            _record_probe(request_id, probe_started, None, exc.code)
+            _record_probe(request_id, probe_started, None, exc.code, probe_phases)
             raise
         except asyncio.CancelledError:
-            _record_probe(request_id, probe_started, None, "cancelled")
+            _record_probe(request_id, probe_started, None, "cancelled", probe_phases)
             raise
         except Exception as exc:  # noqa: BLE001
-            _record_probe(request_id, probe_started, None, "oauth_mcp_endpoint_unreachable")
+            _record_probe(request_id, probe_started, None, "oauth_mcp_endpoint_unreachable", probe_phases)
             # The exception class says whether the endpoint timed out, refused
             # the connection or dropped it; its text may carry the URL and is
             # not kept.
@@ -619,7 +633,7 @@ class McpOAuthEndpointDiscovery:
                 "request_id": request_id,
             }
             raise unreachable from None
-        _record_probe(request_id, probe_started, response.status_code, "ok")
+        _record_probe(request_id, probe_started, response.status_code, "ok", probe_phases)
         if response.status_code != 401:
             raise AuthorizationError(
                 "oauth_challenge_not_advertised",
