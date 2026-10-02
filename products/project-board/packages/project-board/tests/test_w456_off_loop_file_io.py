@@ -21,7 +21,7 @@ from project_board.client import relay
 from project_board.client.io import FileLockBusy, exclusive_lock
 from project_board.client.store import SharedFieldStore
 
-from relay_helpers import make_host, make_supervisor
+from relay_helpers import LoopHeartbeat, make_host, make_supervisor
 
 
 WORKER = "codex-api"
@@ -50,36 +50,6 @@ def _adapter(field: SharedFieldStore):
     adapter.config = SimpleNamespace(relay_id="relay-01", worker_name=WORKER, project_id=PROJECT)
     adapter._outbox_finishes = set()
     return adapter
-
-
-class _Heartbeat:
-    """The largest gap between loop wake-ups while it runs.
-
-    The gap since the last wake is counted at stop too: a blocked loop may let
-    the test resume and stop the heartbeat before the heartbeat runs again.
-    """
-
-    def __init__(self) -> None:
-        self.max_gap = 0.0
-        self._last = time.monotonic()
-        self._task: asyncio.Task | None = None
-
-    async def _run(self) -> None:
-        while True:
-            await asyncio.sleep(0.02)
-            now = time.monotonic()
-            self.max_gap = max(self.max_gap, now - self._last)
-            self._last = now
-
-    def start(self) -> None:
-        self._last = time.monotonic()
-        self._task = asyncio.create_task(self._run())
-
-    async def stop(self) -> None:
-        assert self._task is not None
-        self.max_gap = max(self.max_gap, time.monotonic() - self._last)
-        self._task.cancel()
-        await asyncio.gather(self._task, return_exceptions=True)
 
 
 def _hold(lock_path: Path, seconds: float, held: threading.Event) -> threading.Thread:
@@ -111,7 +81,7 @@ def test_a_held_outbox_lock_does_not_stall_the_event_loop(field):
     async def scenario():
         held = threading.Event()
         holder = _hold(field._outbox.lock, 2.0, held)
-        beat = _Heartbeat()
+        beat = LoopHeartbeat()
         beat.start()
         started = time.monotonic()
         counts = await asyncio.wait_for(
@@ -167,7 +137,7 @@ def test_a_slow_local_work_scan_does_not_stall_the_event_loop(tmp_path, monkeypa
     )
 
     async def scenario():
-        beat = _Heartbeat()
+        beat = LoopHeartbeat()
         beat.start()
         woke = await supervisor._wait_for_local_work(
             host.field_root, 1.5, worker_names=[channel.worker_name]
