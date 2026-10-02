@@ -676,51 +676,46 @@ class OAuthProfileSessionService:
         lock = AsyncFileLock(str(lock_path), timeout=10, mode=0o600)
         started = time.monotonic()
         acquired: float | None = None
-        failure: BaseException | None = None
+        outcome = "ok"
+        watch = None
         try:
             async with lock:
                 acquired = time.monotonic()
-                self._secure_lock(lock_path)
-                try:
-                    yield
-                except BaseException as exc:
-                    failure = exc
-                    raise
-        except Timeout:
-            if acquired is None:
-                lock_spans.record(
+                # A holder still inside the lock after HOLD_WARN_SECONDS is
+                # recorded while it holds, so a stuck holder is visible before
+                # it completes (W461).
+                watch = lock_spans.watch_hold(
                     kind,
                     operation=operation,
                     profile_name=profile_name,
-                    outcome="timeout",
-                    wait_seconds=time.monotonic() - started,
+                    wait_seconds=acquired - started,
+                    acquired_at=acquired,
                 )
+                self._secure_lock(lock_path)
+                yield
+        except BaseException as exc:
+            # Every failure counts: in the body, in securing the lock after
+            # acquisition, in release, or a cancellation. The span names it;
+            # the original exception still propagates unchanged.
+            if isinstance(exc, Timeout) and acquired is None:
+                outcome = "timeout"
                 raise AuthorizationError(
                     "oauth_profile_lock_timeout", timeout_message
                 ) from None
-            raise
-        except BaseException as exc:
-            if acquired is None:
-                # A waiter cancelled (or failing) before it held the lock
-                # leaves a span too: the wait it spent is evidence (W461).
-                lock_spans.record(
-                    kind,
-                    operation=operation,
-                    profile_name=profile_name,
-                    outcome=lock_spans.outcome_of(exc),
-                    wait_seconds=time.monotonic() - started,
-                )
+            outcome = lock_spans.outcome_of(exc)
             raise
         finally:
-            if acquired is not None:
-                lock_spans.record(
-                    kind,
-                    operation=operation,
-                    profile_name=profile_name,
-                    outcome=lock_spans.outcome_of(failure),
-                    wait_seconds=acquired - started,
-                    hold_seconds=time.monotonic() - acquired,
-                )
+            if watch is not None:
+                watch.cancel()
+            ended = time.monotonic()
+            lock_spans.record(
+                kind,
+                operation=operation,
+                profile_name=profile_name,
+                outcome=outcome,
+                wait_seconds=(acquired if acquired is not None else ended) - started,
+                hold_seconds=None if acquired is None else ended - acquired,
+            )
 
     @asynccontextmanager
     async def _refresh_slot(self, profile_name: str):
