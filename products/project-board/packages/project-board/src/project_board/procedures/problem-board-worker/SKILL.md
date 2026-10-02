@@ -190,7 +190,7 @@ For every returned item:
    session still holds the lease and the file is intact. Do not recover an
    attachment from payload metadata or mailbox files.
 3. When `operator_response` is present, send a visible correlated reply before
-   settlement. A settlement summary is evidence, not a conversation turn.
+   settlement; [delivery and recovery](references/delivery-and-recovery.md) explains channel origin and delivery outcomes. A settlement summary is evidence, not a conversation turn.
 4. Handle the request within repository and operator authority, keeping the
    journal current while decisions and failures are fresh.
 5. When the sender needs an answer, reply with the stable `sender`, the

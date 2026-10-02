@@ -132,6 +132,18 @@ def test_apply_profile_goes_through_the_same_path_with_the_actor_named():
     _, call = host.calls[-1]
     assert call["user"]["user_id"] == "owner-one" and call["_actor_subject"] == "ada"
     assert call["transformed"].provenance[PROJECT_AGENT_CARD_AUDIT_PROVENANCE]["action"] == "profile_applied"
+    assert call["resources"] is None, "an unscoped call stays unscoped"
+
+
+def test_apply_profile_passes_the_resource_scope_through_unchanged():
+    """W420: the board's lever names its own resource; the project path carries it to the host."""
+
+    host, port = Host(), Port({(PROJECT, "write"): _allow("project_admin", "write")})
+    asyncio.run(ProjectAgentCardAccess(host, port).apply_profile(
+        ADA, access_id=ACCESS, project_ref=PROJECT, profile="worker", resources=["*/board*"],
+    ))
+    _, call = host.calls[-1]
+    assert call["resources"] == ["*/board*"]
 
 
 def test_refusals_unavailability_and_bad_requests():

@@ -342,6 +342,7 @@ class ProjectAgentCardAccess:
         profile: str,
         expected_card_revision: int | None = None,
         request_id: str = "",
+        resources: Any = None,
     ) -> dict[str, Any]:
         decision = await self._authorize(user, access_id=access_id, project_ref=project_ref, action=AGENT_CARD_WRITE)
         if isinstance(decision, dict):
@@ -352,6 +353,7 @@ class ProjectAgentCardAccess:
             profile=profile,
             expected_card_revision=expected_card_revision,
             request_id=request_id,
+            resources=resources,
             _actor_subject=_subject(user),
             _delegable_grants=await self._actor_delegable_grants(user, decision.grantor_subject),
             _actor_platform_admin=_platform_admin(user),

@@ -188,3 +188,110 @@ async def test_a_project_admin_raises_another_persons_agent_card_through_the_pro
     assert provenance[PROJECT_AGENT_CARD_AUDIT_PROVENANCE]["actor_subject"] == "second-admin"
     assert provenance[PROJECT_AGENT_CARD_AUDIT_PROVENANCE]["via"] == "project_admin"
     assert raised["access"]["grantor_subject"] == GRANTOR, "still the owner's Card"
+
+
+# W420 (claude-main's finding, 2026-09-30): an unscoped profile apply resets
+# every Card resource that declares the profile, so a second service that also
+# declares "worker" lost other.write on a Problem Board worker refresh. The
+# board's levers now scope the apply to their own resource.
+OTHER_RESOURCE = "https://other.example.test/mcp"
+TWO_SERVICES = {
+    "delegated_credentials": {
+        "oauth": {
+            "enabled": True,
+            "capabilities": [
+                *BOARD_CONNECTIONS["delegated_credentials"]["oauth"]["capabilities"],
+                {"grant": "other:read", "label": "Other read", "delegable_roles": ["kdcube:role:registered"]},
+                {"grant": "other:write", "label": "Other write", "delegable_roles": ["kdcube:role:registered"]},
+            ],
+            "resources": [
+                *BOARD_CONNECTIONS["delegated_credentials"]["oauth"]["resources"],
+                {
+                    "resource": OTHER_RESOURCE,
+                    "label": "Other service",
+                    "identity_scope": "grantor",
+                    "grants": ["other:read", "other:write"],
+                    "tools": {
+                        "other.read": {"label": "Read", "grants": ["other:read"]},
+                        "other.write": {"label": "Write", "grants": ["other:write"]},
+                    },
+                    "authorization_profiles": {
+                        "worker": {"scope": "other:profile:worker", "label": "Other worker", "operations": ["other.read"]},
+                    },
+                },
+            ],
+        }
+    }
+}
+
+
+async def _two_service_card():
+    persistence = _Persistence()
+    service = _service(_GrantStore({}), persistence, connections=TWO_SERVICES)
+    card = await service.record_oauth_grant(
+        grantor_subject=GRANTOR,
+        client_id="dcr-claude-ops",
+        scopes=["work:observe", "other:read", "other:write"],
+        resource=CONCRETE_RESOURCE,
+        # A client that carries one credential to several services.
+        client_metadata={"kdcube_credential_use": "multi_resource"},
+        resource_grants={DECLARED_RESOURCE: ["work:observe"], OTHER_RESOURCE: ["other:read", "other:write"]},
+        resource_operations={DECLARED_RESOURCE: ["project.plan.item"], OTHER_RESOURCE: ["other.read", "other.write"]},
+    )
+    assert card is not None
+    assert sorted(card.resource_operations[OTHER_RESOURCE]) == ["other.read", "other.write"]
+    return service, card
+
+
+@pytest.mark.asyncio
+async def test_an_unscoped_worker_apply_resets_every_resource_that_declares_worker():
+    """The generic path, unchanged for unscoped callers: this is the loss the scope prevents."""
+
+    service, card = await _two_service_card()
+    applied = await service.apply_authorization_profile(USER, access_id=card.access_id, profile="worker")
+    assert applied["ok"] is True, applied
+    assert applied["access"]["resource_operations"][OTHER_RESOURCE] == ["other.read"]
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_worker_apply_resets_only_the_named_resource_and_keeps_the_other_service():
+    service, card = await _two_service_card()
+    applied = await service.apply_authorization_profile(
+        USER, access_id=card.access_id, profile="worker", resources=[DECLARED_RESOURCE],
+    )
+    assert applied["ok"] is True, applied
+    operations = applied["access"]["resource_operations"]
+    assert sorted(operations[DECLARED_RESOURCE]) == ["project.plan.item", "worker.heartbeat"]
+    # The other service declares "worker" too, and keeps its write.
+    assert sorted(operations[OTHER_RESOURCE]) == ["other.read", "other.write"]
+    assert sorted(applied["access"]["resource_grants"][OTHER_RESOURCE]) == ["other:read", "other:write"]
+    audit = applied["access"]["provenance"][AUTHORIZATION_PROFILE_AUDIT_PROVENANCE]
+    assert audit["resource_scope"] == [DECLARED_RESOURCE]
+    assert [row["resource"] for row in audit["applied"]] == [DECLARED_RESOURCE]
+    # A repeat is idempotent in effect: the same selection again.
+    again = await service.apply_authorization_profile(
+        USER, access_id=card.access_id, profile="worker", resources=[DECLARED_RESOURCE],
+    )
+    assert again["ok"] is True
+    assert sorted(again["access"]["resource_operations"][OTHER_RESOURCE]) == ["other.read", "other.write"]
+
+
+@pytest.mark.asyncio
+async def test_a_scope_the_card_does_not_hold_or_an_empty_scope_is_refused_and_changes_nothing():
+    service, card = await _two_service_card()
+    absent = await service.apply_authorization_profile(
+        USER, access_id=card.access_id, profile="worker", resources=["https://absent.example.test/mcp"],
+    )
+    assert absent == {
+        "ok": False,
+        "error": "delegated_access_profile_resource_not_on_card",
+        "status": 409,
+        "profile": "worker",
+        "resources": ["https://absent.example.test/mcp"],
+    }
+    empty = await service.apply_authorization_profile(USER, access_id=card.access_id, profile="worker", resources=[])
+    assert empty["error"] == "delegated_access_profile_resource_scope_empty"
+    still = await service.apply_authorization_profile(
+        USER, access_id=card.access_id, profile="worker", resources=[DECLARED_RESOURCE],
+    )
+    assert still["access"]["card_revision"] == card.card_revision + 1, "the refusals wrote nothing"

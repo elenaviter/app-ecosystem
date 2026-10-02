@@ -164,6 +164,316 @@ def _receipt(state="applied"):
     }
 
 
+def _w450_prior(host, channel, *, key="w450-recover", request_id="w450-prior"):
+    """A disposable actor-owned request, never a live worker queue."""
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": key}
+    recovery = CoordinateRecovery(host.field_root)
+    request = {"action": "review.accept", "object_ref": PROJECT, "payload": payload}
+    recovery.reserve(channel.worker_name, key, **request)
+    queue = CoordinateQueue(host.field_root)
+    queue.submit(
+        worker_name=channel.worker_name, worker_identity=channel.worker_identity,
+        runtime_kind=channel.runtime_kind, runtime_session_id=channel.runtime_session_id,
+        timeout_seconds=30, request_id=request_id, **request,
+    )
+    recovery.record_submission(channel.worker_name, key, request_id=request_id, **request)
+    return payload, recovery, queue
+
+
+@pytest.mark.parametrize("source", ["local_receipt", "late_relay_response"])
+def test_w450_reconnecting_returns_exact_completed_receipt_without_a_new_request(
+    monkeypatch, tmp_path, source
+):
+    host, identity, channel = make_host(tmp_path)
+    payload, recovery, queue = _w450_prior(host, channel)
+    receipt = {"ok": True, "operation": "review.accept",
+               "object": {"applied": True, "work_ref": WORK_REF, "status": "done"}}
+    if source == "local_receipt":
+        recovery.settle_attempt(channel.worker_name, payload["idempotency_key"],
+                                "w450-prior", "applied", receipt=receipt)
+    else:
+        _relay_completes(queue, channel, receipt)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("receipt recovery must not reserve, create an identity or submit")
+
+    monkeypatch.setattr(CoordinateRecovery, "reserve", forbidden)
+    monkeypatch.setattr(cli, "new_id", forbidden)
+    monkeypatch.setattr(CoordinateQueue, "submit", forbidden)
+    result = cli._coordinate_command(_args(
+        "review.accept", object_ref=PROJECT, payload=payload,
+        config=str(host.path), identity=identity,
+    ))
+    assert result["object"]["status"] == "done"
+    assert result["recovery"]["source"] == source
+    assert result["recovery"]["request_ids"] == ["w450-prior"]
+    assert result["recovery"]["request_hash"] == coordinate_request_hash("review.accept", PROJECT, payload)
+
+
+@pytest.mark.parametrize("changed", ["project", "work", "payload", "action", "key"])
+def test_w450_reconnecting_never_reuses_a_receipt_for_a_different_request(
+    monkeypatch, tmp_path, changed
+):
+    host, identity, channel = make_host(tmp_path)
+    payload, recovery, queue = _w450_prior(host, channel)
+    recovery.settle_attempt(channel.worker_name, payload["idempotency_key"],
+                            "w450-prior", "applied", receipt=_receipt())
+    original = recovery.read(channel.worker_name, payload["idempotency_key"])
+    action, project = "review.accept", PROJECT
+    if changed == "project":
+        project = "work:project:another"
+    elif changed == "work":
+        payload = dict(payload, work_ref="work:plan:node:20260929T000000Z:w2:two")
+    elif changed == "payload":
+        payload = dict(payload, expected_revision=8)
+    elif changed == "action":
+        action, payload = "review.return", dict(payload, reason="Return for changes")
+    else:
+        payload = dict(payload, idempotency_key="a-new-key")
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+    monkeypatch.setattr(cli, "new_id", lambda *a: pytest.fail("must not create a new identity"))
+    monkeypatch.setattr(CoordinateQueue, "submit", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_args(action, object_ref=project, payload=payload,
+                                      config=str(host.path), identity=identity))
+    expected = "work_coordinate_channel_reconnecting" if changed == "key" else "work_coordinate_idempotency_key_reused"
+    assert refused.value.code == expected
+    assert recovery.read(channel.worker_name, "w450-recover") == original
+    assert recovery.read(channel.worker_name, "a-new-key") is None
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_w450_reconnecting_unknown_or_new_request_creates_no_reservation(
+    monkeypatch, tmp_path, existing
+):
+    host, identity, channel = make_host(tmp_path)
+    if existing:
+        payload, recovery, queue = _w450_prior(host, channel)
+    else:
+        payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "w450-recover"}
+        recovery = CoordinateRecovery(host.field_root)
+    original = recovery.read(channel.worker_name, payload["idempotency_key"])
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+    for owner, name in [(CoordinateRecovery, "reserve"), (CoordinateRecovery, "_prune_unlocked"),
+                        (CoordinateRecovery, "begin_attempt"), (CoordinateQueue, "submit"), (cli, "new_id")]:
+        monkeypatch.setattr(owner, name, lambda *a, **k: pytest.fail("offline recovery must not allocate or prune"))
+    with pytest.raises(DomainError) as blocked:
+        cli._coordinate_command(_args("review.accept", object_ref=PROJECT, payload=payload,
+                                      config=str(host.path), identity=identity))
+    assert blocked.value.code == "work_coordinate_channel_reconnecting"
+    assert recovery.read(channel.worker_name, payload["idempotency_key"]) == original
+
+
+@pytest.mark.parametrize("earlier_unknown", [False, True])
+def test_w450_terminal_refusal_is_not_completion_of_an_earlier_unknown(
+    monkeypatch, tmp_path, earlier_unknown
+):
+    host, identity, channel = make_host(tmp_path)
+    payload, recovery, queue = _w450_prior(host, channel)
+    last = "w450-prior"
+    if earlier_unknown:
+        last = "w450-later"
+        _w450_prior(host, channel, request_id=last)
+    requests = {row["request_id"]: row for row in queue.claim(worker_name=channel.worker_name, limit=10)}
+    queue.complete(requests[last], error={"code": "work_item_revision_conflict", "message": "changed", "status": 409})
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+    monkeypatch.setattr(cli, "new_id", lambda *a: pytest.fail("must not create a new identity"))
+    monkeypatch.setattr(CoordinateQueue, "submit", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(DomainError) as raised:
+        cli._coordinate_command(_args("review.accept", object_ref=PROJECT, payload=payload,
+                                      config=str(host.path), identity=identity))
+    record = recovery.read(channel.worker_name, payload["idempotency_key"])
+    if earlier_unknown:
+        assert raised.value.code == "work_coordinate_channel_reconnecting"
+        assert record["state"] == "outcome_unknown"
+        assert record["attempts"] == {"w450-prior": "unknown", last: "refused"}
+    else:
+        assert raised.value.code == "work_item_revision_conflict"
+        assert record is None, "all attempts proved no effect; the existing release semantics remain"
+
+
+@pytest.mark.parametrize("invalid", ["missing", "wrong_operation", "refused", "mixed"])
+def test_w450_cached_receipt_still_requires_the_original_operation_contract(
+    monkeypatch, tmp_path, invalid
+):
+    host, identity, channel = make_host(tmp_path)
+    payload, recovery, queue = _w450_prior(host, channel)
+    receipt = {"ok": True, "operation": "review.accept", "object": {"applied": True}}
+    expected = "work_coordinate_response_invalid"
+    if invalid == "missing":
+        receipt = None
+    elif invalid == "wrong_operation":
+        receipt["operation"] = "plan.item.update"
+    else:
+        receipt["object"] = {"state": invalid}
+        expected = "work_operation_mixed" if invalid == "mixed" else "work_operation_refused"
+    recovery.settle_attempt(channel.worker_name, payload["idempotency_key"],
+                            "w450-prior", "applied", receipt=receipt)
+    original = recovery.read(channel.worker_name, payload["idempotency_key"])
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+    monkeypatch.setattr(CoordinateQueue, "submit", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_args("review.accept", object_ref=PROJECT, payload=payload,
+                                      config=str(host.path), identity=identity))
+    assert refused.value.code == expected
+    assert recovery.read(channel.worker_name, payload["idempotency_key"]) == original
+
+
+def test_w450_another_actor_cannot_recover_the_same_key(monkeypatch, tmp_path):
+    from project_board.client.host_config import enroll_worker_channel
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+
+    host, identity, channel = make_host(tmp_path)
+    other = WorkerSessionIdentity.create("codex", "22222222-2222-4222-8222-222222222222")
+    other_channel = enroll_worker_channel(host.path, identity=other, profile="other-worker", authorized=True)
+    payload, recovery, queue = _w450_prior(host, other_channel)
+    recovery.settle_attempt(other_channel.worker_name, payload["idempotency_key"],
+                            "w450-prior", "applied", receipt=_receipt())
+    original = recovery.read(other_channel.worker_name, payload["idempotency_key"])
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+    monkeypatch.setattr(CoordinateQueue, "take_response", lambda *a, **k: pytest.fail("foreign queue must not be read"))
+    monkeypatch.setattr(cli, "new_id", lambda *a: pytest.fail("must not create a new identity"))
+    with pytest.raises(DomainError) as blocked:
+        cli._coordinate_command(_args("review.accept", object_ref=PROJECT, payload=payload,
+                                      config=str(host.path), identity=identity))
+    assert blocked.value.code == "work_coordinate_channel_reconnecting"
+    assert "recovery" not in blocked.value.details
+    assert recovery.read(channel.worker_name, payload["idempotency_key"]) is None
+    assert recovery.read(other_channel.worker_name, payload["idempotency_key"]) == original
+
+
+@pytest.mark.parametrize("gate", ["shape", "inactive", "missing", "timeout"])
+def test_w450_front_door_checks_remain_before_local_receipt_access(monkeypatch, tmp_path, gate):
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+
+    host, identity, channel = make_host(tmp_path, authorized=gate != "inactive")
+    payload, recovery, queue = _w450_prior(host, channel)
+    recovery.settle_attempt(channel.worker_name, payload["idempotency_key"],
+                            "w450-prior", "applied", receipt=_receipt())
+    expected = "work_coordinate_shape_invalid"
+    timeout = 30
+    if gate == "shape":
+        payload = {key: value for key, value in payload.items() if key != "expected_revision"}
+    elif gate == "inactive":
+        expected = "work_worker_channel_not_active"
+    elif gate == "missing":
+        identity = WorkerSessionIdentity.create("codex", "22222222-2222-4222-8222-222222222222")
+        expected = "work_worker_channel_missing"
+    else:
+        timeout, expected = 0, "work_coordinate_timeout_invalid"
+    monkeypatch.setattr(CoordinateRecovery, "lookup_existing", lambda *a, **k: pytest.fail("must not inspect a receipt"))
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_args("review.accept", object_ref=PROJECT, payload=payload,
+                                      config=str(host.path), identity=identity, timeout=timeout))
+    assert refused.value.code == expected
+
+
+def test_w450_expired_receipt_is_not_exposed_or_pruned_while_reconnecting(monkeypatch, tmp_path):
+    import os
+    import time
+    from project_board.client.coordinate_recovery import RECOVERY_RETENTION_SECONDS
+
+    host, identity, channel = make_host(tmp_path)
+    payload, recovery, queue = _w450_prior(host, channel)
+    recovery.settle_attempt(channel.worker_name, payload["idempotency_key"],
+                            "w450-prior", "applied", receipt=_receipt())
+    path = recovery._path(channel.worker_name, payload["idempotency_key"])
+    stale = time.time() - RECOVERY_RETENTION_SECONDS - 60
+    os.utime(path, (stale, stale))
+    original = path.read_bytes()
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+    monkeypatch.setattr(CoordinateRecovery, "reserve", lambda *a, **k: pytest.fail("must not reserve"))
+    with pytest.raises(DomainError) as blocked:
+        cli._coordinate_command(_args("review.accept", object_ref=PROJECT, payload=payload,
+                                      config=str(host.path), identity=identity))
+    assert blocked.value.code == "work_coordinate_channel_reconnecting"
+    assert path.read_bytes() == original
+    assert path.stat().st_mtime == stale
+
+
+@pytest.mark.parametrize("change_payload", [False, True])
+def test_w450_late_response_cannot_overwrite_a_concurrently_reused_key(
+    monkeypatch, tmp_path, change_payload
+):
+    host, identity, channel = make_host(tmp_path)
+    payload, recovery, queue = _w450_prior(host, channel)
+    _relay_completes(queue, channel, _receipt())
+    take = CoordinateQueue.take_response
+    replacement = {}
+
+    def reuse_then_take(self, **values):
+        if not replacement:
+            # Deterministic interleaving after lookup, before late settlement.
+            assert recovery.settle_attempt(channel.worker_name, payload["idempotency_key"],
+                                           "w450-prior", "refused") is None
+            changed = dict(payload, expected_revision=8) if change_payload else payload
+            request = {"action": "review.accept", "object_ref": PROJECT, "payload": changed}
+            recovery.reserve(channel.worker_name, payload["idempotency_key"], **request)
+            replacement.update(recovery.record_submission(
+                channel.worker_name, payload["idempotency_key"], request_id="replacement", **request,
+            ))
+        return take(self, **values)
+
+    monkeypatch.setattr(CoordinateQueue, "take_response", reuse_then_take)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+    monkeypatch.setattr(cli, "new_id", lambda *a: pytest.fail("must not create a new identity"))
+    monkeypatch.setattr(CoordinateQueue, "submit", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_args("review.accept", object_ref=PROJECT, payload=payload,
+                                      config=str(host.path), identity=identity))
+    expected = "work_coordinate_idempotency_key_reused" if change_payload else "work_coordinate_channel_reconnecting"
+    assert refused.value.code == expected
+    assert recovery.read(channel.worker_name, payload["idempotency_key"]) == replacement
+    assert replacement["attempts"] == {"replacement": "unknown"}
+    assert "receipt" not in replacement
+
+
+@pytest.mark.parametrize("invalid", ["wrong_operation", "mixed"])
+def test_w450_invalid_late_receipt_remains_unknown_without_a_new_submission(
+    monkeypatch, tmp_path, invalid
+):
+    host, identity, channel = make_host(tmp_path)
+    payload, recovery, queue = _w450_prior(host, channel)
+    receipt = {"ok": True, "operation": "review.accept", "object": {"applied": True}}
+    if invalid == "wrong_operation":
+        receipt["operation"] = "plan.item.update"
+    else:
+        receipt["object"] = {"state": "mixed", "summary": "Only part applied"}
+    _relay_completes(queue, channel, receipt)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+    monkeypatch.setattr(cli, "new_id", lambda *a: pytest.fail("must not create a new identity"))
+    monkeypatch.setattr(CoordinateQueue, "submit", lambda *a, **k: pytest.fail("must not submit"))
+    with pytest.raises(DomainError) as blocked:
+        cli._coordinate_command(_args("review.accept", object_ref=PROJECT, payload=payload,
+                                      config=str(host.path), identity=identity))
+    assert blocked.value.code == "work_coordinate_channel_reconnecting"
+    record = recovery.read(channel.worker_name, payload["idempotency_key"])
+    assert record["state"] == "outcome_unknown"
+    assert record["attempts"] == {"w450-prior": "unknown"}
+    assert "receipt" not in record
+
+
+@pytest.mark.parametrize("field", ["action", "object_ref", "payload"])
+def test_w450_a_stored_hash_does_not_override_mismatched_request_fields(monkeypatch, tmp_path, field):
+    from project_board.client.io import atomic_write_json
+
+    host, identity, channel = make_host(tmp_path)
+    payload, recovery, queue = _w450_prior(host, channel)
+    recovery.settle_attempt(channel.worker_name, payload["idempotency_key"],
+                            "w450-prior", "applied", receipt=_receipt())
+    record = recovery.read(channel.worker_name, payload["idempotency_key"])
+    record[field] = dict(payload, expected_revision=8) if field == "payload" else "different"
+    atomic_write_json(recovery._path(channel.worker_name, payload["idempotency_key"]), record)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
+    monkeypatch.setattr(CoordinateQueue, "take_response", lambda *a, **k: pytest.fail("mismatched request must not read queue"))
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_args("review.accept", object_ref=PROJECT, payload=payload,
+                                      config=str(host.path), identity=identity))
+    assert refused.value.code == "work_coordinate_idempotency_key_reused"
+    assert recovery.read(channel.worker_name, payload["idempotency_key"]) == record
+
+
 def test_an_applied_review_accept_is_recovered_without_a_second_request(submits, monkeypatch, tmp_path):
     # codex-main, 2026-09-29: the first wait ended before the receipt arrived.
     host, identity, channel = make_host(tmp_path)
@@ -525,8 +835,9 @@ def test_a_receipt_is_final_for_its_key(tmp_path):
     assert late["state"] == "applied" and late["receipt"] == _receipt()
 
 
+@pytest.mark.parametrize("reconnecting", [False, True])
 def test_a_late_error_for_one_attempt_does_not_hide_another_attempts_receipt(
-    submits, monkeypatch, tmp_path
+    submits, monkeypatch, tmp_path, reconnecting
 ):
     host, identity, channel = make_host(tmp_path)
     monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
@@ -549,6 +860,8 @@ def test_a_late_error_for_one_attempt_does_not_hide_another_attempts_receipt(
     queue.complete(requests[first], result=_receipt())
     queue.complete(requests[second], error={"code": "work_worker_unavailable", "message": "denied", "status": 403})
 
+    if reconnecting:
+        monkeypatch.setattr(cli, "channel_reconnect_state", lambda *a, **k: {"state": "reconnecting"})
     recovered = cli._coordinate_command(args)
     assert recovered["state"] == "applied"
     assert recovered["recovery"]["source"] == "late_relay_response"
