@@ -63,14 +63,44 @@ class WorkspaceWalkFailed(RuntimeError):
         self.exception_type = exception_type
 
 
+# The exceptions a standard-library directory walk in a fresh interpreter can
+# end with. Anything else, including any text the child printed, is "unknown".
+_KNOWN_WALK_EXCEPTIONS = frozenset(
+    {
+        "BlockingIOError",
+        "FileNotFoundError",
+        "ImportError",
+        "InterruptedError",
+        "IsADirectoryError",
+        "KeyboardInterrupt",
+        "MemoryError",
+        "ModuleNotFoundError",
+        "NotADirectoryError",
+        "OSError",
+        "PermissionError",
+        "RecursionError",
+        "RuntimeError",
+        "TimeoutError",
+        "TypeError",
+        "UnicodeDecodeError",
+        "UnicodeEncodeError",
+        "ValueError",
+    }
+)
+
+
 def _exception_type(stderr: bytes) -> str:
-    """The exception class name from a traceback's last line; its message may name paths."""
+    """A known exception class name from a traceback's last line, else "unknown".
+
+    Only a name from ``_KNOWN_WALK_EXCEPTIONS`` leaves this function: the
+    child's stderr is arbitrary text and may name paths (W461 review).
+    """
 
     lines = [line for line in stderr.decode("utf-8", "replace").splitlines() if line.strip()]
     if not lines:
-        return "-"
+        return "unknown"
     name = lines[-1].split(":", 1)[0].strip()
-    return name if name.replace(".", "").replace("_", "").isalnum() and len(name) <= 80 else "-"
+    return name if name in _KNOWN_WALK_EXCEPTIONS else "unknown"
 
 
 async def walk_in_child_process(path: str, *, timeout_seconds: float = WALK_TIMEOUT_SECONDS) -> int:

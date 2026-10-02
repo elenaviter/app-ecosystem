@@ -243,5 +243,39 @@ def test_a_failed_child_walk_names_its_exception_type_never_its_text():
 
     traceback = b"Traceback (most recent call last):\n  File \"x\", line 1\nPermissionError: [Errno 13] /secret/path/token=CANARY\n"
     assert _exception_type(traceback) == "PermissionError"
-    assert _exception_type(b"") == "-"
-    assert _exception_type(b"weird line with spaces: and text\n") == "-"
+    assert _exception_type(b"") == "unknown"
+    assert _exception_type(b"weird line with spaces: and text\n") == "unknown"
+    # Infra's canary: identifier-looking text that is no exception class.
+    assert _exception_type(b"InfraSyntheticStderrCanary123\n") == "unknown"
+    assert _exception_type(b"some.module.Thing_with_CANARY: x\n") == "unknown"
+
+
+def test_a_failed_child_walk_logs_no_child_text(monkeypatch, caplog):
+    from project_board.client import workspace_size
+
+    class FailedChild:
+        returncode = 7
+
+        async def communicate(self):
+            return b"", b"InfraSyntheticStderrCanary123\n"
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 7
+
+    async def fake_exec(*args, **kwargs):
+        return FailedChild()
+
+    monkeypatch.setattr(workspace_size.asyncio, "create_subprocess_exec", fake_exec)
+    sizes = WorkspaceSizes()
+
+    async def scenario():
+        await sizes.schedule("/synthetic-workspace", worker_name="synthetic-worker")
+
+    with caplog.at_level(logging.INFO, logger=relay.logger.name):
+        asyncio.run(scenario())
+    assert sizes.last("/synthetic-workspace") is None
+    assert "WorkspaceWalkFailed:7:unknown" in caplog.text
+    assert "Canary" not in caplog.text
