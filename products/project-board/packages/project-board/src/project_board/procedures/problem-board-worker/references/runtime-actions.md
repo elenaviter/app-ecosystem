@@ -262,6 +262,24 @@ action the coordinator says the range that loaded; a `ready` may carry a
 constraint (a commit it must be at or after, a window, a file you are about
 to touch), and the coordinator honours it or re-announces.
 
+## A Machine Restart Freezes Every Agent On It
+
+A restart of the machine itself stops every agent session, relay and
+runtime on it, so it is a window of its own: the coordinator owns it and the
+operator reboots. READY in this window means quiescent. The agent has pushed
+its work in progress, settled its leases and written where it resumes, and
+then starts nothing until the operator says the machine is back or cancels
+the window: no tests, builds, merges, item edits or periodic checks after
+READY, however small. Two passive things continue: the inbox watch (a
+session's Stop hook requires it, and it changes nothing) and receiving and
+settling mail, answered with "frozen until the restart" when it asks for
+work. An operation already running that cannot stop safely is reported at
+once, in place of READY. After the reboot the resume is recorded on the
+window's item in the operator's own words, and the coordinator replaces the
+freeze briefing. Why: on 2026-10-02 the coordinator kept merging after its
+own restart GO and the operator ordered a terminal freeze, and an agent's
+Stop hook demanded the watch the freeze had told it not to start (W455).
+
 ## Client Source Selection
 
 Selecting the client source is a runtime action of the same kind as a relay

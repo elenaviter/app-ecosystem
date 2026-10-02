@@ -26,6 +26,7 @@ revision (W449).
 | decide on a submission | [Accept, return, cancel](#accept-return-cancel) |
 | merge or ship a batch | [Merge](#merge) |
 | run a reload, refresh or client switch | [Reload, refresh, restart](#reload-refresh-restart) |
+| restart a machine | [A machine restart freezes every agent on it](runtime-actions.md#a-machine-restart-freezes-every-agent-on-it) |
 | handle a failing channel, relay or delivery | [What the coordinator is for](#what-the-coordinator-is-for), its "Communication comes first" block |
 | wait on a silent worker | [Confirm that work started](#confirm-that-work-started), [Check a silent worker](#check-a-silent-worker-do-not-wait-for-it) |
 | tell the operator and the team where things stand | [Keep the project announcement current](#keep-the-project-announcement-current) |

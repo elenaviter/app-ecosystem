@@ -2499,6 +2499,15 @@ def test_the_w455_amendment_carries_the_batch_table_and_the_seven_corrections() 
     assert "Enumerate the awaits the change adds" in collaboration
     assert "a review that does not list them has not applied the rule" in collaboration
     assert "An agent you name in the table as the window's reserve" in coordinator
+    runtime_actions = _words(_read("references/runtime-actions.md"))
+    assert "## A Machine Restart Freezes Every Agent On It" in _read("references/runtime-actions.md")
+    assert "READY in this window means quiescent" in runtime_actions
+    assert "Two passive things continue: the inbox watch" in runtime_actions
+    assert "the resume is recorded on the window's item in the operator's own words" in runtime_actions
+    assert "(runtime-actions.md#a-machine-restart-freezes-every-agent-on-it)" in _read("references/coordinator.md")
+    assert "A reviewer who passes a source does the same: the verdict names the next actor" in collaboration
+    assert "check the project's Control Card before anything else" in collaboration
+    assert "no Card is ever widened automatically" in collaboration
     assert "starts nothing new: it records each follow-up on its item" in coordinator
 
 

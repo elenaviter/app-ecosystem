@@ -516,7 +516,11 @@ it, what you touched (Rule 3), and what you are waiting on.
   review, which the return itself already spent (W245 blocker three, refused
   live as a duplicate event until the notice said what to cite). Push the
   rework to the same branch. A reviewer who returns an item names who acts
-  next and on what (W403 C5, 2026-09-29).
+  next and on what (W403 C5, 2026-09-29). A reviewer who passes a source
+  does the same: the verdict names the next actor and the step (merge,
+  install, verify) and hands the item to them. A pass never keeps the item
+  waiting on the reviewer and never closes work that remains (W455, Root
+  2026-10-02).
 
 - **The assignee is the current owner, in every status.** `item.assignee`
   names who holds the item now, Review and Done included, and every
@@ -568,6 +572,17 @@ it, what you touched (Rule 3), and what you are waiting on.
   else the acting coordinator (above). Where a command your Card holds cannot
   make the change, ask the coordinator, naming the item and the change; never
   work around a refused permission.
+  When a status edit succeeds and the matching assignee edit is refused (or
+  the combined save is refused with no effect), check the project's Control
+  Card before anything else. The default worker and coordinator profiles
+  carry both `work.status.set` and `work.assignee.set` (the coordinator
+  profile carries the whole catalog), but a Control Card set before an
+  operation existed does not gain it by itself, and no Card is ever widened
+  automatically. The fix is the operator's: add the operation to the
+  project's Control Card in Connection Hub, then refresh the worker and
+  coordinator Cards. Why: on 2026-10-02 the coordinator's combined
+  status-and-owner save was refused because the project Control Card lacked
+  `work.assignee.set`, while the deployed profiles had it (W455).
 - **Reconcile your assignments, act on each, and ask when one is unclear.**
   At session start or resume and after a compaction, read your assignments
   fresh (`project.plan.index` with your stable worker name as assignee, by
