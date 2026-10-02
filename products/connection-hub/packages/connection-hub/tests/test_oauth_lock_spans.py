@@ -334,3 +334,51 @@ def test_a_quick_holder_leaves_no_holding_record(tmp_path, caplog):
     with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
         asyncio.run(scenario())
     assert ["outcome=holding" in r.getMessage() for r in _spans(caplog)] == [False]
+
+
+def test_a_slow_keychain_write_runs_off_the_event_loop_and_the_loop_keeps_ticking():
+    """2026-10-02 12:28:05Z: a refreshed token's Keychain write blocked the relay loop 3.5 s."""
+
+    seen: list[str] = []
+
+    def slow_put(credential_ref, token):
+        seen.append(threading.current_thread().name)
+        time.sleep(0.4)
+
+    async def scenario():
+        ticks = 0
+        stop = asyncio.Event()
+
+        async def ticker():
+            nonlocal ticks
+            while not stop.is_set():
+                ticks += 1
+                await asyncio.sleep(0.02)
+
+        tick_task = asyncio.create_task(ticker())
+        await profile_session.OAuthProfileSessionService._in_custody(slow_put, "ref", object())
+        stop.set()
+        await tick_task
+        return threading.current_thread().name, ticks
+
+    loop_thread, ticks = asyncio.run(scenario())
+    assert seen == ["connection-hub-custody_0"] and seen[0] != loop_thread
+    assert ticks >= 12, f"the loop stalled during a 0.4 s keychain write ({ticks} ticks)"
+
+
+def test_a_cancelled_caller_waits_for_its_keychain_write_to_finish():
+    finished: list[bool] = []
+
+    def put(credential_ref, token):
+        time.sleep(0.2)
+        finished.append(True)
+
+    async def scenario():
+        task = asyncio.create_task(profile_session.OAuthProfileSessionService._in_custody(put, "ref", object()))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return list(finished)
+
+    assert asyncio.run(scenario()) == [True], "the write finished before the cancellation was raised"
