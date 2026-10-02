@@ -1053,12 +1053,18 @@ def _render_inspect(result: Mapping[str, Any]) -> list[str]:
         if label == "session.connection" and connection == channel_connection:
             continue
         lines.append(
-            "{}: state {} · attempts {} · schedule {} · next attempt {}".format(
+            "{}: state {} · attempts {} · schedule {} · {}".format(
                 label,
                 connection.get("state") or "not reported",
                 connection.get("attempts", "?"),
                 _preview(connection.get("schedule"), maximum_bytes=100) or "-",
-                connection.get("next_attempt_at") or "not reported",
+                (
+                    "attempt running since "
+                    + str(connection.get("attempt_started_at") or "not reported")
+                    if connection.get("attempt_in_progress") is True
+                    else "next attempt "
+                    + str(connection.get("next_attempt_at") or "not reported")
+                ),
             )
         )
         for key in ("reason", "last_error", "last_error_code", "last_error_summary"):
