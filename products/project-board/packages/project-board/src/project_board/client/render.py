@@ -934,6 +934,11 @@ def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], projec
     for key in ("message_ref", "correlation_id", "reply_to", "work_ref", "idempotency_key"):
         if message.get(key) not in (None, ""):
             lines.append(f"{key}: {message[key]}")
+    origin = message.get("operator_origin")
+    if isinstance(origin, Mapping):
+        lines.append(f"operator_origin.channel: {origin.get('channel') or 'unknown'}")
+        if origin.get("ref"):
+            lines.append(f"operator_origin.ref: {origin['ref']}")
     if project_ref:
         lines.append(f"project_ref: {project_ref}")
     lease_id = lease.get("lease_id") if isinstance(lease, Mapping) else None

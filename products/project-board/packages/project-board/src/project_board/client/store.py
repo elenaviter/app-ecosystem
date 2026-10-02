@@ -6872,6 +6872,21 @@ class SharedFieldStore:
             ),
             "reply_to": bounded_text(reply_to, field="reply_to", maximum=512),
         }
+        # The normal reply command keeps its local reply-to (and settlement
+        # receipt). Resolve the origin from that exact addressed mail rather
+        # than asking the worker to invent or copy private routing data.
+        if clean_recipient in {"operator", "owner"} and clean_kind == "reply" and reply_to:
+            with exclusive_lock(self._mail_lock(clean_project, clean_sender)):
+                incoming = self._mail_record_unlocked(clean_project, clean_sender, reply_to)
+            origin = dict((incoming.get("payload") or {}).get("operator_origin") or {})
+            if origin.get("ref"):
+                if str(incoming.get("correlation_id") or "") != mail["correlation_id"]:
+                    raise DomainError(
+                        "field_operator_origin_mismatch",
+                        "Reply correlation does not match the addressed operator message.",
+                        status=409,
+                    )
+                mail["payload"]["operator_origin_ref"] = str(origin["ref"])
         if not clean_project:
             if mail["work_ref"]:
                 raise DomainError(
@@ -8606,6 +8621,12 @@ class SharedFieldStore:
             reply_to = str(routed_mail.get("reply_to") or "")
         if attachments:
             message_payload["attachments"] = attachments
+        if isinstance(control.get("operator_origin"), Mapping):
+            origin = control["operator_origin"]
+            message_payload["operator_origin"] = {
+                "ref": str(origin.get("ref") or ""),
+                "channel": str(origin.get("channel") or "unknown"),
+            }
         delivered_work_ref = str(
             payload.get("versioned_work_ref")
             or control.get("versioned_work_ref")
@@ -11453,6 +11474,20 @@ class SharedFieldStore:
                     "error_code": str(proof.get("error_code") or ""),
                     "generation_present": bool(proof.get("generation_present")),
                     "plan_revision": int(proof.get("plan_revision") or 0),
+                }
+        if str(row.get("kind") or "") == "mail.route":
+            proof = row.get("remote_result")
+            notification = proof.get("notification") if isinstance(proof, Mapping) else None
+            if isinstance(notification, Mapping):
+                # Keep Board acceptance distinct from channel outcome, without
+                # projecting arbitrary receipt details or private route metadata.
+                state = str(notification.get("state") or "")
+                known = {
+                    "sent", "partial", "not_connected", "not_configured",
+                    "no_notifier", "failed", "delivery_unknown",
+                }
+                result["notification"] = {
+                    "state": state if state in known else ("not_requested" if not state else "unknown"),
                 }
         return result
 

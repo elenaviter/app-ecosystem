@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..contract.errors import DomainError
+from ..contract.operator_mail_contract import safe_operator_origin
 from ..contract.refs import parse_ref
 from .mail_attachments import worker_message_with_attachments
 from .mail_budget import MAX_WORKER_INPUT_BYTES, MailPullBudget
@@ -336,6 +337,7 @@ def _operator_response_contract(message: Mapping[str, Any]) -> dict[str, Any] | 
             message.get("correlation_id") or payload.get("command_ref") or ""
         ),
         "reply_to": str(message.get("message_ref") or ""),
+        "origin": safe_operator_origin(message.get("operator_origin") or payload.get("operator_origin")),
         "instruction": (
             "Send the operator a visible correlated reply before settling this "
             "conversation message. Settlement records handling; it does not create "
