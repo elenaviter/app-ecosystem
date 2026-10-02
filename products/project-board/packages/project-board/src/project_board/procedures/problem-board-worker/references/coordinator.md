@@ -20,6 +20,20 @@ written. A section still in your context is not read again, and the file is
 reloaded only with the skill, when `pb procedure verify` names a new installed
 revision (W449).
 
+| You are about to | Read |
+|---|---|
+| plan a batch, dispatch or reroute | [Plan every batch with a roles table](#plan-every-batch-with-a-roles-table-and-dispatch-from-it), [Route](#route) |
+| decide on a submission | [Accept, return, cancel](#accept-return-cancel) |
+| merge or ship a batch | [Merge](#merge) |
+| run a reload, refresh or client switch | [Reload, refresh, restart](#reload-refresh-restart) |
+| handle a failing channel, relay or delivery | What the coordinator is for, Communication comes first |
+| wait on a silent worker | [Confirm that work started](#confirm-that-work-started), [Check a silent worker](#check-a-silent-worker-do-not-wait-for-it) |
+| tell the operator and the team where things stand | [Keep the project announcement current](#keep-the-project-announcement-current) |
+| hand the role over | [Hand the coordinator role over](#hand-the-coordinator-role-over-and-take-it-back) |
+
+Read [What the coordinator is for](#what-the-coordinator-is-for) once when
+you take the role; the rest only for the act at hand.
+
 ## What the coordinator is for
 
 The coordinator works for the operator. The team's work reaches the operator through you,
