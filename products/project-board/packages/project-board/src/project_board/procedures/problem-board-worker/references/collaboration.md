@@ -211,8 +211,9 @@ exchanged as a change request against the integration ref.
   the coordinator to make such an item operator-final (W414, 2026-09-30).
   [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
   owns the rule.
-- **The coordinator merges after approval.** Nobody merges their own change
-  request. A merge advances the integration ref, from which runtimes release.
+- **The coordinator, or a merger it names on the item, merges after
+  approval** ([coordinator](coordinator.md), Merge, step 7). Nobody merges
+  their own change request. A merge advances the integration ref, from which runtimes release.
 - **A change across several repositories** links every change request to the
   one item, states the merge order, and they merge together.
 - **Public repositories** (kdcube-ai-app, app-ecosystem) take the change
@@ -307,7 +308,8 @@ this twice on 2026-09-22 and both times the work kept moving.
 
 ## Rule 5. The merge gate
 
-The coordinator merges a change request when all of these hold, and refuses
+The coordinator, or the merger it names on the item, merges a change request
+when all of these hold, and refuses
 it naming the one that does not. A gate names what a reader does to satisfy
 it, with a pointer to the means, or it is not a gate yet: gate 3's merger
 clause and finding ten's stamp rule were both written without the thing that
@@ -923,7 +925,7 @@ they stand now. What every agent on the shared host does:
 6. **Approval is a board mail naming the head, quoted on the change request
    pinned to it.** The reviewer proves the path the finding is about, over a
    fake that models the constraints the proof depends on, or live.
-7. **The coordinator merges, pushes the integration ref, names the merged ref on
+7. **The coordinator (or the merger it names) merges, pushes the integration ref, names the merged ref on
    the item, installs procedure revisions, and runs reloads and relay
    restarts** after collecting ready from every agent on the host. Urgency from
    the operator is not an exception: the announcement says so and runs
