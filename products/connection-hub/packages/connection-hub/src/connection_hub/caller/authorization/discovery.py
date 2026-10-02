@@ -19,6 +19,7 @@ from connection_hub.caller.authorization.models import (
     validate_web_url,
 )
 from connection_hub.caller.authorization import request_records
+from connection_hub.caller.authorization.client_pool import oauth_http_client
 from connection_hub.caller.errors import AuthorizationError
 
 MAX_OAUTH_RESPONSE_BYTES = 1024 * 1024
@@ -282,11 +283,8 @@ class HttpxOAuthTransport:
             import httpx2
 
             async with (
-                httpx2.AsyncClient(
-                    timeout=httpx2.Timeout(self._timeout_seconds),
-                    follow_redirects=False,
-                    transport=self._transport,
-                    trust_env=False,
+                oauth_http_client(
+                    transport=self._transport, timeout_seconds=self._timeout_seconds
                 ) as client,
                 client.stream(
                     method,
@@ -294,6 +292,7 @@ class HttpxOAuthTransport:
                     json=json_payload,
                     data=form_payload,
                     headers={"Accept": "application/json", REQUEST_ID_HEADER: request_id},
+                    timeout=httpx2.Timeout(self._timeout_seconds),
                 ) as response,
             ):
                 content_length = response.headers.get("content-length")
@@ -550,15 +549,13 @@ class McpOAuthEndpointDiscovery:
             import httpx2
 
             async with (
-                httpx2.AsyncClient(
-                    timeout=httpx2.Timeout(self._timeout_seconds),
-                    follow_redirects=False,
-                    transport=self._http_transport,
-                    trust_env=False,
+                oauth_http_client(
+                    transport=self._http_transport, timeout_seconds=self._timeout_seconds
                 ) as client,
                 client.stream(
                     "POST",
                     target,
+                    timeout=httpx2.Timeout(self._timeout_seconds),
                     json={
                         "jsonrpc": "2.0",
                         "id": "connection-hub-oauth-discovery",
