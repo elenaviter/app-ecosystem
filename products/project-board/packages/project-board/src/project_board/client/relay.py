@@ -43,6 +43,7 @@ from .worktree_files import (
     observe_assignments,
 )
 from ..contract.errors import DomainError
+from ..contract.mail_attachments import MAX_MAIL_ATTACHMENT_BYTES, validate_mail_attachment
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
 from ..contract.refs import parse_ref
@@ -2158,7 +2159,22 @@ class ProblemBoardHostRelayAdapter:
         for item in files:
             path = Path(str(item.get("path") or ""))
             filename = str(item.get("filename") or path.name)
-            data = path.read_bytes()
+
+            def read_snapshot() -> bytes:
+                try:
+                    with path.open("rb") as stream:
+                        data = stream.read(MAX_MAIL_ATTACHMENT_BYTES + 1)
+                except OSError as exc:
+                    raise DomainError("field_attachment_missing", "The queued attachment snapshot is not readable.") from exc
+                validate_mail_attachment(data)
+                if ((item.get("size") is not None and int(item["size"]) != len(data))
+                        or (item.get("sha256") and hashlib.sha256(data).hexdigest() != item["sha256"])):
+                    raise DomainError("field_attachment_integrity_mismatch", "The queued attachment snapshot changed before upload.", status=409)
+                return data
+
+            # The existing tracked channel executor keeps a slow file read
+            # off the shared socket loop and drains it on cancellation.
+            data = await run_off_loop(read_snapshot, executor=self._store_executor)
             slot = _object_result(
                 await self.client.action(
                     object_ref="work:worker:self",

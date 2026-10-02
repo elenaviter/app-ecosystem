@@ -95,6 +95,8 @@ that concern this repository so the history is discoverable from here.
 | 2026-09-30 | Operator replies retain trusted channel origin | Controls retain a safe channel label and opaque origin reference; normal local reply outboxes forward that reference while private return routes remain server-owned and fenced to the addressed worker, project and person. Source verification and remaining acceptance gates are recorded. |
 | 2026-10-01 | Origin replies bind the exact delivered operator message | Server admission checks the retained delivery receipt, rejects unrelated reply references, and leaves early replies retryable without inbox or notification side effects; red-green source evidence and pending acceptance boundaries are recorded. |
 
+| 2026-10-02 | Mail files cross hosts as content, not paths or inherited authority | Board-backed worker files, content-bound retries, exact-lease forwarding without inherited routing authority, executable-binary content policy, and the limits of source-only acceptance. |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).

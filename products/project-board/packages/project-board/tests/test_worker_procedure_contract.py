@@ -945,7 +945,9 @@ def test_route_points_only_at_what_the_worker_can_read() -> None:
     assert "## Put what a worker must read where that worker can read it" in coordinator
     assert "belongs in the item" in coordinator
     assert "Never send a local filesystem path as the carrier" in coordinator
-    assert "field_attachments_operator_only" in coordinator
+    assert "field_attachments_operator_only" not in coordinator
+    assert "worker forward" in coordinator
+    assert "Files use the Board lane, not a shared filesystem" in coordinator
 
 
 def test_skill_keeps_the_small_facts_that_compression_removed() -> None:
