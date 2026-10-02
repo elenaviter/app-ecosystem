@@ -373,7 +373,10 @@ async def test_metadata_rejection_names_request_status_and_server_reason() -> No
 
     assert raised.value.code == "oauth_metadata_request_failed"
     assert raised.value.status == 503
-    assert raised.value.details == {
+    details = dict(raised.value.details)
+    request_id = details.pop("request_id")
+    assert len(request_id) == 16 and int(request_id, 16) >= 0
+    assert details == {
         "method": "GET",
         "url": metadata_url,
         "status": 503,
@@ -381,7 +384,7 @@ async def test_metadata_rejection_names_request_status_and_server_reason() -> No
     }
     assert raised.value.message == (
         f"OAuth metadata GET {metadata_url} returned HTTP 503: "
-        "Application catalog is loading."
+        f"Application catalog is loading (request_id {request_id})."
     )
 
 
