@@ -2450,8 +2450,10 @@ def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
     workspace = _words(_read("references/project-workspace.md"))
     assert "**Trees are not a buffer.**" in workspace
     assert "the pushed commits are the copy: end a clean, fully pushed tree, paused change request included" in workspace
-    # The product gaps are named, not claimed (codex-app mapping, 14:39Z).
-    assert "a worker refresh removes those four when they were ticked by hand" in identity
+    # The product gaps are named, not claimed (codex-app mapping, 14:39Z). The
+    # worker profile gap closed: the deployed profile lists all four (W455 audit,
+    # 2026-10-02), so only W420 remains open.
+    assert "The worker profile lists each of them" in identity
     assert "until W420's resource-scoped apply is live" in identity
     # Scheduling table: ownership age and reason, next action, utilization from receipts.
     assert "| Next action or handoff | what this row does next, and to whom it hands over |" in coordinator
@@ -2508,6 +2510,20 @@ def test_the_w455_amendment_carries_the_batch_table_and_the_seven_corrections() 
     assert "A reviewer who passes a source does the same: the verdict names the next actor" in collaboration
     assert "check the project's Control Card before anything else" in collaboration
     assert "no Card is ever widened automatically" in collaboration
+    identity = _words(_read("references/identity-and-authorization.md"))
+    assert "the two independent setters `work.status.set` and `work.assignee.set`" in identity
+    assert "worker default lacks" not in identity, "the stale W451 caveat is gone"
+    assert "`work_worker_operation_withheld_by_control_card`, the project withholds it" in identity
+    assert "Do not reauthorize, re-consent or route the change another way" in identity
+    test_window = _words(_read("references/test-window.md"))
+    assert "A restart of the machine itself is neither" in test_window
+    assert "its READY means stop, not keep working" in test_window
+    assert "It takes precedence over the answers below." in test_window
+    # The restart freeze names each case the audit listed: work after READY,
+    # mail that arrives, an operation that cannot stop, and the resume.
+    assert "no tests, builds, merges, item edits or periodic checks after READY" in runtime_actions
+    assert 'answered with "frozen until the restart" when it asks for work' in runtime_actions
+    assert "An operation already running that cannot stop safely is reported at once, in place of READY" in runtime_actions
     assert "starts nothing new: it records each follow-up on its item" in coordinator
 
 

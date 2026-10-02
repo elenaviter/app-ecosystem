@@ -270,8 +270,9 @@ operator reboots. READY in this window means quiescent. The agent has pushed
 its work in progress, settled its leases and written where it resumes, and
 then starts nothing until the operator says the machine is back or cancels
 the window: no tests, builds, merges, item edits or periodic checks after
-READY, however small. Two passive things continue: the inbox watch (a
-session's Stop hook requires it, and it changes nothing) and receiving and
+READY, however small. Two passive things continue: the inbox watch of a
+Claude Code session (its Stop hook requires it, and it changes nothing, while
+a Codex session has none and is woken by its relay) and receiving and
 settling mail, answered with "frozen until the restart" when it asks for
 work. An operation already running that cannot stop safely is reported at
 once, in place of READY. After the reboot the resume is recorded on the
