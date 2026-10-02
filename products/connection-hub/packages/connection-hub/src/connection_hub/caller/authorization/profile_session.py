@@ -699,6 +699,18 @@ class OAuthProfileSessionService:
                     "oauth_profile_lock_timeout", timeout_message
                 ) from None
             raise
+        except BaseException as exc:
+            if acquired is None:
+                # A waiter cancelled (or failing) before it held the lock
+                # leaves a span too: the wait it spent is evidence (W461).
+                lock_spans.record(
+                    kind,
+                    operation=operation,
+                    profile_name=profile_name,
+                    outcome=lock_spans.outcome_of(exc),
+                    wait_seconds=time.monotonic() - started,
+                )
+            raise
         finally:
             if acquired is not None:
                 lock_spans.record(
