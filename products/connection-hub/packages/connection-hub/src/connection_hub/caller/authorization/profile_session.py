@@ -365,7 +365,7 @@ class OAuthProfileSessionService:
                 # Cancelled while the commit failed and rolled back: the grant
                 # the server issued is recorded nowhere, so it is revoked
                 # before the cancellation goes on.
-                await self._revoke_grant(grant)
+                await self._revoke_grant_through_cancellation(grant)
                 raise
             except asyncio.CancelledError:
                 # Cancelled before the commit started (during the probe or
@@ -373,7 +373,7 @@ class OAuthProfileSessionService:
                 # recorded nowhere, so it is revoked (W464, the P7 window). A
                 # cancel during the commit means the commit completed.
                 if not committing:
-                    await self._revoke_grant(grant)
+                    await self._revoke_grant_through_cancellation(grant)
                 raise
             except Exception:
                 await self._revoke_grant(grant)
@@ -1504,6 +1504,24 @@ class OAuthProfileSessionService:
                 f"Caller profile '{profile.name}' is not OAuth-backed.",
             )
         return profile.oauth
+
+    async def _revoke_grant_through_cancellation(self, grant) -> None:
+        """Revoke an unrecorded grant to completion while the caller is being cancelled.
+
+        A second cancellation must not interrupt the revoke and leave a live
+        grant recorded nowhere (W464 review). The revoke runs as its own task,
+        and this waits for it however many cancellations arrive. A revoke
+        that fails still raises its cleanup error, which names the Card to
+        revoke by hand; otherwise the caller's cancellation goes on.
+        """
+
+        revoking = asyncio.ensure_future(self._revoke_grant(grant))
+        while not revoking.done():
+            try:
+                await asyncio.wait({revoking})
+            except asyncio.CancelledError:
+                continue
+        revoking.result()
 
     async def _revoke_grant(self, grant) -> None:
         try:

@@ -208,3 +208,39 @@ async def test_a_credential_that_keeps_moving_is_named_as_such_not_as_a_timeout(
         await service.access_token("agent-a")
     assert raised.value.code == "oauth_profile_credential_changed"
     assert len(reads) == 4, "two attempts, each reading the record twice"
+
+
+@pytest.mark.asyncio
+async def test_a_second_cancel_during_the_revoke_still_finishes_the_revoke(tmp_path):
+    """Infra on PR 445: a repeated cancel must not leave the unrecorded grant live."""
+
+    from test_oauth_profiles import _OAuth
+
+    probe_entered = asyncio.Event()
+    revoke_entered = asyncio.Event()
+    release_revoke = asyncio.Event()
+    finished: list[str] = []
+
+    class HeldRevokeOAuth(_OAuth):
+        async def revoke(self, **kwargs):
+            revoke_entered.set()
+            await release_revoke.wait()
+            finished.append("server.revoke")
+
+    async def paused_probe(**_kwargs):
+        probe_entered.set()
+        await asyncio.Event().wait()
+
+    service, profiles, _ = _service(tmp_path, oauth=HeldRevokeOAuth(), probe=paused_probe)
+    task = asyncio.create_task(service.authorize(name="agent-a", endpoint=ENDPOINT))
+    await asyncio.wait_for(probe_entered.wait(), 3)
+    task.cancel()
+    await asyncio.wait_for(revoke_entered.wait(), 3)
+    task.cancel()  # a second cancel while the revoke runs
+    await asyncio.sleep(0.05)
+    assert not task.done(), "the revoke is still owned by the cancelled authorize"
+    release_revoke.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert finished == ["server.revoke"], "the grant was revoked despite the second cancel"
+    assert profiles.get("agent-a") is None
