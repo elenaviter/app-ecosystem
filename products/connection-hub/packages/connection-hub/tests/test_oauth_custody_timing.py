@@ -360,3 +360,49 @@ def test_a_connection_hub_error_keeps_its_own_code():
     assert lock_spans.outcome_of(AuthorizationError("oauth_profile_lock_timeout", "x")) == "oauth_profile_lock_timeout"
     malformed = AuthorizationError("Not A Code", "x")
     assert lock_spans.outcome_of(malformed) == type(malformed).__name__
+    untrusted = AuthorizationError("oauth_looks_like_a_code", "x")
+    assert lock_spans.outcome_of(untrusted) == type(untrusted).__name__
+
+
+# Infra's third re-gate (9ff0515b): our own error types accept any code text,
+# so trust is a closed list of codes, not a type.
+
+
+@pytest.mark.parametrize("error_type", ["AuthorizationError", "CredentialError", "ProfileError"])
+def test_a_canary_code_on_our_own_error_types_is_never_logged(error_type, caplog):
+    from connection_hub.caller import errors
+
+    raised = getattr(errors, error_type)("canary_private_credential_reference", "synthetic")
+
+    def failing():
+        raise raised
+
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        with pytest.raises(type(raised)):
+            asyncio.run(in_custody(failing))
+    assert "canary_private_credential_reference" not in caplog.text
+    (record,) = _records(caplog)
+    assert record["outcome"] == type(raised).__name__
+
+
+def test_every_code_the_oauth_paths_raise_is_on_the_trusted_list():
+    import ast
+    from pathlib import Path
+
+    import connection_hub.caller as caller
+
+    root = Path(caller.__file__).parent
+    modules = ["authorization/profile_session.py", "authorization/session.py", "authorization/discovery.py", "state.py", "credentials.py"]
+    raised = set()
+    for module in modules:
+        for node in ast.walk(ast.parse((root / module).read_text())):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", "")) in (
+                "AuthorizationError", "CredentialError", "ProfileError", "StateError", "_request_error",
+            ):
+                if node.args and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str):
+                    raised.add(node.args[0].value)
+                for keyword in node.keywords:
+                    if keyword.arg in ("code", "failure_code") and isinstance(keyword.value, ast.Constant):
+                        raised.add(keyword.value.value)
+    missing = raised - lock_spans.TRUSTED_OUTCOME_CODES
+    assert not missing, f"codes raised but not trusted (they would log as a class name): {sorted(missing)}"

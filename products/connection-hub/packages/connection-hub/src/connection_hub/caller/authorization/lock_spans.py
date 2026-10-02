@@ -27,7 +27,6 @@ import os
 import re
 import time
 
-from connection_hub.caller.errors import AuthorizationError, CredentialError, ProfileError
 
 logger = logging.getLogger("connection_hub.oauth.spans")
 
@@ -232,7 +231,89 @@ def watch_hold(
     return loop.call_later(HOLD_WARN_SECONDS, still_held)
 
 
-_OUTCOME_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# The outcome codes a span or custody record may name: a closed list of the
+# codes the OAuth custody, lock and request paths raise (collected from
+# profile_session, session, discovery, state and credentials). Any other code,
+# whatever its spelling or the exception's type, is not logged: the record
+# names the exception's class instead (W464 review: AuthorizationError is the
+# broad base class and stores any code text it is given).
+TRUSTED_OUTCOME_CODES = frozenset(
+    (
+        "insecure_oauth_profile_store",
+        "invalid_credential",
+        "invalid_state_file",
+        "invalid_state_schema",
+        "oauth_access_id_invalid",
+        "oauth_access_id_missing",
+        "oauth_authorization_in_progress",
+        "oauth_authorization_lock_failed",
+        "oauth_card_kind_missing",
+        "oauth_challenge_not_advertised",
+        "oauth_client_id_invalid",
+        "oauth_device_authorization_unavailable",
+        "oauth_mcp_endpoint_unreachable",
+        "oauth_metadata_request_failed",
+        "oauth_profile_access_id_mismatch",
+        "oauth_profile_authorization_in_progress",
+        "oauth_profile_card_kind_invalid",
+        "oauth_profile_card_kind_mismatch",
+        "oauth_profile_changed_during_reconnect",
+        "oauth_profile_cleanup_failed",
+        "oauth_profile_credential_changed",
+        "oauth_profile_credential_invalid",
+        "oauth_profile_credential_missing",
+        "oauth_profile_directory_permissions",
+        "oauth_profile_lock_failed",
+        "oauth_profile_lock_symlink_rejected",
+        "oauth_profile_lock_timeout",
+        "oauth_profile_login_required",
+        "oauth_profile_resource_missing",
+        "oauth_profile_server_changed",
+        "oauth_profile_store_failed",
+        "oauth_profile_store_probe_cleanup_failed",
+        "oauth_profile_store_probe_failed",
+        "oauth_profile_store_rollback_failed",
+        "oauth_reconnect_card_continuity_required",
+        "oauth_reconnect_card_mismatch",
+        "oauth_reconnect_client_id_missing",
+        "oauth_reconnect_client_mismatch",
+        "oauth_reconnect_device_client_unauthorized",
+        "oauth_refresh_attempt_unstored",
+        "oauth_resource_metadata_unavailable",
+        "oauth_resource_mismatch",
+        "oauth_response_invalid",
+        "oauth_response_too_large",
+        "oauth_scope_invalid",
+        "oauth_server_metadata_unavailable",
+        "oauth_session_access_id_changed",
+        "oauth_session_access_id_mismatch",
+        "oauth_session_credential_missing",
+        "oauth_session_credential_ref_invalid",
+        "oauth_session_directory_permissions",
+        "oauth_session_exists",
+        "oauth_session_lock_failed",
+        "oauth_session_lock_symlink_rejected",
+        "oauth_session_lock_timeout",
+        "oauth_session_not_found",
+        "oauth_session_record_invalid",
+        "oauth_session_store_probe_cleanup_failed",
+        "oauth_session_store_probe_failed",
+        "oauth_session_target_invalid",
+        "oauth_token_request_failed",
+        "profile_exists",
+        "profile_not_found",
+        "profile_not_oauth",
+        "state_directory_permissions",
+        "state_lock_permissions",
+        "state_lock_timeout",
+        "state_symlink_rejected",
+        "state_write_failed",
+        "unavailable_oauth_profile_store",
+        "unsupported_credential_store",
+        "unsupported_oauth_profile_store",
+        "unsupported_oauth_session_store",
+    )
+)
 
 
 def outcome_of(exc: BaseException | None) -> str:
@@ -249,18 +330,15 @@ def outcome_of(exc: BaseException | None) -> str:
         return "ok"
     if isinstance(exc, asyncio.CancelledError):
         return "cancelled"
-    # A code is trusted only from Connection Hub's own error types, whose
-    # codes are constants in this code base. Any other exception, a provider's
-    # included, is named by its class: identifier syntax alone does not make
-    # an attribute safe to log (W464 review, a canary in `code`).
-    if isinstance(exc, (AuthorizationError, ProfileError, CredentialError)):
-        try:
-            code = exc.code
-        except BaseException as broken:  # noqa: BLE001 - a diagnostic read never escapes
-            if isinstance(broken, (KeyboardInterrupt, SystemExit)):
-                raise
-            code = None
-        if isinstance(code, str) and _OUTCOME_CODE.match(code):
-            return code
+    # A code is logged only when it is in TRUSTED_OUTCOME_CODES, whatever
+    # raised it; otherwise the exception's class names the outcome.
+    try:
+        code = getattr(exc, "code", None)
+    except BaseException as broken:  # noqa: BLE001 - a diagnostic read never escapes
+        if isinstance(broken, (KeyboardInterrupt, SystemExit)):
+            raise
+        code = None
+    if isinstance(code, str) and code in TRUSTED_OUTCOME_CODES:
+        return code
     name = type(exc).__name__
     return name if _CALL_NAME.match(name) else "error"
