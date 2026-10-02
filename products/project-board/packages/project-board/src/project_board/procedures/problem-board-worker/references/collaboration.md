@@ -366,9 +366,10 @@ is a verification. One that stops at printing JSON is a report.
    cancelled, and a failure under cancellation still reaches its cleanup:
    `CancelledError` is not an `Exception`, so `except Exception` cleanup does
    not run. Ask for a test that changes the state, or cancels, at that await.
-   Why: on 2026-10-02 two such awaits in one branch let a replaced Card still
-   dispatch and left a stored credential without its profile and an
-   unrevoked grant; the helper tests passed both times (W461).
+   Why: on 2026-10-02 such awaits in one change stream twice let a replaced
+   Card or a closing session still dispatch, and once left a stored
+   credential without its profile and an unrevoked grant. The helper tests
+   passed every time (W461, PR 438 and PR 440).
    The counts are what the tool said, not what the shell returned: the
    report carries pytest's own summary line verbatim for each suite, from
    the run at that head, and the author checks pytest's exit status, never
