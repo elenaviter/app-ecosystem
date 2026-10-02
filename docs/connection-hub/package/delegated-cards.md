@@ -1260,6 +1260,7 @@ POST delegated_access_apply_profile
   access_id               the Card
   profile                 a profile name the Card's resource declares (worker, coordinator)
   expected_card_revision  optional precondition, as for delegated_access_update
+  resources               optional scope: declared resource selectors that take the profile
 ```
 
 - **Who:** the Card's grantor, the same ownership `delegated_access_update`
@@ -1272,13 +1273,24 @@ POST delegated_access_apply_profile
   before a raise. A resource that does not declare the profile keeps its
   selection. When no Card resource declares it, the call is refused with
   `delegated_access_profile_not_declared` and `available_profiles`.
+- **Scope (W420):** with `resources`, only the Card resources whose key or
+  governing selector is listed take the profile. Every other resource keeps
+  its selection, even one that declares a profile of the same name, so one
+  service's worker refresh never resets another service's permissions. A
+  scope the Card holds none of is refused with
+  `delegated_access_profile_resource_not_on_card` (the scope named). An
+  empty list is refused with `delegated_access_profile_resource_scope_empty`.
+  Without `resources`, every declaring resource takes the profile, as before.
+  Problem Board's worker and coordinator levers always send their own
+  resource. `project_agent_card_apply_profile` takes the same field.
 - **How it saves:** through `delegated_access_update`, so the precondition,
   catalog pruning and every refusal of an ordinary edit apply. The Card keeps
   its access id and credential, and the change applies on its next call.
 - **What it records:** the new revision's `provenance.authorization_profile_audit`
   (`connection_hub.authorization_profile.audit.v1`) names the profile, the
-  resources and operations applied, the actor, the request id, the time, the
-  revisions before and after, and the operations before and after.
+  resources and operations applied, the scope when one was given
+  (`resource_scope`), the actor, the request id, the time, the revisions
+  before and after, and the operations before and after.
 
 ## Multi-Resource Cards
 
