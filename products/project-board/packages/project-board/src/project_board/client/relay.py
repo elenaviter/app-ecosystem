@@ -8,6 +8,7 @@ import math
 import os
 import shutil
 import time
+from concurrent.futures import Executor
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -34,7 +35,7 @@ from .codex_quota import (
     read_codex_quota, account_fingerprint, SOURCE_CODEX_APP_SERVER, QUOTA_REFRESH_SECONDS,
 )
 from .runtime_model import session_with_runtime_model
-from .serial_walker import SerialWalker
+from .workspace_size import REMEASURE_SECONDS, WorkspaceSizes, directory_bytes  # noqa: F401 - directory_bytes re-exported
 from .worktree_files import (
     MAX_OBSERVED_PATHS as MAX_OBSERVED_PATHS_DEFAULT,
     WorktreeObserverCache,
@@ -155,28 +156,27 @@ JOURNAL_NOTICE_KIND = "worker.journal"
 # read controls; wake histories remain in the local shared field and never ride
 # every heartbeat through the Data Bus stream.
 HEARTBEAT_CONTROL_REF_LIMIT = 20
-# W423: how often the relay re-walks an agent's workspace to size it.
-DISK_USAGE_REMEASURE_SECONDS = 900
+# Adapters built without their channel's store executor (tests, one-shot
+# commands) still keep blocking work off the event loop (W461).
+_ADAPTER_EXECUTORS = ChannelExecutors(thread_name_prefix="problem-board-adapter")
 
+# W423: how often the relay re-measures an agent's workspace size (W461:
+# held per path by WorkspaceSizes, which the per-poll adapters share).
+DISK_USAGE_REMEASURE_SECONDS = REMEASURE_SECONDS
 
-# W461: workspace walks run one at a time on their own thread, never on the
-# default executor that the OAuth file locks and DNS lookups share.
-WORKSPACE_WALKER = SerialWalker("problem-board-workspace-walk")
-# A walk this slow is logged at WARNING with its timing.
-WORKSPACE_WALK_SLOW_SECONDS = 10.0
+def _disk_usage_of(workspace: str) -> tuple[Any, str] | None:
+    """``shutil.disk_usage`` and the resolved path of an existing workspace, else None.
 
+    Blocking file-system calls: the caller runs this off the event loop.
+    """
 
-def directory_bytes(root: Path) -> int:
-    """Bytes under ``root``, never following links, skipping what cannot be read."""
+    if not Path(workspace).is_dir():
+        return None
+    try:
+        return shutil.disk_usage(workspace), os.path.realpath(workspace)
+    except OSError:
+        return None
 
-    total = 0
-    for current, _dirs, files in os.walk(root, followlinks=False):
-        for name in files:
-            try:
-                total += (Path(current) / name).lstat().st_size
-            except OSError:
-                pass
-    return total
 
 HEARTBEAT_SESSION_FIELDS = (
     "session_id",
@@ -763,6 +763,9 @@ class ProblemBoardHostRelayAdapter:
         runtime_account_reader: Callable[[], Awaitable[Mapping[str, Any]]] | None = None,
         runtime_account_error_state: dict[str, str] | None = None,
         outbox_drain_lock: asyncio.Lock | None = None,
+        workspace_sizes: WorkspaceSizes | None = None,
+        worktree_observer: WorktreeObserverCache | None = None,
+        store_executor: Executor | None = None,
     ) -> None:
         self.config = config
         self.field = field
@@ -784,7 +787,16 @@ class ProblemBoardHostRelayAdapter:
         # published, so an unchanged set rides no heartbeat.
         self._assignment_files_signatures: dict[str, str] = {}
         self._store_reads_signatures: dict[str, str] = {}
-        self._worktree_observer = WorktreeObserverCache()
+        # Both live as long as the relay, not as long as this adapter:
+        # poll_attendances_once builds a new adapter per project on every
+        # poll, so state kept here alone reset each poll, and every heartbeat
+        # walked the whole workspace and ran git on every worktree (W461).
+        self._worktree_observer = worktree_observer if worktree_observer is not None else WorktreeObserverCache()
+        self._workspace_sizes = workspace_sizes if workspace_sizes is not None else WorkspaceSizes()
+        # This channel's own thread for blocking store and git work (W456,
+        # W461): never the event loop, never the default executor that the
+        # OAuth locks and DNS lookups share.
+        self._store_executor = store_executor or _ADAPTER_EXECUTORS.for_channel(config.worker_name)
         # Child adapters are rebuilt for attended projects every cycle. Share
         # this map with them so each discovery/project scope sends a full
         # session projection once, then omits it until that projection changes.
@@ -3673,13 +3685,15 @@ class ProblemBoardHostRelayAdapter:
         )
         return created, issues
 
-    async def _poll_project_once(
+    def _prepare_project_heartbeat(
         self,
         *,
+        project_ref: str,
         agent_sessions: Sequence[Mapping[str, Any]],
-        force_heartbeat: bool = False,
+        force_heartbeat: bool,
     ) -> dict[str, Any]:
-        project_ref = f"work:project:{self.config.project_id}"
+        """The heartbeat decision and payload: store reads and git, run off the loop (W461)."""
+
         session_delta, session_signature = self._session_report_delta(
             project_ref=project_ref,
             sessions=agent_sessions,
@@ -3709,13 +3723,9 @@ class ProblemBoardHostRelayAdapter:
             )
             <= 0
         )
-        heartbeat_result: dict[str, Any] = {}
-        journal_workspace: dict[str, Any] = {"state": "unchanged"}
-        mailbox_reconciliation: dict[str, Any] = {"state": "unchanged"}
-        assignment_notices_reconciled = 0
-        assignment_reconciliation_issues: list[dict[str, Any]] = []
+        heartbeat_payload: dict[str, Any] = {}
         if heartbeat_sent:
-            heartbeat_payload: dict[str, Any] = {
+            heartbeat_payload = {
                 "availability": "available",
                 "project_ref": project_ref,
             }
@@ -3729,6 +3739,109 @@ class ProblemBoardHostRelayAdapter:
             self._add_alias_request(heartbeat_payload, alias_request)
             self._add_project_record(heartbeat_payload, project_ref)
             self._add_workspace_report(heartbeat_payload, project_ref, workspace_report)
+        return {
+            "session_delta": session_delta,
+            "session_signature": session_signature,
+            "files_signature": files_signature,
+            "store_reads_delta": store_reads_delta,
+            "store_reads_signature": store_reads_signature,
+            "worker_info": worker_info,
+            "alias_request": alias_request,
+            "workspace_report": workspace_report,
+            "heartbeat_sent": heartbeat_sent,
+            "heartbeat_payload": heartbeat_payload,
+        }
+
+    def _record_project_heartbeat_result(
+        self,
+        *,
+        project_ref: str,
+        prepared: Mapping[str, Any],
+        heartbeat_result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Record an answered heartbeat in the field store, off the loop (W461)."""
+
+        session_signature = prepared["session_signature"]
+        files_signature = prepared["files_signature"]
+        store_reads_delta = prepared["store_reads_delta"]
+        store_reads_signature = prepared["store_reads_signature"]
+        worker_info = prepared["worker_info"]
+        alias_request = prepared["alias_request"]
+        workspace_report = prepared["workspace_report"]
+        self._record_project_heartbeat(project_ref)
+        self._record_session_report(
+            project_ref=project_ref,
+            signature=session_signature,
+        )
+        self._assignment_files_signatures[project_ref] = files_signature
+        if store_reads_delta is not None:
+            self._store_reads_signatures[project_ref] = store_reads_signature
+        self._acknowledge_worker_info(worker_info, heartbeat_result)
+        self._acknowledge_alias_request(alias_request, heartbeat_result)
+        self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
+        self._record_attendance_observation(heartbeat_result)
+        self._materialize_attended_project(heartbeat_result)
+        journal_workspace = self._reconcile_journal_binding(heartbeat_result)
+        # The team travels with every project heartbeat so a worker can
+        # address a teammate from its packet without asking the control
+        # plane. Runtime identity, when the board reports it, remains
+        # nested on that authoritative roster. Replacing the snapshot
+        # means an omitted model or account is never inherited or made up.
+        if isinstance(heartbeat_result.get("team"), list):
+            try:
+                self.field.sync_project_team(
+                    self.config.project_id, heartbeat_result["team"]
+                )
+            except DomainError:
+                # The project is not materialized here yet; the next cycle
+                # after its materialize control lands stores the team.
+                pass
+        # Who acts as coordinator now (W313): the holder, not the first
+        # labelled teammate. Absent from a board that predates it.
+        if isinstance(heartbeat_result.get("coordinator"), Mapping):
+            try:
+                self.field.sync_project_coordinator(
+                    self.config.project_id, heartbeat_result["coordinator"]
+                )
+            except DomainError:
+                # Like the team sync: a project not yet on this host keeps
+                # no holder; the next heartbeat after it lands writes one.
+                pass
+        return journal_workspace
+
+    async def _poll_project_once(
+        self,
+        *,
+        agent_sessions: Sequence[Mapping[str, Any]],
+        force_heartbeat: bool = False,
+    ) -> dict[str, Any]:
+        project_ref = f"work:project:{self.config.project_id}"
+        # Everything before the network call reads or writes the shared field
+        # store or runs git: in this channel's own thread, never on the event
+        # loop every channel shares (W461).
+        prepared = await run_off_loop(
+            self._prepare_project_heartbeat,
+            project_ref=project_ref,
+            agent_sessions=agent_sessions,
+            force_heartbeat=force_heartbeat,
+            executor=self._store_executor,
+        )
+        session_delta = prepared["session_delta"]
+        session_signature = prepared["session_signature"]
+        files_signature = prepared["files_signature"]
+        store_reads_delta = prepared["store_reads_delta"]
+        store_reads_signature = prepared["store_reads_signature"]
+        worker_info = prepared["worker_info"]
+        alias_request = prepared["alias_request"]
+        workspace_report = prepared["workspace_report"]
+        heartbeat_sent = prepared["heartbeat_sent"]
+        heartbeat_result: dict[str, Any] = {}
+        journal_workspace: dict[str, Any] = {"state": "unchanged"}
+        mailbox_reconciliation: dict[str, Any] = {"state": "unchanged"}
+        assignment_notices_reconciled = 0
+        assignment_reconciliation_issues: list[dict[str, Any]] = []
+        if heartbeat_sent:
+            heartbeat_payload = prepared["heartbeat_payload"]
             await self._add_disk_usage(heartbeat_payload)
             await self._add_runtime_account(heartbeat_payload)
             try:
@@ -3767,46 +3880,14 @@ class ProblemBoardHostRelayAdapter:
                     "agent_sessions_reported": 0,
                     "journal_workspace": {"state": "waiting_for_link"},
                 }
-            self._record_project_heartbeat(project_ref)
-            self._record_session_report(
-                project_ref=project_ref,
-                signature=session_signature,
-            )
-            self._assignment_files_signatures[project_ref] = files_signature
-            if store_reads_delta is not None:
-                self._store_reads_signatures[project_ref] = store_reads_signature
             heartbeat_result = _object_result(heartbeat_response)
-            self._acknowledge_worker_info(worker_info, heartbeat_result)
-            self._acknowledge_alias_request(alias_request, heartbeat_result)
-            self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
-            self._record_attendance_observation(heartbeat_result)
-            self._materialize_attended_project(heartbeat_result)
-            journal_workspace = self._reconcile_journal_binding(heartbeat_result)
-            # The team travels with every project heartbeat so a worker can
-            # address a teammate from its packet without asking the control
-            # plane. Runtime identity, when the board reports it, remains
-            # nested on that authoritative roster. Replacing the snapshot
-            # means an omitted model or account is never inherited or made up.
-            if isinstance(heartbeat_result.get("team"), list):
-                try:
-                    self.field.sync_project_team(
-                        self.config.project_id, heartbeat_result["team"]
-                    )
-                except DomainError:
-                    # The project is not materialized here yet; the next cycle
-                    # after its materialize control lands stores the team.
-                    pass
-            # Who acts as coordinator now (W313): the holder, not the first
-            # labelled teammate. Absent from a board that predates it.
-            if isinstance(heartbeat_result.get("coordinator"), Mapping):
-                try:
-                    self.field.sync_project_coordinator(
-                        self.config.project_id, heartbeat_result["coordinator"]
-                    )
-                except DomainError:
-                    # Like the team sync: a project not yet on this host keeps
-                    # no holder; the next heartbeat after it lands writes one.
-                    pass
+            journal_workspace = await run_off_loop(
+                self._record_project_heartbeat_result,
+                project_ref=project_ref,
+                prepared=prepared,
+                heartbeat_result=heartbeat_result,
+                executor=self._store_executor,
+            )
             recipients = heartbeat_result.get("mail_recipients")
             if not isinstance(recipients, list):
                 recipients = heartbeat_result.get("team")
@@ -3823,13 +3904,15 @@ class ProblemBoardHostRelayAdapter:
             (
                 assignment_notices_reconciled,
                 assignment_reconciliation_issues,
-            ) = self._reconcile_assignments(heartbeat_result)
+            ) = await run_off_loop(
+                self._reconcile_assignments, heartbeat_result, executor=self._store_executor
+            )
         with self._trace_stage(
             "attendance.controls",
             operation="control.pull",
         ):
             controls = await self._pull_controls()
-        self._report_dead_notification_path()
+        await run_off_loop(self._report_dead_notification_path, executor=self._store_executor)
         outbox = await self._flush_outbox()
         return {
             "worker_name": self.config.worker_name,
@@ -3980,76 +4063,34 @@ class ProblemBoardHostRelayAdapter:
         and total bytes of the workspace's file system are read every beat
         (one statvfs). The workspace's own size walks the tree, which takes
         tens of seconds on a large workspace and is slowest on the nearly full
-        disk this exists for, so the heartbeat never waits for it: the walk
-        runs as a background task at most every DISK_USAGE_REMEASURE_SECONDS,
-        and each beat carries the last measured size, or none until the
-        first measurement lands.
+        disk this exists for, so the heartbeat never waits for it: the
+        relay-wide WorkspaceSizes walks in a child process at most every
+        DISK_USAGE_REMEASURE_SECONDS per path, and each beat carries the last
+        measured size, or none until the first measurement lands.
         """
 
-        workspace = str(getattr(self.config, "workspace", "") or getattr(self.config, "working_directory", "") or "")
-        if not workspace or not Path(workspace).is_dir():
+        # Only the agent's workspace (agent_workspace names it), never the
+        # folder a session happened to start in.
+        workspace = str(getattr(self.config, "workspace", "") or "")
+        if not workspace:
             return
-        try:
-            usage = shutil.disk_usage(workspace)
-        except OSError:
+        measured_path = await run_off_loop(
+            _disk_usage_of, workspace, executor=getattr(self, "_store_executor", None)
+        )
+        if measured_path is None:
             return
-        self._schedule_workspace_measure(workspace)
+        usage, real_path = measured_path
+        # Keyed by the resolved path: one folder spelled two ways is one walk.
+        self._workspace_sizes.schedule(real_path, worker_name=self.config.worker_name)
         report: dict[str, Any] = {
             "host_free_bytes": int(usage.free),
             "host_total_bytes": int(usage.total),
             "workspace_path": workspace,
         }
-        measured = getattr(self, "_workspace_bytes", None)
-        if measured is not None and getattr(self, "_workspace_bytes_path", "") == workspace:
+        measured = self._workspace_sizes.last(real_path)
+        if measured is not None:
             report["workspace_bytes"] = int(measured)
         payload["disk_usage"] = report
-
-    def _schedule_workspace_measure(self, workspace: str) -> None:
-        running = getattr(self, "_workspace_measure_task", None)
-        if running is not None and not running.done():
-            return
-        measured_at = getattr(self, "_workspace_bytes_measured", None)
-        if (
-            measured_at is not None
-            and getattr(self, "_workspace_bytes_path", "") == workspace
-            and time.monotonic() - measured_at < DISK_USAGE_REMEASURE_SECONDS
-        ):
-            return
-
-        async def measure() -> None:
-            queued_at = time.monotonic()
-            queued_behind = WORKSPACE_WALKER.queued()
-            started: list[float] = []
-
-            def walk() -> int:
-                started.append(time.monotonic())
-                return directory_bytes(Path(workspace))
-
-            outcome = "ok"
-            try:
-                size = await WORKSPACE_WALKER.run(walk)
-            except Exception as exc:  # noqa: BLE001 - a failed walk leaves the last size and retries next interval
-                outcome = type(exc).__name__
-                size = getattr(self, "_workspace_bytes", None)
-            ended = time.monotonic()
-            walk_seconds = ended - started[0] if started else 0.0
-            wait_seconds = (started[0] if started else ended) - queued_at
-            logger.log(
-                logging.WARNING if walk_seconds >= WORKSPACE_WALK_SLOW_SECONDS or outcome != "ok" else logging.INFO,
-                "Problem Board workspace size walk worker=%s outcome=%s walk_seconds=%.3f "
-                "queue_wait_seconds=%.3f queued_behind=%d bytes=%s",
-                getattr(self.config, "worker_name", "-"),
-                outcome,
-                walk_seconds,
-                wait_seconds,
-                queued_behind,
-                size if size is not None else "-",
-            )
-            self._workspace_bytes = size
-            self._workspace_bytes_path = workspace
-            self._workspace_bytes_measured = time.monotonic()
-
-        self._workspace_measure_task = asyncio.get_running_loop().create_task(measure())
 
     def _add_workspace_report(self, payload: dict[str, Any], project_ref: str, entry: Mapping[str, Any]) -> None:
         report = entry.get("report") if entry else None
@@ -4219,6 +4260,48 @@ class ProblemBoardHostRelayAdapter:
                 force_heartbeat=True,
             )
 
+    def _prepare_discovery_heartbeat(
+        self, sessions: Sequence[Mapping[str, Any]]
+    ) -> tuple[Any, str, Any, Any, bool, dict[str, Any]]:
+        """The discovery heartbeat decision and payload: store reads, off the loop (W461)."""
+
+        discovery_session_delta, session_signature = self._session_report_delta(
+            project_ref="",
+            sessions=sessions,
+        )
+        worker_info, info_pending = self._worker_info()
+        alias_request, alias_pending = self._alias_request()
+        sent = (
+            not self._attendance_cache.get("initialized")
+            or discovery_session_delta is not None
+            or info_pending
+            or alias_pending
+            or self._discovery_heartbeat_wait(sessions) <= 0
+        )
+        heartbeat_payload: dict[str, Any] = {}
+        if sent:
+            heartbeat_payload = {"availability": "available"}
+            if discovery_session_delta is not None:
+                heartbeat_payload["agent_sessions"] = discovery_session_delta
+            self._add_worker_info(heartbeat_payload, worker_info)
+            self._add_alias_request(heartbeat_payload, alias_request)
+        return discovery_session_delta, session_signature, worker_info, alias_request, sent, heartbeat_payload
+
+    def _record_discovery_heartbeat(
+        self,
+        session_signature: str,
+        worker_info: Any,
+        alias_request: Any,
+        discovery: Mapping[str, Any],
+    ) -> None:
+        """Record an answered discovery heartbeat in the field store, off the loop (W461)."""
+
+        self._record_project_heartbeat("")
+        self._record_session_report(project_ref="", signature=session_signature)
+        self._acknowledge_worker_info(worker_info, discovery)
+        self._acknowledge_alias_request(alias_request, discovery)
+        self._record_attendance_observation(discovery)
+
     async def poll_attendances_once(self) -> dict[str, Any]:
         """Discover and poll the current project of this session-bound worker."""
 
@@ -4227,7 +4310,7 @@ class ProblemBoardHostRelayAdapter:
         )
         if registration is not None and registration["remote"].get("pool_status") == "limbo":
             return await self._limbo_result()
-        sessions = self._listener_sessions()
+        sessions = await run_off_loop(self._listener_sessions, executor=self._store_executor)
         discovery: dict[str, Any] = {}
         discovery_heartbeat_sent = False
         discovery_session_delta: list[dict[str, Any]] | None = None
@@ -4239,25 +4322,17 @@ class ProblemBoardHostRelayAdapter:
             # known, its heartbeat refreshes the same authoritative snapshot.
             # An unrelated Data Bus push still starts a control reconciliation,
             # but it does not make unchanged discovery presence due.
-            discovery_session_delta, session_signature = self._session_report_delta(
-                project_ref="",
-                sessions=sessions,
-            )
-            worker_info, info_pending = self._worker_info()
-            alias_request, alias_pending = self._alias_request()
-            discovery_heartbeat_sent = (
-                not self._attendance_cache.get("initialized")
-                or discovery_session_delta is not None
-                or info_pending
-                or alias_pending
-                or self._discovery_heartbeat_wait(sessions) <= 0
+            (
+                discovery_session_delta,
+                session_signature,
+                worker_info,
+                alias_request,
+                discovery_heartbeat_sent,
+                heartbeat_payload,
+            ) = await run_off_loop(
+                self._prepare_discovery_heartbeat, sessions, executor=self._store_executor
             )
             if discovery_heartbeat_sent:
-                heartbeat_payload: dict[str, Any] = {"availability": "available"}
-                if discovery_session_delta is not None:
-                    heartbeat_payload["agent_sessions"] = discovery_session_delta
-                self._add_worker_info(heartbeat_payload, worker_info)
-                self._add_alias_request(heartbeat_payload, alias_request)
                 with self._trace_stage(
                     "attendance.heartbeat",
                     operation="worker.heartbeat.discovery",
@@ -4270,14 +4345,14 @@ class ProblemBoardHostRelayAdapter:
                     and republished["remote"].get("pool_status") == "limbo"
                 ):
                     return await self._limbo_result()
-                self._record_project_heartbeat("")
-                self._record_session_report(
-                    project_ref="",
-                    signature=session_signature,
+                await run_off_loop(
+                    self._record_discovery_heartbeat,
+                    session_signature,
+                    worker_info,
+                    alias_request,
+                    discovery,
+                    executor=self._store_executor,
                 )
-                self._acknowledge_worker_info(worker_info, discovery)
-                self._acknowledge_alias_request(alias_request, discovery)
-                self._record_attendance_observation(discovery)
         with self._trace_stage(
             "attendance.controls",
             operation="control.pull.discovery",
@@ -4310,6 +4385,9 @@ class ProblemBoardHostRelayAdapter:
                 runtime_account_reader=self._runtime_account_reader,
                 runtime_account_error_state=self._runtime_account_error_state,
                 outbox_drain_lock=self._outbox_drain_lock,
+                workspace_sizes=self._workspace_sizes,
+                worktree_observer=self._worktree_observer,
+                store_executor=self._store_executor,
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -4319,9 +4397,11 @@ class ProblemBoardHostRelayAdapter:
             for item in self._attendance_cache.get("items") or []
             if isinstance(item, Mapping) and item.get("project_ref")
         ]
-        self.field.sync_worker_attendances(
+        await run_off_loop(
+            self.field.sync_worker_attendances,
             self.config.worker_name,
             [str(item["project_ref"]) for item in observed_attendances],
+            executor=self._store_executor,
         )
         worker_alias = str(
             self._attendance_cache.get("worker_alias")
@@ -4565,6 +4645,9 @@ class ProblemBoardRelaySupervisor:
         self.connector = connector
         # How often the gateway may be called, per host and per channel
         # (local/relay_pacing.py). Kept beside the host config.
+        # One workspace-size registry for every channel on this host: one walk
+        # at a time, once per interval per path, in a child process (W461).
+        self._workspace_sizes = WorkspaceSizes()
         self._pacing = pacing or RelayPacing(
             self.config_path.parent / PACING_FILENAME, forget_permanent=True
         )
@@ -5596,6 +5679,8 @@ class ProblemBoardRelaySupervisor:
                 outbox_drain_lock=self._outbox_drain_lock(
                     channel.worker_name
                 ),
+                workspace_sizes=self._workspace_sizes,
+                store_executor=self._store_executors.for_channel(channel.worker_name),
             )
         except BaseException as exc:
             self._pacing.record_attempt_ended(channel.worker_name)
@@ -6843,7 +6928,7 @@ class ProblemBoardRelaySupervisor:
 
         while True:
             try:
-                self.serve_coordinate_once()
+                await self.serve_coordinate_pass()
             except Exception:  # noqa: BLE001 - the next pass retries
                 logger.warning("Problem Board coordinate server pass failed", exc_info=True)
             await asyncio.sleep(self.COORDINATE_SERVE_INTERVAL_SECONDS)
@@ -6855,11 +6940,64 @@ class ProblemBoardRelaySupervisor:
         open session is left to the cycle. A retained connected session with
         unknown delivery may recover before periodic backoff, but its live
         channel/Card fences still apply; unavailable transport remains fenced.
+        This form reads files inline, for tests and one-shot callers; the
+        relay's own loop runs ``serve_coordinate_pass``.
         """
 
         host = HostRelayConfig.load(self.config_path)
-        queue = CoordinateQueue(host.field_root)
-        started: list[str] = []
+        return self._start_coordinate_drains(
+            host, self._coordinate_ready(host, self._coordinate_candidates(host))
+        )
+
+    async def serve_coordinate_pass(self) -> list[str]:
+        """``serve_coordinate_once`` with every file read off the event loop (W461).
+
+        It runs every 0.25 s for every channel. Inline, its host config read
+        and request-queue globs were the most frequent relay loop block on
+        2026-10-02 (51 of 128 before the upgrade).
+        """
+
+        executor = self._store_executors.for_channel("coordinate-server")
+        host = await run_off_loop(HostRelayConfig.load, self.config_path, executor=executor)
+        candidates = self._coordinate_candidates(host)
+        if not candidates:
+            return []
+        ready = await run_off_loop(self._coordinate_ready, host, candidates, executor=executor)
+        # A session may have closed, been replaced or had its Card replaced
+        # while the files were read. The loop state is checked again here; the
+        # Card is read once more off the loop, and only what still matches is
+        # dispatched in the same loop step as that answer (W461 review P1).
+        ready = self._still_coordinate_candidates(host, ready)
+        if not ready:
+            return []
+        bound = await run_off_loop(self._coordinate_cards_match, host, ready, executor=executor)
+        return self._start_coordinate_drains(
+            host,
+            [(name, session) for name, session in self._still_coordinate_candidates(host, ready) if name in bound],
+        )
+
+    def _still_coordinate_candidates(
+        self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> list[tuple[str, "_ChannelSession"]]:
+        still = {name: session for name, session in self._coordinate_candidates(host)}
+        return [(name, session) for name, session in ready if still.get(name) is session]
+
+    def _coordinate_cards_match(
+        self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> set[str]:
+        """Names whose session still matches its channel and current Card; reads the profile record."""
+
+        channels = {channel.worker_name: channel for channel in host.workers}
+        return {
+            name
+            for name, session in ready
+            if self._session_matches(host, channels[name], session, require_card=True)
+        }
+
+    def _coordinate_candidates(self, host: HostRelayConfig) -> list[tuple[str, "_ChannelSession"]]:
+        """Channels whose open session may carry a coordinate drain now; loop state only."""
+
+        candidates: list[tuple[str, _ChannelSession]] = []
         for channel in host.workers:
             name = channel.worker_name
             if channel.state != "active" or name in self._coordinate_draining:
@@ -6873,18 +7011,47 @@ class ProblemBoardRelaySupervisor:
                 name, connected=bool(getattr(session.adapter.client, "connected", False))
             ):
                 continue
+            candidates.append((name, session))
+        return candidates
+
+    def _coordinate_ready(
+        self, host: HostRelayConfig, candidates: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> list[tuple[str, "_ChannelSession"]]:
+        """The candidates with ready requests whose session matches its channel and Card.
+
+        Reads files: the request queue, then the profile record. Only the
+        session opened for this exact channel and Card may carry its
+        requests. During a replacement the cached session can still belong to
+        the old one; the cycle drops and reopens it before its own drain, and
+        until then the requests wait. The Card is read only when there is
+        work to carry.
+        """
+
+        queue = CoordinateQueue(host.field_root)
+        channels = {channel.worker_name: channel for channel in host.workers}
+        # Runs in the coordinate-server thread and reads the loop-owned session
+        # attributes (closing, profile, Card fingerprint): plain attribute
+        # reads under the GIL, and the loop re-checks that each session is
+        # still the same before it starts a drain.
+        ready: list[tuple[str, _ChannelSession]] = []
+        for name, session in candidates:
             if not queue.has_ready_work(worker_names=[name]):
                 continue
-            # Only the session opened for this exact channel and Card may
-            # carry its requests. During a replacement the cached session can
-            # still belong to the old one; the cycle drops and reopens it
-            # before its own drain, and until then the requests wait. The
-            # check reads the profile record, so it runs only when there is
-            # work to carry.
-            if not self._session_matches(host, channel, session, require_card=True):
+            if not self._session_matches(host, channels[name], session, require_card=True):
+                continue
+            ready.append((name, session))
+        return ready
+
+    def _start_coordinate_drains(
+        self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> list[str]:
+        channels = {channel.worker_name: channel for channel in host.workers}
+        started: list[str] = []
+        for name, session in ready:
+            if name in self._coordinate_draining:
                 continue
             task = asyncio.create_task(
-                self._drain_coordinate_beside_cycle(host, channel, session),
+                self._drain_coordinate_beside_cycle(host, channels[name], session),
                 name=f"problem-board-coordinate-{name}",
             )
             self._coordinate_draining[name] = task
@@ -6898,6 +7065,25 @@ class ProblemBoardRelaySupervisor:
         session: _ChannelSession,
     ) -> None:
         try:
+            # The Card is checked again here, as the drain's first step: the
+            # pass that started it read the Card in a thread, and a Card
+            # replaced between that read and this task would otherwise carry
+            # requests under the old one (W461 review). Off the loop, fail
+            # closed: a mismatch leaves the requests to the cycle.
+            still_bound = await run_off_loop(
+                self._session_matches,
+                host,
+                channel,
+                session,
+                require_card=True,
+                executor=self._store_executors.for_channel("coordinate-server"),
+            )
+            if not still_bound:
+                logger.info(
+                    "Problem Board coordinate drain beside the cycle skipped worker=%s reason=card_changed",
+                    channel.worker_name,
+                )
+                return
             await self._drain_coordinate_for_worker(host, channel, session)
         except asyncio.CancelledError:
             raise

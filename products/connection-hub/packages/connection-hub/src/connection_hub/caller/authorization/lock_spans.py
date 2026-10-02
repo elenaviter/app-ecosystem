@@ -79,7 +79,7 @@ def record(
     logger.log(
         level,
         "Connection Hub OAuth span kind=%s operation=%s profile=%s outcome=%s "
-        "wait_ms=%s hold_ms=%s pid=%d task=%s",
+        "wait_ms=%s hold_ms=%s pid=%d task=%s corr=%s",
         kind,
         operation or "-",
         profile_tag(profile_name),
@@ -88,7 +88,20 @@ def record(
         _ms(hold_seconds),
         os.getpid(),
         task_tag or _task_tag(),
+        _correlation(),
     )
+
+
+# The opaque task tag, also for the OAuth request records.
+task_tag = _task_tag
+
+
+def _correlation() -> str:
+    """The token operation's correlation (request_records), shared with its HTTP request records."""
+
+    from connection_hub.caller.authorization import request_records
+
+    return request_records.current()[1]
 
 
 def watch_hold(
