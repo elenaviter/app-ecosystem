@@ -120,6 +120,14 @@ _PENDING_REPLACEMENTS: dict[
 _CUSTODY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="connection-hub-custody")
 _T = TypeVar("_T")
 
+
+class _CancelledAfterFailure(asyncio.CancelledError):
+    """A cancellation raised after a custody call that failed; ``failure`` is that call's exception."""
+
+    def __init__(self, failure: BaseException) -> None:
+        super().__init__()
+        self.failure = failure
+
 _UNSPLIT_REFRESHES: set[asyncio.Future] = set()
 
 
@@ -305,6 +313,12 @@ class OAuthProfileSessionService:
                 # cancellation only after both are stored or both rolled back,
                 # never a stored credential without its profile (W461 review).
                 await self._in_custody(self._store_new_profile, profile, bound_token)
+            except _CancelledAfterFailure:
+                # Cancelled while the commit failed and rolled back: the grant
+                # the server issued is recorded nowhere, so it is revoked
+                # before the cancellation goes on.
+                await self._revoke_grant(grant)
+                raise
             except Exception:
                 await self._revoke_grant(grant)
                 raise
@@ -1215,8 +1229,12 @@ class OAuthProfileSessionService:
                     await asyncio.wait({future})
                 except asyncio.CancelledError:
                     continue
-            if not future.cancelled():
-                future.exception()
+            failure = None if future.cancelled() else future.exception()
+            if failure is not None:
+                # The caller is cancelled and the call failed: the failure is
+                # not dropped, the caller can still run its failure cleanup
+                # (W461 review: a failed profile commit must revoke its grant).
+                raise _CancelledAfterFailure(failure) from failure
             raise
 
     def _load_token(self, profile: CallerProfile) -> OAuthTokenSet:
