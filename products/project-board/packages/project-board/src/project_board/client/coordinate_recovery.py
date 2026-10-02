@@ -113,6 +113,38 @@ class CoordinateRecovery:
             return None
         return dict(record)
 
+    def lookup_existing(
+        self, worker_name: str, key: str, *, action: str,
+        object_ref: str, payload: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """Read only an existing exact request, without reserving or pruning.
+
+        Receipt recovery is local and remains available during a reconnect.
+        It must not allocate a key for work the channel cannot yet admit.
+        Expired records remain subject to the usual retention boundary.
+        """
+        path = self._path(worker_name, key)
+        if not path.parent.exists():
+            return None
+        with exclusive_lock(self._lock(worker_name)):
+            try:
+                if path.stat().st_mtime < time.time() - RECOVERY_RETENTION_SECONDS:
+                    return None
+            except FileNotFoundError:
+                return None
+            prior = self.read(worker_name, key)
+            if prior is None:
+                return None
+            request_hash = coordinate_request_hash(action, object_ref, payload)
+            if prior.get("request_hash") != request_hash:
+                raise idempotency_key_reused(key, prior)
+            if (
+                prior.get("action") != action or prior.get("object_ref") != object_ref
+                or prior.get("payload") != dict(payload)
+            ):
+                raise idempotency_key_reused(key, prior)
+            return prior
+
     def reserve(
         self,
         worker_name: str,
@@ -269,12 +301,15 @@ class CoordinateRecovery:
         outcome: str,
         *,
         receipt: Mapping[str, Any] | None = None,
+        expected_request_hash: str = "",
     ) -> dict[str, Any] | None:
         """Record one attempt's outcome and decide the key, under the lock.
 
         ``outcome`` is ``applied`` (with its receipt), ``refused``,
         ``not_sent`` or ``unknown``. Returns the record, or None once every
         attempt is proved to have had no effect and the key is released.
+        Late recovery supplies its original hash and request id; a released
+        and reused key cannot acquire the old request's answer.
         """
 
         if outcome not in ATTEMPT_OUTCOMES:
@@ -283,6 +318,15 @@ class CoordinateRecovery:
             record = self.read(worker_name, key)
             if record is None:
                 return None
+            if expected_request_hash:
+                if record.get("request_hash") != expected_request_hash:
+                    raise idempotency_key_reused(key, record)
+                if request_id not in record.get("request_ids", []):
+                    raise DomainError(
+                        "work_coordinate_recovery_missing",
+                        "The recovered response is not an attempt of the current exact request.",
+                        status=409,
+                    )
             attempts = _attempts(record)
             if request_id:
                 attempts[request_id] = outcome
@@ -345,14 +389,17 @@ def error_outcome(error: DomainError) -> str:
     ``not_sent``: this request id never reached the service. ``refused``: the
     service answered with a domain refusal, so nothing applied under the key.
     ``unknown``: anything else, including a claimed request that expired, a
-    transport failure, a result too large to queue, an invalid or missing
-    result, and a server error. Only proof frees a key; the default keeps it.
+    transport failure, a result too large to queue, an invalid, missing or
+    mixed result, and a server error. Only proof frees a key; the default keeps it.
     """
 
     code = str(error.code or "")
     if code in NOT_SENT_CODES:
         return "not_sent"
-    if not code or code == "domain_error" or code.startswith(("data_bus_", "work_coordinate_")):
+    if (
+        not code or code in {"domain_error", "work_operation_mixed"}
+        or code.startswith(("data_bus_", "work_coordinate_"))
+    ):
         return "unknown"
     return "refused" if 400 <= int(error.status or 0) < 500 else "unknown"
 
