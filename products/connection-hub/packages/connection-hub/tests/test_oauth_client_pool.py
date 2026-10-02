@@ -61,3 +61,31 @@ def test_an_injected_transport_keeps_a_client_per_request(monkeypatch):
         transport=httpx2.MockTransport(lambda request: httpx2.Response(200, json={})), timeout_seconds=2
     )
     assert asyncio.run(transport.get_json("https://hub.example/a")) == {}
+
+
+def test_the_shared_client_carries_no_cookie_from_one_request_to_the_next(monkeypatch):
+    """Ops on PR 439: one client serves every profile on the loop, so it must keep no cookie."""
+
+    sent_cookies: list[str] = []
+
+    def handler(request):
+        sent_cookies.append(request.headers.get("cookie", ""))
+        return httpx2.Response(200, json={}, headers={"set-cookie": "sess=profileA; Path=/"})
+
+    real_new = client_pool._new_pooled_client
+
+    def new_client():
+        client = real_new()
+        client._transport = httpx2.MockTransport(handler)
+        return client
+
+    monkeypatch.setattr(client_pool, "_new_pooled_client", new_client)
+    monkeypatch.setattr(client_pool, "_CLIENTS", __import__("weakref").WeakKeyDictionary())
+    transport = discovery.HttpxOAuthTransport(timeout_seconds=2)
+
+    async def scenario():
+        await transport.get_json("https://hub.example/a")
+        await transport.get_json("https://hub.example/b")
+
+    asyncio.run(scenario())
+    assert sent_cookies == ["", ""], "a cookie set by one response rode the next request"

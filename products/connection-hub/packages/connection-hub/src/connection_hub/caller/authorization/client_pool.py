@@ -9,13 +9,17 @@ reaches Connection Hub as any client does), so the remedy is reuse: one
 client, with keep-alive connections, per running event loop.
 
 A caller that injects its own transport (tests) keeps a client of its own
-per request, as before.
+per request, as before. The shared client keeps no cookies, so nothing one
+identity's response sets reaches another identity's request. It is not
+closed explicitly: it lives as long as its event loop, and a one-shot
+command's loop ends with the process.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import http.cookiejar
 import weakref
 from typing import Any, AsyncIterator
 
@@ -27,12 +31,22 @@ MAX_KEEPALIVE_CONNECTIONS = 20
 _CLIENTS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, Any]" = weakref.WeakKeyDictionary()
 
 
+def _no_cookies() -> http.cookiejar.CookieJar:
+    """A cookie jar that accepts no cookie from any domain."""
+
+    return http.cookiejar.CookieJar(policy=http.cookiejar.DefaultCookiePolicy(allowed_domains=[]))
+
+
 def _new_pooled_client() -> Any:
     import httpx2
 
     return httpx2.AsyncClient(
         follow_redirects=False,
         trust_env=False,
+        # The client is shared by every profile, account and host on the
+        # loop: a cookie one response sets must never ride another identity's
+        # request (W461 review), so the jar stores nothing.
+        cookies=_no_cookies(),
         limits=httpx2.Limits(
             max_keepalive_connections=MAX_KEEPALIVE_CONNECTIONS,
             keepalive_expiry=KEEPALIVE_SECONDS,
