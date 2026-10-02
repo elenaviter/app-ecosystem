@@ -1286,5 +1286,39 @@ async def test_a_transport_failure_logs_its_exception_chain_without_urls(caplog)
     (line,) = [r.getMessage() for r in caplog.records if "event=connect_failed" in r.getMessage()]
     assert "transport_failed=true" in line
     assert "error_chain=socketio.ConnectionError>engineio.ConnectionError>socket.gaierror" in line
-    assert "nodename nor servname provided" in line
-    assert "secret-host" not in line and "CANARY" not in line and "<url>" in line
+    assert "error_errno=8 error_status=-" in line
+    assert "secret-host" not in line and "CANARY" not in line and "nodename" not in line
+
+
+class _SecretEchoSocket(_Socket):
+    """An ingress answer whose text carries a credential and a body."""
+
+    async def connect(self, *args: Any, **kwargs: Any) -> None:
+        import engineio.exceptions
+        from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+        secret = 'Unexpected status code 401 in server response Authorization: Bearer synthetic-secret-canary {"access_token": "tok-canary"}'
+        try:
+            raise engineio.exceptions.ConnectionError(secret)
+        except engineio.exceptions.ConnectionError as exc:
+            await self.handlers["connect_error"]("Connection error")
+            raise SocketIOConnectionError("Connection error") from exc
+
+
+@pytest.mark.asyncio
+async def test_failure_text_is_never_copied_only_the_status_digits(caplog) -> None:
+    import logging
+
+    from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+    echo = _SecretEchoSocket()
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example", credential=_claim(), socket_factory=lambda: echo
+    )
+    with caplog.at_level(logging.WARNING, logger="app_foundation.data_bus.client"):
+        with pytest.raises(SocketIOConnectionError):
+            await client.connect()
+    text = "\n".join(r.getMessage() for r in caplog.records)
+    assert "error_status=401" in text
+    for canary in ("synthetic-secret-canary", "tok-canary", "Authorization", "access_token"):
+        assert canary not in text

@@ -85,7 +85,7 @@ def _transport_failed(error: BaseException) -> bool:
     return False
 
 
-_URL = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>]+")
+_STATUS_CODE = re.compile(r"\bstatus code (\d{3})\b")
 
 
 def _failure_chain(error: BaseException) -> str:
@@ -104,20 +104,35 @@ def _failure_chain(error: BaseException) -> str:
     return ">".join(f"{type(item).__module__.split('.')[0]}.{type(item).__name__}" for item in seen)
 
 
-def _failure_text(error: BaseException) -> str:
-    """The innermost message, URLs removed and bounded: it may carry a host."""
+def _failure_facts(error: BaseException) -> str:
+    """Safe, allowlisted facts about a failure chain (W461).
 
-    current: BaseException = error
+    Exception text can carry hosts, headers or response bodies, so none of it
+    is copied. What is kept: the first OS error number in the chain, and an
+    HTTP status, read from a ``status``/``status_code`` attribute or from
+    engine.io's "status code NNN" phrase (only the three digits).
+    """
+
+    errno_value = "-"
+    status = "-"
     seen: list[BaseException] = []
-    while current not in seen and len(seen) < 8:
+    current: BaseException | None = error
+    while current is not None and current not in seen and len(seen) < 8:
         seen.append(current)
-        nested = current.__cause__ or current.__context__
-        if nested is None:
-            break
-        current = nested
-    text = _URL.sub("<url>", " ".join(str(current).split()))
-    return text[:200] or "-"
-
+        if errno_value == "-" and isinstance(current, OSError) and isinstance(current.errno, int):
+            errno_value = str(current.errno)
+        if status == "-":
+            for name in ("status", "status_code"):
+                value = getattr(current, name, None)
+                if isinstance(value, int) and 100 <= value <= 599:
+                    status = str(value)
+                    break
+            else:
+                match = _STATUS_CODE.search(" ".join(str(arg) for arg in current.args if isinstance(arg, str)))
+                if match:
+                    status = match.group(1)
+        current = current.__cause__ or current.__context__
+    return f"error_errno={errno_value} error_status={status}"
 
 def _refusal_payload(value: Any) -> dict[str, Any]:
     """The server's refusal as a flat mapping: message, and a code when it sent one.
@@ -731,12 +746,12 @@ class FederatedDataBusClient:
             self._deactivate_socket(socket, socket_token)
             logger.warning(
                 "Data Bus socket lifecycle event=connect_failed attempted_generation=%d "
-                "transport_failed=%s refusal=%s error_chain=%s error_text=%r%s",
+                "transport_failed=%s refusal=%s error_chain=%s %s%s",
                 self._connection_generation + 1,
                 str(_transport_failed(exc)).lower(),
                 str(refusal is not None).lower(),
                 _failure_chain(exc),
-                _failure_text(exc),
+                _failure_facts(exc),
                 self._lifecycle_log_suffix(),
             )
             if refusal is None or _transport_failed(exc):
