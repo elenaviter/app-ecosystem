@@ -726,7 +726,7 @@ def test_operator_runtime_and_conduct_rules() -> None:
     assert "before one hour passes during active work without a visible update" in words
     assert "question blocked decision delivery_failed progress reply update result" in words
     assert "work_mail_kind_invalid" in skill
-    assert "executed by the coordinator" in words
+    assert "decided and proven by the coordinator and executed by the delegates it names" in words
     assert "A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves" in words
     assert "A container-local patch is not an action this team has" in words
     assert "(references/runtime-actions.md)" in skill and "(references/test-window.md)" in skill
@@ -1291,7 +1291,7 @@ def test_an_agent_searches_the_plan_and_the_journal_before_acting_on_a_subject()
     # followed a stale runbook and missed the host's own record, although both
     # were in the journal. The search existed, and no step told an agent to run it.
     skill = _words(_read("SKILL.md"))
-    assert "Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it" in skill
+    assert "When you start work on a named subject (a host, a feature, an item), search once for what the project already knows about it, not again at every step of the same task" in skill
     assert "`project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend" in skill
     assert "For the subject of the task, search the plan and the journal (Choose A Relevant Next Action)." in skill
 
@@ -2358,12 +2358,15 @@ def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
     assert "never an idle wait, an invented role or a kept stale tree" in collaboration
     assert "**An unclear assignment is a question, not an idle state.**" in coordinator
     assert "after a resume or a compaction, once per native wake batch, and periodically while it works" in coordinator
-    assert "mirror it in a note on the item and in the mail that routes it" in coordinator
+    assert "state it in the item's description too, and repeat it in the mail that routes it" in coordinator
     assert "and at its safe checkpoints" not in coordinator
     # Operator, 13:07Z: a fresh scheduling table before dispatch and on exhaustion.
-    assert "## Read the scheduling table before you dispatch" in _read("references/coordinator.md")
+    assert "## Plan every batch with a roles table, and dispatch from it" in _read("references/coordinator.md")
     assert "Dispatch from that table, not from memory." in coordinator
-    assert "and at each work boundary while work is active (at least every announcement interval), read a fresh table" in coordinator
+    # W455 correction 4: no whole-team read at every boundary; update on material change and every 2 hours.
+    assert "Update both when a fact in a row changes materially" in coordinator
+    assert "at least every 2 hours while the batch is active" in coordinator
+    assert "do not poll the whole team at each step" in coordinator
     assert "A worker at its limit, or whose wakes are held, does not keep an actionable review or other work someone waits on" in coordinator
 
 
@@ -2451,5 +2454,62 @@ def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
     assert "a worker refresh removes those four when they were ticked by hand" in identity
     assert "until W420's resource-scoped apply is live" in identity
     # Scheduling table: ownership age and reason, next action, utilization from receipts.
-    assert "how long it has been with its assignee and why, and the next action with who takes it" in coordinator
-    assert "Count utilization from receipts (a STARTED, a report, a review verdict), never from mail you queued" in coordinator
+    assert "| Next action or handoff | what this row does next, and to whom it hands over |" in coordinator
+    assert "Count utilization from these receipts, never from mail you queued" in coordinator
+
+
+def test_the_w455_amendment_carries_the_batch_table_and_the_seven_corrections() -> None:
+    """W455 (operator, 2026-10-02): one amendment for the roles table and the seven audit corrections."""
+
+    coordinator = _words(_read("references/coordinator.md"))
+    collaboration = _words(_read("references/collaboration.md"))
+    skill = _words(_read("SKILL.md"))
+    # Batch roles table: columns, evidence states, where it lives, cadence.
+    assert "## Plan every batch with a roles table, and dispatch from it" in _read("references/coordinator.md")
+    for column in ("| Agent and machine |", "| Item and phase |", "| Capacity |", "| State |", "| Next action or handoff |", "| Blocker |", "| Checkpoint |"):
+        assert column in coordinator
+    assert "one of requested, queued, READY, START, done, verified" in coordinator
+    assert "Keep the full table on the batch's work item and a compact one" in coordinator
+    # 1. The coordinator decides and proves; named delegates execute.
+    assert "you own the decisions and the proof, and named delegates do the mechanics" in coordinator
+    assert "Reuse an independent reviewer's or gate's evidence on the exact source instead of rerunning unchanged suites" in coordinator
+    assert "decided and proven by the coordinator and executed by the delegates it names" in skill
+    # 2 and 6. The communication chain and the incident roles.
+    for step in ("A reproducible failure", "The missing instrumentation", "A reviewed fix", "The deployment", "A controlled experiment", "The remaining failures"):
+        assert step in coordinator
+    for role in ("One incident lead", "Complementary diagnostic owners", "One independent verifier", "One author per source change"):
+        assert role in coordinator
+    assert "without waiting for your acknowledgement" in coordinator
+    # 3. One release manifest.
+    assert "One release manifest per batch." in coordinator
+    assert "the batch deploys once, not once per item" in coordinator
+    # 4. Targeted reads, no whole-team read at every step.
+    assert "It does not re-read every pool at every small step." in coordinator
+    assert "search once for what the project already knows about it, not again at every step of the same task" in skill
+    # 5. Current instructions in the description or task; notes are history.
+    assert "The current instruction lives in the item's description or task; notes are the history." in coordinator
+    assert "Worker Cards do not grant `plan.notes.list`" not in coordinator
+    # Steady state after a relay activation.
+    assert "compare the relay log with the same length of log before it" in coordinator
+    assert "A periodic job that runs more often than designed" in coordinator
+    # A newly added await is reviewed around it.
+    assert "is reviewed around that await, not only in the helper" in collaboration
+    assert "`CancelledError` is not an `Exception`" in collaboration
+
+
+def test_an_operator_restriction_reaches_the_card_before_the_coordinator_routes_from_it() -> None:
+    """W413 (approved intent, adapted to info write/show and the restriction-first line)."""
+
+    coordinator = _words(_read("references/coordinator.md"))
+    route = coordinator[coordinator.index("## Route 0."):coordinator.index("1. Need, then discussion")]
+    assert "**Carry an operator restriction to the card before routing from it.**" in route
+    assert "Record the ruling in the project Facts" in route
+    assert "publish the exact restriction with `pb worker info write`" in route
+    assert "A paused worker is not woken for this" in route
+    assert "`pb worker info show` with `on_board = True`" in route
+    assert "fresh `pb worker context` team shows the same `info_text`" in route
+    assert "The restriction stays first on the line and every status rewrite keeps it" in route
+    assert "this was an execution failure" in route
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "### The info line" in _read("references/collaboration.md")
+    assert "says `on_board = True` once the board has it" in collaboration

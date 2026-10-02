@@ -358,6 +358,17 @@ is a verification. One that stops at printing JSON is a report.
    A suite that never puts two entry points in one test proves nothing
    about their interaction (round 1, finding seven: the side-server drain
    guard was tested side against side, and the cycle path bypassed it).
+   A change that puts an `await` where there was none (blocking work moved to
+   a thread, an executor or a child process) is reviewed around that await,
+   not only in the helper. Every condition checked before it that the code
+   after it relies on is checked again after it. Every multi-step write it
+   now splits either completes as one step or rolls back when the caller is
+   cancelled, and a failure under cancellation still reaches its cleanup:
+   `CancelledError` is not an `Exception`, so `except Exception` cleanup does
+   not run. Ask for a test that changes the state, or cancels, at that await.
+   Why: on 2026-10-02 two such awaits in one branch let a replaced Card still
+   dispatch and left a stored credential without its profile and an
+   unrevoked grant; the helper tests passed both times (W461).
    The counts are what the tool said, not what the shell returned: the
    report carries pytest's own summary line verbatim for each suite, from
    the run at that head, and the author checks pytest's exit status, never
