@@ -170,6 +170,17 @@ def _next_step(state: str, *, config: str, relay: Mapping[str, Any], session: Ma
         }
     if state == SESSION_RECONNECTING and session is not None:
         connection = dict(session.get("connection") or {})
+        if connection.get("attempt_in_progress") is True:
+            # W461: the scheduled time has passed while the attempt runs.
+            when = (
+                "Its attempt has been running since "
+                f"{connection.get('attempt_started_at') or 'just now'}."
+            )
+        else:
+            when = (
+                "It retries on its own at "
+                f"{connection.get('next_attempt_at') or 'its next cycle'}."
+            )
         return {
             "step": "wait_for_reconnect",
             "command": "",
@@ -177,8 +188,7 @@ def _next_step(state: str, *, config: str, relay: Mapping[str, Any], session: Ma
             "explain": (
                 "The relay is reconnecting this channel after "
                 f"{connection.get('reason') or 'a failure'} (attempt "
-                f"{connection.get('attempts') or 0}). It retries on its own at "
-                f"{connection.get('next_attempt_at') or 'its next cycle'}. Until then "
+                f"{connection.get('attempts') or 0}). {when} Until then "
                 "pb coordinate refuses at once with work_coordinate_channel_reconnecting. "
                 "This does not indicate that re-authorization is needed."
             ),

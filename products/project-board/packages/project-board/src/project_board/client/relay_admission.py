@@ -77,6 +77,11 @@ RUNTIME_UNAVAILABLE_CODES = frozenset(
     {
         "oauth_challenge_not_advertised",
         "oauth_mcp_endpoint_unreachable",
+        # Every metadata candidate answered that the document is not there.
+        # The deployment is not serving its metadata (the same ingress 404),
+        # which refuses nothing about this credential: a pending channel keeps
+        # retrying rather than parking (W461, 2026-10-02).
+        "oauth_resource_metadata_unavailable",
         # The profile store lock is held across the token refresh. When the
         # runtime is down, the first channel to open holds it through a hung
         # refresh and every sibling times out on the lock after ten seconds:
