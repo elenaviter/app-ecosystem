@@ -300,12 +300,11 @@ class OAuthProfileSessionService:
                     endpoint=profile.endpoint,
                     bearer=bound_token.access_token,
                 )
-                await self._in_custody(self._credentials.put, profile.credential_ref, bound_token)
-                try:
-                    self._profiles.add(profile)
-                except Exception:
-                    await self._in_custody(self._credentials.remove, profile.credential_ref)
-                    raise
+                # The credential and its profile are one commit, run as one
+                # custody call: a caller cancelled while it runs gets the
+                # cancellation only after both are stored or both rolled back,
+                # never a stored credential without its profile (W461 review).
+                await self._in_custody(self._store_new_profile, profile, bound_token)
             except Exception:
                 await self._revoke_grant(grant)
                 raise
@@ -1173,6 +1172,16 @@ class OAuthProfileSessionService:
                 "A connector OAuth profile requires its protected resource.",
             )
         return replace(metadata, card_kind=card_kind)
+
+    def _store_new_profile(self, profile: CallerProfile, token: OAuthTokenSet) -> None:
+        """Store a new profile's credential, then the profile; roll the credential back if the profile fails."""
+
+        self._credentials.put(profile.credential_ref, token)
+        try:
+            self._profiles.add(profile)
+        except BaseException:
+            self._credentials.remove(profile.credential_ref)
+            raise
 
     @staticmethod
     async def _in_custody(call: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:

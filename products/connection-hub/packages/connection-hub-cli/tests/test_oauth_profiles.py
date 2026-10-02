@@ -1445,3 +1445,35 @@ async def test_a_stopping_process_drains_a_refresh_in_flight(tmp_path) -> None:
 
     assert await drain_pending_refreshes(timeout_seconds=2.0) == 0
     assert credentials.values[profile.credential_ref].refresh_token == "rotated-refresh"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_authorize_while_the_credential_is_written_leaves_it_with_its_profile(tmp_path) -> None:
+    """W461 review: the credential and its profile are one commit, a cancellation never splits them."""
+
+    import threading
+
+    service, profiles, credentials = _service(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    real_put = credentials.put
+
+    def held_put(credential_ref, token):
+        if token == _token():
+            entered.set()
+            release.wait(2)
+        real_put(credential_ref, token)
+
+    credentials.put = held_put
+    task = asyncio.create_task(service.authorize(name="agent", endpoint=ENDPOINT))
+    assert await asyncio.to_thread(entered.wait, 2)
+    task.cancel()
+    await asyncio.sleep(0.05)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    stored = [ref for ref, token in credentials.values.items() if token == _token()]
+    profile = profiles.get("agent")
+    assert profile is not None, "the commit finished before the cancellation was raised"
+    assert stored == [profile.credential_ref], "no credential without its profile"
