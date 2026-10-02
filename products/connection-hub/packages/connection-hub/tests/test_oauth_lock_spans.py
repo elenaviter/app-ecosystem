@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import threading
 import time
 from pathlib import Path
@@ -230,3 +231,106 @@ def test_every_oauth_request_carries_a_request_id_that_failures_report():
 
 def test_request_ids_are_unique_per_request():
     assert len({discovery.new_request_id() for _ in range(200)}) == 200
+
+
+CANARY = "synthetic-sensitive-profile-canary"
+
+
+def test_a_caller_chosen_task_name_never_reaches_the_span(tmp_path, caplog):
+    service = _service(tmp_path)
+
+    async def work():
+        async with service._transaction(service._transaction_lock, profile_name=CANARY, operation="read_token"):
+            raise RuntimeError("synthetic-body-error")
+
+    async def scenario():
+        task = asyncio.create_task(work(), name="refresh " + CANARY)
+        with pytest.raises(RuntimeError):
+            await task
+
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        asyncio.run(scenario())
+    (span,) = _spans(caplog)
+    assert CANARY not in span.getMessage()
+    assert re.search(r"task=t[0-9a-f]{6}$", span.getMessage())
+
+
+def test_a_failure_securing_the_held_lock_is_the_span_outcome(tmp_path, caplog, monkeypatch):
+    service = _service(tmp_path)
+
+    def fail_secure(_path):
+        raise RuntimeError("synthetic-security-step-failure")
+
+    monkeypatch.setattr(service, "_secure_lock", fail_secure)
+
+    async def scenario():
+        async with service._transaction(service._transaction_lock, profile_name=PROFILE, operation="read_token"):
+            pass
+
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        with pytest.raises(RuntimeError, match="synthetic-security-step-failure"):
+            asyncio.run(scenario())
+    (span,) = _spans(caplog)
+    assert span.levelno == logging.WARNING and "outcome=RuntimeError" in span.getMessage()
+    assert "hold_ms=-" not in span.getMessage(), "the lock was held when securing it failed"
+
+
+def test_a_release_failure_is_the_span_outcome(tmp_path, caplog, monkeypatch):
+    service = _service(tmp_path)
+
+    class FailingRelease:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            raise RuntimeError("synthetic-release-step-failure")
+
+    monkeypatch.setattr(profile_session, "AsyncFileLock", FailingRelease)
+    monkeypatch.setattr(service, "_secure_lock", lambda _path: None)
+
+    async def scenario():
+        async with service._transaction(service._transaction_lock, profile_name=PROFILE, operation="read_token"):
+            pass
+
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        with pytest.raises(RuntimeError, match="synthetic-release-step-failure"):
+            asyncio.run(scenario())
+    (span,) = _spans(caplog)
+    assert span.levelno == logging.WARNING and "outcome=RuntimeError" in span.getMessage()
+
+
+def test_a_long_holder_is_recorded_while_it_still_holds(tmp_path, caplog, monkeypatch):
+    service = _service(tmp_path)
+    monkeypatch.setattr(lock_spans, "HOLD_WARN_SECONDS", 0.1)
+    seen_while_held: list[str] = []
+
+    async def scenario():
+        async with service._transaction(service._transaction_lock, profile_name=PROFILE, operation="commit_refreshed"):
+            await asyncio.sleep(0.3)
+            seen_while_held.extend(r.getMessage() for r in _spans(caplog))
+
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        asyncio.run(scenario())
+    (holding,) = seen_while_held
+    assert "outcome=holding" in holding and "kind=transaction operation=commit_refreshed" in holding
+    assert int(holding.split("hold_ms=")[1].split()[0]) >= 100
+    holding_task = holding.split("task=")[1]
+    final = _spans(caplog)[-1].getMessage()
+    assert "outcome=ok" in final and final.split("task=")[1] == holding_task
+    assert len(_spans(caplog)) == 2
+
+
+def test_a_quick_holder_leaves_no_holding_record(tmp_path, caplog):
+    service = _service(tmp_path)
+
+    async def scenario():
+        async with service._transaction(service._transaction_lock, profile_name=PROFILE, operation="read_token"):
+            pass
+        await asyncio.sleep(0)
+
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        asyncio.run(scenario())
+    assert ["outcome=holding" in r.getMessage() for r in _spans(caplog)] == [False]
