@@ -1,0 +1,158 @@
+"""The size of each agent workspace, measured off the relay (W423, W461).
+
+W423 reports an agent's workspace size on its heartbeat, so a filling disk is
+seen before it is full. The size needs a walk over every file of the
+workspace, and those are large: 0.5 to 3.6 GB on dev-main on 2026-10-02.
+
+Two defects of the first version are the reason for this module:
+
+- The walk state lived on the relay adapter that ``poll_attendances_once``
+  builds anew for every attended project on every poll. The next poll saw no
+  state, so every heartbeat of every channel started a full walk, the 900 s
+  interval never applied, and the size never reached a heartbeat. Each walk
+  ran in ``asyncio.to_thread``, on the default executor that also runs the
+  OAuth profile lock acquires and DNS lookups (W461).
+- Moved to one serial thread, the walks were still Python running inside the
+  relay process, competing with the event loop for the GIL around the clock.
+
+Here the state lives in one ``WorkspaceSizes`` held by the long-lived relay
+supervisor and handed to every adapter, keyed by workspace path. A walk runs
+in a child process (``python -m project_board.client.workspace_size <path>``),
+so it shares neither the event loop, the default executor nor the GIL. One
+walk runs at a time per relay, at most once per ``interval_seconds`` per
+path, and each logs its timing.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Awaitable, Callable
+
+logger = logging.getLogger("project_board.client.relay")
+
+REMEASURE_SECONDS = 900.0
+WALK_TIMEOUT_SECONDS = 600.0
+WALK_SLOW_SECONDS = 10.0
+
+
+def directory_bytes(root: Path) -> int:
+    """Bytes under ``root``, never following links, skipping what cannot be read."""
+
+    total = 0
+    for current, _dirs, files in os.walk(root, followlinks=False):
+        for name in files:
+            try:
+                total += (Path(current) / name).lstat().st_size
+            except OSError:
+                pass
+    return total
+
+
+async def walk_in_child_process(path: str, *, timeout_seconds: float = WALK_TIMEOUT_SECONDS) -> int:
+    """``directory_bytes`` of ``path``, computed by a child Python process."""
+
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "project_board.client.workspace_size",
+        path,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        out, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+    except BaseException:
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        raise
+    if process.returncode != 0:
+        raise RuntimeError(f"workspace walk exited {process.returncode}")
+    return int(out.decode("ascii").strip())
+
+
+@dataclass
+class _Entry:
+    size: int | None = None
+    measured_at: float | None = None
+    task: asyncio.Task[None] | None = field(default=None, repr=False)
+
+
+class WorkspaceSizes:
+    """Last measured size per workspace path, remeasured off the relay at most once per interval."""
+
+    def __init__(
+        self,
+        *,
+        interval_seconds: float = REMEASURE_SECONDS,
+        walk: Callable[[str], Awaitable[int]] | None = None,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self.interval_seconds = float(interval_seconds)
+        self._walk = walk or walk_in_child_process
+        self._clock = clock or time.monotonic
+        self._entries: dict[str, _Entry] = {}
+        self._one_walk: asyncio.Lock | None = None
+
+    def last(self, path: str) -> int | None:
+        entry = self._entries.get(path)
+        return None if entry is None else entry.size
+
+    def schedule(self, path: str, *, worker_name: str = "-") -> asyncio.Task[None] | None:
+        """Start a measurement of ``path`` when it is due; never waits for it."""
+
+        entry = self._entries.setdefault(path, _Entry())
+        if entry.task is not None and not entry.task.done():
+            return None
+        if entry.measured_at is not None and self._clock() - entry.measured_at < self.interval_seconds:
+            return None
+        entry.task = asyncio.get_running_loop().create_task(
+            self._measure(path, entry, worker_name), name="problem-board-workspace-size"
+        )
+        return entry.task
+
+    async def _measure(self, path: str, entry: _Entry, worker_name: str) -> None:
+        if self._one_walk is None:
+            self._one_walk = asyncio.Lock()
+        queued_at = self._clock()
+        async with self._one_walk:
+            started = self._clock()
+            outcome = "ok"
+            try:
+                entry.size = await self._walk(path)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - the last size stays, the next interval retries
+                outcome = type(exc).__name__
+            ended = self._clock()
+            entry.measured_at = ended
+        walk_seconds = ended - started
+        logger.log(
+            logging.WARNING if walk_seconds >= WALK_SLOW_SECONDS or outcome != "ok" else logging.INFO,
+            "Problem Board workspace size walk worker=%s outcome=%s walk_seconds=%.3f "
+            "queue_wait_seconds=%.3f bytes=%s",
+            worker_name,
+            outcome,
+            walk_seconds,
+            started - queued_at,
+            entry.size if entry.size is not None else "-",
+        )
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print("usage: python -m project_board.client.workspace_size <path>", file=sys.stderr)
+        return 2
+    print(directory_bytes(Path(argv[1])))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

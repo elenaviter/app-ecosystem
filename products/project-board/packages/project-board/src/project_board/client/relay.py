@@ -34,7 +34,7 @@ from .codex_quota import (
     read_codex_quota, account_fingerprint, SOURCE_CODEX_APP_SERVER, QUOTA_REFRESH_SECONDS,
 )
 from .runtime_model import session_with_runtime_model
-from .serial_walker import SerialWalker
+from .workspace_size import REMEASURE_SECONDS, WorkspaceSizes, directory_bytes  # noqa: F401 - directory_bytes re-exported
 from .worktree_files import (
     MAX_OBSERVED_PATHS as MAX_OBSERVED_PATHS_DEFAULT,
     WorktreeObserverCache,
@@ -155,28 +155,9 @@ JOURNAL_NOTICE_KIND = "worker.journal"
 # read controls; wake histories remain in the local shared field and never ride
 # every heartbeat through the Data Bus stream.
 HEARTBEAT_CONTROL_REF_LIMIT = 20
-# W423: how often the relay re-walks an agent's workspace to size it.
-DISK_USAGE_REMEASURE_SECONDS = 900
-
-
-# W461: workspace walks run one at a time on their own thread, never on the
-# default executor that the OAuth file locks and DNS lookups share.
-WORKSPACE_WALKER = SerialWalker("problem-board-workspace-walk")
-# A walk this slow is logged at WARNING with its timing.
-WORKSPACE_WALK_SLOW_SECONDS = 10.0
-
-
-def directory_bytes(root: Path) -> int:
-    """Bytes under ``root``, never following links, skipping what cannot be read."""
-
-    total = 0
-    for current, _dirs, files in os.walk(root, followlinks=False):
-        for name in files:
-            try:
-                total += (Path(current) / name).lstat().st_size
-            except OSError:
-                pass
-    return total
+# W423: how often the relay re-measures an agent's workspace size (W461:
+# held per path by WorkspaceSizes, which the per-poll adapters share).
+DISK_USAGE_REMEASURE_SECONDS = REMEASURE_SECONDS
 
 HEARTBEAT_SESSION_FIELDS = (
     "session_id",
@@ -763,6 +744,8 @@ class ProblemBoardHostRelayAdapter:
         runtime_account_reader: Callable[[], Awaitable[Mapping[str, Any]]] | None = None,
         runtime_account_error_state: dict[str, str] | None = None,
         outbox_drain_lock: asyncio.Lock | None = None,
+        workspace_sizes: WorkspaceSizes | None = None,
+        worktree_observer: WorktreeObserverCache | None = None,
     ) -> None:
         self.config = config
         self.field = field
@@ -784,7 +767,12 @@ class ProblemBoardHostRelayAdapter:
         # published, so an unchanged set rides no heartbeat.
         self._assignment_files_signatures: dict[str, str] = {}
         self._store_reads_signatures: dict[str, str] = {}
-        self._worktree_observer = WorktreeObserverCache()
+        # Both live as long as the relay, not as long as this adapter:
+        # poll_attendances_once builds a new adapter per project on every
+        # poll, so state kept here alone reset each poll, and every heartbeat
+        # walked the whole workspace and ran git on every worktree (W461).
+        self._worktree_observer = worktree_observer if worktree_observer is not None else WorktreeObserverCache()
+        self._workspace_sizes = workspace_sizes if workspace_sizes is not None else WorkspaceSizes()
         # Child adapters are rebuilt for attended projects every cycle. Share
         # this map with them so each discovery/project scope sends a full
         # session projection once, then omits it until that projection changes.
@@ -3980,10 +3968,10 @@ class ProblemBoardHostRelayAdapter:
         and total bytes of the workspace's file system are read every beat
         (one statvfs). The workspace's own size walks the tree, which takes
         tens of seconds on a large workspace and is slowest on the nearly full
-        disk this exists for, so the heartbeat never waits for it: the walk
-        runs as a background task at most every DISK_USAGE_REMEASURE_SECONDS,
-        and each beat carries the last measured size, or none until the
-        first measurement lands.
+        disk this exists for, so the heartbeat never waits for it: the
+        relay-wide WorkspaceSizes walks in a child process at most every
+        DISK_USAGE_REMEASURE_SECONDS per path, and each beat carries the last
+        measured size, or none until the first measurement lands.
         """
 
         workspace = str(getattr(self.config, "workspace", "") or getattr(self.config, "working_directory", "") or "")
@@ -3993,63 +3981,16 @@ class ProblemBoardHostRelayAdapter:
             usage = shutil.disk_usage(workspace)
         except OSError:
             return
-        self._schedule_workspace_measure(workspace)
+        self._workspace_sizes.schedule(workspace, worker_name=self.config.worker_name)
         report: dict[str, Any] = {
             "host_free_bytes": int(usage.free),
             "host_total_bytes": int(usage.total),
             "workspace_path": workspace,
         }
-        measured = getattr(self, "_workspace_bytes", None)
-        if measured is not None and getattr(self, "_workspace_bytes_path", "") == workspace:
+        measured = self._workspace_sizes.last(workspace)
+        if measured is not None:
             report["workspace_bytes"] = int(measured)
         payload["disk_usage"] = report
-
-    def _schedule_workspace_measure(self, workspace: str) -> None:
-        running = getattr(self, "_workspace_measure_task", None)
-        if running is not None and not running.done():
-            return
-        measured_at = getattr(self, "_workspace_bytes_measured", None)
-        if (
-            measured_at is not None
-            and getattr(self, "_workspace_bytes_path", "") == workspace
-            and time.monotonic() - measured_at < DISK_USAGE_REMEASURE_SECONDS
-        ):
-            return
-
-        async def measure() -> None:
-            queued_at = time.monotonic()
-            queued_behind = WORKSPACE_WALKER.queued()
-            started: list[float] = []
-
-            def walk() -> int:
-                started.append(time.monotonic())
-                return directory_bytes(Path(workspace))
-
-            outcome = "ok"
-            try:
-                size = await WORKSPACE_WALKER.run(walk)
-            except Exception as exc:  # noqa: BLE001 - a failed walk leaves the last size and retries next interval
-                outcome = type(exc).__name__
-                size = getattr(self, "_workspace_bytes", None)
-            ended = time.monotonic()
-            walk_seconds = ended - started[0] if started else 0.0
-            wait_seconds = (started[0] if started else ended) - queued_at
-            logger.log(
-                logging.WARNING if walk_seconds >= WORKSPACE_WALK_SLOW_SECONDS or outcome != "ok" else logging.INFO,
-                "Problem Board workspace size walk worker=%s outcome=%s walk_seconds=%.3f "
-                "queue_wait_seconds=%.3f queued_behind=%d bytes=%s",
-                getattr(self.config, "worker_name", "-"),
-                outcome,
-                walk_seconds,
-                wait_seconds,
-                queued_behind,
-                size if size is not None else "-",
-            )
-            self._workspace_bytes = size
-            self._workspace_bytes_path = workspace
-            self._workspace_bytes_measured = time.monotonic()
-
-        self._workspace_measure_task = asyncio.get_running_loop().create_task(measure())
 
     def _add_workspace_report(self, payload: dict[str, Any], project_ref: str, entry: Mapping[str, Any]) -> None:
         report = entry.get("report") if entry else None
@@ -4310,6 +4251,8 @@ class ProblemBoardHostRelayAdapter:
                 runtime_account_reader=self._runtime_account_reader,
                 runtime_account_error_state=self._runtime_account_error_state,
                 outbox_drain_lock=self._outbox_drain_lock,
+                workspace_sizes=self._workspace_sizes,
+                worktree_observer=self._worktree_observer,
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -4565,6 +4508,9 @@ class ProblemBoardRelaySupervisor:
         self.connector = connector
         # How often the gateway may be called, per host and per channel
         # (local/relay_pacing.py). Kept beside the host config.
+        # One workspace-size registry for every channel on this host: one walk
+        # at a time, once per interval per path, in a child process (W461).
+        self._workspace_sizes = WorkspaceSizes()
         self._pacing = pacing or RelayPacing(
             self.config_path.parent / PACING_FILENAME, forget_permanent=True
         )
@@ -5596,6 +5542,7 @@ class ProblemBoardRelaySupervisor:
                 outbox_drain_lock=self._outbox_drain_lock(
                     channel.worker_name
                 ),
+                workspace_sizes=self._workspace_sizes,
             )
         except BaseException as exc:
             self._pacing.record_attempt_ended(channel.worker_name)
