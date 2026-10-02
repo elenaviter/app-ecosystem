@@ -254,3 +254,110 @@ def _reload(host):
     from project_board.client.host_config import HostRelayConfig
 
     return HostRelayConfig.load(host.path)
+
+
+# -- a peer's runtime recovery leaves a running attempt alone (W461 review) ---------
+#
+# Review of f586e488 (codex-infra@e-home, 2026-10-02, note
+# independent-portable-w461-probes-at-exact-f586-actual): when one channel came
+# back from a runtime outage, record_success cleared every channel waiting on the
+# runtime, including one whose own open was still running, so its reconnect view
+# vanished mid-attempt. These two cases are that probe.
+
+
+def _runtime_failed(state: pacing.RelayPacing, *channels) -> None:
+    for channel in channels:
+        state.record_failure(
+            channel.worker_name, "oauth_mcp_endpoint_unreachable", runtime_unavailable=True
+        )
+
+
+def test_a_peer_recovery_keeps_a_running_attempt_and_frees_a_waiting_peer(tmp_path):
+    from relay_helpers import two_channel_host
+
+    host, fast, slow = two_channel_host(tmp_path)
+    state = pacing.RelayPacing(Path(host.path).parent / pacing.PACING_FILENAME, rng=lambda: 1.0)
+    _runtime_failed(state, fast, slow)
+    state.record_attempt_started(slow.worker_name)
+
+    state.record_success(fast.worker_name)
+
+    view = pacing.channel_reconnect_state(host.path, slow.worker_name)
+    assert view is not None, "a peer's recovery removed the running channel's record"
+    assert view["attempt_in_progress"] is True
+    # Its own outcome still decides: a cancel ends the attempt and leaves it due.
+    state.record_attempt_ended(slow.worker_name)
+    after = pacing.channel_reconnect_state(host.path, slow.worker_name)
+    assert after["attempt_in_progress"] is False
+    assert state.channel_due(slow.worker_name)
+
+
+def test_a_peer_recovery_still_frees_a_peer_that_is_only_waiting(tmp_path):
+    from relay_helpers import two_channel_host
+
+    host, fast, slow = two_channel_host(tmp_path)
+    state = pacing.RelayPacing(Path(host.path).parent / pacing.PACING_FILENAME, rng=lambda: 1.0)
+    _runtime_failed(state, fast, slow)
+
+    state.record_success(fast.worker_name)
+
+    assert pacing.channel_reconnect_state(host.path, slow.worker_name) is None
+    assert state.channel_due(slow.worker_name), "the runtime answered: the waiting peer retries now"
+
+
+def test_a_stale_mark_does_not_hold_a_peer_back(tmp_path):
+    from relay_helpers import two_channel_host
+
+    host, fast, slow = two_channel_host(tmp_path)
+    clock = _Clock()
+    state = pacing.RelayPacing(
+        Path(host.path).parent / pacing.PACING_FILENAME, rng=lambda: 1.0, clock=clock
+    )
+    _runtime_failed(state, fast, slow)
+    state.record_attempt_started(slow.worker_name)
+    clock.now += pacing.ATTEMPT_STALE_SECONDS + 1
+
+    state.record_success(fast.worker_name)
+
+    assert slow.worker_name not in state._state["channels"]
+
+
+def test_a_held_open_keeps_its_mark_while_a_peer_opens(tmp_path):
+    from relay_helpers import StableClient, two_channel_host
+
+    from project_board.client import relay
+
+    host, fast, slow = two_channel_host(tmp_path)
+
+    async def run() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        @asynccontextmanager
+        async def connector(_host, channel, *, replacement_epoch):
+            if channel.worker_name == slow.worker_name:
+                entered.set()
+                await release.wait()
+            yield StableClient()
+
+        supervisor = relay.ProblemBoardRelaySupervisor(config_path=host.path, connector=connector)
+        _runtime_failed(supervisor._pacing, fast, slow)
+        slow_task = asyncio.create_task(supervisor._open_session(host, slow))
+        fast_session = slow_session = None
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            fast_session = await supervisor._open_session(host, fast)
+            assert not slow_task.done()
+            during = pacing.channel_reconnect_state(host.path, slow.worker_name)
+            assert during is not None and during["attempt_in_progress"] is True
+        finally:
+            release.set()
+            slow_session = await slow_task
+            for session in (fast_session, slow_session):
+                if session is not None:
+                    await session.stack.aclose()
+            await supervisor.aclose()
+        # The slow open's own success clears it.
+        assert pacing.channel_reconnect_state(host.path, slow.worker_name) is None
+
+    asyncio.run(run())
