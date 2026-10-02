@@ -4544,6 +4544,9 @@ TRANSIENT_ERROR_CODES = frozenset(
         "data_bus_outcome_unknown",
         "oauth_metadata_request_failed",
         "oauth_profile_lock_timeout",
+        # The profile moved to another credential twice while one token
+        # operation read it (W464, the per-credential lock): over in moments.
+        "oauth_profile_credential_changed",
         "oauth_server_metadata_unavailable",
         "oauth_session_lock_timeout",
         "state_lock_timeout",

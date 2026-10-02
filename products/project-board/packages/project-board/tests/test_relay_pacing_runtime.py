@@ -41,6 +41,8 @@ def test_the_runtime_being_down_is_told_apart_from_a_refusal():
     # doubling schedule for 3.5 minutes after the runtime was back.
     locked = DomainError("oauth_profile_lock_timeout", "Timed out waiting for the OAuth profile lock.")
     assert is_runtime_unavailable(locked) is True
+    moved = DomainError("oauth_profile_credential_changed", "The OAuth profile's credential changed twice while it was being read; retry.")
+    assert is_runtime_unavailable(moved) is True, "a moment's race retries fast, not on the doubling (W464)"
     wrapped = RuntimeError("open failed")
     wrapped.__cause__ = _not_advertised()
     assert is_runtime_unavailable(wrapped) is True
