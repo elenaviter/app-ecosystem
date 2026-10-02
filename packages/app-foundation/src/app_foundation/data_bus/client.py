@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -82,6 +83,40 @@ def _transport_failed(error: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+_URL = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>]+")
+
+
+def _failure_chain(error: BaseException) -> str:
+    """The exception types of a failure chain, outermost first (W461).
+
+    python-socketio reports every transport failure as "Connection error";
+    the chain says whether it was DNS, a refused or reset TCP connection, a
+    TLS failure, a timeout or an HTTP status from the ingress.
+    """
+
+    seen: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in seen and len(seen) < 8:
+        seen.append(current)
+        current = current.__cause__ or current.__context__
+    return ">".join(f"{type(item).__module__.split('.')[0]}.{type(item).__name__}" for item in seen)
+
+
+def _failure_text(error: BaseException) -> str:
+    """The innermost message, URLs removed and bounded: it may carry a host."""
+
+    current: BaseException = error
+    seen: list[BaseException] = []
+    while current not in seen and len(seen) < 8:
+        seen.append(current)
+        nested = current.__cause__ or current.__context__
+        if nested is None:
+            break
+        current = nested
+    text = _URL.sub("<url>", " ".join(str(current).split()))
+    return text[:200] or "-"
 
 
 def _refusal_payload(value: Any) -> dict[str, Any]:
@@ -694,6 +729,16 @@ class FederatedDataBusClient:
                 self._namespace_outcome = None
             refusal = self._connect_refusal
             self._deactivate_socket(socket, socket_token)
+            logger.warning(
+                "Data Bus socket lifecycle event=connect_failed attempted_generation=%d "
+                "transport_failed=%s refusal=%s error_chain=%s error_text=%r%s",
+                self._connection_generation + 1,
+                str(_transport_failed(exc)).lower(),
+                str(refusal is not None).lower(),
+                _failure_chain(exc),
+                _failure_text(exc),
+                self._lifecycle_log_suffix(),
+            )
             if refusal is None or _transport_failed(exc):
                 # The transport failed before the server answered. python-socketio
                 # still fires connect_error for that, with "Connection error", so
@@ -715,6 +760,13 @@ class FederatedDataBusClient:
                 timeout=self.namespace_admission_timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
+            logger.warning(
+                "Data Bus socket lifecycle event=namespace_admission_timeout "
+                "attempted_generation=%d timeout_seconds=%s%s",
+                self._connection_generation + 1,
+                self.namespace_admission_timeout_seconds,
+                self._lifecycle_log_suffix(),
+            )
             self._deactivate_socket(socket, socket_token)
             await socket.disconnect()
             try:
