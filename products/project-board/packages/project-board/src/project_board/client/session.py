@@ -1009,8 +1009,19 @@ def _pull_worker_input(
 
     def claim_selected_scope(scope_ref: str, scope_id: str, project_index: int | None):
         scopes = [("", ""), *project_scopes]
+        # Project sends use _project_lock via _mail_lock; lease/settle paths
+        # use the recipient mailbox's .mail.lock. Hold both writer families
+        # across the operator scan and claim, always in one path order.
         lock_paths = sorted(
-            {field._mail_lock(pid, stable_name) for _, pid in scopes}, key=str
+            {
+                path
+                for _, pid in scopes
+                for path in (
+                    field._mail_lock(pid, stable_name),
+                    field._mail_root(pid, stable_name) / ".mail.lock",
+                )
+            },
+            key=str,
         )
         with ExitStack() as locks:
             for path in lock_paths:
