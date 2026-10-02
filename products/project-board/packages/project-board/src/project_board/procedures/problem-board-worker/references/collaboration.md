@@ -211,8 +211,9 @@ exchanged as a change request against the integration ref.
   the coordinator to make such an item operator-final (W414, 2026-09-30).
   [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
   owns the rule.
-- **The coordinator merges after approval.** Nobody merges their own change
-  request. A merge advances the integration ref, from which runtimes release.
+- **The coordinator, or a merger it names on the item, merges after
+  approval** ([coordinator](coordinator.md), Merge, step 7). Nobody merges
+  their own change request. A merge advances the integration ref, from which runtimes release.
 - **A change across several repositories** links every change request to the
   one item, states the merge order, and they merge together.
 - **Public repositories** (kdcube-ai-app, app-ecosystem) take the change
@@ -307,7 +308,8 @@ this twice on 2026-09-22 and both times the work kept moving.
 
 ## Rule 5. The merge gate
 
-The coordinator merges a change request when all of these hold, and refuses
+The coordinator, or the merger it names on the item, merges a change request
+when all of these hold, and refuses
 it naming the one that does not. A gate names what a reader does to satisfy
 it, with a pointer to the means, or it is not a gate yet: gate 3's merger
 clause and finding ten's stamp rule were both written without the thing that
@@ -358,6 +360,24 @@ is a verification. One that stops at printing JSON is a report.
    A suite that never puts two entry points in one test proves nothing
    about their interaction (round 1, finding seven: the side-server drain
    guard was tested side against side, and the cycle path bypassed it).
+   A change that puts an `await` where there was none (blocking work moved to
+   a thread, an executor or a child process) is reviewed around that await,
+   not only in the helper. Every condition checked before it that the code
+   after it relies on is checked again after it. Every multi-step write it
+   now splits either completes as one step or rolls back when the caller is
+   cancelled, and a failure under cancellation still reaches its cleanup:
+   `CancelledError` is not an `Exception`, so `except Exception` cleanup does
+   not run. Ask for a test that changes the state, or cancels, at that await.
+   Enumerate the awaits the change adds (for example
+   `git diff <base> <head> | grep '^+.*await '`) and check each one against
+   these clauses: a review that does not list them has not applied the rule.
+   Why: on 2026-10-02 such awaits in one change stream caused four defects.
+   Twice a replaced Card or a closing session still dispatched, once a
+   cancel split a stored credential from its profile, and once a failure
+   met a cancel and the grant was never revoked. The helper tests passed
+   every time, and the fourth passed a review after this rule existed,
+   because the review checked the awaits it remembered instead of the list
+   (W461, PR 438 and PR 440).
    The counts are what the tool said, not what the shell returned: the
    report carries pytest's own summary line verbatim for each suite, from
    the run at that head, and the author checks pytest's exit status, never
@@ -498,7 +518,11 @@ it, what you touched (Rule 3), and what you are waiting on.
   review, which the return itself already spent (W245 blocker three, refused
   live as a duplicate event until the notice said what to cite). Push the
   rework to the same branch. A reviewer who returns an item names who acts
-  next and on what (W403 C5, 2026-09-29).
+  next and on what (W403 C5, 2026-09-29). A reviewer who passes a source
+  does the same: the verdict names the next actor and the step (merge,
+  install, verify) and hands the item to them. A pass never keeps the item
+  waiting on the reviewer and never closes work that remains (W455, Root
+  2026-10-02).
 
 - **The assignee is the current owner, in every status.** `item.assignee`
   names who holds the item now, Review and Done included, and every
@@ -538,18 +562,30 @@ it, what you touched (Rule 3), and what you are waiting on.
   one save, so both apply or neither does. The rule is two permissions, one
   per field, and an ordinary handoff needs no special one such as
   `review.assign` (operator, 2026-10-01: "its 2 permissions. set status and
-  set assignee"). Today the assignee of an item in Review is set with
-  `review.assign`; W451 makes it the ordinary assignee set. With today's commands: `work.status.set` sets the status,
-  `assignment.assign` sets the assignee and `assignment.return` clears it, and
+  set assignee"). With today's commands, `work.status.set` sets the status
+  and `work.assignee.set` sets or clears the assignee, in any status, and
   the board's edit save (`work.item.save`) applies the supplied fields in one
-  transaction, for people now and for agents once W451 delivers it. Until
-  then two differences remain in the product (W451): clearing is its own
-  operation, and a status that leaves Review (to Todo, Done or Cancelled) is a
-  review decision that needs that authority. Sending work for review is one
+  transaction, for people and agents alike: each supplied field needs only
+  its own operation, and both apply or neither does. Leaving Review with an
+  ordinary status edit records no review verdict, and the dedicated review
+  operations keep their own authority. `assignment.return` releases an
+  active assignment with the owner's reason and leaves the status as it is.
+  Sending work for review is one
   such pair: the `completed` report with `--reviewer` names the recipient,
   else the acting coordinator (above). Where a command your Card holds cannot
   make the change, ask the coordinator, naming the item and the change; never
   work around a refused permission.
+  When a status edit succeeds and the matching assignee edit is refused (or
+  the combined save is refused with no effect), check the project's Control
+  Card before anything else. The default worker and coordinator profiles
+  carry both `work.status.set` and `work.assignee.set` (the coordinator
+  profile carries the whole catalog), but a Control Card set before an
+  operation existed does not gain it by itself, and no Card is ever widened
+  automatically. The fix is the operator's: add the operation to the
+  project's Control Card in Connection Hub, then refresh the worker and
+  coordinator Cards. Why: on 2026-10-02 the coordinator's combined
+  status-and-owner save was refused because the project Control Card lacked
+  `work.assignee.set`, while the deployed profiles had it (W455).
 - **Reconcile your assignments, act on each, and ask when one is unclear.**
   At session start or resume and after a compaction, read your assignments
   fresh (`project.plan.index` with your stable worker name as assignee, by
@@ -889,7 +925,7 @@ they stand now. What every agent on the shared host does:
 6. **Approval is a board mail naming the head, quoted on the change request
    pinned to it.** The reviewer proves the path the finding is about, over a
    fake that models the constraints the proof depends on, or live.
-7. **The coordinator merges, pushes the integration ref, names the merged ref on
+7. **The coordinator (or the merger it names) merges, pushes the integration ref, names the merged ref on
    the item, installs procedure revisions, and runs reloads and relay
    restarts** after collecting ready from every agent on the host. Urgency from
    the operator is not an exception: the announcement says so and runs

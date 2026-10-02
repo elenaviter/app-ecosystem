@@ -50,6 +50,12 @@ logger = logging.getLogger("connection_hub.oauth.requests")
 
 SLOW_SECONDS = 1.0
 
+# The custody calls of the token operation in progress (W464): [calls, slow or
+# failed calls], a list so a copied context (the custody thread) counts into it.
+_CUSTODY_CALLS: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "connection_hub_oauth_custody_calls", default=None
+)
+
 _CORRELATION: contextvars.ContextVar[tuple[str, str]] = contextvars.ContextVar(
     "connection_hub_oauth_correlation", default=("-", "-")
 )
@@ -61,10 +67,40 @@ def correlate(profile_name: str) -> Iterator[str]:
 
     correlation = secrets.token_hex(4)
     reset = _CORRELATION.set((lock_spans.profile_tag(profile_name), correlation))
+    calls = [0, 0]
+    reset_calls = _CUSTODY_CALLS.set(calls)
     try:
         yield correlation
     finally:
+        # The operation's exact custody call count, logged once: the per-call
+        # records at the default level show only slow ones, so their last
+        # seq would undercount (W464 review).
+        try:
+            if calls[0]:
+                lock_spans.record_custody_total(calls=calls[0], notable=calls[1])
+        except BaseException as broken:  # noqa: BLE001 - the count must never change the operation
+            if isinstance(broken, (KeyboardInterrupt, SystemExit)):
+                raise
+        _CUSTODY_CALLS.reset(reset_calls)
         _CORRELATION.reset(reset)
+
+
+def next_custody_call() -> int | None:
+    """The 1-based number of the next custody call in this token operation, or None outside one."""
+
+    calls = _CUSTODY_CALLS.get()
+    if calls is None:
+        return None
+    calls[0] += 1
+    return calls[0]
+
+
+def note_notable_custody_call() -> None:
+    """Count a slow or failed custody call of the operation in progress."""
+
+    calls = _CUSTODY_CALLS.get()
+    if calls is not None:
+        calls[1] += 1
 
 
 def current() -> tuple[str, str]:

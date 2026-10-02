@@ -113,19 +113,28 @@ missing":
 Every agent's Card offers all of the board's current Review and Work
 operations by default: `review.accept`, `review.assign`, `review.cancel`,
 `review.return`, `assignment.assign`, `assignment.list`, `assignment.report`,
-`assignment.return`, `work.accept` (the compatibility name) and
-`work.status.set` (operator, 2026-10-01). The Card's owner applies them with
-**Refresh worker Card**, or **Refresh coordinator Card** for a coordinator,
-which reapply the role's default profile under the project's ceiling and keep
-the same identity. Two product steps are still open (W451, W420). The
-coordinator default already selects every Problem Board operation, but the
-worker default lacks `review.assign`, `assignment.assign`,
-`assignment.return` and `work.accept`: until W451 adds them, a worker refresh
-removes those four when they were ticked by hand, so the owner ticks them on
-the Card in Connection Hub instead. And a refresh reapplies the profile by
-name, so another service on the same Card that declares the same profile name
-can be changed too, until W420's resource-scoped apply is live. An agent never
-edits a Card ([collaboration](collaboration.md) Rule 12).
+`assignment.return`, `work.accept` (the compatibility name), and the two
+independent setters `work.status.set` and `work.assignee.set` (operator,
+2026-10-01). The worker profile lists each of them, and the coordinator
+profile selects every Problem Board operation. The Card's owner applies them
+with **Refresh worker Card**, or **Refresh coordinator Card** for a
+coordinator, which reapply the role's default profile under the project's
+ceiling and keep the same identity. One product step is still open (W420): a
+refresh reapplies the profile by name, so another service on the same Card
+that declares the same profile name can be changed too, until W420's
+resource-scoped apply is live. An agent never edits a Card
+([collaboration](collaboration.md) Rule 12).
+
+The project's Control Card is that ceiling, and it is set per project. An
+operation added to the default profiles after a project's Control Card was
+set does not reach that project by itself, and no Card is ever widened
+automatically. So when the board refuses an operation your role's profile
+lists, with `work_worker_operation_withheld_by_control_card`, the project
+withholds it. Tell the coordinator, naming the operation and the item. A
+project admin adds it in Connection Hub (Project, then Manage project
+access), and the Card's owner refreshes the Card. Do not reauthorize,
+re-consent or route the change another way: none of them changes the
+project's ceiling (W455, 2026-10-02).
 
 Holding an operation is not authority over every item: the board still checks
 at each call who may decide a review, that nobody reviews their own work, and

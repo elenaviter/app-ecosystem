@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import getpass
 import json
 import sys
@@ -74,6 +75,37 @@ class Services:
     adapters: dict[str, Any]
     oauth_profile_sessions: OAuthProfileSessionService | None = None
 
+
+class RemovalCancelledAfterFailure(asyncio.CancelledError):
+    """A cancellation raised after a started removal failed; ``failure`` is that failure."""
+
+    def __init__(self, failure: BaseException) -> None:
+        super().__init__()
+        self.failure = failure
+
+
+async def _run_thread_to_completion(call, /, *args, **kwargs):
+    """Run a blocking call in a worker thread and own it until it finishes.
+
+    A caller cancelled after the call started waits for it, however many
+    cancellations arrive, so a removal is never left running unowned and its
+    rollback always completes first. The cancellation then goes on; a call
+    that failed meanwhile is carried on it (W464 review, PR 446).
+    """
+
+    running = asyncio.ensure_future(asyncio.to_thread(call, *args, **kwargs))
+    try:
+        return await asyncio.shield(running)
+    except asyncio.CancelledError:
+        while not running.done():
+            try:
+                await asyncio.wait({running})
+            except asyncio.CancelledError:
+                continue
+        failure = None if running.cancelled() else running.exception()
+        if failure is not None:
+            raise RemovalCancelledAfterFailure(failure) from failure
+        raise
 
 def build_services(*, paths: StatePaths | None = None) -> Services:
     caller = build_caller_services(paths=paths)
@@ -356,7 +388,11 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
         return 0
 
     if args.profile_command == "remove":
-        removed = services.profile_service.remove(
+        # Removal waits for the profile's credential lock, so it runs in a
+        # worker thread, never on this event loop, and once started it is
+        # owned to completion (W464, P2-C2).
+        removed = await _run_thread_to_completion(
+            services.profile_service.remove,
             args.name,
             force=args.force,
             server_card_revoked=args.server_card_revoked,
