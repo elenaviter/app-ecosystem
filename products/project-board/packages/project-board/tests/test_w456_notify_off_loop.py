@@ -20,6 +20,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -51,19 +52,22 @@ MAX_LOOP_GAP_SECONDS = 0.3
 
 
 class MailboxGate:
-    """Every mailbox read of one worker waits until the test opens the gate."""
+    """Every mailbox read of the named workers waits until the test opens the gate."""
 
-    def __init__(self, monkeypatch, worker_name: str, *, error: Exception | None = None) -> None:
-        self.mailbox = worker_name.lower()
+    def __init__(self, monkeypatch, *worker_names: str, error: Exception | None = None) -> None:
+        self.mailboxes = {name.lower() for name in worker_names}
         self.error = error
         self.entered = threading.Event()
+        self.entered_by: set[str] = set()
         self.opened = threading.Event()
         self.finished: list[float] = []
         real_read_json = store_module.read_json
 
         def read_json(path, *args, **kwargs):
             parts = Path(path).parts
-            if self.mailbox in parts and Path(path).parent.name in {"inbox", "leased"}:
+            held = self.mailboxes.intersection(parts)
+            if held and Path(path).parent.name in {"inbox", "leased"}:
+                self.entered_by.update(held)
                 self.entered.set()
                 self.opened.wait(GATE_LIMIT_SECONDS)  # a read on a paging or contended disk
                 self.finished.append(time.monotonic())
@@ -73,9 +77,9 @@ class MailboxGate:
 
         monkeypatch.setattr(store_module, "read_json", read_json)
 
-    async def wait_entered(self) -> None:
+    async def wait_entered(self, count: int = 1) -> None:
         deadline = time.monotonic() + GATE_LIMIT_SECONDS + 1
-        while not self.entered.is_set():
+        while len(self.entered_by) < count:
             assert time.monotonic() < deadline, "the held read never started"
             await asyncio.sleep(0.01)
 
@@ -100,20 +104,33 @@ def _identity(channel) -> WorkerSessionIdentity:
     return WorkerSessionIdentity.create(channel.runtime_kind, channel.runtime_session_id)
 
 
-def _two_codex_channels(tmp_path: Path, *, slow_mail: int = 1):
-    """Two Codex channels on one host, each listening with pending mail."""
+CODEX_SESSIONS = [f"{digit * 8}-{digit * 4}-4{digit * 3}-8{digit * 3}-{digit * 12}" for digit in "23456789"]
 
-    host, identity_a, _channel = make_host(tmp_path)
-    identity_b = WorkerSessionIdentity.create("codex", "22222222-2222-4222-8222-222222222222")
-    host_config.enroll_worker_channel(
-        host.path, identity=identity_b, profile="problem-board-codex-two", authorized=True
-    )
+
+def _codex_channels(tmp_path: Path, count: int, *, first_mail: int = 1):
+    """``count`` Codex channels on one host, each listening with pending mail."""
+
+    host, first, _channel = make_host(tmp_path)
+    identities = [first]
+    for session in CODEX_SESSIONS[: count - 1]:
+        identity = WorkerSessionIdentity.create("codex", session)
+        host_config.enroll_worker_channel(
+            host.path, identity=identity, profile=f"problem-board-codex-{session[:4]}", authorized=True
+        )
+        identities.append(identity)
     host = host_config.HostRelayConfig.load(host.path)
     field = SharedFieldStore(host.field_root)
     field.initialize(field_id="w456-notify")
-    _register(field, identity_a, slow_mail)
-    _register(field, identity_b, 1)
-    return host, field, host.worker(identity_a), host.worker(identity_b)
+    for index, identity in enumerate(identities):
+        _register(field, identity, first_mail if index == 0 else 1)
+    return host, field, [host.worker(identity) for identity in identities]
+
+
+def _two_codex_channels(tmp_path: Path, *, slow_mail: int = 1):
+    """Two Codex channels on one host, each listening with pending mail."""
+
+    host, field, (slow, peer) = _codex_channels(tmp_path, 2, first_mail=slow_mail)
+    return host, field, slow, peer
 
 
 def _lease_one_live_and_one_expired(field: SharedFieldStore, worker_name: str) -> tuple[str, str]:
@@ -242,6 +259,45 @@ def test_a_held_mailbox_lock_leaves_the_loop_and_a_peer_wake_running(tmp_path, m
     assert peer_seconds < PEER_LIMIT_SECONDS
     assert gap_while_held < MAX_LOOP_GAP_SECONDS, f"the event loop stalled {gap_while_held:.2f}s on a mailbox lock"
     _assert_wake_carries_the_mail(field, slow, slow_delivery, slow_expected)
+
+
+def test_held_mailboxes_beyond_the_default_pool_leave_a_peer_and_the_pool_free(tmp_path, monkeypatch):
+    """Each channel's wake has its own thread: held mailboxes never fill a shared pool."""
+
+    host, field, channels = _codex_channels(tmp_path, 4)
+    held, peer = channels[:3], channels[3]
+    gate = MailboxGate(monkeypatch, *(channel.worker_name for channel in held))
+    pushed: list[str] = []
+    supervisor = _with_session_stubs(make_supervisor(host), pushed)
+
+    async def scenario():
+        # Fewer default-pool threads than held mailboxes, as on a small host
+        # (Python's default is the CPU count plus four).
+        asyncio.get_running_loop().set_default_executor(ThreadPoolExecutor(max_workers=2))
+        for channel in (*held, peer):
+            supervisor._start_notify_beside_turn(host, channel, operation="input.available")
+        tasks = {channel.worker_name: supervisor._beside_notifies[channel.worker_name] for channel in channels}
+        await gate.wait_entered(2)
+        started = time.monotonic()
+        await asyncio.wait_for(asyncio.shield(tasks[peer.worker_name]), PEER_LIMIT_SECONDS + 5)
+        peer_seconds = time.monotonic() - started
+        pool_answer = await asyncio.wait_for(asyncio.to_thread(lambda: "free"), PEER_LIMIT_SECONDS + 5)
+        pool_seconds = time.monotonic() - started
+        still_held = not gate.opened.is_set()
+        entered = set(gate.entered_by)
+        gate.opened.set()
+        deliveries = await asyncio.gather(*tasks.values())
+        return peer_seconds, pool_answer, pool_seconds, still_held, entered, deliveries
+
+    peer_seconds, pool_answer, pool_seconds, still_held, entered, deliveries = asyncio.run(scenario())
+
+    assert still_held, "the peer and the pool were checked while every held mailbox was held"
+    assert peer_seconds < PEER_LIMIT_SECONDS, f"the peer's wake waited {peer_seconds:.2f}s for a thread"
+    assert pool_answer == "free" and pool_seconds < PEER_LIMIT_SECONDS, "the default pool stayed free"
+    assert entered == {channel.worker_name.lower() for channel in held}, "every held mailbox had its own thread"
+    assert all(delivery["delivered"] is True for delivery in deliveries)
+    assert sorted(pushed) == sorted(channel.worker_name for channel in channels)
+    supervisor._store_executors.shutdown()
 
 
 def _active_turn_host(tmp_path: Path):

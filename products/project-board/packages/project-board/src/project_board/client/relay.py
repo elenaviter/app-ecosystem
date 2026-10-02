@@ -74,7 +74,7 @@ from .session_delivery import (
 )
 from .resume_command import build_session_resume_command
 from .relay_faults import consume_relay_fault, pending_relay_faults
-from .off_loop import run_off_loop
+from .off_loop import ChannelExecutors, run_off_loop
 from .relay_failures import (
     RelayStageError,
     failure_message,
@@ -4572,6 +4572,10 @@ class ProblemBoardRelaySupervisor:
         # The cycle's own session wake for a channel without a finished turn
         # runs as a task too, so a hung wake never holds the cycle.
         self._beside_notifies: dict[str, asyncio.Task] = {}
+        # The session wake's mailbox and listener store calls run in the
+        # channel's own thread (W456): a hung mailbox holds that channel only,
+        # never another channel's wake or the default pool's scans.
+        self._store_executors = ChannelExecutors()
         # One drain per worker at a time, whichever path starts it. The
         # queue's claim is exclusive per request and released before the
         # request runs, so without this a side drain executing an earlier
@@ -4613,6 +4617,15 @@ class ProblemBoardRelaySupervisor:
             else self.retryable(error)
         )
 
+    async def _channel_off_loop(
+        self, channel: WorkerChannelConfig, call: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Any:
+        """A synchronous store call of ``channel``'s wake, in that channel's own thread."""
+
+        return await run_off_loop(
+            call, *args, executor=self._store_executors.for_channel(channel.worker_name), **kwargs
+        )
+
     async def _notify_session(
         self,
         host: HostRelayConfig,
@@ -4631,9 +4644,11 @@ class ProblemBoardRelaySupervisor:
                 "delivered": False,
                 "reason": "status_event_does_not_wake_model",
             }
-        field = await run_off_loop(SharedFieldStore, host.field_root)
+        field = await self._channel_off_loop(channel, SharedFieldStore, host.field_root)
         try:
-            listener = await run_off_loop(field.worker_listener_session, channel.worker_name)
+            listener = await self._channel_off_loop(
+                channel, field.worker_listener_session, channel.worker_name
+            )
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
@@ -4648,7 +4663,7 @@ class ProblemBoardRelaySupervisor:
             }
         delivery_wake_id = wake_id or new_id("wake")
         try:
-            prepared_session = await run_off_loop(
+            prepared_session = await self._channel_off_loop(channel,
                 field.prepare_worker_session_wake,
                 channel.worker_name,
                 message_refs=message_refs,
@@ -4726,7 +4741,7 @@ class ProblemBoardRelaySupervisor:
             len(message_refs),
         )
         try:
-            await run_off_loop(
+            await self._channel_off_loop(channel,
                 field.record_worker_session_delivery,
                 channel.worker_name,
                 adapter=str(result.get("adapter") or "unknown"),
@@ -4807,8 +4822,8 @@ class ProblemBoardRelaySupervisor:
             )
         )
         try:
-            field = await run_off_loop(SharedFieldStore, host.field_root)
-            listener = await run_off_loop(
+            field = await self._channel_off_loop(channel, SharedFieldStore, host.field_root)
+            listener = await self._channel_off_loop(channel,
                 field.record_worker_session_queue_reconciliation,
                 channel.worker_name,
                 expected_wake_id=expected_wake_id,
@@ -4869,32 +4884,38 @@ class ProblemBoardRelaySupervisor:
     async def _notify_available_input(
         self, host: HostRelayConfig, channel: WorkerChannelConfig
     ) -> dict[str, Any] | None:
-        field = await run_off_loop(SharedFieldStore, host.field_root)
+        field = await self._channel_off_loop(channel, SharedFieldStore, host.field_root)
         try:
-            listener = await run_off_loop(field.worker_listener_session, channel.worker_name)
+            listener = await self._channel_off_loop(
+                channel, field.worker_listener_session, channel.worker_name
+            )
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
-            await run_off_loop(field.clear_wake_hold, channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return None
         if not listener or listener.get("state") == "detached":
             # Nobody to wake: no hold, so a later attach starts a fresh one (W334 review).
-            await run_off_loop(field.clear_wake_hold, channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return None
         queue_reconciliation = await self._reconcile_session_queue(
             host, channel, listener
         )
         try:
-            pending_refs = await run_off_loop(field.pending_worker_mail_refs, channel.worker_name)
-            listener = await run_off_loop(field.worker_listener_session, channel.worker_name)
+            pending_refs = await self._channel_off_loop(
+                channel, field.pending_worker_mail_refs, channel.worker_name
+            )
+            listener = await self._channel_off_loop(
+                channel, field.worker_listener_session, channel.worker_name
+            )
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
-            await run_off_loop(field.clear_wake_hold, channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
             # Nothing to wake for, or nobody to wake: no hold (W334).
-            await run_off_loop(field.clear_wake_hold, channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
         # W26: a wake to an agent the runtime says is out of tokens or rate
         # limited only piles up turns it cannot take. It waits for the reset
@@ -4906,12 +4927,14 @@ class ProblemBoardRelaySupervisor:
             runtime_kind=channel.runtime_kind,
             runtime_session_id=channel.runtime_session_id,
             now=now,
-            recorded=await run_off_loop(field.runtime_limit_state, channel.worker_name),
+            recorded=await self._channel_off_loop(
+                channel, field.runtime_limit_state, channel.worker_name
+            ),
         ).get("limit_state")
         deferred_until = wake_deferred_until(limit_state, now=now)
         if deferred_until:
             # W334: the card shows the hold from this same decision.
-            await run_off_loop(
+            await self._channel_off_loop(channel,
                 field.record_wake_hold,
                 channel.worker_name,
                 until=deferred_until,
@@ -4942,15 +4965,15 @@ class ProblemBoardRelaySupervisor:
             # A Claude Code session is told by its own `pb worker watch`; there
             # is no native wake to attempt, so none is recorded, and inspect
             # no longer reads "wake delivery failed" (rehearsal, 2026-09-26).
-            await run_off_loop(field.clear_wake_hold, channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return None
         withheld = wake_withheld_by_reconciliation(queue_reconciliation, subscription)
         if not withheld:
             # W334: the wake is eligible again, so a hold ends here and only
             # here. A wake still withheld by reconciliation keeps its hold.
-            await run_off_loop(field.clear_wake_hold, channel.worker_name)
-        elif await run_off_loop(field.wake_hold, channel.worker_name):
-            await run_off_loop(
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+        elif await self._channel_off_loop(channel, field.wake_hold, channel.worker_name):
+            await self._channel_off_loop(channel,
                 field.record_wake_hold, channel.worker_name, until="", pending=len(pending_refs)
             )
         if withheld:
@@ -4982,7 +5005,7 @@ class ProblemBoardRelaySupervisor:
         if outstanding_wake_id and _limit_ended_after_refusal(limit_state):
             # W390: the wake was refused for usage, not ignored, and that
             # limit has ended: one more push, once per ended limit.
-            if await run_off_loop(
+            if await self._channel_off_loop(channel,
                 field.rearm_limit_consumed_wake,
                 channel.worker_name,
                 wake_id=outstanding_wake_id,
@@ -4999,7 +5022,9 @@ class ProblemBoardRelaySupervisor:
                     len(pending_refs),
                 )
                 listener = (
-                    await run_off_loop(field.worker_listener_session, channel.worker_name)
+                    await self._channel_off_loop(
+                        channel, field.worker_listener_session, channel.worker_name
+                    )
                 ) or {}
                 subscription = (
                     dict(listener.get("subscription") or {})
@@ -5007,7 +5032,7 @@ class ProblemBoardRelaySupervisor:
                     else {}
                 )
         if outstanding_wake_id:
-            coalesced = await run_off_loop(
+            coalesced = await self._channel_off_loop(channel,
                 field.coalesce_worker_session_wake,
                 channel.worker_name,
                 message_refs=pending_refs,
@@ -5015,7 +5040,9 @@ class ProblemBoardRelaySupervisor:
             )
             if coalesced is None:
                 listener = (
-                    await run_off_loop(field.worker_listener_session, channel.worker_name)
+                    await self._channel_off_loop(
+                        channel, field.worker_listener_session, channel.worker_name
+                    )
                 ) or {}
                 subscription = (
                     dict(listener.get("subscription") or {})
@@ -5032,7 +5059,7 @@ class ProblemBoardRelaySupervisor:
                         event_kind="input.available",
                         message_refs=pending_refs,
                     )
-                coalesced = await run_off_loop(
+                coalesced = await self._channel_off_loop(channel,
                     field.coalesce_worker_session_wake,
                     channel.worker_name,
                     message_refs=pending_refs,
@@ -6114,6 +6141,7 @@ class ProblemBoardRelaySupervisor:
             await self._cancel_channel_turn(worker_name)
         for worker_name in list(self._beside_notifies):
             await self._cancel_notify_beside_turn(worker_name)
+        self._store_executors.shutdown()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
 

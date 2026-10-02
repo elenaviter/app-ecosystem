@@ -262,14 +262,18 @@ held every channel for 3.8 and 3.2 seconds).
 
 The session wake reads and writes the agent's mailbox and listener record
 (pending mail with expired-lease recovery, the wake hold, the prepared and
-recorded wake, coalescing, queue reconciliation) in a worker thread too, one
-store call at a time and in the same order. A slow disk or a held mailbox lock
-then delays only that agent's wake: every Data Bus socket of the host keeps
-answering the server's ping, and the other channels keep polling, reopening
-and serving coordinate calls. A wake that is cancelled while a store call runs
-waits for that call to end before it gives up its channel, so the next wake
-for the same agent never overlaps it (W456, 2026-10-02: one pending-mail read
-held the loop 15.8 seconds, and the server closed every socket of the host).
+recorded wake, coalescing, queue reconciliation) in that channel's own
+thread, one store call at a time and in the same order. A slow disk or a held
+mailbox lock then delays only that agent's wake: every Data Bus socket of the
+host keeps answering the server's ping, the other channels keep polling,
+reopening and serving coordinate calls, and the shared thread pool that runs
+the scans stays free however many mailboxes hang. A wake that is cancelled
+while a store call runs waits for that call to end before it gives up its
+channel, so the next wake for the same agent never overlaps it. Relay shutdown
+therefore ends when such a call ends. A read the operating system never
+completes holds its channel and the process exit, as any worker thread does
+(W456, 2026-10-02: one pending-mail read held the loop 15.8 seconds, and the
+server closed every socket of the host).
 
 The relay writes nothing else to files.
 
