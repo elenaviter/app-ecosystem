@@ -133,7 +133,7 @@ _UNSPLIT_REFRESHES: set[asyncio.Future] = set()
 def _record_custody_call(
     call: Callable[..., Any],
     seq: int | None,
-    outcome: str,
+    ended: BaseException | None,
     submitted: float,
     marks: Mapping[str, float],
 ) -> None:
@@ -146,7 +146,7 @@ def _record_custody_call(
         lock_spans.record_custody_call(
             lock_spans.custody_call_name(call),
             seq=seq,
-            outcome=outcome,
+            outcome=lock_spans.outcome_of(ended),
             queue_seconds=None if start is None else start - submitted,
             run_seconds=None if start is None or end is None else end - start,
             resume_seconds=None if end is None else resumed - end,
@@ -1257,28 +1257,32 @@ class OAuthProfileSessionService:
 
         submitted = time.monotonic()
         future = loop.run_in_executor(_CUSTODY_EXECUTOR, timed)
-        outcome = "ok"
+        # Only plain assignments here: every diagnostic expression runs inside
+        # _record_custody_call's fence, so none can replace the call's own
+        # exception or the cancellation's failure signal (W464 review).
+        ended: BaseException | None = None
         try:
             return await asyncio.shield(future)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancelled:
+            ended = cancelled
             while not future.done():
                 try:
                     await asyncio.wait({future})
                 except asyncio.CancelledError:
                     continue
             failure = None if future.cancelled() else future.exception()
-            outcome = "cancelled" if failure is None else lock_spans.outcome_of(failure)
             if failure is not None:
+                ended = failure
                 # The caller is cancelled and the call failed: the failure is
                 # not dropped, the caller can still run its failure cleanup
                 # (W461 review: a failed profile commit must revoke its grant).
                 raise _CancelledAfterFailure(failure) from failure
             raise
         except BaseException as exc:
-            outcome = lock_spans.outcome_of(exc)
+            ended = exc
             raise
         finally:
-            _record_custody_call(call, seq, outcome, submitted, marks)
+            _record_custody_call(call, seq, ended, submitted, marks)
 
     def _load_token(self, profile: CallerProfile) -> OAuthTokenSet:
         custody_started = time.monotonic()

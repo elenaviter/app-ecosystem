@@ -17,7 +17,7 @@ import time
 
 import pytest
 
-from connection_hub.caller.authorization import profile_session, request_records
+from connection_hub.caller.authorization import lock_spans, profile_session, request_records
 
 PROFILE = "problem-board-claude-0123456789ab"
 in_custody = profile_session.OAuthProfileSessionService._in_custody
@@ -27,7 +27,7 @@ def _records(caplog) -> list[dict[str, str]]:
     return [
         dict(re.findall(r"(\w+)=(\S+)", r.getMessage()))
         for r in caplog.records
-        if r.name == "connection_hub.oauth.spans" and "custody call" in r.getMessage()
+        if r.name == "connection_hub.oauth.spans" and "custody call call=" in r.getMessage()
     ]
 
 
@@ -165,3 +165,156 @@ def test_a_quick_call_adds_no_line_at_the_default_level(caplog):
     with caplog.at_level(logging.INFO, logger="connection_hub.oauth.spans"):
         assert asyncio.run(in_custody(lambda: 7)) == 7
     assert _records(caplog) == []
+
+
+# Infra's review controls (W464, PR 444): diagnostics never replace an outcome,
+# never log caller text, and the operation's count is exact at the default level.
+
+
+def _totals(caplog) -> list[dict[str, str]]:
+    return [
+        dict(re.findall(r"(\w+)=(\S+)", r.getMessage()))
+        for r in caplog.records
+        if r.name == "connection_hub.oauth.spans" and "custody calls total=" in r.getMessage()
+    ]
+
+
+class _BrokenCodeError(Exception):
+    @property
+    def code(self):
+        raise RuntimeError("synthetic diagnostic getter failure")
+
+
+def test_a_code_attribute_that_raises_never_replaces_the_original_exception(caplog):
+    original = _BrokenCodeError("synthetic store refusal")
+
+    def failing():
+        raise original
+
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        with pytest.raises(_BrokenCodeError) as caught:
+            asyncio.run(in_custody(failing))
+    assert caught.value is original
+    (record,) = _records(caplog)
+    assert record["outcome"] == "_BrokenCodeError"
+
+
+def test_free_text_in_a_code_attribute_is_never_logged(caplog):
+    class StoreError(Exception):
+        code = "CANARY_PRIVATE_CREDENTIAL_REFERENCE"
+
+    def failing():
+        raise StoreError("another canary")
+
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        with pytest.raises(StoreError):
+            asyncio.run(in_custody(failing))
+    assert "CANARY" not in caplog.text
+    (record,) = _records(caplog)
+    assert record["outcome"] == "StoreError"
+
+
+def test_a_queued_call_cancelled_twice_keeps_its_failure_for_cleanup():
+    entered, release, started = threading.Event(), threading.Event(), threading.Event()
+    original = _BrokenCodeError("synthetic store refusal")
+
+    def held_first():
+        entered.set()
+        assert release.wait(3)
+
+    def failing_second():
+        started.set()
+        raise original
+
+    async def scenario():
+        first = asyncio.create_task(in_custody(held_first))
+        assert await asyncio.to_thread(entered.wait, 2)
+        second = asyncio.create_task(in_custody(failing_second))
+        await asyncio.sleep(0)
+        second.cancel()
+        await asyncio.sleep(0)
+        second.cancel()
+        await asyncio.sleep(0)
+        assert not started.is_set() and not second.done()
+        release.set()
+        await first
+        with pytest.raises(profile_session._CancelledAfterFailure) as caught:
+            await second
+        assert caught.value.failure is original
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
+
+
+def test_a_failing_record_sink_changes_no_result_and_no_exception(monkeypatch):
+    def broken_sink(*args, **kwargs):
+        raise RuntimeError("synthetic logging failure")
+
+    monkeypatch.setattr(lock_spans, "record_custody_call", broken_sink)
+    assert asyncio.run(in_custody(lambda: 42)) == 42
+    original = OSError("synthetic store failure")
+
+    def failing():
+        raise original
+
+    with pytest.raises(OSError) as caught:
+        asyncio.run(in_custody(failing))
+    assert caught.value is original
+
+
+def test_a_name_attribute_that_raises_changes_no_result():
+    class Provider:
+        @property
+        def __name__(self):
+            raise RuntimeError("synthetic name getter failure")
+
+        def __call__(self):
+            return 43
+
+    assert asyncio.run(in_custody(Provider())) == 43
+
+
+def test_the_exact_call_count_is_logged_at_the_default_level_when_a_call_was_slow(caplog):
+    def slow_first():
+        time.sleep(0.3)
+
+    async def scenario():
+        with request_records.correlate(PROFILE) as correlation:
+            await in_custody(slow_first)
+            await in_custody(lambda: None)
+            await in_custody(lambda: None)
+            return correlation
+
+    with caplog.at_level(logging.INFO, logger="connection_hub.oauth.spans"):
+        correlation = asyncio.run(scenario())
+    assert [r["seq"] for r in _records(caplog)] == ["1"], "only the slow call at INFO"
+    (total,) = _totals(caplog)
+    assert (total["total"], total["notable"], total["corr"]) == ("3", "1", correlation)
+
+
+def test_a_quick_operation_logs_its_count_only_at_debug(caplog):
+    async def scenario():
+        with request_records.correlate(PROFILE):
+            await in_custody(lambda: None)
+            await in_custody(lambda: None)
+
+    with caplog.at_level(logging.INFO, logger="connection_hub.oauth.spans"):
+        asyncio.run(scenario())
+    assert _totals(caplog) == []
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        asyncio.run(scenario())
+    (total,) = _totals(caplog)
+    assert (total["total"], total["notable"]) == ("2", "0")
+
+
+def test_lock_span_outcomes_are_bounded_too():
+    class Weird(Exception):
+        code = "Not A Code; drop table"
+
+    assert lock_spans.outcome_of(Weird()) == "Weird"
+    assert lock_spans.outcome_of(_BrokenCodeError()) == "_BrokenCodeError"
+    assert lock_spans.outcome_of(asyncio.CancelledError()) == "cancelled"
+    assert lock_spans.outcome_of(None) == "ok"

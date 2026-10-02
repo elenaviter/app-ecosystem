@@ -119,25 +119,28 @@ def record_custody_call(
     thread busy with earlier calls), ``run`` the call itself on the thread
     (the native store and the work around it), ``resume`` from the call's end
     to its awaiting coroutine running again (a busy or stalled event loop).
-    ``seq`` numbers the calls of one token operation, so their count per
-    operation reads off the last one. WARNING when not ok, INFO when any part
-    is SLOW_SECONDS or longer, DEBUG otherwise.
+    ``seq`` numbers the calls of one token operation. The operation's exact
+    count is ``record_custody_total``, logged when it ends, because at the
+    default level only slow or failed calls appear here. WARNING when not ok,
+    INFO when any part is SLOW_SECONDS or longer, DEBUG otherwise.
     """
 
     slow = any(
         value is not None and value >= SLOW_SECONDS
         for value in (queue_seconds, run_seconds, resume_seconds)
     )
+    from connection_hub.caller.authorization import request_records
+
     if outcome != "ok":
         level = logging.WARNING
     elif slow:
         level = logging.INFO
     else:
         level = logging.DEBUG
+    if level > logging.DEBUG:
+        request_records.note_notable_custody_call()
     if not logger.isEnabledFor(level):
         return
-    from connection_hub.caller.authorization import request_records
-
     profile, correlation = request_records.current()
     logger.log(
         level,
@@ -152,6 +155,31 @@ def record_custody_call(
         _ms(resume_seconds),
         os.getpid(),
         task_tag or _task_tag(),
+        correlation,
+    )
+
+
+def record_custody_total(*, calls: int, notable: int) -> None:
+    """Log a token operation's exact custody call count when it ends.
+
+    INFO when any of its calls was slow or failed, so the count stands beside
+    those call records at the default level; DEBUG otherwise.
+    """
+
+    level = logging.INFO if notable else logging.DEBUG
+    if not logger.isEnabledFor(level):
+        return
+    from connection_hub.caller.authorization import request_records
+
+    profile, correlation = request_records.current()
+    logger.log(
+        level,
+        "Connection Hub OAuth custody calls total=%d notable=%d profile=%s pid=%d task=%s corr=%s",
+        calls,
+        notable,
+        profile,
+        os.getpid(),
+        _task_tag(),
         correlation,
     )
 
@@ -202,12 +230,28 @@ def watch_hold(
     return loop.call_later(HOLD_WARN_SECONDS, still_held)
 
 
+_OUTCOME_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+
 def outcome_of(exc: BaseException | None) -> str:
-    """The span outcome for an exception raised inside a span, or ok."""
+    """The span outcome for an exception raised inside a span, or ok.
+
+    Never raises and never logs caller text: an error ``code`` is used only
+    when it is a lowercase identifier (the product's error codes), else the
+    exception class name when that is an identifier, else ``error`` (W464
+    review: a ``code`` getter that raised replaced the original exception,
+    and free text in ``code`` reached the log).
+    """
 
     if exc is None:
         return "ok"
     if isinstance(exc, asyncio.CancelledError):
         return "cancelled"
-    code = getattr(exc, "code", "")
-    return str(code) if code else type(exc).__name__
+    try:
+        code = exc.code  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - a broken attribute names nothing
+        code = None
+    if isinstance(code, str) and _OUTCOME_CODE.match(code):
+        return code
+    name = type(exc).__name__
+    return name if _CALL_NAME.match(name) else "error"
