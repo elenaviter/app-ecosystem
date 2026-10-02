@@ -94,3 +94,94 @@ def test_no_workspace_means_no_disk_report(tmp_path: Path):
     payload: dict = {}
     asyncio.run(_adapter_class()._add_disk_usage(adapter, payload))
     assert "disk_usage" not in payload
+
+
+def test_workspace_walks_never_use_the_default_executor_and_run_one_at_a_time(tmp_path: Path, monkeypatch):
+    """W461: walks of many channels saturated the default executor that OAuth
+    file locks and DNS lookups share (dev-main, 2026-10-02, 94% CPU, about
+    twenty threads in lstat)."""
+
+    import threading
+
+    adapter_class = _adapter_class()
+    adapters = []
+    for index in range(4):
+        workspace = tmp_path / f"workspace-{index}"
+        workspace.mkdir()
+        adapter = SimpleNamespace(
+            config=SimpleNamespace(workspace=str(workspace), working_directory="", worker_name=f"w{index}")
+        )
+        adapter._schedule_workspace_measure = (
+            lambda path, adapter=adapter: adapter_class._schedule_workspace_measure(adapter, path)
+        )
+        adapters.append(adapter)
+    active = []
+    overlap = []
+    threads = set()
+    guard = threading.Lock()
+
+    def walk(_root):
+        with guard:
+            active.append(1)
+            overlap.append(len(active))
+            threads.add(threading.current_thread().name)
+        time.sleep(0.05)
+        with guard:
+            active.pop()
+        return 1
+
+    monkeypatch.setattr(relay, "directory_bytes", walk)
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        executor_used = []
+        real_run_in_executor = loop.run_in_executor
+
+        def spy(executor, func, *args):
+            executor_used.append(executor)
+            return real_run_in_executor(executor, func, *args)
+
+        loop.run_in_executor = spy
+        for adapter in adapters:
+            await adapter_class._add_disk_usage(adapter, {})
+        # While the walks run, the default executor still answers at once.
+        started = time.monotonic()
+        await asyncio.to_thread(lambda: None)
+        free_executor_seconds = time.monotonic() - started
+        await asyncio.gather(*(adapter._workspace_measure_task for adapter in adapters))
+        return executor_used, free_executor_seconds
+
+    executor_used, free_executor_seconds = asyncio.run(scenario())
+    assert max(overlap) == 1, "walks ran in parallel"
+    assert threads == {"problem-board-workspace-walk"}
+    assert executor_used == [None], "only the probe used the default executor"
+    assert free_executor_seconds < 0.05
+    assert all(adapter._workspace_bytes == 1 for adapter in adapters)
+
+
+def test_each_walk_is_logged_with_its_timing_and_queue_wait(tmp_path: Path, monkeypatch, caplog):
+    import logging
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    adapter = SimpleNamespace(config=SimpleNamespace(workspace=str(workspace), working_directory="", worker_name="w-log"))
+    adapter_class = _adapter_class()
+    adapter._schedule_workspace_measure = lambda path: adapter_class._schedule_workspace_measure(adapter, path)
+
+    def failing(_root):
+        raise PermissionError("synthetic")
+
+    monkeypatch.setattr(relay, "directory_bytes", failing)
+
+    async def beat():
+        await adapter_class._add_disk_usage(adapter, {})
+        await adapter._workspace_measure_task
+
+    with caplog.at_level(logging.INFO, logger=relay.logger.name):
+        asyncio.run(beat())
+    (line,) = [r for r in caplog.records if "workspace size walk" in r.getMessage()]
+    text = line.getMessage()
+    assert line.levelno == logging.WARNING
+    assert "worker=w-log outcome=PermissionError" in text
+    assert "walk_seconds=" in text and "queue_wait_seconds=" in text and "queued_behind=" in text
+    assert "synthetic" not in text

@@ -34,6 +34,7 @@ from .codex_quota import (
     read_codex_quota, account_fingerprint, SOURCE_CODEX_APP_SERVER, QUOTA_REFRESH_SECONDS,
 )
 from .runtime_model import session_with_runtime_model
+from .serial_walker import SerialWalker
 from .worktree_files import (
     MAX_OBSERVED_PATHS as MAX_OBSERVED_PATHS_DEFAULT,
     WorktreeObserverCache,
@@ -156,6 +157,13 @@ JOURNAL_NOTICE_KIND = "worker.journal"
 HEARTBEAT_CONTROL_REF_LIMIT = 20
 # W423: how often the relay re-walks an agent's workspace to size it.
 DISK_USAGE_REMEASURE_SECONDS = 900
+
+
+# W461: workspace walks run one at a time on their own thread, never on the
+# default executor that the OAuth file locks and DNS lookups share.
+WORKSPACE_WALKER = SerialWalker("problem-board-workspace-walk")
+# A walk this slow is logged at WARNING with its timing.
+WORKSPACE_WALK_SLOW_SECONDS = 10.0
 
 
 def directory_bytes(root: Path) -> int:
@@ -4009,10 +4017,34 @@ class ProblemBoardHostRelayAdapter:
             return
 
         async def measure() -> None:
+            queued_at = time.monotonic()
+            queued_behind = WORKSPACE_WALKER.queued()
+            started: list[float] = []
+
+            def walk() -> int:
+                started.append(time.monotonic())
+                return directory_bytes(Path(workspace))
+
+            outcome = "ok"
             try:
-                size = await asyncio.to_thread(directory_bytes, Path(workspace))
-            except Exception:  # noqa: BLE001 - a failed walk leaves the last size and retries next interval
+                size = await WORKSPACE_WALKER.run(walk)
+            except Exception as exc:  # noqa: BLE001 - a failed walk leaves the last size and retries next interval
+                outcome = type(exc).__name__
                 size = getattr(self, "_workspace_bytes", None)
+            ended = time.monotonic()
+            walk_seconds = ended - started[0] if started else 0.0
+            wait_seconds = (started[0] if started else ended) - queued_at
+            logger.log(
+                logging.WARNING if walk_seconds >= WORKSPACE_WALK_SLOW_SECONDS or outcome != "ok" else logging.INFO,
+                "Problem Board workspace size walk worker=%s outcome=%s walk_seconds=%.3f "
+                "queue_wait_seconds=%.3f queued_behind=%d bytes=%s",
+                getattr(self.config, "worker_name", "-"),
+                outcome,
+                walk_seconds,
+                wait_seconds,
+                queued_behind,
+                size if size is not None else "-",
+            )
             self._workspace_bytes = size
             self._workspace_bytes_path = workspace
             self._workspace_bytes_measured = time.monotonic()
