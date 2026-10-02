@@ -129,6 +129,16 @@ A lease that those commands cannot enumerate or read is a delivery-integrity
 blocker. Do not inspect, move, or edit private mailbox files as routine
 recovery.
 
+When an exact current reply is known but older mail fills the ordinary batch,
+use `pb worker receive --message-ref <work:mail:...>` or
+`pb worker receive --correlation-id <id> --sender <stable-worker-address>`.
+`--project-ref` and `--work-ref` are optional constraints. The `selection`
+result says whether a match was claimed, is already held or settled, or was
+blocked by pending operator mail. A selection leaves other pending mail in
+place and returns normal leases for any claimed messages; settle each once.
+Run ordinary `pb worker receive` after a selection before selecting again.
+Use ordinary receive with every native `--wake-id`.
+
 ## Lease Discipline
 
 Build a local handling ledger from the complete returned items before starting

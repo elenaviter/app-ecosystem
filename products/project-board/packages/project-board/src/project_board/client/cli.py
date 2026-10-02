@@ -819,6 +819,11 @@ def build_parser() -> argparse.ArgumentParser:
     _agent_identity(command)
     command.add_argument("--limit", type=int, default=5)
     command.add_argument("--lease-seconds", type=int, default=1800)
+    command.add_argument("--message-ref", default="", help="Lease one exact addressed mail message if pending.")
+    command.add_argument("--correlation-id", default="", help="Select a thread with --sender stable worker name.")
+    command.add_argument("--sender", default="", help="Stable sender worker name; required with --correlation-id.")
+    command.add_argument("--project-ref", default="", help="Optional attended project constraint for a selection.")
+    command.add_argument("--work-ref", default="", help="Optional canonical work-item constraint for a selection.")
     command.add_argument(
         "--wake-id",
         default="",
@@ -5038,6 +5043,11 @@ def _worker_command(args: Any) -> dict[str, Any]:
             limit=args.limit,
             lease_seconds=args.lease_seconds,
             wake_id=args.wake_id,
+            message_ref=args.message_ref,
+            correlation_id=args.correlation_id,
+            sender=args.sender,
+            project_ref=args.project_ref,
+            work_ref=args.work_ref,
         )
         return _with_project_files_signals(received, config, field, identity)
     if args.worker_command == "leases":

@@ -8,6 +8,7 @@ import mimetypes
 mimetypes.add_type("text/markdown", ".md")
 import logging
 import os
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -3510,6 +3511,7 @@ class SharedFieldStore:
                     5, min(int(check_interval_seconds), 3600)
                 ),
                 "last_inbox_check_at": str(previous.get("last_inbox_check_at") or ""),
+                "general_receive_due": bool(previous.get("general_receive_due")),
                 "last_message_refs": list(previous.get("last_message_refs") or []),
                 "last_control_refs": list(previous.get("last_control_refs") or []),
                 "observed_control_plane_state": str(
@@ -3561,6 +3563,7 @@ class SharedFieldStore:
         *,
         state: str = "waiting",
         inbox_checked: bool = False,
+        selective_receive: bool = False,
         message_refs: Sequence[str] = (),
         control_refs: Sequence[str] = (),
         observed_control_plane_state: str | None = None,
@@ -3591,7 +3594,10 @@ class SharedFieldStore:
                 heartbeat_at=now,
                 revision=int(listener.get("revision") or 0) + 1,
             )
+            if selective_receive:
+                listener["general_receive_due"] = True
             if inbox_checked:
+                listener["general_receive_due"] = False
                 observed_message_refs = _bounded_message_refs(message_refs)
                 listener.update(
                     last_inbox_check_at=now,
@@ -6514,6 +6520,7 @@ class SharedFieldStore:
         reply_to: str = "",
         idempotency_key: str,
         sender_identity: Mapping[str, Any] | None = None,
+        admitted_operator_control: bool = False,
         board_routed: bool = False,
         idempotency_identity: Mapping[str, Any] | None = None,
         idempotency_alias_keys: Sequence[str] = (),
@@ -6696,6 +6703,12 @@ class SharedFieldStore:
                 status = "ignored_recipient_limbo"
             message_id = new_id("mail")
             now = utc_now()
+            operator_admitted = bool(
+                admitted_operator_control
+                and clean_sender == "control-plane"
+                and identity.get("kind") == "user"
+                and clean_kind in {"request", "reply"}
+            )
             envelope = {
                 "schema": MAIL_SCHEMA,
                 "message_id": message_id,
@@ -6720,6 +6733,10 @@ class SharedFieldStore:
                 "created_at": now,
                 "updated_at": now,
             }
+            if operator_admitted:
+                # Only materialize_control passes this for a board-admitted
+                # person; peer display labels and public payloads cannot.
+                envelope["admitted_operator_control"] = True
             envelope["message_ref"] = reference_for_record("mail", envelope)
             envelope["content_hash"] = content_hash(envelope)
             if status == "pending":
@@ -7198,6 +7215,131 @@ class SharedFieldStore:
                     atomic_write_json(path, row)
                     os.replace(path, root / "inbox" / path.name)
 
+    @staticmethod
+    def _is_admitted_operator_mail(row: Mapping[str, Any]) -> bool:
+        identity = row.get("sender_identity")
+        identity = identity if isinstance(identity, Mapping) else {}
+        payload = row.get("payload")
+        payload = payload if isinstance(payload, Mapping) else {}
+        return bool(
+            str(row.get("sender") or "") == "control-plane"
+            and str(row.get("kind") or "") in {"request", "reply"}
+            and str(identity.get("kind") or "") == "user"
+            and (
+                row.get("admitted_operator_control") is True
+                # Controls already materialized by an older client carry the
+                # board's sender identity and control ref, but not the marker.
+                or str(payload.get("command_ref") or "").startswith("work:control:")
+            )
+        )
+
+    def select_mail_candidates(
+        self,
+        project_ids: Sequence[str],
+        *,
+        worker_name: str,
+        message_ref: str = "",
+        correlation_id: str = "",
+        sender: str = "",
+        project_id: str | None = None,
+        work_ref: str = "",
+        maximum_scanned: int = 4096,
+    ) -> dict[str, Any]:
+        """Inspect this worker's locked shards before any selective lease.
+
+        The caller holds every listed ``.mail.lock`` in sorted path order.
+        Files remain where they are; pull_mail uses the returned paths while
+        those locks are still held. A scan beyond the cap refuses closed.
+        """
+        clean_worker = component(worker_name, field="worker_name").lower()
+        selected: dict[str, list[Path]] = {scope: [] for scope in project_ids}
+        held: list[dict[str, str]] = []
+        pending_count = 0
+        unselected_count = 0
+        oldest_unselected_at = ""
+        operator_pending = False
+        scanned = 0
+
+        def matches(row: Mapping[str, Any], scope: str) -> bool:
+            if project_id is not None and scope != project_id:
+                return False
+            if str(row.get("recipient") or "").lower() != clean_worker:
+                return False
+            if message_ref and str(row.get("message_ref") or "") != message_ref:
+                return False
+            if correlation_id and str(row.get("correlation_id") or "") != correlation_id:
+                return False
+            if sender and str(row.get("sender") or "").lower() != sender:
+                return False
+            if work_ref:
+                try:
+                    if plan_node_identity_ref(str(row.get("work_ref") or "")) != work_ref:
+                        return False
+                except DomainError:
+                    return False
+            return True
+
+        for scope in project_ids:
+            root = self._mail_root(scope, clean_worker)
+            self._recover_expired_mail(scope, clean_worker)
+            for path in sorted((root / "inbox").glob("*.json")):
+                scanned += 1
+                if scanned > maximum_scanned:
+                    raise DomainError(
+                        "field_mail_selection_scan_limit",
+                        "Selective receive cannot safely scan this backlog. Use ordinary receive.",
+                        status=409,
+                        details={"maximum_scanned": maximum_scanned},
+                    )
+                row = read_json(path)
+                pending_count += 1
+                if self._is_admitted_operator_mail(row):
+                    operator_pending = True
+                if matches(row, scope):
+                    selected[scope].append(path)
+                else:
+                    unselected_count += 1
+                    created_at = str(row.get("created_at") or "")
+                    if created_at and (not oldest_unselected_at or created_at < oldest_unselected_at):
+                        oldest_unselected_at = created_at
+            for path in sorted((root / "leased").glob("*.json")):
+                scanned += 1
+                if scanned > maximum_scanned:
+                    raise DomainError(
+                        "field_mail_selection_scan_limit",
+                        "Selective receive cannot safely scan this backlog. Use ordinary receive.",
+                        status=409,
+                        details={"maximum_scanned": maximum_scanned},
+                    )
+                row = read_json(path)
+                if matches(row, scope):
+                    lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
+                    held.append({
+                        "message_ref": str(row.get("message_ref") or ""),
+                        "project_ref": make_ref("project", scope) if scope else "",
+                        "lease_id": str(lease.get("lease_id") or ""),
+                        "lease_owner": str(lease.get("owner") or ""),
+                        "expires_at": str(lease.get("expires_at") or ""),
+                    })
+
+        previous_state = ""
+        if message_ref and not any(selected.values()) and not held:
+            for scope in project_ids:
+                row = self._mail_record_unlocked(scope, clean_worker, message_ref)
+                if row and matches(row, scope):
+                    previous_state = str(row.get("state") or row.get("delivery_status") or "")
+                    break
+        return {
+            "selected": selected,
+            "operator_pending": operator_pending,
+            "pending_count": pending_count,
+            "unselected_count": unselected_count,
+            "oldest_unselected_at": oldest_unselected_at,
+            "held": held[:10],
+            "held_count": len(held),
+            "previous_state": previous_state,
+        }
+
     def pull_mail(
         self,
         project_id: str,
@@ -7209,6 +7351,8 @@ class SharedFieldStore:
         byte_budget: MailPullBudget | None = None,
         measure_response: Callable[[Sequence[Mapping[str, Any]]], int] | None = None,
         measure_message: Callable[[Mapping[str, Any]], int] | None = None,
+        selected_paths: Sequence[Path] | None = None,
+        lock_held: bool = False,
     ) -> list[dict[str, Any]]:
         """Lease one bounded mailbox batch.
 
@@ -7237,9 +7381,16 @@ class SharedFieldStore:
         (root / "inbox").mkdir(parents=True, exist_ok=True, mode=0o700)
         (root / "leased").mkdir(parents=True, exist_ok=True, mode=0o700)
         claimed: list[dict[str, Any]] = []
-        with exclusive_lock(root / ".mail.lock"):
+        with nullcontext() if lock_held else exclusive_lock(root / ".mail.lock"):
             self._recover_expired_mail(clean_project, clean_worker)
-            sources = sorted((root / "inbox").glob("*.json"))
+            sources = (
+                sorted((root / "inbox").glob("*.json"))
+                if selected_paths is None
+                else [
+                    path for path in selected_paths
+                    if path.parent == root / "inbox" and path.exists()
+                ]
+            )
             with PartitionedStore(root, store="mailbox").reading("receive") as read:
                 read.opened_pending(clean_worker, len(sources))
             take = max(0, min(int(limit), 100))
@@ -8708,6 +8859,11 @@ class SharedFieldStore:
             reply_to=reply_to,
             idempotency_key=f"control:{command_ref}",
             sender_identity=sender_identity,
+            admitted_operator_control=(
+                control_kind in {"request", "reply"}
+                and isinstance(sender_identity, Mapping)
+                and str(sender_identity.get("kind") or "") == "user"
+            ),
             board_routed=control_kind == "mail",
         )
         if control_kind == "mail" and kind == "delivery_failed":
