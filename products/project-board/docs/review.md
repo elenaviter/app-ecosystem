@@ -52,7 +52,7 @@ todo --working status--> working --assignment.completed--> review
 | `todo` | Work has not started. The item may already have an assignee. |
 | `working` | Work has started. The assignee may be empty; assignment and status are independent. A released item keeps this status until a status edit changes it. A blocked assignment stays `working` and records its reason separately. |
 | `review` | A versioned result is ready for a qualified reviewer. Work completed under an assignment carries its assignment evidence; work managed by a person carries the immutable item version as evidence. |
-| `done` | A qualified reviewer accepted the submitted result and its evidence. |
+| `done` | The item is marked finished. A qualified acceptance is evidenced by its separate review record, not by this field alone. |
 | `cancelled` | Work ended without acceptance. Who cancelled it, when, and why stay on the record. |
 
 ## Assignment and status are separate facts
@@ -61,11 +61,26 @@ todo --working status--> working --assignment.completed--> review
   the item. The item moves to `working` when the owner reports `working`, or
   when Working is set on an item: by an agent whose Card holds
   `work.status.set`, or by any person on the project, admin or member.
-- **A status edit preserves the assignee.** Review-to-Done and
-  Review-to-Cancelled also audit the decision and settle active ownership.
-  Selecting Todo does not reopen ownership or issue a rework assignment.
-- **Ownership moves only by ownership acts:** `assignment.assign`,
-  `assignment.return` (release), or a reassignment. A review decision may
+- **A status edit preserves the assignee.** Leaving Review for Todo, Done or
+  Cancelled records only the ordinary status change, not a review decision.
+  Done/Cancelled close execution as `accepted`/`cancelled` under ordinary
+  status authority, without recording review approval or advancing ownership.
+  Nonterminal status does not reopen closed execution or issue rework.
+- **Explicit authorized reopen is separate from ordinary fields.**
+  `assignment.assign(reopen=true)` establishes a new ownership period at an
+  unchanged Review, Done or Cancelled status, leaving `started_at` unchanged.
+  No preliminary nonterminal status save is required. The new owner's first
+  working report follows the usual status/start-time contract; old-period
+  controls and new reports remain fenced, while recorded retries replay.
+  This uses the existing assignment authorization, not either field grant.
+  Its trusted Board evidence, bound to the current active assignment and
+  ownership, makes the notice `begin_work` even while the old status remains.
+  Ordinary Review/terminal notices and review-return semantics are unchanged.
+  Evidence is durable for heartbeat recovery after control acknowledgement;
+  legacy assignments without it retain status-based notices. Release testing
+  must verify server/client compatibility and a fresh worker's first report.
+- **Ownership moves only by explicit assignee/ownership acts:** `work.assignee.set`,
+  `assignment.assign`, or `assignment.return` (release). A review decision may
   settle assignment history. The dedicated `review.return` action routes
   rework to the contributor; it is distinct from selecting a status field.
 - **No status-dependent assignee restriction.** Any status can keep an empty
@@ -77,12 +92,26 @@ started, and moving work back to Todo says nothing about who holds it.
 In the board's work-item dialog a person edits the Status and Assignee
 fields. A save runs two independent steps: a changed assignee is an assign
 (or a release, when cleared), and a changed status is a status edit.
+The field permissions are `work.assignee.set` and `work.status.set`; a combined
+save checks those two, with no third permission. At a nonterminal status a newly
+selected assignee does the next work immediately if their existing Card and repository scope allow it.
+At Done/Cancelled the chosen display owner persists, but execution is closed
+and the ordinary field edit creates no assignment control or work wake. This
+does not prohibit a later explicit authorized assignment reopen.
+Selection grants no new authority or credentials and requires no second handoff.
+Applied report history continues to name the contributor for review decisions.
 Selecting Cancelled requires a reason, but no status restricts the assignee.
 Working may be explicitly unassigned; Review-to-Cancelled may select a new
 worker. No detour through another status is needed. When both fields change,
-one transaction applies the
-review decision first when there is one, then the selected ownership, and
-either all of the save succeeds or none of it does. The dialog always displays
+one transaction applies the selected ownership and ordinary status fields,
+and either all of the save succeeds or none of it does. An ordinary status
+edit, including leaving Review for Todo, Done or Cancelled, needs only
+`work.status.set`: it records a status change, not a review verdict, and never
+fabricates review acceptance or reopens the implementation assignment.
+Terminal closure records its ordinary field authority and cause separately.
+Dedicated review operations retain their review authority, no-self-review and
+audit fences; they do not additionally require status or assignee field grants.
+The dialog always displays
 and submits `item.assignee`, for Todo, Working, Review, Done and Cancelled.
 Assignment rows and history never replace that field in a projection. Explicit
 review routing updates the direct field as described below. The
@@ -91,9 +120,10 @@ compare the selected value with the stored assignee. A status-only save does
 not read, derive, clear or recreate the assignee; an explicit assignee edit
 sets it once. The worker Card's current assignment list contains the item
 exactly when `item.assignee` names that worker.
-An explicit clear after a review has closed ownership clears only the item
-field and preserves that closed assignment as history. A new selection creates
-the new ownership after the decision, without rewriting the prior ownership
+An explicit clear after review has closed execution clears the item field and
+advances the ownership fence once, without creating a new reporting-authority
+ledger row. The closed assignment state and prior contributor evidence stay
+historical. A new selection advances once without rewriting the prior ownership
 evidence. A person can be selected directly without manufacturing an agent
 assignment. The two fields can be saved separately in either order, including
 while Review or Done remains unchanged. No extra accept, return or reopen
@@ -274,11 +304,10 @@ Refusals are named: a revision conflict, an item not in `review`, self-review,
 or an unmet requirement for a person. A retired contributor row is not a
 prerequisite for editing the item's current fields.
 
-On the board a person changes the Status field; the record still names the
-decision. Review to Done records `review.accept`, Review to Todo records
-`review.return`, and Review to Cancelled records `review.cancel`. Selecting
-Todo persists Todo and preserves the current assignee and assignment period;
-it does not invoke the dedicated action's rework ownership behavior.
+An ordinary Status field edit records `work.status.set`, including Review to
+Done, Todo or Cancelled. It preserves the current assignee and assignment
+period and writes no review verdict. A qualified review decision requires the
+dedicated action and its authority; selecting a status never invokes it.
 
 ## Returns
 
@@ -334,13 +363,16 @@ report is never final acceptance.
 
 ## What done means
 
-`done` says that a qualified reviewer accepted the submitted result and its
-evidence. It makes no claim about deployment or runtime state. Where an
-acceptance line is about behaviour, the reviewer checks it against the
-deployed result before accepting; the status itself does not record that.
+In the review workflow, `review.accept` records that a qualified reviewer
+accepted the submitted result and its evidence, and marks the item `done`.
+An ordinary field edit can also select `done`, but the status alone proves
+neither acceptance nor deployment. Where an acceptance line is about behaviour,
+the reviewer checks it against the deployed result and records that evidence
+in the review verdict; the status itself does not record that.
 
-A done or cancelled item can receive a new assignment from someone whose
-Card holds `assignment.assign`. That ownership act does not change its status;
+A done or cancelled item can receive a new assignee from someone whose
+Card holds `work.assignee.set`, or an explicit assignment using `assignment.assign`.
+That ownership act does not change its status;
 changing the status is a separate edit.
 
 ## Where the steps are

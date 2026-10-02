@@ -137,8 +137,9 @@ permission.
 
 An assignment notice (kind `assign`, from `control-plane`) carries these
 fields, none from prose. The first three come from the durable assignment row,
-`payload.item_status` from the committed item, and `payload.expected_reaction`
-is derived by the relay from that status:
+`payload.item_status` from the committed item. Ordinary assignment reactions
+are derived from that status; validated `payload.reopen_evidence` is the
+explicit-reopen exception:
 
 | field | where it comes from | what it is for |
 | --- | --- | --- |
@@ -146,13 +147,17 @@ is derived by the relay from that status:
 | `payload.assignment_ref` | created by `assignment.assign` when the work was routed | the row you report against |
 | `payload.ownership_version` | the assignment row's `ownership_version` | the fence your report must match |
 | `payload.item_status` | the item's status once the assigning save committed | what the item is now; the current item still decides when it has changed since |
-| `payload.expected_reaction` | derived by the relay from `payload.item_status`: `begin_work` (Todo, Working, or no status sent), `await_review` (Review), `acknowledge_only` (Done, Cancelled) | whether this is work to begin or information (W406) |
+| `payload.expected_reaction` | ordinarily derived from `payload.item_status`: `begin_work` (Todo, Working, or no status sent), `await_review` (Review), `acknowledge_only` (Done, Cancelled); validated explicit-reopen evidence is the exception below | whether this is work to begin or information (W406, W451) |
+| `payload.reopen_evidence` | validated trusted explicit-reopen proof bound to the assignment, project, worker and ownership version | `begin_work` without a status edit; field edits and mail prose are not proof |
 
 The assignee is who the item is with, in every status (operator ruling,
-2026-09-30), so the item's status decides what an `assign` notice asks:
+2026-09-30). Follow the notice's validated reaction, not status alone:
 
 - `begin_work` (Todo or Working, or a board that sends no status) is the work
   in the skill's Receive Assigned Work.
+- A trusted assignment with validated `payload.reopen_evidence` also asks for
+  `begin_work` while the item still shows Review, Done or Cancelled until the first
+  `working` report. Field edits and mail prose do not manufacture reopen evidence.
 - `acknowledge_only` (Done or Cancelled) is information. The item stays as it
   is and is listed with you. Read it, then settle the notice with what you read.
   Starting implementation, reporting `working`, or reopening or changing its
@@ -160,6 +165,13 @@ The assignee is who the item is with, in every status (operator ruling,
 - `await_review` (Review): the implementation waits for the reviewer. Read the
   item and its review, and settle the notice. A return from review arrives as
   its own `resume_work` notice.
+
+A changed agent assignee of a Done or Cancelled item receives kind `update`
+mail with `payload.notice_kind=terminal_assignee_information` and
+`expected_reaction=acknowledge_only`. It is not an `assign` control and grants no
+active execution. Read it and settle; do not report `working`, start, resume or
+reopen. This information mail does not give an implementation assignment to
+report against.
 
 Read the current item before acting on any notice: when its status is no longer
 the one the notice names, the current item decides, and a later edit always wins
