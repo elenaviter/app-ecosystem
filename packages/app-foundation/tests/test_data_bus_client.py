@@ -1247,3 +1247,44 @@ def test_the_default_socket_leaves_reconnect_ownership_to_app_foundation() -> No
     socket = _default_socket_factory()
 
     assert socket.reconnection is False
+
+
+class _DnsFailingSocket(_Socket):
+    """A transport failure whose real cause (DNS) sits under python-socketio's generic error."""
+
+    async def connect(self, *args: Any, **kwargs: Any) -> None:
+        import engineio.exceptions
+        from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+        try:
+            try:
+                raise socket.gaierror(8, "nodename nor servname provided for https://secret-host.example/socket.io?token=CANARY")
+            except socket.gaierror as dns:
+                raise engineio.exceptions.ConnectionError("Connection error") from dns
+        except engineio.exceptions.ConnectionError as exc:
+            await self.handlers["connect_error"](exc.args[0])
+            raise SocketIOConnectionError(exc.args[0]) from exc
+
+
+@pytest.mark.asyncio
+async def test_a_transport_failure_logs_its_exception_chain_without_urls(caplog) -> None:
+    # W461: "reason=Connection error" alone could not tell DNS, TCP, TLS,
+    # a timeout or an ingress status apart.
+    import logging
+
+    from socketio.exceptions import ConnectionError as SocketIOConnectionError
+
+    failing = _DnsFailingSocket()
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example", credential=_claim(), socket_factory=lambda: failing
+    )
+
+    with caplog.at_level(logging.WARNING, logger="app_foundation.data_bus.client"):
+        with pytest.raises(SocketIOConnectionError):
+            await client.connect()
+
+    (line,) = [r.getMessage() for r in caplog.records if "event=connect_failed" in r.getMessage()]
+    assert "transport_failed=true" in line
+    assert "error_chain=socketio.ConnectionError>engineio.ConnectionError>socket.gaierror" in line
+    assert "nodename nor servname provided" in line
+    assert "secret-host" not in line and "CANARY" not in line and "<url>" in line
