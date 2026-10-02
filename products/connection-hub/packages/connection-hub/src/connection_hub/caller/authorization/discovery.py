@@ -355,6 +355,33 @@ def _rate_limited(error: AuthorizationError) -> bool:
     return int(getattr(error, "status", 0) or 0) == 429
 
 
+# A metadata candidate the server says is not there. Only these answers move
+# discovery on to the next candidate as an absence.
+METADATA_ABSENT_STATUSES = frozenset({404, 410})
+
+
+def _metadata_absent(error: AuthorizationError) -> bool:
+    return (
+        error.code == "oauth_metadata_request_failed"
+        and int(getattr(error, "status", 0) or 0) in METADATA_ABSENT_STATUSES
+    )
+
+
+def _metadata_transient(error: AuthorizationError) -> bool:
+    """A metadata request that did not get the server's answer.
+
+    No status (timeout, refused or dropped connection), a request timeout or a
+    server error says nothing about whether the document exists (W461,
+    2026-10-02: a timed-out candidate fell through to the root fallback's 404
+    and was reported as metadata unavailable).
+    """
+
+    if error.code != "oauth_metadata_request_failed":
+        return False
+    status = getattr(error, "status", None)
+    return status is None or int(status) == 408 or int(status) >= 500
+
+
 class OAuthDiscovery:
     def __init__(self, *, transport: OAuthTransport) -> None:
         self._transport = transport
@@ -490,11 +517,22 @@ class McpOAuthEndpointDiscovery:
                         )
         except AuthorizationError:
             raise
-        except Exception:  # noqa: BLE001
-            raise AuthorizationError(
+        except Exception as exc:  # noqa: BLE001
+            # The exception class says whether the endpoint timed out, refused
+            # the connection or dropped it; its text may carry the URL and is
+            # not kept.
+            unreachable = AuthorizationError(
                 "oauth_mcp_endpoint_unreachable",
-                "The MCP endpoint could not be reached for OAuth discovery.",
-            ) from None
+                "The MCP endpoint could not be reached for OAuth discovery "
+                f"({type(exc).__name__}).",
+            )
+            unreachable.details = {
+                "phase": "mcp_probe",
+                "method": "POST",
+                "url": _safe_request_url(target, failure_code=""),
+                "failure_kind": type(exc).__name__,
+            }
+            raise unreachable from None
         if response.status_code != 401:
             raise AuthorizationError(
                 "oauth_challenge_not_advertised",
@@ -505,14 +543,24 @@ class McpOAuthEndpointDiscovery:
         challenge_scope = str(extract_scope_from_www_auth(response) or "").strip()
         metadata_url = ""
         resource: ProtectedResourceMetadata | None = None
+        unanswered: AuthorizationError | None = None
         for candidate in build_protected_resource_metadata_discovery_urls(
             challenge_metadata,
             target,
         ):
             try:
                 payload = await self._transport.get_json(candidate)
-            except AuthorizationError:
-                continue
+            except AuthorizationError as exc:
+                if _metadata_absent(exc):
+                    continue
+                if _metadata_transient(exc):
+                    # The next candidate may still answer; if none does, this
+                    # failure is what discovery reports.
+                    unanswered = unanswered or exc
+                    continue
+                # A rate limit, a refusal (401, 403, other 4xx) or a malformed
+                # document is the answer: it is not an absence to skip past.
+                raise
             published_resource = validate_resource_identifier(payload.get("resource"))
             requested_resource = resource_url_from_server_url(target)
             if not check_resource_allowed(
@@ -533,6 +581,8 @@ class McpOAuthEndpointDiscovery:
             )
             break
         if resource is None:
+            if unanswered is not None:
+                raise unanswered
             raise AuthorizationError(
                 "oauth_resource_metadata_unavailable",
                 "The MCP protected-resource metadata is unavailable.",
