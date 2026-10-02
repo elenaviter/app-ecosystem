@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -223,7 +224,11 @@ def atomic_write_text(path: Path, value: str) -> None:
 
 
 @contextmanager
-def exclusive_lock(path: Path) -> Iterator[None]:
+def exclusive_lock(
+    path: Path, *, check_cancelled: Callable[[], None] | None = None
+) -> Iterator[None]:
+    if check_cancelled is not None:
+        check_cancelled()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:
@@ -245,8 +250,21 @@ def exclusive_lock(path: Path) -> Iterator[None]:
             os.close(descriptor)
         raise
     with handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        if check_cancelled is None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        else:
+            # Background maintenance must not retain an uncancellable waiter
+            # when its channel closes. Keep the default CLI locking unchanged.
+            while True:
+                check_cancelled()
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(0.02)
         try:
+            if check_cancelled is not None:
+                check_cancelled()
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

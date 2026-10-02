@@ -168,6 +168,17 @@ coordinator included, and for every read and write of project state:
   `current_local_source` certifies the worker's local source only, and the
   accompanying clone state compares the last fetched remote ref, not live
   upstream availability.
+- **Heartbeat maintenance never waits on the shared relay loop.** Each worker
+  channel owns one reusable background journal job, shared by its transient
+  attendance adapters. While it is running, heartbeats return `refresh_pending`
+  and controls and peer channels continue normally; repeated heartbeats do not
+  queue jobs. A later heartbeat applies only the matching binding's result and
+  reports any local failure. The job uses separate index connections and a
+  cooperative 30-second maintenance budget, including cancellable catalog and
+  index lock waits. Channel shutdown cancels pending work and drains the tracked
+  job before replacement; it never abandons a thread that can still mutate the
+  index. An already-running OS/index operation must finish before that drain
+  completes, so cancellation is not a claim of hard preemption.
 - **An empty result is not a freshness diagnosis.** Search returns an `index`
   status with its source commits, recording time, compatibility issues and
   exclusions. A skipped invalid entry makes the index `partial`; historical

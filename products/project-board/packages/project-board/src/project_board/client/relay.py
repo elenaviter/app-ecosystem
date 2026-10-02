@@ -8,10 +8,12 @@ import math
 import os
 import shutil
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 try:
@@ -44,6 +46,7 @@ from ..contract.worker_identity import WorkerSessionIdentity, normalize_worker_a
 from ..contract.runtime_account import normalize_runtime_account
 from .io import content_hash, new_id, parse_utc, read_json, utc_now
 from .journals import (
+    JournalRefreshCancelled,
     JournalWorkspace,
     RepositoryMap,
     repository_entries,
@@ -733,6 +736,125 @@ class RelayConfig:
         )
 
 
+class _JournalRefreshWorker:
+    """One reusable, single-flight LOCAL job owned by a persistent channel.
+
+    No heartbeat awaits file/Git/index work, and no repeated poll can enqueue
+    another job while one is running. Only the loop applies incident/field
+    side effects. Closing fences cooperative writes and drains the tracked
+    job before the channel can be replaced; cancelling an await cannot detach
+    its thread. An in-progress OS/index operation is drained, not pretend-killed.
+    """
+
+    def __init__(self, *, timeout_seconds: float = 30.0) -> None:
+        self.timeout_seconds = timeout_seconds
+        self._stop = Event()
+        self._cancel_job = Event()
+        self._pool: ThreadPoolExecutor | None = None
+        self._future: Future[dict[str, Any] | DomainError | None] | None = None
+        self._key: str = ""
+
+    def poll(
+        self, workspace: JournalWorkspace, heartbeat: Mapping[str, Any],
+        *, create_home: bool,
+    ) -> tuple[bool, dict[str, Any] | DomainError | None]:
+        if self._stop.is_set():
+            return False, None
+        raw_binding = heartbeat.get("journal_binding")
+        binding = dict(raw_binding) if isinstance(raw_binding, Mapping) else {}
+        key = content_hash({
+            "binding": binding, "root": str(workspace.root),
+            "repositories": {name: str(path) for name, path in workspace.repositories.roots.items()},
+            "missing": {name: str(path) for name, path in workspace.repositories.missing.items()},
+            "workspace": str(workspace.repositories.workspace or ""),
+            "create_home": create_home,
+        })
+        completed = None
+        ready = False
+        if self._future is not None:
+            if not self._future.done():
+                if key != self._key:
+                    self._cancel_job.set()
+                return False, None
+            result = self._future.result()
+            self._future = None
+            if key == self._key and result is not None:
+                completed, ready = result, True
+            # Never apply an obsolete binding's result to a newer heartbeat.
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pb-journal")
+        self._key = key
+        self._cancel_job = Event()
+        self._future = self._pool.submit(
+            self._run, workspace, binding, create_home, self._cancel_job
+        )
+        # Every due heartbeat starts a check, even when it consumes a previous
+        # result. Otherwise a clone advance could wait two heartbeat intervals.
+        return ready, completed
+
+    def _run(
+        self, source: JournalWorkspace, binding: dict[str, Any], create_home: bool,
+        cancel_job: Event,
+    ) -> dict[str, Any] | DomainError | None:
+        deadline = time.monotonic() + self.timeout_seconds
+        expired = False
+
+        def check() -> None:
+            nonlocal expired
+            if self._stop.is_set() or cancel_job.is_set():
+                raise JournalRefreshCancelled()
+            if not expired and time.monotonic() >= deadline:
+                # Abort the operation once; its failure receipt can still be
+                # recorded, with stop/supersession fences remaining active.
+                expired = True
+                raise DomainError(
+                    "journal_index_refresh_failed",
+                    "The journal refresh exceeded its LOCAL maintenance time budget.",
+                    status=503, details={"error_type": "TimeoutError"},
+                )
+
+        # Separate index/SQLite objects: a loop-side view must never share a
+        # connection or a cancellation callback with this background job.
+        try:
+            check()
+            workspace = JournalWorkspace(source.root, source.repositories, check_cancelled=check)
+            if not binding.get("journal_home_ref"):
+                workspace.initialize()
+                return {"state": "unbound"}
+            return workspace.reconcile(binding, create_home=create_home)
+        except JournalRefreshCancelled:
+            return None
+        except DomainError as exc:
+            return exc
+        except Exception as exc:
+            return DomainError(
+                "journal_index_refresh_failed", "The LOCAL journal refresh failed.",
+                status=503, details={"error_type": type(exc).__name__},
+            )
+
+    async def aclose(self) -> None:
+        self._stop.set()
+        cancelled = False
+        if self._future is not None:
+            future = asyncio.wrap_future(self._future)
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    break
+            # Consume even a late cancellation/error before discarding state.
+            if future.done() and not future.cancelled():
+                future.exception()
+            self._future = None
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+            self._pool = None
+        if cancelled:
+            raise asyncio.CancelledError
+
+
 class ProblemBoardHostRelayAdapter:
     adapter_id = "problem-board"
 
@@ -752,6 +874,7 @@ class ProblemBoardHostRelayAdapter:
         runtime_account_reader: Callable[[], Awaitable[Mapping[str, Any]]] | None = None,
         runtime_account_error_state: dict[str, str] | None = None,
         outbox_drain_lock: asyncio.Lock | None = None,
+        journal_refresh_worker: _JournalRefreshWorker | None = None,
     ) -> None:
         self.config = config
         self.field = field
@@ -763,6 +886,7 @@ class ProblemBoardHostRelayAdapter:
         self.uploader = uploader or _http_upload
         self.downloader = downloader or _http_download
         self.journal_workspace = config.journal_workspace()
+        self._journal_refresh_worker = journal_refresh_worker or _JournalRefreshWorker()
         # Publishing registers the worker once per connection. Afterwards the
         # heartbeat alone proves relay presence; the control plane answers
         # ``work_worker_unavailable`` when the registration is gone or in limbo,
@@ -1548,44 +1672,68 @@ class ProblemBoardHostRelayAdapter:
                 create_home=self.config.create_missing_journal_home,
             )
         except DomainError as exc:
-            if exc.code not in LOCAL_JOURNAL_MAPPING_CODES:
-                raise
-            details = dict(exc.details or {})
-            repository = str(details.get("repository") or details.get("alias") or "")
-            path = str(details.get("path") or "")
-            gap = {
-                "state": "index_unavailable" if exc.code.startswith(("journal_index_", "journal_source_")) else "unmapped",
-                "project_ref": project_ref,
-                "journal_home_ref": str(binding.get("journal_home_ref") or ""),
-                "error_code": exc.code,
-                "error_summary": str(exc),
-                "repository": repository,
-                "path": path,
-                # One sentence for the worker and the operator (W304 D13).
-                "message": (
-                    f"journal unavailable for {project_ref}: {repository} not found at {path}"
-                    if path
-                    else f"journal unavailable for {project_ref}: {exc}"
-                ),
-                "mapped_repositories": sorted(self.journal_workspace.repositories.roots),
-                # W343: the worker's own workspace, where the clone belongs.
-                "workspace": str(self.journal_workspace.repositories.workspace or ""),
-            }
-            self._journal_mapping_gap = gap
-            key = (self.config.relay_id, project_ref, exc.code)
-            if key not in _reported_journal_gaps:
-                _reported_journal_gaps.add(key)
-                logger.warning(
-                    "Problem Board %s (code=%s ref=%s workspace=%s); controls still flow, "
-                    "journal views refuse until the worker clones the repository into "
-                    "its workspace (project-workspace.md step 2)",
-                    gap["message"],
-                    exc.code,
-                    gap["journal_home_ref"],
-                    gap["workspace"] or "-",
-                )
-            self._report_journal_incident(project_ref, gap)
-            return gap
+            return self._journal_binding_error(binding, exc)
+        return self._journal_binding_result(result)
+
+    def _reconcile_journal_binding_background(self, heartbeat: Mapping[str, Any]) -> dict[str, Any]:
+        if self.journal_workspace is None:
+            return {"state": "disabled"}
+        ready, result = self._journal_refresh_worker.poll(
+            self.journal_workspace, heartbeat,
+            create_home=self.config.create_missing_journal_home,
+        )
+        if not ready:
+            return {"state": "refresh_pending"}
+        if isinstance(result, DomainError):
+            binding = dict(heartbeat.get("journal_binding") or {})
+            return self._journal_binding_error(binding, result)
+        if result and result.get("state") == "unbound":
+            return {**result, "project_ref": f"work:project:{self.config.project_id}"}
+        assert result is not None
+        return self._journal_binding_result(result)
+
+    async def aclose(self) -> None:
+        await self._journal_refresh_worker.aclose()
+
+    def _journal_binding_error(self, binding: Mapping[str, Any], exc: DomainError) -> dict[str, Any]:
+        if exc.code not in LOCAL_JOURNAL_MAPPING_CODES:
+            raise exc
+        assert self.journal_workspace is not None
+        project_ref = f"work:project:{self.config.project_id}"
+        details = dict(exc.details or {})
+        repository = str(details.get("repository") or details.get("alias") or "")
+        path = str(details.get("path") or "")
+        gap = {
+            "state": "index_unavailable" if exc.code.startswith(("journal_index_", "journal_source_")) else "unmapped",
+            "project_ref": project_ref,
+            "journal_home_ref": str(binding.get("journal_home_ref") or ""),
+            "error_code": exc.code,
+            "error_summary": str(exc),
+            "repository": repository,
+            "path": path,
+            # One sentence for the worker and the operator (W304 D13).
+            "message": (
+                f"journal unavailable for {project_ref}: {repository} not found at {path}"
+                if path else f"journal unavailable for {project_ref}: {exc}"
+            ),
+            "mapped_repositories": sorted(self.journal_workspace.repositories.roots),
+            "workspace": str(self.journal_workspace.repositories.workspace or ""),
+        }
+        self._journal_mapping_gap = gap
+        key = (self.config.relay_id, project_ref, exc.code)
+        if key not in _reported_journal_gaps:
+            _reported_journal_gaps.add(key)
+            logger.warning(
+                "Problem Board %s (code=%s ref=%s workspace=%s); controls still flow, "
+                "journal views refuse until the worker clones the repository into "
+                "its workspace (project-workspace.md step 2)",
+                gap["message"], exc.code, gap["journal_home_ref"], gap["workspace"] or "-",
+            )
+        self._report_journal_incident(project_ref, gap)
+        return gap
+
+    def _journal_binding_result(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        project_ref = f"work:project:{self.config.project_id}"
         self._report_journal_incident(project_ref, None)
         self._journal_mapping_gap = None
         _reported_journal_gaps.difference_update(
@@ -3716,7 +3864,7 @@ class ProblemBoardHostRelayAdapter:
             self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
             self._record_attendance_observation(heartbeat_result)
             self._materialize_attended_project(heartbeat_result)
-            journal_workspace = self._reconcile_journal_binding(heartbeat_result)
+            journal_workspace = self._reconcile_journal_binding_background(heartbeat_result)
             # The team travels with every project heartbeat so a worker can
             # address a teammate from its packet without asking the control
             # plane. Runtime identity, when the board reports it, remains
@@ -4215,6 +4363,7 @@ class ProblemBoardHostRelayAdapter:
                 runtime_account_reader=self._runtime_account_reader,
                 runtime_account_error_state=self._runtime_account_error_state,
                 outbox_drain_lock=self._outbox_drain_lock,
+                journal_refresh_worker=self._journal_refresh_worker,
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -4443,7 +4592,10 @@ class _ChannelSession:
     close_failure: Exception | None = None
 
     async def aclose(self) -> None:
-        await self.stack.aclose()
+        try:
+            await self.adapter.aclose()
+        finally:
+            await self.stack.aclose()
 
 
 class ProblemBoardRelaySupervisor:

@@ -8,7 +8,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import yaml
 from app_foundation.index.sqlite import FusionWeights
@@ -398,22 +398,37 @@ def worker_journal_root(journal_workspace_root: str | Path, worker_name: str) ->
     return Path(journal_workspace_root).expanduser() / WORKER_JOURNALS_DIRECTORY / name
 
 
+class JournalRefreshCancelled(Exception):
+    """A closing relay must not publish a late journal generation or failure."""
+
+
 class JournalWorkspace:
     """LOCAL aggregate of Git-backed project journals and its disposable index."""
 
-    def __init__(self, root: str | Path, repositories: RepositoryMap) -> None:
+    def __init__(
+        self, root: str | Path, repositories: RepositoryMap,
+        *, check_cancelled: Callable[[], None] | None = None,
+    ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.repositories = repositories
         self.control = self.root / ".problem-board"
         self.catalog_path = self.control / "catalog.json"
         self.index = JournalSearchIndex(self.control / "index" / "journals.sqlite3")
         self.index_status_path = self.control / "index" / "journal-status.json"
+        self._cancel_callback = check_cancelled
+        self._check_cancelled = check_cancelled or (lambda: None)
+
+    def _lock(self, name: str):
+        return exclusive_lock(
+            self.control / "locks" / name, check_cancelled=self._cancel_callback
+        )
 
     def initialize(self) -> dict[str, Any]:
+        self._check_cancelled()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         (self.root / "projects").mkdir(parents=True, exist_ok=True, mode=0o700)
         (self.root / "workspaces").mkdir(parents=True, exist_ok=True, mode=0o700)
-        with exclusive_lock(self.control / "locks" / "catalog.lock"):
+        with self._lock("catalog.lock"):
             catalog = read_json(self.catalog_path, required=False)
             if catalog:
                 if catalog.get("schema") != WORKSPACE_SCHEMA:
@@ -428,6 +443,7 @@ class JournalWorkspace:
                 "created_at": utc_now(),
                 "updated_at": utc_now(),
             }
+            self._check_cancelled()
             atomic_write_json(self.catalog_path, catalog)
             return catalog
 
@@ -457,6 +473,7 @@ class JournalWorkspace:
         }
 
     def _link(self, binding: Mapping[str, Any], target: Path, *, group: str) -> Path:
+        self._check_cancelled()
         project_id = parse_ref(str(binding["project_ref"])).object_id
         destination = self.root / group / project_id
         if destination.exists() and not destination.is_symlink():
@@ -469,7 +486,9 @@ class JournalWorkspace:
             return destination
         temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
         try:
+            self._check_cancelled()
             os.symlink(target, temporary, target_is_directory=True)
+            self._check_cancelled()
             os.replace(temporary, destination)
         finally:
             if temporary.is_symlink():
@@ -477,6 +496,7 @@ class JournalWorkspace:
         return destination
 
     def _remove_link(self, binding: Mapping[str, Any], *, group: str) -> None:
+        self._check_cancelled()
         project_id = parse_ref(str(binding["project_ref"])).object_id
         destination = self.root / group / project_id
         if destination.is_symlink():
@@ -491,6 +511,7 @@ class JournalWorkspace:
     def reconcile(
         self, value: Mapping[str, Any], *, create_home: bool = False, rebuild: bool = True
     ) -> dict[str, Any]:
+        self._check_cancelled()
         binding = self._binding(value)
         try:
             _, target = self.repositories.resolve(
@@ -509,14 +530,16 @@ class JournalWorkspace:
             _, artifact_target = self.repositories.resolve(
                 str(binding["project_artifact_ref"])
             )
+        self._check_cancelled()
         (target / "journal").mkdir(parents=True, exist_ok=True, mode=0o700)
         self.initialize()
-        with exclusive_lock(self.control / "locks" / "catalog.lock"):
+        with self._lock("catalog.lock"):
             catalog = read_json(self.catalog_path)
             bindings = dict(catalog.get("bindings") or {})
             changed = bindings.get(binding["project_ref"]) != binding
             bindings[binding["project_ref"]] = binding
             catalog.update(bindings=bindings, updated_at=utc_now())
+            self._check_cancelled()
             atomic_write_json(self.catalog_path, catalog)
             link = self._link(binding, target, group="projects")
             artifact_link = (
@@ -544,13 +567,14 @@ class JournalWorkspace:
 
     def _record_binding(self, binding: Mapping[str, Any]) -> None:
         self.initialize()
-        with exclusive_lock(self.control / "locks" / "catalog.lock"):
+        with self._lock("catalog.lock"):
             catalog = read_json(self.catalog_path)
             bindings = dict(catalog.get("bindings") or {})
             if bindings.get(binding["project_ref"]) == dict(binding):
                 return
             bindings[binding["project_ref"]] = dict(binding)
             catalog.update(bindings=bindings, updated_at=utc_now())
+            self._check_cancelled()
             atomic_write_json(self.catalog_path, catalog)
 
     def clone_stamp(self, project_ref: str) -> dict[str, Any]:
@@ -838,6 +862,7 @@ class JournalWorkspace:
         exclusions: list[dict[str, Any]] = []
         bindings = self.catalog().get("bindings") or {}
         for project_ref, raw_binding in sorted(bindings.items()):
+            self._check_cancelled()
             binding = dict(raw_binding or {})
             try:
                 home_ref, home = self.repositories.resolve(
@@ -849,6 +874,7 @@ class JournalWorkspace:
                 issues.append(exc.to_dict())
                 continue
             for path in self._journal_paths(home):
+                self._check_cancelled()
                 try:
                     document = self._document_from_path(
                         project_ref=project_ref,
@@ -909,6 +935,7 @@ class JournalWorkspace:
 
         sources = {}
         for project_ref, binding in sorted(self.catalog().get("bindings", {}).items()):
+            self._check_cancelled()
             home_ref, home = self.repositories.resolve(binding["journal_home_ref"])
             journal = home / "journal"
             if home not in journal.resolve().parents:
@@ -919,11 +946,13 @@ class JournalWorkspace:
                 )
             files = []
             for path in self._journal_paths(home):
+                self._check_cancelled()
                 self._check_document_path(home, path)
                 metadata = path.stat()
                 files.append((path.relative_to(home).as_posix(), metadata.st_size,
                               metadata.st_mtime_ns, metadata.st_ctime_ns))
             clone = self.repositories.clone(home_ref.repository)
+            self._check_cancelled()
             commit = head_commit(clone)
             sources[project_ref] = {
                 "journal_home_ref": str(home_ref),
@@ -954,6 +983,7 @@ class JournalWorkspace:
         for current, directories, files in os.walk(
             journal, followlinks=False, onerror=failed_walk
         ):
+            self._check_cancelled()
             for name in directories:
                 self._check_document_path(home, Path(current) / name)
             paths.extend(Path(current) / name for name in files if name.endswith(".md"))
@@ -968,7 +998,9 @@ class JournalWorkspace:
             )
 
     def _record_refresh_failure(self, error: DomainError) -> None:
+        self._check_cancelled()
         previous = self.index_status(verify_sources=False)
+        self._check_cancelled()
         atomic_write_json(self.index_status_path, {
             **previous,
             "state": "stale" if self.index.path.exists() else "unavailable",
@@ -987,12 +1019,14 @@ class JournalWorkspace:
                 return {**previous, "refreshed": False}
             # A process interrupted during incremental writes cannot leave the
             # previous ready receipt certifying a partially updated index.
+            self._check_cancelled()
             atomic_write_json(self.index_status_path, {
                 **previous, "schema": JOURNAL_INDEX_STATUS_SCHEMA,
                 "state": "indexing", "freshness": "unverified",
                 "target_sources": sources, "last_refresh_attempt_at": utc_now(),
             })
             documents, issues, exclusions = self._scan_documents()
+            self._check_cancelled()
             # Never certify a mixed generation if a clone changed during scan.
             if self._source_stamps() != sources:
                 raise DomainError(
@@ -1000,7 +1034,12 @@ class JournalWorkspace:
                     "The journal source changed during indexing. Retry the search.",
                     status=409,
                 )
-            indexed_entries = self.index.sync(documents)
+            self._check_cancelled()
+            indexed_entries = (
+                self.index.sync(documents, check_cancelled=self._cancel_callback)
+                if self._cancel_callback is not None else self.index.sync(documents)
+            )
+            self._check_cancelled()
             if self._source_stamps() != sources:
                 raise DomainError(
                     "journal_source_changed",
@@ -1012,6 +1051,8 @@ class JournalWorkspace:
                 exclusions=exclusions, sources=sources,
             )
             return {**status, "refreshed": True}
+        except JournalRefreshCancelled:
+            raise
         except DomainError as exc:
             self._record_refresh_failure(exc)
             raise
@@ -1029,7 +1070,7 @@ class JournalWorkspace:
     def ensure_index_fresh(self) -> dict[str, Any]:
         """Serialize relay/CLI refreshes and certify the current LOCAL source."""
 
-        with exclusive_lock(self.control / "locks" / "index.lock"):
+        with self._lock("index.lock"):
             return self._refresh_index_locked()
 
     def _record_index_status(
@@ -1058,6 +1099,7 @@ class JournalWorkspace:
             "freshness": "current_local_source" if sources is not None else "unverified",
             "sources": dict(sources or {}),
         }
+        self._check_cancelled()
         atomic_write_json(self.index_status_path, status)
         return status
 
