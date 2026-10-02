@@ -26,7 +26,7 @@ revision (W449).
 | decide on a submission | [Accept, return, cancel](#accept-return-cancel) |
 | merge or ship a batch | [Merge](#merge) |
 | run a reload, refresh or client switch | [Reload, refresh, restart](#reload-refresh-restart) |
-| handle a failing channel, relay or delivery | What the coordinator is for, Communication comes first |
+| handle a failing channel, relay or delivery | [What the coordinator is for](#what-the-coordinator-is-for), its "Communication comes first" block |
 | wait on a silent worker | [Confirm that work started](#confirm-that-work-started), [Check a silent worker](#check-a-silent-worker-do-not-wait-for-it) |
 | tell the operator and the team where things stand | [Keep the project announcement current](#keep-the-project-announcement-current) |
 | hand the role over | [Hand the coordinator role over](#hand-the-coordinator-role-over-and-take-it-back) |
@@ -212,8 +212,8 @@ While it lasts:
   tree is the one reviewed (`git rev-parse <merge>^{tree}` against the
   reviewed tree), name in the roles table who backs up the board tables, who
   installs on which host, who gates and who verifies, monitor their receipts,
-  and give the ALL CLEAR. The delegates announce, collect ready, back up into
-  the host's backup folder, execute, verify and report
+  and give the ALL CLEAR. The delegates announce, collect ready, back up the
+  board tables into the host's backup folder, execute, verify and report
   ([runtime actions](runtime-actions.md#runtime-window-database-backups)), and
   after the ALL CLEAR the newest backup alone is kept. Reuse an independent
   reviewer's or gate's evidence on the exact source instead of rerunning

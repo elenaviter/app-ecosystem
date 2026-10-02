@@ -366,10 +366,16 @@ is a verification. One that stops at printing JSON is a report.
    cancelled, and a failure under cancellation still reaches its cleanup:
    `CancelledError` is not an `Exception`, so `except Exception` cleanup does
    not run. Ask for a test that changes the state, or cancels, at that await.
-   Why: on 2026-10-02 such awaits in one change stream twice let a replaced
-   Card or a closing session still dispatch, and once left a stored
-   credential without its profile and an unrevoked grant. The helper tests
-   passed every time (W461, PR 438 and PR 440).
+   Enumerate the awaits the change adds (for example
+   `git diff <base> <head> | grep '^+.*await '`) and check each one against
+   these clauses: a review that does not list them has not applied the rule.
+   Why: on 2026-10-02 such awaits in one change stream caused four defects.
+   Twice a replaced Card or a closing session still dispatched, once a
+   cancel split a stored credential from its profile, and once a failure
+   met a cancel and the grant was never revoked. The helper tests passed
+   every time, and the fourth passed a review after this rule existed,
+   because the review checked the awaits it remembered instead of the list
+   (W461, PR 438 and PR 440).
    The counts are what the tool said, not what the shell returned: the
    report carries pytest's own summary line verbatim for each suite, from
    the run at that head, and the author checks pytest's exit status, never

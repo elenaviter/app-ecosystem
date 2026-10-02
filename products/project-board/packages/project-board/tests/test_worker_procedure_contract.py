@@ -2495,6 +2495,11 @@ def test_the_w455_amendment_carries_the_batch_table_and_the_seven_corrections() 
     # A newly added await is reviewed around it.
     assert "is reviewed around that await, not only in the helper" in collaboration
     assert "`CancelledError` is not an `Exception`" in collaboration
+    assert "a failure under cancellation still reaches its cleanup" in collaboration
+    assert "Enumerate the awaits the change adds" in collaboration
+    assert "a review that does not list them has not applied the rule" in collaboration
+    assert "An agent you name in the table as the window's reserve" in coordinator
+    assert "starts nothing new: it records each follow-up on its item" in coordinator
 
 
 def test_an_operator_restriction_reaches_the_card_before_the_coordinator_routes_from_it() -> None:
