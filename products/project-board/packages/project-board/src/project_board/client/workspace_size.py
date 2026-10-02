@@ -54,6 +54,25 @@ def directory_bytes(root: Path) -> int:
     return total
 
 
+class WorkspaceWalkFailed(RuntimeError):
+    """The child walk exited non-zero; carries its exit code and exception type, never its text."""
+
+    def __init__(self, returncode: int | None, exception_type: str) -> None:
+        super().__init__(f"workspace walk exited {returncode} ({exception_type})")
+        self.returncode = returncode
+        self.exception_type = exception_type
+
+
+def _exception_type(stderr: bytes) -> str:
+    """The exception class name from a traceback's last line; its message may name paths."""
+
+    lines = [line for line in stderr.decode("utf-8", "replace").splitlines() if line.strip()]
+    if not lines:
+        return "-"
+    name = lines[-1].split(":", 1)[0].strip()
+    return name if name.replace(".", "").replace("_", "").isalnum() and len(name) <= 80 else "-"
+
+
 async def walk_in_child_process(path: str, *, timeout_seconds: float = WALK_TIMEOUT_SECONDS) -> int:
     """``directory_bytes`` of ``path``, computed by a child Python process."""
 
@@ -64,17 +83,17 @@ async def walk_in_child_process(path: str, *, timeout_seconds: float = WALK_TIME
         path,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
     )
     try:
-        out, _ = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
+        out, err = await asyncio.wait_for(process.communicate(), timeout=timeout_seconds)
     except BaseException:
         if process.returncode is None:
             process.kill()
             await process.wait()
         raise
     if process.returncode != 0:
-        raise RuntimeError(f"workspace walk exited {process.returncode}")
+        raise WorkspaceWalkFailed(process.returncode, _exception_type(err))
     return int(out.decode("ascii").strip())
 
 
@@ -131,6 +150,8 @@ class WorkspaceSizes:
                 raise
             except Exception as exc:  # noqa: BLE001 - the last size stays, the next interval retries
                 outcome = type(exc).__name__
+                if isinstance(exc, WorkspaceWalkFailed):
+                    outcome = f"{outcome}:{exc.returncode}:{exc.exception_type}"
             ended = self._clock()
             entry.measured_at = ended
         walk_seconds = ended - started

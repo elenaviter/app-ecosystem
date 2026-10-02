@@ -92,3 +92,34 @@ def test_the_coordinate_server_pass_reads_files_off_the_loop_and_still_serves(tm
     assert started == [channel.worker_name]
     assert response is not None and response["ok"] is True
     assert threads and all(name != loop_thread for name in threads), threads
+
+
+def test_the_project_heartbeat_store_work_runs_off_the_loop(tmp_path, monkeypatch):
+    """Before and after the network call, _poll_project_once reads and writes the field store."""
+
+    from project_board.client.store import SharedFieldStore
+
+    host, identity, field, config = _fresh_host(tmp_path)
+    threads: dict[str, set[str]] = {}
+
+    def spy(name, real):
+        def wrapper(*args, **kwargs):
+            threads.setdefault(name, set()).add(threading.current_thread().name)
+            return real(*args, **kwargs)
+        return wrapper
+
+    for name in ("sync_project_team", "sync_project_coordinator", "read_project"):
+        monkeypatch.setattr(SharedFieldStore, name, spy(name, getattr(SharedFieldStore, name)))
+    for name in ("_session_report_delta", "_reconcile_assignments", "_record_project_heartbeat"):
+        monkeypatch.setattr(relay.ProblemBoardHostRelayAdapter, name, spy(name, getattr(relay.ProblemBoardHostRelayAdapter, name)))
+
+    adapter = relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=Board(identity.worker_name))
+
+    async def scenario():
+        await adapter.poll_attendances_once()
+        return threading.current_thread().name
+
+    loop_thread = asyncio.run(scenario())
+    for name in ("sync_project_team", "sync_project_coordinator", "_session_report_delta", "_reconcile_assignments", "_record_project_heartbeat"):
+        assert name in threads, f"{name} did not run"
+        assert loop_thread not in threads[name], f"{name} ran on the event loop"

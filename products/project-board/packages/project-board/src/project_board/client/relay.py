@@ -164,6 +164,20 @@ _ADAPTER_EXECUTORS = ChannelExecutors(thread_name_prefix="problem-board-adapter"
 # held per path by WorkspaceSizes, which the per-poll adapters share).
 DISK_USAGE_REMEASURE_SECONDS = REMEASURE_SECONDS
 
+def _disk_usage_of(workspace: str) -> tuple[Any, str] | None:
+    """``shutil.disk_usage`` and the resolved path of an existing workspace, else None.
+
+    Blocking file-system calls: the caller runs this off the event loop.
+    """
+
+    if not Path(workspace).is_dir():
+        return None
+    try:
+        return shutil.disk_usage(workspace), os.path.realpath(workspace)
+    except OSError:
+        return None
+
+
 HEARTBEAT_SESSION_FIELDS = (
     "session_id",
     "state",
@@ -3671,24 +3685,21 @@ class ProblemBoardHostRelayAdapter:
         )
         return created, issues
 
-    async def _poll_project_once(
+    def _prepare_project_heartbeat(
         self,
         *,
+        project_ref: str,
         agent_sessions: Sequence[Mapping[str, Any]],
-        force_heartbeat: bool = False,
+        force_heartbeat: bool,
     ) -> dict[str, Any]:
-        project_ref = f"work:project:{self.config.project_id}"
+        """The heartbeat decision and payload: store reads and git, run off the loop (W461)."""
+
         session_delta, session_signature = self._session_report_delta(
             project_ref=project_ref,
             sessions=agent_sessions,
         )
-        # git runs per declared worktree here: in this channel's thread, never
-        # on the event loop (W461: 3 to 3.6 s loop blocks in git status).
-        assignment_files_delta, files_signature = await run_off_loop(
-            self._assignment_files_delta,
-            project_ref=project_ref,
-            fresh=force_heartbeat,
-            executor=self._store_executor,
+        assignment_files_delta, files_signature = self._assignment_files_delta(
+            project_ref=project_ref, fresh=force_heartbeat
         )
         store_reads_delta, store_reads_signature = self._store_reads_delta(
             project_ref=project_ref
@@ -3712,13 +3723,9 @@ class ProblemBoardHostRelayAdapter:
             )
             <= 0
         )
-        heartbeat_result: dict[str, Any] = {}
-        journal_workspace: dict[str, Any] = {"state": "unchanged"}
-        mailbox_reconciliation: dict[str, Any] = {"state": "unchanged"}
-        assignment_notices_reconciled = 0
-        assignment_reconciliation_issues: list[dict[str, Any]] = []
+        heartbeat_payload: dict[str, Any] = {}
         if heartbeat_sent:
-            heartbeat_payload: dict[str, Any] = {
+            heartbeat_payload = {
                 "availability": "available",
                 "project_ref": project_ref,
             }
@@ -3732,6 +3739,109 @@ class ProblemBoardHostRelayAdapter:
             self._add_alias_request(heartbeat_payload, alias_request)
             self._add_project_record(heartbeat_payload, project_ref)
             self._add_workspace_report(heartbeat_payload, project_ref, workspace_report)
+        return {
+            "session_delta": session_delta,
+            "session_signature": session_signature,
+            "files_signature": files_signature,
+            "store_reads_delta": store_reads_delta,
+            "store_reads_signature": store_reads_signature,
+            "worker_info": worker_info,
+            "alias_request": alias_request,
+            "workspace_report": workspace_report,
+            "heartbeat_sent": heartbeat_sent,
+            "heartbeat_payload": heartbeat_payload,
+        }
+
+    def _record_project_heartbeat_result(
+        self,
+        *,
+        project_ref: str,
+        prepared: Mapping[str, Any],
+        heartbeat_result: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Record an answered heartbeat in the field store, off the loop (W461)."""
+
+        session_signature = prepared["session_signature"]
+        files_signature = prepared["files_signature"]
+        store_reads_delta = prepared["store_reads_delta"]
+        store_reads_signature = prepared["store_reads_signature"]
+        worker_info = prepared["worker_info"]
+        alias_request = prepared["alias_request"]
+        workspace_report = prepared["workspace_report"]
+        self._record_project_heartbeat(project_ref)
+        self._record_session_report(
+            project_ref=project_ref,
+            signature=session_signature,
+        )
+        self._assignment_files_signatures[project_ref] = files_signature
+        if store_reads_delta is not None:
+            self._store_reads_signatures[project_ref] = store_reads_signature
+        self._acknowledge_worker_info(worker_info, heartbeat_result)
+        self._acknowledge_alias_request(alias_request, heartbeat_result)
+        self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
+        self._record_attendance_observation(heartbeat_result)
+        self._materialize_attended_project(heartbeat_result)
+        journal_workspace = self._reconcile_journal_binding(heartbeat_result)
+        # The team travels with every project heartbeat so a worker can
+        # address a teammate from its packet without asking the control
+        # plane. Runtime identity, when the board reports it, remains
+        # nested on that authoritative roster. Replacing the snapshot
+        # means an omitted model or account is never inherited or made up.
+        if isinstance(heartbeat_result.get("team"), list):
+            try:
+                self.field.sync_project_team(
+                    self.config.project_id, heartbeat_result["team"]
+                )
+            except DomainError:
+                # The project is not materialized here yet; the next cycle
+                # after its materialize control lands stores the team.
+                pass
+        # Who acts as coordinator now (W313): the holder, not the first
+        # labelled teammate. Absent from a board that predates it.
+        if isinstance(heartbeat_result.get("coordinator"), Mapping):
+            try:
+                self.field.sync_project_coordinator(
+                    self.config.project_id, heartbeat_result["coordinator"]
+                )
+            except DomainError:
+                # Like the team sync: a project not yet on this host keeps
+                # no holder; the next heartbeat after it lands writes one.
+                pass
+        return journal_workspace
+
+    async def _poll_project_once(
+        self,
+        *,
+        agent_sessions: Sequence[Mapping[str, Any]],
+        force_heartbeat: bool = False,
+    ) -> dict[str, Any]:
+        project_ref = f"work:project:{self.config.project_id}"
+        # Everything before the network call reads or writes the shared field
+        # store or runs git: in this channel's own thread, never on the event
+        # loop every channel shares (W461).
+        prepared = await run_off_loop(
+            self._prepare_project_heartbeat,
+            project_ref=project_ref,
+            agent_sessions=agent_sessions,
+            force_heartbeat=force_heartbeat,
+            executor=self._store_executor,
+        )
+        session_delta = prepared["session_delta"]
+        session_signature = prepared["session_signature"]
+        files_signature = prepared["files_signature"]
+        store_reads_delta = prepared["store_reads_delta"]
+        store_reads_signature = prepared["store_reads_signature"]
+        worker_info = prepared["worker_info"]
+        alias_request = prepared["alias_request"]
+        workspace_report = prepared["workspace_report"]
+        heartbeat_sent = prepared["heartbeat_sent"]
+        heartbeat_result: dict[str, Any] = {}
+        journal_workspace: dict[str, Any] = {"state": "unchanged"}
+        mailbox_reconciliation: dict[str, Any] = {"state": "unchanged"}
+        assignment_notices_reconciled = 0
+        assignment_reconciliation_issues: list[dict[str, Any]] = []
+        if heartbeat_sent:
+            heartbeat_payload = prepared["heartbeat_payload"]
             await self._add_disk_usage(heartbeat_payload)
             await self._add_runtime_account(heartbeat_payload)
             try:
@@ -3770,46 +3880,14 @@ class ProblemBoardHostRelayAdapter:
                     "agent_sessions_reported": 0,
                     "journal_workspace": {"state": "waiting_for_link"},
                 }
-            self._record_project_heartbeat(project_ref)
-            self._record_session_report(
-                project_ref=project_ref,
-                signature=session_signature,
-            )
-            self._assignment_files_signatures[project_ref] = files_signature
-            if store_reads_delta is not None:
-                self._store_reads_signatures[project_ref] = store_reads_signature
             heartbeat_result = _object_result(heartbeat_response)
-            self._acknowledge_worker_info(worker_info, heartbeat_result)
-            self._acknowledge_alias_request(alias_request, heartbeat_result)
-            self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
-            self._record_attendance_observation(heartbeat_result)
-            self._materialize_attended_project(heartbeat_result)
-            journal_workspace = self._reconcile_journal_binding(heartbeat_result)
-            # The team travels with every project heartbeat so a worker can
-            # address a teammate from its packet without asking the control
-            # plane. Runtime identity, when the board reports it, remains
-            # nested on that authoritative roster. Replacing the snapshot
-            # means an omitted model or account is never inherited or made up.
-            if isinstance(heartbeat_result.get("team"), list):
-                try:
-                    self.field.sync_project_team(
-                        self.config.project_id, heartbeat_result["team"]
-                    )
-                except DomainError:
-                    # The project is not materialized here yet; the next cycle
-                    # after its materialize control lands stores the team.
-                    pass
-            # Who acts as coordinator now (W313): the holder, not the first
-            # labelled teammate. Absent from a board that predates it.
-            if isinstance(heartbeat_result.get("coordinator"), Mapping):
-                try:
-                    self.field.sync_project_coordinator(
-                        self.config.project_id, heartbeat_result["coordinator"]
-                    )
-                except DomainError:
-                    # Like the team sync: a project not yet on this host keeps
-                    # no holder; the next heartbeat after it lands writes one.
-                    pass
+            journal_workspace = await run_off_loop(
+                self._record_project_heartbeat_result,
+                project_ref=project_ref,
+                prepared=prepared,
+                heartbeat_result=heartbeat_result,
+                executor=self._store_executor,
+            )
             recipients = heartbeat_result.get("mail_recipients")
             if not isinstance(recipients, list):
                 recipients = heartbeat_result.get("team")
@@ -3826,13 +3904,15 @@ class ProblemBoardHostRelayAdapter:
             (
                 assignment_notices_reconciled,
                 assignment_reconciliation_issues,
-            ) = self._reconcile_assignments(heartbeat_result)
+            ) = await run_off_loop(
+                self._reconcile_assignments, heartbeat_result, executor=self._store_executor
+            )
         with self._trace_stage(
             "attendance.controls",
             operation="control.pull",
         ):
             controls = await self._pull_controls()
-        self._report_dead_notification_path()
+        await run_off_loop(self._report_dead_notification_path, executor=self._store_executor)
         outbox = await self._flush_outbox()
         return {
             "worker_name": self.config.worker_name,
@@ -3989,20 +4069,25 @@ class ProblemBoardHostRelayAdapter:
         measured size, or none until the first measurement lands.
         """
 
-        workspace = str(getattr(self.config, "workspace", "") or getattr(self.config, "working_directory", "") or "")
-        if not workspace or not Path(workspace).is_dir():
+        # Only the agent's workspace (agent_workspace names it), never the
+        # folder a session happened to start in.
+        workspace = str(getattr(self.config, "workspace", "") or "")
+        if not workspace:
             return
-        try:
-            usage = shutil.disk_usage(workspace)
-        except OSError:
+        measured_path = await run_off_loop(
+            _disk_usage_of, workspace, executor=getattr(self, "_store_executor", None)
+        )
+        if measured_path is None:
             return
-        self._workspace_sizes.schedule(workspace, worker_name=self.config.worker_name)
+        usage, real_path = measured_path
+        # Keyed by the resolved path: one folder spelled two ways is one walk.
+        self._workspace_sizes.schedule(real_path, worker_name=self.config.worker_name)
         report: dict[str, Any] = {
             "host_free_bytes": int(usage.free),
             "host_total_bytes": int(usage.total),
             "workspace_path": workspace,
         }
-        measured = self._workspace_sizes.last(workspace)
+        measured = self._workspace_sizes.last(real_path)
         if measured is not None:
             report["workspace_bytes"] = int(measured)
         payload["disk_usage"] = report
@@ -4175,6 +4260,48 @@ class ProblemBoardHostRelayAdapter:
                 force_heartbeat=True,
             )
 
+    def _prepare_discovery_heartbeat(
+        self, sessions: Sequence[Mapping[str, Any]]
+    ) -> tuple[Any, str, Any, Any, bool, dict[str, Any]]:
+        """The discovery heartbeat decision and payload: store reads, off the loop (W461)."""
+
+        discovery_session_delta, session_signature = self._session_report_delta(
+            project_ref="",
+            sessions=sessions,
+        )
+        worker_info, info_pending = self._worker_info()
+        alias_request, alias_pending = self._alias_request()
+        sent = (
+            not self._attendance_cache.get("initialized")
+            or discovery_session_delta is not None
+            or info_pending
+            or alias_pending
+            or self._discovery_heartbeat_wait(sessions) <= 0
+        )
+        heartbeat_payload: dict[str, Any] = {}
+        if sent:
+            heartbeat_payload = {"availability": "available"}
+            if discovery_session_delta is not None:
+                heartbeat_payload["agent_sessions"] = discovery_session_delta
+            self._add_worker_info(heartbeat_payload, worker_info)
+            self._add_alias_request(heartbeat_payload, alias_request)
+        return discovery_session_delta, session_signature, worker_info, alias_request, sent, heartbeat_payload
+
+    def _record_discovery_heartbeat(
+        self,
+        session_signature: str,
+        worker_info: Any,
+        alias_request: Any,
+        discovery: Mapping[str, Any],
+    ) -> None:
+        """Record an answered discovery heartbeat in the field store, off the loop (W461)."""
+
+        self._record_project_heartbeat("")
+        self._record_session_report(project_ref="", signature=session_signature)
+        self._acknowledge_worker_info(worker_info, discovery)
+        self._acknowledge_alias_request(alias_request, discovery)
+        self._record_attendance_observation(discovery)
+
     async def poll_attendances_once(self) -> dict[str, Any]:
         """Discover and poll the current project of this session-bound worker."""
 
@@ -4183,7 +4310,7 @@ class ProblemBoardHostRelayAdapter:
         )
         if registration is not None and registration["remote"].get("pool_status") == "limbo":
             return await self._limbo_result()
-        sessions = self._listener_sessions()
+        sessions = await run_off_loop(self._listener_sessions, executor=self._store_executor)
         discovery: dict[str, Any] = {}
         discovery_heartbeat_sent = False
         discovery_session_delta: list[dict[str, Any]] | None = None
@@ -4195,25 +4322,17 @@ class ProblemBoardHostRelayAdapter:
             # known, its heartbeat refreshes the same authoritative snapshot.
             # An unrelated Data Bus push still starts a control reconciliation,
             # but it does not make unchanged discovery presence due.
-            discovery_session_delta, session_signature = self._session_report_delta(
-                project_ref="",
-                sessions=sessions,
-            )
-            worker_info, info_pending = self._worker_info()
-            alias_request, alias_pending = self._alias_request()
-            discovery_heartbeat_sent = (
-                not self._attendance_cache.get("initialized")
-                or discovery_session_delta is not None
-                or info_pending
-                or alias_pending
-                or self._discovery_heartbeat_wait(sessions) <= 0
+            (
+                discovery_session_delta,
+                session_signature,
+                worker_info,
+                alias_request,
+                discovery_heartbeat_sent,
+                heartbeat_payload,
+            ) = await run_off_loop(
+                self._prepare_discovery_heartbeat, sessions, executor=self._store_executor
             )
             if discovery_heartbeat_sent:
-                heartbeat_payload: dict[str, Any] = {"availability": "available"}
-                if discovery_session_delta is not None:
-                    heartbeat_payload["agent_sessions"] = discovery_session_delta
-                self._add_worker_info(heartbeat_payload, worker_info)
-                self._add_alias_request(heartbeat_payload, alias_request)
                 with self._trace_stage(
                     "attendance.heartbeat",
                     operation="worker.heartbeat.discovery",
@@ -4226,14 +4345,14 @@ class ProblemBoardHostRelayAdapter:
                     and republished["remote"].get("pool_status") == "limbo"
                 ):
                     return await self._limbo_result()
-                self._record_project_heartbeat("")
-                self._record_session_report(
-                    project_ref="",
-                    signature=session_signature,
+                await run_off_loop(
+                    self._record_discovery_heartbeat,
+                    session_signature,
+                    worker_info,
+                    alias_request,
+                    discovery,
+                    executor=self._store_executor,
                 )
-                self._acknowledge_worker_info(worker_info, discovery)
-                self._acknowledge_alias_request(alias_request, discovery)
-                self._record_attendance_observation(discovery)
         with self._trace_stage(
             "attendance.controls",
             operation="control.pull.discovery",
@@ -4278,9 +4397,11 @@ class ProblemBoardHostRelayAdapter:
             for item in self._attendance_cache.get("items") or []
             if isinstance(item, Mapping) and item.get("project_ref")
         ]
-        self.field.sync_worker_attendances(
+        await run_off_loop(
+            self.field.sync_worker_attendances,
             self.config.worker_name,
             [str(item["project_ref"]) for item in observed_attendances],
+            executor=self._store_executor,
         )
         worker_alias = str(
             self._attendance_cache.get("worker_alias")
@@ -6883,6 +7004,10 @@ class ProblemBoardRelaySupervisor:
 
         queue = CoordinateQueue(host.field_root)
         channels = {channel.worker_name: channel for channel in host.workers}
+        # Runs in the coordinate-server thread and reads the loop-owned session
+        # attributes (closing, profile, Card fingerprint): plain attribute
+        # reads under the GIL, and the loop re-checks that each session is
+        # still the same before it starts a drain.
         ready: list[tuple[str, _ChannelSession]] = []
         for name, session in candidates:
             if not queue.has_ready_work(worker_names=[name]):

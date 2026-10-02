@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import os
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -175,3 +176,72 @@ def test_no_workspace_means_no_disk_report(tmp_path: Path):
     payload: dict = {}
     asyncio.run(relay.ProblemBoardHostRelayAdapter._add_disk_usage(adapter, payload))
     assert "disk_usage" not in payload
+
+
+def _beat_adapter(config_workspace: str, sizes: WorkspaceSizes, *, working_directory: str = "", worker: str = "w"):
+    return SimpleNamespace(
+        config=SimpleNamespace(workspace=config_workspace, working_directory=working_directory, worker_name=worker),
+        _workspace_sizes=sizes,
+    )
+
+
+def _beats(adapters, rounds: int = 3) -> list[dict]:
+    payloads: list[dict] = []
+
+    async def scenario():
+        for _ in range(rounds):
+            for adapter in adapters:
+                payload: dict = {}
+                await relay.ProblemBoardHostRelayAdapter._add_disk_usage(adapter, payload)
+                payloads.append(payload)
+            await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    return payloads
+
+
+def test_two_channels_on_one_workspace_share_one_walk_and_its_size(tmp_path: Path):
+    """Ops case C1: one WorkspaceSizes for the host, two channel adapters, one folder."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    walks: list[str] = []
+    sizes = WorkspaceSizes(walk=_counting_walk(walks))
+    payloads = _beats([_beat_adapter(str(workspace), sizes, worker="w1"), _beat_adapter(str(workspace), sizes, worker="w2")])
+    assert len(walks) == 1
+    assert payloads[-1]["disk_usage"]["workspace_bytes"] == 4096
+
+
+def test_a_session_folder_is_never_measured_as_the_workspace(tmp_path: Path):
+    """Ops case C5: no workspace named means no walk, even when a session folder exists."""
+
+    session_folder = tmp_path / "session-start"
+    session_folder.mkdir()
+    walks: list[str] = []
+    payloads = _beats([_beat_adapter("", WorkspaceSizes(walk=_counting_walk(walks)), working_directory=str(session_folder))], rounds=1)
+    assert walks == [] and "disk_usage" not in payloads[0]
+
+
+def test_one_folder_spelled_three_ways_is_one_walk(tmp_path: Path):
+    """Ops case C6: plain path, trailing slash and a symlink name one folder."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (tmp_path / "alias").symlink_to(workspace)
+    walks: list[str] = []
+    sizes = WorkspaceSizes(walk=_counting_walk(walks))
+    _beats([
+        _beat_adapter(str(workspace), sizes),
+        _beat_adapter(str(workspace) + "/", sizes),
+        _beat_adapter(str(tmp_path / "alias"), sizes),
+    ])
+    assert walks == [os.path.realpath(workspace)]
+
+
+def test_a_failed_child_walk_names_its_exception_type_never_its_text():
+    from project_board.client.workspace_size import _exception_type
+
+    traceback = b"Traceback (most recent call last):\n  File \"x\", line 1\nPermissionError: [Errno 13] /secret/path/token=CANARY\n"
+    assert _exception_type(traceback) == "PermissionError"
+    assert _exception_type(b"") == "-"
+    assert _exception_type(b"weird line with spaces: and text\n") == "-"
