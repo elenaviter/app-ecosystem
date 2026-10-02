@@ -72,6 +72,18 @@ exists; receive returns it; settlement records that it was handled.
 
 - A receive returns a complete batch with exact leases, or returns every
   provisional lease to the inbox before reporting failure.
+- Newly materialized operator `request` and `reply` controls carry a priority
+  mail ID assigned only after the server verifies the human sender. Within
+  that mailbox, they sort before ordinary worker mail when the item limit is
+  small. Worker-supplied sender labels cannot grant priority.
+- This does not reorder mail that was pending before the change. Older operator
+  controls keep their random IDs and can still be selected after worker mail;
+  existing queues are not migrated.
+- Priority applies within one mailbox. A receive reads direct mail before
+  project mail, so direct messages can exhaust the item limit before a project
+  approval. Continuing operator arrivals can keep worker mail pending under
+  strict priority; when that stream ends, the pending mail remains available
+  for later receives.
 - One size budget covers a receive. A message that would cross it stays
   pending and unleased for the next receive.
 - A session can always re-read what it already holds: it can page every
@@ -85,7 +97,8 @@ exists; receive returns it; settlement records that it was handled.
   Selective receive refuses a claim while board-admitted operator mail is
   pending in any local attended shard. It cannot accompany `--wake-id`, and
   an ordinary receive is required before another selection. Native wakes
-  continue to use ordinary receive and its unchanged mailbox order.
+  continue to use ordinary receive and the same direct-before-project mailbox
+  order.
 - Attached files are part of the message, each with an exact read command
   that checks the lease, size and content hash.
 
