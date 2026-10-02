@@ -75,6 +75,7 @@ from .session_delivery import (
 from .resume_command import build_session_resume_command
 from .relay_faults import consume_relay_fault, pending_relay_faults
 from .off_loop import ChannelExecutors, run_off_loop
+from .local_work_scanner import LocalWorkScanner
 from .relay_failures import (
     RelayStageError,
     failure_message,
@@ -4546,6 +4547,10 @@ class ProblemBoardRelaySupervisor:
         # authorization leaves the same row pending, the next wait observes it
         # as the baseline instead of spinning until the channel is due.
         self._local_outbox_ready_signatures: dict[str, tuple] = {}
+        # The local-work scans of every wait run in one thread, one at a
+        # time; a wait joins a scan already running instead of starting
+        # another beside it (W459).
+        self._local_work_scanner = LocalWorkScanner()
         self._expected_open_failure_signatures: dict[
             str, tuple[str, str, str]
         ] = {}
@@ -6142,6 +6147,7 @@ class ProblemBoardRelaySupervisor:
         for worker_name in list(self._beside_notifies):
             await self._cancel_notify_beside_turn(worker_name)
         self._store_executors.shutdown()
+        self._local_work_scanner.close()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
 
@@ -6274,20 +6280,26 @@ class ProblemBoardRelaySupervisor:
         """Wake on work raised on this machine, the way push wakes on the board.
 
         Every signature here is a pure directory read with no lock and no
-        claim, and it runs in a worker thread: the scans blocked the event loop
-        for 3.2 s on 2026-10-01 (W456). A cancelled wait lets at most one scan
-        finish, which leaves nothing behind (W321).
+        claim, and it runs off the event loop: the scans blocked the loop for
+        3.2 s on 2026-10-01 (W456). They run in the relay's one local-work
+        scanner thread, and a wait joins a scan of the same kind that is
+        already running: a cancelled wait leaves its scan to finish and serve
+        the next wait, and never adds a scan beside it (W459, W321).
         """
 
         coordinate_queue = CoordinateQueue(field_root)
         outbox = OutboxStore(field_root / ".problem-board")
-        if await asyncio.to_thread(
-            coordinate_queue.has_ready_work, worker_names=worker_names
+        scanned = (str(field_root), tuple(sorted(worker_names)))
+        scan = self._local_work_scanner.scan
+        if await scan(
+            ("coordinate-ready", *scanned),
+            coordinate_queue.has_ready_work,
+            worker_names=worker_names,
         ):
             return True
         outbox_key = str(field_root.expanduser().resolve())
-        ready_signature = await asyncio.to_thread(
-            outbox.ready_signature, worker_names=worker_names
+        ready_signature = await scan(
+            ("outbox-ready", *scanned), outbox.ready_signature, worker_names=worker_names
         )
         if (
             ready_signature
@@ -6296,15 +6308,16 @@ class ProblemBoardRelaySupervisor:
         ):
             self._local_outbox_ready_signatures[outbox_key] = ready_signature
             return True
-        initial = await asyncio.to_thread(
+        initial = await scan(
+            ("local-work", *scanned),
             self._local_work_signature,
             field_root,
             worker_names=worker_names,
         )
         # Close the check-to-baseline race: a row that became the baseline is
         # already work and must not wait for a second change.
-        ready_signature = await asyncio.to_thread(
-            outbox.ready_signature, worker_names=worker_names
+        ready_signature = await scan(
+            ("outbox-ready", *scanned), outbox.ready_signature, worker_names=worker_names
         )
         if (
             ready_signature
@@ -6320,15 +6333,16 @@ class ProblemBoardRelaySupervisor:
             if remaining <= 0:
                 return False
             await asyncio.sleep(min(0.25, remaining))
-            if await asyncio.to_thread(
+            if await scan(
+                ("local-work", *scanned),
                 self._local_work_signature,
                 field_root,
                 worker_names=worker_names,
             ) != initial:
-                self._local_outbox_ready_signatures[outbox_key] = (
-                    await asyncio.to_thread(
-                        outbox.ready_signature, worker_names=worker_names
-                    )
+                self._local_outbox_ready_signatures[outbox_key] = await scan(
+                    ("outbox-ready", *scanned),
+                    outbox.ready_signature,
+                    worker_names=worker_names,
                 )
                 return True
 
