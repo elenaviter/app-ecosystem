@@ -20,7 +20,8 @@ The scans are pure reads with no lock and no claim, so closing the relay does
 not wait for one: ``close`` refuses new scans and lets a running scan finish
 in its thread. Closing is final. A wait still running when the relay closes
 gets ``LocalWorkScannerClosed`` from its next scan, which ends that wait the
-way a failed scan does, and no scan starts after the close.
+way a failed scan does. A scan queued before the close ends the same way in
+the thread without scanning, so no scan starts after the close.
 """
 
 from __future__ import annotations
@@ -63,21 +64,20 @@ class LocalWorkScanner:
                     max_workers=1, thread_name_prefix=self._thread_name
                 )
             future = asyncio.get_running_loop().run_in_executor(
-                self._executor, functools.partial(call, *args, **kwargs)
+                self._executor, functools.partial(self._unless_closed, call, args, kwargs)
             )
             self._in_flight[kind] = future
             future.add_done_callback(functools.partial(self._finished, kind))
-        try:
-            return await asyncio.shield(future)
-        except asyncio.CancelledError:
-            # A scan that close() dropped before it started ends its waiters
-            # as closed. A waiter that is itself cancelled stays cancelled.
-            task = asyncio.current_task()
-            if self._closed and future.cancelled() and not (task and task.cancelling()):
-                raise LocalWorkScannerClosed(
-                    "The relay closed its local-work scanner."
-                ) from None
-            raise
+        # A waiter that is itself cancelled stays cancelled: shield keeps the
+        # scan, and its result serves the next wait.
+        return await asyncio.shield(future)
+
+    def _unless_closed(self, call: Callable[..., T], args: tuple, kwargs: dict) -> T:
+        """In the scanner thread: a scan queued before close() never runs."""
+
+        if self._closed:
+            raise LocalWorkScannerClosed("The relay closed its local-work scanner.")
+        return call(*args, **kwargs)
 
     def _finished(self, kind: Hashable, future: asyncio.Future) -> None:
         if self._in_flight.get(kind) is future:
@@ -94,4 +94,7 @@ class LocalWorkScanner:
         executor, self._executor = self._executor, None
         self._in_flight = {}
         if executor is not None:
-            executor.shutdown(wait=False, cancel_futures=True)
+            # Queued scans are not cancelled: each sees the closed flag in the
+            # thread and ends its waiters as closed, so a waiter is never told
+            # it was cancelled when it was not (and no Python 3.11 API is needed).
+            executor.shutdown(wait=False)

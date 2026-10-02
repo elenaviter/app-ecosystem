@@ -256,6 +256,72 @@ def test_a_closed_scanner_refuses_every_later_scan():
     assert asyncio.run(scenario()) is True
 
 
+def _queued_behind_a_held_scan():
+    """A scanner whose thread is busy, a second scan queued behind it, and the release."""
+
+    release = threading.Event()
+    started = threading.Event()
+    ran: list[str] = []
+
+    def held() -> str:
+        started.set()
+        release.wait(GATE_LIMIT_SECONDS)
+        return "held"
+
+    def queued() -> str:
+        ran.append("queued")
+        return "queued"
+
+    return release, started, ran, held, queued
+
+
+def test_a_scan_queued_at_close_ends_its_waiter_as_closed_without_scanning():
+    """Review of 7245f7b (codex-infra): this ended in AttributeError on Python 3.10."""
+
+    release, started, ran, held, queued = _queued_behind_a_held_scan()
+
+    async def scenario():
+        scanner = LocalWorkScanner()
+        first = asyncio.create_task(scanner.scan("first", held))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        second = asyncio.create_task(scanner.scan("second", queued))
+        await asyncio.sleep(0.05)
+        scanner.close()
+        release.set()
+        return await asyncio.gather(first, second, return_exceptions=True)
+
+    first, second = asyncio.run(scenario())
+
+    assert first == "held", "the scan running at close finishes"
+    assert isinstance(second, LocalWorkScannerClosed), f"queued waiter got {second!r}"
+    assert ran == [], "a scan queued before close never runs"
+
+
+def test_a_cancelled_waiter_of_a_queued_scan_stays_cancelled():
+    release, started, _ran, held, queued = _queued_behind_a_held_scan()
+
+    async def scenario():
+        scanner = LocalWorkScanner()
+        first = asyncio.create_task(scanner.scan("first", held))
+        while not started.is_set():
+            await asyncio.sleep(0.01)
+        second = asyncio.create_task(scanner.scan("second", queued))
+        await asyncio.sleep(0.05)
+        second.cancel()
+        outcome = await asyncio.gather(second, return_exceptions=True)
+        release.set()
+        await first
+        later = await scanner.scan("second", queued)
+        scanner.close()
+        return outcome[0], later
+
+    cancelled, later = asyncio.run(scenario())
+
+    assert isinstance(cancelled, asyncio.CancelledError)
+    assert later == "queued", "the cancelled waiter's scan still serves the next wait"
+
+
 def test_a_failing_scan_ends_the_wait_as_before(tmp_path, monkeypatch):
     host, _fast, _slow = two_channel_host(tmp_path)
     gate = ScanGate(monkeypatch, error=OSError("field unreadable"))
