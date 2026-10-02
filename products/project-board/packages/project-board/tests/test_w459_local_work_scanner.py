@@ -20,8 +20,11 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from project_board.client import coordinate_queue, relay
 from project_board.client.coordinate_queue import CoordinateQueue
+from project_board.client.local_work_scanner import LocalWorkScanner, LocalWorkScannerClosed
 from project_board.client.outbox_store import OutboxStore
 
 from relay_helpers import (
@@ -207,6 +210,50 @@ def test_closing_the_relay_during_a_held_scan_starts_no_further_scan(tmp_path, m
     assert closed_after < PEER_LIMIT_SECONDS, "closing does not wait for a read-only scan"
     assert started_after == started_at_close, "no scan starts after the relay closed"
     assert gate.running == 0
+
+
+def test_a_wait_active_across_relay_close_ends_and_starts_no_scan_after_close(tmp_path, monkeypatch):
+    """Review of 3e3a0a8 (codex-infra): a wait held across aclose started five scans after release."""
+
+    host, _fast, _slow = two_channel_host(tmp_path)
+    gate = ScanGate(monkeypatch)
+
+    async def scenario():
+        attendance = Attendance("no-channel-hangs-its-poll")
+        supervisor, _opened = supervisor_with_fake_channels(host, attendance)
+        waiting = asyncio.create_task(supervisor.wait_for_wakeup(30.0))
+        await gate.wait_started()
+        await asyncio.wait_for(supervisor.aclose(), timeout=PEER_LIMIT_SECONDS)
+        started_at_close = gate.started
+        gate.opened.set()
+        await gate.wait_idle()
+        released = time.monotonic()
+        woke = await asyncio.wait_for(waiting, timeout=5)
+        ended_after = time.monotonic() - released
+        await asyncio.sleep(0.6)  # two of the waiter's 0.25 s ticks
+        return woke, ended_after, started_at_close, gate.started
+
+    woke, ended_after, started_at_close, started_after = asyncio.run(scenario())
+
+    assert started_after == started_at_close, (
+        f"{started_after - started_at_close} scans started after the relay closed"
+    )
+    assert woke is False and ended_after < 1.0, "the active wait ended once its scan finished"
+    assert gate.running == 0
+
+
+def test_a_closed_scanner_refuses_every_later_scan():
+    async def scenario():
+        scanner = LocalWorkScanner()
+        assert await scanner.scan("kind", lambda: "before") == "before"
+        scanner.close()
+        with pytest.raises(LocalWorkScannerClosed):
+            await scanner.scan("kind", lambda: "after")
+        with pytest.raises(LocalWorkScannerClosed):
+            await scanner.scan("other-kind", lambda: "after")
+        return scanner.closed
+
+    assert asyncio.run(scenario()) is True
 
 
 def test_a_failing_scan_ends_the_wait_as_before(tmp_path, monkeypatch):
