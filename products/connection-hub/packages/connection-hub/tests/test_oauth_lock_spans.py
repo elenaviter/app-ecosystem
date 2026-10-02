@@ -171,6 +171,43 @@ def test_a_failure_inside_the_lock_releases_it_and_names_the_outcome(tmp_path, c
     assert asyncio.run(again()) is True, "the lock was released"
 
 
+def test_a_waiter_cancelled_before_the_lock_leaves_a_cancelled_span(tmp_path, caplog):
+    service = _service(tmp_path)
+    held = threading.Event()
+    release = threading.Event()
+
+    def holder():
+        with FileLock(str(service._transaction_lock)):
+            held.set()
+            release.wait(5)
+
+    thread = threading.Thread(target=holder, daemon=True)
+    thread.start()
+    assert held.wait(2)
+
+    async def scenario():
+        async def wait_for_lock():
+            async with service._transaction(service._transaction_lock, profile_name=PROFILE, operation="read_token"):
+                pass
+
+        task = asyncio.create_task(wait_for_lock())
+        await asyncio.sleep(0.3)
+        task.cancel()
+        return await asyncio.gather(task, return_exceptions=True)
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+            (result,) = asyncio.run(scenario())
+    finally:
+        release.set()
+        thread.join(2)
+    assert isinstance(result, asyncio.CancelledError)
+    (span,) = _spans(caplog)
+    assert span.levelno == logging.WARNING
+    assert "outcome=cancelled" in span.getMessage() and "hold_ms=-" in span.getMessage()
+    assert int(span.getMessage().split("wait_ms=")[1].split()[0]) >= 250
+
+
 def test_every_oauth_request_carries_a_request_id_that_failures_report():
     httpx2 = pytest.importorskip("httpx2")
     seen: list[str] = []
