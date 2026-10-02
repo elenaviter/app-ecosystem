@@ -580,6 +580,7 @@ class JournalWorkspace:
     def clone_stamp(self, project_ref: str) -> dict[str, Any]:
         """The commit a view of this project's journal was read at, and its clone state (W343)."""
 
+        self._check_cancelled()
         catalog = read_json(self.catalog_path, required=False) or {}
         binding = dict((catalog.get("bindings") or {}).get(project_ref) or {})
         if not binding:
@@ -589,6 +590,7 @@ class JournalWorkspace:
         stamp: dict[str, Any] = {"journal_home_commit": head_commit(clone)}
         if self.repositories.workspace is not None:
             stamp["journal_clone"] = clone_state(alias, clone)
+        self._check_cancelled()
         return stamp
 
     def _bound(
@@ -1336,6 +1338,7 @@ class JournalWorkspace:
     ) -> dict[str, Any]:
         """Read one current page from Git, using the index only for a search."""
 
+        self._check_cancelled()
         page_limit = max(1, min(int(limit), 100))
         clean_query = str(query or "").strip()
         clean_worker = str(worker_name or "").strip().lower()
@@ -1396,8 +1399,14 @@ class JournalWorkspace:
                         "The journal cursor does not contain a repository path.",
                     )
                 boundary = decoded_boundary
+
+            def checked_paths():
+                for path in (home / "journal").glob("**/*.md"):
+                    self._check_cancelled()
+                    yield path
+
             paths = sorted(
-                (home / "journal").glob("**/*.md"),
+                checked_paths(),
                 key=lambda path: path.relative_to(home).as_posix(),
                 reverse=True,
             )
@@ -1405,6 +1414,7 @@ class JournalWorkspace:
             page_issues: list[dict[str, Any]] = []
             page_exclusions: list[dict[str, Any]] = []
             for path in paths:
+                self._check_cancelled()
                 relative = path.relative_to(home).as_posix()
                 if boundary and relative >= boundary:
                     continue
@@ -1419,6 +1429,7 @@ class JournalWorkspace:
                 except DomainError as exc:
                     page_issues.append(exc.to_dict())
                     continue
+                self._check_cancelled()
                 if isinstance(document, JournalIndexExclusion):
                     page_exclusions.append(document.to_dict())
                     continue
@@ -1449,7 +1460,7 @@ class JournalWorkspace:
 
         # A view must not bypass the same lock/generation certificate used by
         # CLI and heartbeat refreshes. Cursor content and rows are one snapshot.
-        with exclusive_lock(self.control / "locks" / "index.lock"):
+        with self._lock("index.lock"):
             freshness = self._refresh_index_locked()
             all_documents, index_issues, index_exclusions = self._scan_documents()
             if self._source_stamps() != freshness["sources"]:
@@ -1468,6 +1479,7 @@ class JournalWorkspace:
                 clean_query, project_ref=project_ref, worker_name=clean_worker,
                 limit=max(1, len(documents)), weights=rank_weights,
             )
+            self._check_cancelled()
         generation = hashlib.sha256(
             "\n".join(
                 f"{document.entry_ref}:{document.content_hash}"
@@ -1525,6 +1537,7 @@ class JournalWorkspace:
         }
 
     def read(self, repository_journal_ref: str) -> dict[str, Any]:
+        self._check_cancelled()
         reference, path = self.repositories.resolve(
             repository_journal_ref, require_directory=False
         )
@@ -1536,6 +1549,7 @@ class JournalWorkspace:
                 details={"repository_journal_ref": str(reference)},
             )
         text = path.read_text(encoding="utf-8")
+        self._check_cancelled()
         metadata, body = _frontmatter(text)
         return {
             "repository_journal_ref": str(reference),

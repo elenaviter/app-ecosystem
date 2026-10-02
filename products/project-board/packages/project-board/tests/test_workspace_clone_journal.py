@@ -29,7 +29,7 @@ import pytest
 from project_board.client import cli, host_config, relay
 from project_board.client.journals import JournalWorkspace
 from project_board.client.journal_search import JournalSearchIndex
-from project_board.client.io import exclusive_lock
+from project_board.client.io import content_hash, exclusive_lock
 from project_board.client.project_setup import PROJECT_SETUP_FILE, PROJECT_SETUP_SCHEMA
 from project_board.client.store import SharedFieldStore
 from project_board.contract.worker_identity import WorkerSessionIdentity
@@ -670,6 +670,233 @@ def test_slow_heartbeat_freshness_is_single_flight_across_child_adapters(host, m
                 await close()
 
     asyncio.run(scenario())
+
+
+def journal_view_control(*, query="decision", mode="catalog"):
+    payload = {
+        "view_ref": "work:journal_view:20260927T214000Z:view_0123456789abcdef0123456789abcdef:journal",
+        "mode": mode, "query": query,
+        "repository_journal_ref": f"repo:journals/{ENTRY}",
+    }
+    return {"project_ref": PROJECT, "kind": "journal.catalog" if mode == "catalog" else "journal.read",
+            "payload": payload, "payload_hash": content_hash(payload)}
+
+
+def capture_journal_view(adapter):
+    published = []
+
+    class Client:
+        async def action(self, **kwargs):
+            published.append(kwargs)
+            return {}
+
+    adapter.client = Client()
+    return published
+
+
+def test_requested_journal_view_held_index_lock_keeps_peer_loop_responsive(host):
+    """Actual async view handler must not block peers behind refresh/CLI locks."""
+    adapter = host["workers"]["current"]["relay"]
+    published = capture_journal_view(adapter)
+    locked, release = Event(), Event()
+
+    def hold():
+        with exclusive_lock(adapter.journal_workspace.control / "locks" / "index.lock"):
+            locked.set()
+            assert release.wait(3)
+
+    async def scenario():
+        await wait_for_event(locked)
+        started = time.monotonic()
+
+        async def peer():
+            await asyncio.sleep(0.05)
+            return time.monotonic() - started
+
+        peer_task = asyncio.create_task(peer())
+        rescue = Timer(0.8, release.set)
+        rescue.start()
+        try:
+            await adapter._serve_journal_view(journal_view_control())
+            elapsed = await peer_task
+            assert elapsed < 0.3, f"requested view blocked peer loop for {elapsed:.3f}s"
+            assert len(published) == 1 and published[0]["action"] == "journal.view.publish"
+            assert published[0]["payload"]["entries"]
+        finally:
+            release.set()
+            rescue.cancel()
+            await adapter.aclose()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold)
+        try:
+            asyncio.run(scenario())
+        finally:
+            release.set()
+        holder.result(timeout=3)
+
+
+@pytest.mark.parametrize("cancel_request", [True, False])
+def test_requested_journal_view_lock_cancellation_drains_without_publish(host, cancel_request):
+    adapter = host["workers"]["current"]["relay"]
+    published = capture_journal_view(adapter)
+    locked, release = Event(), Event()
+
+    def hold():
+        with exclusive_lock(adapter.journal_workspace.control / "locks" / "index.lock"):
+            locked.set()
+            assert release.wait(3)
+
+    async def scenario():
+        await wait_for_event(locked)
+        request = asyncio.create_task(adapter._serve_journal_view(journal_view_control()))
+        await asyncio.sleep(0.05)
+        assert adapter._journal_refresh_worker._view_future is not None
+        started = time.monotonic()
+        if cancel_request:
+            request.cancel()
+        else:
+            await asyncio.wait_for(adapter.aclose(), timeout=0.5)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(request, timeout=0.5)
+        assert time.monotonic() - started < 0.3
+        assert not published
+        assert adapter._journal_refresh_worker._view_future is None
+        release.set()
+        await asyncio.sleep(0.03)
+        assert not published
+        await adapter.aclose()
+        assert adapter._journal_refresh_worker._pool is None
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold)
+        try:
+            asyncio.run(scenario())
+        finally:
+            release.set()
+        holder.result(timeout=3)
+
+
+def test_requested_journal_view_budget_reports_failure_without_private_details(host):
+    adapter = host["workers"]["current"]["relay"]
+    adapter._journal_refresh_worker = relay._JournalRefreshWorker(timeout_seconds=0.1)
+    published = capture_journal_view(adapter)
+    locked, release = Event(), Event()
+
+    def hold():
+        with exclusive_lock(adapter.journal_workspace.control / "locks" / "index.lock"):
+            locked.set()
+            assert release.wait(3)
+
+    async def scenario():
+        await wait_for_event(locked)
+        try:
+            with pytest.raises(DomainError) as caught:
+                await asyncio.wait_for(adapter._serve_journal_view(journal_view_control()), timeout=0.5)
+            assert caught.value.code == "journal_index_refresh_failed"
+            assert caught.value.details == {"error_type": "TimeoutError"}
+            assert not published
+        finally:
+            release.set()
+            await adapter.aclose()
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        holder = pool.submit(hold)
+        try:
+            asyncio.run(scenario())
+        finally:
+            release.set()
+        holder.result(timeout=3)
+
+
+def test_requested_journal_view_shares_single_flight_with_heartbeat(host, monkeypatch):
+    adapter = host["workers"]["current"]["relay"]
+    published = capture_journal_view(adapter)
+    entered, release = Event(), Event()
+    source_stamps = JournalWorkspace._source_stamps
+
+    def slow(workspace):
+        entered.set()
+        assert release.wait(3)
+        return source_stamps(workspace)
+
+    monkeypatch.setattr(JournalWorkspace, "_source_stamps", slow)
+
+    async def scenario():
+        worker = adapter._journal_refresh_worker
+        try:
+            adapter._reconcile_journal_binding_background(BINDING)
+            await wait_for_event(entered)
+            refresh, pool = worker._future, worker._pool
+            request = asyncio.create_task(adapter._serve_journal_view(journal_view_control()))
+            await asyncio.sleep(0.02)
+            assert worker._view_active and worker._view_future is None
+            queued = asyncio.create_task(adapter._serve_journal_view(journal_view_control()))
+            await asyncio.sleep(0.02)
+            queued.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await queued
+            for _ in range(20):
+                assert adapter._reconcile_journal_binding_background(BINDING)["state"] == "refresh_pending"
+                assert worker._future is refresh and worker._view_future is None and worker._pool is pool
+                await asyncio.sleep(0)
+            release.set()
+            await asyncio.wait_for(request, timeout=2)
+            assert len(published) == 1
+            assert worker._pool is pool and worker._view_future is None
+            assert adapter._reconcile_journal_binding_background(BINDING)["state"] == "bound"
+        finally:
+            release.set()
+            await adapter.aclose()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["catalog", "document"])
+def test_requested_journal_view_slow_read_cancelled_shutdown_drains(host, monkeypatch, mode):
+    adapter = host["workers"]["current"]["relay"]
+    published = capture_journal_view(adapter)
+    entered, release = Event(), Event()
+    method = "view_catalog_page" if mode == "catalog" else "read_for_project"
+    original = getattr(JournalWorkspace, method)
+
+    def slow(workspace, **kwargs):
+        result = original(workspace, **kwargs)
+        entered.set()
+        assert release.wait(3)
+        return result
+
+    monkeypatch.setattr(JournalWorkspace, method, slow)
+
+    async def scenario():
+        request = asyncio.create_task(adapter._serve_journal_view(journal_view_control(query="", mode=mode)))
+        await wait_for_event(entered)
+        future = adapter._journal_refresh_worker._view_future
+        request.cancel()
+        await asyncio.sleep(0.02)
+        request.cancel()
+        closing = asyncio.create_task(adapter.aclose())
+        await asyncio.sleep(0.02)
+        closing.cancel()
+        await asyncio.sleep(0.02)
+        assert not request.done() and not closing.done()
+        assert adapter._journal_refresh_worker._view_future is future
+        assert not future.done() and not published
+        release.set()
+        for task in (request, closing):
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=1)
+        assert adapter._journal_refresh_worker._view_future is None
+        assert adapter._journal_refresh_worker._pool is None
+        assert not published
+        with pytest.raises(asyncio.CancelledError):
+            await adapter._serve_journal_view(journal_view_control())
+        assert adapter._journal_refresh_worker._pool is None
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        release.set()
 
 
 @pytest.mark.parametrize("lock_name", ["index.lock", "catalog.lock"])

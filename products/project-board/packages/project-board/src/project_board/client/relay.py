@@ -753,6 +753,10 @@ class _JournalRefreshWorker:
         self._pool: ThreadPoolExecutor | None = None
         self._future: Future[dict[str, Any] | DomainError | None] | None = None
         self._key: str = ""
+        self._view_lock = asyncio.Lock()
+        self._view_active = False
+        self._view_future: Future[dict[str, Any]] | None = None
+        self._view_cancel = Event()
 
     def poll(
         self, workspace: JournalWorkspace, heartbeat: Mapping[str, Any],
@@ -769,6 +773,12 @@ class _JournalRefreshWorker:
             "workspace": str(workspace.repositories.workspace or ""),
             "create_home": create_home,
         })
+        if self._view_active:
+            if self._future is not None and not self._future.done() and key != self._key:
+                self._cancel_job.set()
+            # A view takes the next executor turn after any tracked refresh.
+            # Do not queue another heartbeat behind it.
+            return False, None
         completed = None
         ready = False
         if self._future is not None:
@@ -832,22 +842,104 @@ class _JournalRefreshWorker:
                 status=503, details={"error_type": type(exc).__name__},
             )
 
+    async def run_view(
+        self, source: JournalWorkspace,
+        operation: Callable[[JournalWorkspace], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Serialize request work on the same owned executor, never on the loop."""
+        deadline = time.monotonic() + self.timeout_seconds
+
+        def budget_error() -> DomainError:
+            return DomainError(
+                "journal_index_refresh_failed",
+                "The LOCAL journal view exceeded its time budget.",
+                status=503, details={"error_type": "TimeoutError"},
+            )
+
+        if self._stop.is_set():
+            raise asyncio.CancelledError
+        try:
+            await asyncio.wait_for(self._view_lock.acquire(), timeout=self.timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            raise budget_error() from exc
+        self._view_active = True
+        try:
+            if self._future is not None and not self._future.done():
+                # Cancellation of this request must not detach or cancel the
+                # background refresh; it remains tracked by poll/aclose.
+                remaining = max(0.0, deadline - time.monotonic())
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(asyncio.wrap_future(self._future)), timeout=remaining,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise budget_error() from exc
+            if self._stop.is_set():
+                raise asyncio.CancelledError
+            self._view_cancel = Event()
+            cancel = self._view_cancel
+
+            def check() -> None:
+                if self._stop.is_set() or cancel.is_set():
+                    raise JournalRefreshCancelled()
+                if time.monotonic() >= deadline:
+                    raise budget_error()
+
+            def run() -> dict[str, Any]:
+                check()
+                workspace = JournalWorkspace(source.root, source.repositories, check_cancelled=check)
+                result = operation(workspace)
+                check()
+                return result
+
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pb-journal")
+            self._view_future = self._pool.submit(run)
+            try:
+                result = await asyncio.shield(asyncio.wrap_future(self._view_future))
+            except asyncio.CancelledError:
+                cancel.set()
+                await self._drain(self._view_future)
+                raise
+            except JournalRefreshCancelled:
+                raise asyncio.CancelledError from None
+            except DomainError:
+                raise
+            except Exception as exc:
+                raise DomainError(
+                    "journal_index_refresh_failed", "The LOCAL journal view failed.",
+                    status=503, details={"error_type": type(exc).__name__},
+                ) from exc
+            if self._stop.is_set() or cancel.is_set():
+                raise asyncio.CancelledError
+            return result
+        finally:
+            self._view_future = None
+            self._view_active = False
+            self._view_lock.release()
+
+    @staticmethod
+    async def _drain(tracked: Future[Any]) -> bool:
+        cancelled = False
+        future = asyncio.wrap_future(tracked)
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if future.done() and not future.cancelled():
+            future.exception()
+        return cancelled
+
     async def aclose(self) -> None:
         self._stop.set()
         cancelled = False
-        if self._future is not None:
-            future = asyncio.wrap_future(self._future)
-            while not future.done():
-                try:
-                    await asyncio.shield(future)
-                except asyncio.CancelledError:
-                    cancelled = True
-                except Exception:
-                    break
-            # Consume even a late cancellation/error before discarding state.
-            if future.done() and not future.cancelled():
-                future.exception()
-            self._future = None
+        for tracked in (self._future, self._view_future):
+            if tracked is not None:
+                cancelled = await self._drain(tracked) or cancelled
+        self._future = None
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=True)
             self._pool = None
@@ -2392,8 +2484,32 @@ class ProblemBoardHostRelayAdapter:
             )
         mode = str(payload.get("mode") or "")
         kind = str(control.get("kind") or "")
+        if (mode, kind) not in {("catalog", "journal.catalog"), ("document", "journal.read")}:
+            raise DomainError(
+                "work_journal_view_mode_mismatch",
+                "The journal-view mode does not match its control kind.",
+                status=409,
+            )
+        action_payload = await self._journal_refresh_worker.run_view(
+            self.journal_workspace,
+            lambda workspace: ProblemBoardHostRelayAdapter._journal_view_payload(
+                workspace, payload, project_ref, mode, kind,
+            ),
+        )
+        await self.client.action(
+            object_ref=view_ref,
+            action="journal.view.publish",
+            payload=action_payload,
+        )
+        return view_ref
+
+    @staticmethod
+    def _journal_view_payload(
+        workspace: JournalWorkspace, payload: Mapping[str, Any],
+        project_ref: str, mode: str, kind: str,
+    ) -> dict[str, Any]:
         if mode == "catalog" and kind == "journal.catalog":
-            page = self.journal_workspace.view_catalog_page(
+            page = workspace.view_catalog_page(
                 project_ref=project_ref,
                 query=str(payload.get("query") or ""),
                 cursor=str(payload.get("cursor") or ""),
@@ -2416,10 +2532,10 @@ class ProblemBoardHostRelayAdapter:
                 "next_cursor": next_cursor,
                 # W343: the clone commit the page was read at, and how current
                 # that clone is.
-                **self.journal_workspace.clone_stamp(project_ref),
+                **workspace.clone_stamp(project_ref),
             }
         elif mode == "document" and kind == "journal.read":
-            result = self.journal_workspace.read_for_project(
+            result = workspace.read_for_project(
                 project_ref=project_ref,
                 repository_journal_ref=str(payload.get("repository_journal_ref") or ""),
             )
@@ -2435,7 +2551,7 @@ class ProblemBoardHostRelayAdapter:
                 "content_hash": str(result.get("content_hash") or ""),
                 "repository_journal_ref": str(result["repository_journal_ref"]),
                 "next_cursor": "",
-                **self.journal_workspace.clone_stamp(project_ref),
+                **workspace.clone_stamp(project_ref),
             }
         else:
             raise DomainError(
@@ -2443,12 +2559,7 @@ class ProblemBoardHostRelayAdapter:
                 "The journal-view mode does not match its control kind.",
                 status=409,
             )
-        await self.client.action(
-            object_ref=view_ref,
-            action="journal.view.publish",
-            payload=action_payload,
-        )
-        return view_ref
+        return action_payload
 
     async def _serve_file_edit(self, control: Mapping[str, Any]) -> tuple[str, str]:
         """Apply a project-file edit made on the card, in this coordinator's clone (W370).

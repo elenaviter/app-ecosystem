@@ -179,6 +179,13 @@ coordinator included, and for every read and write of project state:
   job before replacement; it never abandons a thread that can still mutate the
   index. An already-running OS/index operation must finish before that drain
   completes, so cancellation is not a claim of hard preemption.
+- **Requested journal views use that same owned executor.** Catalog searches,
+  browsing, document reads and clone stamps never run synchronously on the
+  shared loop. One view at a time follows any tracked refresh; heartbeats do
+  not queue more jobs behind it. The cooperative 30-second view budget covers
+  scheduling and cancellable lock waits. Cancelling a request or closing its
+  channel fences and drains its tracked work before releasing it; no late
+  result is published. Only the loop publishes the completed response.
 - **An empty result is not a freshness diagnosis.** Search returns an `index`
   status with its source commits, recording time, compatibility issues and
   exclusions. A skipped invalid entry makes the index `partial`; historical
