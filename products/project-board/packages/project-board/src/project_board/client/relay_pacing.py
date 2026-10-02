@@ -110,6 +110,11 @@ RUNTIME_SCHEDULE = "runtime"
 RESTART_ATTEMPTED = "attempted"
 RESTART_KEPT_BACKOFF = "kept_backoff"
 RESTART_PARKED_PERMANENT = "parked_permanent"
+# A reconnect attempt the relay is running now (record_attempt_started).
+ATTEMPT_IN_PROGRESS = "in_progress"
+# No attempt outlives the relay's channel turn deadline (300 s). An older mark
+# was left by a relay that stopped mid-attempt and is not reported as running.
+ATTEMPT_STALE_SECONDS = 330.0
 # A 429 that names no wait still means the bucket is spent.
 HOST_QUIET_DEFAULT_SECONDS = 60.0
 # The gateway's own window is an hour. A longer Retry-After (a wrong value, or
@@ -203,6 +208,9 @@ class RelayPacing:
         # persisted uncertainty must not authorize its foreground drains.
         for record in self._state["channels"].values():
             if record.pop("retained_connected", None) is not None:
+                changed = True
+            # Nor does it have the previous process's attempt in flight.
+            if record.pop("attempt", None) is not None:
                 changed = True
         for name, record in list(self._state["pending"].items()):
             if not record.get("permanent"):
@@ -405,8 +413,32 @@ class RelayPacing:
             record.pop("runtime_since", None)
         else:
             record["runtime_since"] = float(runtime_since)
+        record.pop("attempt", None)
         self._save()
         return delay
+
+    def record_attempt_started(self, name: str) -> None:
+        """Mark that the relay is opening ``name`` again, for its readers.
+
+        A channel with a failure on record shows when its next attempt may
+        start; while that attempt runs, the time has passed and the channel is
+        still not open. Readers show the attempt in progress instead of a time
+        already past (W461, 2026-10-02: an open took 50 to 96 seconds during a
+        host stall). Nothing is written for a channel without a failure.
+        """
+
+        record = self._state["channels"].get(name)
+        if record is None:
+            return
+        record["attempt"] = {"state": ATTEMPT_IN_PROGRESS, "started_at": self._clock()}
+        self._save()
+
+    def record_attempt_ended(self, name: str) -> None:
+        """The attempt failed or was cancelled; its outcome is recorded apart."""
+
+        record = self._state["channels"].get(name)
+        if record is not None and record.pop("attempt", None) is not None:
+            self._save()
 
     def record_success(self, name: str) -> None:
         """Forget ``name``'s failures. A channel that was waiting on the
@@ -511,13 +543,24 @@ class RelayPacing:
 
 
 def _channel_view(record: Mapping[str, Any], now: float) -> dict[str, Any]:
-    return {
+    view = {
         "state": "degraded" if record.get("retained_connected") is True else "reconnecting",
         "attempts": int(record.get("attempts") or 0),
         "reason": str(record.get("reason") or ""),
         "schedule": str(record.get("schedule") or "backoff"),
         "next_attempt_at": _iso(float(record.get("next_at") or now)),
+        "attempt_in_progress": False,
     }
+    attempt = record.get("attempt")
+    if isinstance(attempt, Mapping) and attempt.get("state") == ATTEMPT_IN_PROGRESS:
+        try:
+            started = float(attempt.get("started_at") or 0.0)
+        except (TypeError, ValueError):
+            started = 0.0
+        if started and now - started < ATTEMPT_STALE_SECONDS:
+            view["attempt_in_progress"] = True
+            view["attempt_started_at"] = _iso(started)
+    return view
 
 
 def channel_reconnect_state(
@@ -600,6 +643,8 @@ def channel_pending_refusal(
 
 
 __all__ = [
+    "ATTEMPT_IN_PROGRESS",
+    "ATTEMPT_STALE_SECONDS",
     "channel_pending_refusal",
     "channel_reconnect_state",
     "RESTART_ATTEMPTED",

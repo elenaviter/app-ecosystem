@@ -465,6 +465,93 @@ def test_an_unreachable_endpoint_seen_by_the_relay_stays_retryable(tmp_path):
     assert "required_action" not in refused.value.details
 
 
+def _metadata_unavailable() -> BaseException:
+    from connection_hub.caller.errors import AuthorizationError
+
+    return AuthorizationError(
+        "oauth_resource_metadata_unavailable",
+        "The MCP protected-resource metadata is unavailable.",
+    )
+
+
+def _metadata_unanswered() -> BaseException:
+    from connection_hub.caller.errors import AuthorizationError
+
+    error = AuthorizationError(
+        "oauth_metadata_request_failed",
+        "OAuth metadata GET https://runtime.example.test/meta could not be reached (ReadTimeout).",
+    )
+    error.status = None
+    error.details = {"method": "GET", "failure_kind": "ReadTimeout"}
+    return error
+
+
+def _probe_unanswered() -> BaseException:
+    from connection_hub.caller.errors import AuthorizationError
+
+    error = AuthorizationError(
+        "oauth_mcp_endpoint_unreachable",
+        "The MCP endpoint could not be reached for OAuth discovery (ReadTimeout).",
+    )
+    error.details = {"phase": "mcp_probe", "failure_kind": "ReadTimeout"}
+    return error
+
+
+def _retry_parked(host, identity, error: BaseException) -> None:
+    _cycle(_refusing_supervisor(host, _invalid_grant()))
+    state = _pacing(host.path)
+    state._state["channels"].pop(identity.worker_name, None)
+    state._state["pending"][identity.worker_name]["fingerprint"] = "changed"
+    state._save()
+    _cycle(_refusing_supervisor(host, error))
+
+
+# W461 (2026-10-02): a discovery that met no metadata, or got no answer, says
+# nothing about the credential. A channel waiting for authorization keeps
+# retrying; it is never parked as permanently refused.
+@pytest.mark.parametrize("error", [_metadata_unavailable, _metadata_unanswered])
+def test_a_pending_channel_meeting_a_metadata_outage_stays_retryable(tmp_path, error):
+    host, identity, _channel = _host(tmp_path)
+
+    _retry_parked(host, identity, error())
+
+    refusal = pacing.channel_pending_refusal(host.path, identity.worker_name)
+    assert refusal["permanent"] is False and refusal["credential"] is False
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_coordinate_args(host, identity))
+    assert refused.value.code == "work_coordinate_channel_reconnecting"
+    assert refused.value.details["reauthorization_indicated"] is False
+
+
+@pytest.mark.parametrize("error", [_metadata_unavailable, _metadata_unanswered, _probe_unanswered])
+def test_an_active_channel_meeting_a_metadata_outage_reconnects_without_reauthorization(tmp_path, error):
+    host, identity, _channel = _host(tmp_path)
+
+    # The only channel failing is every channel failing: the cycle ends with
+    # the relay's retryable error, never the raw outage that stops the process.
+    _cycle(_refusing_supervisor(host, error()))
+
+    assert host_config.HostRelayConfig.load(host.path).worker(identity).state == "active"
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_coordinate_args(host, identity))
+    assert refused.value.code == "work_coordinate_channel_reconnecting"
+    assert refused.value.details["reauthorization_indicated"] is False
+    assert "required_action" not in refused.value.details
+
+
+def test_a_refused_grant_after_a_metadata_outage_is_still_a_refused_credential(tmp_path):
+    host, identity, channel = _host(tmp_path)
+    _cycle(_refusing_supervisor(host, _metadata_unavailable()))
+
+    _cycle(_refusing_supervisor(host, _invalid_grant()))
+
+    refusal = pacing.channel_pending_refusal(host.path, identity.worker_name)
+    assert refusal["credential"] is True and refusal["permanent"] is True
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_coordinate_args(host, identity))
+    _assert_reauthorization_required(refused.value, channel)
+
+
 def test_a_parked_channel_retried_into_an_unreachable_endpoint_stays_retryable(tmp_path):
     host, identity, _channel = _host(tmp_path)
     _cycle(_refusing_supervisor(host, _invalid_grant()))

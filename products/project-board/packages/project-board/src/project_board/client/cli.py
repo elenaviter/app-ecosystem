@@ -2419,6 +2419,8 @@ def _channel_not_usable_error(
             "attempts": retry.get("attempts") or 0,
             "schedule": retry.get("schedule") or "backoff",
             "next_attempt_at": retry.get("next_attempt_at") or "",
+            "attempt_in_progress": retry.get("attempt_in_progress") is True,
+            "attempt_started_at": retry.get("attempt_started_at") or "",
         }
         error = (
             _send_channel_reconnecting_error(
@@ -2489,16 +2491,43 @@ def _raise_if_channel_not_usable(
         raise error
 
 
+def _reconnect_timing(reconnect: Mapping[str, Any]) -> tuple[str, str, dict[str, Any]]:
+    """When the relay tries this channel next, said truthfully.
+
+    While an attempt runs, its scheduled time has passed and the channel is
+    still not open: say the attempt is running instead (W461).
+    """
+
+    attempts = reconnect.get("attempts") or 0
+    details: dict[str, Any] = {
+        "next_attempt_at": str(reconnect.get("next_attempt_at") or ""),
+        "attempt_in_progress": reconnect.get("attempt_in_progress") is True,
+    }
+    if details["attempt_in_progress"]:
+        started = str(reconnect.get("attempt_started_at") or "")
+        details["attempt_started_at"] = started
+        return (
+            f"attempt {attempts} has been running since {started or 'just now'}",
+            "Retry in a minute",
+            details,
+        )
+    return (
+        f"attempt {attempts}, next attempt {details['next_attempt_at'] or 'unknown'}",
+        "Retry after that time",
+        details,
+    )
+
+
 def _channel_reconnecting_error(
     worker_name: str, reconnect: Mapping[str, Any]
 ) -> DomainError:
+    when, retry, timing = _reconnect_timing(reconnect)
     return DomainError(
         "work_coordinate_channel_reconnecting",
         (
             "This worker's channel is not open: the relay is reconnecting it "
             f"after {reconnect.get('reason') or 'a failure'} "
-            f"(attempt {reconnect.get('attempts') or 0}, next attempt "
-            f"{reconnect.get('next_attempt_at') or 'unknown'}). Retry after that time. "
+            f"({when}). {retry}. "
             + _NO_REAUTHORIZATION_INDICATED
         ),
         status=503,
@@ -2508,7 +2537,7 @@ def _channel_reconnecting_error(
             "last_error": str(reconnect.get("reason") or ""),
             "attempts": int(reconnect.get("attempts") or 0),
             "retry_schedule": str(reconnect.get("schedule") or ""),
-            "next_attempt_at": str(reconnect.get("next_attempt_at") or ""),
+            **timing,
             "reauthorization_indicated": False,
             "inspect": ["pb", "status"],
         },
@@ -2524,14 +2553,14 @@ def _raise_if_channel_reconnecting(config_path: Any, worker_name: str) -> None:
 def _send_channel_reconnecting_error(
     worker_name: str, reconnect: Mapping[str, Any], *, idempotency_key: str
 ) -> DomainError:
+    when, retry, timing = _reconnect_timing(reconnect)
     return DomainError(
         "work_send_channel_reconnecting",
         (
             "This worker's channel is not open: the relay is reconnecting it "
             f"after {reconnect.get('reason') or 'a failure'} "
-            f"(attempt {reconnect.get('attempts') or 0}, next attempt "
-            f"{reconnect.get('next_attempt_at') or 'unknown'}). The message was "
-            "not delivered. Retry after that time with the same idempotency key: "
+            f"({when}). The message was "
+            f"not delivered. {retry} with the same idempotency key: "
             "a delivered message replays, a lost one goes through. "
             + _NO_REAUTHORIZATION_INDICATED
         ),
@@ -2542,7 +2571,7 @@ def _send_channel_reconnecting_error(
             "last_error": str(reconnect.get("reason") or ""),
             "attempts": int(reconnect.get("attempts") or 0),
             "retry_schedule": str(reconnect.get("schedule") or ""),
-            "next_attempt_at": str(reconnect.get("next_attempt_at") or ""),
+            **timing,
             "reauthorization_indicated": False,
             "delivered": False,
             "idempotency_key": str(idempotency_key or ""),
