@@ -853,8 +853,8 @@ class OAuthProfileSessionService:
                     yield current
                     return
         raise AuthorizationError(
-            "oauth_profile_lock_timeout",
-            "The OAuth profile's credential changed while it was being read; retry.",
+            "oauth_profile_credential_changed",
+            "The OAuth profile's credential changed twice while it was being read; retry.",
         )
 
     @asynccontextmanager

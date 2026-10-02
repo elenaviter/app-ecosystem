@@ -187,3 +187,24 @@ async def test_a_cancel_during_the_authorize_commit_keeps_the_stored_grant(tmp_p
         await task
     assert oauth.events == [], "a committed grant is not revoked"
     assert profiles.get("agent-a") is not None
+
+
+@pytest.mark.asyncio
+async def test_a_credential_that_keeps_moving_is_named_as_such_not_as_a_timeout(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from connection_hub_cli.errors import AuthorizationError
+
+    service, profiles, _ = await _authorized(tmp_path, ["agent-a"])
+    real = profiles.require("agent-a")
+    reads = []
+
+    def moving(name):
+        reads.append(name)
+        return replace(real, credential_ref=f"{real.credential_ref}-{len(reads)}")
+
+    monkeypatch.setattr(service, "_require_oauth_profile", moving)
+    with pytest.raises(AuthorizationError) as raised:
+        await service.access_token("agent-a")
+    assert raised.value.code == "oauth_profile_credential_changed"
+    assert len(reads) == 4, "two attempts, each reading the record twice"
