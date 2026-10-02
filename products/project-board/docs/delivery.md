@@ -76,6 +76,16 @@ exists; receive returns it; settlement records that it was handled.
   pending and unleased for the next receive.
 - A session can always re-read what it already holds: it can page every
   lease it holds and re-read any one of them without waiting for expiry.
+- A worker can receive an exact pending message with `pb worker receive
+  --message-ref <work:mail:...>`, or a current thread with `--correlation-id
+  <id> --sender <stable-worker-address>`. Optional `--project-ref` and
+  `--work-ref` constrain that match. This leases only addressed matches from
+  one shard, leaving older nonmatches pending; it does not discard or settle
+  them. The response names held or already settled exact messages when known.
+  Selective receive refuses a claim while board-admitted operator mail is
+  pending in any local attended shard. It cannot accompany `--wake-id`, and
+  an ordinary receive is required before another selection. Native wakes
+  continue to use ordinary receive and its unchanged mailbox order.
 - Attached files are part of the message, each with an exact read command
   that checks the lease, size and content hash.
 

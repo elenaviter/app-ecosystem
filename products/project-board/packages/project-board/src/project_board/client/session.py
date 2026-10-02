@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import ExitStack
 from collections.abc import Mapping, Sequence
 from typing import Any
 
 from ..contract.errors import DomainError
 from ..contract.operator_mail_contract import safe_operator_origin
 from ..contract.refs import parse_ref
+from ..contract.plan_nodes import plan_node_identity_ref
+from ..contract.worker_identity import WORKER_ADDRESS_RE
+from .io import bounded_text, exclusive_lock
 from .mail_attachments import worker_message_with_attachments
 from .mail_budget import MAX_WORKER_INPUT_BYTES, MailPullBudget
 from .quarantine import quarantine_summary
@@ -83,6 +87,7 @@ def _worker_input_session_view(session: Mapping[str, Any]) -> dict[str, Any]:
         "inbox_check_age_seconds",
         "inbox_check_interval_seconds",
         "inbox_overdue_by_seconds",
+        "general_receive_due",
         "last_inbox_result_at",
         "last_mail_settled_at",
         "last_settled_message_ref",
@@ -489,23 +494,54 @@ def probe_worker_input(
     }
 
 
-def pull_worker_input(
+def _pull_worker_input(
     field: SharedFieldStore,
     *,
     worker_name: str,
     limit: int = 5,
     lease_seconds: int = 1800,
     wake_id: str = "",
+    message_ref: str = "",
+    correlation_id: str = "",
+    sender: str = "",
+    project_ref: str = "",
+    work_ref: str = "",
 ) -> dict[str, Any]:
     """Read the worker's direct mailbox, then every attended project shard."""
 
     worker = field.read_worker(worker_name)
     stable_name = str(worker.get("worker_name") or "")
+    selective = bool(message_ref or correlation_id)
+    if selective:
+        if message_ref and correlation_id:
+            raise DomainError("field_mail_selection_invalid", "Choose an exact message ref or a correlation id, not both.")
+        if wake_id:
+            raise DomainError("field_mail_selection_wake_invalid", "A native wake requires an ordinary receive.")
+        if message_ref and parse_ref(message_ref).kind != "mail":
+            raise DomainError("field_mail_ref_invalid", "Expected a work:mail reference.")
+        correlation_id = bounded_text(correlation_id, field="correlation_id", maximum=512)
+        sender = bounded_text(sender, field="sender", maximum=64).lower()
+        if correlation_id and not sender:
+            raise DomainError("field_mail_selection_sender_required", "A correlation selector requires a stable sender name.")
+        if sender and not WORKER_ADDRESS_RE.fullmatch(sender):
+            raise DomainError("field_mail_selection_sender_invalid", "Use the stable worker address, not a display label.")
+        if project_ref and parse_ref(project_ref).kind != "project":
+            raise DomainError("field_project_ref_invalid", "Expected a work:project reference.")
+        work_ref = plan_node_identity_ref(work_ref) if work_ref else ""
+    elif sender or project_ref or work_ref:
+        raise DomainError("field_mail_selection_invalid", "Selection modifiers require a message ref or correlation id.")
+    selector_project_ref = project_ref
     listener = field.worker_listener_session(stable_name)
     if listener is None or listener.get("state") == "detached":
         raise DomainError(
             "field_worker_not_listening",
             "This coding-agent session must run worker listen before receiving mail.",
+            status=409,
+        )
+    if selective and listener.get("general_receive_due"):
+        raise DomainError(
+            "field_mail_general_receive_due",
+            "Run ordinary pb worker receive before another selective receive.",
             status=409,
         )
     lease_owner = str(worker.get("runtime_session_id") or stable_name)
@@ -606,6 +642,11 @@ def pull_worker_input(
         )
     assignment_refs = list(dict.fromkeys(assignment_refs))
     projects.extend(projects_not_on_host)
+    if selective and project_ref and project_ref not in project_refs:
+        raise DomainError("field_worker_not_linked", "This session does not attend the selected project.", status=403)
+    if selective and project_ref and project_ref not in {ref for ref, _ in project_scopes}:
+        raise DomainError("field_project_not_materialized", "The selected project is not on this host yet.", status=409)
+    selection_view: dict[str, Any] = {}
 
     def report_delivery_failure(
         project_id: str,
@@ -800,7 +841,7 @@ def pull_worker_input(
         limited_by: str,
         held_lease_count: int,
     ) -> dict[str, Any]:
-        return {
+        result = {
             "item_count": int(item_count),
             "held_lease_count": int(held_lease_count),
             "remaining_count": int(remaining_count),
@@ -810,6 +851,7 @@ def pull_worker_input(
             "deferred_message_ref": budget.deferred_message_ref,
             "required_response_bytes": budget.required_response_bytes,
         }
+        return result
 
     def response_document(
         *,
@@ -848,7 +890,7 @@ def pull_worker_input(
                 else "",
                 "stale_or_duplicate": state in {"stale", "already_acknowledged"},
             }
-        return {
+        result = {
             "acquired_leases": acquired,
             "active_leases": {
                 "already_held_count": already_held_count,
@@ -883,6 +925,9 @@ def pull_worker_input(
                 "outcomes": ["acknowledged", "refused"],
             },
         }
+        if selective:
+            result["selection"] = dict(selection_view)
+        return result
 
     def measured_item(
         *, project_ref: str, project_id: str, message: Mapping[str, Any]
@@ -962,8 +1007,78 @@ def pull_worker_input(
 
         return measure
 
+    def claim_selected_scope(scope_ref: str, scope_id: str, project_index: int | None):
+        scopes = [("", ""), *project_scopes]
+        # Project sends use _project_lock via _mail_lock; lease/settle paths
+        # use the recipient mailbox's .mail.lock. Hold both writer families
+        # across the operator scan and claim, always in one path order.
+        lock_paths = sorted(
+            {
+                path
+                for _, pid in scopes
+                for path in (
+                    field._mail_lock(pid, stable_name),
+                    field._mail_root(pid, stable_name) / ".mail.lock",
+                )
+            },
+            key=str,
+        )
+        with ExitStack() as locks:
+            for path in lock_paths:
+                locks.enter_context(exclusive_lock(path))
+            selected = field.select_mail_candidates(
+                [pid for _, pid in scopes],
+                worker_name=stable_name,
+                message_ref=message_ref,
+                correlation_id=correlation_id,
+                sender=sender,
+                project_id=parse_ref(selector_project_ref).object_id if selector_project_ref else None,
+                work_ref=work_ref,
+            )
+            selection_view.update({
+                "message_ref": message_ref,
+                "correlation_id": correlation_id,
+                "sender": sender,
+                "project_ref": selector_project_ref,
+                "work_ref": work_ref,
+                "pending_count": selected["pending_count"],
+                "matched_pending_count": sum(len(paths) for paths in selected["selected"].values()),
+                "unselected_count": selected["unselected_count"],
+                "oldest_unselected_at": selected["oldest_unselected_at"],
+                "held": selected["held"],
+                "held_count": selected["held_count"],
+                "previous_state": selected["previous_state"],
+                "general_receive_due": True,
+                "instruction": "Run ordinary pb worker receive before another selection.",
+            })
+            if selected["operator_pending"]:
+                selection_view["state"] = "operator_pending"
+                selection_view["instruction"] = "Admitted operator mail is pending. Run ordinary pb worker receive."
+                return []
+            selection_view["state"] = (
+                "selected" if selected["selected"][scope_id]
+                else "held" if selected["held"]
+                else selected["previous_state"] or "no_pending_match"
+            )
+            return field.pull_mail(
+                scope_id,
+                worker_name=stable_name,
+                lease_owner=lease_owner,
+                limit=remaining,
+                lease_seconds=lease_seconds,
+                byte_budget=budget,
+                measure_response=mailbox_response_size(
+                    project_ref=scope_ref,
+                    project_id=scope_id,
+                    project_index=project_index,
+                ),
+                measure_message=mailbox_message_size(project_ref=scope_ref, project_id=scope_id),
+                selected_paths=selected["selected"][scope_id],
+                lock_held=True,
+            )
+
     try:
-        direct_messages = field.pull_mail(
+        direct_messages = claim_selected_scope("", "", None) if selective else field.pull_mail(
             "",
             worker_name=stable_name,
             lease_owner=lease_owner,
@@ -988,8 +1103,13 @@ def pull_worker_input(
                 isolate_message_failure("", message, claim, exc)
         remaining -= len(direct_messages)
         for project_index, (project_ref, project_id) in enumerate(project_scopes):
+            # One locked shard claim is sufficient to surface a current reply.
+            # Do not make a later claim after releasing the locks that proved
+            # operator mail absent for the first one.
+            if selective and (claimed or selection_view.get("state") == "operator_pending"):
+                break
             before_items = len(items)
-            messages = field.pull_mail(
+            messages = claim_selected_scope(project_ref, project_id, project_index) if selective else field.pull_mail(
                 project_id,
                 worker_name=stable_name,
                 lease_owner=lease_owner,
@@ -1022,6 +1142,10 @@ def pull_worker_input(
                     isolate_message_failure(project_id, message, claim, exc)
             projects[project_index]["leased_messages"] = len(items) - before_items
             remaining -= len(messages)
+        if selective:
+            selection_view["claimed_now_count"] = len(claimed)
+            if claimed and selection_view.get("state") != "operator_pending":
+                selection_view["state"] = "selected"
         message_refs = [
             str(item["message"].get("message_ref") or "") for item in items
         ]
@@ -1055,7 +1179,8 @@ def pull_worker_input(
         listener = field.check_in_worker_listener(
             stable_name,
             state=next_state,
-            inbox_checked=True,
+            inbox_checked=not selective,
+            selective_receive=selective,
             message_refs=message_refs,
             control_refs=control_refs,
             observed_control_plane_state=control_plane_state,
@@ -1113,6 +1238,37 @@ def pull_worker_input(
                 details={"rollback_errors": rollback_errors},
             ) from exc
         raise
+
+
+def pull_worker_input(
+    field: SharedFieldStore,
+    *,
+    worker_name: str,
+    limit: int = 5,
+    lease_seconds: int = 1800,
+    wake_id: str = "",
+    message_ref: str = "",
+    correlation_id: str = "",
+    sender: str = "",
+    project_ref: str = "",
+    work_ref: str = "",
+) -> dict[str, Any]:
+    """Receive addressed mail, serializing selections through their check-in."""
+
+    def receive() -> dict[str, Any]:
+        return _pull_worker_input(
+            field, worker_name=worker_name, limit=limit,
+            lease_seconds=lease_seconds, wake_id=wake_id,
+            message_ref=message_ref, correlation_id=correlation_id,
+            sender=sender, project_ref=project_ref, work_ref=work_ref,
+        )
+
+    if not (message_ref or correlation_id):
+        return receive()
+    worker = field.read_worker(worker_name)
+    stable_name = str(worker.get("worker_name") or "")
+    with exclusive_lock(field.control / "locks" / f"receive-{stable_name}.lock"):
+        return receive()
 
 
 __all__ = [
