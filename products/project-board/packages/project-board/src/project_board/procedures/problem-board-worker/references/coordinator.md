@@ -755,8 +755,14 @@ noticed, while the coordinator answered other mail (W466).
 Not at every tool step, and not as a loop of status polls. Between these
 points, end the turn and let the next wake bring the next event.
 
-**What to read.** One `assignment.list` with `status` `assigned`, `working`
-and `blocked`, beside the batch's roles table. For each row, answer:
+**What to read.** The plan first: `project.plan.index` with `status` `todo`,
+`working` and `review`, narrowed to the batch's items or a small `limit`. It
+names each item's current assignee and reviewer, including a review or merge
+that waits after the author's assignment completed. Then, for each worker
+those rows name, one `assignment.list` with that `worker_name` and `status`
+`assigned`, `working`, `blocked` and `accepted`. The list is per worker:
+without `worker_name` it returns only your own assignments, so never read the
+team from it. For each item, beside the batch's roles table, answer:
 
 1. **Started?** A `working` report at the current ownership version, not mail
    you queued.

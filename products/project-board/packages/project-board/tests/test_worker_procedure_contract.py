@@ -2561,7 +2561,9 @@ def test_the_coordinator_reconciles_the_work_and_integrates_promptly() -> None:
     assert "about every 30 minutes while a batch is active" in reconcile
     assert "Not at every tool step, and not as a loop of status polls." in reconcile
     assert "A companion repository the task names but the binding lacks is a blocker you own" in reconcile
-    assert "One `assignment.list` with `status` `assigned`, `working` and `blocked`" in reconcile
+    assert "The plan first: `project.plan.index` with `status` `todo`, `working` and `review`" in reconcile
+    assert "one `assignment.list` with that `worker_name` and `status` `assigned`, `working`, `blocked` and `accepted`" in reconcile
+    assert "without `worker_name` it returns only your own assignments, so never read the team from it" in reconcile
     assert "What do you owe it?" in reconcile
     assert "Turn every finding into one owned next action in the same turn" in reconcile
     assert "never kept only in your context" in reconcile
