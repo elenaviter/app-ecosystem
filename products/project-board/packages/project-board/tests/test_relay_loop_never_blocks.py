@@ -53,3 +53,42 @@ def test_the_worktree_observation_runs_off_the_event_loop_and_the_loop_keeps_tic
     assert all(name != loop_thread for name in seen), "git work ran on the event loop's thread"
     assert all(name.startswith("problem-board-") for name in seen), "not the default executor"
     assert ticks >= 15, f"the loop stalled during a 0.5 s observation ({ticks} ticks)"
+
+
+def test_the_coordinate_server_pass_reads_files_off_the_loop_and_still_serves(tmp_path, monkeypatch):
+    """Every 0.25 s per channel; inline it was 51 of 128 loop blocks on 2026-10-02."""
+
+    from project_board.client import coordinate_queue
+    from relay_helpers import StableClient, make_host, make_supervisor, submit_request
+    from test_relay_coordinate_beside_cycle import _bound_session
+
+    host, _identity, channel = make_host(tmp_path)
+    queue = coordinate_queue.CoordinateQueue(host.field_root)
+    supervisor = make_supervisor(host)
+    supervisor._sessions[channel.worker_name] = _bound_session(host, channel, supervisor, StableClient())
+    threads: list[str] = []
+    real_load = relay.HostRelayConfig.load
+    real_ready = coordinate_queue.CoordinateQueue.has_ready_work
+
+    def load(path):
+        threads.append(threading.current_thread().name)
+        return real_load(path)
+
+    def has_ready_work(self, **kwargs):
+        threads.append(threading.current_thread().name)
+        return real_ready(self, **kwargs)
+
+    monkeypatch.setattr(relay.HostRelayConfig, "load", staticmethod(load))
+    monkeypatch.setattr(coordinate_queue.CoordinateQueue, "has_ready_work", has_ready_work)
+
+    async def scenario():
+        loop_thread = threading.current_thread().name
+        request = submit_request(queue, channel)
+        started = await supervisor.serve_coordinate_pass()
+        await asyncio.gather(*supervisor._coordinate_draining.values())
+        return loop_thread, started, queue.take_response(worker_name=channel.worker_name, request_id=request["request_id"])
+
+    loop_thread, started, response = asyncio.run(scenario())
+    assert started == [channel.worker_name]
+    assert response is not None and response["ok"] is True
+    assert threads and all(name != loop_thread for name in threads), threads

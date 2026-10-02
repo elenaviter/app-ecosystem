@@ -6807,7 +6807,7 @@ class ProblemBoardRelaySupervisor:
 
         while True:
             try:
-                self.serve_coordinate_once()
+                await self.serve_coordinate_pass()
             except Exception:  # noqa: BLE001 - the next pass retries
                 logger.warning("Problem Board coordinate server pass failed", exc_info=True)
             await asyncio.sleep(self.COORDINATE_SERVE_INTERVAL_SECONDS)
@@ -6819,11 +6819,39 @@ class ProblemBoardRelaySupervisor:
         open session is left to the cycle. A retained connected session with
         unknown delivery may recover before periodic backoff, but its live
         channel/Card fences still apply; unavailable transport remains fenced.
+        This form reads files inline, for tests and one-shot callers; the
+        relay's own loop runs ``serve_coordinate_pass``.
         """
 
         host = HostRelayConfig.load(self.config_path)
-        queue = CoordinateQueue(host.field_root)
-        started: list[str] = []
+        return self._start_coordinate_drains(
+            host, self._coordinate_ready(host, self._coordinate_candidates(host))
+        )
+
+    async def serve_coordinate_pass(self) -> list[str]:
+        """``serve_coordinate_once`` with every file read off the event loop (W461).
+
+        It runs every 0.25 s for every channel. Inline, its host config read
+        and request-queue globs were the most frequent relay loop block on
+        2026-10-02 (51 of 128 before the upgrade).
+        """
+
+        executor = self._store_executors.for_channel("coordinate-server")
+        host = await run_off_loop(HostRelayConfig.load, self.config_path, executor=executor)
+        candidates = self._coordinate_candidates(host)
+        if not candidates:
+            return []
+        ready = await run_off_loop(self._coordinate_ready, host, candidates, executor=executor)
+        # A session may have closed or been replaced while the files were read.
+        still = {name: session for name, session in self._coordinate_candidates(host)}
+        return self._start_coordinate_drains(
+            host, [(name, session) for name, session in ready if still.get(name) is session]
+        )
+
+    def _coordinate_candidates(self, host: HostRelayConfig) -> list[tuple[str, "_ChannelSession"]]:
+        """Channels whose open session may carry a coordinate drain now; loop state only."""
+
+        candidates: list[tuple[str, _ChannelSession]] = []
         for channel in host.workers:
             name = channel.worker_name
             if channel.state != "active" or name in self._coordinate_draining:
@@ -6837,18 +6865,43 @@ class ProblemBoardRelaySupervisor:
                 name, connected=bool(getattr(session.adapter.client, "connected", False))
             ):
                 continue
+            candidates.append((name, session))
+        return candidates
+
+    def _coordinate_ready(
+        self, host: HostRelayConfig, candidates: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> list[tuple[str, "_ChannelSession"]]:
+        """The candidates with ready requests whose session matches its channel and Card.
+
+        Reads files: the request queue, then the profile record. Only the
+        session opened for this exact channel and Card may carry its
+        requests. During a replacement the cached session can still belong to
+        the old one; the cycle drops and reopens it before its own drain, and
+        until then the requests wait. The Card is read only when there is
+        work to carry.
+        """
+
+        queue = CoordinateQueue(host.field_root)
+        channels = {channel.worker_name: channel for channel in host.workers}
+        ready: list[tuple[str, _ChannelSession]] = []
+        for name, session in candidates:
             if not queue.has_ready_work(worker_names=[name]):
                 continue
-            # Only the session opened for this exact channel and Card may
-            # carry its requests. During a replacement the cached session can
-            # still belong to the old one; the cycle drops and reopens it
-            # before its own drain, and until then the requests wait. The
-            # check reads the profile record, so it runs only when there is
-            # work to carry.
-            if not self._session_matches(host, channel, session, require_card=True):
+            if not self._session_matches(host, channels[name], session, require_card=True):
+                continue
+            ready.append((name, session))
+        return ready
+
+    def _start_coordinate_drains(
+        self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> list[str]:
+        channels = {channel.worker_name: channel for channel in host.workers}
+        started: list[str] = []
+        for name, session in ready:
+            if name in self._coordinate_draining:
                 continue
             task = asyncio.create_task(
-                self._drain_coordinate_beside_cycle(host, channel, session),
+                self._drain_coordinate_beside_cycle(host, channels[name], session),
                 name=f"problem-board-coordinate-{name}",
             )
             self._coordinate_draining[name] = task
