@@ -11,7 +11,7 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Event
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
@@ -31,6 +31,10 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 from .card_refusal import actionable_card_refusal
 from .limit_state import session_with_limit_state, wake_deferred_until
+from .limit_state import merge_codex_quota, codex_limit_state
+from .codex_quota import (
+    read_codex_quota, account_fingerprint, SOURCE_CODEX_APP_SERVER, QUOTA_REFRESH_SECONDS,
+)
 from .runtime_model import session_with_runtime_model
 from .worktree_files import (
     MAX_OBSERVED_PATHS as MAX_OBSERVED_PATHS_DEFAULT,
@@ -44,7 +48,7 @@ from ..contract.plan_nodes import parse_plan_node_ref
 from ..contract.refs import parse_ref
 from ..contract.worker_identity import WorkerSessionIdentity, normalize_worker_alias
 from ..contract.runtime_account import normalize_runtime_account
-from .io import content_hash, new_id, parse_utc, read_json, utc_now
+from .io import FileLockBusy, content_hash, new_id, parse_utc, read_json, utc_now
 from .journals import (
     JournalRefreshCancelled,
     JournalWorkspace,
@@ -77,6 +81,8 @@ from .session_delivery import (
 )
 from .resume_command import build_session_resume_command
 from .relay_faults import consume_relay_fault, pending_relay_faults
+from .off_loop import ChannelExecutors, run_off_loop
+from .local_work_scanner import LocalWorkScanner
 from .relay_failures import (
     RelayStageError,
     failure_message,
@@ -1023,6 +1029,8 @@ class ProblemBoardHostRelayAdapter:
         )
         self._monotonic = monotonic or time.monotonic
         self._trace = trace or RelayActivityTrace(log=logger)
+        # Outbox settles running on after a cancelled turn, kept referenced.
+        self._outbox_finishes: set[asyncio.Future] = set()
         self._runtime_account_reader = runtime_account_reader
         self._runtime_account_error_state = (
             runtime_account_error_state
@@ -3284,6 +3292,58 @@ class ProblemBoardHostRelayAdapter:
                     project_ref=project_ref,
                 )
 
+    # W456: the outbox lock is also held by the local-state maintenance thread
+    # and by pb commands in other processes. Waiting for it on the event loop
+    # stalled every channel (3.8 s, 2026-10-01 22:18:35Z), so the relay's
+    # outbox calls never wait on it.
+    OUTBOX_LOCK_RETRY_FIRST_SECONDS = 0.05
+    OUTBOX_LOCK_RETRY_MAX_SECONDS = 0.5
+
+    def _outbox_store(self, call, *, finish: bool = False):
+        """An outbox store call that takes the outbox lock without blocking the loop.
+
+        The call runs with ``wait=False``; while another holder has the lock it
+        is retried after an awaited, capped backoff. Nothing runs in a thread
+        (W321): the store refuses a busy lock before it reads or moves a row,
+        so a claim cancelled while waiting leaves nothing claimed. A settle or
+        retry of a row already sent (``finish=True``) runs as its own task on
+        the loop, awaited through a shield, so a cancelled turn still records
+        the delivery instead of leaving the row leased for a resend.
+        """
+
+        async def attempt(*args, **kwargs):
+            delay = self.OUTBOX_LOCK_RETRY_FIRST_SECONDS
+            while True:
+                try:
+                    return call(*args, wait=False, **kwargs)
+                except FileLockBusy:
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, self.OUTBOX_LOCK_RETRY_MAX_SECONDS)
+
+        if not finish:
+            return attempt
+
+        async def finished(*args, **kwargs):
+            task = asyncio.ensure_future(attempt(*args, **kwargs))
+            self._outbox_finishes.add(task)
+            task.add_done_callback(self._outbox_finishes.discard)
+            try:
+                return await asyncio.shield(task)
+            except asyncio.CancelledError:
+                # The turn ended; the settle goes on and reports only here.
+                task.add_done_callback(self._outbox_finish_after_cancel)
+                raise
+
+        return finished
+
+    @staticmethod
+    def _outbox_finish_after_cancel(task: asyncio.Future) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.warning(
+                "Problem Board relay outbox settle failed after its turn ended",
+                exc_info=task.exception(),
+            )
+
     async def _flush_outbox_unlocked(
         self,
         *,
@@ -3297,7 +3357,7 @@ class ProblemBoardHostRelayAdapter:
             "outbox_retried": 0,
             "reconciliation_publications_refused": 0,
         }
-        for row in self.field.pull_outbox(
+        for row in await self._outbox_store(self.field.pull_outbox)(
             relay_id=self.config.relay_id,
             worker_name=self.config.worker_name,
             project_ref=(
@@ -3388,7 +3448,7 @@ class ProblemBoardHostRelayAdapter:
                         payload=payload,
                     )
                 else:
-                    self.field.settle_outbox(
+                    await self._outbox_store(self.field.settle_outbox, finish=True)(
                         str(row.get("outbox_id") or ""),
                         relay_id=self.config.relay_id,
                         outcome="refused",
@@ -3398,7 +3458,7 @@ class ProblemBoardHostRelayAdapter:
                     continue
             except DomainError as exc:
                 if exc.status >= 500:
-                    self.field.retry_outbox(
+                    await self._outbox_store(self.field.retry_outbox, finish=True)(
                         str(row.get("outbox_id") or ""),
                         relay_id=self.config.relay_id,
                         error_code=exc.code,
@@ -3460,7 +3520,7 @@ class ProblemBoardHostRelayAdapter:
                         # Do not turn a sender-notification failure into silent
                         # terminal loss. The original payload stays leased only
                         # until this bounded retry returns it to pending.
-                        self.field.retry_outbox(
+                        await self._outbox_store(self.field.retry_outbox, finish=True)(
                             str(row.get("outbox_id") or ""),
                             relay_id=self.config.relay_id,
                             error_code="field_delivery_failure_notice_failed",
@@ -3485,7 +3545,7 @@ class ProblemBoardHostRelayAdapter:
                     )
                     if details.get(key)
                 )
-                self.field.settle_outbox(
+                await self._outbox_store(self.field.settle_outbox, finish=True)(
                     str(row.get("outbox_id") or ""),
                     relay_id=self.config.relay_id,
                     outcome="refused",
@@ -3560,7 +3620,7 @@ class ProblemBoardHostRelayAdapter:
                     "plan_revision": int(remote.get("plan_revision") or 0),
                     "content_hash": str(remote.get("content_hash") or ""),
                 }
-            self.field.settle_outbox(
+            await self._outbox_store(self.field.settle_outbox, finish=True)(
                 str(row.get("outbox_id") or ""),
                 relay_id=self.config.relay_id,
                 outcome=outcome,
@@ -4333,6 +4393,12 @@ class ProblemBoardHostRelayAdapter:
         # project's heartbeat. With no mail left there is nothing held, even
         # before the delivery loop runs again.
         hold = self.field.wake_hold(self.config.worker_name)
+        limit = row.get("limit_state")
+        if isinstance(limit, Mapping) and limit.get("source") == SOURCE_CODEX_APP_SERVER and limit.get("kind") == "ok":
+            # cleared_at is local rearm evidence. The Board treats that field
+            # as an expired/unmeasured limit and omits it from current usage;
+            # this positive authenticated measurement is not expired evidence.
+            row["limit_state"] = {key: value for key, value in limit.items() if key != "cleared_at"}
         row = session_with_wake_hold(
             row,
             hold=hold,
@@ -4672,6 +4738,11 @@ def transient_failure(error: BaseException) -> bool:
         return False
     if code_text in TRANSIENT_ERROR_CODES:
         return True
+    # A runtime that is not there ends when it comes back. Connection Hub's
+    # discovery codes for it carry no status, so without this a cycle in which
+    # every channel met the outage ended the relay process (W461).
+    if is_runtime_unavailable(error):
+        return True
     try:
         status = int(getattr(error, "status", 0) or 0)
     except (TypeError, ValueError):
@@ -4750,6 +4821,9 @@ class ProblemBoardRelaySupervisor:
         # W26: per worker, the reset time a deferred wake was last logged for,
         # so a limit is said once per reset and not once per cycle.
         self._limit_wake_deferrals: dict[str, str] = {}
+        self._codex_quota_reader = read_codex_quota
+        self._codex_quota_refresh_at: dict[str, float] = {}
+        self._codex_quota_errors: dict[str, str] = {}
         self._listener_signature_cache: dict[
             str, tuple[tuple[int, int, int] | None, tuple]
         ] = {}
@@ -4757,6 +4831,10 @@ class ProblemBoardRelaySupervisor:
         # authorization leaves the same row pending, the next wait observes it
         # as the baseline instead of spinning until the channel is due.
         self._local_outbox_ready_signatures: dict[str, tuple] = {}
+        # The local-work scans of every wait run in one thread, one at a
+        # time; a wait joins a scan already running instead of starting
+        # another beside it (W459).
+        self._local_work_scanner = LocalWorkScanner()
         self._expected_open_failure_signatures: dict[
             str, tuple[str, str, str]
         ] = {}
@@ -4768,6 +4846,25 @@ class ProblemBoardRelaySupervisor:
         # proportion to history, so it runs in a thread beside the cycle, never
         # inside it (W287, rule LS5 in storage-and-retention.md).
         self._maintenance_task: asyncio.Task | None = None
+        self._loop_lag_task: asyncio.Task | None = None
+        # Each channel's turn (open or reopen, reconnect grace, drain,
+        # attendance, then its own finishing) runs as its own task, keyed by
+        # worker name. The cycle starts turns and waits only a short grace for
+        # them, so one slow or hung channel never holds another channel's next
+        # turn (W456). A turn that ends after its cycle returned sets the event,
+        # which wakes the next cycle at once.
+        self._channel_turns: dict[str, asyncio.Task] = {}
+        self._late_turn_finished: asyncio.Event | None = None
+        # A running turn's own wake and the cycle's wake for that channel take
+        # turns; the cycle skips a wake the turn is giving right now.
+        self._notify_locks: dict[str, asyncio.Lock] = {}
+        # The cycle's own session wake for a channel without a finished turn
+        # runs as a task too, so a hung wake never holds the cycle.
+        self._beside_notifies: dict[str, asyncio.Task] = {}
+        # The session wake's mailbox and listener store calls run in the
+        # channel's own thread (W456): a hung mailbox holds that channel only,
+        # never another channel's wake or the default pool's scans.
+        self._store_executors = ChannelExecutors()
         # One drain per worker at a time, whichever path starts it. The
         # queue's claim is exclusive per request and released before the
         # request runs, so without this a side drain executing an earlier
@@ -4809,6 +4906,15 @@ class ProblemBoardRelaySupervisor:
             else self.retryable(error)
         )
 
+    async def _channel_off_loop(
+        self, channel: WorkerChannelConfig, call: Callable[..., Any], /, *args: Any, **kwargs: Any
+    ) -> Any:
+        """A synchronous store call of ``channel``'s wake, in that channel's own thread."""
+
+        return await run_off_loop(
+            call, *args, executor=self._store_executors.for_channel(channel.worker_name), **kwargs
+        )
+
     async def _notify_session(
         self,
         host: HostRelayConfig,
@@ -4827,9 +4933,11 @@ class ProblemBoardRelaySupervisor:
                 "delivered": False,
                 "reason": "status_event_does_not_wake_model",
             }
-        field = SharedFieldStore(host.field_root)
+        field = await self._channel_off_loop(channel, SharedFieldStore, host.field_root)
         try:
-            listener = field.worker_listener_session(channel.worker_name)
+            listener = await self._channel_off_loop(
+                channel, field.worker_listener_session, channel.worker_name
+            )
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
@@ -4844,7 +4952,8 @@ class ProblemBoardRelaySupervisor:
             }
         delivery_wake_id = wake_id or new_id("wake")
         try:
-            prepared_session = field.prepare_worker_session_wake(
+            prepared_session = await self._channel_off_loop(channel,
+                field.prepare_worker_session_wake,
                 channel.worker_name,
                 message_refs=message_refs,
                 wake_id=delivery_wake_id,
@@ -4921,7 +5030,8 @@ class ProblemBoardRelaySupervisor:
             len(message_refs),
         )
         try:
-            field.record_worker_session_delivery(
+            await self._channel_off_loop(channel,
+                field.record_worker_session_delivery,
                 channel.worker_name,
                 adapter=str(result.get("adapter") or "unknown"),
                 state=str(result.get("state") or "unknown"),
@@ -5001,8 +5111,9 @@ class ProblemBoardRelaySupervisor:
             )
         )
         try:
-            field = SharedFieldStore(host.field_root)
-            listener = field.record_worker_session_queue_reconciliation(
+            field = await self._channel_off_loop(channel, SharedFieldStore, host.field_root)
+            listener = await self._channel_off_loop(channel,
+                field.record_worker_session_queue_reconciliation,
                 channel.worker_name,
                 expected_wake_id=expected_wake_id,
                 result=result,
@@ -5059,35 +5170,119 @@ class ProblemBoardRelaySupervisor:
 
         await asyncio.gather(*(reconcile(channel) for channel in channels))
 
+    async def _refresh_codex_quota(
+        self, field: SharedFieldStore, channel: WorkerChannelConfig,
+        state: Mapping[str, Any] | None, *, now: str,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """Refresh a quota-held session at most once a minute, without a turn."""
+        if channel.runtime_kind != "codex":
+            return state, ""
+        recorded = field.runtime_limit_state(channel.worker_name)
+        if not state or (state.get("kind") not in {"rate_limited", "out_of_tokens"}
+                         and recorded.get("source") != SOURCE_CODEX_APP_SERVER):
+            return state, ""
+        if (state.get("source") == "codex-rollout" and state.get("kind") == "ok"
+            and str(state.get("observed_at") or "") >= str(recorded.get("observed_at") or "")):
+            # A served turn measured capacity again. Do not keep launching
+            # quota helpers for an already healthy session's ordinary mail.
+            self._codex_quota_errors.pop(channel.worker_name, None)
+            return state, ""
+        # Merge against the actual newest turn/buckets, not an already merged
+        # capacity projection whose age may have elapsed while a queue was held.
+        base_state = codex_limit_state(channel.runtime_session_id, now=now) or state
+        worker = field.read_worker(channel.worker_name)
+        if worker.get("runtime_session_id") != channel.runtime_session_id:
+            return state, "work_codex_quota_session_mismatch"
+        if (_limit_ended_after_refusal(base_state)
+            and not (state.get("source") == SOURCE_CODEX_APP_SERVER
+                     and state.get("kind") in {"rate_limited", "out_of_tokens"})):
+            # The recorded reset already ended this refusal. An optional
+            # early-redemption reader (including its cached failure) cannot
+            # disable the ordinary, durable one-wake reset recovery. A newer
+            # native exhausted measurement still keeps its own hold.
+            self._codex_quota_errors.pop(channel.worker_name, None)
+            return base_state, ""
+        account = field.worker_board_record(channel.worker_name).get("runtime_account") or {}
+        email = str(account.get("email") or "")
+        if not email:
+            # Legacy registrations have no binding for this optional native
+            # reader. They retain their existing limit/time-reset behavior;
+            # an unbound read can never authorize an early release.
+            return state, ""
+        fingerprint = account_fingerprint(email)
+        if (recorded.get("source") == SOURCE_CODEX_APP_SERVER
+            and recorded.get("account_email_sha256") != fingerprint):
+            self._codex_quota_refresh_at.pop(channel.worker_name, None)
+        if time.monotonic() < self._codex_quota_refresh_at.get(channel.worker_name, 0):
+            return merge_codex_quota(base_state, recorded, runtime_session_id=channel.runtime_session_id,
+                                     now=now), self._codex_quota_errors.get(channel.worker_name, "")
+        self._codex_quota_refresh_at[channel.worker_name] = time.monotonic() + QUOTA_REFRESH_SECONDS
+        try:
+            observation = await self._codex_quota_reader(
+                expected_email=email, runtime_session_id=channel.runtime_session_id,
+            )
+            if (observation.get("source") != SOURCE_CODEX_APP_SERVER
+                or not observation.get("account_bound")
+                or observation.get("account_email_sha256") != fingerprint
+                or observation.get("runtime_session_id") != channel.runtime_session_id):
+                raise DomainError("work_codex_quota_account_mismatch", "Native quota account binding changed.")
+            if field.read_worker(channel.worker_name).get("runtime_session_id") != channel.runtime_session_id:
+                raise DomainError("work_codex_quota_session_mismatch", "The registered native session changed during the read.")
+            current_account = field.worker_board_record(channel.worker_name).get("runtime_account") or {}
+            if account_fingerprint(current_account.get("email")) != fingerprint:
+                raise DomainError("work_codex_quota_account_mismatch", "The registered native account changed during the read.")
+            field.record_runtime_limit_state(channel.worker_name, observation)
+            self._codex_quota_errors.pop(channel.worker_name, None)
+        except DomainError as exc:
+            self._codex_quota_errors[channel.worker_name] = exc.code
+            return state, exc.code
+        except Exception:  # a failed reader is unavailable, never permission to spend a turn
+            self._codex_quota_errors[channel.worker_name] = "work_codex_quota_unavailable"
+            return state, "work_codex_quota_unavailable"
+        merged = merge_codex_quota(base_state, observation, runtime_session_id=channel.runtime_session_id,
+                                   now=utc_now())
+        if (observation.get("kind") not in {"ok", "rate_limited", "out_of_tokens"}
+            or not merged or (merged.get("source") == SOURCE_CODEX_APP_SERVER and merged.get("kind") == "unknown")
+            or (observation.get("kind") == "ok" and merged.get("source") != SOURCE_CODEX_APP_SERVER)):
+            self._codex_quota_errors[channel.worker_name] = "work_codex_quota_unmeasured"
+            return merged, "work_codex_quota_unmeasured"
+        return merged, ""
+
     async def _notify_available_input(
         self, host: HostRelayConfig, channel: WorkerChannelConfig
     ) -> dict[str, Any] | None:
-        field = SharedFieldStore(host.field_root)
+        field = await self._channel_off_loop(channel, SharedFieldStore, host.field_root)
         try:
-            listener = field.worker_listener_session(channel.worker_name)
+            listener = await self._channel_off_loop(
+                channel, field.worker_listener_session, channel.worker_name
+            )
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
-            field.clear_wake_hold(channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return None
         if not listener or listener.get("state") == "detached":
             # Nobody to wake: no hold, so a later attach starts a fresh one (W334 review).
-            field.clear_wake_hold(channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return None
         queue_reconciliation = await self._reconcile_session_queue(
             host, channel, listener
         )
         try:
-            pending_refs = field.pending_worker_mail_refs(channel.worker_name)
-            listener = field.worker_listener_session(channel.worker_name)
+            pending_refs = await self._channel_off_loop(
+                channel, field.pending_worker_mail_refs, channel.worker_name
+            )
+            listener = await self._channel_off_loop(
+                channel, field.worker_listener_session, channel.worker_name
+            )
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
-            field.clear_wake_hold(channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
             # Nothing to wake for, or nobody to wake: no hold (W334).
-            field.clear_wake_hold(channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
         # W26: a wake to an agent the runtime says is out of tokens or rate
         # limited only piles up turns it cannot take. It waits for the reset
@@ -5099,12 +5294,39 @@ class ProblemBoardRelaySupervisor:
             runtime_kind=channel.runtime_kind,
             runtime_session_id=channel.runtime_session_id,
             now=now,
-            recorded=field.runtime_limit_state(channel.worker_name),
+            recorded=await self._channel_off_loop(
+                channel, field.runtime_limit_state, channel.worker_name
+            ),
         ).get("limit_state")
+        limit_state, quota_error = await self._refresh_codex_quota(
+            field, channel, limit_state, now=now,
+        )
+        # The bounded account read can yield. Do not wake a detached session or
+        # stale captured work that ceased to be pending while it was running.
+        pending_refs = field.pending_worker_mail_refs(channel.worker_name)
+        listener = field.worker_listener_session(channel.worker_name)
+        if not pending_refs or not listener or listener.get("state") == "detached":
+            field.clear_wake_hold(channel.worker_name)
+            return queue_reconciliation
+        if quota_error or (limit_state and limit_state.get("source") == SOURCE_CODEX_APP_SERVER
+                           and limit_state.get("kind") in {"rate_limited", "out_of_tokens"}
+                           and not limit_state.get("resets_at")):
+            # A failed/unmeasured read or continued exhaustion never spends a
+            # model turn. The next bounded read, not a tight native retry loop,
+            # can establish capacity. Pending mail remains untouched.
+            retry_at = (datetime.now(timezone.utc) + timedelta(seconds=QUOTA_REFRESH_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            field.record_wake_hold(channel.worker_name, until=retry_at, pending=len(pending_refs))
+            return {"wake_deferred": True, "wake_deferred_until": retry_at,
+                    "reason": quota_error or "agent_rate_limited"}
         deferred_until = wake_deferred_until(limit_state, now=now)
         if deferred_until:
             # W334: the card shows the hold from this same decision.
-            field.record_wake_hold(channel.worker_name, until=deferred_until, pending=len(pending_refs))
+            await self._channel_off_loop(channel,
+                field.record_wake_hold,
+                channel.worker_name,
+                until=deferred_until,
+                pending=len(pending_refs),
+            )
             if self._limit_wake_deferrals.get(channel.worker_name) != deferred_until:
                 self._limit_wake_deferrals[channel.worker_name] = deferred_until
                 logger.warning(
@@ -5130,15 +5352,17 @@ class ProblemBoardRelaySupervisor:
             # A Claude Code session is told by its own `pb worker watch`; there
             # is no native wake to attempt, so none is recorded, and inspect
             # no longer reads "wake delivery failed" (rehearsal, 2026-09-26).
-            field.clear_wake_hold(channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return None
         withheld = wake_withheld_by_reconciliation(queue_reconciliation, subscription)
         if not withheld:
             # W334: the wake is eligible again, so a hold ends here and only
             # here. A wake still withheld by reconciliation keeps its hold.
-            field.clear_wake_hold(channel.worker_name)
-        elif field.wake_hold(channel.worker_name):
-            field.record_wake_hold(channel.worker_name, until="", pending=len(pending_refs))
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+        elif await self._channel_off_loop(channel, field.wake_hold, channel.worker_name):
+            await self._channel_off_loop(channel,
+                field.record_wake_hold, channel.worker_name, until="", pending=len(pending_refs)
+            )
         if withheld:
             # Every withheld wake is said out loud. On 2026-09-23 Codex
             # sessions sat without a wake for minutes and the log had no line
@@ -5168,11 +5392,15 @@ class ProblemBoardRelaySupervisor:
         if outstanding_wake_id and _limit_ended_after_refusal(limit_state):
             # W390: the wake was refused for usage, not ignored, and that
             # limit has ended: one more push, once per ended limit.
-            if field.rearm_limit_consumed_wake(
+            if await self._channel_off_loop(channel,
+                field.rearm_limit_consumed_wake,
                 channel.worker_name,
                 wake_id=outstanding_wake_id,
-                refused_at=str(limit_state.get("observed_at") or ""),
+                refused_at=str(limit_state.get("refused_at") or limit_state.get("observed_at") or ""),
                 cleared_at=str(limit_state.get("cleared_at") or ""),
+                quota_observed_at=(str(limit_state.get("observed_at") or "")
+                                   if limit_state.get("source") == SOURCE_CODEX_APP_SERVER else ""),
+                runtime_session_id=channel.runtime_session_id,
             ):
                 logger.warning(
                     "Problem Board wake re-armed worker=%s wake_id=%s reason=limit_ended "
@@ -5183,20 +5411,29 @@ class ProblemBoardRelaySupervisor:
                     limit_state.get("cleared_at"),
                     len(pending_refs),
                 )
-                listener = field.worker_listener_session(channel.worker_name) or {}
+                listener = (
+                    await self._channel_off_loop(
+                        channel, field.worker_listener_session, channel.worker_name
+                    )
+                ) or {}
                 subscription = (
                     dict(listener.get("subscription") or {})
                     if isinstance(listener.get("subscription"), Mapping)
                     else {}
                 )
         if outstanding_wake_id:
-            coalesced = field.coalesce_worker_session_wake(
+            coalesced = await self._channel_off_loop(channel,
+                field.coalesce_worker_session_wake,
                 channel.worker_name,
                 message_refs=pending_refs,
                 wake_id=outstanding_wake_id,
             )
             if coalesced is None:
-                listener = field.worker_listener_session(channel.worker_name) or {}
+                listener = (
+                    await self._channel_off_loop(
+                        channel, field.worker_listener_session, channel.worker_name
+                    )
+                ) or {}
                 subscription = (
                     dict(listener.get("subscription") or {})
                     if isinstance(listener.get("subscription"), Mapping)
@@ -5212,7 +5449,8 @@ class ProblemBoardRelaySupervisor:
                         event_kind="input.available",
                         message_refs=pending_refs,
                     )
-                coalesced = field.coalesce_worker_session_wake(
+                coalesced = await self._channel_off_loop(channel,
+                    field.coalesce_worker_session_wake,
                     channel.worker_name,
                     message_refs=pending_refs,
                     wake_id=outstanding_wake_id,
@@ -5440,20 +5678,24 @@ class ProblemBoardRelaySupervisor:
         for key in (
             "method", "url", "server_reason", "failure_kind", "operation", "target",
             "transport_message_id", "transport_phase", "request_scope", "socket_id",
+            "socket_id_at_failure",
         ):
             value = str(details.get(key) or "").strip()
             if value:
                 evidence[key] = value
-        for key in ("ingress_accepted", "transport_replayed", "connection_active"):
+        for key in (
+            "ingress_accepted", "transport_replayed", "connection_active",
+            "ingress_ack_received", "connection_active_at_failure",
+            "disconnected_during_request",
+        ):
             if isinstance(details.get(key), bool):
                 evidence[key] = details[key]
-        try:
-            if details.get("connection_generation") is not None:
-                evidence["connection_generation"] = max(
-                    0, int(details["connection_generation"])
-                )
-        except (TypeError, ValueError):
-            pass
+        for key in ("connection_generation", "connection_generation_at_failure"):
+            try:
+                if details.get(key) is not None:
+                    evidence[key] = max(0, int(details[key]))
+            except (TypeError, ValueError):
+                pass
         status = details.get("status") if isinstance(error, RelayStageError) else details.get(
             "status", getattr(error, "status", None)
         )
@@ -5462,7 +5704,7 @@ class ProblemBoardRelaySupervisor:
                 evidence["status"] = int(status)
         except (TypeError, ValueError):
             pass
-        for key in ("elapsed_seconds", "timeout_seconds"):
+        for key in ("elapsed_seconds", "timeout_seconds", "timer_overrun_seconds"):
             try:
                 if details.get(key) is not None:
                     evidence[key] = round(max(0.0, float(details[key])), 3)
@@ -5562,6 +5804,10 @@ class ProblemBoardRelaySupervisor:
         # leaves this session with the old identity, so it is refused beside
         # the cycle rather than trusted.
         card_fingerprint = self._card_fingerprint(host, channel)
+        # Readers of a failed channel see this attempt running rather than a
+        # retry time already past (W461). Success clears the whole record
+        # below; failure and cancellation clear the mark in the handler.
+        self._pacing.record_attempt_started(channel.worker_name)
         stack = AsyncExitStack()
         try:
             client = await stack.enter_async_context(
@@ -5586,6 +5832,7 @@ class ProblemBoardRelaySupervisor:
                 ),
             )
         except BaseException as exc:
+            self._pacing.record_attempt_ended(channel.worker_name)
             await stack.aclose()
             if isinstance(exc, Exception):
                 error_type = failure_type(exc)
@@ -6284,6 +6531,13 @@ class ProblemBoardRelaySupervisor:
         await self.stop_coordinate_server()
         await self.stop_outbox_server()
         await self.stop_local_state_maintenance()
+        await self.stop_loop_lag_sampler()
+        for worker_name in list(self._channel_turns):
+            await self._cancel_channel_turn(worker_name)
+        for worker_name in list(self._beside_notifies):
+            await self._cancel_notify_beside_turn(worker_name)
+        self._store_executors.shutdown()
+        self._local_work_scanner.close()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
 
@@ -6413,14 +6667,30 @@ class ProblemBoardRelaySupervisor:
         *,
         worker_names: Sequence[str] = (),
     ) -> bool:
-        """Wake on work raised on this machine, the way push wakes on the board."""
+        """Wake on work raised on this machine, the way push wakes on the board.
+
+        Every signature here is a pure directory read with no lock and no
+        claim, and it runs off the event loop: the scans blocked the loop for
+        3.2 s on 2026-10-01 (W456). They run in the relay's one local-work
+        scanner thread, and a wait joins a scan of the same kind that is
+        already running: a cancelled wait leaves its scan to finish and serve
+        the next wait, and never adds a scan beside it (W459, W321).
+        """
 
         coordinate_queue = CoordinateQueue(field_root)
         outbox = OutboxStore(field_root / ".problem-board")
-        if coordinate_queue.has_ready_work(worker_names=worker_names):
+        scanned = (str(field_root), tuple(sorted(worker_names)))
+        scan = self._local_work_scanner.scan
+        if await scan(
+            ("coordinate-ready", *scanned),
+            coordinate_queue.has_ready_work,
+            worker_names=worker_names,
+        ):
             return True
         outbox_key = str(field_root.expanduser().resolve())
-        ready_signature = outbox.ready_signature(worker_names=worker_names)
+        ready_signature = await scan(
+            ("outbox-ready", *scanned), outbox.ready_signature, worker_names=worker_names
+        )
         if (
             ready_signature
             and self._local_outbox_ready_signatures.get(outbox_key, ())
@@ -6428,13 +6698,17 @@ class ProblemBoardRelaySupervisor:
         ):
             self._local_outbox_ready_signatures[outbox_key] = ready_signature
             return True
-        initial = self._local_work_signature(
+        initial = await scan(
+            ("local-work", *scanned),
+            self._local_work_signature,
             field_root,
             worker_names=worker_names,
         )
         # Close the check-to-baseline race: a row that became the baseline is
         # already work and must not wait for a second change.
-        ready_signature = outbox.ready_signature(worker_names=worker_names)
+        ready_signature = await scan(
+            ("outbox-ready", *scanned), outbox.ready_signature, worker_names=worker_names
+        )
         if (
             ready_signature
             and self._local_outbox_ready_signatures.get(outbox_key, ())
@@ -6449,12 +6723,16 @@ class ProblemBoardRelaySupervisor:
             if remaining <= 0:
                 return False
             await asyncio.sleep(min(0.25, remaining))
-            if self._local_work_signature(
+            if await scan(
+                ("local-work", *scanned),
+                self._local_work_signature,
                 field_root,
                 worker_names=worker_names,
             ) != initial:
-                self._local_outbox_ready_signatures[outbox_key] = (
-                    outbox.ready_signature(worker_names=worker_names)
+                self._local_outbox_ready_signatures[outbox_key] = await scan(
+                    ("outbox-ready", *scanned),
+                    outbox.ready_signature,
+                    worker_names=worker_names,
                 )
                 return True
 
@@ -6591,6 +6869,12 @@ class ProblemBoardRelaySupervisor:
                     )
                 )
             )
+        # A channel turn that ended after its cycle returned wakes the next
+        # cycle at once (W456): its outcome is reported, and a channel whose
+        # socket dropped starts its reopen without waiting out the interval.
+        late_turn = self._late_turn_finished
+        if late_turn is not None:
+            waiters.append(asyncio.create_task(late_turn.wait()))
         stop_task = (
             asyncio.create_task(stop_event.wait()) if stop_event is not None else None
         )
@@ -6652,6 +6936,36 @@ class ProblemBoardRelaySupervisor:
 
     LOCAL_STATE_MAINTENANCE_FIRST_DELAY_SECONDS = 30.0
     LOCAL_STATE_MAINTENANCE_INTERVAL_SECONDS = 300.0
+
+    def _ensure_loop_lag_sampler(self) -> None:
+        """Run the trace's event-loop lag sampler beside the channel cycle (W448)."""
+
+        task = self._loop_lag_task
+        if task is not None and task.done() and not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                # Without this line, no stall lines would read the same as
+                # no sampler at all.
+                logger.warning(
+                    "Problem Board relay loop-lag sampler ended error=%s; restarting",
+                    type(error).__name__,
+                )
+        if task is None or task.done():
+            self._loop_lag_task = asyncio.create_task(
+                self._trace.sample_loop_lag(),
+                name="problem-board-relay-loop-lag",
+            )
+            # The sampler's beat feeds the watchdog thread, which names the
+            # frames holding the loop while a stall is happening (W456).
+            self._trace.watchdog.start()
+
+    async def stop_loop_lag_sampler(self) -> None:
+        self._trace.watchdog.stop()
+        task = self._loop_lag_task
+        self._loop_lag_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     def _ensure_local_state_maintenance(self, field_root: Path) -> None:
         task = self._maintenance_task
@@ -6830,130 +7144,406 @@ class ProblemBoardRelaySupervisor:
         finally:
             self._coordinate_draining.pop(channel.worker_name, None)
 
-    async def poll_once(self) -> dict[str, Any]:
-        cycle = self._trace.start_cycle()
-        outcome = "succeeded"
-        try:
-            return await self._poll_once_body()
-        except BaseException as exc:
-            outcome = (
-                "cancelled"
-                if isinstance(exc, asyncio.CancelledError)
-                else f"failed:{self._failure_code(exc)}"
-            )
-            raise
-        finally:
-            self._trace.finish_cycle(cycle, outcome=outcome)
+    # -- one channel's turn, independent of every other channel (W456) --------
 
-    async def _poll_once_body(self) -> dict[str, Any]:
-        self._ensure_coordinate_server()
-        self._ensure_outbox_server()
-        with self._trace.stage("host.load", operation="relay.config"):
-            host = HostRelayConfig.load(self.config_path)
-        self._ensure_local_state_maintenance(host.field_root)
-        with self._trace.stage(
-            "channels.retire_local",
-            operation="terminal_listener.reconcile",
-        ):
-            locally_retired = await self._disable_locally_terminal_channels(host)
-        if locally_retired:
-            host = HostRelayConfig.load(self.config_path)
-        channels = [worker for worker in host.workers if worker.state == "active"]
-        pending_channels = [
-            worker for worker in host.workers if worker.state == "pending_authorization"
-        ]
-        active_names = {
-            worker.worker_name for worker in (*channels, *pending_channels)
-        }
-        for worker_name in list(self._sessions):
-            if worker_name not in active_names:
-                with self._trace.stage(
-                    "channel.close",
-                    channel=worker_name,
-                    operation="inactive_session.close",
-                ):
-                    await self._drop_session(worker_name)
-        with self._trace.stage(
-            "native_queue.reconcile",
-            operation="session_queue.preflight",
-        ):
-            await self._reconcile_queues_before_channels(
-                host, [*channels, *pending_channels]
-            )
-        # Only channels the pacing allows call the gateway this cycle. A
-        # deferred active channel still gets its local session wake below.
-        pacing = self._pacing
-        host_quiet = pacing.host_quiet_seconds() > 0
-        due_channels = [
-            worker for worker in channels
-            if not host_quiet and pacing.channel_due(worker.worker_name)
-        ]
-        due_names = {worker.worker_name for worker in due_channels}
-        deferred_channels = [
-            worker for worker in channels if worker.worker_name not in due_names
-        ]
-        fingerprints = {
-            worker.worker_name: self._profile_fingerprint(host, worker)
-            for worker in pending_channels
-        }
-        due_pending = [
-            worker for worker in pending_channels
-            if not host_quiet
-            and pacing.pending_due(worker.worker_name, fingerprints[worker.worker_name])
-        ]
-        due_pending_names = {worker.worker_name for worker in due_pending}
-        waiting_pending = [
-            worker for worker in pending_channels
-            if worker.worker_name not in due_pending_names
-        ]
-        with self._trace.stage(
-            "channels.active",
-            operation="channel.poll_due",
-        ):
-            results = await asyncio.gather(
-                *(self._poll_channel(host, worker) for worker in due_channels),
-                return_exceptions=True,
-            )
-        with self._trace.stage(
-            "channels.pending",
-            operation="authorization.retry_due",
-        ):
-            pending_results = await asyncio.gather(
-                *(self._poll_channel(host, worker) for worker in due_pending),
-                return_exceptions=True,
-            )
-        with self._trace.stage(
-            "channels.retire_remote",
-            operation="host_retirements.apply",
-        ):
-            remote_retired = await self._apply_host_retirements(
-                host, [*results, *pending_results]
-            )
-        retired = [*locally_retired, *remote_retired]
-        retired_names = {row["worker_name"] for row in retired}
-        workers: list[dict[str, Any]] = []
-        failures: list[BaseException] = []
-        next_poll_seconds: list[int] = []
-        pending: list[dict[str, Any]] = []
-        demoted = 0
-        for channel, result in zip(due_channels, results):
-            if channel.worker_name in retired_names:
-                continue
-            if isinstance(result, BaseException):
-                pacing.observe(result)
-            if (
-                isinstance(result, DomainError)
-                and result.code == "work_worker_retired"
+    # How long a cycle waits for the turns it started. Half a second reports
+    # a prompt outcome in the cycle that started it, so the cycle still says
+    # when every channel failed (the host runtime's degraded state and retry
+    # rest on it), while a hung new turn costs the other channels at most this
+    # once: later cycles never wait for it. A turn that ends later reports in
+    # the next cycle, and a failed one wakes that cycle at once. A one-shot
+    # `pb relay --once` sets this to the whole turn ceiling.
+    CHANNEL_TURN_CYCLE_GRACE_SECONDS = 0.5
+    # The ceiling on one channel's whole turn: poll, retirements and its own
+    # finishing. Each network call inside has its own transport timeout; this
+    # bounds a turn that hangs beyond them, so a hung channel fails alone with
+    # a named outcome and backs off.
+    CHANNEL_TURN_DEADLINE_SECONDS = 300.0
+    # How long a cancelled turn and its session drop are awaited. Past it the
+    # relay goes on and logs the leftover, so cleanup never holds a channel.
+    CHANNEL_TURN_CLEANUP_SECONDS = 10.0
+
+    def _start_channel_turn(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        fingerprint: str | None,
+    ) -> asyncio.Task:
+        task = asyncio.create_task(
+            self._channel_turn(host, channel, fingerprint=fingerprint),
+            name=f"problem-board-channel-turn-{channel.worker_name}",
+        )
+        self._channel_turns[channel.worker_name] = task
+        return task
+
+    async def _cancel_channel_turn(self, worker_name: str) -> None:
+        task = self._channel_turns.pop(worker_name, None)
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    def _late_turn_done(self, task: asyncio.Task) -> None:
+        """Wake the next cycle for a late turn that needs a prompt report.
+
+        A failed, refused, activated or retiring turn is reported at once. A
+        successful poll waits for the ordinary interval, so turns that end
+        quickly never make the cycle spin.
+        """
+
+        if self._late_turn_finished is None or task.cancelled():
+            return
+        if task.exception() is None:
+            outcome = task.result()
+            if not (
+                outcome["failure"] is not None
+                or outcome["pending_row"] is not None
+                or outcome["promoted"]
+                or outcome["retired"]
             ):
-                retired_row = await self._retire_channel(
+                return
+        self._late_turn_finished.set()
+
+    def _turn_outcome(
+        self, worker_name: str, task: asyncio.Task
+    ) -> dict[str, Any] | None:
+        """A finished turn's outcome, or None when it was cancelled or broke."""
+
+        if task.cancelled():
+            return None
+        error = task.exception()
+        if error is not None:
+            logger.warning(
+                "Problem Board relay channel turn failed worker=%s "
+                "error_type=%s error_code=%s message=%s",
+                worker_name,
+                failure_type(error),
+                self._failure_code(error),
+                failure_message(error),
+                exc_info=error,
+            )
+            return None
+        return task.result()
+
+    @staticmethod
+    def _empty_turn_outcome() -> dict[str, Any]:
+        return {
+            "worker_row": None,
+            "pending_row": None,
+            "failure": None,
+            "next_poll_seconds": None,
+            "demoted": 0,
+            "promoted": 0,
+            "retired": [],
+        }
+
+    async def _channel_turn(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        fingerprint: str | None,
+    ) -> dict[str, Any]:
+        """One channel's whole turn under its own deadline.
+
+        ``fingerprint`` is set for a channel waiting on authorization. The
+        deadline covers the poll, retirements and the channel's own finishing.
+        Past it the turn is cancelled, its cleanup is awaited for a bounded
+        time, and the deadline outcome is recorded without awaiting anything
+        that can hang. Nothing here awaits another channel.
+        """
+
+        started = time.monotonic()
+        body = asyncio.ensure_future(
+            self._channel_turn_body(
+                host, channel, fingerprint=fingerprint, started=started
+            )
+        )
+        try:
+            done, _ = await asyncio.wait(
+                {body}, timeout=self.CHANNEL_TURN_DEADLINE_SECONDS
+            )
+        except asyncio.CancelledError:
+            body.cancel()
+            await asyncio.wait({body}, timeout=self.CHANNEL_TURN_CLEANUP_SECONDS)
+            raise
+        if body in done:
+            return body.result()
+        body.cancel()
+        await asyncio.wait({body}, timeout=self.CHANNEL_TURN_CLEANUP_SECONDS)
+        if not body.done():
+            # Retrieve the eventual result so a late failure is not lost.
+            body.add_done_callback(
+                lambda task: task.cancelled() or task.exception()
+            )
+            logger.warning(
+                "Problem Board relay turn still running after its cancel bound "
+                "worker=%s bound_seconds=%.1f",
+                channel.worker_name,
+                self.CHANNEL_TURN_CLEANUP_SECONDS,
+            )
+        await self._bounded_drop_session(channel.worker_name)
+        elapsed = time.monotonic() - started
+        failure = RelayStageError(
+            "work_relay_channel_turn_deadline_exceeded",
+            f"The channel's turn did not finish within "
+            f"{self.CHANNEL_TURN_DEADLINE_SECONDS:.0f}s; only this channel "
+            "backs off and reopens.",
+            details={
+                "worker_name": channel.worker_name,
+                "operation": "channel.turn",
+                "elapsed_seconds": round(elapsed, 3),
+                "deadline_seconds": self.CHANNEL_TURN_DEADLINE_SECONDS,
+            },
+            retryable=True,
+        )
+        outcome = self._deadline_outcome(host, channel, fingerprint, failure)
+        self._log_slow_turn(channel, failure, elapsed)
+        return outcome
+
+    async def _bounded_drop_session(self, worker_name: str) -> None:
+        drop = asyncio.ensure_future(self._drop_session(worker_name))
+        done, _ = await asyncio.wait(
+            {drop}, timeout=self.CHANNEL_TURN_CLEANUP_SECONDS
+        )
+        if drop in done:
+            if not drop.cancelled() and drop.exception() is not None:
+                logger.warning(
+                    "Problem Board relay session drop after a turn deadline failed "
+                    "worker=%s",
+                    worker_name,
+                    exc_info=drop.exception(),
+                )
+            return
+        # Retrieve the eventual result so a late failure is logged once.
+        drop.add_done_callback(
+            lambda task: task.cancelled() or task.exception()
+        )
+        logger.warning(
+            "Problem Board relay session drop still running after its bound "
+            "worker=%s bound_seconds=%.1f",
+            worker_name,
+            self.CHANNEL_TURN_CLEANUP_SECONDS,
+        )
+
+    def _deadline_outcome(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        fingerprint: str | None,
+        failure: RelayStageError,
+    ) -> dict[str, Any]:
+        """The outcome of a turn cut at its deadline: records only, no awaits."""
+
+        pacing = self._pacing
+        outcome = self._empty_turn_outcome()
+        code = self._failure_code(failure)
+        pacing.observe(failure)
+        if fingerprint is not None:
+            pacing.record_pending_refusal(
+                channel.worker_name,
+                fingerprint=fingerprint,
+                permanent=False,
+                reason=code,
+                credential=False,
+            )
+        self._record_channel_failure(pacing, channel.worker_name, failure)
+        try:
+            self._record_relay_channel_degraded(host, channel, failure)
+        except Exception:  # noqa: BLE001 - the outcome stands without the record
+            logger.warning(
+                "Problem Board relay degraded record failed worker=%s",
+                channel.worker_name,
+                exc_info=True,
+            )
+        logger.warning(
+            "Problem Board worker channel failed worker=%s profile=%s "
+            "error_type=%s error_code=%s retryable=True message=%s",
+            channel.worker_name,
+            channel.profile,
+            failure_type(failure),
+            code,
+            failure_message(failure),
+        )
+        if fingerprint is not None:
+            observation = self._authorization_failure_observation(failure)
+            try:
+                self._record_authorization(host, channel, observation)
+            except Exception:  # noqa: BLE001 - the outcome stands without the record
+                logger.warning(
+                    "Problem Board relay authorization record failed worker=%s",
+                    channel.worker_name,
+                    exc_info=True,
+                )
+            outcome["pending_row"] = {
+                **channel.to_mapping(),
+                "observation": observation,
+            }
+            return outcome
+        outcome["failure"] = failure
+        outcome["worker_row"] = {
+            "worker_name": channel.worker_name,
+            "worker_alias": channel.worker_alias,
+            "state": "error",
+            "error_type": failure_type(failure),
+            "error_code": code,
+            "retryable": True,
+            "message": failure_message(failure),
+            "needed": {},
+        }
+        return outcome
+
+    def _log_slow_turn(
+        self, channel: WorkerChannelConfig, result: object, elapsed: float
+    ) -> None:
+        if elapsed < self._trace.slow_seconds:
+            return
+        logger.warning(
+            "Problem Board relay slow channel turn worker=%s outcome=%s "
+            "seconds=%.3f threshold_seconds=%.3f",
+            channel.worker_name,
+            (
+                f"failed:{self._failure_code(result)}"
+                if isinstance(result, BaseException)
+                else "succeeded"
+            ),
+            elapsed,
+            self._trace.slow_seconds,
+        )
+
+    async def _channel_turn_body(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        fingerprint: str | None,
+        started: float,
+    ) -> dict[str, Any]:
+        """The turn itself: the poll, retirements, then the channel's finishing."""
+
+        result: object
+        try:
+            result = await self._poll_channel(host, channel)
+        except Exception as exc:  # noqa: BLE001 - a failed poll is this turn's result
+            result = exc
+        retired = await self._apply_host_retirements(host, [result])
+        for row in retired:
+            if row["worker_name"] != channel.worker_name:
+                await self._cancel_channel_turn(row["worker_name"])
+        if any(row["worker_name"] == channel.worker_name for row in retired):
+            outcome = self._empty_turn_outcome()
+        elif fingerprint is None:
+            outcome = await self._finish_active_turn(host, channel, result)
+        else:
+            outcome = await self._finish_pending_turn(
+                host, channel, fingerprint, result
+            )
+        outcome["retired"] = [*retired, *outcome["retired"]]
+        self._log_slow_turn(channel, result, time.monotonic() - started)
+        return outcome
+
+    def _start_notify_beside_turn(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        operation: str,
+    ) -> dict[str, Any] | None:
+        """Start the session wake for a channel without a finished turn; never wait.
+
+        The wake runs as its own task, one per channel at a time, so a wake
+        that hangs holds only that channel. Returns the delivery of the wake
+        the previous cycle started, when it has finished.
+        """
+
+        name = channel.worker_name
+        delivery: dict[str, Any] | None = None
+        previous = self._beside_notifies.get(name)
+        if previous is not None:
+            if not previous.done():
+                return None
+            del self._beside_notifies[name]
+            if not previous.cancelled() and previous.exception() is None:
+                delivery = previous.result()
+        if not self._notify_lock(name).locked():
+            self._beside_notifies[name] = asyncio.create_task(
+                self._notify_beside_turn(host, channel, operation=operation),
+                name=f"problem-board-session-wake-{name}",
+            )
+        return delivery
+
+    async def _cancel_notify_beside_turn(self, worker_name: str) -> None:
+        task = self._beside_notifies.pop(worker_name, None)
+        if task is None or task.done():
+            return
+        task.cancel()
+        await asyncio.wait({task}, timeout=self.CHANNEL_TURN_CLEANUP_SECONDS)
+
+    async def _notify_beside_turn(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        operation: str,
+    ) -> dict[str, Any] | None:
+        """The local session wake for a channel the cycle did not finish a turn for.
+
+        A turn that is notifying this channel right now holds its notify lock;
+        the wake is then that turn's, and this one is skipped.
+        """
+
+        lock = self._notify_lock(channel.worker_name)
+        if lock.locked():
+            return None
+        try:
+            async with lock:
+                with self._trace.stage(
+                    "session.notify",
+                    channel=channel.worker_name,
+                    operation=operation,
+                ):
+                    return await self._notify_available_input(host, channel)
+        except Exception:  # noqa: BLE001 - a local wake never blocks the cycle
+            logger.warning(
+                "Problem Board session wake failed worker=%s", channel.worker_name,
+                exc_info=True,
+            )
+            return None
+
+    def _notify_lock(self, worker_name: str) -> asyncio.Lock:
+        lock = self._notify_locks.get(worker_name)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._notify_locks[worker_name] = lock
+        return lock
+
+    async def _finish_active_turn(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        result: object,
+    ) -> dict[str, Any]:
+        """An active channel's own finishing after its poll: wake, pacing, rows."""
+
+        pacing = self._pacing
+        outcome = self._empty_turn_outcome()
+        if isinstance(result, BaseException):
+            pacing.observe(result)
+        if (
+            isinstance(result, DomainError)
+            and result.code == "work_worker_retired"
+        ):
+            outcome["retired"].append(
+                await self._retire_channel(
                     host,
                     channel,
                     reason=str(result.details.get("retirement_reason") or ""),
                 )
-                retired.append(retired_row)
-                retired_names.add(channel.worker_name)
-                continue
+            )
+            return outcome
 
+        async with self._notify_lock(channel.worker_name):
             # Local mail and the native session wake do not depend on a healthy
             # Data Bus reconciliation. A poisoned outbox or remote operation
             # refusal must not make an already-running coding session deaf.
@@ -6990,224 +7580,391 @@ class ProblemBoardRelaySupervisor:
                     "request": self._failure_evidence(failure),
                 }
 
-            if isinstance(result, BaseException):
-                observation = self._authorization_failure_observation(result)
-                if observation["terminal_channel"]:
-                    pacing.record_pending_refusal(
-                        channel.worker_name,
-                        fingerprint=self._profile_fingerprint(host, channel),
-                        permanent=True,
-                        reason=self._failure_code(result),
-                        credential=credential_refused(result),
-                    )
-                    identity = WorkerSessionIdentity.create(
-                        channel.runtime_kind, channel.runtime_session_id
-                    )
-                    set_worker_channel_state(
-                        self.config_path,
-                        identity=identity,
-                        state="pending_authorization",
-                        expected_state="active",
-                    )
-                    self._record_authorization(host, channel, observation)
-                    pending_row = {
-                        **channel.to_mapping(),
-                        "observation": observation,
-                    }
-                    if delivery is not None:
-                        pending_row["session_delivery"] = delivery
-                    pending.append(pending_row)
-                    demoted += 1
-                    continue
-                retryable = self._is_retryable(result)
-                if retryable:
-                    self._record_relay_channel_degraded(host, channel, result)
-                # Every failed channel backs off. The classification only
-                # decides the log, the degraded record and the operator hint.
-                # The one exception is a relay process that must be replaced:
-                # that failure is about this process, not the gateway, and it
-                # has to keep surfacing until the supervisor replaces it.
-                if self._failure_code(result) != "work_relay_channel_stop_failed":
-                    self._record_channel_failure(pacing, channel.worker_name, result)
-                failures.append(result)
-                # An authorization refusal that does not name what it wanted is
-                # a dead end for whoever reads it. work_worker_operation_not_granted
-                # appeared 1131 times in this log without once saying which
-                # operation or which claim, so nobody could act on any of them.
-                details = getattr(result, "details", None)
-                details = dict(details) if isinstance(details, Mapping) else {}
-                request = self._failure_evidence(result)
-                wanted = " ".join(
-                    f"{key}={details[key]}"
-                    for key in ("operation", "required_grants", "resource", "held_grants")
-                    if details.get(key) and key not in request
-                )
-                request_log = "".join(
-                    f" {key}={json.dumps(value, ensure_ascii=True)}"
-                    for key, value in request.items()
-                )
-                logger.warning(
-                    "Problem Board worker channel failed worker=%s profile=%s "
-                    "error_type=%s error_code=%s retryable=%s%s%s%s",
-                    channel.worker_name,
-                    channel.profile,
-                    failure_type(result),
-                    self._failure_code(result),
-                    retryable,
-                    request_log,
-                    f" {wanted}" if wanted else "",
-                    f" message={failure_message(result)}",
-                )
-                # The log says what it wanted; the surfaced row did not, and the
-                # row is what a person actually sees. Carrying only error_type
-                # and retryable is why 1131 refusals produced no action: the
-                # reader could tell something failed and never what to grant.
-                error_row = {
-                    "worker_name": channel.worker_name,
-                    "worker_alias": channel.worker_alias,
-                    "state": "error",
-                    "error_type": failure_type(result),
-                    "error_code": self._failure_code(result),
-                    "retryable": retryable,
-                    "message": failure_message(result),
-                    "needed": {
-                        key: details[key]
-                        for key in (
-                            "operation",
-                            "required_grants",
-                            "resource",
-                            "held_grants",
-                        )
-                        if details.get(key)
-                    },
-                }
-                # A Card whose operation list predates the operation is fixed
-                # by one command, and the row names it with this channel's
-                # profile (W262, operator 2026-09-23: re-approval, no fallback).
-                actionable = actionable_card_refusal(
-                    self._failure_code(result), details, profile=channel.profile
-                )
-                if actionable:
-                    error_row["needed"] = {**error_row["needed"], **actionable}
-                if request:
-                    error_row["request"] = request
-                if delivery is not None:
-                    error_row["session_delivery"] = delivery
-                workers.append(error_row)
-            else:
-                row = dict(result)
-                pacing.record_success(channel.worker_name)
-                await self._record_relay_channel_recovered(host, channel)
-                if delivery is not None:
-                    row["session_delivery"] = delivery
-                hint = row.get("next_poll_seconds")
-                if isinstance(hint, (int, float)) and hint > 0:
-                    next_poll_seconds.append(int(hint))
-                workers.append(row)
-        for channel in deferred_channels:
-            if channel.worker_name in retired_names:
-                continue
-            try:
-                with self._trace.stage(
-                    "session.notify",
-                    channel=channel.worker_name,
-                    operation="input.available.deferred_channel",
-                ):
-                    delivery = await self._notify_available_input(host, channel)
-            except Exception:  # noqa: BLE001 - a local wake never blocks the cycle
-                logger.warning(
-                    "Problem Board session wake failed worker=%s", channel.worker_name,
-                    exc_info=True,
-                )
-                delivery = None
-            deferred_row = {
-                "worker_name": channel.worker_name,
-                "worker_alias": channel.worker_alias,
-                "state": "deferred",
-                "reason": "host_rate_limited" if host_quiet else "backing_off",
-            }
-            if delivery is not None:
-                deferred_row["session_delivery"] = delivery
-            workers.append(deferred_row)
-        for channel in waiting_pending:
-            if channel.worker_name not in retired_names:
-                pending.append({**channel.to_mapping(), "deferred": True})
-        promoted = 0
-        for channel, result in zip(due_pending, pending_results):
-            if channel.worker_name in retired_names:
-                continue
-            if isinstance(result, BaseException):
-                pacing.observe(result)
-                # A runtime that is not there refused nothing: never permanent.
-                permanent = not self._is_retryable(result) and not is_runtime_unavailable(result)
+        if isinstance(result, BaseException):
+            observation = self._authorization_failure_observation(result)
+            if observation["terminal_channel"]:
                 pacing.record_pending_refusal(
                     channel.worker_name,
-                    fingerprint=fingerprints[channel.worker_name],
-                    permanent=permanent,
+                    fingerprint=self._profile_fingerprint(host, channel),
+                    permanent=True,
                     reason=self._failure_code(result),
-                    credential=permanent and credential_refused(result),
+                    credential=credential_refused(result),
                 )
-                if not permanent:
-                    self._record_channel_failure(pacing, channel.worker_name, result)
-                if (
-                    isinstance(result, DomainError)
-                    and result.code == "work_worker_retired"
-                ):
-                    retired_row = await self._retire_channel(
+                identity = WorkerSessionIdentity.create(
+                    channel.runtime_kind, channel.runtime_session_id
+                )
+                set_worker_channel_state(
+                    self.config_path,
+                    identity=identity,
+                    state="pending_authorization",
+                    expected_state="active",
+                )
+                self._record_authorization(host, channel, observation)
+                pending_row = {
+                    **channel.to_mapping(),
+                    "observation": observation,
+                }
+                if delivery is not None:
+                    pending_row["session_delivery"] = delivery
+                outcome["pending_row"] = pending_row
+                outcome["demoted"] = 1
+                return outcome
+            retryable = self._is_retryable(result)
+            if retryable:
+                self._record_relay_channel_degraded(host, channel, result)
+            # Every failed channel backs off. The classification only
+            # decides the log, the degraded record and the operator hint.
+            # The one exception is a relay process that must be replaced:
+            # that failure is about this process, not the gateway, and it
+            # has to keep surfacing until the supervisor replaces it.
+            if self._failure_code(result) != "work_relay_channel_stop_failed":
+                self._record_channel_failure(pacing, channel.worker_name, result)
+            outcome["failure"] = result
+            # An authorization refusal that does not name what it wanted is
+            # a dead end for whoever reads it. work_worker_operation_not_granted
+            # appeared 1131 times in this log without once saying which
+            # operation or which claim, so nobody could act on any of them.
+            details = getattr(result, "details", None)
+            details = dict(details) if isinstance(details, Mapping) else {}
+            request = self._failure_evidence(result)
+            wanted = " ".join(
+                f"{key}={details[key]}"
+                for key in ("operation", "required_grants", "resource", "held_grants")
+                if details.get(key) and key not in request
+            )
+            request_log = "".join(
+                f" {key}={json.dumps(value, ensure_ascii=True)}"
+                for key, value in request.items()
+            )
+            logger.warning(
+                "Problem Board worker channel failed worker=%s profile=%s "
+                "error_type=%s error_code=%s retryable=%s%s%s%s",
+                channel.worker_name,
+                channel.profile,
+                failure_type(result),
+                self._failure_code(result),
+                retryable,
+                request_log,
+                f" {wanted}" if wanted else "",
+                f" message={failure_message(result)}",
+            )
+            # The log says what it wanted; the surfaced row did not, and the
+            # row is what a person actually sees. Carrying only error_type
+            # and retryable is why 1131 refusals produced no action: the
+            # reader could tell something failed and never what to grant.
+            error_row = {
+                "worker_name": channel.worker_name,
+                "worker_alias": channel.worker_alias,
+                "state": "error",
+                "error_type": failure_type(result),
+                "error_code": self._failure_code(result),
+                "retryable": retryable,
+                "message": failure_message(result),
+                "needed": {
+                    key: details[key]
+                    for key in (
+                        "operation",
+                        "required_grants",
+                        "resource",
+                        "held_grants",
+                    )
+                    if details.get(key)
+                },
+            }
+            # A Card whose operation list predates the operation is fixed
+            # by one command, and the row names it with this channel's
+            # profile (W262, operator 2026-09-23: re-approval, no fallback).
+            actionable = actionable_card_refusal(
+                self._failure_code(result), details, profile=channel.profile
+            )
+            if actionable:
+                error_row["needed"] = {**error_row["needed"], **actionable}
+            if request:
+                error_row["request"] = request
+            if delivery is not None:
+                error_row["session_delivery"] = delivery
+            outcome["worker_row"] = error_row
+        else:
+            row = dict(result)
+            pacing.record_success(channel.worker_name)
+            await self._record_relay_channel_recovered(host, channel)
+            if delivery is not None:
+                row["session_delivery"] = delivery
+            hint = row.get("next_poll_seconds")
+            if isinstance(hint, (int, float)) and hint > 0:
+                outcome["next_poll_seconds"] = int(hint)
+            outcome["worker_row"] = row
+        return outcome
+
+    async def _finish_pending_turn(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        fingerprint: str,
+        result: object,
+    ) -> dict[str, Any]:
+        """A pending channel's own finishing: refusal pacing or activation."""
+
+        pacing = self._pacing
+        outcome = self._empty_turn_outcome()
+        if isinstance(result, BaseException):
+            pacing.observe(result)
+            # A runtime that is not there refused nothing: never permanent.
+            permanent = not self._is_retryable(result) and not is_runtime_unavailable(result)
+            pacing.record_pending_refusal(
+                channel.worker_name,
+                fingerprint=fingerprint,
+                permanent=permanent,
+                reason=self._failure_code(result),
+                credential=permanent and credential_refused(result),
+            )
+            if not permanent:
+                self._record_channel_failure(pacing, channel.worker_name, result)
+            if (
+                isinstance(result, DomainError)
+                and result.code == "work_worker_retired"
+            ):
+                outcome["retired"].append(
+                    await self._retire_channel(
                         host,
                         channel,
                         reason=str(result.details.get("retirement_reason") or ""),
                     )
-                    retired.append(retired_row)
-                    retired_names.add(channel.worker_name)
-                    continue
-                observation = self._authorization_failure_observation(result)
-                self._record_authorization(host, channel, observation)
-                if self._is_retryable(result):
-                    self._record_relay_channel_degraded(host, channel, result)
-                pending.append(
-                    {
-                        **channel.to_mapping(),
-                        "observation": observation,
-                    }
                 )
-                continue
-            identity = WorkerSessionIdentity.create(
-                channel.runtime_kind, channel.runtime_session_id
+                return outcome
+            observation = self._authorization_failure_observation(result)
+            self._record_authorization(host, channel, observation)
+            if self._is_retryable(result):
+                self._record_relay_channel_degraded(host, channel, result)
+            outcome["pending_row"] = {
+                **channel.to_mapping(),
+                "observation": observation,
+            }
+            return outcome
+        identity = WorkerSessionIdentity.create(
+            channel.runtime_kind, channel.runtime_session_id
+        )
+        try:
+            set_worker_channel_state(
+                self.config_path,
+                identity=identity,
+                state="active",
+                expected_state="pending_authorization",
             )
-            try:
-                set_worker_channel_state(
-                    self.config_path,
-                    identity=identity,
-                    state="active",
-                    expected_state="pending_authorization",
+        except DomainError:
+            await self._drop_session(channel.worker_name)
+            raise
+        row = dict(result)
+        row["authorization_transition"] = "activated"
+        pacing.record_success(channel.worker_name)
+        await self._record_relay_channel_recovered(host, channel)
+        with self._trace.stage(
+            "session.notify",
+            channel=channel.worker_name,
+            operation="control_plane.connected",
+        ):
+            row["session_delivery"] = await self._notify_session(
+                host,
+                channel,
+                event_kind="control_plane.connected",
+            )
+        hint = row.get("next_poll_seconds")
+        if isinstance(hint, (int, float)) and hint > 0:
+            outcome["next_poll_seconds"] = int(hint)
+        outcome["worker_row"] = row
+        outcome["promoted"] = 1
+        return outcome
+
+    async def poll_once(self) -> dict[str, Any]:
+        cycle = self._trace.start_cycle()
+        outcome = "succeeded"
+        try:
+            return await self._poll_once_body()
+        except BaseException as exc:
+            outcome = (
+                "cancelled"
+                if isinstance(exc, asyncio.CancelledError)
+                else f"failed:{self._failure_code(exc)}"
+            )
+            raise
+        finally:
+            self._trace.finish_cycle(cycle, outcome=outcome)
+
+    async def _poll_once_body(self) -> dict[str, Any]:
+        if self._late_turn_finished is None:
+            self._late_turn_finished = asyncio.Event()
+        self._late_turn_finished.clear()
+        self._ensure_coordinate_server()
+        self._ensure_outbox_server()
+        with self._trace.stage("host.load", operation="relay.config"):
+            host = HostRelayConfig.load(self.config_path)
+        self._ensure_local_state_maintenance(host.field_root)
+        self._ensure_loop_lag_sampler()
+        with self._trace.stage(
+            "channels.retire_local",
+            operation="terminal_listener.reconcile",
+        ):
+            locally_retired = await self._disable_locally_terminal_channels(host)
+        if locally_retired:
+            host = HostRelayConfig.load(self.config_path)
+        channels = [worker for worker in host.workers if worker.state == "active"]
+        pending_channels = [
+            worker for worker in host.workers if worker.state == "pending_authorization"
+        ]
+        active_names = {
+            worker.worker_name for worker in (*channels, *pending_channels)
+        }
+        for worker_name in list(self._channel_turns):
+            if worker_name not in active_names:
+                await self._cancel_channel_turn(worker_name)
+        for worker_name in list(self._beside_notifies):
+            if worker_name not in active_names:
+                await self._cancel_notify_beside_turn(worker_name)
+        for worker_name in list(self._sessions):
+            if worker_name not in active_names:
+                with self._trace.stage(
+                    "channel.close",
+                    channel=worker_name,
+                    operation="inactive_session.close",
+                ):
+                    await self._drop_session(worker_name)
+        with self._trace.stage(
+            "native_queue.reconcile",
+            operation="session_queue.preflight",
+        ):
+            await self._reconcile_queues_before_channels(
+                host, [*channels, *pending_channels]
+            )
+        # Only channels the pacing allows call the gateway this cycle. A
+        # deferred active channel still gets its local session wake below.
+        pacing = self._pacing
+        host_quiet = pacing.host_quiet_seconds() > 0
+        due_channels = [
+            worker for worker in channels
+            if not host_quiet and pacing.channel_due(worker.worker_name)
+        ]
+        fingerprints = {
+            worker.worker_name: self._profile_fingerprint(host, worker)
+            for worker in pending_channels
+        }
+        due_pending = [
+            worker for worker in pending_channels
+            if not host_quiet
+            and pacing.pending_due(worker.worker_name, fingerprints[worker.worker_name])
+        ]
+        due_pending_names = {worker.worker_name for worker in due_pending}
+        # Each due channel's turn runs as its own task (W456). The cycle waits
+        # only a short grace for the turns it starts, never for a turn started
+        # earlier, so one slow, hung or failing channel delays only itself. A
+        # channel whose turn is still running is not started again; it is
+        # reported as running and still gets its local session wake below.
+        turns = self._channel_turns
+        outcomes: dict[str, dict[str, Any]] = {}
+        for worker_name, task in list(turns.items()):
+            if task.done():
+                del turns[worker_name]
+                outcome = self._turn_outcome(worker_name, task)
+                if outcome is not None:
+                    outcomes[worker_name] = outcome
+        started: dict[str, asyncio.Task] = {}
+        for worker in due_channels:
+            if worker.worker_name not in turns:
+                started[worker.worker_name] = self._start_channel_turn(
+                    host, worker, fingerprint=None
                 )
-            except DomainError:
-                await self._drop_session(channel.worker_name)
-                raise
-            row = dict(result)
-            row["authorization_transition"] = "activated"
-            pacing.record_success(channel.worker_name)
-            await self._record_relay_channel_recovered(host, channel)
+        for worker in due_pending:
+            if worker.worker_name not in turns:
+                started[worker.worker_name] = self._start_channel_turn(
+                    host, worker, fingerprint=fingerprints[worker.worker_name]
+                )
+        if started and self.CHANNEL_TURN_CYCLE_GRACE_SECONDS > 0:
             with self._trace.stage(
-                "session.notify",
-                channel=channel.worker_name,
-                operation="control_plane.connected",
+                "channels.turns",
+                operation="channel.turn_grace",
             ):
-                row["session_delivery"] = await self._notify_session(
-                    host,
-                    channel,
-                    event_kind="control_plane.connected",
+                await asyncio.wait(
+                    set(started.values()),
+                    timeout=self.CHANNEL_TURN_CYCLE_GRACE_SECONDS,
                 )
-            hint = row.get("next_poll_seconds")
-            if isinstance(hint, (int, float)) and hint > 0:
-                next_poll_seconds.append(int(hint))
-            workers.append(row)
-            promoted += 1
+        for worker_name, task in started.items():
+            if not task.done():
+                task.add_done_callback(self._late_turn_done)
+                continue
+            if turns.get(worker_name) is task:
+                del turns[worker_name]
+            outcome = self._turn_outcome(worker_name, task)
+            if outcome is not None:
+                outcomes[worker_name] = outcome
+        retired = list(locally_retired)
+        retired_names = {row["worker_name"] for row in retired}
+        for outcome in outcomes.values():
+            for row in outcome["retired"]:
+                if row["worker_name"] not in retired_names:
+                    retired.append(row)
+                    retired_names.add(row["worker_name"])
+        workers: list[dict[str, Any]] = []
+        failures: list[BaseException] = []
+        next_poll_seconds: list[int] = []
+        pending: list[dict[str, Any]] = []
+        demoted = 0
+        promoted = 0
+        for worker_name, outcome in outcomes.items():
+            if worker_name in retired_names:
+                continue
+            if outcome["worker_row"] is not None:
+                workers.append(outcome["worker_row"])
+            if outcome["pending_row"] is not None:
+                pending.append(outcome["pending_row"])
+            if outcome["failure"] is not None:
+                failures.append(outcome["failure"])
+            if outcome["next_poll_seconds"]:
+                next_poll_seconds.append(int(outcome["next_poll_seconds"]))
+            demoted += int(outcome["demoted"])
+            promoted += int(outcome["promoted"])
+        running_names = set(turns)
+        unreported_channels = [
+            channel
+            for channel in channels
+            if channel.worker_name not in outcomes
+            and channel.worker_name not in retired_names
+        ]
+        for channel in unreported_channels:
+            running = channel.worker_name in running_names
+            delivery = self._start_notify_beside_turn(
+                host,
+                channel,
+                operation=(
+                    "input.available.running_channel"
+                    if running
+                    else "input.available.deferred_channel"
+                ),
+            )
+            deferred_row = {
+                "worker_name": channel.worker_name,
+                "worker_alias": channel.worker_alias,
+                "state": "running" if running else "deferred",
+                "reason": (
+                    "turn_in_progress"
+                    if running
+                    else "host_rate_limited"
+                    if host_quiet
+                    else "backing_off"
+                ),
+            }
+            if delivery is not None:
+                deferred_row["session_delivery"] = delivery
+            workers.append(deferred_row)
+        for channel in pending_channels:
+            name = channel.worker_name
+            if name in outcomes or name in retired_names:
+                continue
+            if name in running_names:
+                pending.append({**channel.to_mapping(), "running": True})
+            elif name not in due_pending_names:
+                pending.append({**channel.to_mapping(), "deferred": True})
         if (
             failures
-            and len(failures) == len(due_channels)
-            and not deferred_channels
+            and len(failures) == len(channels)
             and not pending_channels
         ):
             first = failures[0]

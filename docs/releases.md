@@ -16,31 +16,66 @@ releasable.
 1. **Write the release notes.** *The maintainer who cuts the release.* One short file saying
    what changed since the last release. It becomes the description in each
    release record.
-2. **Prepare.** *The maintainer, from a clean checkout of `origin/main`.*
+2. **Prepare.** *The maintainer, in the release's own worktree made from
+   `origin/main`.*
 
    ```bash
-   scripts/release-pb prepare <YYYY.MM.DD.HHMM> --notes <file>
+   git -C <clone> worktree add <workspace>/wt/release-<version> origin/main
+   cd <workspace>/wt/release-<version>
+   pb worker workspace --path "$PWD" --item <item>   # an agent registers the tree
+   scripts/release-pb prepare <YYYY.MM.DD.HHMM> --notes <file> --scratch <run> \
+     --project-ref <project> --github-login <owner's login>
    ```
 
+   The script refuses a clone's main checkout, because it switches the
+   branch and changes files, and other work reads that checkout.
+   `--scratch` names a folder for the environments and distributions, such
+   as a `pb worker scratch --new` run. The script makes its own subfolder
+   there and removes only that subfolder at the end (`--keep-scratch` leaves
+   it). It also removes only the ignored build outputs that the run itself
+   made in the set's packages.
+
    It sets the version in every file of the set and checks that no file
-   still names the old one. It builds and `twine check`s every distribution.
+   still names the old one. The managed procedure package
+   (`project_board/procedures/`) is left alone: its own revision ledger
+   versions it, and a version named there is the release a behaviour came
+   with. The gate runs with `PB_REQUIRE_REVISION_RECORDED=1`, so procedure
+   content that is not recorded under its revision fails the release instead
+   of skipping. It builds and `twine check`s every distribution.
    Then it runs each package's gate the way the publish workflow does: a fresh
    environment, `pip install -e "<path>[test]"` with the set's own packages
    from the wheels just built, no source overlay, the tests, the import
-   version, and a wheel smoke. It then commits on `release/<version>` and
-   opens the release pull request. You should see one line per package ending
-   in "passed", then the pull request's address. Add `--dry-run` to do all of
-   it in a throwaway worktree and commit nothing.
+   version, and a wheel smoke. It then commits on `release/<version>`, pushes
+   it, and opens the release pull request. It checks that GitHub shows that
+   branch, `main` and the gated commit. You should see one line per package
+   ending in "passed", a `sha256` line per distribution, then the pull
+   request's address. Add `--dry-run` to run all of it, commit nothing, and
+   put back the files it changed. A dry run makes no GitHub call and needs no
+   `--project-ref`.
+
+   **GitHub goes through the governed route only.** Every GitHub call is
+   `pb worker gh` or `pb worker push --owner-key-only` for the named
+   `--project-ref`. On Claude Code, also pass
+   `--runtime-kind claude-code --runtime-session-id <id>`. There is no
+   ambient `gh` login and no deploy key: in `--owner-key-only` mode a failed
+   push is never retried through the deploy key, even when the clone has the
+   `deploykey` remote. Before each push the script fails closed:
+   - the remote must be HTTPS, which only the owner key's credential helper
+     answers;
+   - `pb worker gh -- api user` must answer as `--github-login`.
 3. **Review and merge the release pull request.** *The maintainer.* It
    changes versions and release notes only.
 4. **Publish.** *The maintainer, with the release owner's approval.*
 
    ```bash
-   scripts/release-pb publish <YYYY.MM.DD.HHMM>
+   scripts/release-pb publish <YYYY.MM.DD.HHMM> --scratch <run> \
+     --project-ref <project> --github-login <owner's login>
    ```
 
-   It tags the merge commit that brought the version in, and dispatches
-   `publish-python-package.yml` once with `package=pb-set`. The workflow
+   It tags the merge commit that brought the version in, pushes the tag
+   through the same fail-closed route, and dispatches
+   `publish-python-package.yml` once with `package=pb-set`. It waits only on
+   the run whose tag, commit and dispatch time match. The workflow
    publishes the four packages one after another in dependency order. Each
    waits until the index serves the ones before it, and the first failure
    cancels the rest, so project-board is never published against a
@@ -48,7 +83,7 @@ releasable.
 5. **Verify.** *Done by `publish`; run it again at any time.*
 
    ```bash
-   scripts/release-pb verify <YYYY.MM.DD.HHMM>
+   scripts/release-pb verify <YYYY.MM.DD.HHMM> --scratch <run>
    ```
 
    It checks each version on PyPI and installs `project-board==<version>` in

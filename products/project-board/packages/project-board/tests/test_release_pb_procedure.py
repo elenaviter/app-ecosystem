@@ -156,3 +156,231 @@ def test_the_release_guide_leads_with_the_procedure() -> None:
     for project_role in ("coordinator", "operator"):
         assert project_role not in first_section.lower(), project_role
     assert "The maintainer" in first_section and "release owner's approval" in first_section
+
+
+# W454: a release reaches GitHub only through the agent's governed route, and
+# it works in a tree and a scratch folder the workspace accounts for. The
+# helper used the ambient `gh` login and hidden temporary worktrees before.
+
+
+def test_the_script_has_no_ambient_gh_and_no_hidden_trees() -> None:
+    source = SCRIPT.read_text(encoding="utf-8")
+    code = source.split('"""', 2)[2]
+    assert 'run(["gh"' not in code and "run(['gh'" not in code
+    assert '"gh", "' not in code.replace('self.command("gh", args)', "")
+    assert "import tempfile" not in code and "mkdtemp" not in code
+    assert "--force" not in code
+    assert 'git("push"' not in code, "a push goes through GitHubRoute.push"
+
+
+def _fake_pb(tmp_path: Path, *, login: str = "owner", push_stderr: str = "", pr_view: str = "{}") -> tuple[str, Path]:
+    log = tmp_path / "pb-calls.txt"
+    fake = tmp_path / "pb"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, sys\n"
+        f"open({str(log)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "args = sys.argv[sys.argv.index('--') + 1:]\n"
+        "if sys.argv[2] == 'push':\n"
+        f"    sys.stderr.write({push_stderr!r}); sys.exit(0)\n"
+        "if args[:2] == ['api', 'user']:\n"
+        f"    print({login!r}); sys.exit(0)\n"
+        "if args[:2] == ['pr', 'create']:\n"
+        "    print('https://github.example/o/r/pull/1'); sys.exit(0)\n"
+        "if args[:2] == ['pr', 'view']:\n"
+        f"    print({pr_view!r}); sys.exit(0)\n"
+        "sys.exit(3)\n",
+        encoding="utf-8",
+    )
+    fake.chmod(0o755)
+    return str(fake), log
+
+
+def _calls(log: Path) -> list[list[str]]:
+    import json
+
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
+
+
+def _clone(tmp_path: Path, **remotes: str) -> Path:
+    root = tmp_path / "clone"
+    _git(tmp_path, "init", "-q", "-b", "main", str(root))
+    for name, url in remotes.items():
+        _git(root, "remote", "add", name, url)
+    return root
+
+
+def test_a_push_names_the_project_and_checks_the_actor_before_it_writes(tmp_path: Path) -> None:
+    fake, log = _fake_pb(tmp_path)
+    root = _clone(tmp_path, origin="https://github.com/o/r.git")
+    route = release_pb.GitHubRoute("work:project:p", "owner", ("--runtime-kind", "claude-code"), pb=fake)
+
+    route.push("origin", ["release/2099.01.02.0304"], cwd=root)
+
+    actor, push = _calls(log)
+    assert actor == ["worker", "gh", "--project-ref", "work:project:p", "--runtime-kind", "claude-code",
+                     "--", "api", "user", "--jq", ".login"]
+    assert push == ["worker", "push", "--project-ref", "work:project:p", "--runtime-kind", "claude-code",
+                    "--owner-key-only", "--", "--quiet", "origin", "release/2099.01.02.0304"]
+
+
+def test_a_push_uses_the_owner_key_only_mode_even_where_a_deploy_key_remote_exists(tmp_path: Path) -> None:
+    """`pb worker push --owner-key-only` never falls back, so the remote may stay."""
+
+    fake, log = _fake_pb(tmp_path)
+    route = release_pb.GitHubRoute("work:project:p", "owner", pb=fake)
+    root = _clone(tmp_path, origin="https://github.com/o/r.git", deploykey="github-r:o/r.git")
+
+    route.push("origin", ["x"], cwd=root)
+
+    assert "--owner-key-only" in _calls(log)[-1]
+
+
+def test_a_push_fails_closed_on_a_remote_that_is_not_https(tmp_path: Path) -> None:
+    fake, log = _fake_pb(tmp_path)
+    route = release_pb.GitHubRoute("work:project:p", "owner", pb=fake)
+    root = _clone(tmp_path, origin="git@github.com:o/r.git")
+    with pytest.raises(release_pb.ReleaseError, match="over HTTPS with the owner key only"):
+        route.push("origin", ["x"], cwd=root)
+    assert not log.exists(), "nothing ran, not even the actor check"
+
+
+def test_a_push_that_still_reports_the_deploy_key_stops_the_release(tmp_path: Path) -> None:
+    fake, _ = _fake_pb(tmp_path, push_stderr="pb GitHub key: owner key unavailable (x): pushed with the deploy key\n")
+    route = release_pb.GitHubRoute("work:project:p", "owner", pb=fake)
+    with pytest.raises(release_pb.ReleaseError, match="deploy-key fallback"):
+        route.push("origin", ["x"], cwd=_clone(tmp_path, origin="https://github.com/o/r.git"))
+
+
+def test_a_push_does_not_run_when_github_answers_as_someone_else(tmp_path: Path) -> None:
+    fake, log = _fake_pb(tmp_path, login="someone-else")
+    route = release_pb.GitHubRoute("work:project:p", "owner", pb=fake)
+
+    with pytest.raises(release_pb.ReleaseError, match="not 'owner'; nothing was pushed"):
+        route.push("origin", ["x"], cwd=_clone(tmp_path, origin="https://github.com/o/r.git"))
+    assert [call[1] for call in _calls(log)] == ["gh"]
+
+
+def test_the_release_pull_request_must_hold_the_gated_commit(tmp_path: Path) -> None:
+    import json
+
+    root = tmp_path / "repo"
+    _git(tmp_path, "init", "-q", "-b", "main", str(root))
+    _git(root, "commit", "-q", "--allow-empty", "-m", "release")
+    head = _git(root, "rev-parse", "HEAD")
+    good = {"headRefName": "release/2099.01.02.0304", "baseRefName": "main", "headRefOid": head}
+
+    fake, _ = _fake_pb(tmp_path, pr_view=json.dumps(good))
+    route = release_pb.GitHubRoute("work:project:p", "owner", pb=fake)
+    assert release_pb.open_release_pull_request(route, "2099.01.02.0304", "body", root=root).endswith("/pull/1")
+
+    fake, _ = _fake_pb(tmp_path, pr_view=json.dumps({**good, "headRefOid": "0" * 40}))
+    route = release_pb.GitHubRoute("work:project:p", "owner", pb=fake)
+    with pytest.raises(release_pb.ReleaseError, match="not the gated release"):
+        release_pb.open_release_pull_request(route, "2099.01.02.0304", "body", root=root)
+
+
+def test_the_publish_run_is_the_one_this_dispatch_started() -> None:
+    started = 4_000_000_000.0  # 2096-10-02T07:06:40Z
+    when = "2096-10-02T07:06:40Z"
+    row = {"databaseId": 7, "headBranch": "2099.01.02.0304", "headSha": "abc", "event": "workflow_dispatch",
+           "createdAt": when}
+    assert release_pb.matching_run([row], "2099.01.02.0304", "abc", started) == "7"
+    assert release_pb.matching_run([{**row, "headSha": "other"}], "2099.01.02.0304", "abc", started) == ""
+    assert release_pb.matching_run([{**row, "event": "push"}], "2099.01.02.0304", "abc", started) == ""
+    assert release_pb.matching_run([row], "2099.01.02.0304", "abc", started + 3600) == ""
+
+
+def test_a_real_prepare_or_publish_refuses_without_the_governed_route(tmp_path: Path, capsys) -> None:
+    notes = tmp_path / "notes.md"
+    notes.write_text("What changed.", encoding="utf-8")
+    assert release_pb.main(["prepare", "2099.01.02.0304", "--notes", str(notes), "--scratch", str(tmp_path)]) == 1
+    assert "--project-ref <project> --github-login" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == [notes], "nothing was made before the refusal"
+
+
+def test_the_release_runs_only_in_its_own_linked_worktree(tmp_path: Path) -> None:
+    clone = tmp_path / "clone"
+    _git(tmp_path, "init", "-q", "-b", "main", str(clone))
+    _git(clone, "commit", "-q", "--allow-empty", "-m", "base")
+    with pytest.raises(release_pb.ReleaseError, match="main checkout"):
+        release_pb.require_own_worktree(clone)
+    tree = tmp_path / "wt" / "release-2099.01.02.0304"
+    _git(clone, "worktree", "add", "-q", "--detach", str(tree), "HEAD")
+    release_pb.require_own_worktree(tree)
+
+
+def test_cleanup_removes_only_the_build_outputs_this_run_made(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    package = root / release_pb.SET[0].path
+    package.mkdir(parents=True)
+    (root / ".gitignore").write_text("*.egg-info/\n__pycache__/\nnotes.local\n", encoding="utf-8")
+    (package / "keep.py").write_text("", encoding="utf-8")
+    _git(tmp_path, "init", "-q", "-b", "main", str(root))
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "base")
+    def made(path: Path) -> None:
+        path.mkdir()
+        (path / "PKG-INFO").write_text("x", encoding="utf-8")
+
+    made(package / "old.egg-info")
+    (root / "notes.local").write_text("mine", encoding="utf-8")
+    before = release_pb.ignored_paths(root)
+
+    made(package / "new.egg-info")
+    made(package / "__pycache__")
+    made(root / "elsewhere.egg-info")
+    removed = release_pb.remove_new_ignored(root, before)
+
+    prefix = release_pb.SET[0].path
+    assert removed == [f"{prefix}/__pycache__/", f"{prefix}/new.egg-info/"]
+    assert (package / "old.egg-info").is_dir() and (root / "notes.local").exists()
+    assert (root / "elsewhere.egg-info").is_dir(), "outside the set's packages nothing is touched"
+
+
+def test_the_scratch_subfolder_is_new_and_the_only_thing_removed(tmp_path: Path) -> None:
+    import argparse
+
+    args = argparse.Namespace(scratch=str(tmp_path), version="2099.01.02.0304")
+    (tmp_path / "earlier-finding.txt").write_text("keep", encoding="utf-8")
+    folder = release_pb.scratch_folder(args, "prepare")
+    assert folder == tmp_path / "release-pb-prepare-2099.01.02.0304"
+    with pytest.raises(release_pb.ReleaseError, match="exists from an earlier run"):
+        release_pb.scratch_folder(args, "prepare")
+    release_pb.drop_scratch(folder, keep=False)
+    assert [path.name for path in tmp_path.iterdir()] == ["earlier-finding.txt"]
+    with pytest.raises(release_pb.ReleaseError, match="not a folder"):
+        release_pb.scratch_folder(argparse.Namespace(scratch=str(tmp_path / "missing"), version="x"), "verify")
+
+
+def test_the_release_guide_names_the_governed_route_and_the_release_tree() -> None:
+    guide = (REPOSITORY_ROOT / "docs" / "releases.md").read_text(encoding="utf-8")
+    first_section = guide.split("\n## ", 2)[1]
+    for phrase in ("wt/release-<version>", "--scratch", "--project-ref", "--github-login",
+                   "pb worker gh", "pb worker push --owner-key-only", "HTTPS"):
+        assert phrase in first_section, phrase
+    assert "throwaway worktree" not in first_section
+
+
+def test_a_release_leaves_the_procedure_package_and_its_digest_alone(tmp_path: Path) -> None:
+    """The 2026-10-01 dry run rewrote a version named in project-workspace.md.
+
+    The procedure is versioned by its revision ledger; a changed digest under
+    a recorded revision makes `pb procedure verify` fail on every host. The
+    gate now requires the recorded revision, so such a change fails it.
+    """
+
+    root = _copy_of_the_set(tmp_path)
+    procedures = root / release_pb.VERSION_EXCLUDED[0]
+    current = release_pb.read_version(root)
+    # A procedure page that names the release a behaviour came with.
+    (procedures / "named-release.md").write_text(f"Since {current}.\n", encoding="utf-8")
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "a page names the release")
+    before = {path: path.read_bytes() for path in procedures.rglob("*") if path.is_file()}
+
+    changed = release_pb.apply_version(root, current, "2099.01.02.0304", "What changed.")
+
+    assert not [path for path in changed if str(path).startswith(str(procedures))]
+    assert {path: path.read_bytes() for path in procedures.rglob("*") if path.is_file()} == before
+    assert release_pb.clean_env()["PB_REQUIRE_REVISION_RECORDED"] == "1"

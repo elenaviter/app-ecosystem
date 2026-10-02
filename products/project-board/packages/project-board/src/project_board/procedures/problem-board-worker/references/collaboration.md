@@ -262,6 +262,13 @@ every agent can read it, and read what the others have published.
   signal for a teammate deciding where to start. They are not the handoff and
   not the contract, the pushed branch is (Rule 2), and the scope line is your
   word before the first edit.
+- **Inspect what the edit removes before validating it.** Read the affected
+  source, make a bounded edit with a unique match, and inspect the actual
+  removed lines at each coherent edit boundary before tests or handoff. For a
+  scripted rewrite between structural anchors, verify that required definitions
+  between them remain present and behave as before. Preserve unrelated work;
+  never reset a whole file to make a patch fit. Then run the relevant Rule 5
+  gates. A syntax check or focused test does not excuse an unexpected removal.
 
 Why: two agents should not discover the same file at merge time. The surface
 exists for exactly this and went unused all evening on 2026-09-22.
@@ -472,10 +479,10 @@ it, what you touched (Rule 3), and what you are waiting on.
   `main` that you fetched and checked with `git merge-base --is-ancestor
   <commit> origin/main`, not from memory, and the acceptor runs the same
   command on their own clone, because the report is a claim and the clone is
-  the evidence. A journal entry that says landed names that merge commit and
-  is written after it is fetched, never from the intention to merge (finding
-  eighteen: three reviewed commits journaled as landed sat in no branch for
-  two days). Why source-ready: the earlier rule, report only when merged,
+  the evidence. Any claim that a change landed (a report, an item note, a
+  journal lesson) names that merge commit after you fetched it, never the
+  intention to merge (finding eighteen: three reviewed commits journaled as
+  landed sat in no branch for two days). Why source-ready: the earlier rule, report only when merged,
   deadlocked with review, which reads the source before it merges (W403 C6,
   2026-09-29, four yes votes).
   Each report cites as its source event the event that prompted it: the assignment notice
@@ -507,9 +514,15 @@ it, what you touched (Rule 3), and what you are waiting on.
   work-item review documentation owns the save and history semantics (W403
   C4 with the operator's direct-assignee rule, 2026-09-29; the product
   delivers it with W398). Name the reviewer on the completed
-  report with `--reviewer <stable worker name>` or `--reviewer operator`;
-  with none named, the acting coordinator reviews and routes it
-  (`review.assign`). The operator is named only once the work is integrated:
+  report with `--reviewer <stable worker name>` or `--reviewer operator`.
+  With no specific reviewer, name the acting coordinator's stable worker
+  name in `--reviewer`: the item then lands on the coordinator, who reviews
+  it or routes it on (`review.assign`). Sending work for review must never
+  leave it on you (operator, 2026-10-01). You may propose a qualified
+  reviewer in the summary; you never schedule your own acceptance. When an
+  item you completed is still assigned to you in Review, the review is not
+  routed: tell the coordinator, naming the item, and do not explain it as a
+  state (W446, W449). The operator is named only once the work is integrated:
   `--merged <commits>` and `--deploy "<window>: <check>"`, or
   `--nothing-to-deploy`; otherwise the report is refused with
   `work_review_operator_evidence_missing`, naming what is missing, and
@@ -517,6 +530,57 @@ it, what you touched (Rule 3), and what you are waiting on.
   one worker's own work and its reviews apart, and the operator's review
   list held items with nothing for the operator to look at (W314, W287, W300
   on 2026-09-25, W326).
+- **Status and assignee are two fields, set by two permissions.** Setting the
+  status and setting the assignee are independent acts, in any status: a
+  status change never selects, substitutes or clears the assignee, and an
+  assignee change never moves the status. When both must change together (close
+  and assign to someone, or Review and assign to a reviewer), change both in
+  one save, so both apply or neither does. The rule is two permissions, one
+  per field, and an ordinary handoff needs no special one such as
+  `review.assign` (operator, 2026-10-01: "its 2 permissions. set status and
+  set assignee"). Today the assignee of an item in Review is set with
+  `review.assign`; W451 makes it the ordinary assignee set. With today's commands: `work.status.set` sets the status,
+  `assignment.assign` sets the assignee and `assignment.return` clears it, and
+  the board's edit save (`work.item.save`) applies the supplied fields in one
+  transaction, for people now and for agents once W451 delivers it. Until
+  then two differences remain in the product (W451): clearing is its own
+  operation, and a status that leaves Review (to Todo, Done or Cancelled) is a
+  review decision that needs that authority. Sending work for review is one
+  such pair: the `completed` report with `--reviewer` names the recipient,
+  else the acting coordinator (above). Where a command your Card holds cannot
+  make the change, ask the coordinator, naming the item and the change; never
+  work around a refused permission.
+- **Reconcile your assignments, act on each, and ask when one is unclear.**
+  At session start or resume and after a compaction, read your assignments
+  fresh (`project.plan.index` with your stable worker name as assignee, by
+  status, and `assignment.list`) and compare them with the work you remember,
+  before acting on old mail. Read them again once per native wake batch (the
+  addressed mail one wake delivers, received together) and, while you work,
+  once about 30 minutes of active work have passed since the last full read,
+  at the next safe boundary. The cadence needs no timer and no idle polling,
+  and a command, a leased message within a batch, a guard prompt or a work
+  boundary is not a reason for a full read. An addressed change to one
+  assignment or its ownership, or a doubt about one item, reads only that
+  item, including the assignment's own task (`project.plan.item` with
+  `--format json`, `assignment.task`), which the brief view does not show. Listing them is
+  not the act. For each item read its
+  current state (the item, its change request and exact head), name the next
+  gate, the actor who clears it and the next decision time, and do the step
+  when it is yours. A remembered approval is not proof until you have checked
+  the head again. An item whose purpose, owner, priority or gate is unclear or
+  stale is a question for the coordinator at once, naming the item, its
+  ownership version and your last checkpoint: never an idle wait, an invented
+  role or a kept stale tree. When the next action is the coordinator's (a
+  decision, a routing, an integration), assign the item to the acting
+  coordinator, unless you were told otherwise: `assignment.assign`, or
+  `review.assign` for an item in Review, with a note on the item naming the
+  reason, the next action and the time, then mail it. A wait on the
+  coordinator that stays on you is hidden from it (operator, 2026-10-01: "if
+  you wait for coordinator you assign it to it"). Why: an assignment's notice is sent once, so the
+  board is the record; on 2026-10-01 an agent listed nine items in Review as
+  waiting on others without checking one. And a full read at every step costs
+  more than it finds, so the cadence is periodic (operator, 2026-10-01; W449,
+  W455).
 - **Only a durably authorized reviewer decides.** A review decision (accept,
   return) comes from the reviewer the board names for that item, against the
   exact head under review, through the existing authorization and revision
@@ -525,6 +589,21 @@ it, what you touched (Rule 3), and what you are waiting on.
   Why: unsolicited evidence is not authority, and two agents that both
   believe they decide an item is the collision Rule 8 exists to fence (W403
   C7, 2026-09-29, four yes votes).
+- **A finished review hands the item on.** When your verdict is a source
+  approval and the acceptance still needs a merge, an activation or the
+  operator's check, you do not keep the item. Record the verdict at the exact
+  head on the item, then give the item to the coordinator with the gates that
+  remain and who clears each: route it with `review.assign` naming the
+  coordinator. When your Card lacks the operation, write the same handoff
+  note on the item (the verdict's head, the gates, who clears each, the
+  time), send the coordinator a `decision` mail naming the item, and report
+  the missing operation as a Card defect ([identity and
+  authorization](identity-and-authorization.md)): the Card refresh is the
+  remedy, not the mail. A missing permission is never a reason to hide
+  ownership in mail (coordinator, 2026-10-01). A source approval is never `review.accept` when the acceptance names
+  merge, deployment, live behaviour or the operator. Why: on 2026-10-01 source
+  approvals sat on their reviewers while the coordinator waited for them,
+  and nobody saw the wait (W455).
 
 Why: the operator's measure for this procedure includes "their info reflects
 where they are and what they work on". A status that lags reality is a
@@ -561,12 +640,21 @@ different actions (P8, four yes votes).
 
 ### The info line
 
-When the operator tells you something the team must know about you (for
-example, not to be used actively, or reviews only), publish it:
+The info line says what the team needs to plan around you, and nothing else:
+the priority work you are on, what you paused, whether you take new work, and
+any restriction the operator gave you (for example, not to be used actively,
+or reviews only). Findings, checkpoint results and analysis go to mail, item
+notes and reports, not to this line. Rewrite the line when one of those facts
+changes, and clear it when nothing on it would help anyone plan. A
+restriction and your status share this one line, the restriction first,
+and a rewrite keeps the restriction: everything on it serves the same
+planning, so it all belongs on this line (operator, 2026-10-01). Publish it
+with:
 
 ```bash
-pb worker info "<one line, at most 200 characters>"
-pb worker info --clear
+pb worker info show
+pb worker info write "<one line, at most 200 characters>"
+pb worker info clear
 ```
 
 Clear it the moment it no longer holds. Why: the line is first on every card
@@ -575,12 +663,22 @@ coordinator look before routing (coordinator, Route, step 0), while mail about
 it reaches only whoever reads that mail (W330, operator, 2026-09-25). The
 line rides the relay's next heartbeat, which every worker Card already holds,
 so it shows within about two minutes (the idle heartbeat ceiling); `pb worker
-info` without arguments says `on_board = True` once the board has it.
+info show` says `on_board = True` once the board has it. Every change names
+its verb, so reading your line never rewrites it: a bare `pb worker info
+"<text>"` is refused (operator, 2026-10-01).
+
+**Read a teammate's line before you start contact with it.** Before you send
+another agent a request, ask it for evidence or route it a question, read its
+line in the team section of `pb worker context`. A line that says paused,
+restricted or do not use means you do not wake it: ask the coordinator
+instead. Why: on 2026-10-01 a worker's line still said "idle for new work" 13
+hours after it had taken new work, and the same worker mailed teammates
+without reading theirs (operator, 2026-10-01).
 
 **A pause you choose goes on the line too.** When you consciously stop working
 (your quota pool is near its limit, you wait for a person, or you are blocked):
 commit and push, write a one-line progress note on your item, then publish
-`pb worker info "Paused by choice: <reason>, resumes <time>"`, and clear it
+`pb worker info write "Paused by choice: <reason>, resumes <time>"`, and clear it
 when you resume. Why: an agent that stopped by decision looks, on its card,
 exactly like one that is broken or asleep, and the operator must tell them
 apart at a glance (operator, 2026-09-26). The coordinator's thresholds for
@@ -612,6 +710,14 @@ skipped:
    `open`. Below the table, every member's thoughts, attributed. Split votes
    stay `open` for the operator. The result goes to the operator and to every
    member, not only to the coordinator.
+
+Each round has a time box the proposer states with the questions. A member
+who has not answered when it closes is shown as `pending`, and the owner of
+the current P0 work may skip a round. A change to a procedure is decided this
+way too, and the rules it adopts land in the procedure section that owns them
+through a reviewed source change, with a behavioural check, not only in a
+note. An operator ruling on the question is adopted as given and is not put
+to a vote (W449).
 
 Where the result lives: as a note on the item the question belongs to
 (`plan.note.append`), so a member on another machine or a successor after a

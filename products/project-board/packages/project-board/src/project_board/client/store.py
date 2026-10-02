@@ -18,6 +18,7 @@ from ..contract.delivery_failures import (
     resolve_delivery_failure_target,
 )
 from ..contract.errors import DomainError
+from ..contract.assignment_reopen import validated_reopen_evidence
 from ..contract.mail_addresses import resolve_mail_recipient
 from ..contract.mailbox_reconciliation_contract import (
     MAILBOX_RECONCILIATION_RECEIPT_SCHEMA,
@@ -343,6 +344,9 @@ WAKE_OBSERVATION_FIELDS = (
     # W390: the ended limit an exhausted wake was re-armed for, once.
     "wake_limit_rearmed_for",
     "wake_limit_rearmed_at",
+    # Native early-redemption recovery is allowed only once for this wake,
+    # even when later quota samples have different observation timestamps.
+    "wake_quota_rearmed_for",
     "wake_queued_confirmed_at",
     # W405: the explicit recovery of an exhausted consumed wake belongs to
     # that wake; a matching receive or a new wake clears it.
@@ -1373,6 +1377,12 @@ class SharedFieldStore:
             "state": "assigned",
             "received_at": utc_now(),
         }
+        # This entry is fed by authenticated board controls/heartbeat views,
+        # not a mail payload or task text. Keep only matching active evidence.
+        proof = validated_reopen_evidence(assignment)
+        if proof:
+            row["reopen_evidence"] = proof
+            row["item_assignee"] = str(assignment.get("item_assignee") or "")
         returned = assignment.get("returned")
         if isinstance(returned, Mapping):
             # A review return keeps the worker under a new ownership version
@@ -1401,6 +1411,11 @@ class SharedFieldStore:
                     status=409,
                 )
             if current_version == ownership_version:
+                if proof and str(current.get("state") or "") not in {"routing", "assigned", "working", "blocked"}:
+                    # A delayed same-version control cannot resurrect a
+                    # locally settled period, even with genuine old evidence.
+                    row.pop("reopen_evidence", None)
+                    row["state"] = str(current.get("state") or "assigned")
                 current_assignment_id = self._assignment_object_id(current)
                 current_identity = {
                     "assignment_id": current_assignment_id,
@@ -1453,7 +1468,9 @@ class SharedFieldStore:
         ``item_status`` is the item's committed status as the board sent it
         (W406). It decides what the notice asks: Todo or Working is work to
         begin, Review waits for the review, Done or Cancelled is information
-        only. A board that sends none gets the notice it always got.
+        only. Validated explicit-reopen evidence on the current active ownership
+        instead asks the owner to begin work without a preliminary status edit.
+        A board that sends neither status nor evidence gets its legacy notice.
         """
 
         parsed_assignment = parse_ref(str(assignment.get("assignment_ref") or ""))
@@ -1476,6 +1493,14 @@ class SharedFieldStore:
                 "The assignment ownership version must be positive.",
             )
         assignment_id = parsed_assignment.object_id
+        current = self._assignments(component(project_id, field="project_id")).read(
+            assignment_id, worker_name=recipient.lower(),
+        ) or {}
+        proof = validated_reopen_evidence(current, recipient=recipient)
+        if (int(current.get("ownership_version") or 0) != ownership_version
+                or str(current.get("assignment_ref") or "") != assignment_ref
+                or proof != assignment.get("reopen_evidence")):
+            proof = {}
         legacy_assignment_ref = f"work:assignment:{assignment_id}"
         # The notice must say WHICH work the assignment is for. It carried the
         # assignment ref three times and the work ref not at all, so a worker
@@ -1527,6 +1552,7 @@ class SharedFieldStore:
                 work_ref=notice_work_ref,
                 assignment_ref=assignment_ref,
                 ownership_version=ownership_version,
+                explicit_reopen=bool(proof),
             )
             payload = {
                 "assignment_id": assignment_id,
@@ -1537,6 +1563,8 @@ class SharedFieldStore:
             }
             if item_status:
                 payload["item_status"] = item_status
+            if proof:
+                payload["reopen_evidence"] = proof
         return self.send_mail(
             project_id,
             sender="control-plane",
@@ -2977,6 +3005,7 @@ class SharedFieldStore:
                 ("transport_phase", 64),
                 ("request_scope", 512),
                 ("socket_id", 128),
+                ("socket_id_at_failure", 128),
             ):
                 selected = bounded_text(
                     raw_request.get(key),
@@ -2989,23 +3018,25 @@ class SharedFieldStore:
                 "ingress_accepted",
                 "transport_replayed",
                 "connection_active",
+                "ingress_ack_received",
+                "connection_active_at_failure",
+                "disconnected_during_request",
             ):
                 if isinstance(raw_request.get(key), bool):
                     selected_request[key] = raw_request[key]
-            try:
-                if raw_request.get("connection_generation") is not None:
-                    selected_request["connection_generation"] = max(
-                        0, int(raw_request["connection_generation"])
-                    )
-            except (TypeError, ValueError):
-                pass
+            for key in ("connection_generation", "connection_generation_at_failure"):
+                try:
+                    if raw_request.get(key) is not None:
+                        selected_request[key] = max(0, int(raw_request[key]))
+                except (TypeError, ValueError):
+                    pass
             try:
                 status = int(raw_request.get("status"))
             except (TypeError, ValueError):
                 status = 0
             if status:
                 selected_request["status"] = status
-            for key in ("elapsed_seconds", "timeout_seconds"):
+            for key in ("elapsed_seconds", "timeout_seconds", "timer_overrun_seconds"):
                 try:
                     if raw_request.get(key) is not None:
                         selected_request[key] = round(
@@ -3019,7 +3050,10 @@ class SharedFieldStore:
                     "operation", "target", "transport_message_id",
                     "transport_phase", "ingress_accepted", "transport_replayed",
                     "request_scope", "elapsed_seconds", "connection_generation",
-                    "socket_id", "connection_active",
+                    "socket_id", "connection_active", "timeout_seconds",
+                    "timer_overrun_seconds", "ingress_ack_received",
+                    "disconnected_during_request", "connection_active_at_failure",
+                    "connection_generation_at_failure", "socket_id_at_failure",
                 )
                 if key in selected_request
             }
@@ -4350,8 +4384,9 @@ class SharedFieldStore:
         Claude Code has no file the relay can read, so the runtime's own status
         line command and StopFailure hook hand the state to ``pb worker
         limit-state``, which records it here. The relay puts it on the listener
-        session at the next cycle. Codex needs none of this: its rollout file
-        is read directly.
+        session at the next cycle. Codex rollouts are still read directly;
+        the native quota adapter also retains authenticated, bounded account
+        observations here. This records capacity, never session activity.
         """
 
         if not isinstance(state, Mapping) or not state:
@@ -4377,6 +4412,10 @@ class SharedFieldStore:
                 current.get(key) == incoming.get(key)
                 for key in ("kind", "reached", "resets_at", "windows", "source")
             )
+            if incoming.get("source") == "codex-app-server":
+                unchanged = unchanged and all(current.get(key) == incoming.get(key) for key in (
+                    "observed_at", "account_email_sha256", "runtime_session_id", "account_bound", "buckets",
+                ))
             recorded_at = str(current.get("recorded_at") or "")
             if unchanged and recorded_at and (_seconds_since(recorded_at) or 0) < 60:
                 return current
@@ -4906,6 +4945,8 @@ class SharedFieldStore:
         wake_id: str,
         refused_at: str,
         cleared_at: str,
+        quota_observed_at: str = "",
+        runtime_session_id: str = "",
     ) -> bool:
         """Give an exhausted wake one more push once the limit that refused it ends (W390).
 
@@ -4921,6 +4962,10 @@ class SharedFieldStore:
         usage refusal no earlier than the wake's first attempt, and that
         limit's reset (``cleared_at``) has passed. It returns whether it
         re-armed. Any other exhausted wake keeps the ceiling.
+
+        A native early-redemption sample also carries its observed time and
+        same-session/account binding. That path has one durable allowance per
+        wake, not per quota sample; a stream of newer readings cannot spin.
         """
 
         worker = self.read_worker(worker_name)
@@ -4929,11 +4974,36 @@ class SharedFieldStore:
         clean_cleared = str(cleared_at or "").strip()
         clean_refused = str(refused_at or "").strip()
         now = utc_now()
-        if not clean_cleared or not clean_refused or clean_cleared > now:
+        if not clean_cleared or not clean_refused:
+            return False
+        try:
+            cleared_time = parse_utc(clean_cleared)
+            refused_time = parse_utc(clean_refused)
+            now_time = parse_utc(now)
+        except DomainError:
+            return False
+        if cleared_time > now_time:
             return False
         path = self._worker_path(clean_name)
         with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
             row = read_json(path)
+            if quota_observed_at:
+                from .codex_quota import SOURCE_CODEX_APP_SERVER, account_fingerprint, QUOTA_FRESH_SECONDS
+                sample = row.get("runtime_limit_state") or {}
+                account = (row.get("board_record") or {}).get("runtime_account") or {}
+                try:
+                    observed_time = parse_utc(quota_observed_at)
+                    sample_age = (now_time - observed_time).total_seconds()
+                except DomainError:
+                    return False
+                if (sample.get("source") != SOURCE_CODEX_APP_SERVER or sample.get("kind") != "ok"
+                    or not sample.get("account_bound") or sample.get("observed_at") != quota_observed_at
+                    or sample.get("runtime_session_id") != runtime_session_id
+                    or row.get("runtime_session_id") != runtime_session_id
+                    or sample.get("account_email_sha256") != account_fingerprint(account.get("email"))
+                    or observed_time <= refused_time
+                    or not 0 <= sample_age <= QUOTA_FRESH_SECONDS):
+                    return False
             listener = listener_without_legacy_fields(row.get("listener"))
             if not listener or listener.get("state") == "detached":
                 return False
@@ -4942,10 +5012,16 @@ class SharedFieldStore:
                 return False
             if not str(subscription.get("wake_retry_exhausted_since") or ""):
                 return False
+            if quota_observed_at and subscription.get("wake_quota_rearmed_for") == clean_wake_id:
+                return False
             if str(subscription.get("wake_limit_rearmed_for") or "") == clean_cleared:
                 return False
             first_attempt = str(subscription.get("wake_first_attempt_at") or "")
-            if first_attempt and clean_refused < first_attempt:
+            try:
+                refused_before_attempt = bool(first_attempt and refused_time < parse_utc(first_attempt))
+            except DomainError:
+                return False
+            if refused_before_attempt:
                 # The refusal came before this wake: the wake itself was
                 # taken by a session that could run, and the ceiling stands.
                 return False
@@ -4953,6 +5029,8 @@ class SharedFieldStore:
             subscription.pop("wake_retry_exhausted_since", None)
             subscription["wake_limit_rearmed_for"] = clean_cleared
             subscription["wake_limit_rearmed_at"] = now
+            if quota_observed_at:
+                subscription["wake_quota_rearmed_for"] = clean_wake_id
             # Due now: the next relay cycle pushes it once.
             subscription["wake_ack_deadline_at"] = now
             subscription["revision"] = int(subscription.get("revision") or 0) + 1
@@ -6819,6 +6897,21 @@ class SharedFieldStore:
             ),
             "reply_to": bounded_text(reply_to, field="reply_to", maximum=512),
         }
+        # The normal reply command keeps its local reply-to (and settlement
+        # receipt). Resolve the origin from that exact addressed mail rather
+        # than asking the worker to invent or copy private routing data.
+        if clean_recipient in {"operator", "owner"} and clean_kind == "reply" and reply_to:
+            with exclusive_lock(self._mail_lock(clean_project, clean_sender)):
+                incoming = self._mail_record_unlocked(clean_project, clean_sender, reply_to)
+            origin = dict((incoming.get("payload") or {}).get("operator_origin") or {})
+            if origin.get("ref"):
+                if str(incoming.get("correlation_id") or "") != mail["correlation_id"]:
+                    raise DomainError(
+                        "field_operator_origin_mismatch",
+                        "Reply correlation does not match the addressed operator message.",
+                        status=409,
+                    )
+                mail["payload"]["operator_origin_ref"] = str(origin["ref"])
         if not clean_project:
             if mail["work_ref"]:
                 raise DomainError(
@@ -8553,6 +8646,12 @@ class SharedFieldStore:
             reply_to = str(routed_mail.get("reply_to") or "")
         if attachments:
             message_payload["attachments"] = attachments
+        if isinstance(control.get("operator_origin"), Mapping):
+            origin = control["operator_origin"]
+            message_payload["operator_origin"] = {
+                "ref": str(origin.get("ref") or ""),
+                "channel": str(origin.get("channel") or "unknown"),
+            }
         delivered_work_ref = str(
             payload.get("versioned_work_ref")
             or control.get("versioned_work_ref")
@@ -11401,6 +11500,20 @@ class SharedFieldStore:
                     "generation_present": bool(proof.get("generation_present")),
                     "plan_revision": int(proof.get("plan_revision") or 0),
                 }
+        if str(row.get("kind") or "") == "mail.route":
+            proof = row.get("remote_result")
+            notification = proof.get("notification") if isinstance(proof, Mapping) else None
+            if isinstance(notification, Mapping):
+                # Keep Board acceptance distinct from channel outcome, without
+                # projecting arbitrary receipt details or private route metadata.
+                state = str(notification.get("state") or "")
+                known = {
+                    "sent", "partial", "not_connected", "not_configured",
+                    "no_notifier", "failed", "delivery_unknown",
+                }
+                result["notification"] = {
+                    "state": state if state in known else ("not_requested" if not state else "unknown"),
+                }
         return result
 
     def list_mail_deliveries(
@@ -11654,10 +11767,17 @@ class SharedFieldStore:
         limit: int = 20,
         lease_seconds: int = 300,
         kinds: set[str] | None = None,
+        wait: bool = True,
     ) -> list[dict[str, Any]]:
+        """Claim pending outbox rows for this relay under the outbox lock.
+
+        ``wait=False`` raises ``FileLockBusy`` when the lock is held, before
+        any row is read or claimed, so a busy lock never leaves a claim behind.
+        """
+
         claimed: list[dict[str, Any]] = []
         outbox = self._outbox
-        with exclusive_lock(outbox.lock):
+        with exclusive_lock(outbox.lock, wait=wait):
             now_dt = datetime.now(timezone.utc)
             # Rows in flight only: pending/ and leased/ per agent, never the
             # settled history (W287 2b, LS3).
@@ -11723,11 +11843,16 @@ class SharedFieldStore:
         relay_id: str,
         error_code: str,
         error_summary: str,
+        wait: bool = True,
     ) -> dict[str, Any]:
-        """Return a transiently failed delivery to pending with bounded backoff."""
+        """Return a transiently failed delivery to pending with bounded backoff.
+
+        ``wait=False`` raises ``FileLockBusy`` instead of blocking on the outbox
+        lock, before anything is read or moved.
+        """
 
         clean_id = component(outbox_id, field="outbox_id")
-        with exclusive_lock(self._outbox.lock):
+        with exclusive_lock(self._outbox.lock, wait=wait):
             source = self._leased_outbox_path(clean_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
@@ -11778,9 +11903,10 @@ class SharedFieldStore:
         remote_ref: str = "",
         remote_disposition: str = "",
         remote_result: Mapping[str, Any] | None = None,
+        wait: bool = True,
     ) -> dict[str, Any]:
         clean_id = component(outbox_id, field="outbox_id")
-        with exclusive_lock(self._outbox.lock):
+        with exclusive_lock(self._outbox.lock, wait=wait):
             source = self._leased_outbox_path(clean_id)
             row = read_json(source)
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}

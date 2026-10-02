@@ -410,6 +410,18 @@ def _control_card_changes(payload: Mapping[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _profile_resource_scope(payload: Mapping[str, Any]) -> list[str] | None:
+    """The optional ``resources`` scope of a profile apply (W420): declared
+    selectors whose Card resources take the profile. Absent means unscoped."""
+
+    if "resources" not in payload or payload.get("resources") is None:
+        return None
+    value = payload.get("resources")
+    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+        raise ValueError("resources must be a list of declared resource selectors")
+    return [item.strip() for item in value]
+
+
 def _expected_card_revision(payload: Mapping[str, Any]) -> Optional[int]:
     """The revision the editor loaded. Absent means no precondition.
 
@@ -4700,6 +4712,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
         try:
             expected = _expected_card_revision(payload)
+            scope = _profile_resource_scope(payload)
         except ValueError as exc:
             return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
         return await (await self._project_agent_card_access(request)).apply_profile(
@@ -4709,6 +4722,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             profile=str(payload.get("profile") or "").strip(),
             expected_card_revision=expected,
             request_id=_audit_request_id(request),
+            resources=scope,
         )
 
     @api(
@@ -5674,10 +5688,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         access_id = str(payload.get("access_id") or "").strip()
         profile = str(payload.get("profile") or "").strip()
         LOGGER.info(
-            "[automation-access.apply-profile] request access_id=%s profile=%s expected_card_revision=%s",
+            "[automation-access.apply-profile] request access_id=%s profile=%s expected_card_revision=%s resources=%s",
             access_id,
             profile,
             payload.get("expected_card_revision"),
+            payload.get("resources"),
         )
         try:
             access_service = await _automation_access_service(self, request)
@@ -5687,6 +5702,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 profile=profile,
                 expected_card_revision=_expected_card_revision(payload),
                 request_id=_audit_request_id(request),
+                resources=_profile_resource_scope(payload),
             )
         except ValueError as exc:
             LOGGER.warning(

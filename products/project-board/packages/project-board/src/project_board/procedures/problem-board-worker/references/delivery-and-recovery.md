@@ -172,6 +172,35 @@ original correlation and reply-to refs, and only then settle. A worker-to-worker
 status message, a settlement summary, terminal output, or a journal entry is not
 the operator reply.
 
+Read `message.operator_origin` in receive or lease-read (also
+`operator_response.origin` in receive). `channel` is `telegram`, `board`, or
+`unknown` for legacy mail without trusted origin; `ref` is opaque. Send the
+normal `pb worker send --recipient operator --kind reply` with the exact
+received `--reply-to`, correlation ID and a stable idempotency key. The client
+preserves the trusted origin automatically. Do not invent a route, infer a
+channel from prose or correlation, change the kind to obtain a notification,
+or use a raw channel API. A Telegram-origin response goes to that originating
+person and private project topic, not the other project operators. With an App
+Ecosystem checkout, the optional public
+[Telegram operator channel](repo:app-ecosystem/products/project-board/docs/telegram.md#reply-in-the-originating-channel)
+explains the routing and delivery contract; it is not needed to operate the
+installed skill.
+
+A worker outbox marked remote `accepted` proves Board acceptance, not Telegram
+delivery. `pb worker outbox-status --outbox-id <outbox-id>` shows the accepted
+mail receipt's `notification.state` separately; `not_requested` means no channel
+notification was requested, and an old receipt without that field proves no
+channel outcome. `sent` records a
+successful SDK send, not that the person read it; `partial`, `not_connected`,
+`not_configured`, `no_notifier` and `failed` are not successful channel delivery. A stopped
+or interrupted return attempt can remain `delivery_unknown`. Report the
+actual outcome in the visible Board conversation and to the coordinator when
+channel recovery is needed. Inspect the existing message/receipt through
+supported reads, or retry the same send with its original idempotency key;
+never use a new key, another person's route or an ad-hoc send to force a
+possibly duplicated post. Settle the lease after the visible correlated Board
+reply is recorded, stating any channel failure or unknown outcome honestly.
+
 When sending the operator a link, address the exact Problem Board conversation
 and message. A deployment root URL is not a conversation link.
 
@@ -205,8 +234,11 @@ and only the handshake timed out, which the relay retries within seconds.
 `work_coordinate_relay_unavailable` still means the relay process did not pick
 the request up at all (for example, it is stopped).
 
-`pb worker send` to a remote recipient refuses the same way, with
-`work_send_channel_reconnecting`. Its details carry `delivered: false` and the
+Neither error indicates that re-authorization is needed; a refused credential
+has its own code, `work_worker_reauthorization_required` ([identity and
+authorization](identity-and-authorization.md), "Authorization States").
+`pb worker send` to a remote recipient, or with `--work-ref`, refuses the same
+way before its item check, with `work_send_channel_reconnecting`. Its details carry `delivered: false` and the
 `idempotency_key` you gave: the message was not delivered. Retry after
 `next_attempt_at` with the same key, which replays a delivered message and
 sends a lost one. A send counts as delivered only when it returns a receipt,
@@ -308,3 +340,14 @@ If the board says relay online while no message reaches the model, report each
 observed stage separately: remote acceptance, local materialization, outstanding
 wake, receive evidence, visible response, and settlement. "Online" is not an
 end-to-end delivery claim.
+
+## Old input
+
+Old input is answered with the current state. Compare each item's creation time
+with now. When the item, its assignment or an operator ruling has moved on
+since it was written, act on the current state, settle the old item naming
+what superseded it, and neither restart superseded work nor repeat a reply or
+side effect already given. Why a message arrived late (a queued wake, a
+transport fault) is a separate finding: report it with the wake's provenance
+and do not assume a cause. Why: on 2026-10-01 a request written at 12:18Z
+reached its reader at 14:39Z and was answered as if new (W455).

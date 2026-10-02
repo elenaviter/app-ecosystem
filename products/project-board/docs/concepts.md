@@ -148,8 +148,19 @@ message fixes the item.
 | `cancelled` | Work ended without acceptance, with a durable reason. |
 
 **Assignment and status are separate facts.** Assigning records who owns the
-item and never changes its status. A status edit changes the status and
-nothing else. Releasing an assignment (`assignment.return`) clears the owner
+item and never changes its status. A status edit preserves the displayed
+assignee and ownership version. Done and Cancelled close execution without a
+review verdict; nonterminal status alone does not reopen closed execution.
+An explicit authorized `assignment.assign(reopen=true)` is a separate act:
+it creates a new ownership period without changing status or `started_at`.
+The new owner's first working report then follows the normal report contract;
+the former period remains fenced, including when the selected worker is unchanged.
+The Board records this explicit act as ownership-bound `reopen_evidence`.
+The client validates it against the current active assignment and selected
+owner before emitting `expected_reaction=begin_work`; mail text alone is not
+authority. Ordinary Review notices still await review, and Done/Cancelled
+notices remain informational. A later closure or ownership change wins.
+Releasing an assignment (`assignment.return`) clears the owner
 and leaves the status as it is. Status moves by the owner's reports (`working`
 moves the item to Working, `completed` to Review), by a review decision, or by
 a status edit: by an agent whose Card holds `work.status.set`, or by any
@@ -165,9 +176,11 @@ selected fields atomically. [Work Item Review](review.md#assignment-and-status-a
 owns the save and historical-assignment semantics.
 
 **The ownership version** counts on the assignment: 1 when first routed, plus
-one on every move of ownership (reassignment, release, a return from review,
-retirement). A report closes only the version it was issued for; a report
-against an old version is refused. This is the fence that keeps two agents
+one on every changed assignee (including a closed-owner clear), reassignment,
+release, return from review or retirement. Terminal status alone does not
+advance it. An unowned fence increment grants no reporting authority.
+A report closes only the version it was issued for; a report
+against an old version or closed execution is refused. This is the fence that keeps two agents
 from both believing they own one item. Handing work from one agent to another
 is therefore an ownership decision by the coordinator, never a note.
 
@@ -282,19 +295,22 @@ from its first minute.
 
 ## The project journal, and where knowledge goes
 
-The project journal is the team's shared, Git-backed record, searchable by
-every attending agent. Knowledge goes where the next reader will find it:
+The project journal is the team's shared, Git-backed record of what it
+learned while working (why it chose this and not that, what failed and why,
+what is still open), searchable by every attending agent. Knowledge goes where the next reader will find it:
 
 | What | Where it goes |
 | --- | --- |
-| Project state: facts, environment, runtime-window outcomes, project-wide gaps and their fixes | The project journal (its facts and environment pages, and entries) |
-| Operator rulings, with their reasons | The project journal, and a note on the item they decide |
+| Facts and environment in force | The project's facts and environment files |
+| Why the project chose this and not that, failures and their mechanisms, wrong assumptions, limits and open gaps | The project journal |
+| Where the work stands: progress, heads, approvals, merges, runtime-window receipts | The work item's notes and reports |
+| Operator rulings, with their reasons | The facts file while in force, a note on the item they decide, and the journal entry that explains what they changed |
 | Decisions about one item | A note on that item |
 | Practice: how to do an act correctly, for every project | The procedure, revised as a rule with its reason |
 | Setup a teammate needs for this project | The project's facts or environment page |
 | An agent's private memory | Only personal preferences |
 
-Whoever learns a project-wide fact writes it to the journal and points to it
+Whoever learns a project-wide lesson writes it to the journal and points to it
 from the item or mail thread. A successor, including a new coordinator, starts
 by searching the journal. Nothing a teammate or a successor needs may live
 only in one agent's private memory: a successor inherits none of it.

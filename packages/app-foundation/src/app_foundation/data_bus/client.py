@@ -206,20 +206,29 @@ class DataBusRemoteError(DataBusClientError):
 
 
 class DataBusOutcomeUnknown(DataBusClientError):
+    """No terminal result arrived in time; the operation may still have applied.
+
+    ``accepted`` says only whether the ingress acknowledgement arrived. A
+    missing acknowledgement is not evidence that the server did not accept or
+    apply the operation, so the details call it ``ingress_ack_received``.
+    """
+
     def __init__(
         self,
         *,
         message_id: str,
         accepted: bool,
         connection: Mapping[str, Any] | None = None,
+        evidence: Mapping[str, Any] | None = None,
     ) -> None:
         super().__init__(
             "data_bus_outcome_unknown",
             "The Data Bus operation did not return a terminal result before the timeout.",
             details={
                 "message_id": message_id,
-                "accepted": bool(accepted),
+                "ingress_ack_received": bool(accepted),
                 **dict(connection or {}),
+                **dict(evidence or {}),
             },
         )
         self.message_id = message_id
@@ -341,6 +350,10 @@ class FederatedDataBusClient:
         self._active_socket_token: object | None = None
         self._connection_generation = 0
         self._socket_id = ""
+        # Disconnects of the active transport over this client's lifetime. A
+        # request compares it before and after, so a failure says whether the
+        # transport dropped while it waited (W448).
+        self._disconnect_count = 0
         # The server's answer when it refuses the namespace: python-socketio
         # delivers it to connect_error and then raises a generic
         # ConnectionError from connect(), so the reason has to be caught here
@@ -425,6 +438,34 @@ class FederatedDataBusClient:
             "connection_generation": self._connection_generation,
             "socket_id": self._socket_id,
             "connection_active": self.connected,
+        }
+
+    def _wait_evidence(
+        self,
+        *,
+        disconnects_at_start: int,
+        waited_from: float,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        """The transport as a timed-out wait left it, beside the request start.
+
+        ``connection`` in the error describes the transport when the request
+        began. These fields describe it when the wait ended: whether it
+        dropped meanwhile, and how late the timer fired. A timer that fires
+        well after its deadline means the event loop or the process was not
+        running, which no transport timeout can explain (W448).
+        """
+
+        elapsed = max(0.0, time.monotonic() - waited_from)
+        return {
+            "connection_generation_at_failure": self._connection_generation,
+            "socket_id_at_failure": self._socket_id,
+            "connection_active_at_failure": self.connected,
+            "disconnected_during_request": (
+                self._disconnect_count != disconnects_at_start
+            ),
+            "timeout_seconds": round(timeout_seconds, 3),
+            "timer_overrun_seconds": round(max(0.0, elapsed - timeout_seconds), 3),
         }
 
     def _lifecycle_log_suffix(self) -> str:
@@ -517,6 +558,7 @@ class FederatedDataBusClient:
             )
             return
         self._connected.clear()
+        self._disconnect_count += 1
         reason = _connection_reason(args[0] if args else None)
         logger.info(
             "Data Bus socket lifecycle event=disconnected connection_generation=%d "
@@ -872,11 +914,13 @@ class FederatedDataBusClient:
             )
         resolved_message_id = str(message_id or uuid.uuid4())
         connection = self._connection_evidence()
+        disconnects_at_start = self._disconnect_count
         loop = asyncio.get_running_loop()
         future: asyncio.Future[DataBusOutcome] = loop.create_future()
         self._pending[resolved_message_id] = future
         accepted = False
         try:
+            waited_from = time.monotonic()
             try:
                 ack = await self.socket.call(
                     "data_bus.publish",
@@ -908,6 +952,11 @@ class FederatedDataBusClient:
                     message_id=resolved_message_id,
                     accepted=False,
                     connection=connection,
+                    evidence=self._wait_evidence(
+                        disconnects_at_start=disconnects_at_start,
+                        waited_from=waited_from,
+                        timeout_seconds=self.ingress_timeout_seconds,
+                    ),
                 ) from exc
             acknowledgement = _mapping(ack)
             accepted_rows = acknowledgement.get("accepted")
@@ -938,20 +987,26 @@ class FederatedDataBusClient:
                 raise DataBusIngressRejected(
                     "data_bus_ingress_rejected", message, details=details
                 )
+            outcome_timeout = (
+                self.outcome_timeout_seconds
+                if timeout_seconds is None
+                else max(0.1, float(timeout_seconds))
+            )
+            waited_from = time.monotonic()
             try:
                 return await asyncio.wait_for(
-                    asyncio.shield(future),
-                    timeout=(
-                        self.outcome_timeout_seconds
-                        if timeout_seconds is None
-                        else max(0.1, float(timeout_seconds))
-                    ),
+                    asyncio.shield(future), timeout=outcome_timeout
                 )
             except asyncio.TimeoutError as exc:
                 raise DataBusOutcomeUnknown(
                     message_id=resolved_message_id,
                     accepted=True,
                     connection=connection,
+                    evidence=self._wait_evidence(
+                        disconnects_at_start=disconnects_at_start,
+                        waited_from=waited_from,
+                        timeout_seconds=outcome_timeout,
+                    ),
                 ) from exc
         finally:
             self._pending.pop(resolved_message_id, None)

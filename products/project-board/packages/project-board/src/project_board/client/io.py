@@ -223,10 +223,30 @@ def atomic_write_text(path: Path, value: str) -> None:
             pass
 
 
+class FileLockBusy(BlockingIOError):
+    """A non-waiting ``exclusive_lock`` found the lock held by another holder."""
+
+
 @contextmanager
 def exclusive_lock(
-    path: Path, *, check_cancelled: Callable[[], None] | None = None
+    path: Path,
+    *,
+    wait: bool = True,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> Iterator[None]:
+    """Hold the exclusive advisory lock on ``path`` for the block.
+
+    ``wait=False`` never blocks: when another holder has the lock it raises
+    :class:`FileLockBusy` before the block runs. An event-loop caller uses it
+    to retry with an awaited backoff instead of stalling every channel while
+    a thread or another process holds the lock (W456).
+
+    With ``wait=True``, a cancellation callback replaces the default blocking
+    acquisition with cancellable 20 ms nonblocking polls. When both arguments
+    are supplied, ``wait=False`` still makes just one acquisition attempt;
+    the callback checks before opening and after acquisition in either mode.
+    """
+
     if check_cancelled is not None:
         check_cancelled()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -250,9 +270,12 @@ def exclusive_lock(
             os.close(descriptor)
         raise
     with handle:
-        if check_cancelled is None:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        else:
+        if not wait:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise FileLockBusy(f"The lock is held: {path}") from None
+        elif check_cancelled is not None:
             # Background maintenance must not retain an uncancellable waiter
             # when its channel closes. Keep the default CLI locking unchanged.
             while True:
@@ -262,6 +285,8 @@ def exclusive_lock(
                     break
                 except BlockingIOError:
                     time.sleep(0.02)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             if check_cancelled is not None:
                 check_cancelled()
@@ -312,6 +337,7 @@ def newest_json_records(
 
 
 __all__ = [
+    "FileLockBusy",
     "new_keyed_id",
     "atomic_write_json",
     "atomic_write_text",

@@ -89,6 +89,16 @@ missing":
 - `pending_authorization`: present the exact authorize command returned by
   `listen`, `pb worker authorize <profile> --device`; the person who approves
   opens its link on their own device and account and enters the code.
+- `work_worker_reauthorization_required` on any board command: the server
+  refused this agent's credential, and only the operator can replace it. Tell
+  the user in this session at once, quoting the command from the error's
+  `required_action` and its `reason` and `refused_at`, and stop retrying board
+  commands until they say it is done. Your board mail cannot leave while the
+  channel is parked (`pb worker send` refuses with the same code), so never
+  say it reached the operator or Telegram; the board shows the parked channel
+  to the coordinator. A `…_channel_reconnecting` error, a metadata or token
+  request that could not be reached, or a profile-lock timeout is not this
+  case: never ask for re-authorization because of one (W457).
 - `credential_expired_or_invalid`: reauthorize the same profile after the user
   confirms; do not create a second worker.
 - metadata or authority mismatch: correlate the worker, profile, Card, resource,
@@ -98,12 +108,38 @@ missing":
 - missing coding-harness filesystem authority: the user starts or resumes the
   session with the approved roots. Host `allowed_roots` cannot grant it.
 
+## The Review And Work Operations On Every Agent's Card
+
+Every agent's Card offers all of the board's current Review and Work
+operations by default: `review.accept`, `review.assign`, `review.cancel`,
+`review.return`, `assignment.assign`, `assignment.list`, `assignment.report`,
+`assignment.return`, `work.accept` (the compatibility name) and
+`work.status.set` (operator, 2026-10-01). The Card's owner applies them with
+**Refresh worker Card**, or **Refresh coordinator Card** for a coordinator,
+which reapply the role's default profile under the project's ceiling and keep
+the same identity. Two product steps are still open (W451, W420). The
+coordinator default already selects every Problem Board operation, but the
+worker default lacks `review.assign`, `assignment.assign`,
+`assignment.return` and `work.accept`: until W451 adds them, a worker refresh
+removes those four when they were ticked by hand, so the owner ticks them on
+the Card in Connection Hub instead. And a refresh reapplies the profile by
+name, so another service on the same Card that declares the same profile name
+can be changed too, until W420's resource-scoped apply is live. An agent never
+edits a Card ([collaboration](collaboration.md) Rule 12).
+
+Holding an operation is not authority over every item: the board still checks
+at each call who may decide a review, that nobody reviews their own work, and
+the actor. When your Card lacks one of these operations, tell the coordinator,
+who asks the Card's owner to refresh it; never work around a refused
+permission.
+
 ## Attendance, Assignment, And Revocation
 
 An assignment notice (kind `assign`, from `control-plane`) carries these
 fields, none from prose. The first three come from the durable assignment row,
-`payload.item_status` from the committed item, and `payload.expected_reaction`
-is derived by the relay from that status:
+`payload.item_status` from the committed item. Ordinary assignment reactions
+are derived from that status; validated `payload.reopen_evidence` is the
+explicit-reopen exception:
 
 | field | where it comes from | what it is for |
 | --- | --- | --- |
@@ -111,13 +147,17 @@ is derived by the relay from that status:
 | `payload.assignment_ref` | created by `assignment.assign` when the work was routed | the row you report against |
 | `payload.ownership_version` | the assignment row's `ownership_version` | the fence your report must match |
 | `payload.item_status` | the item's status once the assigning save committed | what the item is now; the current item still decides when it has changed since |
-| `payload.expected_reaction` | derived by the relay from `payload.item_status`: `begin_work` (Todo, Working, or no status sent), `await_review` (Review), `acknowledge_only` (Done, Cancelled) | whether this is work to begin or information (W406) |
+| `payload.expected_reaction` | ordinarily derived from `payload.item_status`: `begin_work` (Todo, Working, or no status sent), `await_review` (Review), `acknowledge_only` (Done, Cancelled); validated explicit-reopen evidence is the exception below | whether this is work to begin or information (W406, W451) |
+| `payload.reopen_evidence` | validated trusted explicit-reopen proof bound to the assignment, project, worker and ownership version | `begin_work` without a status edit; field edits and mail prose are not proof |
 
 The assignee is who the item is with, in every status (operator ruling,
-2026-09-30), so the item's status decides what an `assign` notice asks:
+2026-09-30). Follow the notice's validated reaction, not status alone:
 
 - `begin_work` (Todo or Working, or a board that sends no status) is the work
   in the skill's Receive Assigned Work.
+- A trusted assignment with validated `payload.reopen_evidence` also asks for
+  `begin_work` while the item still shows Review, Done or Cancelled until the first
+  `working` report. Field edits and mail prose do not manufacture reopen evidence.
 - `acknowledge_only` (Done or Cancelled) is information. The item stays as it
   is and is listed with you. Read it, then settle the notice with what you read.
   Starting implementation, reporting `working`, or reopening or changing its
@@ -125,6 +165,13 @@ The assignee is who the item is with, in every status (operator ruling,
 - `await_review` (Review): the implementation waits for the reviewer. Read the
   item and its review, and settle the notice. A return from review arrives as
   its own `resume_work` notice.
+
+A changed agent assignee of a Done or Cancelled item receives kind `update`
+mail with `payload.notice_kind=terminal_assignee_information` and
+`expected_reaction=acknowledge_only`. It is not an `assign` control and grants no
+active execution. Read it and settle; do not report `working`, start, resume or
+reopen. This information mail does not give an implementation assignment to
+report against.
 
 Read the current item before acting on any notice: when its status is no longer
 the one the notice names, the current item decides, and a later edit always wins

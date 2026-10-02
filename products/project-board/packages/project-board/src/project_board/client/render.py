@@ -934,6 +934,11 @@ def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], projec
     for key in ("message_ref", "correlation_id", "reply_to", "work_ref", "idempotency_key"):
         if message.get(key) not in (None, ""):
             lines.append(f"{key}: {message[key]}")
+    origin = message.get("operator_origin")
+    if isinstance(origin, Mapping):
+        lines.append(f"operator_origin.channel: {origin.get('channel') or 'unknown'}")
+        if origin.get("ref"):
+            lines.append(f"operator_origin.ref: {origin['ref']}")
     if project_ref:
         lines.append(f"project_ref: {project_ref}")
     lease_id = lease.get("lease_id") if isinstance(lease, Mapping) else None
@@ -1048,12 +1053,18 @@ def _render_inspect(result: Mapping[str, Any]) -> list[str]:
         if label == "session.connection" and connection == channel_connection:
             continue
         lines.append(
-            "{}: state {} · attempts {} · schedule {} · next attempt {}".format(
+            "{}: state {} · attempts {} · schedule {} · {}".format(
                 label,
                 connection.get("state") or "not reported",
                 connection.get("attempts", "?"),
                 _preview(connection.get("schedule"), maximum_bytes=100) or "-",
-                connection.get("next_attempt_at") or "not reported",
+                (
+                    "attempt running since "
+                    + str(connection.get("attempt_started_at") or "not reported")
+                    if connection.get("attempt_in_progress") is True
+                    else "next attempt "
+                    + str(connection.get("next_attempt_at") or "not reported")
+                ),
             )
         )
         for key in ("reason", "last_error", "last_error_code", "last_error_summary"):

@@ -79,16 +79,14 @@ def plan_status_mutation(
 ) -> WorkStatusMutation:
     """Plan a direct status edit without performing any writes.
 
-    A status edit changes the status and nothing else: the assignee, the
-    preferred reworker, the assignment state and the ownership version stay as
-    they are. Assignment and status are independent in both directions:
-    ownership moves only through
-    assignment.assign, assignment.return, a reassignment, or a named review
-    decision. Any status may retain an explicitly empty assignee (W398).
-    Why: a status-only edit must not silently release an existing assignment.
+    Status does not select an assignee or create a new ownership period.
+    Nonterminal edits leave execution alone; Done and Cancelled close it as
+    accepted and cancelled respectively, without a review decision or an
+    ownership-version increment. Reopening status alone does not resurrect
+    closed execution. Any status may retain an explicitly empty assignee.
     """
 
-    del assignment_worker, assignment_state
+    del assignment_worker
     current = canonical_work_status(current_status, strict=True)
     target = canonical_work_status(requested_status, strict=True)
     assignee = str(current_assignee or "").strip()
@@ -96,7 +94,10 @@ def plan_status_mutation(
         status=target,
         assignee=assignee,
         preferred_reworker=str(preferred_reworker or "").strip(),
-        assignment_state="",
+        assignment_state=(
+            {DONE: "accepted", CANCELLED: "cancelled"}.get(target, "")
+            if str(assignment_state or "").strip() else ""
+        ),
         fence_ownership=False,
         clear_cancellation=current == CANCELLED and target != CANCELLED,
     )

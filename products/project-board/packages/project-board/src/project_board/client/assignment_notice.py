@@ -1,10 +1,14 @@
-"""What an assignment notice asks of its assignee, by the item's committed status (W406).
+"""Assignment reactions from committed status, with a trusted explicit-reopen exception.
 
 An assignee is who the item is with, in every status (operator ruling,
 2026-09-30). Assigning a Done item makes that person or agent its assignee and
 tells them so: it is not a request to work on it. Before W406 every assignment
 notice said "work to begin", and an agent given a Done item reported working
 on it, undoing the operator's completed state.
+
+W451 distinguishes an authorized assignment.assign reopen under new ownership
+from an ordinary assignee edit. Only its validated Board evidence asks the new
+owner to begin work while the item's old status remains unchanged.
 """
 
 from __future__ import annotations
@@ -41,8 +45,9 @@ def assignment_notice_text(
     work_ref: str,
     assignment_ref: str,
     ownership_version: int,
+    explicit_reopen: bool = False,
 ) -> tuple[str, str, str]:
-    """The subject, body and expected reaction of one assignment notice."""
+    """Format a notice; callers must validate Board evidence before setting explicit_reopen."""
 
     state = str(status or "").strip().lower()
     label = _STATUS_LABELS.get(state, "")
@@ -54,6 +59,24 @@ def assignment_notice_text(
         + (f"Item status: {label}\n" if label else "")
         + "\n"
     )
+    if explicit_reopen:
+        subject = f"Explicitly reopened work: {work_ref}" if work_ref else "Explicitly reopened work"
+        body = (
+            "This assignment was explicitly reopened under a new ownership version. "
+            f"The item still shows {label or state} until your first `working` report "
+            "sets Working. Begin work now: no preliminary status edit is required. "
+            "Assignment did not change status or started_at.\n\n"
+            + header
+            + "Read the current item and assignment before acting. This notice is work "
+            "to begin only while its ownership remains current and active and the "
+            "item still names you. A later closure or ownership change wins; the "
+            "unchanged Review, Done or Cancelled status alone does not cancel this "
+            "explicit reopen. Report against this new ownership, never the former one.\n\n"
+            + _READ_COMMANDS
+            + "  pb worker report --assignment-ref <assignment> "
+            "--ownership-version <version> --state working\n"
+        )
+        return subject, body, REACTION_BEGIN_WORK
     if state in {DONE, CANCELLED}:
         subject = (
             f"Assigned a {label} item, for information: {work_ref}"

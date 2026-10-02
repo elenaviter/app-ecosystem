@@ -106,6 +106,16 @@ def _all_arguments(connection: _Connection) -> list[Any]:
     return [argument for _kind, _sql, args, _depth in connection.calls for argument in args]
 
 
+def _assert_family_locked_first(connection: _Connection) -> None:
+    """W408 review: the family row is locked before any generation row."""
+
+    kind, sql, _args, _depth = connection.calls[0]
+    assert kind == "execute"
+    assert "connection_hub_oauth_credential_families" in sql
+    assert "FOR UPDATE" in sql and "FOR UPDATE OF" not in sql
+    assert "WHERE token_sha256 = $1" in sql
+
+
 def test_schema_has_hash_columns_and_no_raw_bearer_columns() -> None:
     sql = oauth_authority_schema_sql("kdcube_demo_tenant_demo_project")
 
@@ -326,7 +336,8 @@ async def test_rotate_locks_and_advances_one_generation_without_sql_bearers(
     assert rotated == new_token
     assert connection.transaction_enters == 1
     assert connection.transaction_exits == 1
-    assert "FOR UPDATE OF generation, family" in connection.calls[0][1]
+    _assert_family_locked_first(connection)
+    assert "FOR UPDATE OF generation, family" in connection.calls[1][1]
     assert all(depth == 1 for _kind, _sql, _args, depth in connection.calls)
     arguments = _all_arguments(connection)
     assert old_token not in arguments
@@ -359,7 +370,8 @@ async def test_rotate_refuses_a_stale_generation_without_mutation() -> None:
     )
 
     assert rotated is None
-    assert [kind for kind, _sql, _args, _depth in connection.calls] == ["fetchrow"]
+    assert [kind for kind, _sql, _args, _depth in connection.calls] == ["execute", "fetchrow"]
+    _assert_family_locked_first(connection)
     assert connection.transaction_enters == 1
     assert connection.transaction_exits == 1
 
@@ -396,11 +408,13 @@ async def test_rotation_rollback_restores_only_the_current_replacement() -> None
     assert connection.transaction_enters == 1
     assert connection.transaction_exits == 1
     assert [kind for kind, _sql, _args, _depth in connection.calls] == [
+        "execute",
         "fetchrow",
         "execute",
         "execute",
         "execute",
     ]
+    _assert_family_locked_first(connection)
     assert all(depth == 1 for _kind, _sql, _args, depth in connection.calls)
     sql = "\n".join(call[1] for call in connection.calls)
     assert "FOR UPDATE OF prior, successor, family" in sql
@@ -440,7 +454,8 @@ async def test_rotation_rollback_does_not_revive_a_revoked_family() -> None:
     )
 
     assert restored is False
-    assert [kind for kind, _sql, _args, _depth in connection.calls] == ["fetchrow"]
+    assert [kind for kind, _sql, _args, _depth in connection.calls] == ["execute", "fetchrow"]
+    _assert_family_locked_first(connection)
 
 
 @pytest.mark.asyncio
@@ -468,9 +483,10 @@ async def test_rotation_race_revokes_the_reused_refresh_family() -> None:
 
     assert connection.transaction_enters == 1
     assert connection.transaction_exits == 1
-    assert len(connection.calls) == 3
-    assert "SET state = 'revoked'" in connection.calls[1][1]
-    assert "WHERE family_id = $1 AND state = 'active'" in connection.calls[2][1]
+    assert len(connection.calls) == 4
+    _assert_family_locked_first(connection)
+    assert "SET state = 'revoked'" in connection.calls[2][1]
+    assert "WHERE family_id = $1 AND state = 'active'" in connection.calls[3][1]
 
 
 @pytest.mark.asyncio
@@ -495,10 +511,11 @@ async def test_consumed_refresh_reuse_revokes_the_family_without_raw_bearer() ->
 
     assert connection.transaction_enters == 1
     assert connection.transaction_exits == 1
-    assert len(connection.calls) == 3
-    assert "FOR UPDATE OF generation, family" in connection.calls[0][1]
-    assert "SET state = 'revoked'" in connection.calls[1][1]
-    assert "WHERE family_id = $1 AND state = 'active'" in connection.calls[2][1]
+    assert len(connection.calls) == 4
+    _assert_family_locked_first(connection)
+    assert "FOR UPDATE OF generation, family" in connection.calls[1][1]
+    assert "SET state = 'revoked'" in connection.calls[2][1]
+    assert "WHERE family_id = $1 AND state = 'active'" in connection.calls[3][1]
     assert raw_token not in _all_arguments(connection)
     assert hashlib.sha256(raw_token.encode()).hexdigest() in _all_arguments(
         connection
@@ -570,6 +587,7 @@ async def test_card_lifecycle_uses_stable_id_in_one_transaction() -> None:
     assert connection.transaction_enters == 1
     assert connection.transaction_exits == 1
     assert [kind for kind, _sql, _args, _depth in connection.calls] == [
+        "execute",
         "fetch",
         "execute",
         "execute",
@@ -577,7 +595,11 @@ async def test_card_lifecycle_uses_stable_id_in_one_transaction() -> None:
     ]
     assert all(depth == 1 for _kind, _sql, _args, depth in connection.calls)
     assert all("refresh-bearer" not in args for _kind, _sql, args, _depth in connection.calls)
+    # W408 review: the Card's families are locked in id order before generations.
+    assert "ORDER BY family_id" in connection.calls[0][1]
+    assert "FOR UPDATE" in connection.calls[0][1]
     assert connection.calls[0][2] == ("aut_card",)
+    assert connection.calls[1][2] == ("aut_card",)
 
 
 @pytest.mark.asyncio

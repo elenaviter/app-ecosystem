@@ -16,6 +16,8 @@ import json
 import re
 from typing import Any, Mapping
 
+from .errors import DomainError
+from .plan_nodes import parse_plan_node_ref
 from .work_lifecycle import CANONICAL_WORK_STATUSES, canonical_work_status
 from .worker_operation_contract import PROBLEM_BOARD_OPERATIONS
 
@@ -248,6 +250,33 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                            'expected_revision': 'positive integer',
                                            'changes': PLAN_ITEM_CHANGE_FIELDS,
                                            'idempotency_key': 'stable retry key'}},
+    'work.assignee.set': {
+        'description': 'Set or clear the current assignee in any valid status; status stays unchanged and existing Card/repository scope checks still apply.',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {
+            'work_ref': 'canonical plan-node URI',
+            'assignee': 'stable worker name or operator:<user id>; empty string clears',
+            'expected_revision': 'positive integer',
+            'expected_ownership_version': 'integer; zero when never assigned',
+            'reason': 'optional durable reason',
+            'idempotency_key': 'stable retry key',
+        },
+    },
+    'work.item.save': {
+        'description': 'Save status only, assignee only, or both atomically. Omitted fields stay unchanged; empty assignee clears. Supplied steps need their existing permissions, never a separate composite grant.',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {
+            'work_ref': 'canonical plan-node URI',
+            'status': 'optional: ' + ' | '.join(CANONICAL_WORK_STATUSES),
+            'assignee': 'optional stable worker name or operator:<user id>; empty string clears',
+            'expected_revision': 'positive integer',
+            'expected_ownership_version': 'integer, required when assignee is supplied; zero when never assigned',
+            'reason': 'optional reason; required for cancelled',
+            'review': {'look_at': 'required when entering review', 'could_not_verify': "required when entering review; 'None' if nothing"},
+            'tags': 'optional string[]', 'keywords': 'optional string[]',
+            'idempotency_key': 'stable retry key',
+        },
+    },
     'work.status.set': {   'description': 'Set a canonical status; the assignee and the assignment '
                                           'stay as they are, including an empty assignee in Working. '
                                           'Entering review requires review.look_at and '
@@ -920,6 +949,8 @@ PROBLEM_BOARD_OPERATION_REQUIRED: dict[str, tuple[str, ...]] = {
     "project.references.migrate": ("idempotency_key",),
     "work.accept": ("idempotency_key",),
     "work.status.set": ("work_ref", "status", "expected_revision", "idempotency_key"),
+    "work.assignee.set": ("work_ref", "assignee", "expected_revision", "expected_ownership_version", "idempotency_key"),
+    "work.item.save": ("work_ref", "expected_revision", "idempotency_key"),
 }
 
 # The payload field each object kind is sometimes mistaken for: a call that
@@ -997,6 +1028,16 @@ _EXAMPLE_PAYLOADS: dict[str, dict[str, Any]] = {
         "work_ref": "<work_ref>",
         "status": "working",
         "expected_revision": 12,
+        "idempotency_key": "<idempotency_key>",
+    },
+    "work.item.save": {
+        "work_ref": "<work_ref>", "status": "done", "assignee": "<worker_name>",
+        "expected_revision": 12, "expected_ownership_version": 2,
+        "idempotency_key": "<idempotency_key>",
+    },
+    "work.assignee.set": {
+        "work_ref": "<work_ref>", "assignee": "<worker_name>",
+        "expected_revision": 12, "expected_ownership_version": 2,
         "idempotency_key": "<idempotency_key>",
     },
     "review.assign": {
@@ -1122,6 +1163,8 @@ def operation_call_problems(
                 "message": "Carry exactly one of " + " and ".join(group) + " in the payload.",
             })
     for field in PROBLEM_BOARD_OPERATION_REQUIRED.get(operation, ()):
+        if operation == "work.assignee.set" and field == "assignee" and field in payload and payload[field] == "":
+            continue  # Explicit clear is present, not missing.
         if payload.get(field) in (None, "", [], {}):
             problems.append({
                 "field": field,
@@ -1135,7 +1178,23 @@ def operation_call_problems(
                 payload, described, path="", strict=_STRICT_OBJECTS.get(operation, frozenset())
             )
         )
-    if operation == "work.status.set" and payload.get("status") not in (None, ""):
+    if operation in {"work.item.save", "work.assignee.set"}:
+        if payload.get("work_ref"):
+            try:
+                parse_plan_node_ref(payload["work_ref"])
+            except DomainError:
+                problems.append({"field": "work_ref", "problem": "wrong_kind", "message": "Use the canonical plan-node URI returned by a current item read."})
+        if operation == "work.item.save" and "status" not in payload and "assignee" not in payload:
+            problems.append({"field": "status | assignee", "problem": "missing", "message": "Supply status, assignee, or both."})
+        if "assignee" in payload and "expected_ownership_version" not in payload:
+            problems.append({"field": "expected_ownership_version", "problem": "missing", "message": "A supplied assignee needs expected_ownership_version; zero when never assigned."})
+        for field in ("status", "assignee"):
+            if field in payload and not isinstance(payload[field], str):
+                problems.append({"field": field, "problem": "type", "message": f"{field} must be a string; null is not an omission."})
+        for field, minimum in (("expected_revision", 1), ("expected_ownership_version", 0)):
+            if field in payload and (type(payload[field]) is not int or payload[field] < minimum):
+                problems.append({"field": field, "problem": "type", "message": f"{field} must be an integer at least {minimum}."})
+    if (operation == "work.status.set" and payload.get("status") not in (None, "")) or (operation == "work.item.save" and "status" in payload):
         status = canonical_work_status(payload.get("status"))
         if status not in CANONICAL_WORK_STATUSES:
             problems.append({

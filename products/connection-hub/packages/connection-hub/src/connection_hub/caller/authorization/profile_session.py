@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
 import time
@@ -99,6 +100,60 @@ def _device_reconnect_refusal(
 class OAuthProfileAuthorizationResult:
     profile: CallerProfile
     probe: ProbeResult
+
+
+# A refresh the token endpoint answered has rotated the refresh token, so its
+# replacement is the only copy of the new chain until it is stored. Both maps
+# are process-wide: the relay builds a new service for each channel open, and
+# a channel torn down and reopened must still find what its predecessor
+# received (2026-10-01 17:25Z, W456). Neither is ever logged or persisted
+# outside the credential store.
+_PENDING_REPLACEMENTS: dict[
+    tuple[str, str], tuple[CallerProfile, OAuthTokenSet, OAuthTokenSet]
+] = {}
+_UNSPLIT_REFRESHES: set[asyncio.Future] = set()
+
+
+async def drain_pending_refreshes(timeout_seconds: float) -> int:
+    """Await this loop's refreshes still committing, at most ``timeout_seconds``.
+
+    A process that stops calls this before its loop closes, so a refresh in its
+    token round trip or commit is stored rather than cancelled. Returns how
+    many were still running at the bound.
+    """
+
+    loop = asyncio.get_running_loop()
+    running = {
+        task
+        for task in _UNSPLIT_REFRESHES
+        if not task.done() and task.get_loop() is loop
+    }
+    if running:
+        await asyncio.wait(running, timeout=max(0.0, float(timeout_seconds)))
+    return sum(1 for task in running if not task.done())
+
+
+# Statuses a client or an intermediary returns without the token endpoint
+# having decided the grant: a request timeout and a rate limit.
+_UNDECIDED_CLIENT_STATUSES = frozenset({408, 429})
+
+
+def _token_endpoint_refused(error: AuthorizationError) -> bool:
+    """True when the token endpoint itself refused the refresh (W408).
+
+    That is a 4xx answer carrying a registered OAuth error code, which the
+    transport records as ``details["oauth_error"]``. A 5xx, a 408 or 429, or a
+    status without an OAuth error body can come from a proxy or tunnel in
+    front of the endpoint, after the endpoint rotated the token.
+    """
+
+    status = getattr(error, "status", None)
+    if not isinstance(status, int) or not 400 <= status < 500:
+        return False
+    if status in _UNDECIDED_CLIENT_STATUSES:
+        return False
+    details = getattr(error, "details", None)
+    return isinstance(details, Mapping) and bool(details.get("oauth_error"))
 
 
 class OAuthProfileSessionService:
@@ -422,14 +477,12 @@ class OAuthProfileSessionService:
         """
 
         profile, token = await self._read_token(profile_name)
-        if not token.is_expiring(leeway_seconds=60):
+        if (
+            not token.is_expiring(leeway_seconds=60)
+            and self._pending_key(profile_name) not in _PENDING_REPLACEMENTS
+        ):
             return token.access_token
-        async with self._refresh_slot(profile_name):
-            profile, token = await self._read_token(profile_name)
-            if not token.is_expiring(leeway_seconds=60):
-                return token.access_token
-            replacement = await self._refresh(profile, token)
-            return await self._commit_refreshed_token(profile, token, replacement)
+        return await self._refresh_unsplit(profile_name, force=False)
 
     async def refresh_access_token(self, profile_name: str) -> str:
         """Mint a new access token now, whatever the local expiry says.
@@ -443,10 +496,91 @@ class OAuthProfileSessionService:
         refresh is then the card's answer and not a stale session's.
         """
 
+        return await self._refresh_unsplit(profile_name, force=True)
+
+    # A refresh the server answered has rotated the refresh token: the
+    # replacement is then the only copy of the new chain. Dropping it leaves the
+    # spent token stored, the next refresh is refused as reuse, and the Card
+    # needs re-approval (2026-10-01: a relay channel torn down 66 ms after its
+    # token response lost the replacement). So the refresh and its commit run
+    # as one task a caller's cancellation does not split, the commit waits out
+    # store-lock timeouts, and a replacement whose commit attempts all time
+    # out stays pending: the next refresh of the profile commits it instead
+    # of spending the stored token again.
+    REFRESH_COMMIT_ATTEMPTS = 12
+
+    def _pending_key(self, profile_name: str) -> tuple[str, str]:
+        return (str(self._profiles.path), profile_name)
+
+    async def _refresh_unsplit(self, profile_name: str, *, force: bool) -> str:
+        task = asyncio.ensure_future(
+            self._refresh_and_commit(profile_name, force=force)
+        )
+        _UNSPLIT_REFRESHES.add(task)
+        task.add_done_callback(self._unsplit_refresh_done)
+        return await asyncio.shield(task)
+
+    @staticmethod
+    def _unsplit_refresh_done(task: asyncio.Future) -> None:
+        _UNSPLIT_REFRESHES.discard(task)
+        if not task.cancelled():
+            # Retrieved here so a refresh whose caller was cancelled does not
+            # log an unretrieved exception; a waiting caller still gets it.
+            task.exception()
+
+    async def _refresh_and_commit(self, profile_name: str, *, force: bool) -> str:
+        key = self._pending_key(profile_name)
         async with self._refresh_slot(profile_name):
+            pending = _PENDING_REPLACEMENTS.get(key)
+            if pending is not None:
+                # A replacement the server already issued is newer than the
+                # stored token; it is committed, or found stale, first.
+                return await self._commit_until_stored(*pending)
             profile, token = await self._read_token(profile_name)
+            if not force and not token.is_expiring(leeway_seconds=60):
+                return token.access_token
             replacement = await self._refresh(profile, token)
-            return await self._commit_refreshed_token(profile, token, replacement)
+            _PENDING_REPLACEMENTS[key] = (profile, token, replacement)
+            return await self._commit_until_stored(profile, token, replacement)
+
+    async def _commit_until_stored(
+        self,
+        profile: CallerProfile,
+        refreshed: OAuthTokenSet,
+        replacement: OAuthTokenSet,
+    ) -> str:
+        """Commit a server-issued replacement, retrying the store lock.
+
+        Each attempt waits the store lock's own 10 s. The per-profile refresh
+        slot stays held, so no second refresh of this chain starts meanwhile.
+        A commit that lands, or finds the stored chain replaced (the stale
+        check returns the stored token), clears the pending replacement. When
+        every attempt timed out it stays pending for the next refresh. Any
+        other refusal clears it: that replacement can never be stored.
+        """
+
+        key = self._pending_key(profile.name)
+        for attempt in range(1, self.REFRESH_COMMIT_ATTEMPTS + 1):
+            try:
+                access = await self._commit_refreshed_token(
+                    profile, refreshed, replacement
+                )
+            except AuthorizationError as exc:
+                if exc.code != "oauth_profile_lock_timeout":
+                    self._clear_pending(key, replacement)
+                    raise
+                if attempt == self.REFRESH_COMMIT_ATTEMPTS:
+                    raise
+                continue
+            self._clear_pending(key, replacement)
+            return access
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    @staticmethod
+    def _clear_pending(key: tuple[str, str], replacement: OAuthTokenSet) -> None:
+        pending = _PENDING_REPLACEMENTS.get(key)
+        if pending is not None and pending[2] is replacement:
+            del _PENDING_REPLACEMENTS[key]
 
     async def _read_token(self, profile_name: str) -> tuple[CallerProfile, OAuthTokenSet]:
         """The profile record and its stored token, read under the store lock."""
@@ -646,11 +780,15 @@ class OAuthProfileSessionService:
                 refresh_attempt=token.refresh_attempt,
             )
         except AuthorizationError as exc:
-            # An answer with an HTTP status is the server's decision: nothing
-            # was rotated, so no retry of this attempt can ever be needed. A
-            # failure without one (the request may have been processed) keeps
-            # the attempt with the token for the next refresh.
-            if getattr(exc, "status", None) is not None:
+            # Only the token endpoint's own refusal settles the attempt: a 4xx
+            # carrying a registered OAuth error code means nothing was rotated,
+            # so no retry of it can be needed. Anything else keeps the attempt
+            # with the token for the next refresh: no answer at all, a 408 or
+            # 429, or a 5xx, which a proxy or tunnel in front of the endpoint
+            # also writes when the endpoint did rotate and its answer was lost
+            # (W408 review, 2026-10-01). A kept attempt is harmless: a live
+            # token rotates normally and the server records the new fingerprint.
+            if _token_endpoint_refused(exc):
                 await self._clear_refresh_attempt(profile, token)
             raise
 
@@ -1125,4 +1263,5 @@ __all__ = [
     "OAuthProfileAuthorizationResult",
     "OAuthProfileCredentialStore",
     "OAuthProfileSessionService",
+    "drain_pending_refreshes",
 ]

@@ -322,6 +322,47 @@ class PostgresOAuthAuthorityStore:
             family_id,
         )
 
+    async def _lock_family_of_token(self, connection: Any, token_sha256: str) -> None:
+        """Lock the family of the generation a token names, before any generation row.
+
+        Every transaction that locks refresh rows takes the family first, by
+        id, so two requests on one family queue on that row and never lock
+        generations in opposite orders. A retried refresh locked its successor
+        after the presented generation while an ordinary refresh of that
+        successor locked successor then family, and PostgreSQL aborted one of
+        them as a deadlock (W408 review, 2026-10-01).
+        """
+
+        # One statement: the subquery reads the family id without locking the
+        # generation, then only the family row is locked.
+        await connection.execute(
+            f"""
+            SELECT 1
+            FROM {self.schema}.{TABLE_FAMILIES}
+            WHERE family_id = (
+                SELECT family_id
+                FROM {self.schema}.{TABLE_REFRESH_GENERATIONS}
+                WHERE token_sha256 = $1
+            )
+            FOR UPDATE
+            """,
+            token_sha256,
+        )
+
+    async def _lock_card_families(self, connection: Any, registry_access_id: str) -> None:
+        """Lock one Card's families in id order, before any of their generations."""
+
+        await connection.execute(
+            f"""
+            SELECT 1
+            FROM {self.schema}.{TABLE_FAMILIES}
+            WHERE registry_access_id = $1
+            ORDER BY family_id
+            FOR UPDATE
+            """,
+            registry_access_id,
+        )
+
     async def _retried_successor(
         self,
         connection: Any,
@@ -445,6 +486,7 @@ class PostgresOAuthAuthorityStore:
         reuse_detected = False
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await self._lock_family_of_token(connection, bearer_sha256(token))
                 row = await connection.fetchrow(
                     f"""
                     SELECT generation.generation_id,
@@ -522,6 +564,7 @@ class PostgresOAuthAuthorityStore:
         rotated = False
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await self._lock_family_of_token(connection, bearer_sha256(token))
                 row = await connection.fetchrow(
                     f"""
                     SELECT generation.generation_id,
@@ -673,6 +716,7 @@ class PostgresOAuthAuthorityStore:
         restored = False
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await self._lock_family_of_token(connection, bearer_sha256(token))
                 row = await connection.fetchrow(
                     f"""
                     SELECT prior.generation_id AS prior_generation_id,
@@ -782,6 +826,7 @@ class PostgresOAuthAuthorityStore:
             return False
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await self._lock_family_of_token(connection, bearer_sha256(token))
                 row = await connection.fetchrow(
                     f"""
                     SELECT generation.generation_id, generation.family_id
@@ -832,6 +877,7 @@ class PostgresOAuthAuthorityStore:
             return False
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await self._lock_family_of_token(connection, bearer_sha256(token))
                 row = await connection.fetchrow(
                     f"""
                     SELECT generation.generation_id, generation.family_id
@@ -1096,6 +1142,7 @@ class PostgresOAuthAuthorityStore:
         seconds = max(1, int(ttl_seconds))
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await self._lock_card_families(connection, access_id)
                 rows = await connection.fetch(
                     f"""
                     SELECT family.family_id

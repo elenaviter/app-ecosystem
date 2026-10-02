@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import socket
+import time
 from contextlib import asynccontextmanager
 from typing import Any, Callable
 
@@ -603,10 +604,157 @@ async def test_socketio_ack_timeout_without_result_is_outcome_unknown() -> None:
 
     assert captured.value.message_id == "message-1"
     assert captured.value.accepted is False
+    # A missing acknowledgement is not "not accepted": the server may have
+    # applied the operation and only the acknowledgement was lost.
+    assert captured.value.details["ingress_ack_received"] is False
+    assert "accepted" not in captured.value.details
     assert captured.value.details["connection_generation"] == 1
     assert captured.value.details["socket_id"] == "socketio-1"
     assert captured.value.details["connection_active"] is True
+    assert captured.value.details["disconnected_during_request"] is False
+    assert captured.value.details["connection_active_at_failure"] is True
+    assert captured.value.details["timer_overrun_seconds"] == 0.0
     assert client._pending == {}
+    await client.close()
+
+
+# W448 (2026-10-01): one host's relay logs showed 99 of 147 ingress.ack
+# timeouts against a 15 s deadline firing more than 3 s late, and the error
+# described the socket only as it was when the request began
+# (connection_active=true). These fields describe the wait as it ended.
+
+
+@pytest.mark.asyncio
+async def test_a_transport_drop_during_the_ack_wait_is_recorded_and_stays_outcome_unknown() -> None:
+    class DroppingSocket(_Socket):
+        async def call(self, event: str, data: dict[str, Any], timeout: float) -> dict[str, Any]:
+            self.calls.append((event, data, timeout))
+            self.connected = False
+            await self.handlers["disconnect"]("transport error")
+            raise SocketIOTimeoutError()
+
+    socket = DroppingSocket()
+    client = await _client(socket)
+
+    with pytest.raises(DataBusOutcomeUnknown) as captured:
+        await client.request(
+            subject="problem_board.command.v1",
+            object_ref="work:worker-stream:abc",
+            payload={},
+            idempotency_key="request-1",
+            message_id="message-1",
+        )
+
+    details = captured.value.details
+    assert details["connection_active"] is True
+    assert details["disconnected_during_request"] is True
+    assert details["connection_active_at_failure"] is False
+    assert details["connection_generation_at_failure"] == 1
+    assert details["ingress_ack_received"] is False
+    assert client._pending == {}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_receipt_on_the_reconnected_session_still_resolves_the_waiting_request() -> None:
+    # Receipts fan out to the re-authenticated session, so a drop while the
+    # outcome is awaited is recoverable: the request must keep waiting, not
+    # fail when the transport drops.
+    class ReconnectingDuringWaitSocket(_Socket):
+        async def call(self, event: str, data: dict[str, Any], timeout: float) -> dict[str, Any]:
+            self.calls.append((event, data, timeout))
+            message_id = data["messages"][0]["message_id"]
+
+            async def drop_reconnect_and_deliver() -> None:
+                self.connected = False
+                await self.handlers["disconnect"]("transport error")
+                self.namespace_sid = "socketio-2"
+                self.connected = True
+                await self.handlers["connect"]()
+                await self.handlers["chat_service"](
+                    {
+                        "type": "kdcube.data_bus.result",
+                        "data": {"message_id": message_id, "data": {"ok": True}},
+                    }
+                )
+
+            asyncio.get_running_loop().call_later(
+                0.01, lambda: asyncio.ensure_future(drop_reconnect_and_deliver())
+            )
+            return {"status": "accepted", "accepted": [{"message_id": message_id}]}
+
+    socket = ReconnectingDuringWaitSocket()
+    client = await _client(socket, outcome_timeout=1.0)
+
+    outcome = await client.request(
+        subject="problem_board.command.v1",
+        object_ref="work:worker-stream:abc",
+        payload={},
+        idempotency_key="request-1",
+        message_id="message-1",
+    )
+
+    assert outcome.status == "ok"
+    assert client.connection_generation == 2
+    assert client._pending == {}
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_a_timer_that_fires_late_records_its_overrun() -> None:
+    # A blocked event loop (a paging host, a synchronous stall) makes the
+    # 0.1 s deadline fire about 0.3 s late; the overrun names that, apart
+    # from the transport.
+    class StallingSocket(_Socket):
+        async def call(self, event: str, data: dict[str, Any], timeout: float) -> dict[str, Any]:
+            self.calls.append((event, data, timeout))
+            time.sleep(0.4)
+            raise SocketIOTimeoutError()
+
+    socket = StallingSocket()
+    client = FederatedDataBusClient(
+        platform_url="https://platform.example",
+        credential=_claim(),
+        socket_factory=lambda: socket,
+        ingress_timeout_seconds=0.1,
+    )
+    await client.connect()
+
+    with pytest.raises(DataBusOutcomeUnknown) as captured:
+        await client.request(
+            subject="problem_board.command.v1",
+            object_ref="work:worker-stream:abc",
+            payload={},
+            idempotency_key="request-1",
+            message_id="message-1",
+        )
+
+    assert captured.value.details["timeout_seconds"] == 0.1
+    assert captured.value.details["timer_overrun_seconds"] >= 0.25
+    assert captured.value.details["disconnected_during_request"] is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_an_outcome_wait_timeout_records_the_wait_as_it_ended() -> None:
+    socket = _Socket()
+    socket.ack = {"status": "accepted", "accepted": [{"message_id": "message-1"}]}
+    client = await _client(socket, outcome_timeout=0.01)
+
+    with pytest.raises(DataBusOutcomeUnknown) as captured:
+        await client.request(
+            subject="problem_board.command.v1",
+            object_ref="work:worker-stream:abc",
+            payload={},
+            idempotency_key="request-1",
+            message_id="message-1",
+        )
+
+    details = captured.value.details
+    assert details["ingress_ack_received"] is True
+    assert details["timeout_seconds"] == 0.1
+    assert details["disconnected_during_request"] is False
+    assert details["timer_overrun_seconds"] >= 0.0
     await client.close()
 
 

@@ -57,6 +57,7 @@ When the person asks you to create a project and connect you and other agents to
 
 ## Start Or Resume
 
+**Which session this is.** A new session, or one that lost this skill's text, runs these steps from 1 and loads what the harness requires. An addressed wake in a running, enrolled session is not a start: it continues this session. Reuse the instructions already loaded at the installed revision, go straight to Receive Addressed Input, and replay no enrollment, startup read or full skill load. A changed installed revision means one full load of the new skill. A doubt about one act reads that act's owning section. The harness's own loading is not a replay you chose, and nothing here overrides it (operator, 2026-10-01).
 1. Read the repository instructions of the folder you are in. What `pb worker context` names is read after you attend a project (step 7): the command needs enrollment and attendance first.
    An agent attends one project at a time (a link to another is refused until it is unlinked).
 2. Identify this exact runtime session: `pb worker whoami`.
@@ -189,7 +190,7 @@ For every returned item:
    session still holds the lease and the file is intact. Do not recover an
    attachment from payload metadata or mailbox files.
 3. When `operator_response` is present, send a visible correlated reply before
-   settlement. A settlement summary is evidence, not a conversation turn.
+   settlement; [delivery and recovery](references/delivery-and-recovery.md) explains channel origin and delivery outcomes. A settlement summary is evidence, not a conversation turn.
 4. Handle the request within repository and operator authority, keeping the
    journal current while decisions and failures are fresh.
 5. When the sender needs an answer, reply with the stable `sender`, the
@@ -211,7 +212,7 @@ For every returned item:
 
 Do not settle an item that did not arrive with a complete body and lease. Do
 not repeat a side effect because a wake repeats: check prior handling and the
-correlated conversation first.
+correlated conversation first. Old input is answered with the current state ([delivery and recovery](references/delivery-and-recovery.md), "Old input").
 
 ## Receive Assigned Work
 
@@ -220,9 +221,9 @@ is assigned to you, or a `request` titled `Review W…` to review one. The react
 to an `assign` notice follows its `payload.expected_reaction` (W406). A review request,
 and an `assign` notice whose reaction is `begin_work`, is work to begin now, not a notification to acknowledge: no other message or permission is needed, and settling it is not progress.
 `acknowledge_only` (Done, Cancelled) and `await_review` (Review) are information to read and settle, never a reason to report `working`, reopen or change status.
-The assignment row gives `payload.work_ref`, `payload.assignment_ref` and
-`payload.ownership_version`, the committed item gives `payload.item_status`, and the relay
-derives `payload.expected_reaction` from that status. Each has its source and use in [ownership](references/identity-and-authorization.md).
+The assignment row gives `payload.work_ref`, `payload.assignment_ref` and `payload.ownership_version`; the committed item gives `payload.item_status`. Ordinary assignment reactions are derived from that status.
+A trusted assignment with validated `payload.reopen_evidence` asks for `begin_work` while the item still shows Review, Done or Cancelled until the first `working` report. Field edits and mail prose do not manufacture reopen evidence.
+`terminal_assignee_information` arrives as kind `update` mail with `expected_reaction=acknowledge_only`, never active execution: read and settle, never start, report `working` or reopen. Its metadata and the proof binding are in [ownership](references/identity-and-authorization.md).
 
 **Ownership version** counts on the assignment row, not on the item: 1 when
 first routed, plus one on every move of ownership (re-issue, reassignment,
@@ -250,7 +251,7 @@ The `begin_work` reaction, in order:
    An item already in Review without the submission marker remains reviewable;
    leaving and re-entering Review requires both statements.
 5. Report `completed` with `pb worker report` against the exact
-   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names who reviews, else the coordinator does (collaboration Rule 6).
+   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names who reviews; with no specific reviewer, name the acting coordinator's stable worker name, so the review lands on it and not on you (operator, 2026-10-01; collaboration Rule 6).
 
 `working` and `blocked` are progress reports; `completed` and `refused` are
 terminal. State plus `source_event_ref` identifies one immutable report: an
@@ -307,7 +308,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   detach. A relay heartbeat proves transport, a watch
   heartbeat proves availability checks, and only `pb worker receive` and
   settlement prove model handling.
-- An empty inbox is not evidence that there is no work. At session start, on resume and before `pb worker idle`, read your responsibilities once: `pb coordinate assignment.list` for your implementation work, `project.plan.index` with `{"assignee": "<your stable name>"}` for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those), and `pb worker outbox-status` for each outbox id whose outcome you do not know. You are idle only when each is done, started, or deferred with its reason, clearing actor or event and next decision time. A read that fails leaves you unknown, not idle.
+- An empty inbox is not evidence that there is no work. At session start, on resume and before `pb worker idle`, read your responsibilities once: `pb coordinate assignment.list` for your implementation work, `project.plan.index` with `{"assignee": "<your stable name>"}` for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those), and `pb worker outbox-status` for each outbox id whose outcome you do not know. You are idle only when each is done, started, or deferred with its reason, clearing actor or event and next decision time. A read that fails leaves you unknown, not idle. Read it again once per native wake batch and, while you work, about every 30 minutes at the next safe boundary, never per command, per leased message or per guard prompt, and act on each item or ask: [collaboration](references/collaboration.md) Rule 6, "Reconcile your assignments".
 - A correction that must survive an unread inbox belongs in the assigned plan
   item. The coordinator updates the item and sends a short notice naming the
   same stable work ref. Mail wakes the worker; the item retains the corrected
@@ -324,11 +325,10 @@ move status ([ownership](references/identity-and-authorization.md)).
   have applied. Read that row, then retry the same report unchanged. Changed
   content or an invented source event is a different report, not recovery.
 - A `project.report` request reaches only the coordinator: before answering one, read [project-report](references/project-report.md).
-- Journal every completed move only when the project declares role `journal`; no role means no journal work. The role is repository agnostic and every change is item-scoped: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
-- Author the complete journal Markdown, front matter included, at the configured relative path in the current item's worktree. Keep the operator's exact
-  ruling, artifact refs, failure text, alternatives, blast radius, verification
-  and next action when they matter; manufacture no empty sections or generic
-  tags. The front matter needs a unique
+- Journal what the work taught the project (why this and not that, failures and their mechanism, wrong assumptions, limits) only when the project declares role `journal`; where the work stands goes on the item, not in the journal; no role means no journal work. The role is repository agnostic and every change is item-scoped: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
+- Author the complete journal Markdown, front matter included, at the configured relative path in the current item's worktree. Lead with the lesson; keep the
+  mechanism, the rejected alternatives and why, the operator's exact ruling and
+  the evidence that proves it ([journaling](references/journaling.md)); no empty sections or generic tags. The front matter needs a unique
   `work:journal:<created-at>:<entry-id>:<semantic-name>` `entry_ref` (semantic
   name at most 64 characters of `a-z0-9-`, else `journal_entry_ref_invalid`)
   and this exact `project_ref`; `title`, `summary`, `keywords`, `see_also`,
@@ -342,7 +342,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 - Your estimate is visible state. After planning, `pb worker busy-until <UTC> --note <one line>`
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and
-  marks it overdue once the time has passed ([collaboration](references/collaboration.md), rule 6). What the operator told you that the team must know about you goes on your cards with `pb worker info` (same rule, The info line), and so does a pause you choose.
+  marks it overdue once the time has passed ([collaboration](references/collaboration.md), rule 6). What the operator told you that the team must know about you goes on your cards with `pb worker info write` (same rule, The info line), and so does a pause you choose.
 - How the team collaborates is decided in rounds, ideas alone first, then read all, then talk, then a votes table to everyone (rule 7). Handoff is an ownership decision the coordinator takes (rule 8), what you publish is safe to publish (rule 9), a runtime window speaks one channel that survives it (rule 10), a shared name or field is settled in one exchange and crossed messages are decided by its owner with "do not reply" (rule 15): all in [collaboration](references/collaboration.md).
 - When assigned work transitions to no work remaining, say so once with `pb worker idle`. When
   this exact session stops participating, run `pb worker detach`.
@@ -396,8 +396,8 @@ revised one rehearsal round at a time. What every worker does, from it:
 - **A `completed` report submits the source for review** at an exact head and
   change request, and its could-not-verify names what is still to come (merge,
   activation). Approval, merge, activation and whole-item acceptance are
-  separate milestones ([collaboration](references/collaboration.md) Rule 6). The merge milestone names the merge commit after you fetched and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor runs it on their own clone. A
-  journal entry that says landed names that merge commit and is written after it is fetched, never from the intention
+  separate milestones ([collaboration](references/collaboration.md) Rule 6). The merge milestone names the merge commit after you fetched and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor runs it on their own clone. Any
+  claim that a change landed (a report, an item note, a journal lesson) names that merge commit after you fetched it, never the intention
   to merge. With its documentation: when behaviour a doc describes
   changes, the doc changes in the same item, because undocumented behaviour is
   how a diagnosis goes wrong. One home per concept, one-line pointers
@@ -419,7 +419,7 @@ Mail to the operator takes one of these kinds and nothing else:
     progress   reply     update     result
 
 `progress`, `update`, `reply` and `result` stay on the board; only `question`, `decision`,
-`blocked`, `delivery_failed` reach their Telegram. Ask for their input this way, never in a terminal prompt
+`blocked`, `delivery_failed` reach their Telegram, and a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there. A board send is in the operator's board inbox; say it reached Telegram only when its kind or correlation sends it there and its receipt says delivered. Ask for their input this way, never in a terminal prompt
 (collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`. Mail about a plan item carries `--work-ref` with its `--project-ref`; only direct operator mail that names no item leaves both out.
 
 ## Runtime Actions And Test Windows
@@ -507,7 +507,7 @@ repeat a mistake, resolve the gap: with clear evidence and a clear owning rule,
 re-read the complete package, find every statement of the concept, rewrite the
 owning rule so no vague, duplicate, or contradictory guidance remains, test the
 contract, leave the revision to the merger, reinstall it, and tell active workers
-to re-read it. With uncertain ownership or policy, create a work item with the
+the new revision: each loads it once, when `pb procedure verify` names it. With uncertain ownership or policy, create a work item with the
 evidence and ask. A procedure update is a semantic revision of the affected
 contract, never an append-only note, and it carries the rule with one clause of
 reason. Incidents go to the journal, where search finds them when they are

@@ -147,7 +147,8 @@ wake one automatic retry. When the session takes both without running
 mail joins it and the relay submits nothing more on its own. The coordinator
 on that host then runs one explicit recovery of that exact wake. A wake the
 provider refused for usage is not stranded this way: the turn never ran, so
-once that limit's reset passes the relay pushes the wake once more itself,
+once that limit's reset passes, or a newer account-bound native reading
+proves early redemption, the relay may push the eligible wake once more,
 and a recovery is refused while the relay still holds the session for its
 limit. The steps are in the coordinator procedure,
 [Recover a stalled Codex delivery](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md#recover-a-stalled-codex-delivery).
@@ -157,6 +158,60 @@ the native queue accepted the prompt, and says nothing about whether the
 model read it. Only the worker's own `pb worker receive` of that wake
 resolves the recovery. That receive clears the outstanding wake and its
 recovery together, on the host, on the next heartbeat and on the Card.
+
+### Early quota redemption
+
+An operator can redeem quota before the reset recorded in a stopped Codex
+rollout. Waiting for another model turn to update that file would keep its
+addressed work held behind an obsolete reading. For a listening, registered
+session with pending input and a registered account email, the relay therefore
+checks the installed native App Server without starting a thread or model turn.
+It uses `account/read` with `refreshToken:false`, `account/rateLimits/read`,
+and a second account check; the account must match the worker's retained
+identity. It never consumes an earned reset, reads a credential file through
+this quota adapter, or uses the PB Card profile as a Codex configuration profile.
+These are the documented [Codex App Server account interfaces](https://learn.chatgpt.com/docs/app-server).
+
+The read has a bounded deadline and runs at most once a minute for a
+quota-held session with pending work. Native bucket, source, account fingerprint,
+session and observation time are retained locally. A newer positive reading
+must cover the exhausted bucket and window; partial, stale, other-session or
+different-account data cannot clear it. All returned buckets are checked, so
+one healthy bucket does not hide another exhausted bucket. A newer provider
+refusal still wins. Before the recorded reset, a failed, unmeasured or
+still-exhausted read submits no model turn and waits for a later bounded check,
+without discarding pending mail. Once the runtime's recorded reset ends the
+refusal, the ordinary one-wake reset recovery does not depend on this optional
+reader or its cached errors. A newer native exhausted measurement retains its
+own hold. The reader's temporary process group is stopped on every exit,
+including a shim that exits before its native child.
+An expired positive reading is unknown, not proof of capacity or a return to an
+older exhausted measurement.
+
+Fresh capacity can end the old hold. If the provider refused an outstanding
+consumed wake, its recovery requires the same current session, a later matched
+reading, pending addressed input and normal queue/authorization fences. One
+durable allowance belongs to that wake, not to each newer quota reading; the
+ordinary consumed-wake ceiling remains. Input and listener state are checked
+again after the read. No pending work means no unsolicited model turn, and
+superseded assignments are not revived by recovery.
+
+`capacity available; same-session receive pending` is quota evidence, not
+working or restored-session proof. The heartbeat can carry fresh usage while
+the separately recorded receive and settlement timestamps remain old. Only
+a new receive establishes that the same session fetched addressed input;
+handling and Operator closure remain separate evidence. The existing status
+surface may show usage ok without a dedicated recovery badge; no new widget or
+notification policy is implied by this client change.
+
+The normal user check is `/status` in the existing Codex console. If it is
+running but still waiting, one normal message can ask it to receive Problem
+Board input and reread live assignments. If the console process has actually
+exited, the operator reopens the original thread with the native `codex resume`
+command and original configuration; PB does not launch a replacement worker.
+Resuming a thread alone is not proof of a model turn or inbox handling.
+Without a registered matching account, the client cannot authorize early
+release from this reader and retains its existing reset-time behavior.
 
 The relay states the recovery on every heartbeat in the session field
 `wake_recovery`: `{wake_id, state, requested_at, recorded_at, submission_id}`
@@ -193,7 +248,7 @@ itself is unchanged. The board drops a malformed recovery with the event
 | A message comes back with prior handling | Its lease expired before it was settled. | Settle the new lease without repeating the work, unless the prior record says the effect was incomplete. |
 | Some referenced items were not delivered | Those items could not be read; the rest arrived with leases. | Handle what arrived. The named items retry once storage recovers. |
 | A send is refused as `work_worker_not_found` | The address is not a stable worker name (an alias, an unknown or a retired worker). | Correct the recipient to the stable name and replay from your outbox with the same idempotency key. |
-| A send or call is refused as reconnecting | The relay is reconnecting this channel. Nothing reached the board. | Wait until the named next attempt, then retry with the same idempotency key. |
+| A send or call is refused as reconnecting | The relay is reconnecting this channel. Nothing reached the board. | Wait until the named next attempt, then retry with the same idempotency key. When the refusal says an attempt has been running since a time, that attempt is in progress: retry in a minute. |
 | An active channel carries a degraded connection observation | A prior delivery outcome is uncertain; it is not a transport-disconnect verdict. | Preserve the unknown operation's identity. Foreground recovery uses the live-session fences in [governed operation routing](architecture.md#governed-operation-routing), not a restart or an assumed success. |
 | `work_coordinate_relay_unavailable` | The relay on this machine did not pick the request up (for example, it is stopped). | Check the relay's status on the machine. A relay restart is agreed with the other agents on the host first. |
 | `work_coordinate_outcome_unknown` | The relay took the request, but no result arrived in time. | Read the board's state first; retry a mutation only with the same idempotency key. |
@@ -212,3 +267,77 @@ at the same time: if its calls succeed, the fault is this worker's channel;
 if they fail too, it is the relay or the board. The layer-by-layer steps are
 in the
 [delivery and recovery reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/delivery-and-recovery.md#diagnosing-a-failure-layer-by-layer).
+
+### Reading an outcome-unknown failure
+
+A `data_bus_outcome_unknown` failure keeps its evidence in the channel's
+degraded-connection record (`relay_diagnostic.request` and its attempts). Read
+the fields as follows:
+
+- `ingress_ack_received: false` means only that the ingress acknowledgement
+  did not arrive. The server may still have accepted and applied the
+  operation. A retry keeps the same identity. It is not
+  `ingress_accepted: false`, which appears only on a real ingress refusal
+  (`transport_phase` `ingress.rejected`).
+- `connection_generation`, `socket_id` and `connection_active` describe the
+  socket **when the request began**. The `..._at_failure` fields describe it
+  when the wait ended. `disconnected_during_request: true` means the transport
+  dropped while the request waited.
+- `timer_overrun_seconds` is how late the deadline (`timeout_seconds`)
+  fired. When it is large, the relay's event loop or the whole process did
+  not run, for example on a paging host. A slow server does not cause it.
+
+The relay also measures its own loop. A sampler sleeps one second and records
+how late it wakes.
+
+- **Slow-cycle line:** carries the cycle's largest lag (`loop_lag_max_seconds`).
+- **Stall line:** a lag of a second or more logs `relay loop stalled` at once,
+  then at most once every 30 seconds, with the stalls in between counted.
+- **Blocked-loop line:** while the loop has not run for three seconds, a
+  watchdog thread reads the loop thread's stack and logs `relay loop blocked`
+  with `blocked_seconds` and `frames`, the innermost twelve frames as
+  `file:line:function` (no values). It names the call that held every
+  channel, once per stall and at most every 30 seconds.
+- **Paging and memory:** both lines carry `major_faults_delta`, the major page
+  faults since the previous line, which shows whether the relay itself was
+  paging. They also carry the current resident size `rss_bytes` (from `/proc`
+  on Linux, libproc on macOS) and the lifetime peak `rss_peak_bytes`.
+  `rss_source` names where the figures came from (`current`, `peak_only` or
+  `unavailable`), because a peak never falls.
+- **Sampler failure:** a sampler that fails logs `relay loop-lag sampler ended`
+  before it restarts. So when no stall lines appear, the sampler was running.
+
+The loop itself waits on neither the outbox lock nor a directory scan.
+Claiming, settling and retrying outbox rows try the lock without waiting
+and, while another holder (the local-state maintenance thread, a `pb`
+command) has it, retry after a short awaited pause. A claim that is
+cancelled while waiting has claimed nothing. The scans that detect work
+raised on this machine run off the loop too (W456, 2026-10-01: these two
+held every channel for 3.8 and 3.2 seconds), in one scanner thread of the
+relay, one scan at a time. A wait that needs a scan already running joins
+it. A wait that ends early leaves its scan to finish and serve the next
+wait, so repeated waits never pile scans up beside each other (W459,
+2026-10-02: abandoned scans had filled all 20 threads of the default pool).
+Closing the relay closes the scanner for good: a wait still running ends at
+its next scan, and no scan starts after the close.
+
+The session wake reads and writes the agent's mailbox and listener record
+(pending mail with expired-lease recovery, the wake hold, the prepared and
+recorded wake, coalescing, queue reconciliation) in that channel's own
+thread, one store call at a time and in the same order. A slow disk or a held
+mailbox lock then delays only that agent's wake: every Data Bus socket of the
+host keeps answering the server's ping, the other channels keep polling,
+reopening and serving coordinate calls, and the shared thread pool that runs
+the scans stays free however many mailboxes hang. A wake that is cancelled
+while a store call runs waits for that call to end before it gives up its
+channel, so the next wake for the same agent never overlaps it. Relay shutdown
+therefore ends when such a call ends. A read the operating system never
+completes holds its channel and the process exit, as any worker thread does
+(W456, 2026-10-02: one pending-mail read held the loop 15.8 seconds, and the
+server closed every socket of the host).
+
+The relay writes nothing else to files.
+
+A polling handshake that answers quickly proves that the ingress accepts new
+sessions. It does not prove that an existing WebSocket, its acknowledgements
+or its receipts are healthy (W448, 2026-10-01).
