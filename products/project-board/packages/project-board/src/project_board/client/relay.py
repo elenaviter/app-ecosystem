@@ -991,15 +991,26 @@ class ProblemBoardHostRelayAdapter:
         self._attendance_cache["initialized"] = False
         return True
 
-    def _materialize_after_board_read(self, item: Mapping[str, Any]) -> dict[str, Any] | None:
-        """Deliver on the board's own attendance when it lists the control's project, else None."""
+    def _board_project_refs(self) -> list[str]:
+        """The projects the board's last attendance read lists; loop state."""
 
-        project_ref = str(item.get("project_ref") or "")
-        board_refs = [
+        return [
             str(entry.get("project_ref") or "")
             for entry in self._attendance_cache.get("items") or []
             if isinstance(entry, Mapping) and entry.get("project_ref")
         ]
+
+    def _materialize_after_board_read(
+        self, item: Mapping[str, Any], board_refs: Sequence[str]
+    ) -> dict[str, Any] | None:
+        """Deliver on the board's own attendance when it lists the control's project, else None.
+
+        Writes the host record and the mailbox, so it runs in the channel's
+        store thread; ``board_refs`` is read on the loop before (W461).
+        """
+
+        project_ref = str(item.get("project_ref") or "")
+        board_refs = list(board_refs)
         if not project_ref or project_ref not in board_refs:
             return None
         try:
@@ -2081,7 +2092,12 @@ class ProblemBoardHostRelayAdapter:
                         # The board lists the control's project when the local
                         # host record is what lags. Synchronize that attendance
                         # and deliver the already-leased control.
-                        receipt = self._materialize_after_board_read(item)
+                        receipt = await run_off_loop(
+                            self._materialize_after_board_read,
+                            item,
+                            self._board_project_refs(),
+                            executor=self._store_thread(),
+                        )
                         if receipt is not None:
                             await self._settle_leased_control(
                                 command_ref,
