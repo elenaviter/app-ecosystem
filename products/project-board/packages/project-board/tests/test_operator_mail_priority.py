@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from project_board.client import store as store_module
 from project_board.client.io import content_hash
+from project_board.client.mail_budget import MAX_WORKER_INPUT_BYTES
 from project_board.client.session import pull_worker_input
 from project_board.client.store import SharedFieldStore
 from project_board.contract.errors import DomainError
@@ -290,3 +292,47 @@ def test_worker_cannot_assert_the_shared_operator_admission_predicate(field, mon
     assert field._mail_record_unlocked(PROJECT, WORKER, spoof["message_ref"]).get("admitted_operator_control") is not True
     selected = pull_worker_input(field, worker_name=WORKER, message_ref=spoof["message_ref"])
     assert [row["message"]["message_ref"] for row in selected["items"]] == [spoof["message_ref"]]
+
+
+def test_direct_mail_still_precedes_priority_mail_in_the_project(field):
+    field.sync_worker_attendances(WORKER, [f"work:project:{PROJECT}"])
+    field.listen_worker(WORKER)
+    project_operator = _operator_reply(field)
+    payload = {"body": "Direct operator input."}
+    direct_operator = field.materialize_control({
+        "ref": "work:control:direct-operator-input", "recipient": WORKER,
+        "kind": "request", "subject": "Direct input",
+        "payload": payload, "payload_hash": content_hash(payload),
+        "sender_identity": {"kind": "user", "label": "Operator"},
+    })
+    first = pull_worker_input(field, worker_name=WORKER, limit=1)
+    assert first["items"][0]["scope"] == "direct"
+    assert first["items"][0]["message"]["message_ref"] == direct_operator["message_ref"]
+    assert first["delivery"]["remaining_count"] == 1
+    assert field._mail_record_unlocked(PROJECT, WORKER, project_operator["message_ref"])["state"] == "pending"
+    second = pull_worker_input(field, worker_name=WORKER, limit=1)
+    assert second["items"][0]["message"]["message_ref"] == project_operator["message_ref"]
+
+
+def test_priority_does_not_bypass_the_response_byte_budget_or_lease_deferred_mail(field):
+    field.sync_worker_attendances(WORKER, [f"work:project:{PROJECT}"])
+    field.listen_worker(WORKER)
+    workers = [field.send_mail(
+        PROJECT, sender=SENDER, recipient=WORKER, kind="update",
+        subject=f"Large worker update {number}", body="x" * 9000,
+        idempotency_key=f"large-worker-{number}",
+    ) for number in range(8)]
+    operator = _operator_reply(field)
+    received = pull_worker_input(field, worker_name=WORKER, limit=100)
+    encoded = (json.dumps({"ok": True, "result": received}, ensure_ascii=True,
+                          indent=2, sort_keys=True) + "\n").encode("utf-8")
+    assert len(encoded) <= MAX_WORKER_INPUT_BYTES
+    assert received["items"][0]["message"]["message_ref"] == operator["message_ref"]
+    received_refs = {row["message"]["message_ref"] for row in received["items"]}
+    assert 1 < len(received_refs) < len(workers) + 1
+    assert received["delivery"]["limited_by"] == "response_byte_limit"
+    assert received["delivery"]["remaining_count"] == len(workers) + 1 - len(received_refs)
+    assert {row["message_ref"] for row in received["acquired_leases"]} == received_refs
+    deferred = received["delivery"]["deferred_message_ref"]
+    assert deferred not in received_refs
+    assert field._mail_record_unlocked(PROJECT, WORKER, deferred)["state"] == "pending"
