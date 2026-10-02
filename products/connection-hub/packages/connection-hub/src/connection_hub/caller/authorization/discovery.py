@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -20,6 +21,18 @@ from connection_hub.caller.errors import AuthorizationError
 
 MAX_OAUTH_RESPONSE_BYTES = 1024 * 1024
 MAX_OAUTH_ERROR_REASON_CHARS = 512
+
+
+# Every OAuth discovery, metadata and token request carries one random id
+# that the relay logs with any failure, and that a proxy can log with the
+# request, so a client failure can be matched with what the server side saw
+# (W461, 2026-10-02: failing token requests left no proxy line, and nothing
+# joined the two sides). It is random per request and carries no identity.
+REQUEST_ID_HEADER = "X-Request-ID"
+
+
+def new_request_id() -> str:
+    return secrets.token_hex(8)
 
 
 def _request_label(failure_code: str) -> str:
@@ -155,10 +168,13 @@ def _request_error(
     failure_kind: str = "",
     oauth_error: str = "",
     retry_after_seconds: int | None = None,
+    request_id: str = "",
 ) -> AuthorizationError:
     safe_url = _safe_request_url(endpoint, failure_code=failure_code)
     label = _request_label(failure_code)
     details: dict[str, Any] = {"method": method, "url": safe_url}
+    if request_id:
+        details["request_id"] = request_id
     if status is not None:
         details["status"] = int(status)
     if retry_after_seconds is not None:
@@ -179,6 +195,8 @@ def _request_error(
         if server_reason:
             message += f": {server_reason}"
         message += "."
+    if request_id:
+        message = f"{message[:-1]} (request_id {request_id})."
     error = AuthorizationError(failure_code, message)
     error.status = int(status) if status is not None else None
     error.details = details
@@ -243,6 +261,7 @@ class HttpxOAuthTransport:
         failure_code: str,
     ) -> Mapping[str, Any]:
         endpoint = validate_web_url(url, code="oauth_endpoint_invalid")
+        request_id = new_request_id()
         try:
             import httpx2
 
@@ -258,7 +277,7 @@ class HttpxOAuthTransport:
                     endpoint,
                     json=json_payload,
                     data=form_payload,
-                    headers={"Accept": "application/json"},
+                    headers={"Accept": "application/json", REQUEST_ID_HEADER: request_id},
                 ) as response,
             ):
                 content_length = response.headers.get("content-length")
@@ -300,6 +319,7 @@ class HttpxOAuthTransport:
                         retry_after_seconds=_retry_after_seconds(
                             response.headers, bytes(body)
                         ),
+                        request_id=request_id,
                     )
         except AuthorizationError:
             raise
@@ -309,6 +329,7 @@ class HttpxOAuthTransport:
                 method=method,
                 endpoint=endpoint,
                 failure_kind=type(exc).__name__,
+                request_id=request_id,
             ) from None
         try:
             value = json.loads(bytes(body))
@@ -464,6 +485,7 @@ class McpOAuthEndpointDiscovery:
         from mcp.types import LATEST_PROTOCOL_VERSION
 
         target = validate_web_url(endpoint, code="oauth_mcp_endpoint_invalid")
+        request_id = new_request_id()
         try:
             import httpx2
 
@@ -494,6 +516,7 @@ class McpOAuthEndpointDiscovery:
                         "Accept": "application/json, text/event-stream",
                         "Content-Type": "application/json",
                         "MCP-Protocol-Version": LATEST_PROTOCOL_VERSION,
+                        REQUEST_ID_HEADER: request_id,
                     },
                 ) as response,
             ):
@@ -524,13 +547,14 @@ class McpOAuthEndpointDiscovery:
             unreachable = AuthorizationError(
                 "oauth_mcp_endpoint_unreachable",
                 "The MCP endpoint could not be reached for OAuth discovery "
-                f"({type(exc).__name__}).",
+                f"({type(exc).__name__}, request_id {request_id}).",
             )
             unreachable.details = {
                 "phase": "mcp_probe",
                 "method": "POST",
                 "url": _safe_request_url(target, failure_code=""),
                 "failure_kind": type(exc).__name__,
+                "request_id": request_id,
             }
             raise unreachable from None
         if response.status_code != 401:
