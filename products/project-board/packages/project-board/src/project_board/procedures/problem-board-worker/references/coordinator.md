@@ -694,6 +694,15 @@ worker at its limit, or whose wakes are held, does not keep an actionable
 review or other work someone waits on: reroute it with the reason, and give
 it back after the reset only by a new routing (operator, 2026-10-01, W449).
 
+Use the capacity the table shows. An agent with capacity implements a
+follow-up the batch has made clearly necessary, agreed with you and recorded
+on its item, without waiting for the batch to end. An agent you name in the
+table as the window's reserve (ready to take an urgent problem of the
+rollout at any moment) starts nothing new: it records each follow-up on its
+item so none is lost. Why: "if you can implement the problems that are
+obviously followup to current effort window ... then its natural to
+implement it now if you can" (operator, 2026-10-02).
+
 Keep the full table on the batch's work item and a compact one (one line per
 active row) in the project announcement, linked to the item
 ([Keep the project announcement current](#keep-the-project-announcement-current)).
