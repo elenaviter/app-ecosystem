@@ -50,6 +50,12 @@ logger = logging.getLogger("connection_hub.oauth.requests")
 
 SLOW_SECONDS = 1.0
 
+# The custody calls made so far by the token operation in progress (W464):
+# a one-element list so a copied context (the custody thread) counts into it.
+_CUSTODY_CALLS: contextvars.ContextVar[list[int] | None] = contextvars.ContextVar(
+    "connection_hub_oauth_custody_calls", default=None
+)
+
 _CORRELATION: contextvars.ContextVar[tuple[str, str]] = contextvars.ContextVar(
     "connection_hub_oauth_correlation", default=("-", "-")
 )
@@ -61,10 +67,22 @@ def correlate(profile_name: str) -> Iterator[str]:
 
     correlation = secrets.token_hex(4)
     reset = _CORRELATION.set((lock_spans.profile_tag(profile_name), correlation))
+    reset_calls = _CUSTODY_CALLS.set([0])
     try:
         yield correlation
     finally:
+        _CUSTODY_CALLS.reset(reset_calls)
         _CORRELATION.reset(reset)
+
+
+def next_custody_call() -> int | None:
+    """The 1-based number of the next custody call in this token operation, or None outside one."""
+
+    calls = _CUSTODY_CALLS.get()
+    if calls is None:
+        return None
+    calls[0] += 1
+    return calls[0]
 
 
 def current() -> tuple[str, str]:

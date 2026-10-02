@@ -24,6 +24,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import time
 
 logger = logging.getLogger("connection_hub.oauth.spans")
@@ -89,6 +90,69 @@ def record(
         os.getpid(),
         task_tag or _task_tag(),
         _correlation(),
+    )
+
+
+_CALL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,39}$")
+
+
+def custody_call_name(call: object) -> str:
+    """The code name of a custody callable (an identifier), or ``other``; never its arguments."""
+
+    name = getattr(call, "__name__", "")
+    return name if isinstance(name, str) and _CALL_NAME.match(name) else "other"
+
+
+def record_custody_call(
+    call_name: str,
+    *,
+    seq: int | None,
+    outcome: str,
+    queue_seconds: float | None,
+    run_seconds: float | None,
+    resume_seconds: float | None,
+    task_tag: str | None = None,
+) -> None:
+    """Log one credential custody call (W464): where its time went between the loop and the custody thread.
+
+    ``queue`` is from submission to the thread starting it (the single custody
+    thread busy with earlier calls), ``run`` the call itself on the thread
+    (the native store and the work around it), ``resume`` from the call's end
+    to its awaiting coroutine running again (a busy or stalled event loop).
+    ``seq`` numbers the calls of one token operation, so their count per
+    operation reads off the last one. WARNING when not ok, INFO when any part
+    is SLOW_SECONDS or longer, DEBUG otherwise.
+    """
+
+    slow = any(
+        value is not None and value >= SLOW_SECONDS
+        for value in (queue_seconds, run_seconds, resume_seconds)
+    )
+    if outcome != "ok":
+        level = logging.WARNING
+    elif slow:
+        level = logging.INFO
+    else:
+        level = logging.DEBUG
+    if not logger.isEnabledFor(level):
+        return
+    from connection_hub.caller.authorization import request_records
+
+    profile, correlation = request_records.current()
+    logger.log(
+        level,
+        "Connection Hub OAuth custody call call=%s seq=%s profile=%s outcome=%s "
+        "queue_ms=%s run_ms=%s resume_ms=%s pid=%d task=%s corr=%s",
+        call_name,
+        "-" if seq is None else seq,
+        profile,
+        outcome,
+        _ms(queue_seconds),
+        _ms(run_seconds),
+        _ms(resume_seconds),
+        os.getpid(),
+        task_tag or _task_tag(),
+        correlation,
     )
 
 

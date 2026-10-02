@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import functools
 import os
 import secrets
 import time
@@ -129,6 +128,31 @@ class _CancelledAfterFailure(asyncio.CancelledError):
         self.failure = failure
 
 _UNSPLIT_REFRESHES: set[asyncio.Future] = set()
+
+
+def _record_custody_call(
+    call: Callable[..., Any],
+    seq: int | None,
+    outcome: str,
+    submitted: float,
+    marks: Mapping[str, float],
+) -> None:
+    """Record one custody call's queue, run and resume time; never raises into the caller."""
+
+    resumed = time.monotonic()
+    start = marks.get("start")
+    end = marks.get("end")
+    try:
+        lock_spans.record_custody_call(
+            lock_spans.custody_call_name(call),
+            seq=seq,
+            outcome=outcome,
+            queue_seconds=None if start is None else start - submitted,
+            run_seconds=None if start is None or end is None else end - start,
+            resume_seconds=None if end is None else resumed - end,
+        )
+    except Exception:  # noqa: BLE001 - timing must never change a custody outcome
+        pass
 
 
 async def drain_pending_refreshes(timeout_seconds: float) -> int:
@@ -1218,9 +1242,22 @@ class OAuthProfileSessionService:
 
         loop = asyncio.get_running_loop()
         context = contextvars.copy_context()
-        future = loop.run_in_executor(
-            _CUSTODY_EXECUTOR, functools.partial(context.run, call, *args, **kwargs)
-        )
+        # Where the call's time goes is recorded per call (W464): waiting for
+        # the one custody thread, running on it, and waiting for this loop to
+        # resume the caller. Timing only; the call and its outcome are unchanged.
+        seq = request_records.next_custody_call()
+        marks: dict[str, float] = {}
+
+        def timed() -> _T:
+            marks["start"] = time.monotonic()
+            try:
+                return context.run(call, *args, **kwargs)
+            finally:
+                marks["end"] = time.monotonic()
+
+        submitted = time.monotonic()
+        future = loop.run_in_executor(_CUSTODY_EXECUTOR, timed)
+        outcome = "ok"
         try:
             return await asyncio.shield(future)
         except asyncio.CancelledError:
@@ -1230,12 +1267,18 @@ class OAuthProfileSessionService:
                 except asyncio.CancelledError:
                     continue
             failure = None if future.cancelled() else future.exception()
+            outcome = "cancelled" if failure is None else lock_spans.outcome_of(failure)
             if failure is not None:
                 # The caller is cancelled and the call failed: the failure is
                 # not dropped, the caller can still run its failure cleanup
                 # (W461 review: a failed profile commit must revoke its grant).
                 raise _CancelledAfterFailure(failure) from failure
             raise
+        except BaseException as exc:
+            outcome = lock_spans.outcome_of(exc)
+            raise
+        finally:
+            _record_custody_call(call, seq, outcome, submitted, marks)
 
     def _load_token(self, profile: CallerProfile) -> OAuthTokenSet:
         custody_started = time.monotonic()
