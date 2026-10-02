@@ -2546,3 +2546,39 @@ def test_an_operator_restriction_reaches_the_card_before_the_coordinator_routes_
     collaboration = _words(_read("references/collaboration.md"))
     assert "### The info line" in _read("references/collaboration.md")
     assert "says `on_board = True` once the board has it" in collaboration
+
+
+def test_the_coordinator_reconciles_the_work_and_integrates_promptly() -> None:
+    """W466 (operator, 2026-10-02): progress from the assignments, owned next actions, prompt integration."""
+
+    raw = _read("references/coordinator.md")
+    coordinator = _words(raw)
+    # One reconciliation, read from the assignments, on events and a cadence.
+    assert "## Reconcile the work, not the inbox" in raw
+    assert "[Reconcile the work, not the inbox](#reconcile-the-work-not-the-inbox)" in raw
+    reconcile = coordinator[coordinator.index("## Reconcile the work, not the inbox"):coordinator.index("## Confirm that work started")]
+    assert "never infer it from whichever mail reached you" in reconcile
+    assert "about every 30 minutes while a batch is active" in reconcile
+    assert "Not at every tool step, and not as a loop of status polls." in reconcile
+    assert "A companion repository the task names but the binding lacks is a blocker you own" in reconcile
+    assert "One `assignment.list` with `status` `assigned`, `working` and `blocked`" in reconcile
+    assert "What do you owe it?" in reconcile
+    assert "Turn every finding into one owned next action in the same turn" in reconcile
+    assert "never kept only in your context" in reconcile
+    # A short turn still takes the decisions it makes due and delegates execution.
+    assert "builds, suites and installs go to named delegates" in coordinator
+    assert "at most one follow-up action" not in coordinator
+    # Handoff records say why, and the blocker column names the decision owed.
+    assert "why this owner and this phase now, in one line" in coordinator
+    assert "when you clear it, the decision you owe" in coordinator
+    # Every host in the release manifest; a host not running is named.
+    assert "`not running, update on return`" in coordinator
+    assert '"we have multiple machines"' in coordinator
+    # Prompt integration after an independent PASS, a permitted merger, one cut per payload.
+    assert "**Integrate promptly after an independent PASS.**" in coordinator
+    assert "a tree equal to the gated tree reuses the gate's evidence" in coordinator
+    assert "name on the item a permitted merger" in coordinator
+    assert "after the author confirms the head is frozen" in coordinator
+    assert "Cut a revision only for a changed procedure payload" in coordinator
+    # The procedure installed is the one in the running release.
+    assert "`pb procedure install` installs the procedure package of the release `pb` runs" in coordinator

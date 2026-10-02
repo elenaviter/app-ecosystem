@@ -28,6 +28,7 @@ revision (W449).
 | run a reload, refresh or client switch | [Reload, refresh, restart](#reload-refresh-restart) |
 | restart a machine | [A machine restart freezes every agent on it](runtime-actions.md#a-machine-restart-freezes-every-agent-on-it) |
 | handle a failing channel, relay or delivery | [What the coordinator is for](#what-the-coordinator-is-for), its "Communication comes first" block |
+| take stock of the team (a relevant wake, or the cadence while a batch is active) | [Reconcile the work, not the inbox](#reconcile-the-work-not-the-inbox) |
 | wait on a silent worker | [Confirm that work started](#confirm-that-work-started), [Check a silent worker](#check-a-silent-worker-do-not-wait-for-it) |
 | tell the operator and the team where things stand | [Keep the project announcement current](#keep-the-project-announcement-current) |
 | hand the role over | [Hand the coordinator role over](#hand-the-coordinator-role-over-and-take-it-back) |
@@ -74,11 +75,11 @@ successor inherits none of that.
 
 **You drive the team; you do not wait for it.**
 
-- Know what every worker is doing. When a reply is overdue (about ten minutes, or
-  any window waiting on one worker), check its state yourself: its relay wake
-  lines, its queue, its heartbeat. Then re-send, nudge, or tell the operator what
-  is stuck. Why: "look on the status of workers after you wait for long time"
-  (2026-09-23).
+- Know what every worker is doing from the work records, not from whichever
+  mail arrived: reconcile on the events and the cadence in
+  [Reconcile the work, not the inbox](#reconcile-the-work-not-the-inbox), and
+  check a worker whose reply is overdue yourself. Why: "look on the status of
+  workers after you wait for long time" (2026-09-23).
 - Ask the worker; do not infer from files. Decide what is yours to decide; hand
   the operator only what is theirs. Why: "cant you ask?" (2026-09-15).
 - File what you find. A problem you notice becomes an item, or a note on the
@@ -136,9 +137,11 @@ successor inherits none of that.
   - End a turn at a safe, durable boundary: every lease you acquired is
     settled or recorded as yours, an authorized window is either finished or
     at a recorded checkpoint, and pending work is routed to a worker or left
-    to a wake. Then keep the turn short: settle the batch you received plus at
-    most one follow-up action. A turn limit never abandons a window in
-    progress or a held lease.
+    to a wake. Then keep the turn short: settle the batch you received, answer
+    the operator, and take the decisions it makes due
+    ([Reconcile the work, not the inbox](#reconcile-the-work-not-the-inbox));
+    builds, suites and installs go to named delegates. A turn limit never
+    abandons a window in progress or a held lease.
   - Reload the worker instructions only when their installed revision
     changed (the skill's Receive Addressed Input section). A wake, a mail or a
     compaction is not a reason to reread them.
@@ -406,7 +409,24 @@ it, in the order of the act.
    their own acceptance and progress; the batch deploys once, not once per
    item. Why: on 2026-10-02 the communication fixes of several items had
    merged on `main` and were still not running anywhere until they shipped as
-   one batch (W461).
+   one batch (W461). "Where" is every host the project runs agents on, read
+   from the team in `pb worker context`, not only the hosts of this window: a
+   host not running now reads `not running, update on return`, and the ALL
+   CLEAR names it so. Why: "we have multiple machines" (operator, 2026-10-02,
+   after a window that named two of three hosts).
+7. **Integrate promptly after an independent PASS.** When an exact head has
+   an independent reviewer's PASS and the gate's checks on that exact source,
+   merge it in that turn or the next, or write on the item the concrete
+   blocker, its owner and a checkpoint. An unrelated batch, a further
+   approval round or a rerun on an unchanged tree is not a blocker: a tree
+   equal to the gated tree reuses the gate's evidence, and only what changed
+   runs again. When you cannot merge in time, name on the item a permitted
+   merger (an agent whose Git access allows it and who did not author the
+   change) and keep the tree proof of step 3. The revision cut of step 4 may
+   be delegated the same way, after the author confirms the head is frozen.
+   Cut a revision only for a changed procedure payload, never again for the
+   same one. Why: on 2026-10-02 approved heads waited for one coordinator
+   thread while reviewers and gates were idle (W466).
 
 ## Release a stalled assignment
 
@@ -680,7 +700,7 @@ yourself and the operator included:
 | Capacity | current usage and reset, presence, from a fresh read |
 | State | one of requested, queued, READY, START, done, verified, each with the time and the receipt that shows it |
 | Next action or handoff | what this row does next, and to whom it hands over |
-| Blocker | what stops it and who clears it, or none |
+| Blocker | what stops it and who clears it, or none; when you clear it, the decision you owe |
 | Checkpoint | the time of the next expected report |
 
 The states are evidence, not intentions. Requested and queued are mail you
@@ -713,6 +733,49 @@ Update from the receipts that changed; do not poll the whole team at each
 step. Why: the operator requires the table for every batch, without being
 asked for it, so who holds what and what comes next is visible at a glance
 (operator, 2026-10-02, as relayed by the coordinator).
+
+## Reconcile the work, not the inbox
+
+Read the team's progress from the assignments, never infer it from whichever
+mail reached you. A mail says what one sender said; only the assignments say
+who holds what and whether it can move. Why: on 2026-10-02 W295's author
+stayed blocked on a missing companion repository binding until the operator
+noticed, while the coordinator answered other mail (W466).
+
+**When.** Reconcile on:
+
+- a wake that carries a relevant event: a `working`, `blocked` or `completed`
+  report, a review verdict, a refusal, a changed head, a handoff or an operator
+  message;
+- the 10-minute mark of a dispatch without its STARTED
+  ([Confirm that work started](#confirm-that-work-started));
+- about every 30 minutes while a batch is active, and with the roles table and
+  the announcement at least every 2 hours.
+
+Not at every tool step, and not as a loop of status polls. Between these
+points, end the turn and let the next wake bring the next event.
+
+**What to read.** One `assignment.list` with `status` `assigned`, `working`
+and `blocked`, beside the batch's roles table. For each row, answer:
+
+1. **Started?** A `working` report at the current ownership version, not mail
+   you queued.
+2. **Can it move?** The assignment binds every repository the task needs, at
+   a base that exists ([Bind every repository](#bind-every-repository-the-work-touches-when-you-assign)).
+   A companion repository the task names but the binding lacks is a blocker
+   you own, whether or not the worker reported it.
+3. **Blocked or waiting?** Its blocker, and who clears it.
+4. **What do you owe it?** A decision only you make: a route, a review
+   routing, a binding, a merge, a GO, a release.
+
+**What to do.** Turn every finding into one owned next action in the same
+turn: take the decision you owe, reassign with the missing binding, route the
+review, or name the owner and checkpoint. Write it where the next reader
+looks: the instruction in the item or task, the handoff in an item note
+([Record each dispatch on the item](#record-each-dispatch-on-the-item)), and
+the row in the roles table. A handoff you know is pending (a review waiting
+for a head, an install waiting for a GO, a "tell X when Y") is done now or
+written as an owned row with a checkpoint, never kept only in your context.
 
 ## Confirm that work started
 
@@ -1015,6 +1078,7 @@ a poll, a handoff between agents), append one note to the item
 - the recipient's full alias and stable worker name;
 - the phase and its scope;
 - the assignment or control reference and its ownership version;
+- why this owner and this phase now, in one line;
 - the evidence state, one of requested, queued, applied or STARTED, never
   merged into one;
 - the source and job constraints;
@@ -1248,7 +1312,11 @@ used by both the host command and that service, and include the restart needed
 for the relay to observe it. Announce the exact package version or, for code,
 the full App Ecosystem commit. Collect the same host-local
 readiness, and verify `pb source status` plus the new relay startup record
-before reporting the move complete.
+before reporting the move complete. `pb procedure install` installs the
+procedure package of the release `pb` runs, so a procedure change merged on
+`main` reaches a host only after its source moves to a commit that contains
+it: switch the source, then install for each target, then `pb procedure
+verify` (2026-10-02, W455).
 
 When a host still runs the checkout client, follow the cutover section in
 [runtime actions](runtime-actions.md) before fast-forwarding that checkout.
