@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Protocol, TypeVar
 from urllib.parse import urlsplit, urlunsplit
 
-from filelock import AsyncFileLock, Timeout
+from filelock import AsyncFileLock, FileLock, Timeout
 from platformdirs import user_cache_dir
 
 from connection_hub.delegated_credentials.cards.identity import (
@@ -795,6 +795,16 @@ class OAuthProfileSessionService:
                 hold_seconds=None if acquired is None else ended - acquired,
             )
 
+    def _prepare_credential_lock_dir(self) -> None:
+        try:
+            self._credential_lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+            os.chmod(self._credential_lock_dir, 0o700)
+        except OSError:
+            raise AuthorizationError(
+                "oauth_profile_directory_permissions",
+                "Connection Hub cannot secure its credential lock directory.",
+            ) from None
+
     def _credential_lock_path(self, credential_ref: str) -> Path:
         key = hashlib.sha256(
             f"{OAUTH_PROFILE_KEYRING_SERVICE}\0{credential_ref}".encode("utf-8")
@@ -811,14 +821,7 @@ class OAuthProfileSessionService:
         """
 
         lock_path = self._credential_lock_path(credential_ref)
-        try:
-            self._credential_lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
-            os.chmod(self._credential_lock_dir, 0o700)
-        except OSError:
-            raise AuthorizationError(
-                "oauth_profile_directory_permissions",
-                "Connection Hub cannot secure its credential lock directory.",
-            ) from None
+        self._prepare_credential_lock_dir()
         async with self._timed_lock(
             "credential",
             lock_path,
@@ -935,9 +938,53 @@ class OAuthProfileSessionService:
         return self._credentials.remove(profile.credential_ref)
 
     def retire_local(self, profile: CallerProfile) -> CallerProfile:
-        """Remove OAuth custody and metadata, restoring custody on state failure."""
+        """Remove OAuth custody and metadata under the profile's credential lock (sync callers).
+
+        It blocks on the credential lock, so it refuses to run on a thread with
+        a running event loop: an async caller uses ``revoke_and_retire``, or
+        runs this in a worker thread (W464, P2-C2).
+        """
 
         self._require_oauth(profile)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise AuthorizationError(
+                "oauth_profile_retire_on_event_loop",
+                "Removing an OAuth profile waits for its credential lock; call it from a worker "
+                "thread, or use revoke_and_retire from async code.",
+            )
+        lock_path = self._credential_lock_path(profile.credential_ref)
+        self._prepare_credential_lock_dir()
+        self._prepare_lock(lock_path)
+        try:
+            with FileLock(str(lock_path), timeout=10, mode=0o600):
+                self._secure_lock(lock_path)
+                return self._retire_unlocked(profile)
+        except Timeout:
+            raise AuthorizationError(
+                "oauth_profile_lock_timeout", "Timed out waiting for the OAuth profile lock."
+            ) from None
+
+    async def revoke_and_retire(self, profile: CallerProfile) -> CallerProfile:
+        """Revoke the Card at its server, then remove it locally, as one credential-lock operation.
+
+        No other operation on this credential (a refresh commit, a reconnect)
+        runs between the revoke and the retire (W464, P2-C2).
+        """
+
+        self._require_oauth(profile)
+        async with self._credential_lock(
+            profile.name, profile.credential_ref, operation="disconnect"
+        ):
+            await self.revoke(profile)
+            return await self._in_custody(self._retire_unlocked, profile)
+
+    def _retire_unlocked(self, profile: CallerProfile) -> CallerProfile:
+        """Remove OAuth custody and metadata, restoring custody on state failure; the caller holds the lock."""
+
         previous = self._credentials.get(profile.credential_ref)
         if previous is not None:
             self._credentials.remove(profile.credential_ref)

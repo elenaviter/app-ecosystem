@@ -268,6 +268,7 @@ TRUSTED_OUTCOME_CODES = frozenset(
         "oauth_profile_lock_timeout",
         "oauth_profile_login_required",
         "oauth_profile_resource_missing",
+        "oauth_profile_retire_on_event_loop",
         "oauth_profile_server_changed",
         "oauth_profile_store_failed",
         "oauth_profile_store_probe_cleanup_failed",

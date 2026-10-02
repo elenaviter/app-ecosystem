@@ -244,3 +244,67 @@ async def test_a_second_cancel_during_the_revoke_still_finishes_the_revoke(tmp_p
         await task
     assert finished == ["server.revoke"], "the grant was revoked despite the second cancel"
     assert profiles.get("agent-a") is None
+
+
+# P2-C2: removal and disconnect serialize with the credential lock (Infra's case on 7b14d6c4).
+
+
+@pytest.mark.asyncio
+async def test_a_retire_waits_while_another_task_holds_the_credential_lock(tmp_path):
+    service, profiles, credentials = await _authorized(tmp_path, ["agent-a"])
+    profile = profiles.require("agent-a")
+    holding, release = asyncio.Event(), asyncio.Event()
+
+    async def hold():
+        async with service._credential_lock(profile.name, profile.credential_ref, operation="test_hold"):
+            holding.set()
+            await release.wait()
+
+    holder = asyncio.create_task(hold())
+    await holding.wait()
+    retiring = asyncio.ensure_future(asyncio.to_thread(service.retire_local, profile))
+    await asyncio.sleep(0.4)
+    assert not retiring.done(), "the retire waits for the held credential lock"
+    assert profiles.get("agent-a") is not None and credentials.get(profile.credential_ref) is not None
+    release.set()
+    await holder
+    await retiring
+    assert profiles.get("agent-a") is None
+
+
+@pytest.mark.asyncio
+async def test_retire_local_refuses_to_block_a_running_event_loop(tmp_path):
+    from connection_hub_cli.errors import AuthorizationError
+
+    service, profiles, _ = await _authorized(tmp_path, ["agent-a"])
+    with pytest.raises(AuthorizationError) as raised:
+        service.retire_local(profiles.require("agent-a"))
+    assert raised.value.code == "oauth_profile_retire_on_event_loop"
+    assert profiles.get("agent-a") is not None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_revokes_and_retires_under_one_credential_lock(tmp_path):
+    from test_oauth_profiles import _OAuth
+
+    oauth = _OAuth()
+    service, profiles, credentials = _service(tmp_path, oauth=oauth)
+    await service.authorize(name="agent-a", endpoint=ENDPOINT)
+    profile = profiles.require("agent-a")
+    holding, release = asyncio.Event(), asyncio.Event()
+
+    async def hold():
+        async with service._credential_lock(profile.name, profile.credential_ref, operation="test_hold"):
+            holding.set()
+            await release.wait()
+
+    holder = asyncio.create_task(hold())
+    await holding.wait()
+    disconnecting = asyncio.create_task(service.revoke_and_retire(profile))
+    await asyncio.sleep(0.4)
+    assert not disconnecting.done() and oauth.events == [], "nothing is revoked while the lock is held"
+    release.set()
+    await holder
+    await disconnecting
+    assert oauth.events == ["server.revoke"]
+    assert profiles.get("agent-a") is None and credentials.get(profile.credential_ref) is None

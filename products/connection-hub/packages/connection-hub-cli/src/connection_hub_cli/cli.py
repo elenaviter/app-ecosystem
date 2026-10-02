@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import getpass
 import json
 import sys
@@ -356,7 +357,10 @@ async def _run_profile(args: argparse.Namespace, services: Services) -> int:
         return 0
 
     if args.profile_command == "remove":
-        removed = services.profile_service.remove(
+        # Removal waits for the profile's credential lock, so it runs in a
+        # worker thread, never on this event loop (W464, P2-C2).
+        removed = await asyncio.to_thread(
+            services.profile_service.remove,
             args.name,
             force=args.force,
             server_card_revoked=args.server_card_revoked,
