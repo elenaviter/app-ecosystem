@@ -4475,6 +4475,11 @@ def transient_failure(error: BaseException) -> bool:
         return False
     if code_text in TRANSIENT_ERROR_CODES:
         return True
+    # A runtime that is not there ends when it comes back. Connection Hub's
+    # discovery codes for it carry no status, so without this a cycle in which
+    # every channel met the outage ended the relay process (W461).
+    if is_runtime_unavailable(error):
+        return True
     try:
         status = int(getattr(error, "status", 0) or 0)
     except (TypeError, ValueError):
@@ -5533,6 +5538,10 @@ class ProblemBoardRelaySupervisor:
         # leaves this session with the old identity, so it is refused beside
         # the cycle rather than trusted.
         card_fingerprint = self._card_fingerprint(host, channel)
+        # Readers of a failed channel see this attempt running rather than a
+        # retry time already past (W461). Success clears the whole record
+        # below; failure and cancellation clear the mark in the handler.
+        self._pacing.record_attempt_started(channel.worker_name)
         stack = AsyncExitStack()
         try:
             client = await stack.enter_async_context(
@@ -5557,6 +5566,7 @@ class ProblemBoardRelaySupervisor:
                 ),
             )
         except BaseException as exc:
+            self._pacing.record_attempt_ended(channel.worker_name)
             await stack.aclose()
             if isinstance(exc, Exception):
                 error_type = failure_type(exc)
