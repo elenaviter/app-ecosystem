@@ -1019,11 +1019,11 @@ class OAuthProfileSessionService:
         ):
             current = self._require_oauth_profile(expected.name)
             self._require_same_reconnect_binding(expected, current)
-            previous = await self._in_custody(self._credentials.get, current.credential_ref)
+            # Read and replace as one custody call: a cancellation cannot fall
+            # between them and leave the server's new grant unrecorded.
             await self._in_custody(
-                self._replace_token,
+                self._replace_current_token,
                 current,
-                previous,
                 replacement,
                 oauth=replacement_metadata,
             )
@@ -1182,6 +1182,13 @@ class OAuthProfileSessionService:
         except BaseException:
             self._credentials.remove(profile.credential_ref)
             raise
+
+    def _replace_current_token(
+        self, profile: CallerProfile, replacement: OAuthTokenSet, **kwargs: Any
+    ) -> None:
+        """Replace the stored token of ``profile`` with ``replacement``, reading the current one first."""
+
+        self._replace_token(profile, self._credentials.get(profile.credential_ref), replacement, **kwargs)
 
     @staticmethod
     async def _in_custody(call: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
