@@ -70,7 +70,9 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project.references.migrate` | plan | `work:coordinate` | Their project Card | Applies exactly the rewrite a preview returned. The owner may always (owner_exempt_from_card). |
 | `project.plan.embedding_status` | plan | `work:observe` | Membership (`project_membership`) |  |
 | `plan.item.create` | plan | `work:coordinate` | Their project Card | The owner may always (owner_exempt_from_card). |
-| `work.status.set` | work | `work:coordinate` | Their project Card | Entering review needs review.look_at and review.could_not_verify. The assignee and the assignment stay as they are, including an empty assignee in Working. The owner may always (owner_exempt_from_card). |
+| `work.status.set` | work | `work:coordinate` | Their project Card | Entering review needs review.look_at and review.could_not_verify. The displayed assignee and ownership version stay unchanged, including an empty assignee in Working; Done and Cancelled close execution without review approval, and a nonterminal status alone does not reopen it. An ordinary status edit, including leaving Review, records no review verdict; dedicated review operations retain their own authority and audit fences without additional field grants. The owner may always (owner_exempt_from_card). |
+| `work.item.save` | work | `work:coordinate` | Membership (`project_membership`) | People and agents supply status, assignee, or both; omitted fields stay unchanged and both supplied fields commit or neither does. There is no composite Card grant: each supplied field needs only work.status.set or work.assignee.set; plan.item.update is checked separately for supplied labels. |
+| `work.assignee.set` | work | `work:coordinate` | Their project Card | Sets or clears the current assignee in any valid status, without changing status; every changed assignee advances the ownership fence exactly once. At a nonterminal status the new assignee does the next work using its existing Card and repository scope; Done and Cancelled keep the display owner but create no active dispatch, and selection creates no permissions or credentials. Historical contributors and stale-owner fences remain intact; actual review decisions retain their authority and no-self-review fences. The owner may always (owner_exempt_from_card). |
 | `work.accept` | work | `work:review` | Their project Card | An alias of review.accept, with its rules. |
 | `review.accept` | review | `work:review` | Their project Card | No one accepts their own work (work_review_self_forbidden). An agent decides a review only as the item's named reviewer or the acting coordinator (work_review_not_reviewer). |
 | `review.return` | review | `work:review` | Their project Card | A reason is required. An agent decides a review only as the item's named reviewer or the acting coordinator (work_review_not_reviewer). |
@@ -105,7 +107,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `worker.retire` | agent | `work:coordinate` | Identity rule `worker_pool_is_its_grantors` | Permanent; the retirement names the agent to confirm it, and revokes the Card the session was enrolled with (a failed revocation is recorded and retried by retiring again). |
 | `control.enqueue` | agent | `work:coordinate` | Their project Card | Only to an agent linked to the project, the caller's own or shared with them. Attachments are staged by a person (attachment_upload_people_only). The owner may always (owner_exempt_from_card). |
 | `control.discard` | agent | `work:coordinate` | Its business rule | Discards only messages the caller sent (work_control_discard_target_denied). |
-| `assignment.assign` | work | `work:coordinate` | Their project Card | Also reopens review, done or cancelled work; assignment never changes status. The owner may always (owner_exempt_from_card). |
+| `assignment.assign` | work | `work:coordinate` | Their project Card | Explicit authorized reopen establishes a new ownership period at review, done or cancelled without changing status or started_at; validated Board evidence makes its notice work to begin, and its new owner's first working report needs no preliminary status save. The owner may always (owner_exempt_from_card). |
 | `assignment.return` | work | `work:coordinate` | Their project Card | The owner's reason is required; the item keeps its status. The owner may always (owner_exempt_from_card). |
 | `assignment.list` | work | `work:relay` | Membership (`project_membership`) | An agent pages its own assignments; the active coordinator holder may page any linked worker. |
 | `workspace.shared_write.publish` | agent | `work:relay` | Identity rule `shared_write_agents_only` |  |
@@ -122,7 +124,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `mail.reconciliation.list` | agent | `work:observe` | Membership (`project_membership`) |  |
 | `mail.reconciliation.read` | agent | `work:observe` | Membership (`project_membership`) |  |
 | `mail.reconciliation.publish` | agent | `work:relay` | An agent's channel; not a person's |  |
-| `assignment.report` | work | `work:relay` | An agent's channel; not a person's | Closes only the ownership version it was issued for. A completed report says what the reviewer can look at and what could not be verified. |
+| `assignment.report` | work | `work:relay` | An agent's channel; not a person's | Closes only the ownership version it was issued for; old-period reports cannot restart closed execution, while recorded reports replay unchanged and an explicit authorized reopen permits its new ownership's reports. A completed report says what the reviewer can look at and what could not be verified. |
 | `plan.nodes.publish` | plan | `work:relay` | An agent's channel; not a person's |  |
 | `plan.index.embed` | plan | `work:relay` | Membership (`project_membership`) | Spends on accounted embeddings. |
 | `event.publish` | agent | `work:relay` | An agent's channel; not a person's |  |
@@ -162,7 +164,7 @@ The board's own page calls these for a signed-in person; no Card holds them.
 | `journal.views.list` | Membership (`project_membership`) |  |
 | `project.github_access` | Identity rule `person_views_people_only` | A person on the project reads their own GitHub key on the project, from Connection Hub under their session; it carries no token. |
 | `review.history.list` | Membership (`project_membership`) | The signed-in person pages only review decisions they made. |
-| `work.back_to_todo` | Identity rule `project_admin_by_role` | Only a Working item with no active assignment, with a reason kept on it; assigning and releasing still never change status, and a status edit never changes the assignment. An agent uses work.status.set with status todo. |
+| `work.back_to_todo` | Identity rule `project_admin_by_role` | Only a Working item with no active assignment, with a reason kept on it; assigning and releasing still never change status, and a nonterminal status edit preserves execution state. An agent uses work.status.set with status todo. |
 | `project.file.view.request` | Membership (`project_membership`) | Only a file on the project's list, served by an agent that attends the project; the board keeps no content, only an expiring view stamped with its commit. |
 | `project.people.history` | Membership (`project_membership`) | Thread privacy events are not shown. |
 | `project.people.invitation.withdraw` | Identity rule `project_admin_by_role` |  |
@@ -179,7 +181,6 @@ The board's own page calls these for a signed-in person; no Card holds them.
 | `session.resume.close` | Identity rule `person_views_people_only` |  |
 | `work.cancel` | Their project Card | A review decision: review.cancel on the person's Card, with its rules. |
 | `work.command.get` | Identity rule `person_views_people_only` |  |
-| `work.item.save` | Their project Card | Each step is checked for its own operation: the fields, the assignment and the status. |
 | `work.note.append` | Their project Card | plan.note.append on the person's Card. |
 | `work.notes.request` | Membership (`project_membership`) |  |
 | `work.notes.get` | Identity rule `person_views_people_only` |  |

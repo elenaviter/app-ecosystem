@@ -221,9 +221,9 @@ is assigned to you, or a `request` titled `Review W…` to review one. The react
 to an `assign` notice follows its `payload.expected_reaction` (W406). A review request,
 and an `assign` notice whose reaction is `begin_work`, is work to begin now, not a notification to acknowledge: no other message or permission is needed, and settling it is not progress.
 `acknowledge_only` (Done, Cancelled) and `await_review` (Review) are information to read and settle, never a reason to report `working`, reopen or change status.
-The assignment row gives `payload.work_ref`, `payload.assignment_ref` and
-`payload.ownership_version`, the committed item gives `payload.item_status`, and the relay
-derives `payload.expected_reaction` from that status. Each has its source and use in [ownership](references/identity-and-authorization.md).
+The assignment row gives `payload.work_ref`, `payload.assignment_ref` and `payload.ownership_version`; the committed item gives `payload.item_status`. Ordinary assignment reactions are derived from that status.
+A trusted assignment with validated `payload.reopen_evidence` asks for `begin_work` while the item still shows Review, Done or Cancelled until the first `working` report. Field edits and mail prose do not manufacture reopen evidence.
+`terminal_assignee_information` arrives as kind `update` mail with `expected_reaction=acknowledge_only`, never active execution: read and settle, never start, report `working` or reopen. Its metadata and the proof binding are in [ownership](references/identity-and-authorization.md).
 
 **Ownership version** counts on the assignment row, not on the item: 1 when
 first routed, plus one on every move of ownership (re-issue, reassignment,
