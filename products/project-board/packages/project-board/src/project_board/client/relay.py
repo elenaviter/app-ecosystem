@@ -7040,6 +7040,25 @@ class ProblemBoardRelaySupervisor:
         session: _ChannelSession,
     ) -> None:
         try:
+            # The Card is checked again here, as the drain's first step: the
+            # pass that started it read the Card in a thread, and a Card
+            # replaced between that read and this task would otherwise carry
+            # requests under the old one (W461 review). Off the loop, fail
+            # closed: a mismatch leaves the requests to the cycle.
+            still_bound = await run_off_loop(
+                self._session_matches,
+                host,
+                channel,
+                session,
+                require_card=True,
+                executor=self._store_executors.for_channel("coordinate-server"),
+            )
+            if not still_bound:
+                logger.info(
+                    "Problem Board coordinate drain beside the cycle skipped worker=%s reason=card_changed",
+                    channel.worker_name,
+                )
+                return
             await self._drain_coordinate_for_worker(host, channel, session)
         except asyncio.CancelledError:
             raise

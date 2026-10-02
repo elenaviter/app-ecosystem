@@ -441,8 +441,12 @@ def test_the_cycle_waits_for_a_side_drain_of_the_same_worker(tmp_path):
     async def scenario():
         earlier = _submit(queue, channel, object_ref="work:project:earlier")
         assert supervisor.serve_coordinate_once() == [channel.worker_name]
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        # The side drain first re-checks the Card off the loop (W461), then
+        # carries the earlier request; wait for that, bounded.
+        for _ in range(200):
+            if active["now"] == 1:
+                break
+            await asyncio.sleep(0.005)
         assert active["now"] == 1
         later = _submit(queue, channel, object_ref="work:project:later")
         cycle = asyncio.create_task(supervisor._poll_channel(host, channel))

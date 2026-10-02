@@ -123,3 +123,39 @@ def test_the_project_heartbeat_store_work_runs_off_the_loop(tmp_path, monkeypatc
     for name in ("sync_project_team", "sync_project_coordinator", "_session_report_delta", "_reconcile_assignments", "_record_project_heartbeat"):
         assert name in threads, f"{name} did not run"
         assert loop_thread not in threads[name], f"{name} ran on the event loop"
+
+
+def test_a_card_replaced_after_the_ready_read_carries_nothing_under_the_old_card(tmp_path, monkeypatch):
+    """Infra's PR 438 finding: the pass reads the Card in a thread, the drain starts later on the loop."""
+
+    from project_board.client import coordinate_queue
+    from relay_helpers import StableClient, make_host, make_supervisor, submit_request
+    from test_relay_coordinate_beside_cycle import _bound_session, _write_profile
+
+    host, _identity, channel = make_host(tmp_path)
+    queue = coordinate_queue.CoordinateQueue(host.field_root)
+    supervisor = make_supervisor(host)
+    old_client = StableClient()
+    supervisor._sessions[channel.worker_name] = _bound_session(host, channel, supervisor, old_client)
+    real_ready = relay.ProblemBoardRelaySupervisor._coordinate_ready
+
+    def ready_then_card_replaced(self, host_config, candidates):
+        ready = real_ready(self, host_config, candidates)
+        assert ready, "the old Card matched when the pass read it"
+        # The operator replaces the Card while the pass is between its read and the dispatch.
+        _write_profile(host, channel, access_id="oauth-card-replaced", updated_at="t1")
+        return ready
+
+    monkeypatch.setattr(relay.ProblemBoardRelaySupervisor, "_coordinate_ready", ready_then_card_replaced)
+
+    async def scenario():
+        request = submit_request(queue, channel)
+        await supervisor.serve_coordinate_pass()
+        await asyncio.gather(*supervisor._coordinate_draining.values())
+        return request
+
+    request = asyncio.run(scenario())
+    assert getattr(old_client, "calls", []) == [], "the old Card's client carried the request"
+    assert queue.take_response(worker_name=channel.worker_name, request_id=request["request_id"]) is None, (
+        "the request is left for the cycle, unanswered"
+    )
