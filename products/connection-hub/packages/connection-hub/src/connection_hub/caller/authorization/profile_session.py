@@ -31,6 +31,7 @@ from connection_hub.caller.authorization.discovery import (
     OAuthDiscoveryResult,
 )
 from connection_hub.caller.authorization.flow import BrowserAuthorizationFlow
+from connection_hub.caller.authorization import lock_spans
 from connection_hub.caller.authorization.models import (
     OAuthClientRegistration,
     OAuthTokenSet,
@@ -539,7 +540,25 @@ class OAuthProfileSessionService:
             profile, token = await self._read_token(profile_name)
             if not force and not token.is_expiring(leeway_seconds=60):
                 return token.access_token
-            replacement = await self._refresh(profile, token)
+            refresh_started = time.monotonic()
+            try:
+                replacement = await self._refresh(profile, token)
+            except BaseException as exc:
+                lock_spans.record(
+                    "refresh",
+                    operation="token_refresh",
+                    profile_name=profile_name,
+                    outcome=lock_spans.outcome_of(exc),
+                    hold_seconds=time.monotonic() - refresh_started,
+                )
+                raise
+            lock_spans.record(
+                "refresh",
+                operation="token_refresh",
+                profile_name=profile_name,
+                outcome="ok",
+                hold_seconds=time.monotonic() - refresh_started,
+            )
             _PENDING_REPLACEMENTS[key] = (profile, token, replacement)
             return await self._commit_until_stored(profile, token, replacement)
 
@@ -585,7 +604,9 @@ class OAuthProfileSessionService:
     async def _read_token(self, profile_name: str) -> tuple[CallerProfile, OAuthTokenSet]:
         """The profile record and its stored token, read under the store lock."""
 
-        async with self._transaction(self._transaction_lock):
+        async with self._transaction(
+            self._transaction_lock, profile_name=profile_name, operation="read_token"
+        ):
             profile = self._require_oauth_profile(profile_name)
             return profile, self._load_token(profile)
 
@@ -605,7 +626,9 @@ class OAuthProfileSessionService:
         chain the server may already have rotated, so it is dropped.
         """
 
-        async with self._transaction(self._transaction_lock):
+        async with self._transaction(
+            self._transaction_lock, profile_name=profile.name, operation="commit_refreshed"
+        ):
             current = self._require_oauth_profile(profile.name)
             stored = self._load_token(current)
             if (
@@ -620,20 +643,79 @@ class OAuthProfileSessionService:
             return replacement.access_token
 
     @asynccontextmanager
-    async def _transaction(self, lock_path: Path):
-        """The store-wide lock, for a read or a write of profile state, never for I/O."""
+    async def _transaction(
+        self, lock_path: Path, *, profile_name: str = "", operation: str = ""
+    ):
+        """The store-wide lock, for a read or a write of profile state, never for I/O.
+
+        Its wait and hold are recorded as a redacted span (lock_spans, W461).
+        """
+
+        async with self._timed_lock(
+            "transaction",
+            lock_path,
+            profile_name=profile_name,
+            operation=operation,
+            timeout_message="Timed out waiting for the OAuth profile lock.",
+        ):
+            yield
+
+    @asynccontextmanager
+    async def _timed_lock(
+        self,
+        kind: str,
+        lock_path: Path,
+        *,
+        profile_name: str,
+        operation: str,
+        timeout_message: str,
+    ):
+        """Hold one OAuth file lock and record its wait and hold as a span."""
 
         self._prepare_lock(lock_path)
         lock = AsyncFileLock(str(lock_path), timeout=10, mode=0o600)
+        started = time.monotonic()
+        acquired: float | None = None
+        outcome = "ok"
+        watch = None
         try:
             async with lock:
+                acquired = time.monotonic()
+                # A holder still inside the lock after HOLD_WARN_SECONDS is
+                # recorded while it holds, so a stuck holder is visible before
+                # it completes (W461).
+                watch = lock_spans.watch_hold(
+                    kind,
+                    operation=operation,
+                    profile_name=profile_name,
+                    wait_seconds=acquired - started,
+                    acquired_at=acquired,
+                )
                 self._secure_lock(lock_path)
                 yield
-        except Timeout:
-            raise AuthorizationError(
-                "oauth_profile_lock_timeout",
-                "Timed out waiting for the OAuth profile lock.",
-            ) from None
+        except BaseException as exc:
+            # Every failure counts: in the body, in securing the lock after
+            # acquisition, in release, or a cancellation. The span names it;
+            # the original exception still propagates unchanged.
+            if isinstance(exc, Timeout) and acquired is None:
+                outcome = "timeout"
+                raise AuthorizationError(
+                    "oauth_profile_lock_timeout", timeout_message
+                ) from None
+            outcome = lock_spans.outcome_of(exc)
+            raise
+        finally:
+            if watch is not None:
+                watch.cancel()
+            ended = time.monotonic()
+            lock_spans.record(
+                kind,
+                operation=operation,
+                profile_name=profile_name,
+                outcome=outcome,
+                wait_seconds=(acquired if acquired is not None else ended) - started,
+                hold_seconds=None if acquired is None else ended - acquired,
+            )
 
     @asynccontextmanager
     async def _refresh_slot(self, profile_name: str):
@@ -642,17 +724,14 @@ class OAuthProfileSessionService:
         lock_path = self._profiles.path.with_suffix(
             f"{self._profiles.path.suffix}.{profile_name}.oauth.refresh.lock"
         )
-        self._prepare_lock(lock_path)
-        lock = AsyncFileLock(str(lock_path), timeout=10, mode=0o600)
-        try:
-            async with lock:
-                self._secure_lock(lock_path)
-                yield
-        except Timeout:
-            raise AuthorizationError(
-                "oauth_profile_lock_timeout",
-                "Timed out waiting for this profile's OAuth refresh lock.",
-            ) from None
+        async with self._timed_lock(
+            "refresh_slot",
+            lock_path,
+            profile_name=profile_name,
+            operation="refresh",
+            timeout_message="Timed out waiting for this profile's OAuth refresh lock.",
+        ):
+            yield
 
     async def probe(self, profile_name: str) -> ProbeResult:
         profile = self._require_oauth_profile(profile_name)
@@ -798,7 +877,9 @@ class OAuthProfileSessionService:
         """Drop a settled attempt id from the stored token, when it is still that token."""
 
         try:
-            async with self._transaction(self._transaction_lock):
+            async with self._transaction(
+                self._transaction_lock, profile_name=profile.name, operation="clear_refresh_attempt"
+            ):
                 current = self._require_oauth_profile(profile.name)
                 stored = self._load_token(current)
                 if (
@@ -831,7 +912,9 @@ class OAuthProfileSessionService:
             return token
         attempt = secrets.token_urlsafe(32)
         try:
-            async with self._transaction(self._transaction_lock):
+            async with self._transaction(
+                self._transaction_lock, profile_name=profile.name, operation="record_refresh_attempt"
+            ):
                 current = self._require_oauth_profile(profile.name)
                 stored = self._load_token(current)
                 if (
@@ -916,7 +999,9 @@ class OAuthProfileSessionService:
         replacement: OAuthTokenSet,
         replacement_metadata: ProfileOAuthMetadata,
     ) -> CallerProfile:
-        async with self._transaction(self._transaction_lock):
+        async with self._transaction(
+            self._transaction_lock, profile_name=expected.name, operation="commit_reconnected"
+        ):
             current = self._require_oauth_profile(expected.name)
             self._require_same_reconnect_binding(expected, current)
             previous = self._credentials.get(current.credential_ref)
@@ -1073,7 +1158,20 @@ class OAuthProfileSessionService:
         return replace(metadata, card_kind=card_kind)
 
     def _load_token(self, profile: CallerProfile) -> OAuthTokenSet:
-        token = self._credentials.get(profile.credential_ref)
+        custody_started = time.monotonic()
+        try:
+            token = self._credentials.get(profile.credential_ref)
+        except BaseException as exc:
+            lock_spans.record(
+                "custody", operation="get", profile_name=profile.name,
+                outcome=lock_spans.outcome_of(exc),
+                hold_seconds=time.monotonic() - custody_started,
+            )
+            raise
+        lock_spans.record(
+            "custody", operation="get", profile_name=profile.name, outcome="ok",
+            hold_seconds=time.monotonic() - custody_started,
+        )
         if token is None:
             raise AuthorizationError(
                 "oauth_profile_credential_missing",
@@ -1102,7 +1200,20 @@ class OAuthProfileSessionService:
                 "oauth_profile_card_kind_mismatch",
                 "The OAuth credential belongs to a different Card kind.",
             )
-        self._credentials.put(profile.credential_ref, replacement)
+        custody_started = time.monotonic()
+        try:
+            self._credentials.put(profile.credential_ref, replacement)
+        except BaseException as exc:
+            lock_spans.record(
+                "custody", operation="put", profile_name=profile.name,
+                outcome=lock_spans.outcome_of(exc),
+                hold_seconds=time.monotonic() - custody_started,
+            )
+            raise
+        lock_spans.record(
+            "custody", operation="put", profile_name=profile.name, outcome="ok",
+            hold_seconds=time.monotonic() - custody_started,
+        )
         try:
             self._profiles.update(profile.with_oauth_replaced(replacement_oauth))
         except Exception:
