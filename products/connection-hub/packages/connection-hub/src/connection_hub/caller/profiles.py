@@ -166,8 +166,7 @@ class ProfileService:
         profile = self.profiles.require(name)
         installed = self._installations_for_removal(profile, force=force)
         oauth = self._oauth_service()
-        await oauth.revoke(profile)
-        removed = oauth.retire_local(profile)
+        removed = await oauth.revoke_and_retire(profile)
         return ProfileRemoval(
             profile=removed,
             dangling_installations=len(installed),

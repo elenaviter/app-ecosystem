@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
-import functools
+import hashlib
 import os
 import secrets
 import time
@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Any, Protocol, TypeVar
 from urllib.parse import urlsplit, urlunsplit
 
-from filelock import AsyncFileLock, Timeout
+from filelock import AsyncFileLock, FileLock, Timeout
+from platformdirs import user_cache_dir
 
 from connection_hub.delegated_credentials.cards.identity import (
     CARD_KIND_AGENT,
@@ -35,6 +36,7 @@ from connection_hub.caller.authorization.discovery import (
 )
 from connection_hub.caller.authorization.flow import BrowserAuthorizationFlow
 from connection_hub.caller.authorization import lock_spans, request_records
+from connection_hub.caller.authorization.session import OAUTH_PROFILE_KEYRING_SERVICE
 from connection_hub.caller.authorization.models import (
     OAuthClientRegistration,
     OAuthTokenSet,
@@ -131,6 +133,45 @@ class _CancelledAfterFailure(asyncio.CancelledError):
 _UNSPLIT_REFRESHES: set[asyncio.Future] = set()
 
 
+def default_credential_lock_dir() -> Path:
+    """One directory per OS user for the credential locks, outside every state root.
+
+    The native credential store is per OS user and every state root shares
+    it, so the lock that serializes one credential must be shared by every
+    root holding that credential (W464).
+    """
+
+    return Path(user_cache_dir("connection-hub", appauthor=False)) / "credential-locks"
+
+
+def _record_custody_call(
+    call: Callable[..., Any],
+    seq: int | None,
+    ended: BaseException | None,
+    submitted: float,
+    marks: Mapping[str, float],
+) -> None:
+    """Record one custody call's queue, run and resume time; never raises into the caller."""
+
+    resumed = time.monotonic()
+    start = marks.get("start")
+    end = marks.get("end")
+    try:
+        lock_spans.record_custody_call(
+            lock_spans.custody_call_name(call),
+            seq=seq,
+            outcome=lock_spans.outcome_of(ended),
+            queue_seconds=None if start is None else start - submitted,
+            run_seconds=None if start is None or end is None else end - start,
+            resume_seconds=None if end is None else resumed - end,
+        )
+    except BaseException as broken:  # noqa: BLE001 - timing must never change a custody outcome
+        # A diagnostic that raises, even a CancelledError from a getter, is
+        # dropped: the caller's own result, exception or cancellation stands.
+        if isinstance(broken, (KeyboardInterrupt, SystemExit)):
+            raise
+
+
 async def drain_pending_refreshes(timeout_seconds: float) -> int:
     """Await this loop's refreshes still committing, at most ``timeout_seconds``.
 
@@ -187,8 +228,10 @@ class OAuthProfileSessionService:
         device_authorization: DeviceAuthorizationFlow | None = None,
         oauth: OAuthClient,
         probe: Probe,
+        credential_lock_dir: Path | None = None,
     ) -> None:
         self._profiles = profiles
+        self._credential_lock_dir = credential_lock_dir or default_credential_lock_dir()
         self._credentials = credentials
         self._endpoint_discovery = endpoint_discovery
         self._discovery = discovery
@@ -303,21 +346,34 @@ class OAuthProfileSessionService:
                 oauth=metadata,
             )
             bound_token = self._token_for_profile(profile, grant.token)
+            committing = False
             try:
                 probe = await self._probe(
                     endpoint=profile.endpoint,
                     bearer=bound_token.access_token,
                 )
-                # The credential and its profile are one commit, run as one
-                # custody call: a caller cancelled while it runs gets the
-                # cancellation only after both are stored or both rolled back,
-                # never a stored credential without its profile (W461 review).
-                await self._in_custody(self._store_new_profile, profile, bound_token)
+                async with self._credential_lock(
+                    profile.name, profile.credential_ref, operation="authorize_store"
+                ):
+                    # The credential and its profile are one commit, run as one
+                    # custody call: a caller cancelled while it runs gets the
+                    # cancellation only after both are stored or both rolled back,
+                    # never a stored credential without its profile (W461 review).
+                    committing = True
+                    await self._in_custody(self._store_new_profile, profile, bound_token)
             except _CancelledAfterFailure:
                 # Cancelled while the commit failed and rolled back: the grant
                 # the server issued is recorded nowhere, so it is revoked
                 # before the cancellation goes on.
-                await self._revoke_grant(grant)
+                await self._revoke_grant_through_cancellation(grant)
+                raise
+            except asyncio.CancelledError:
+                # Cancelled before the commit started (during the probe or
+                # while waiting for the credential lock): the grant is
+                # recorded nowhere, so it is revoked (W464, the P7 window). A
+                # cancel during the commit means the commit completed.
+                if not committing:
+                    await self._revoke_grant_through_cancellation(grant)
                 raise
             except Exception:
                 await self._revoke_grant(grant)
@@ -373,7 +429,10 @@ class OAuthProfileSessionService:
                     )
                 # W414: the Card's last refresh token proves this machine held
                 # it; the server re-authorizes an existing Card only with it.
-                held = await self._in_custody(self._credentials.get, profile.credential_ref)
+                async with self._credential_lock(
+                    profile.name, profile.credential_ref, operation="reconnect_continuity"
+                ):
+                    held = await self._in_custody(self._credentials.get, profile.credential_ref)
                 continuity = str(getattr(held, "refresh_token", "") or "")
                 try:
                     grant = await self._device_authorization.authorize_discovered(
@@ -629,10 +688,7 @@ class OAuthProfileSessionService:
     async def _read_token(self, profile_name: str) -> tuple[CallerProfile, OAuthTokenSet]:
         """The profile record and its stored token, read under the store lock."""
 
-        async with self._transaction(
-            self._transaction_lock, profile_name=profile_name, operation="read_token"
-        ):
-            profile = self._require_oauth_profile(profile_name)
+        async with self._custody_section(profile_name, operation="read_token") as profile:
             return profile, await self._in_custody(self._load_token, profile)
 
     async def _commit_refreshed_token(
@@ -651,10 +707,7 @@ class OAuthProfileSessionService:
         chain the server may already have rotated, so it is dropped.
         """
 
-        async with self._transaction(
-            self._transaction_lock, profile_name=profile.name, operation="commit_refreshed"
-        ):
-            current = self._require_oauth_profile(profile.name)
+        async with self._custody_section(profile.name, operation="commit_refreshed") as current:
             stored = await self._in_custody(self._load_token, current)
             if (
                 current.credential_ref != profile.credential_ref
@@ -742,6 +795,71 @@ class OAuthProfileSessionService:
                 hold_seconds=None if acquired is None else ended - acquired,
             )
 
+    def _prepare_credential_lock_dir(self) -> None:
+        try:
+            self._credential_lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+            os.chmod(self._credential_lock_dir, 0o700)
+        except OSError:
+            raise AuthorizationError(
+                "oauth_profile_directory_permissions",
+                "Connection Hub cannot secure its credential lock directory.",
+            ) from None
+
+    def _credential_lock_path(self, credential_ref: str) -> Path:
+        key = hashlib.sha256(
+            f"{OAUTH_PROFILE_KEYRING_SERVICE}\0{credential_ref}".encode("utf-8")
+        ).hexdigest()[:32]
+        return self._credential_lock_dir / f"cred-{key}.lock"
+
+    @asynccontextmanager
+    async def _credential_lock(self, profile_name: str, credential_ref: str, *, operation: str):
+        """One native credential at a time, across every state root and process (W464).
+
+        Each credential has its own lock, so one agent's keychain work never
+        holds another agent's. Copies of one credential in two state roots
+        share it. It is taken before the store-wide lock and never inside it.
+        """
+
+        lock_path = self._credential_lock_path(credential_ref)
+        self._prepare_credential_lock_dir()
+        async with self._timed_lock(
+            "credential",
+            lock_path,
+            profile_name=profile_name,
+            operation=operation,
+            timeout_message="Timed out waiting for the OAuth profile lock.",
+        ):
+            yield
+
+    @asynccontextmanager
+    async def _custody_section(self, profile_name: str, *, operation: str):
+        """The profile's credential lock, with its record read again under it.
+
+        Yields the current record. The keychain calls the caller makes inside
+        run under the credential lock only: the store-wide lock is held just
+        for the record read, never across a custody or network call (W464,
+        the store-wide lock "never for I/O"). A record that moved to another
+        credential between the two reads is read once more under that
+        credential's lock.
+        """
+
+        for _ in range(2):
+            first = self._require_oauth_profile(profile_name)
+            async with self._credential_lock(
+                profile_name, first.credential_ref, operation=operation
+            ):
+                async with self._transaction(
+                    self._transaction_lock, profile_name=profile_name, operation=operation
+                ):
+                    current = self._require_oauth_profile(profile_name)
+                if current.credential_ref == first.credential_ref:
+                    yield current
+                    return
+        raise AuthorizationError(
+            "oauth_profile_credential_changed",
+            "The OAuth profile's credential changed twice while it was being read; retry.",
+        )
+
     @asynccontextmanager
     async def _refresh_slot(self, profile_name: str):
         """One refresh at a time per profile, so two callers refresh once."""
@@ -820,9 +938,53 @@ class OAuthProfileSessionService:
         return self._credentials.remove(profile.credential_ref)
 
     def retire_local(self, profile: CallerProfile) -> CallerProfile:
-        """Remove OAuth custody and metadata, restoring custody on state failure."""
+        """Remove OAuth custody and metadata under the profile's credential lock (sync callers).
+
+        It blocks on the credential lock, so it refuses to run on a thread with
+        a running event loop: an async caller uses ``revoke_and_retire``, or
+        runs this in a worker thread (W464, P2-C2).
+        """
 
         self._require_oauth(profile)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        else:
+            raise AuthorizationError(
+                "oauth_profile_retire_on_event_loop",
+                "Removing an OAuth profile waits for its credential lock; call it from a worker "
+                "thread, or use revoke_and_retire from async code.",
+            )
+        lock_path = self._credential_lock_path(profile.credential_ref)
+        self._prepare_credential_lock_dir()
+        self._prepare_lock(lock_path)
+        try:
+            with FileLock(str(lock_path), timeout=10, mode=0o600):
+                self._secure_lock(lock_path)
+                return self._retire_unlocked(profile)
+        except Timeout:
+            raise AuthorizationError(
+                "oauth_profile_lock_timeout", "Timed out waiting for the OAuth profile lock."
+            ) from None
+
+    async def revoke_and_retire(self, profile: CallerProfile) -> CallerProfile:
+        """Revoke the Card at its server, then remove it locally, as one credential-lock operation.
+
+        No other operation on this credential (a refresh commit, a reconnect)
+        runs between the revoke and the retire (W464, P2-C2).
+        """
+
+        self._require_oauth(profile)
+        async with self._credential_lock(
+            profile.name, profile.credential_ref, operation="disconnect"
+        ):
+            await self.revoke(profile)
+            return await self._in_custody(self._retire_unlocked, profile)
+
+    def _retire_unlocked(self, profile: CallerProfile) -> CallerProfile:
+        """Remove OAuth custody and metadata, restoring custody on state failure; the caller holds the lock."""
+
         previous = self._credentials.get(profile.credential_ref)
         if previous is not None:
             self._credentials.remove(profile.credential_ref)
@@ -902,10 +1064,9 @@ class OAuthProfileSessionService:
         """Drop a settled attempt id from the stored token, when it is still that token."""
 
         try:
-            async with self._transaction(
-                self._transaction_lock, profile_name=profile.name, operation="clear_refresh_attempt"
-            ):
-                current = self._require_oauth_profile(profile.name)
+            async with self._custody_section(
+                profile.name, operation="clear_refresh_attempt"
+            ) as current:
                 stored = await self._in_custody(self._load_token, current)
                 if (
                     stored.refresh_token == token.refresh_token
@@ -939,10 +1100,9 @@ class OAuthProfileSessionService:
             return token
         attempt = secrets.token_urlsafe(32)
         try:
-            async with self._transaction(
-                self._transaction_lock, profile_name=profile.name, operation="record_refresh_attempt"
-            ):
-                current = self._require_oauth_profile(profile.name)
+            async with self._custody_section(
+                profile.name, operation="record_refresh_attempt"
+            ) as current:
                 stored = await self._in_custody(self._load_token, current)
                 if (
                     current.credential_ref != profile.credential_ref
@@ -1028,10 +1188,7 @@ class OAuthProfileSessionService:
         replacement: OAuthTokenSet,
         replacement_metadata: ProfileOAuthMetadata,
     ) -> CallerProfile:
-        async with self._transaction(
-            self._transaction_lock, profile_name=expected.name, operation="commit_reconnected"
-        ):
-            current = self._require_oauth_profile(expected.name)
+        async with self._custody_section(expected.name, operation="commit_reconnected") as current:
             self._require_same_reconnect_binding(expected, current)
             # Read and replace as one custody call: a cancellation cannot fall
             # between them and leave the server's new grant unrecorded.
@@ -1218,12 +1375,29 @@ class OAuthProfileSessionService:
 
         loop = asyncio.get_running_loop()
         context = contextvars.copy_context()
-        future = loop.run_in_executor(
-            _CUSTODY_EXECUTOR, functools.partial(context.run, call, *args, **kwargs)
-        )
+        # Where the call's time goes is recorded per call (W464): waiting for
+        # the one custody thread, running on it, and waiting for this loop to
+        # resume the caller. Timing only; the call and its outcome are unchanged.
+        seq = request_records.next_custody_call()
+        marks: dict[str, float] = {}
+
+        def timed() -> _T:
+            marks["start"] = time.monotonic()
+            try:
+                return context.run(call, *args, **kwargs)
+            finally:
+                marks["end"] = time.monotonic()
+
+        submitted = time.monotonic()
+        future = loop.run_in_executor(_CUSTODY_EXECUTOR, timed)
+        # Only plain assignments here: every diagnostic expression runs inside
+        # _record_custody_call's fence, so none can replace the call's own
+        # exception or the cancellation's failure signal (W464 review).
+        ended: BaseException | None = None
         try:
             return await asyncio.shield(future)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancelled:
+            ended = cancelled
             while not future.done():
                 try:
                     await asyncio.wait({future})
@@ -1231,11 +1405,17 @@ class OAuthProfileSessionService:
                     continue
             failure = None if future.cancelled() else future.exception()
             if failure is not None:
+                ended = failure
                 # The caller is cancelled and the call failed: the failure is
                 # not dropped, the caller can still run its failure cleanup
                 # (W461 review: a failed profile commit must revoke its grant).
                 raise _CancelledAfterFailure(failure) from failure
             raise
+        except BaseException as exc:
+            ended = exc
+            raise
+        finally:
+            _record_custody_call(call, seq, ended, submitted, marks)
 
     def _load_token(self, profile: CallerProfile) -> OAuthTokenSet:
         custody_started = time.monotonic()
@@ -1371,6 +1551,24 @@ class OAuthProfileSessionService:
                 f"Caller profile '{profile.name}' is not OAuth-backed.",
             )
         return profile.oauth
+
+    async def _revoke_grant_through_cancellation(self, grant) -> None:
+        """Revoke an unrecorded grant to completion while the caller is being cancelled.
+
+        A second cancellation must not interrupt the revoke and leave a live
+        grant recorded nowhere (W464 review). The revoke runs as its own task,
+        and this waits for it however many cancellations arrive. A revoke
+        that fails still raises its cleanup error, which names the Card to
+        revoke by hand; otherwise the caller's cancellation goes on.
+        """
+
+        revoking = asyncio.ensure_future(self._revoke_grant(grant))
+        while not revoking.done():
+            try:
+                await asyncio.wait({revoking})
+            except asyncio.CancelledError:
+                continue
+        revoking.result()
 
     async def _revoke_grant(self, grant) -> None:
         try:
