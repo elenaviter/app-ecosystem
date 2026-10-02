@@ -8,6 +8,7 @@ import math
 import os
 import shutil
 import time
+from concurrent.futures import Executor
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -155,6 +156,10 @@ JOURNAL_NOTICE_KIND = "worker.journal"
 # read controls; wake histories remain in the local shared field and never ride
 # every heartbeat through the Data Bus stream.
 HEARTBEAT_CONTROL_REF_LIMIT = 20
+# Adapters built without their channel's store executor (tests, one-shot
+# commands) still keep blocking work off the event loop (W461).
+_ADAPTER_EXECUTORS = ChannelExecutors(thread_name_prefix="problem-board-adapter")
+
 # W423: how often the relay re-measures an agent's workspace size (W461:
 # held per path by WorkspaceSizes, which the per-poll adapters share).
 DISK_USAGE_REMEASURE_SECONDS = REMEASURE_SECONDS
@@ -746,6 +751,7 @@ class ProblemBoardHostRelayAdapter:
         outbox_drain_lock: asyncio.Lock | None = None,
         workspace_sizes: WorkspaceSizes | None = None,
         worktree_observer: WorktreeObserverCache | None = None,
+        store_executor: Executor | None = None,
     ) -> None:
         self.config = config
         self.field = field
@@ -773,6 +779,10 @@ class ProblemBoardHostRelayAdapter:
         # walked the whole workspace and ran git on every worktree (W461).
         self._worktree_observer = worktree_observer if worktree_observer is not None else WorktreeObserverCache()
         self._workspace_sizes = workspace_sizes if workspace_sizes is not None else WorkspaceSizes()
+        # This channel's own thread for blocking store and git work (W456,
+        # W461): never the event loop, never the default executor that the
+        # OAuth locks and DNS lookups share.
+        self._store_executor = store_executor or _ADAPTER_EXECUTORS.for_channel(config.worker_name)
         # Child adapters are rebuilt for attended projects every cycle. Share
         # this map with them so each discovery/project scope sends a full
         # session projection once, then omits it until that projection changes.
@@ -3672,8 +3682,13 @@ class ProblemBoardHostRelayAdapter:
             project_ref=project_ref,
             sessions=agent_sessions,
         )
-        assignment_files_delta, files_signature = self._assignment_files_delta(
-            project_ref=project_ref, fresh=force_heartbeat
+        # git runs per declared worktree here: in this channel's thread, never
+        # on the event loop (W461: 3 to 3.6 s loop blocks in git status).
+        assignment_files_delta, files_signature = await run_off_loop(
+            self._assignment_files_delta,
+            project_ref=project_ref,
+            fresh=force_heartbeat,
+            executor=self._store_executor,
         )
         store_reads_delta, store_reads_signature = self._store_reads_delta(
             project_ref=project_ref
@@ -4253,6 +4268,7 @@ class ProblemBoardHostRelayAdapter:
                 outbox_drain_lock=self._outbox_drain_lock,
                 workspace_sizes=self._workspace_sizes,
                 worktree_observer=self._worktree_observer,
+                store_executor=self._store_executor,
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -5543,6 +5559,7 @@ class ProblemBoardRelaySupervisor:
                     channel.worker_name
                 ),
                 workspace_sizes=self._workspace_sizes,
+                store_executor=self._store_executors.for_channel(channel.worker_name),
             )
         except BaseException as exc:
             self._pacing.record_attempt_ended(channel.worker_name)
