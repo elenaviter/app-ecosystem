@@ -648,7 +648,7 @@ def test_repository_sharing_rules() -> None:
     assert "work/<wN>-<short-slug>" in skill
     assert "push it yourself" in words
     assert "Commit each coherent piece as you finish it" in words
-    assert "The coordinator merges after approval and pushes the integration ref" in words
+    assert "The coordinator, or a merger it names on the item, merges after approval and pushes the integration ref" in words
     assert "Deploying stays the operator's" in words
     assert "A branch is closed by its merge, a later push is a new change request" in words
     assert "Publish your intent before the first edit" in words
@@ -2566,7 +2566,7 @@ def test_the_coordinator_reconciles_the_work_and_integrates_promptly() -> None:
     assert "Turn every finding into one owned next action in the same turn" in reconcile
     assert "never kept only in your context" in reconcile
     # A short turn still takes the decisions it makes due and delegates execution.
-    assert "builds, suites and installs go to named delegates" in coordinator
+    assert "Builds, suites and installs go to named delegates" in coordinator
     assert "at most one follow-up action" not in coordinator
     # Handoff records say why, and the blocker column names the decision owed.
     assert "why this owner and this phase now, in one line" in coordinator
@@ -2580,5 +2580,15 @@ def test_the_coordinator_reconciles_the_work_and_integrates_promptly() -> None:
     assert "name on the item a permitted merger" in coordinator
     assert "after the author confirms the head is frozen" in coordinator
     assert "Cut a revision only for a changed procedure payload" in coordinator
+    # One home for merge authority: collaboration and the skill agree with Merge step 7.
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "**The coordinator, or a merger it names on the item, merges after approval**" in collaboration
+    assert "The coordinator, or the merger it names on the item, merges a change request when all of these hold" in collaboration
+    assert "The coordinator merges after approval." not in collaboration
+    assert "or a merger it names on the item, merges after approval and pushes the integration ref" in _words(_read("SKILL.md"))
+    # Reader prose added here uses no semicolon inside a sentence.
+    assert "named delegates. A turn limit" in coordinator
+    assert "or none; when you clear it" not in coordinator
+    assert "one sender said; only the assignments" not in coordinator
     # The procedure installed is the one in the running release.
     assert "`pb procedure install` installs the procedure package of the release `pb` runs" in coordinator

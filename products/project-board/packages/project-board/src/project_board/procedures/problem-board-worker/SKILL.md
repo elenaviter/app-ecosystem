@@ -362,10 +362,10 @@ revised one rehearsal round at a time. What every worker does, from it:
   `work/<wN>-<short-slug>` from the pushed integration ref (`origin/main`), push
   it yourself (the operator's ruling of 2026-09-22), and open a change request
   against `main` when the work is ready for review. Commit each coherent piece
-  as you finish it. Put the link on the item and in your report. The coordinator
-  merges after approval and pushes the integration ref. Deploying stays the
-  operator's. A branch is closed by its merge, a later push is a new change
-  request, and you delete your own branch when it merges or you abandon it.
+  as you finish it. Put the link on the item and in your report. The coordinator, or a
+  merger it names on the item, merges after approval and pushes the integration ref.
+  Deploying stays the operator's. A branch is closed by its merge, a later push is a
+  new change request, and you delete your branch when it merges or you abandon it.
 - **Publish your intent before the first edit** on the shared-write dashboard
   (`kind=source_in_flight`, the item key, the repository paths you will
   touch), read the list first, and send an overlap to the coordinator rather

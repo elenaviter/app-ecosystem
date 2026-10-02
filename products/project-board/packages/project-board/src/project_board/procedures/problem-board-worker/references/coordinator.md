@@ -139,8 +139,8 @@ successor inherits none of that.
     at a recorded checkpoint, and pending work is routed to a worker or left
     to a wake. Then keep the turn short: settle the batch you received, answer
     the operator, and take the decisions it makes due
-    ([Reconcile the work, not the inbox](#reconcile-the-work-not-the-inbox));
-    builds, suites and installs go to named delegates. A turn limit never
+    ([Reconcile the work, not the inbox](#reconcile-the-work-not-the-inbox)).
+    Builds, suites and installs go to named delegates. A turn limit never
     abandons a window in progress or a held lease.
   - Reload the worker instructions only when their installed revision
     changed (the skill's Receive Addressed Input section). A wake, a mail or a
@@ -700,7 +700,7 @@ yourself and the operator included:
 | Capacity | current usage and reset, presence, from a fresh read |
 | State | one of requested, queued, READY, START, done, verified, each with the time and the receipt that shows it |
 | Next action or handoff | what this row does next, and to whom it hands over |
-| Blocker | what stops it and who clears it, or none; when you clear it, the decision you owe |
+| Blocker | what stops it and who clears it, or none, and when you clear it, the decision you owe |
 | Checkpoint | the time of the next expected report |
 
 The states are evidence, not intentions. Requested and queued are mail you
@@ -737,7 +737,7 @@ asked for it, so who holds what and what comes next is visible at a glance
 ## Reconcile the work, not the inbox
 
 Read the team's progress from the assignments, never infer it from whichever
-mail reached you. A mail says what one sender said; only the assignments say
+mail reached you. A mail says what one sender said. Only the assignments say
 who holds what and whether it can move. Why: on 2026-10-02 W295's author
 stayed blocked on a missing companion repository binding until the operator
 noticed, while the coordinator answered other mail (W466).
