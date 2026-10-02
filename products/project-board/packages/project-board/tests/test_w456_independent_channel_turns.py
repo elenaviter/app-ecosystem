@@ -10,122 +10,16 @@ failed with 90 s deadlines while the server answered in under a second.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
-from types import SimpleNamespace
 
-from project_board.client import coordinate_queue, host_config
-from project_board.contract.worker_identity import WorkerSessionIdentity
+from project_board.client import coordinate_queue
 
 from relay_helpers import (
-    StableClient,
-    make_host,
-    make_supervisor,
+    Attendance as _Attendance,
     submit_request,
+    supervisor_with_fake_channels as _supervisor_with_fake_channels,
+    two_channel_host as _two_channel_host,
 )
-
-
-def _two_channel_host(tmp_path):
-    host, _identity, fast = make_host(tmp_path)
-    slow = host_config.enroll_worker_channel(
-        host.path,
-        identity=WorkerSessionIdentity.create(
-            "claude-code", "22222222-2222-4222-8222-222222222222"
-        ),
-        profile="problem-board-claude-two",
-        authorized=True,
-    )
-    host = host_config.HostRelayConfig.load(host.path)
-    root = host.connection_hub_state_root
-    root.mkdir(parents=True, exist_ok=True)
-    (root / "profiles.json").write_text(
-        json.dumps(
-            {
-                "profiles": [
-                    {
-                        "name": channel.profile,
-                        "endpoint": "https://runtime.example/mcp",
-                        "credential_ref": f"ref-{channel.profile}",
-                        "access_id": f"oauth-card-{channel.profile}",
-                        "auth_type": "oauth",
-                        "record_version": 3,
-                        "updated_at": "t0",
-                    }
-                    for channel in (fast, slow)
-                ]
-            }
-        ),
-        encoding="utf-8",
-    )
-    return host, fast, slow
-
-
-class _Attendance:
-    """Each channel's attendance poll: the slow one waits for its gate."""
-
-    def __init__(self, slow_name: str, *, slow_fails: bool = False) -> None:
-        self.slow_name = slow_name
-        self.slow_fails = slow_fails
-        self.gate = asyncio.Event()
-        self.polls: dict[str, int] = {}
-        self.polled = asyncio.Event()
-
-    async def poll(self, worker_name: str) -> dict:
-        self.polls[worker_name] = self.polls.get(worker_name, 0) + 1
-        self.polled.set()
-        if worker_name == self.slow_name:
-            await self.gate.wait()
-            if self.slow_fails:
-                raise ConnectionError("the slow channel's socket dropped")
-        return {"worker_name": worker_name, "state": "attending"}
-
-
-def _supervisor_with_fake_channels(host, attendance: _Attendance):
-    """The production supervisor with fake sessions; its turn timings stay default."""
-
-    supervisor = make_supervisor(host)
-    opened: list[str] = []
-
-    async def open_session(host_, channel):
-        opened.append(channel.worker_name)
-
-        async def aclose():
-            return None
-
-        client = StableClient()
-        return SimpleNamespace(
-            adapter=SimpleNamespace(
-                client=client,
-                poll_attendances_once=lambda: attendance.poll(channel.worker_name),
-            ),
-            client=client,
-            closing=False,
-            close_failure=None,
-            profile=channel.profile,
-            worker_name=channel.worker_name,
-            channel_identity=channel.worker_identity,
-            replacement_epoch=len(opened),
-            card_fingerprint=supervisor._card_fingerprint(host_, channel),
-            aclose=aclose,
-        )
-
-    async def nothing(*_args, **_kwargs):
-        return None
-
-    async def no_retirements(_host):
-        return []
-
-    supervisor._open_session = open_session
-    supervisor._notify_available_input = nothing
-    supervisor._reconcile_queues_before_channels = nothing
-    supervisor._record_relay_channel_recovered = nothing
-    supervisor._disable_locally_terminal_channels = no_retirements
-    # Side servers and samplers have their own tests; here only turns run.
-    supervisor._ensure_coordinate_server = lambda: None
-    supervisor._ensure_outbox_server = lambda: None
-    supervisor._ensure_local_state_maintenance = lambda _root: None
-    supervisor._ensure_loop_lag_sampler = lambda: None
-    return supervisor, opened
 
 
 def _rows(result: dict) -> dict[str, dict]:
