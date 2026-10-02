@@ -4690,8 +4690,9 @@ class ProblemBoardRelaySupervisor:
         self.connector = connector
         # How often the gateway may be called, per host and per channel
         # (local/relay_pacing.py). Kept beside the host config.
-        # One workspace-size registry for every channel on this host: one walk
-        # at a time, once per interval per path, in a child process (W461).
+        # One workspace-size registry for every channel on this host: at most
+        # two walks at once, once per interval per path, in a child process
+        # (W461, W469).
         self._workspace_sizes = WorkspaceSizes()
         self._pacing = pacing or RelayPacing(
             self.config_path.parent / PACING_FILENAME, forget_permanent=True

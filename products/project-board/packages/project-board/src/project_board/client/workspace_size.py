@@ -18,9 +18,16 @@ Two defects of the first version are the reason for this module:
 Here the state lives in one ``WorkspaceSizes`` held by the long-lived relay
 supervisor and handed to every adapter, keyed by workspace path. A walk runs
 in a child process (``python -m project_board.client.workspace_size <path>``),
-so it shares neither the event loop, the default executor nor the GIL. One
-walk runs at a time per relay, at most once per ``interval_seconds`` per
-path, and each logs its timing.
+so it shares neither the event loop, the default executor nor the GIL. At
+most ``max_concurrent_walks`` walks run at once per relay (two by default),
+each path at most once per ``interval_seconds``, and each logs its timing.
+
+Why two and not one (W469): with one walk at a time, every channel's walk at
+relay startup queued behind the slowest workspace. On dev-main on 2026-10-02
+a 0.9 GB workspace of many small files walked for 87 s, and the walks behind
+it waited up to 142 s. With two slots, a long walk holds one slot and the
+others pass through the second. The bound keeps disk load to two child
+processes. Two long walks at once still delay the rest.
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ logger = logging.getLogger("project_board.client.relay")
 REMEASURE_SECONDS = 900.0
 WALK_TIMEOUT_SECONDS = 600.0
 WALK_SLOW_SECONDS = 10.0
+MAX_CONCURRENT_WALKS = 2
 
 
 def directory_bytes(root: Path) -> int:
@@ -143,12 +151,17 @@ class WorkspaceSizes:
         interval_seconds: float = REMEASURE_SECONDS,
         walk: Callable[[str], Awaitable[int]] | None = None,
         clock: Callable[[], float] | None = None,
+        max_concurrent_walks: int = MAX_CONCURRENT_WALKS,
     ) -> None:
+        if max_concurrent_walks < 1:
+            raise ValueError("max_concurrent_walks must be at least 1")
         self.interval_seconds = float(interval_seconds)
+        self.max_concurrent_walks = int(max_concurrent_walks)
         self._walk = walk or walk_in_child_process
         self._clock = clock or time.monotonic
         self._entries: dict[str, _Entry] = {}
-        self._one_walk: asyncio.Lock | None = None
+        # Created on first use, inside the relay's running loop.
+        self._walk_slots: asyncio.Semaphore | None = None
 
     def last(self, path: str) -> int | None:
         entry = self._entries.get(path)
@@ -168,10 +181,10 @@ class WorkspaceSizes:
         return entry.task
 
     async def _measure(self, path: str, entry: _Entry, worker_name: str) -> None:
-        if self._one_walk is None:
-            self._one_walk = asyncio.Lock()
+        if self._walk_slots is None:
+            self._walk_slots = asyncio.Semaphore(self.max_concurrent_walks)
         queued_at = self._clock()
-        async with self._one_walk:
+        async with self._walk_slots:
             started = self._clock()
             outcome = "ok"
             try:
