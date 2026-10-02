@@ -17,13 +17,19 @@ evidence shows instead of guessing a cause:
 Verdicts are evidence labels, not proven causes:
 
   reached-proxy:<status>   the proxy logged the request id with this status
-  no-proxy-record          no proxy line with this id: the hop is unknown
+  no-proxy-record          the proxy log was read and has no line with this id
+  proxy-log-unavailable    the proxy log could not be read: no evidence either way
   no-request-id            the failure predates request ids
-  lock-holder-seen:<spans> a lock span held 0.25 s or more within 15 s
-  no-holder-seen           spans were logged in the window, none held long
+  holder-overlap:<spans>   a span of the same lock kind and profile tag was
+                           held during this failure's wait (an overlap, which
+                           is a candidate holder, not proof of the cause)
+  no-overlapping-holder    spans were logged, none of the same lock overlapped
+                           the wait (absence does not prove starvation)
   no-span-evidence         no span lines in the window (before W461, or
                            span logging below INFO)
   loop-blocked:<n>         n relay loop-block or stall lines within 5 s
+  tunnel-warn:<n>          n tunnel lines at warn level or above within 5 s
+                           (counts only, no message text)
 
 Usage:
   scripts/oauth_failure_triage.py --relay-log <relay.stderr.log> \\
@@ -32,13 +38,14 @@ Usage:
       [--tunnel-log ~/Library/Logs/ngrok/ngrok.log] [--worker <name fragment>]
 
 It prints one line per failure and a count per verdict. It never prints a
-token, a header, a body or a URL host.
+token, a header, a body, a URL host or any tunnel message text.
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import re
 import subprocess
 from datetime import datetime, timedelta, timezone
@@ -47,9 +54,11 @@ from pathlib import Path
 NEAR = timedelta(seconds=15)
 TUNNEL_NEAR = timedelta(seconds=5)
 LOOP_NEAR = timedelta(seconds=5)
+LOCK_TIMEOUT = timedelta(seconds=10)
 SLOW_MS = 250
 
 _FAILED = re.compile(r"worker channel failed worker=(?P<worker>\S+).*?error_code=(?P<code>oauth_\w+)")
+_PROFILE = re.compile(r"\bprofile=(?P<profile>\S+)")
 _KIND = re.compile(r'failure_kind="?(?P<kind>\w+)')
 _RID = re.compile(r"request_id[ =](?P<rid>[0-9a-f]{16})")
 _SPAN = re.compile(
@@ -90,24 +99,35 @@ def relay_events(path: Path, since: datetime, until: datetime, worker: str):
             if failed and since <= at <= until and worker in failed.group("worker"):
                 kind = _KIND.search(line)
                 rid = _RID.search(line)
+                profile = _PROFILE.search(line)
                 failures.append({
                     "at": at,
                     "worker": failed.group("worker"),
                     "code": failed.group("code"),
                     "kind": kind.group("kind") if kind else "",
                     "rid": rid.group("rid") if rid else "",
+                    # Spans carry this tag, never the clear name.
+                    "profile_tag": hashlib.sha256(profile.group("profile").encode()).hexdigest()[:12]
+                    if profile else "",
                 })
     return failures, spans, loops
 
 
-def proxy_rids(container: str, since: datetime, until: datetime) -> dict[str, str]:
+def proxy_rids(container: str, since: datetime, until: datetime) -> dict[str, str] | None:
+    """Request id -> status from the proxy log, or None when it could not be read."""
+
     if not container:
-        return {}
-    result = subprocess.run(
-        ["docker", "logs", "--since", (since - NEAR).strftime("%Y-%m-%dT%H:%M:%SZ"),
-         "--until", (until + NEAR).strftime("%Y-%m-%dT%H:%M:%SZ"), container],
-        capture_output=True, text=True, check=False,
-    )
+        return None
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "--since", (since - NEAR).strftime("%Y-%m-%dT%H:%M:%SZ"),
+             "--until", (until + NEAR).strftime("%Y-%m-%dT%H:%M:%SZ"), container],
+            capture_output=True, text=True, check=False, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
     found: dict[str, str] = {}
     for line in (result.stdout + result.stderr).splitlines():
         rid = _PROXY_RID.search(line)
@@ -117,50 +137,67 @@ def proxy_rids(container: str, since: datetime, until: datetime) -> dict[str, st
     return found
 
 
-def tunnel_lines(path: Path | None, at: datetime) -> list[str]:
+def tunnel_warnings(path: Path | None, at: datetime) -> int:
+    """How many tunnel lines at warn level or above fall within TUNNEL_NEAR.
+
+    Only a count: tunnel messages can carry hosts, addresses or tokens.
+    """
+
     if path is None or not path.exists():
-        return []
-    near = []
+        return 0
+    count = 0
     with path.open(errors="replace") as handle:
         for line in handle:
-            stamp = re.search(r"t=(\S+)", line)
+            if not re.search(r"\blvl=(warn|eror|crit)\b", line):
+                continue
+            stamp = re.search(r"\bt=(\S+)", line)
             if not stamp:
                 continue
             try:
                 when = datetime.fromisoformat(stamp.group(1).replace("Z", "+00:00")).astimezone(timezone.utc)
             except ValueError:
                 continue
-            if abs(when - at) <= TUNNEL_NEAR and re.search(r"lvl=(warn|eror|crit)", line):
-                # Keep only level and message: no addresses, hosts or ids.
-                msg = re.search(r'msg="?([^"]*)"?', line)
-                near.append((msg.group(1) if msg else "?")[:80])
-    return near
+            if abs(when - at) <= TUNNEL_NEAR:
+                count += 1
+    return count
+
+
+_LOCK_KIND = {"oauth_profile_lock_timeout": ("transaction", "refresh_slot")}
 
 
 def classify(failure, spans, loops, rids, tunnel_log):
     labels = []
     if failure["code"] == "oauth_profile_lock_timeout":
-        holders = [
-            s for at, s in spans
-            if abs(at - failure["at"]) <= NEAR and s["hold"] not in ("-",) and int(s["hold"]) >= SLOW_MS
-            and s["kind"] in ("transaction", "refresh_slot")
-        ]
-        if holders:
-            labels.append("lock-holder-seen:" + ",".join(
-                sorted({f"{h['kind']}/{h['op']}/{h['hold']}ms" for h in holders})))
+        # The failed wait ran from (failure - LOCK_TIMEOUT) to the failure.
+        wait_start = failure["at"] - LOCK_TIMEOUT
+        overlapping = []
+        for at, s in spans:
+            if s["kind"] not in _LOCK_KIND[failure["code"]] or s["hold"] == "-":
+                continue
+            # The refresh slot is per profile, so only the same profile's slot can block it.
+            if s["kind"] == "refresh_slot" and s["profile"] != failure.get("profile_tag", ""):
+                continue
+            held_from = at - timedelta(milliseconds=int(s["hold"]))
+            if held_from < failure["at"] and at > wait_start:
+                overlapping.append(s)
+        if overlapping:
+            labels.append("holder-overlap:" + ",".join(
+                sorted({f"{h['kind']}/{h['op']}/{h['profile']}/{h['outcome']}/{h['hold']}ms" for h in overlapping})))
         else:
-            labels.append("no-holder-seen" if spans else "no-span-evidence")
-    elif failure["rid"]:
+            labels.append("no-overlapping-holder" if spans else "no-span-evidence")
+    elif not failure["rid"]:
+        labels.append("no-request-id")
+    elif rids is None:
+        labels.append("proxy-log-unavailable")
+    else:
         status = rids.get(failure["rid"])
         labels.append(f"reached-proxy:{status}" if status else "no-proxy-record")
-    else:
-        labels.append("no-request-id")
     blocked = sum(1 for at in loops if abs(at - failure["at"]) <= LOOP_NEAR)
     if blocked:
         labels.append(f"loop-blocked:{blocked}")
-    tunnel = tunnel_lines(tunnel_log, failure["at"])
-    if tunnel:
-        labels.append("tunnel:" + "|".join(sorted(set(tunnel))[:3]))
+    warned = tunnel_warnings(tunnel_log, failure["at"])
+    if warned:
+        labels.append(f"tunnel-warn:{warned}")
     return labels
 
 
@@ -187,7 +224,8 @@ def main() -> int:
         )
     long_holds = [s for _, s in spans if s["hold"] != "-" and int(s["hold"]) >= SLOW_MS]
     print(f"--- {len(failures)} OAuth failures, {len(spans)} spans ({len(long_holds)} held 250 ms or more), "
-          f"{len(loops)} loop-block lines, {len(rids)} proxy request ids")
+          f"{len(loops)} loop-block lines, "
+          + ("proxy log unavailable" if rids is None else f"{len(rids)} proxy request ids"))
     for label, count in sorted(counts.items()):
         print(f"{label}: {count}")
     return 0
