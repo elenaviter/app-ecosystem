@@ -15,8 +15,21 @@ outcome and the client-side elapsed time. A token operation's correlation is
 set where it starts (``access_token``, ``refresh_access_token``) and is
 inherited by every request and span awaited inside it.
 
+W464: the client-side time is split into phases from the HTTP library's own
+trace events, so a slow request says where its time went: ``queue_ms`` from
+the start until the first network step (building the request, waiting for a
+pooled connection, the event loop starting the work late), ``connect_ms``
+(DNS and TCP), ``tls_ms``, ``send_ms``, ``wait_ms`` (until the response
+headers) and ``read_ms`` (the body). A request on a reused connection has no
+connect or TLS phase, and ``failed_at`` names the phase a failure or a
+cancellation interrupted. On 2026-10-02 joins with the proxy left about
+1.5 s per metadata request outside the server on the development host and
+about 0.3 s per token request on spark1, and no record could say which phase
+held it.
+
 It never records a token, a credential, a header, a body, a query string, a
-URL or a profile name in clear. Failures and cancellations log at WARNING,
+URL or a profile name in clear; the trace events' details (host, port,
+request) are read for their timing only. Failures and cancellations log at WARNING,
 requests of ``SLOW_SECONDS`` or longer at INFO, and every other request at
 DEBUG, so a healthy relay adds no lines at the default level.
 """
@@ -28,7 +41,8 @@ import contextvars
 import logging
 import os
 import secrets
-from typing import Iterator
+import time
+from typing import Any, Callable, Iterator, Mapping
 
 from connection_hub.caller.authorization import lock_spans
 
@@ -67,6 +81,75 @@ def kind_of(failure_code: str) -> str:
     return failure_code.removeprefix("oauth_").removesuffix("_failed") or "-"
 
 
+# The library's step names, by the phase they count toward.
+_PHASE_OF_STEP = {
+    "connect_tcp": "connect",
+    "start_tls": "tls",
+    "send_request_headers": "send",
+    "send_request_body": "send",
+    "receive_response_headers": "wait",
+    "receive_response_body": "read",
+}
+PHASES = ("connect", "tls", "send", "wait", "read")
+
+
+class RequestPhases:
+    """Where one request's client-side time went, from the HTTP library's trace events.
+
+    ``trace`` is the library's ``trace`` request extension: it is called with
+    ``<layer>.<step>.started`` and ``<layer>.<step>.complete`` or ``.failed``.
+    """
+
+    def __init__(self, started: float, *, clock: Callable[[], float] = time.monotonic) -> None:
+        self._started = started
+        self._clock = clock
+        self._first_step_at: float | None = None
+        self._open: dict[str, float] = {}
+        self.seconds: dict[str, float] = {}
+        self.failed_at = "-"
+
+    async def trace(self, event: str, info: Mapping[str, Any]) -> None:
+        self.observe(event)
+
+    def observe(self, event: str) -> None:
+        step, _, edge = event.rpartition(".")
+        phase = _PHASE_OF_STEP.get(step.rpartition(".")[2])
+        if phase is None:
+            return
+        now = self._clock()
+        if self._first_step_at is None:
+            self._first_step_at = now
+        if edge == "started":
+            self._open[step] = now
+            return
+        began = self._open.pop(step, None)
+        if began is not None:
+            self.seconds[phase] = self.seconds.get(phase, 0.0) + (now - began)
+        if edge == "failed" and self.failed_at == "-":
+            self.failed_at = phase
+
+    def queue_seconds(self) -> float | None:
+        """Start to first network step; ``None`` when the request never reached one."""
+
+        if self._first_step_at is None:
+            return None
+        return self._first_step_at - self._started
+
+
+def _ms(seconds: float | None) -> str:
+    return "-" if seconds is None else str(int(round(seconds * 1000)))
+
+
+def _phase_fields(phases: RequestPhases | None) -> str:
+    if phases is None:
+        return "queue_ms=- " + " ".join(f"{name}_ms=-" for name in PHASES) + " failed_at=-"
+    return (
+        f"queue_ms={_ms(phases.queue_seconds())} "
+        + " ".join(f"{name}_ms={_ms(phases.seconds.get(name))}" for name in PHASES)
+        + f" failed_at={phases.failed_at}"
+    )
+
+
 def record(
     *,
     request_id: str,
@@ -75,6 +158,7 @@ def record(
     status: int | None,
     outcome: str,
     elapsed_seconds: float,
+    phases: RequestPhases | None = None,
 ) -> None:
     """Log one completed, failed or cancelled OAuth request."""
 
@@ -90,7 +174,7 @@ def record(
     logger.log(
         level,
         "Connection Hub OAuth request rid=%s corr=%s profile=%s kind=%s method=%s "
-        "status=%s outcome=%s elapsed_ms=%d pid=%d task=%s",
+        "status=%s outcome=%s elapsed_ms=%d %s pid=%d task=%s",
         request_id,
         correlation,
         profile,
@@ -99,6 +183,7 @@ def record(
         "-" if status is None else int(status),
         outcome,
         int(round(elapsed_seconds * 1000)),
+        _phase_fields(phases),
         os.getpid(),
         lock_spans.task_tag(),
     )
