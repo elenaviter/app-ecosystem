@@ -27,6 +27,8 @@ import os
 import re
 import time
 
+from connection_hub.caller.errors import AuthorizationError, CredentialError, ProfileError
+
 logger = logging.getLogger("connection_hub.oauth.spans")
 
 SLOW_SECONDS = 0.25
@@ -247,11 +249,18 @@ def outcome_of(exc: BaseException | None) -> str:
         return "ok"
     if isinstance(exc, asyncio.CancelledError):
         return "cancelled"
-    try:
-        code = exc.code  # type: ignore[attr-defined]
-    except Exception:  # noqa: BLE001 - a broken attribute names nothing
-        code = None
-    if isinstance(code, str) and _OUTCOME_CODE.match(code):
-        return code
+    # A code is trusted only from Connection Hub's own error types, whose
+    # codes are constants in this code base. Any other exception, a provider's
+    # included, is named by its class: identifier syntax alone does not make
+    # an attribute safe to log (W464 review, a canary in `code`).
+    if isinstance(exc, (AuthorizationError, ProfileError, CredentialError)):
+        try:
+            code = exc.code
+        except BaseException as broken:  # noqa: BLE001 - a diagnostic read never escapes
+            if isinstance(broken, (KeyboardInterrupt, SystemExit)):
+                raise
+            code = None
+        if isinstance(code, str) and _OUTCOME_CODE.match(code):
+            return code
     name = type(exc).__name__
     return name if _CALL_NAME.match(name) else "error"

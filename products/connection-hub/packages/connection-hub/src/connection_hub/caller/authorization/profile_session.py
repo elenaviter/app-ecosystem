@@ -151,8 +151,11 @@ def _record_custody_call(
             run_seconds=None if start is None or end is None else end - start,
             resume_seconds=None if end is None else resumed - end,
         )
-    except Exception:  # noqa: BLE001 - timing must never change a custody outcome
-        pass
+    except BaseException as broken:  # noqa: BLE001 - timing must never change a custody outcome
+        # A diagnostic that raises, even a CancelledError from a getter, is
+        # dropped: the caller's own result, exception or cancellation stands.
+        if isinstance(broken, (KeyboardInterrupt, SystemExit)):
+            raise
 
 
 async def drain_pending_refreshes(timeout_seconds: float) -> int:

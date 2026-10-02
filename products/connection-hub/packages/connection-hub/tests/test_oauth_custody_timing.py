@@ -318,3 +318,45 @@ def test_lock_span_outcomes_are_bounded_too():
     assert lock_spans.outcome_of(_BrokenCodeError()) == "_BrokenCodeError"
     assert lock_spans.outcome_of(asyncio.CancelledError()) == "cancelled"
     assert lock_spans.outcome_of(None) == "ok"
+
+
+# Infra's second re-gate controls (W464, PR 444 at 5ba67ba9).
+
+
+def test_an_identifier_shaped_code_on_a_foreign_error_is_never_logged(caplog):
+    class ProviderError(Exception):
+        code = "canary_private_credential_reference"
+
+    def failing():
+        raise ProviderError("synthetic")
+
+    with caplog.at_level(logging.DEBUG, logger="connection_hub.oauth.spans"):
+        with pytest.raises(ProviderError):
+            asyncio.run(in_custody(failing))
+    assert "canary_private_credential_reference" not in caplog.text
+    (record,) = _records(caplog)
+    assert record["outcome"] == "ProviderError"
+
+
+def test_a_code_getter_raising_cancelled_never_replaces_the_original_error():
+    class ProviderError(Exception):
+        @property
+        def code(self):
+            raise asyncio.CancelledError()
+
+    original = ProviderError("synthetic store refusal")
+
+    def failing():
+        raise original
+
+    with pytest.raises(ProviderError) as caught:
+        asyncio.run(in_custody(failing))
+    assert caught.value is original
+
+
+def test_a_connection_hub_error_keeps_its_own_code():
+    from connection_hub.caller.errors import AuthorizationError
+
+    assert lock_spans.outcome_of(AuthorizationError("oauth_profile_lock_timeout", "x")) == "oauth_profile_lock_timeout"
+    malformed = AuthorizationError("Not A Code", "x")
+    assert lock_spans.outcome_of(malformed) == type(malformed).__name__

@@ -78,8 +78,9 @@ def correlate(profile_name: str) -> Iterator[str]:
         try:
             if calls[0]:
                 lock_spans.record_custody_total(calls=calls[0], notable=calls[1])
-        except Exception:  # noqa: BLE001 - the count must never change the operation
-            pass
+        except BaseException as broken:  # noqa: BLE001 - the count must never change the operation
+            if isinstance(broken, (KeyboardInterrupt, SystemExit)):
+                raise
         _CUSTODY_CALLS.reset(reset_calls)
         _CORRELATION.reset(reset)
 
