@@ -8,6 +8,7 @@ import mimetypes
 mimetypes.add_type("text/markdown", ".md")
 import logging
 import os
+import uuid
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
@@ -6701,14 +6702,25 @@ class SharedFieldStore:
                 status = "ignored_sender_limbo"
             elif recipient_row and recipient_row.get("pool_status") == "limbo":
                 status = "ignored_recipient_limbo"
-            message_id = new_id("mail")
-            now = utc_now()
             operator_admitted = bool(
                 admitted_operator_control
                 and clean_sender == "control-plane"
                 and identity.get("kind") == "user"
                 and clean_kind in {"request", "reply"}
             )
+            # Share the admitted-control boundary with selective receive:
+            # worker display identities and routed peer mail cannot assert it.
+            # Sort trusted new controls before random-ID worker mail without
+            # reading the whole inbox for each bounded receive.
+            message_id = (
+                "mail-priority_"
+                + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                + "_"
+                + uuid.uuid4().hex
+                if operator_admitted
+                else new_id("mail")
+            )
+            now = utc_now()
             envelope = {
                 "schema": MAIL_SCHEMA,
                 "message_id": message_id,
