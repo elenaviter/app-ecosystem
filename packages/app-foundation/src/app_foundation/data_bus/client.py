@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -83,6 +84,55 @@ def _transport_failed(error: BaseException) -> bool:
         current = current.__cause__ or current.__context__
     return False
 
+
+_STATUS_CODE = re.compile(r"\bstatus code (\d{3})\b")
+
+
+def _failure_chain(error: BaseException) -> str:
+    """The exception types of a failure chain, outermost first (W461).
+
+    python-socketio reports every transport failure as "Connection error";
+    the chain says whether it was DNS, a refused or reset TCP connection, a
+    TLS failure, a timeout or an HTTP status from the ingress.
+    """
+
+    seen: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in seen and len(seen) < 8:
+        seen.append(current)
+        current = current.__cause__ or current.__context__
+    return ">".join(f"{type(item).__module__.split('.')[0]}.{type(item).__name__}" for item in seen)
+
+
+def _failure_facts(error: BaseException) -> str:
+    """Safe, allowlisted facts about a failure chain (W461).
+
+    Exception text can carry hosts, headers or response bodies, so none of it
+    is copied. What is kept: the first OS error number in the chain, and an
+    HTTP status, read from a ``status``/``status_code`` attribute or from
+    engine.io's "status code NNN" phrase (only the three digits).
+    """
+
+    errno_value = "-"
+    status = "-"
+    seen: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in seen and len(seen) < 8:
+        seen.append(current)
+        if errno_value == "-" and isinstance(current, OSError) and isinstance(current.errno, int):
+            errno_value = str(current.errno)
+        if status == "-":
+            for name in ("status", "status_code"):
+                value = getattr(current, name, None)
+                if isinstance(value, int) and 100 <= value <= 599:
+                    status = str(value)
+                    break
+            else:
+                match = _STATUS_CODE.search(" ".join(str(arg) for arg in current.args if isinstance(arg, str)))
+                if match:
+                    status = match.group(1)
+        current = current.__cause__ or current.__context__
+    return f"error_errno={errno_value} error_status={status}"
 
 def _refusal_payload(value: Any) -> dict[str, Any]:
     """The server's refusal as a flat mapping: message, and a code when it sent one.
@@ -694,6 +744,16 @@ class FederatedDataBusClient:
                 self._namespace_outcome = None
             refusal = self._connect_refusal
             self._deactivate_socket(socket, socket_token)
+            logger.warning(
+                "Data Bus socket lifecycle event=connect_failed attempted_generation=%d "
+                "transport_failed=%s refusal=%s error_chain=%s %s%s",
+                self._connection_generation + 1,
+                str(_transport_failed(exc)).lower(),
+                str(refusal is not None).lower(),
+                _failure_chain(exc),
+                _failure_facts(exc),
+                self._lifecycle_log_suffix(),
+            )
             if refusal is None or _transport_failed(exc):
                 # The transport failed before the server answered. python-socketio
                 # still fires connect_error for that, with "Connection error", so
@@ -715,6 +775,13 @@ class FederatedDataBusClient:
                 timeout=self.namespace_admission_timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
+            logger.warning(
+                "Data Bus socket lifecycle event=namespace_admission_timeout "
+                "attempted_generation=%d timeout_seconds=%s%s",
+                self._connection_generation + 1,
+                self.namespace_admission_timeout_seconds,
+                self._lifecycle_log_suffix(),
+            )
             self._deactivate_socket(socket, socket_token)
             await socket.disconnect()
             try:
