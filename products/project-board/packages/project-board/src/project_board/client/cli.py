@@ -1255,9 +1255,19 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--work-ref", default="")
     command.add_argument("--correlation-id", default="")
     command.add_argument("--reply-to", default="")
-    command.add_argument("--attach", action="append", default=[], help="File to send with the message (repeatable); only to the operator inbox.")
+    command.add_argument("--attach", action="append", default=[], help="File to send through the board to any mailbox (repeatable). Executable binaries are refused; scripts and text are allowed.")
     command.add_argument("--idempotency-key", required=True)
     command.add_argument("--route", choices=("auto", "local", "remote"), default="auto")
+
+    command = worker_commands.add_parser("forward", help="Forward one leased message with all its attachments and original-message provenance; does not settle it.")
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", default="")
+    command.add_argument("--message-ref", required=True)
+    command.add_argument("--lease-id", required=True)
+    command.add_argument("--recipient", required=True)
+    command.add_argument("--kind", default="", help="Optional destination mail kind; otherwise preserves the original kind. Use an operator mail kind when forwarding a request to the operator.")
+    command.add_argument("--idempotency-key", required=True)
 
     command = worker_commands.add_parser(
         "deliveries",
@@ -5342,6 +5352,24 @@ def _worker_command(args: Any) -> dict[str, Any]:
             lease_seconds=args.lease_seconds,
             note=args.note,
         )
+    if args.worker_command == "forward":
+        _raise_if_channel_not_usable(path, channel, sending=True, idempotency_key=args.idempotency_key)
+        _raise_if_send_channel_reconnecting(path, identity.worker_name, idempotency_key=args.idempotency_key)
+        original = field.read_worker_mail_lease(
+            project_id, worker_name=identity.worker_name,
+            message_ref=args.message_ref, lease_id=args.lease_id,
+            lease_owner=identity.runtime_session_id,
+        )
+        require_plan_item(
+            field, project_id=project_id, worker_name=identity.worker_name,
+            work_ref=str(original.get("work_ref") or ""),
+        )
+        return field.forward_worker_mail(
+            project_id, worker_name=identity.worker_name,
+            message_ref=args.message_ref, lease_id=args.lease_id,
+            lease_owner=identity.runtime_session_id, recipient=args.recipient,
+            idempotency_key=args.idempotency_key, kind=args.kind,
+        )
     if args.worker_command == "send":
         payload = (
             _json_object(args.payload_file, field="payload-file")
@@ -5379,6 +5407,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             resolution = field.resolve_mail_recipient(project_id, args.recipient)
         recipient = str(resolution["worker_name"])
         route = str(resolution["route"])
+        if getattr(args, "attach", None):
+            route = "remote"  # Bytes use the governed board lane on every host.
         if args.route != "auto" and args.route != route:
             raise DomainError(
                 "field_mail_route_mismatch",
@@ -5419,11 +5449,6 @@ def _worker_command(args: Any) -> dict[str, Any]:
             work_ref=args.work_ref,
         )
         if route == "local":
-            if attachments:
-                raise DomainError(
-                    "field_attachments_operator_only",
-                    "Attachments travel to the operator inbox; local worker mail carries paths in its body.",
-                )
             return field.send_mail(
                 project_id,
                 sender=identity.worker_name,

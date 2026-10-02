@@ -222,6 +222,24 @@ folders are removed 30 days after the row was created, per agent. Rows from
 before this layout are moved into it once by housekeeping, and are found by id
 in the old flat folders until then.
 
+Mail attachments between workers use the same Board-backed storage as
+operator uploads. The sender snapshots each file into its own outbox,
+including a byte size and SHA-256; equal display names have separate snapshot
+directories. The relay uploads the bytes, and the Board stores them on a turn
+in the recipient's conversation before committing the control with a signed
+download manifest. The receiving relay verifies and materializes its own copy;
+no sender-local path travels in the Board envelope. A content-bound retry
+reuses the committed control and links instead of creating another message.
+Staged mail inputs remain subject to staging expiry so an outcome-unknown
+retry can use the same upload or an identical newly staged file.
+
+`worker forward` requires the original message's exact unexpired session
+lease and verifies its local file manifest before creating a new outbox
+snapshot. It records the original message, sender and kind as provenance,
+not as authority. Settling the original does not erase either retained copy.
+Both mailbox lanes allow ten files of at most 25 MiB each and enforce the
+shared `no-executable-binary` content rule; source and scripts remain allowed.
+
 The journal-index lock files follow their operation. Housekeeping removes a
 lock after the operation's retained record expires. A migration never deletes
 an unreadable record.

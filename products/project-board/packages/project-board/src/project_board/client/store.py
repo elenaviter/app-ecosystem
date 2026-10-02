@@ -86,6 +86,12 @@ from .mail_attachments import (
     materialized_attachment_manifest,
     stored_attachment_manifest,
     verified_attachment,
+    safe_attachment_filename,
+)
+from ..contract.mail_attachments import (
+    MAX_MAIL_ATTACHMENT_BYTES,
+    MAX_MAIL_ATTACHMENTS,
+    validate_mail_attachment,
 )
 from .local_wake import notify_worker_watch
 from .mail_history import MailHistoryStore
@@ -5955,6 +5961,57 @@ class SharedFieldStore:
             ),
         }
 
+    def forward_worker_mail(
+        self,
+        project_id: str,
+        *,
+        worker_name: str,
+        message_ref: str,
+        lease_id: str,
+        lease_owner: str,
+        recipient: str,
+        idempotency_key: str,
+        kind: str = "",
+    ) -> dict[str, Any]:
+        """Forward exactly one currently leased message and its verified files.
+
+        No arbitrary payload, private operator route, signed URL or sender path
+        crosses this boundary. The new envelope names the original as evidence,
+        never as authority. Forwarding does not settle the original lease.
+        """
+        message = self.read_worker_mail_lease(
+            project_id, worker_name=worker_name, message_ref=message_ref,
+            lease_id=lease_id, lease_owner=lease_owner,
+        )
+        files = []
+        for entry in stored_attachment_manifest(message):
+            verified = self.read_worker_mail_attachment(
+                project_id, worker_name=worker_name, message_ref=message_ref,
+                lease_id=lease_id, lease_owner=lease_owner, file_ref=entry["file_ref"],
+            )["attachment"]
+            files.append({"path": verified["local_path"], "filename": verified["filename"], "sha256": verified["sha256"]})
+        common = dict(
+            project_id=project_id, sender=worker_name, recipient=recipient,
+            kind=kind or str(message.get("kind") or "request"),
+            subject=str(message.get("subject") or "Forwarded message"),
+            body=str(message.get("body") or ""),
+            payload={"forwarded_message_ref": message_ref,
+                     "forwarded_sender": str(message.get("sender") or ""),
+                     "forwarded_kind": str(message.get("kind") or "")},
+            work_ref=str(message.get("work_ref") or ""),
+            correlation_id=str(message.get("correlation_id") or ""),
+            reply_to="", idempotency_key=idempotency_key,
+        )
+        # Direct worker mail is always adjudicated by the board, even when
+        # the recipient is absent from this host's directory (W304).
+        direct = str(recipient or "").strip().lower()
+        if not project_id and direct not in {"operator", "owner", "coordinator"}:
+            return self.enqueue_remote_mail(**common, attachments=files)
+        resolution = self.resolve_mail_recipient(project_id, recipient)
+        if files or resolution["route"] == "remote":
+            return self.enqueue_remote_mail(**common, attachments=files)
+        return self.send_mail(**common)
+
     def record_worker_mail_settlement(
         self, worker_name: str, *, message_ref: str
     ) -> dict[str, Any]:
@@ -6841,7 +6898,7 @@ class SharedFieldStore:
         idempotency_key: str,
         attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Queue mail for a worker whose inbox belongs to another host relay.
+        """Queue governed Board mail, including files addressed on this host.
 
         Files named in ``attachments`` (``path``, optional ``filename``) are
         copied next to the outbox row now, so the relay uploads a stable copy
@@ -6875,7 +6932,9 @@ class SharedFieldStore:
         key = bounded_text(
             idempotency_key, field="idempotency_key", maximum=512, required=True
         )
-        attachment_sources: list[tuple[Path, str]] = []
+        attachment_sources: list[tuple[bytes, str]] = []
+        if len(attachments or []) > MAX_MAIL_ATTACHMENTS:
+            raise DomainError("field_attachment_count", f"At most {MAX_MAIL_ATTACHMENTS} attachments per message.")
         for item in attachments or []:
             source = Path(str((item or {}).get("path") or "")).expanduser()
             if not source.is_file():
@@ -6884,10 +6943,16 @@ class SharedFieldStore:
                     "An attachment path does not name a readable file.",
                     details={"path": str(source)},
                 )
-            filename = bounded_text(
-                (item or {}).get("filename") or source.name, field="attachment.filename", maximum=512, required=True
-            )
-            attachment_sources.append((source, Path(filename).name))
+            filename = safe_attachment_filename((item or {}).get("filename") or source.name)
+            try:
+                with source.open("rb") as stream:
+                    data = stream.read(MAX_MAIL_ATTACHMENT_BYTES + 1)
+            except OSError as exc:
+                raise DomainError("field_attachment_missing", "An attachment is not readable.") from exc
+            validate_mail_attachment(data)
+            if item.get("sha256") and hashlib.sha256(data).hexdigest() != item["sha256"]:
+                raise DomainError("field_attachment_integrity_mismatch", "Attachment bytes changed after their leased read.", status=409)
+            attachment_sources.append((data, filename))
         resolution = (
             # W304 decision 3: without a project the board resolves the exact
             # stable name and decides; this host's directory is not asked.
@@ -6895,7 +6960,7 @@ class SharedFieldStore:
             if not clean_project and requested_recipient not in {"operator", "owner"}
             else self.resolve_mail_recipient(clean_project, requested_recipient)
         )
-        if resolution["route"] != "remote":
+        if resolution["route"] != "remote" and not attachment_sources:
             raise DomainError(
                 "field_mail_route_mismatch",
                 "The addressed worker belongs to this host; use the local route.",
@@ -6906,11 +6971,6 @@ class SharedFieldStore:
                 },
             )
         clean_recipient = str(resolution["worker_name"])
-        if attachment_sources and clean_recipient not in {"operator", "owner"}:
-            raise DomainError(
-                "field_attachments_operator_only",
-                "Attachments travel to the operator inbox; worker-to-worker mail carries refs.",
-            )
         mail = {
             "kind": clean_kind,
             "subject": bounded_text(
@@ -6963,7 +7023,9 @@ class SharedFieldStore:
                 },
             )
         request_hash = content_hash(
-            {"route": "remote", "recipient": clean_recipient, **mail}
+            {"route": "remote", "recipient": clean_recipient, **mail,
+             **({"attachments": [{"filename": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                 for data, name in attachment_sources]} if attachment_sources else {})}
         )
         with exclusive_lock(self._mail_lock(clean_project, clean_sender)):
             if clean_project:
@@ -7010,15 +7072,18 @@ class SharedFieldStore:
                     / outbox_id
                 )
                 folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-                for source, filename in attachment_sources:
-                    target = folder / filename
-                    target.write_bytes(source.read_bytes())
+                for index, (data, filename) in enumerate(attachment_sources):
+                    # Distinct directories preserve equal display names.
+                    target = folder / str(index) / filename
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    target.write_bytes(data)
                     attachment_files.append(
                         {
                             "filename": filename,
                             "path": str(target),
                             "mime": mimetypes.guess_type(filename)[0] or "application/octet-stream",
                             "size": target.stat().st_size,
+                            "sha256": hashlib.sha256(data).hexdigest(),
                         }
                     )
                 routed_mail["attachment_files"] = attachment_files
@@ -11871,6 +11936,7 @@ class SharedFieldStore:
             {
                 "path": str(item.get("path") or ""),
                 "filename": str(item.get("filename") or ""),
+                "sha256": str(item.get("sha256") or ""),
             }
             for item in payload.get("attachment_files") or []
             if isinstance(item, Mapping)
@@ -11893,13 +11959,8 @@ class SharedFieldStore:
             "idempotency_key": replay_key,
         }
         if resolution["route"] == "local":
-            if attachments:
-                raise DomainError(
-                    "field_attachments_operator_only",
-                    "A retained attachment can only be replayed to the operator inbox.",
-                    status=409,
-                )
-            replay = self.send_mail(**common)
+            replay = (self.enqueue_remote_mail(**common, attachments=attachments)
+                      if attachments else self.send_mail(**common))
         else:
             replay = self.enqueue_remote_mail(**common, attachments=attachments)
 

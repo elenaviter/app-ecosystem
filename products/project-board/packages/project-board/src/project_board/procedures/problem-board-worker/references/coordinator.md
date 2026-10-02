@@ -1182,9 +1182,11 @@ its machine can reach.
 - **Never send a local filesystem path as the carrier.** A path is bound to one
   machine and one user. The moment a worker runs on another host it points at
   nothing, and the failure looks like a worker ignoring instructions.
-- **Attachments are operator-only.** Worker-to-worker mail refuses them with
-  `field_attachments_operator_only`; local worker mail carries paths in its
-  body, which is subject to the rule above.
+- **Files use the Board lane, not a shared filesystem.** Use `worker send
+  --attach` for any worker or operator mailbox. To pass on an addressed
+  message, use the exact lease-bound `worker forward` described in
+  [delivery and recovery](delivery-and-recovery.md); do not copy a sender's
+  local path. The normal recipient rules still apply.
 - **A repository ref is portable, a working-tree path is not.** Point at a
   committed file by repository alias and path, never at `/home/...` or
   `<home>/...`.
