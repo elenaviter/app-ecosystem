@@ -1696,7 +1696,9 @@ class ProblemBoardHostRelayAdapter:
         self._published_interval = interval
         remote = _object_result(response)
         self._record_attendance_observation(remote)
-        local = self.field.register_worker(
+        local = await run_off_loop(
+            self.field.register_worker,
+            executor=self._store_thread(),
             worker_name=self.config.worker_name,
             worker_alias=str(remote.get("worker_alias") or self.config.worker_alias),
             worker_identity=str(
@@ -2033,7 +2035,9 @@ class ProblemBoardHostRelayAdapter:
                 continue
             try:
                 await self._fetch_attachments(item)
-                receipt = self.field.materialize_control(item)
+                receipt = await run_off_loop(
+                    self.field.materialize_control, item, executor=self._store_thread()
+                )
                 self._attendance_cache.get("not_linked_deferrals", {}).pop(command_ref, None)
             except DomainError as exc:
                 if exc.code == "field_project_not_materialized":
@@ -3685,6 +3689,12 @@ class ProblemBoardHostRelayAdapter:
         )
         return created, issues
 
+    def _store_thread(self) -> Executor:
+        """This channel's store thread; adapters built without __init__ (tests) get the per-worker one."""
+
+        executor = getattr(self, "_store_executor", None)
+        return executor if executor is not None else _ADAPTER_EXECUTORS.for_channel(self.config.worker_name)
+
     def _prepare_project_heartbeat(
         self,
         *,
@@ -3824,7 +3834,7 @@ class ProblemBoardHostRelayAdapter:
             project_ref=project_ref,
             agent_sessions=agent_sessions,
             force_heartbeat=force_heartbeat,
-            executor=self._store_executor,
+            executor=self._store_thread(),
         )
         session_delta = prepared["session_delta"]
         session_signature = prepared["session_signature"]
@@ -3886,7 +3896,7 @@ class ProblemBoardHostRelayAdapter:
                 project_ref=project_ref,
                 prepared=prepared,
                 heartbeat_result=heartbeat_result,
-                executor=self._store_executor,
+                executor=self._store_thread(),
             )
             recipients = heartbeat_result.get("mail_recipients")
             if not isinstance(recipients, list):
@@ -3905,14 +3915,14 @@ class ProblemBoardHostRelayAdapter:
                 assignment_notices_reconciled,
                 assignment_reconciliation_issues,
             ) = await run_off_loop(
-                self._reconcile_assignments, heartbeat_result, executor=self._store_executor
+                self._reconcile_assignments, heartbeat_result, executor=self._store_thread()
             )
         with self._trace_stage(
             "attendance.controls",
             operation="control.pull",
         ):
             controls = await self._pull_controls()
-        await run_off_loop(self._report_dead_notification_path, executor=self._store_executor)
+        await run_off_loop(self._report_dead_notification_path, executor=self._store_thread())
         outbox = await self._flush_outbox()
         return {
             "worker_name": self.config.worker_name,
@@ -4310,7 +4320,7 @@ class ProblemBoardHostRelayAdapter:
         )
         if registration is not None and registration["remote"].get("pool_status") == "limbo":
             return await self._limbo_result()
-        sessions = await run_off_loop(self._listener_sessions, executor=self._store_executor)
+        sessions = await run_off_loop(self._listener_sessions, executor=self._store_thread())
         discovery: dict[str, Any] = {}
         discovery_heartbeat_sent = False
         discovery_session_delta: list[dict[str, Any]] | None = None
@@ -4330,7 +4340,7 @@ class ProblemBoardHostRelayAdapter:
                 discovery_heartbeat_sent,
                 heartbeat_payload,
             ) = await run_off_loop(
-                self._prepare_discovery_heartbeat, sessions, executor=self._store_executor
+                self._prepare_discovery_heartbeat, sessions, executor=self._store_thread()
             )
             if discovery_heartbeat_sent:
                 with self._trace_stage(
@@ -4351,7 +4361,7 @@ class ProblemBoardHostRelayAdapter:
                     worker_info,
                     alias_request,
                     discovery,
-                    executor=self._store_executor,
+                    executor=self._store_thread(),
                 )
         with self._trace_stage(
             "attendance.controls",
@@ -4387,7 +4397,7 @@ class ProblemBoardHostRelayAdapter:
                 outbox_drain_lock=self._outbox_drain_lock,
                 workspace_sizes=self._workspace_sizes,
                 worktree_observer=self._worktree_observer,
-                store_executor=self._store_executor,
+                store_executor=self._store_thread(),
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -4401,7 +4411,7 @@ class ProblemBoardHostRelayAdapter:
             self.field.sync_worker_attendances,
             self.config.worker_name,
             [str(item["project_ref"]) for item in observed_attendances],
-            executor=self._store_executor,
+            executor=self._store_thread(),
         )
         worker_alias = str(
             self._attendance_cache.get("worker_alias")
@@ -5863,8 +5873,15 @@ class ProblemBoardRelaySupervisor:
     ) -> dict[str, int]:
         """Run bounded local requests through this exact worker Card channel."""
 
-        queue = CoordinateQueue(host.field_root)
-        requests = queue.claim(worker_name=channel.worker_name)
+        # The queue's file reads and writes run in this channel's store thread
+        # (W461). run_off_loop submits a call before its first suspension and
+        # lets it finish when the caller is cancelled, so no queue step is
+        # split: a claim whose caller is gone is recovered by its lease expiry.
+        store_executor = self._store_executors.for_channel(channel.worker_name)
+        queue = await run_off_loop(CoordinateQueue, host.field_root, executor=store_executor)
+        requests = await run_off_loop(
+            queue.claim, worker_name=channel.worker_name, executor=store_executor
+        )
         counts = {
             "claimed": len(requests),
             "completed": 0,
@@ -5941,8 +5958,10 @@ class ProblemBoardRelaySupervisor:
             }
             if observed_identity != expected_identity:
                 try:
-                    queue.complete(
+                    await run_off_loop(
+                        queue.complete,
                         request,
+                        executor=store_executor,
                         error={
                             "code": "work_coordinate_worker_mismatch",
                             "message": (
@@ -5970,7 +5989,47 @@ class ProblemBoardRelaySupervisor:
                 )
                 continue
             try:
-                request = queue.mark_attempt(request)
+                request, card_now = await run_off_loop(
+                    self._mark_attempt_and_read_card, queue, request, host, channel,
+                    executor=store_executor,
+                )
+                # The session, its closing flag and the Card may have changed
+                # while the store thread ran: check them here, on the loop,
+                # with no await before the dispatch (W461 review). A request
+                # fenced off goes back to pending under its transport id, so
+                # the channel's current session carries it.
+                fence_reason = self._dispatch_fence_failure(channel, session, card_now)
+                if fence_reason:
+                    try:
+                        await run_off_loop(
+                            queue.defer_after_unknown,
+                            request,
+                            error=DomainError(
+                                "work_coordinate_session_changed",
+                                "The worker channel session changed before dispatch.",
+                                status=409,
+                            ),
+                            executor=store_executor,
+                        )
+                    except DomainError as queue_exc:
+                        if queue_exc.code == COORDINATE_LEASE_LOST:
+                            continue
+                        raise
+                    counts["deferred"] += 1
+                    logger.warning(
+                        "Problem Board coordinate dispatch fenced worker=%s request_id=%s reason=%s",
+                        channel.worker_name,
+                        str(request.get("request_id") or ""),
+                        fence_reason,
+                    )
+                    log_stages(
+                        request,
+                        outcome="session_changed_deferred",
+                        relay_started=relay_started,
+                        governed_action_seconds=governed_action_seconds,
+                        wait_context=wait_context,
+                    )
+                    continue
                 stable_action = getattr(
                     session.adapter.client,
                     "action_with_transport_identity",
@@ -6013,7 +6072,9 @@ class ProblemBoardRelaySupervisor:
                     and not queue.expired(request)
                 ):
                     try:
-                        queue.defer_after_unknown(request, error=exc)
+                        await run_off_loop(
+                            queue.defer_after_unknown, request, error=exc, executor=store_executor
+                        )
                     except DomainError as queue_exc:
                         if queue_exc.code == COORDINATE_LEASE_LOST:
                             continue
@@ -6022,7 +6083,7 @@ class ProblemBoardRelaySupervisor:
                     outcome = "outcome_unknown_deferred"
                 else:
                     try:
-                        queue.fail(request, exc)
+                        await run_off_loop(queue.fail, request, exc, executor=store_executor)
                     except DomainError as queue_exc:
                         if queue_exc.code == COORDINATE_LEASE_LOST:
                             continue
@@ -6031,7 +6092,9 @@ class ProblemBoardRelaySupervisor:
                     outcome = "refused"
             else:
                 try:
-                    queue.complete(request, result=dict(result))
+                    await run_off_loop(
+                        queue.complete, request, result=dict(result), executor=store_executor
+                    )
                 except DomainError as exc:
                     if exc.code == COORDINATE_LEASE_LOST:
                         continue
@@ -6981,6 +7044,36 @@ class ProblemBoardRelaySupervisor:
     ) -> list[tuple[str, "_ChannelSession"]]:
         still = {name: session for name, session in self._coordinate_candidates(host)}
         return [(name, session) for name, session in ready if still.get(name) is session]
+
+    def _mark_attempt_and_read_card(
+        self,
+        queue: CoordinateQueue,
+        request: Mapping[str, Any],
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+    ) -> tuple[dict[str, Any], str]:
+        """Persist the attempt, then read the Card the dispatch must still match; store thread."""
+
+        marked = queue.mark_attempt(request)
+        return marked, self._card_fingerprint(host, channel)
+
+    def _dispatch_fence_failure(
+        self,
+        channel: WorkerChannelConfig,
+        session: "_ChannelSession",
+        card_now: str,
+    ) -> str:
+        """Why ``session`` may no longer carry a request now, or ``""``; loop state only."""
+
+        if self._sessions.get(channel.worker_name) is not session:
+            return "session_replaced"
+        if session.closing:
+            return "session_closing"
+        if session.profile != channel.profile or session.channel_identity != channel.worker_identity:
+            return "channel_changed"
+        if session.card_fingerprint != card_now:
+            return "card_changed"
+        return ""
 
     def _coordinate_cards_match(
         self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
