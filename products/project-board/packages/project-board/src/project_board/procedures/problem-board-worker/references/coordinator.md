@@ -20,6 +20,21 @@ written. A section still in your context is not read again, and the file is
 reloaded only with the skill, when `pb procedure verify` names a new installed
 revision (W449).
 
+| You are about to | Read |
+|---|---|
+| plan a batch, dispatch or reroute | [Plan every batch with a roles table](#plan-every-batch-with-a-roles-table-and-dispatch-from-it), [Route](#route) |
+| decide on a submission | [Accept, return, cancel](#accept-return-cancel) |
+| merge or ship a batch | [Merge](#merge) |
+| run a reload, refresh or client switch | [Reload, refresh, restart](#reload-refresh-restart) |
+| restart a machine | [A machine restart freezes every agent on it](runtime-actions.md#a-machine-restart-freezes-every-agent-on-it) |
+| handle a failing channel, relay or delivery | [What the coordinator is for](#what-the-coordinator-is-for), its "Communication comes first" block |
+| wait on a silent worker | [Confirm that work started](#confirm-that-work-started), [Check a silent worker](#check-a-silent-worker-do-not-wait-for-it) |
+| tell the operator and the team where things stand | [Keep the project announcement current](#keep-the-project-announcement-current) |
+| hand the role over | [Hand the coordinator role over](#hand-the-coordinator-role-over-and-take-it-back) |
+
+Read [What the coordinator is for](#what-the-coordinator-is-for) once when
+you take the role; the rest only for the act at hand.
+
 ## What the coordinator is for
 
 The coordinator works for the operator. The team's work reaches the operator through you,
@@ -140,19 +155,50 @@ successor inherits none of that.
   tell it the team is there. Put project knowledge in the journal, not in mail.
 
 **Communication comes first.** A failing channel, relay or delivery path is
-the project's first priority, unless the operator has set another. Hand it to
-a named owner as a P0 item with a checkpoint, and publish a `blocker`
-announcement with the cause known so far and the next probe. While it lasts:
+the project's first priority, unless the operator has set another. Run it as
+an incident with these roles, written in the batch's roles table:
+
+- **One incident lead** owns the diagnosis and names the next cause and
+  action. Not you, unless no one else can.
+- **Complementary diagnostic owners**, one per layer the evidence points at
+  (client, server, network or tunnel, credential store), each reading its
+  own layer.
+- **One independent verifier**, who did not write the fix, reviews it and
+  checks it live.
+- **One author per source change.** No competing implementations.
+
+They exchange findings directly with each other, without waiting for your
+acknowledgement, and copy you. Every finding names the time, the actor, the
+request or socket id, the source commit and the host.
+
+Move the incident through this chain, with an owner and a next action at
+every step, and publish a `blocker` announcement with the step it is at:
+
+1. **A reproducible failure:** the exact operation, time and error, from more
+   than one actor where possible.
+2. **The missing instrumentation:** what the logs cannot yet tell (who held
+   a lock, which hop dropped a request), added as a reviewed change first
+   when the cause is not visible.
+3. **A reviewed fix**, at an exact head, with a regression that fails
+   without it.
+4. **The deployment**, as a runtime window ([Reload, refresh, restart](#reload-refresh-restart)).
+5. **A controlled experiment:** a baseline before, the same measurement
+   after, over at least the longest designed interval, with bounded load.
+6. **The remaining failures**, each a new turn of the chain or a named,
+   accepted limit.
+
+While it lasts:
 
 - Pause uncertain product writes. Keep supported status and evidence replies
   going, with their identities preserved and their receipts checked.
 - Recover an uncertain write only under its original identity and key.
   Missing acknowledgement is not proof that nothing was applied.
-- Collect bounded evidence from more than one actor and stage (time, request
-  id, socket, source, host) before naming a cause.
 - A longer timeout, a retry loop, a restart, a reauthorization or a host action
   is not a fix. Each needs the operator, and none replaces the causal proof a
-  fix is reviewed against (W448, W449).
+  fix is reviewed against (W448, W449). Why: on 2026-10-02 each turn of this
+  chain named the next cause: request ids and lock spans, then the fix for
+  the workspace walk on every heartbeat, then the experiment that found the
+  loop blocks still left (W461).
 
 **The runtime is the operator's; the mechanics are yours.**
 
@@ -162,11 +208,20 @@ announcement with the cause known so far and the next probe. While it lasts:
   and what the action would interrupt or lose. The operator decides, and the
   action does not prove a product fix (W449).
 - No runtime window (reload, refresh, client switch) without the operator's go.
-  Once the operator gives it, you run the whole window yourself: announce, collect ready,
-  back up the board tables into the host's backup folder, execute, verify, report,
-  update the facts table, and after the ALL CLEAR keep only the newest backup
-  ([runtime actions](runtime-actions.md#runtime-window-database-backups)). Do not
-  ask the operator about the mechanics.
+  Once the operator gives it, you own the decisions and the proof, and named
+  delegates do the mechanics. You decide the exact candidate, prove the merged
+  tree is the one reviewed (`git rev-parse <merge>^{tree}` against the
+  reviewed tree), name in the roles table who backs up the board tables, who
+  installs on which host, who gates and who verifies, monitor their receipts,
+  and give the ALL CLEAR. The delegates announce, collect ready, back up the
+  board tables into the host's backup folder, execute, verify and report
+  ([runtime actions](runtime-actions.md#runtime-window-database-backups)), and
+  after the ALL CLEAR the newest backup alone is kept. Reuse an independent
+  reviewer's or gate's evidence on the exact source instead of rerunning
+  unchanged suites; run only what the evidence does not cover. Do not ask the
+  operator about the mechanics. Why: a coordinator that builds, tests and
+  installs itself leaves the team idle and the operator waiting for its one
+  thread (operator, 2026-09-30 and 2026-10-02).
 - Deliver a cross-layer item as independently verifiable activations. When one
   layer is reviewed, compatible with the counterparts already running, reversible
   through its normal runtime action, and useful on its own, run its approved
@@ -344,6 +399,14 @@ it, in the order of the act.
    parent, base or deploy dependency in that ledger. A head on `main` is not a
    deployment. Why: on 2026-10-01 eight change requests whose content was
    already on `main` were still open (W442, W449).
+6. **One release manifest per batch.** When several items ship together, keep
+   one manifest on the batch's work item: per original item, its exact
+   commits, what it depends on, its review evidence (reviewer, exact head,
+   verdict), who deploys it where, and how it is verified live. The items keep
+   their own acceptance and progress; the batch deploys once, not once per
+   item. Why: on 2026-10-02 the communication fixes of several items had
+   merged on `main` and were still not running anywhere until they shipped as
+   one batch (W461).
 
 ## Release a stalled assignment
 
@@ -478,7 +541,7 @@ threads through the next runtime upgrade.
 
 ### Thresholds, a visible pause, and waking after the reset
 
-The coordinator reads every pool's usage at each work boundary, before it starts a review, a merge or a routing decision: `pb worker list` for this host, `pb worker context` for the team. Its own pool is included. A coordinator that shares an account with its workers spends the same pool it is guarding. The operator ruled this on 2026-09-26, after a shared pool reached 95% unnoticed.
+The coordinator reads the usage of the pools a decision depends on immediately before that decision (routing or reviewing work to a pool, starting a long operation of its own), and every pool when it updates the batch's roles table (on a material change, and at least every 2 hours while work is active): `pb worker list` for this host, `pb worker context` for the team. Its own pool is included. It does not re-read every pool at every small step. A coordinator that shares an account with its workers spends the same pool it is guarding. The operator ruled this on 2026-09-26, after a shared pool reached 95% unnoticed.
 
 **Weigh the task against what is left and when it resets** (operator, 2026-09-29). Availability is three figures read together: the capacity left in the window, the task's expected size, and the time until the window's `resets_at`. Decide per task: a task whose next bounded phase fits in the capacity left before the reset proceeds, and a task that can start after a near reset is taken for that time. A pool at 97% of its weekly window with the reset ten minutes away can still take a bounded action, or start work that safely crosses the reset. A task larger than what is left before a distant reset waits for the reset or goes to a pool with capacity (Worker budgets).
 
@@ -603,21 +666,53 @@ commits them. The first host, repository, environment and operator ruling
 update those files as soon as each becomes known. A journal, when the project
 keeps one, accumulates beside them from the first day.
 
-## Read the scheduling table before you dispatch
+## Plan every batch with a roles table, and dispatch from it
 
-Before you dispatch or reroute work, whenever a worker reaches its usage
-limit, and at each work boundary while work is active (at least every
-announcement interval), read a fresh table of the project's Todo, Working and Review items
-joined with each assignee's full alias, machine, current usage and reset,
-presence and blocker, and for each item its status, how long it has been
-with its assignee and why, and the next action with who takes it
-(`pb worker context --format brief` for the team and pools,
-`assignment.list` and the plan for the items). Dispatch from that table, not
-from memory. Count utilization from receipts (a STARTED, a report, a review
-verdict), never from mail you queued (W455). A worker at its limit, or whose wakes are held, does not keep an
-actionable review or other work someone waits on: reroute it with the reason,
-and give it back after the reset only by a new routing (operator, 2026-10-01,
-W449).
+A batch is any coordinated set of work: a half-day plan, a release, an
+incident, a runtime window. Before it starts, write its roles table.
+Dispatch from that table, not from memory. One row per participant,
+yourself and the operator included:
+
+| Column | What it holds |
+|---|---|
+| Agent and machine | the full alias and the host it runs on |
+| Item and phase | the work item by key and title, and the phase (author, review, gate, deploy, verify) |
+| Capacity | current usage and reset, presence, from a fresh read |
+| State | one of requested, queued, READY, START, done, verified, each with the time and the receipt that shows it |
+| Next action or handoff | what this row does next, and to whom it hands over |
+| Blocker | what stops it and who clears it, or none |
+| Checkpoint | the time of the next expected report |
+
+The states are evidence, not intentions. Requested and queued are mail you
+sent. READY is the worker's own answer. START is its `working` report at the
+current ownership version ([Confirm that work started](#confirm-that-work-started)).
+Done is its report or verdict, and verified is someone else's check of it.
+Count utilization from these receipts, never from mail you queued (W455).
+
+Read the facts for it fresh: `pb worker context --format brief` for the
+team and quota pools, `assignment.list` and the plan for the items. A
+worker at its limit, or whose wakes are held, does not keep an actionable
+review or other work someone waits on: reroute it with the reason, and give
+it back after the reset only by a new routing (operator, 2026-10-01, W449).
+
+Use the capacity the table shows. An agent with capacity implements a
+follow-up the batch has made clearly necessary, agreed with you and recorded
+on its item, without waiting for the batch to end. An agent you name in the
+table as the window's reserve (ready to take an urgent problem of the
+rollout at any moment) starts nothing new: it records each follow-up on its
+item so none is lost. Why: "if you can implement the problems that are
+obviously followup to current effort window ... then its natural to
+implement it now if you can" (operator, 2026-10-02).
+
+Keep the full table on the batch's work item and a compact one (one line per
+active row) in the project announcement, linked to the item
+([Keep the project announcement current](#keep-the-project-announcement-current)).
+Update both when a fact in a row changes materially (a START, a verdict, a
+blocker, a handover) and at least every 2 hours while the batch is active.
+Update from the receipts that changed; do not poll the whole team at each
+step. Why: the operator requires the table for every batch, without being
+asked for it, so who holds what and what comes next is visible at a glance
+(operator, 2026-10-02, as relayed by the coordinator).
 
 ## Confirm that work started
 
@@ -641,8 +736,9 @@ reconciles its current assignments with the work it remembers after a resume
 or a compaction, once per native wake batch, and periodically while it works
 ([collaboration](collaboration.md) Rule 6, about every 30 minutes, not at every
 step). An instruction you put only in an assignment's task is invisible in the
-brief item view and the assign notice: mirror it in a note on the item and in
-the mail that routes it (W455, 2026-10-01). When an item stays on it and its
+brief item view and the assign notice: state it in the item's description too,
+and repeat it in the mail that routes it (W455, 2026-10-01; [Put what a worker
+must read](#put-what-a-worker-must-read-where-that-worker-can-read-it)). When an item stays on it and its
 purpose or next action is unclear, it asks you, naming the item, the ownership
 version and its last checkpoint. Answer with a durable decision on the item
 (the next section): continue, release, reroute or close (W449).
@@ -867,6 +963,31 @@ section says.
    publishes there what the operator told it about itself (not to be used
    actively, reviews only), and routing past it spends a quota or a session
    the operator reserved.
+
+   **Carry an operator restriction to the card before routing from it.**
+   When the operator sets or changes a restriction on a worker (a cap, a
+   pause, reviews only, a resumption):
+   - Record the ruling in the project Facts: what holds, who ruled, since
+     when.
+   - Ask that worker, when it is active, to publish the exact restriction
+     with `pb worker info write` ([collaboration](collaboration.md), Rule 6,
+     The info line). A paused worker is not woken for this. Until it
+     returns, the Facts row is what routing reads.
+   - Before you say the restriction is in place, or route from it, check
+     that the worker reports its `pb worker info show` with `on_board = True`
+     and that its row in a fresh `pb worker context` team shows the same
+     `info_text`. You cannot run its `show` yourself; you rely on that
+     reported receipt and your own fresh team read.
+   - The restriction stays first on the line and every status rewrite keeps
+     it. Findings and progress detail go to mail, item notes, the task and
+     `pb worker busy-until`, never in place of the restriction.
+
+   Why: on 2026-09-30 the operator let one paused agent resume under a
+   weekly ceiling on its shared account's total usage. The ruling reached the
+   project Facts and the team's mail, and the agent's card showed no
+   restriction until the operator asked. Step 0 already said to read the
+   line, so this was an execution failure. Nothing required the restriction
+   to reach the card before the coordinator routed from it (W413).
 1. Need, then discussion with the candidates, then decision, then route. A
    route carries the intention and the acceptance, not the engineering
    constraints. The assigned worker decides how.
@@ -981,9 +1102,13 @@ its machine can reach.
   description or in the assignment's task instructions. Those travel with the
   assignment, survive an unread inbox, and every worker Card can read them
   through `project.plan.item`.
-- **Notes are the record, not the briefing.** Worker Cards do not grant
-  `plan.notes.list` today, so "read the newest note" refuses. Decide by what the
-  Card grants, not by what the coordinator can see.
+- **The current instruction lives in the item's description or task; notes
+  are the history.** Worker Cards can read notes (`plan.notes.list`), but a
+  worker reads the description and task first, and a note can be one of
+  sixty. When an instruction changes, rewrite the description or task so it
+  states what holds now, and say there which earlier briefing it supersedes;
+  the note records the change and why. Never leave the current instruction
+  only in a note or a mail.
 - **Never send a local filesystem path as the carrier.** A path is bound to one
   machine and one user. The moment a worker runs on another host it points at
   nothing, and the failure looks like a worker ignoring instructions.
@@ -1083,7 +1208,16 @@ tree, which stages whatever it holds at that instant.
    process for one symbol or behaviour the change introduced, with the checks
    the runtime's profile gives. Relay: the first stamped line of the new pid
    (`file_descriptor_limit=`, `source=`). Package: `pb procedure verify` on
-   the host.
+   the host. For a relay, identity is not enough: once the longest designed
+   interval has passed after activation (the 900 s workspace walk today),
+   compare the relay log with the same length of log before it. Count each
+   periodic job's lines against its designed interval, and the slow channel
+   turns. A periodic job that runs more often than designed, or a slow-turn
+   rate several times the earlier window's, is a failed activation: report
+   both counts, hold the ALL CLEAR and keep the rollback. Why: on 2026-10-02 an
+   activation passed identity proof while its workspace walk ran on every
+   heartbeat (278 walks in 48 minutes for 3 channels against one per 900 s
+   each), readable from the release's own log lines that nobody compared.
 7. **Say what loaded**: the pid or the profile's receipt, the ref and the
    commit it named, the commit range, and, for
    each worker whose commits rode along, that they did. Clear your dashboard

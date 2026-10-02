@@ -16,7 +16,10 @@ window. Today the requester of a test window is the operator, and it may be a QA
 agent. The requester is a role and the protocol is the same.
 
 The announcement says which of two things it is, and they ask different
-things of you.
+things of you. A restart of the machine itself is neither: it freezes every
+agent on that machine until the operator resumes, and its READY means stop,
+not keep working ([runtime actions](runtime-actions.md#a-machine-restart-freezes-every-agent-on-it)).
+It takes precedence over the answers below.
 
 ## An exact-commit release
 

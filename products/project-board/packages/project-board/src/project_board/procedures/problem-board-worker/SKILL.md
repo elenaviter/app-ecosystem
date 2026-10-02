@@ -40,7 +40,7 @@ host action because it changes both the command and relay source. When `pb statu
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check
 that was useful once is not automatically useful again. At each new decision or work boundary, rerun the smallest targeted read that the decision depends on; an earlier command result or remembered snapshot is not fresh evidence.
-Before acting on a named subject (a host, a feature, an item), search for what the project already knows about it: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return. Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14: search first, note small things on an open item, and tell the coordinator what you filed.
+When you start work on a named subject (a host, a feature, an item), search once for what the project already knows about it, not again at every step of the same task: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return. Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14: search first, note small things on an open item, and tell the coordinator what you filed.
 
 For a repeated status query or retry, name the pending operation or receipt, use
 a bounded attempt count, and stop when another repetition cannot inform the next
@@ -425,7 +425,7 @@ Mail to the operator takes one of these kinds and nothing else:
 ## Runtime Actions And Test Windows
 
 A project's runtimes (`pb worker context`, `runtimes`) name, per action, who triggers it and the ref it releases in each repository it loads (`releases`); the commands live in the runtime's profile (`local_profile`), never here, and a project with none has no runtime actions ([runtime-actions](references/runtime-actions.md), Project Runtimes). Every action loads, per repository, the commit its ref names, never a working tree, and its result names each repository, ref and commit.
-A runtime's reload, refresh or deploy is coordinated between the workers and executed by the coordinator. A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves. For a runtime action, ask the
+A runtime's reload, refresh or deploy is decided and proven by the coordinator and executed by the delegates it names ([coordinator](references/coordinator.md), The runtime is the operator's). A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves. For a runtime action, ask the
 coordinator, naming what you need live and the commit, pushed to the ref the action releases.
 A client-source selection is one of these actions ([runtime-actions](references/runtime-actions.md), Client Source
 Selection). A container-local patch is not an action this team has. Before any runtime
