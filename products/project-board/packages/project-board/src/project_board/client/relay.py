@@ -6963,11 +6963,36 @@ class ProblemBoardRelaySupervisor:
         if not candidates:
             return []
         ready = await run_off_loop(self._coordinate_ready, host, candidates, executor=executor)
-        # A session may have closed or been replaced while the files were read.
-        still = {name: session for name, session in self._coordinate_candidates(host)}
+        # A session may have closed, been replaced or had its Card replaced
+        # while the files were read. The loop state is checked again here; the
+        # Card is read once more off the loop, and only what still matches is
+        # dispatched in the same loop step as that answer (W461 review P1).
+        ready = self._still_coordinate_candidates(host, ready)
+        if not ready:
+            return []
+        bound = await run_off_loop(self._coordinate_cards_match, host, ready, executor=executor)
         return self._start_coordinate_drains(
-            host, [(name, session) for name, session in ready if still.get(name) is session]
+            host,
+            [(name, session) for name, session in self._still_coordinate_candidates(host, ready) if name in bound],
         )
+
+    def _still_coordinate_candidates(
+        self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> list[tuple[str, "_ChannelSession"]]:
+        still = {name: session for name, session in self._coordinate_candidates(host)}
+        return [(name, session) for name, session in ready if still.get(name) is session]
+
+    def _coordinate_cards_match(
+        self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> set[str]:
+        """Names whose session still matches its channel and current Card; reads the profile record."""
+
+        channels = {channel.worker_name: channel for channel in host.workers}
+        return {
+            name
+            for name, session in ready
+            if self._session_matches(host, channels[name], session, require_card=True)
+        }
 
     def _coordinate_candidates(self, host: HostRelayConfig) -> list[tuple[str, "_ChannelSession"]]:
         """Channels whose open session may carry a coordinate drain now; loop state only."""

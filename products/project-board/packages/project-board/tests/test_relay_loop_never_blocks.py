@@ -150,11 +150,12 @@ def test_a_card_replaced_after_the_ready_read_carries_nothing_under_the_old_card
 
     async def scenario():
         request = submit_request(queue, channel)
-        await supervisor.serve_coordinate_pass()
+        started = await supervisor.serve_coordinate_pass()
         await asyncio.gather(*supervisor._coordinate_draining.values())
-        return request
+        return request, started
 
-    request = asyncio.run(scenario())
+    request, started = asyncio.run(scenario())
+    assert started == [], "the pass dispatched under a Card that changed after its ready read"
     assert getattr(old_client, "calls", []) == [], "the old Card's client carried the request"
     assert queue.take_response(worker_name=channel.worker_name, request_id=request["request_id"]) is None, (
         "the request is left for the cycle, unanswered"
