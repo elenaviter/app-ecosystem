@@ -24,10 +24,12 @@ import asyncio
 import hashlib
 import logging
 import os
+import time
 
 logger = logging.getLogger("connection_hub.oauth.spans")
 
 SLOW_SECONDS = 0.25
+HOLD_WARN_SECONDS = 2.0
 
 
 def profile_tag(profile_name: str) -> str:
@@ -36,12 +38,14 @@ def profile_tag(profile_name: str) -> str:
     return hashlib.sha256(str(profile_name or "").encode("utf-8")).hexdigest()[:12]
 
 
-def _task_name() -> str:
+def _task_tag() -> str:
+    """An opaque tag for the current task: correlates spans, carries no caller text."""
+
     try:
         task = asyncio.current_task()
     except RuntimeError:
         return "-"
-    return task.get_name() if task is not None else "-"
+    return "-" if task is None else f"t{id(task) & 0xFFFFFF:06x}"
 
 
 def _ms(seconds: float | None) -> str:
@@ -56,6 +60,7 @@ def record(
     outcome: str,
     wait_seconds: float | None = None,
     hold_seconds: float | None = None,
+    task_tag: str | None = None,
 ) -> None:
     """Log one span: WARNING on failure, INFO when slow, DEBUG otherwise."""
 
@@ -82,8 +87,42 @@ def record(
         _ms(wait_seconds),
         _ms(hold_seconds),
         os.getpid(),
-        _task_name(),
+        task_tag or _task_tag(),
     )
+
+
+def watch_hold(
+    kind: str,
+    *,
+    operation: str,
+    profile_name: str,
+    wait_seconds: float,
+    acquired_at: float,
+) -> asyncio.TimerHandle | None:
+    """Record a ``holding`` span if the lock is still held after HOLD_WARN_SECONDS.
+
+    The caller cancels the returned handle on release. Without a running
+    loop nothing is scheduled.
+    """
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+    task_tag = _task_tag()
+
+    def still_held() -> None:
+        record(
+            kind,
+            operation=operation,
+            profile_name=profile_name,
+            outcome="holding",
+            wait_seconds=wait_seconds,
+            hold_seconds=time.monotonic() - acquired_at,
+            task_tag=task_tag,
+        )
+
+    return loop.call_later(HOLD_WARN_SECONDS, still_held)
 
 
 def outcome_of(exc: BaseException | None) -> str:
