@@ -31,7 +31,7 @@ from connection_hub.caller.authorization.discovery import (
     OAuthDiscoveryResult,
 )
 from connection_hub.caller.authorization.flow import BrowserAuthorizationFlow
-from connection_hub.caller.authorization import lock_spans
+from connection_hub.caller.authorization import lock_spans, request_records
 from connection_hub.caller.authorization.models import (
     OAuthClientRegistration,
     OAuthTokenSet,
@@ -477,13 +477,16 @@ class OAuthProfileSessionService:
         once: the second finds the replacement when it re-reads.
         """
 
-        profile, token = await self._read_token(profile_name)
-        if (
-            not token.is_expiring(leeway_seconds=60)
-            and self._pending_key(profile_name) not in _PENDING_REPLACEMENTS
-        ):
-            return token.access_token
-        return await self._refresh_unsplit(profile_name, force=False)
+        # One correlation for this operation's lock spans and HTTP requests,
+        # so they join each other and the proxy's request ids (W461).
+        with request_records.correlate(profile_name):
+            profile, token = await self._read_token(profile_name)
+            if (
+                not token.is_expiring(leeway_seconds=60)
+                and self._pending_key(profile_name) not in _PENDING_REPLACEMENTS
+            ):
+                return token.access_token
+            return await self._refresh_unsplit(profile_name, force=False)
 
     async def refresh_access_token(self, profile_name: str) -> str:
         """Mint a new access token now, whatever the local expiry says.
@@ -497,7 +500,8 @@ class OAuthProfileSessionService:
         refresh is then the card's answer and not a stale session's.
         """
 
-        return await self._refresh_unsplit(profile_name, force=True)
+        with request_records.correlate(profile_name):
+            return await self._refresh_unsplit(profile_name, force=True)
 
     # A refresh the server answered has rotated the refresh token: the
     # replacement is then the only copy of the new chain. Dropping it leaves the

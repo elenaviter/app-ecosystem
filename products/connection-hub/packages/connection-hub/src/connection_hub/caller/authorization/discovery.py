@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import time
@@ -17,6 +18,7 @@ from connection_hub.caller.authorization.models import (
     validate_resource_identifier,
     validate_web_url,
 )
+from connection_hub.caller.authorization import request_records
 from connection_hub.caller.errors import AuthorizationError
 
 MAX_OAUTH_RESPONSE_BYTES = 1024 * 1024
@@ -29,6 +31,19 @@ MAX_OAUTH_ERROR_REASON_CHARS = 512
 # (W461, 2026-10-02: failing token requests left no proxy line, and nothing
 # joined the two sides). It is random per request and carries no identity.
 REQUEST_ID_HEADER = "X-Request-ID"
+
+
+def _record_probe(request_id: str, started: float, status: int | None, outcome: str) -> None:
+    """The MCP endpoint probe's request record; a 401 challenge is its expected answer."""
+
+    request_records.record(
+        request_id=request_id,
+        kind="mcp_probe",
+        method="POST",
+        status=status,
+        outcome=outcome,
+        elapsed_seconds=time.monotonic() - started,
+    )
 
 
 def new_request_id() -> str:
@@ -250,18 +265,19 @@ class HttpxOAuthTransport:
             failure_code="oauth_token_request_failed",
         )
 
-    async def _request_json(
+    async def _exchange(
         self,
         method: str,
-        url: str,
+        endpoint: str,
         *,
-        json_payload: Mapping[str, Any] | None = None,
-        form_payload: Mapping[str, str] | None = None,
+        request_id: str,
+        json_payload: Mapping[str, Any] | None,
+        form_payload: Mapping[str, str] | None,
         expected_statuses: set[int],
         failure_code: str,
-    ) -> Mapping[str, Any]:
-        endpoint = validate_web_url(url, code="oauth_endpoint_invalid")
-        request_id = new_request_id()
+    ) -> tuple[bytearray, int]:
+        """One HTTP exchange: the response body and status, or the classified failure."""
+
         try:
             import httpx2
 
@@ -331,6 +347,49 @@ class HttpxOAuthTransport:
                 failure_kind=type(exc).__name__,
                 request_id=request_id,
             ) from None
+        return body, response.status_code
+
+    async def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_payload: Mapping[str, Any] | None = None,
+        form_payload: Mapping[str, str] | None = None,
+        expected_statuses: set[int],
+        failure_code: str,
+    ) -> Mapping[str, Any]:
+        endpoint = validate_web_url(url, code="oauth_endpoint_invalid")
+        request_id = new_request_id()
+        started = time.monotonic()
+        status: int | None = None
+        outcome = "ok"
+        try:
+            body, status = await self._exchange(
+                method,
+                endpoint,
+                request_id=request_id,
+                json_payload=json_payload,
+                form_payload=form_payload,
+                expected_statuses=expected_statuses,
+                failure_code=failure_code,
+            )
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except AuthorizationError as exc:
+            outcome = exc.code
+            status = exc.details.get("status") if isinstance(exc.details, Mapping) else None
+            raise
+        finally:
+            request_records.record(
+                request_id=request_id,
+                kind=request_records.kind_of(failure_code),
+                method=method,
+                status=status if isinstance(status, int) else None,
+                outcome=outcome,
+                elapsed_seconds=time.monotonic() - started,
+            )
         try:
             value = json.loads(bytes(body))
         except (UnicodeError, ValueError):
@@ -486,6 +545,7 @@ class McpOAuthEndpointDiscovery:
 
         target = validate_web_url(endpoint, code="oauth_mcp_endpoint_invalid")
         request_id = new_request_id()
+        probe_started = time.monotonic()
         try:
             import httpx2
 
@@ -538,9 +598,14 @@ class McpOAuthEndpointDiscovery:
                             "oauth_response_too_large",
                             "The MCP endpoint response is too large.",
                         )
-        except AuthorizationError:
+        except AuthorizationError as exc:
+            _record_probe(request_id, probe_started, None, exc.code)
+            raise
+        except asyncio.CancelledError:
+            _record_probe(request_id, probe_started, None, "cancelled")
             raise
         except Exception as exc:  # noqa: BLE001
+            _record_probe(request_id, probe_started, None, "oauth_mcp_endpoint_unreachable")
             # The exception class says whether the endpoint timed out, refused
             # the connection or dropped it; its text may carry the URL and is
             # not kept.
@@ -557,6 +622,7 @@ class McpOAuthEndpointDiscovery:
                 "request_id": request_id,
             }
             raise unreachable from None
+        _record_probe(request_id, probe_started, response.status_code, "ok")
         if response.status_code != 401:
             raise AuthorizationError(
                 "oauth_challenge_not_advertised",

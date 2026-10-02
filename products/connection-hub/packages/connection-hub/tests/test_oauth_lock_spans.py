@@ -252,7 +252,7 @@ def test_a_caller_chosen_task_name_never_reaches_the_span(tmp_path, caplog):
         asyncio.run(scenario())
     (span,) = _spans(caplog)
     assert CANARY not in span.getMessage()
-    assert re.search(r"task=t[0-9a-f]{6}$", span.getMessage())
+    assert re.search(r"task=t[0-9a-f]{6} corr=\S+$", span.getMessage())
 
 
 def test_a_failure_securing_the_held_lock_is_the_span_outcome(tmp_path, caplog, monkeypatch):
