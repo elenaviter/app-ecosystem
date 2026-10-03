@@ -309,6 +309,18 @@ the fields as follows:
 - `timer_overrun_seconds` is how late the deadline (`timeout_seconds`)
   fired. When it is large, the relay's event loop or the whole process did
   not run, for example on a paging host. A slow server does not cause it.
+- `silent_transport_replaced: true` means the acknowledgement timed out on a
+  socket that delivered nothing since the request was sent, so the client
+  dropped that socket and reconnected at once. It is never set when the timer
+  fired a second or more late, because then the silence says nothing about the
+  network.
+
+When the outcome is unknown and the socket is connected or only reconnecting,
+the relay keeps the channel's session, as long as it still matches the
+channel and Card. The channel then shows as degraded, not reconnecting, and
+queued `pb coordinate` calls run once the socket is back. Any other failure,
+cancellation included, still replaces the session with a fresh credential
+after the channel backoff.
 
 The relay also measures its own loop. A sampler sleeps one second and records
 how late it wakes.
