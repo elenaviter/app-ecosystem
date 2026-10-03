@@ -67,6 +67,11 @@ def _binary(size: int) -> bytes:
         (b"\x00\x01binary", "", "other"),
         (b"text with a \x01 control byte", "", "other"),
         (b"%PDF-1.7 plain", "", "other"),
+        # PDF or ZIP bytes go to the platform's document checks first,
+        # whatever the declared type (review of the first head).
+        (b"%PDF-1.7 report", "text/plain", "other"),
+        (b"%PDF-1.7 notes", "text/markdown", "other"),
+        (b"PK\x03\x04drawing", "image/svg+xml", "other"),
         # A declared image type is kept, whatever the bytes are.
         (b"plain words", "image/png", "other"),
     ],
@@ -111,6 +116,18 @@ def test_svg_is_accepted_to_two_mib_and_refused_above():
 
 def test_an_svg_without_its_type_meets_the_text_ceiling_as_on_the_service():
     validate_mail_attachment(_svg(SVG_MAX_BYTES + 1), filename="d", mime="")
+
+
+@pytest.mark.parametrize(
+    ("data", "filename", "mime"),
+    [
+        (b"%PDF-1.7\n" + b"0" * (TEXT_MAX_BYTES + 1), "report.txt", "text/plain"),
+        (b"%PDF-1.7\n" + b"0" * (TEXT_MAX_BYTES + 1), "notes.md", "text/markdown"),
+        (b"PK\x03\x04" + b"0" * (3 * MIB), "draw.svg", "image/svg+xml"),
+    ],
+)
+def test_pdf_or_zip_bytes_under_a_text_or_svg_name_are_not_held_to_its_ceiling(data, filename, mime):
+    validate_mail_attachment(data, filename=filename, mime=mime)
 
 
 def test_a_raster_image_keeps_the_general_ceiling():

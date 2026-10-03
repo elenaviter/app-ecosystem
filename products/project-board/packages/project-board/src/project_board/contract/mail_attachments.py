@@ -56,6 +56,11 @@ def attachment_kind(data: bytes, *, mime: str = "") -> str:
     script type, from the content; a name alone never makes binary bytes text.
     """
 
+    # The platform routes PDF and ZIP content to its document checks before
+    # it looks at the declared type, and those carry no byte ceiling of
+    # their own: a file with such bytes is never held to the text or SVG one.
+    if data.startswith((b"%PDF", b"PK")):
+        return "other"
     routed = _service_mime(data, mime)
     if routed == "image/svg+xml":
         return "svg"
