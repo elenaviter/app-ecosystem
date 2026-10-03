@@ -1043,7 +1043,7 @@ finds it out.
 
 | Role | Responsible for |
 |---|---|
-| Coordinator | Tracking assignments, actual progress and live availability where they decide something; every route's current actor and next action; readable instructions that are consistent, with superseded ones marked; handing off a work owner who cannot act, by a reassignment from its checkpoint (Rule 8); the batch roles table; the decisions in point 2. Nothing below transfers this. |
+| Coordinator | Tracking assignments, actual progress and live availability where they decide something; seeing that every route names its current actor and next action, which each holder keeps; readable instructions that are consistent, with superseded ones marked; handing off a work owner who cannot act, by a reassignment from its checkpoint (Rule 8); the batch roles table; the decisions in point 2. Nothing below transfers this. |
 | Author | Starting at once; one consolidated clarification; implementing within the bound scope; exact-source and test evidence; arranging its review and replacing a reviewer who cannot act (Rule 6); a visible next action and checkpoint; a checkpoint and a notice before a known absence (Rule 8). |
 | Reviewer | Verifying the exact changed source and proportionate test evidence; a verdict at the exact head; handing the item to the named merger (Rule 6). |
 | Merger | Merging an exact head with an independent PASS and the named gates without another routine acknowledgement, reusing unchanged evidence, proving the merged tree (Rule 5); handing on to the installer or verifier. |
