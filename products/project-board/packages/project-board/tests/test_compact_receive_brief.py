@@ -542,3 +542,73 @@ def test_the_delivery_doc_states_the_brief_rules_and_the_evidence_path():
     assert "(signed query withheld: N parameters)" in doc
     assert "Values compare as JSON, so `0` and `false` never match." in doc
     assert "goes as a file with `pb worker send --attach <file>`" in doc
+
+
+# Review return (CodeApp, 16:05Z) on 7eea60e7: links in prose and headers,
+# signed values under unexpected shapes, a parser-rejected link, and folding
+# that hid locator content or claimed identity fields an entry lacked.
+
+PROSE_SECRET = "https://files.example.test/report?token=SYNTHETIC_REVIEW_SECRET&expires=123"
+
+
+def _both_views(message):
+    return [render_envelope(_receive(message), worker_flags=FLAGS),
+            render_envelope(_lease_read(message), worker_flags=FLAGS)]
+
+
+@pytest.mark.parametrize("placement", ["body", "subject", "prose", "download_url_mapping", "download_url_nested"])
+def test_a_signed_value_is_withheld_in_every_placement(placement):
+    message = _message()
+    if placement == "body":
+        message["body"] = f"Evidence: {PROSE_SECRET}\nSecond line."
+    elif placement == "subject":
+        message["subject"] = f"Report at {PROSE_SECRET}"
+    elif placement == "prose":
+        message["payload"]["evidence"] = f"See {PROSE_SECRET} for the run."
+    elif placement == "download_url_mapping":
+        message["payload"]["download_url"] = {"opaque": "SYNTHETIC_REVIEW_SECRET"}
+    else:
+        message["payload"]["download_url"] = [["SYNTHETIC_REVIEW_SECRET"]]
+    for text in _both_views(message):
+        assert "SYNTHETIC_REVIEW_SECRET" not in text
+        assert "settle: pb worker settle" in text
+    if placement in ("body", "subject", "prose"):
+        assert "https://files.example.test/report?(signed query withheld: 2 parameters)" in _both_views(message)[0]
+
+
+def test_a_parser_rejected_link_never_stops_the_view_and_is_still_withheld():
+    message = _message()
+    message["payload"]["evidence"] = "https://[broken-host/report?token=SYNTHETIC_REVIEW_SECRET"
+    for text in _both_views(message):
+        assert "SYNTHETIC_REVIEW_SECRET" not in text
+        assert "https://[broken-host/report?(signed query withheld: 1 parameters)" in text
+        assert "settle: pb worker settle" in text
+
+
+def test_a_token_in_a_link_fragment_is_withheld_and_ordinary_fragments_stay():
+    message = _message()
+    message["payload"]["callback"] = "https://app.example/cb#access_token=SYNTHETIC_REVIEW_SECRET&state=1"
+    message["payload"]["doc"] = "https://docs.example/page#section-2"
+    for text in _both_views(message):
+        assert "SYNTHETIC_REVIEW_SECRET" not in text
+        assert "https://docs.example/page#section-2" in text
+
+
+@pytest.mark.parametrize("missing", ["filename", "mime", "size", "sha256"])
+def test_an_entry_missing_an_identity_field_is_not_claimed_to_match(missing):
+    message = _routed_with_attachment()
+    del message["payload"]["retirement_command"]["attachments"][0][missing]
+    text = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert "admitted attachment entry match" not in text
+    assert "retirement_command.attachments[0].file_ref = " in text
+    _assert_no_secret(text)
+
+
+@pytest.mark.parametrize("locator", ["owner_id", "download_path", "stored_name", "conversation_id", "turn_id"])
+def test_a_locator_with_nested_content_is_printed_not_folded(locator):
+    text = render_envelope(
+        _receive(_routed_with_attachment(**{locator: {"action": "VISIBLE_NEXT_ACTION"}})), worker_flags=FLAGS,
+    )
+    assert "admitted attachment entry match" not in text
+    assert f"retirement_command.attachments[0].{locator}.action = VISIBLE_NEXT_ACTION" in text
+    _assert_no_secret(text)

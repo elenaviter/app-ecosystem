@@ -29,7 +29,7 @@ import re
 import shlex
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
-from urllib.parse import parse_qsl, urlsplit, urlunsplit
+from urllib.parse import unquote
 
 from project_board.client.limit_state import limit_state_line, usage_windows_line, window_length_label
 
@@ -125,11 +125,13 @@ def render_envelope(envelope: Mapping[str, Any], *, worker_flags: Sequence[str] 
         prefix.append(f"NOTE: {len(skipped)} line(s) printed before the envelope:")
         prefix.extend(_BODY_INDENT + line for line in skipped)
     if not envelope.get("ok"):
-        return "\n".join(prefix + [_render_error(envelope.get("error")).rstrip("\n")]) + "\n"
+        return _withhold_signed_urls(
+            "\n".join(prefix + [_render_error(envelope.get("error")).rstrip("\n")]) + "\n"
+        )
     result = envelope.get("result")
     lines: list[str] = prefix + ["OK"]
     lines.extend(_render_result(result, list(worker_flags)))
-    return "\n".join(lines) + "\n"
+    return _withhold_signed_urls("\n".join(lines) + "\n")
 
 
 # --------------------------------------------------------------------------- errors
@@ -1208,8 +1210,15 @@ def _retirement_attachments_summary(entries: Any, message: Mapping[str, Any]) ->
         allowed = {"file_ref", *_RETIREMENT_ATTACHMENT_IDENTITY, *_RETIREMENT_ATTACHMENT_LOCATORS}
         if not set(entry) <= allowed:
             return None
+        # The summary claims every identity field matches, so every one must be
+        # present on both sides and equal as JSON.
         for name in _RETIREMENT_ATTACHMENT_IDENTITY:
-            if name in entry and not _same_json(entry[name], local[ref].get(name)):
+            if name not in entry or name not in local[ref] or not _same_json(entry[name], local[ref][name]):
+                return None
+        # A locator is only redundant when it is a plain string; anything else
+        # may carry content the reader needs, so the entry is printed.
+        for name in _RETIREMENT_ATTACHMENT_LOCATORS:
+            if name in entry and entry[name] is not None and not isinstance(entry[name], str):
                 return None
     return (
         f"{len(entries)} admitted attachment entr{'y' if len(entries) == 1 else 'ies'} match this "
@@ -2651,22 +2660,28 @@ def _cmd(parts: Iterable[str], flags: list[str]) -> str:
 # --------------------------------------------------------------------------- generic
 
 
-def _flatten(value: Any, *, prefix: str, path: str = "") -> list[str]:
-    """Every leaf as ``path = value``, complete. Nothing is skipped or cut."""
+def _flatten(value: Any, *, prefix: str, path: str = "", withheld: bool = False) -> list[str]:
+    """Every leaf as ``path = value``, complete. Nothing is skipped or cut.
+
+    The one exception is a signed link: every leaf under a ``download_url``,
+    ``upload_url`` or ``signed_url`` key, whatever its shape, prints as withheld.
+    """
     lines: list[str] = []
     if isinstance(value, Mapping):
         if not value:
             lines.append(f"{prefix}{path or '(object)'} = {{}}")
         for key, child in value.items():
             child_path = f"{path}.{key}" if path else str(key)
-            lines.extend(_flatten(child, prefix=prefix, path=child_path))
+            lines.extend(_flatten(child, prefix=prefix, path=child_path,
+                                  withheld=withheld or str(key) in _SIGNED_LINK_KEYS))
     elif isinstance(value, list):
         if not value:
             lines.append(f"{prefix}{path or '(list)'} = []")
         for index, child in enumerate(value):
-            lines.extend(_flatten(child, prefix=prefix, path=f"{path}[{index}]"))
+            lines.extend(_flatten(child, prefix=prefix, path=f"{path}[{index}]", withheld=withheld))
     else:
-        value = _without_signed_link(path, value)
+        if withheld and value not in (None, ""):
+            value = _SIGNED_LINK_WITHHELD
         if isinstance(value, str) and "\n" in value:
             lines.append(f"{prefix}{path} =")
             lines.extend(f"{prefix}{_BODY_INDENT}{line}" for line in value.splitlines())
@@ -2687,25 +2702,33 @@ _SIGNED_QUERY_NAME = re.compile(
 _SIGNED_LINK_WITHHELD = "(signed link withheld; use the attachment read command)"
 
 
-def _without_signed_link(path: str, value: Any) -> Any:
-    """A leaf as brief output may print it: a signed link or signed query is withheld."""
+_URL_IN_TEXT = re.compile(r"https?://[^\s<>\"'`]+", re.IGNORECASE)
 
-    if not isinstance(value, str) or not value:
-        return value
-    leaf = re.sub(r"\[\d+\]$", "", path.rsplit(".", 1)[-1])
-    if leaf in _SIGNED_LINK_KEYS:
-        return _SIGNED_LINK_WITHHELD
-    if "://" not in value:
-        return value
-    parts = urlsplit(value)
-    if parts.scheme not in ("http", "https") or not parts.query:
-        return value
-    names = [name for name, _ in parse_qsl(parts.query, keep_blank_values=True)]
-    if not any(_SIGNED_QUERY_NAME.search(name) for name in names):
-        return value
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")) + (
-        f"?(signed query withheld: {len(names)} parameters)"
-    )
+
+def _withhold_signed_urls(text: str) -> str:
+    """Rendered text with the query and fragment of every signed http(s) link withheld.
+
+    Runs over everything a brief view prints (headers, subject, body, payload,
+    attachment lines, errors), so a link in prose is caught as well as one in
+    a field. It parses by hand, never with ``urlsplit``: a malformed link is
+    still found and withheld, and can never stop the view from rendering.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        url = match.group(0)
+        cut = min((i for i in (url.find("?"), url.find("#")) if i >= 0), default=-1)
+        if cut < 0:
+            return url
+        names = [
+            unquote(part.split("=", 1)[0])
+            for part in re.split(r"[?#&;]", url[cut:])
+            if part
+        ]
+        if not any(_SIGNED_QUERY_NAME.search(name) for name in names):
+            return url
+        return f"{url[:cut]}?(signed query withheld: {len(names)} parameters)"
+
+    return _URL_IN_TEXT.sub(replace, text)
 
 
 def worker_flags_from_argv(argv: Sequence[str]) -> list[str]:
