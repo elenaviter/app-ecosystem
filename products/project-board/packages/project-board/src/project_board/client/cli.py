@@ -3462,6 +3462,21 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
         refuse_unresolved_slots(data.decode("utf-8"), argument="--file")
     except UnicodeDecodeError:
         pass
+    import mimetypes
+
+    from ..contract.mail_attachments import attachment_kind, kind_limit_bytes
+
+    mime = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+    # W475: the platform refuses a text file over 10 MiB and an SVG over
+    # 2 MiB at upload; say so before a slot is taken.
+    kind = attachment_kind(data, mime=mime)
+    kind_limit = kind_limit_bytes(kind)
+    if len(data) > kind_limit:
+        raise DomainError(
+            "work_attachment_too_large",
+            f"The platform accepts {kind} attachments up to {kind_limit} bytes.",
+            details={"maximum_bytes": kind_limit, "content_bytes": len(data), "kind": kind},
+        )
     slot_result = _reference_mapping_request(
         args,
         action="attachment.request_upload",
@@ -3482,9 +3497,7 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
     staged_ref = str(slot.get("staged_ref") or "")
     if not upload_url or not staged_ref:
         raise DomainError("work_attachment_upload_response_invalid", "The upload slot is incomplete.", status=502)
-    import mimetypes
-
-    asyncio.run(_http_upload(upload_url, data, mimetypes.guess_type(source.name)[0] or "application/octet-stream"))
+    asyncio.run(_http_upload(upload_url, data, mime))
     refs = [str(ref) for ref in item.get("attachment_refs") or []]
     updated = _reference_mapping_request(
         args,

@@ -6949,7 +6949,11 @@ class SharedFieldStore:
                     data = stream.read(MAX_MAIL_ATTACHMENT_BYTES + 1)
             except OSError as exc:
                 raise DomainError("field_attachment_missing", "An attachment is not readable.") from exc
-            validate_mail_attachment(data)
+            # W475: the platform's per-kind ceilings apply at send, not
+            # after the message was queued.
+            validate_mail_attachment(
+                data, filename=filename, mime=mimetypes.guess_type(filename)[0] or ""
+            )
             if item.get("sha256") and hashlib.sha256(data).hexdigest() != item["sha256"]:
                 raise DomainError("field_attachment_integrity_mismatch", "Attachment bytes changed after their leased read.", status=409)
             attachment_sources.append((data, filename))
