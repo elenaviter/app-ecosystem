@@ -1010,6 +1010,7 @@ def _render_message(
         lines.extend(_BODY_INDENT + line for line in str(body).splitlines())
     payload = message.get("payload")
     if compact:
+        payload = _with_matching_retirement_command_folded(payload, message)
         payload = _without_envelope_defaults(payload, header_work_ref=message.get("work_ref"))
     if payload:
         lines.append("payload:")
@@ -1102,6 +1103,116 @@ def _without_envelope_defaults(payload: Any, *, header_work_ref: Any) -> Any:
             continue
         kept[name] = value
     return kept
+
+
+# The fields of a routed mail's admitted command (W474) that repeat what the
+# delivered message already shows. Any other field is printed in full.
+_RETIREMENT_MAIL_FIELDS = (
+    "kind",
+    "subject",
+    "body",
+    "correlation_id",
+    "reply_to",
+    "source_message_ref",
+    "work_ref",
+    "identity_ref",
+    "payload",
+)
+
+
+def _with_matching_retirement_command_folded(payload: Any, message: Mapping[str, Any]) -> Any:
+    """The payload with a matching copy of the admitted mail command named, not repeated (W472).
+
+    Since W474 a routed mail carries ``retirement_command``: the command the
+    server admitted, kept as transport evidence. Its ``mail`` fields repeat
+    the message's own kind, subject, body, correlation, reply-to, source and
+    work refs and payload. When the copy has that shape, each of those fields
+    is shown as one summary line naming what it matches, and a field that
+    differs, or any field outside that set, is still printed in full under its
+    own name. A copy of any other shape is printed whole. Nothing is dropped
+    from the JSON output or ``pb worker lease-read``, and the summary carries
+    no authority: it says the copy matches, nothing more.
+    """
+
+    if not isinstance(payload, Mapping):
+        return payload
+    command = payload.get("retirement_command")
+    if not isinstance(command, Mapping) or set(command) != {"mail"}:
+        return payload
+    mail = command.get("mail")
+    if not isinstance(mail, Mapping):
+        return payload
+    matched: list[str] = []
+    differing: dict[str, Any] = {}
+    for name, value in mail.items():
+        if _retirement_field_matches(name, value, payload, message):
+            matched.append(name)
+        else:
+            differing[name] = value
+    if not matched:
+        return payload
+    folded = dict(payload)
+    summary = "admitted copy of this message; matches its " + ", ".join(matched)
+    if differing:
+        folded["retirement_command"] = {"mail": {"(matching fields)": summary, **differing}}
+    else:
+        folded["retirement_command"] = summary + " (full copy: pb worker lease-read or --format json)"
+    return folded
+
+
+def _retirement_field_matches(
+    name: str, value: Any, payload: Mapping[str, Any], message: Mapping[str, Any]
+) -> bool:
+    """Whether one field of the admitted mail command repeats what the message shows.
+
+    Matching is strict: values compare as JSON, so ``0`` and ``false`` (or
+    ``1`` and ``true``) never match each other at any depth, and a value of
+    an unexpected type never matches, so it is printed in full.
+    """
+
+    if name not in _RETIREMENT_MAIL_FIELDS:
+        return False
+    if name == "body":
+        return isinstance(value, str) and value.strip() == str(message.get("body") or "").strip()
+    if name in ("work_ref", "identity_ref"):
+        if value is None or value == "":
+            return _empty_text(payload.get(name))
+        if not isinstance(value, str):
+            return False
+        # The server may adapt a work locator for older clients, so the copy
+        # matches when it names a locator this message already shows.
+        shown = (message.get("work_ref"), payload.get("work_ref"), payload.get("identity_ref"),
+                 payload.get("versioned_work_ref"))
+        return value in {item for item in shown if isinstance(item, str) and item}
+    if name == "correlation_id" and (value is None or value == ""):
+        # An uncorrelated mail is delivered under its command's ref.
+        command_ref = payload.get("command_ref")
+        return isinstance(command_ref, str) and bool(command_ref) and message.get("correlation_id") == command_ref
+    if name == "reply_to":
+        if value is None or value == "":
+            return _empty_text(message.get("reply_to"))
+        return isinstance(value, str) and value == message.get("reply_to")
+    if name == "source_message_ref":
+        return isinstance(value, str) and _same_json(value, payload.get("source_message_ref"))
+    if name == "payload":
+        inner = payload.get("payload")
+        return isinstance(value, Mapping) and _same_json(value, inner if isinstance(inner, Mapping) else {})
+    return isinstance(value, str) and _same_json(value, message.get(name))
+
+
+def _empty_text(value: Any) -> bool:
+    """Only an absent value or the empty string counts as empty, never 0, false or []."""
+
+    return value is None or (isinstance(value, str) and value == "")
+
+
+def _same_json(left: Any, right: Any) -> bool:
+    """Equal as JSON, so a boolean never equals a number; unserialisable values never match."""
+
+    try:
+        return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+    except (TypeError, ValueError):
+        return False
 
 
 def _payload_without_body_copies(payload: Any, body: Any) -> Any:
