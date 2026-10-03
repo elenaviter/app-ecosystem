@@ -222,6 +222,24 @@ folders are removed 30 days after the row was created, per agent. Rows from
 before this layout are moved into it once by housekeeping, and are found by id
 in the old flat folders until then.
 
+Mail attachments between workers use the same Board-backed storage as
+operator uploads. The sender snapshots each file into its own outbox,
+including a byte size and SHA-256; equal display names have separate snapshot
+directories. The relay uploads the bytes, and the Board stores them on a turn
+in the recipient's conversation before committing the control with a signed
+download manifest. The receiving relay verifies and materializes its own copy;
+no sender-local path travels in the Board envelope. A content-bound retry
+reuses the committed control and links instead of creating another message.
+Staged mail inputs remain subject to staging expiry so an outcome-unknown
+retry can use the same upload or an identical newly staged file.
+
+`worker forward` requires the original message's exact unexpired session
+lease and verifies its local file manifest before creating a new outbox
+snapshot. It records the original message, sender and kind as provenance,
+not as authority. Settling the original does not erase either retained copy.
+Both mailbox lanes allow ten files of at most 25 MiB each and enforce the
+shared `no-executable-binary` content rule; source and scripts remain allowed.
+
 The journal-index lock files follow their operation. Housekeeping removes a
 lock after the operation's retained record expires. A migration never deletes
 an unreadable record.
@@ -232,8 +250,11 @@ Finished worktrees filled a host disk before anyone saw it (2026-09-30). The
 relay's heartbeat carries `disk_usage`: the host's free and total bytes for
 the file system that holds the agent's workspace (one `statvfs` per beat) and
 the workspace's own size. The size walks the tree, which takes tens of seconds
-on a large workspace, so a background task re-measures it at most every 15
-minutes and the heartbeat never waits for it: each beat carries the last
+on a large workspace (time follows the file count more than the bytes). So a
+background task re-measures it at most every 15 minutes, in a child process,
+with at most two walks at once per relay, and the heartbeat never waits for
+it. Two slots, not one, let the other channels' walks pass a long one at
+relay startup: each beat carries the last
 measured size, or none until the first walk lands (the card then shows
 "measuring"). The board keeps the latest report per
 agent, shows it on the agent card ("disk … free (…%) · workspace …") and in

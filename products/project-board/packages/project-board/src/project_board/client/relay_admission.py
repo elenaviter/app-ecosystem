@@ -90,6 +90,10 @@ RUNTIME_UNAVAILABLE_CODES = frozenset(
         # schedule after the runtime was back). A sibling holding the lock
         # for any other reason is also over within seconds, never a refusal.
         "oauth_profile_lock_timeout",
+        # With one lock per credential (W464), a token operation whose
+        # profile moved to another credential twice while it read gives up
+        # with this code: a moment's race, retried like the lock timeout.
+        "oauth_profile_credential_changed",
     }
 )
 

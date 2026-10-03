@@ -122,7 +122,16 @@ def test_slow_coordinate_wait_names_overlapping_relay_work(
     trace = _trace(clock)
     supervisor = make_supervisor(host)
     supervisor._trace = trace
-    session = SimpleNamespace(adapter=SimpleNamespace(client=StableClient()))
+    # The cycle drains with the session it holds in _sessions; the drain
+    # checks that before the dispatch (W461 review).
+    session = SimpleNamespace(
+        adapter=SimpleNamespace(client=StableClient()),
+        closing=False,
+        profile=channel.profile,
+        channel_identity=channel.worker_identity,
+        card_fingerprint=supervisor._card_fingerprint(host, channel),
+    )
+    supervisor._sessions[channel.worker_name] = session
     caplog.set_level(logging.WARNING)
 
     with trace.stage(

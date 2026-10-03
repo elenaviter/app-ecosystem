@@ -281,3 +281,35 @@ def test_the_message_clock_decides_nothing():
         _board_read(adapter, linked=True, field=field)
         clock.now = 102.0
         assert asyncio.run(adapter._pull_controls())["controls_materialized"] == 1
+
+
+def test_the_store_writes_of_a_delivery_after_a_board_read_run_off_the_loop():
+    """W461: the host record sync and the delivery that follow a board read
+    write files, so they run in the channel's store thread, not on the loop."""
+
+    import threading
+
+    loop_threads: list[int] = []
+    write_threads: list[int] = []
+
+    class ThreadField(Field):
+        def materialize_control(self, item):
+            write_threads.append(threading.get_ident())
+            return super().materialize_control(item)
+
+        def sync_worker_attendances(self, worker_name, project_refs):
+            write_threads.append(threading.get_ident())
+            return super().sync_worker_attendances(worker_name, project_refs)
+
+    field, clock = ThreadField(), Clock()
+    client = Client([_welcome()], attendances=[{"project_ref": "work:project:demo-project-0a1b2c3d"}])
+    adapter = _adapter(field, client, clock)
+
+    async def scenario():
+        loop_threads.append(threading.get_ident())
+        return await adapter._pull_controls()
+
+    result = asyncio.run(scenario())
+    assert result["controls_materialized"] == 1
+    assert len(write_threads) == 3, "first delivery, host record sync, delivery after the board read"
+    assert loop_threads[0] not in write_threads

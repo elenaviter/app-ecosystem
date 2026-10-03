@@ -95,6 +95,8 @@ that concern this repository so the history is discoverable from here.
 | 2026-10-01 | Optional quota failures preserve timed wake recovery | Corrected reset-time fallback preserves one durable addressed wake despite unavailable optional quota reads; owned process-group cleanup and parsed timestamp ordering gain regressions, with unchanged baseline failures and independent review boundaries recorded. |
 | 2026-10-01 | Origin replies bind the exact delivered operator message | Server admission checks the retained delivery receipt, rejects unrelated reply references, and leaves early replies retryable without inbox or notification side effects; red-green source evidence and pending acceptance boundaries are recorded. |
 
+| 2026-10-02 | Mail files cross hosts as content, not paths or inherited authority | Board-backed worker files, content-bound retries, exact-lease forwarding without inherited routing authority, executable-binary content policy, and the limits of source-only acceptance. |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).

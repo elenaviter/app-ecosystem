@@ -22,7 +22,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from threading import Event, Timer
+from threading import Event, Timer, get_ident
 
 import pytest
 
@@ -655,14 +655,14 @@ def test_slow_heartbeat_freshness_is_single_flight_across_child_adapters(host, m
                     config=adapter.config, field=adapter.field, client=adapter.client,
                     journal_refresh_worker=adapter._journal_refresh_worker,
                 )
-                assert child._reconcile_journal_binding_background(BINDING)["state"] == "refresh_pending"
+                assert (await child._reconcile_journal_binding_background(BINDING))["state"] == "refresh_pending"
                 await asyncio.sleep(0)
             assert adapter._journal_refresh_worker._future is future
             assert adapter._journal_refresh_worker._pool is pool
             assert len(calls) == 1
             release.set()
             await asyncio.wait_for(asyncio.wrap_future(future), timeout=3)
-            assert adapter._reconcile_journal_binding_background(BINDING)["state"] == "bound"
+            assert (await adapter._reconcile_journal_binding_background(BINDING))["state"] == "bound"
         finally:
             release.set()
             close = getattr(adapter, "aclose", None)
@@ -670,6 +670,122 @@ def test_slow_heartbeat_freshness_is_single_flight_across_child_adapters(host, m
                 await close()
 
     asyncio.run(scenario())
+
+
+def test_held_journal_refresh_does_not_hold_channel_store_executor(host, monkeypatch):
+    """The composed heartbeat keeps W461 writes off-loop without using their queue for Git."""
+    adapter = heartbeat_adapter(host, monkeypatch)
+    entered, release = Event(), Event()
+    source_stamps = JournalWorkspace._source_stamps
+    record = adapter._record_project_heartbeat_result
+    poll = adapter._journal_refresh_worker.poll
+    loop_thread = get_ident()
+    recorded = []
+
+    def slow(workspace):
+        entered.set()
+        assert release.wait(3)
+        return source_stamps(workspace)
+
+    def record_off_loop(**kwargs):
+        recorded.append(get_ident())
+        assert get_ident() != loop_thread
+        return record(**kwargs)
+
+    def poll_on_loop(*args, **kwargs):
+        assert get_ident() == loop_thread
+        return poll(*args, **kwargs)
+
+    monkeypatch.setattr(JournalWorkspace, "_source_stamps", slow)
+    monkeypatch.setattr(adapter, "_record_project_heartbeat_result", record_off_loop)
+    monkeypatch.setattr(adapter._journal_refresh_worker, "poll", poll_on_loop)
+
+    async def scenario():
+        rescue = Timer(0.8, release.set)
+        rescue.start()
+        try:
+            started = time.monotonic()
+            result = await adapter._poll_project_once(agent_sessions=[], force_heartbeat=True)
+            assert time.monotonic() - started < 0.3
+            assert result["journal_workspace"]["state"] == "refresh_pending"
+            await wait_for_event(entered)
+            assert not release.is_set()
+            thread = await asyncio.wait_for(
+                relay.run_off_loop(get_ident, executor=adapter._store_thread()), timeout=0.3
+            )
+            assert recorded == [thread] and thread != loop_thread
+            assert not release.is_set(), "the store probe must finish while journal work is held"
+        finally:
+            release.set()
+            rescue.cancel()
+            await adapter.aclose()
+
+    with ThreadPoolExecutor(max_workers=1) as store:
+        adapter._store_executor = store
+        asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("outcome", ["bound", "error"])
+def test_held_store_executor_does_not_block_journal_poll_or_view_lock(host, monkeypatch, outcome):
+    """Polling/views remain loop-owned while completed incident effects wait for field I/O."""
+    adapter = host["workers"]["current"]["relay"]
+    published = capture_journal_view(adapter)
+    worker = adapter._journal_refresh_worker
+    held, release, polled, applied = Event(), Event(), Event(), Event()
+    poll = worker.poll
+    report_incident = adapter._report_journal_incident
+    loop_thread = get_ident()
+
+    def hold_store():
+        held.set()
+        assert release.wait(3)
+
+    def poll_on_loop(*args, **kwargs):
+        assert get_ident() == loop_thread
+        ready, result = poll(*args, **kwargs)
+        if ready:
+            polled.set()
+            if outcome == "error":
+                result = DomainError("journal_index_refresh_failed", "LOCAL refresh failed.")
+        return ready, result
+
+    def report_off_loop(*args, **kwargs):
+        assert get_ident() != loop_thread
+        applied.set()
+        return report_incident(*args, **kwargs)
+
+    monkeypatch.setattr(worker, "poll", poll_on_loop)
+    monkeypatch.setattr(adapter, "_report_journal_incident", report_off_loop)
+
+    async def scenario(store):
+        consume = None
+        try:
+            assert (await adapter._reconcile_journal_binding_background(BINDING))["state"] == "refresh_pending"
+            await asyncio.wait_for(asyncio.wrap_future(worker._future), timeout=3)
+            holder = store.submit(hold_store)
+            await wait_for_event(held)
+            consume = asyncio.create_task(adapter._reconcile_journal_binding_background(BINDING))
+            await wait_for_event(polled)
+            assert not consume.done() and not applied.is_set()
+            # An actual requested view can take and release its asyncio lock
+            # while the completed refresh's incident write is still queued.
+            await asyncio.wait_for(adapter._serve_journal_view(journal_view_control()), timeout=0.5)
+            assert len(published) == 1 and not worker._view_lock.locked()
+            assert not release.is_set() and not applied.is_set()
+            release.set()
+            result = await asyncio.wait_for(consume, timeout=3)
+            assert result["state"] == ("bound" if outcome == "bound" else "index_unavailable")
+            assert applied.is_set()
+            holder.result(timeout=3)
+        finally:
+            release.set()
+            if consume is not None:
+                await asyncio.gather(consume, return_exceptions=True)
+            await adapter.aclose()
+
+    with ThreadPoolExecutor(max_workers=1) as store:
+        adapter._store_executor = store
+        asyncio.run(scenario(store))
 
 
 def journal_view_control(*, query="decision", mode="catalog"):
@@ -825,7 +941,7 @@ def test_requested_journal_view_shares_single_flight_with_heartbeat(host, monkey
     async def scenario():
         worker = adapter._journal_refresh_worker
         try:
-            adapter._reconcile_journal_binding_background(BINDING)
+            await adapter._reconcile_journal_binding_background(BINDING)
             await wait_for_event(entered)
             refresh, pool = worker._future, worker._pool
             request = asyncio.create_task(adapter._serve_journal_view(journal_view_control()))
@@ -837,14 +953,14 @@ def test_requested_journal_view_shares_single_flight_with_heartbeat(host, monkey
             with pytest.raises(asyncio.CancelledError):
                 await queued
             for _ in range(20):
-                assert adapter._reconcile_journal_binding_background(BINDING)["state"] == "refresh_pending"
+                assert (await adapter._reconcile_journal_binding_background(BINDING))["state"] == "refresh_pending"
                 assert worker._future is refresh and worker._view_future is None and worker._pool is pool
                 await asyncio.sleep(0)
             release.set()
             await asyncio.wait_for(request, timeout=2)
             assert len(published) == 1
             assert worker._pool is pool and worker._view_future is None
-            assert adapter._reconcile_journal_binding_background(BINDING)["state"] == "bound"
+            assert (await adapter._reconcile_journal_binding_background(BINDING))["state"] == "bound"
         finally:
             release.set()
             await adapter.aclose()
@@ -912,7 +1028,7 @@ def test_channel_shutdown_cancels_held_lock_without_late_mutation(host, lock_nam
 
     async def scenario():
         await wait_for_event(locked)
-        assert adapter._reconcile_journal_binding_background(BINDING)["state"] == "refresh_pending"
+        assert (await adapter._reconcile_journal_binding_background(BINDING))["state"] == "refresh_pending"
         await asyncio.sleep(0.05)
         started = time.monotonic()
         await asyncio.wait_for(adapter.aclose(), timeout=0.5)
@@ -923,7 +1039,7 @@ def test_channel_shutdown_cancels_held_lock_without_late_mutation(host, lock_nam
         release.set()
         await asyncio.sleep(0.05)
         assert before == (workspace.catalog_path.read_bytes(), workspace.index_status_path.read_bytes())
-        assert adapter._reconcile_journal_binding_background(BINDING)["state"] == "refresh_pending"
+        assert (await adapter._reconcile_journal_binding_background(BINDING))["state"] == "refresh_pending"
         assert adapter._journal_refresh_worker._pool is None
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -951,7 +1067,7 @@ def test_cancelled_shutdown_drains_slow_scan_without_certifying_late_result(host
     monkeypatch.setattr(JournalWorkspace, "_scan_documents", slow)
 
     async def scenario():
-        adapter._reconcile_journal_binding_background(BINDING)
+        await adapter._reconcile_journal_binding_background(BINDING)
         await wait_for_event(entered)
         closing = asyncio.create_task(adapter.aclose())
         await asyncio.sleep(0.02)
@@ -988,18 +1104,18 @@ def test_background_refresh_budget_refuses_held_lock_and_can_retry(host):
 
     async def scenario():
         await wait_for_event(locked)
-        adapter._reconcile_journal_binding_background(BINDING)
+        await adapter._reconcile_journal_binding_background(BINDING)
         future = adapter._journal_refresh_worker._future
         await asyncio.wait_for(asyncio.wrap_future(future), timeout=0.5)
-        result = adapter._reconcile_journal_binding_background(BINDING)
+        result = await adapter._reconcile_journal_binding_background(BINDING)
         assert result["state"] == "index_unavailable"
         assert result["error_code"] == "journal_index_refresh_failed"
         assert "TimeoutError" not in result["error_summary"]
         release.set()
         adapter._journal_refresh_worker.timeout_seconds = 3
-        adapter._reconcile_journal_binding_background(BINDING)
+        await adapter._reconcile_journal_binding_background(BINDING)
         await asyncio.wait_for(asyncio.wrap_future(adapter._journal_refresh_worker._future), timeout=3)
-        assert adapter._reconcile_journal_binding_background(BINDING)["state"] == "bound"
+        assert (await adapter._reconcile_journal_binding_background(BINDING))["state"] == "bound"
         await adapter.aclose()
 
     with ThreadPoolExecutor(max_workers=1) as pool:
@@ -1029,18 +1145,18 @@ def test_superseded_binding_cancels_late_scan_before_index_publication(host, mon
 
     async def scenario():
         try:
-            adapter._reconcile_journal_binding_background(BINDING)
+            await adapter._reconcile_journal_binding_background(BINDING)
             await wait_for_event(entered)
             old = adapter._journal_refresh_worker._future
-            assert adapter._reconcile_journal_binding_background(newer)["state"] == "refresh_pending"
+            assert (await adapter._reconcile_journal_binding_background(newer))["state"] == "refresh_pending"
             assert adapter._journal_refresh_worker._future is old
             release.set()
             assert await asyncio.wait_for(asyncio.wrap_future(old), timeout=3) is None
             assert workspace.index.inspect(MERGED_ENTRY)["state"] == "entry_absent"
             assert workspace.index_status()["freshness"] == "unverified"
-            adapter._reconcile_journal_binding_background(newer)
+            await adapter._reconcile_journal_binding_background(newer)
             await asyncio.wait_for(asyncio.wrap_future(adapter._journal_refresh_worker._future), timeout=3)
-            result = adapter._reconcile_journal_binding_background(newer)
+            result = await adapter._reconcile_journal_binding_background(newer)
             assert result["state"] == "bound" and result["revision"] == 2
             assert workspace.index.inspect(MERGED_ENTRY)["state"] == "indexed"
         finally:
@@ -1074,9 +1190,9 @@ def test_background_refresh_keeps_failure_source_and_partial_semantics(host, mon
 
     async def scenario():
         try:
-            adapter._reconcile_journal_binding_background(BINDING)
+            await adapter._reconcile_journal_binding_background(BINDING)
             await asyncio.wait_for(asyncio.wrap_future(adapter._journal_refresh_worker._future), timeout=3)
-            result = adapter._reconcile_journal_binding_background(BINDING)
+            result = await adapter._reconcile_journal_binding_background(BINDING)
             status = workspace.index_status()
             if failure == "partial":
                 assert result["state"] == "bound"

@@ -129,6 +129,16 @@ A lease that those commands cannot enumerate or read is a delivery-integrity
 blocker. Do not inspect, move, or edit private mailbox files as routine
 recovery.
 
+When an exact current reply is known but older mail fills the ordinary batch,
+use `pb worker receive --message-ref <work:mail:...>` or
+`pb worker receive --correlation-id <id> --sender <stable-worker-address>`.
+`--project-ref` and `--work-ref` are optional constraints. The `selection`
+result says whether a match was claimed, is already held or settled, or was
+blocked by pending operator mail. A selection leaves other pending mail in
+place and returns normal leases for any claimed messages; settle each once.
+Run ordinary `pb worker receive` after a selection before selecting again.
+Use ordinary receive with every native `--wake-id`.
+
 ## Lease Discipline
 
 Build a local handling ledger from the complete returned items before starting
@@ -204,14 +214,42 @@ reply is recorded, stating any channel failure or unknown outcome honestly.
 When sending the operator a link, address the exact Problem Board conversation
 and message. A deployment root URL is not a conversation link.
 
-`pb worker send --recipient operator --attach <path>` snapshots an outgoing
-file into the durable message; repeat `--attach` for several files. An incoming
+`pb worker send --recipient <worker-or-operator> --attach <path>` snapshots an
+outgoing file into the durable outbox; repeat `--attach` for several files.
+Files always use the governed Board upload/download lane, including between
+workers on one host. No sender filesystem is required on the receiving host.
+The operator and worker limits are the same: ten files, at most 25 MiB each.
+Rule `no-executable-binary` refuses ELF, Mach-O, PE and WebAssembly containers
+by content and directs the sender to Git. Source, scripts and ordinary text
+are allowed; an executable extension or mode bit alone is not a refusal.
+An incoming
 message exposes `attachment_count`, a first-class `attachments[]` manifest, and
 one exact `read_command` per file. Run that command while the named lease is
 active, then read the returned `local_path` as message input. The command is
 session-bound and verifies mailbox containment, byte size, and SHA-256. File
 bytes do not belong in a control body, and private mailbox files are not an
 attachment API.
+
+To forward that exact message and its verified files in one command while its
+lease is active:
+
+```bash
+pb worker forward \
+  --project-ref <project-ref-if-present> \
+  --message-ref <message-ref> \
+  --lease-id <lease-id> \
+  --recipient <worker-or-operator> \
+  --idempotency-key <stable-forward-key>
+```
+
+The forwarded message retains its original body, subject and work context and
+names the original message, sender and kind as provenance. It does not copy
+arbitrary payload or private operator routing authority. Its sender is this
+session and its recipient must pass the normal project and receiving-host
+rules. The original kind is retained unless `--kind` is supplied; use an
+allowed operator kind, for example `--kind update`, when forwarding a worker
+request to the operator. Forwarding does not settle the lease or replace a
+required visible reply to the original sender. Handle and settle it normally.
 
 ```bash
 pb worker attachment-read \

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import secrets
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -16,10 +18,44 @@ from connection_hub.caller.authorization.models import (
     validate_resource_identifier,
     validate_web_url,
 )
+from connection_hub.caller.authorization import request_records
+from connection_hub.caller.authorization.client_pool import oauth_http_client
 from connection_hub.caller.errors import AuthorizationError
 
 MAX_OAUTH_RESPONSE_BYTES = 1024 * 1024
 MAX_OAUTH_ERROR_REASON_CHARS = 512
+
+
+# Every OAuth discovery, metadata and token request carries one random id
+# that the relay logs with any failure, and that a proxy can log with the
+# request, so a client failure can be matched with what the server side saw
+# (W461, 2026-10-02: failing token requests left no proxy line, and nothing
+# joined the two sides). It is random per request and carries no identity.
+REQUEST_ID_HEADER = "X-Request-ID"
+
+
+def _record_probe(
+    request_id: str,
+    started: float,
+    status: int | None,
+    outcome: str,
+    phases: request_records.RequestPhases,
+) -> None:
+    """The MCP endpoint probe's request record; a 401 challenge is its expected answer."""
+
+    request_records.record(
+        request_id=request_id,
+        kind="mcp_probe",
+        method="POST",
+        status=status,
+        outcome=outcome,
+        elapsed_seconds=time.monotonic() - started,
+        phases=phases,
+    )
+
+
+def new_request_id() -> str:
+    return secrets.token_hex(8)
 
 
 def _request_label(failure_code: str) -> str:
@@ -155,10 +191,13 @@ def _request_error(
     failure_kind: str = "",
     oauth_error: str = "",
     retry_after_seconds: int | None = None,
+    request_id: str = "",
 ) -> AuthorizationError:
     safe_url = _safe_request_url(endpoint, failure_code=failure_code)
     label = _request_label(failure_code)
     details: dict[str, Any] = {"method": method, "url": safe_url}
+    if request_id:
+        details["request_id"] = request_id
     if status is not None:
         details["status"] = int(status)
     if retry_after_seconds is not None:
@@ -179,6 +218,8 @@ def _request_error(
         if server_reason:
             message += f": {server_reason}"
         message += "."
+    if request_id:
+        message = f"{message[:-1]} (request_id {request_id})."
     error = AuthorizationError(failure_code, message)
     error.status = int(status) if status is not None else None
     error.details = details
@@ -232,33 +273,35 @@ class HttpxOAuthTransport:
             failure_code="oauth_token_request_failed",
         )
 
-    async def _request_json(
+    async def _exchange(
         self,
         method: str,
-        url: str,
+        endpoint: str,
         *,
-        json_payload: Mapping[str, Any] | None = None,
-        form_payload: Mapping[str, str] | None = None,
+        request_id: str,
+        json_payload: Mapping[str, Any] | None,
+        form_payload: Mapping[str, str] | None,
         expected_statuses: set[int],
         failure_code: str,
-    ) -> Mapping[str, Any]:
-        endpoint = validate_web_url(url, code="oauth_endpoint_invalid")
+        phases: request_records.RequestPhases,
+    ) -> tuple[bytearray, int]:
+        """One HTTP exchange: the response body and status, or the classified failure."""
+
         try:
             import httpx2
 
             async with (
-                httpx2.AsyncClient(
-                    timeout=httpx2.Timeout(self._timeout_seconds),
-                    follow_redirects=False,
-                    transport=self._transport,
-                    trust_env=False,
+                oauth_http_client(
+                    transport=self._transport, timeout_seconds=self._timeout_seconds
                 ) as client,
                 client.stream(
                     method,
                     endpoint,
                     json=json_payload,
                     data=form_payload,
-                    headers={"Accept": "application/json"},
+                    headers={"Accept": "application/json", REQUEST_ID_HEADER: request_id},
+                    timeout=httpx2.Timeout(self._timeout_seconds),
+                    extensions={"trace": phases.trace},
                 ) as response,
             ):
                 content_length = response.headers.get("content-length")
@@ -300,6 +343,7 @@ class HttpxOAuthTransport:
                         retry_after_seconds=_retry_after_seconds(
                             response.headers, bytes(body)
                         ),
+                        request_id=request_id,
                     )
         except AuthorizationError:
             raise
@@ -309,7 +353,54 @@ class HttpxOAuthTransport:
                 method=method,
                 endpoint=endpoint,
                 failure_kind=type(exc).__name__,
+                request_id=request_id,
             ) from None
+        return body, response.status_code
+
+    async def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_payload: Mapping[str, Any] | None = None,
+        form_payload: Mapping[str, str] | None = None,
+        expected_statuses: set[int],
+        failure_code: str,
+    ) -> Mapping[str, Any]:
+        endpoint = validate_web_url(url, code="oauth_endpoint_invalid")
+        request_id = new_request_id()
+        started = time.monotonic()
+        phases = request_records.RequestPhases(started)
+        status: int | None = None
+        outcome = "ok"
+        try:
+            body, status = await self._exchange(
+                method,
+                endpoint,
+                request_id=request_id,
+                json_payload=json_payload,
+                form_payload=form_payload,
+                expected_statuses=expected_statuses,
+                failure_code=failure_code,
+                phases=phases,
+            )
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except AuthorizationError as exc:
+            outcome = exc.code
+            status = exc.details.get("status") if isinstance(exc.details, Mapping) else None
+            raise
+        finally:
+            request_records.record(
+                request_id=request_id,
+                kind=request_records.kind_of(failure_code),
+                method=method,
+                status=status if isinstance(status, int) else None,
+                outcome=outcome,
+                elapsed_seconds=time.monotonic() - started,
+                phases=phases,
+            )
         try:
             value = json.loads(bytes(body))
         except (UnicodeError, ValueError):
@@ -464,19 +555,21 @@ class McpOAuthEndpointDiscovery:
         from mcp.types import LATEST_PROTOCOL_VERSION
 
         target = validate_web_url(endpoint, code="oauth_mcp_endpoint_invalid")
+        request_id = new_request_id()
+        probe_started = time.monotonic()
+        probe_phases = request_records.RequestPhases(probe_started)
         try:
             import httpx2
 
             async with (
-                httpx2.AsyncClient(
-                    timeout=httpx2.Timeout(self._timeout_seconds),
-                    follow_redirects=False,
-                    transport=self._http_transport,
-                    trust_env=False,
+                oauth_http_client(
+                    transport=self._http_transport, timeout_seconds=self._timeout_seconds
                 ) as client,
                 client.stream(
                     "POST",
                     target,
+                    timeout=httpx2.Timeout(self._timeout_seconds),
+                    extensions={"trace": probe_phases.trace},
                     json={
                         "jsonrpc": "2.0",
                         "id": "connection-hub-oauth-discovery",
@@ -494,6 +587,7 @@ class McpOAuthEndpointDiscovery:
                         "Accept": "application/json, text/event-stream",
                         "Content-Type": "application/json",
                         "MCP-Protocol-Version": LATEST_PROTOCOL_VERSION,
+                        REQUEST_ID_HEADER: request_id,
                     },
                 ) as response,
             ):
@@ -515,24 +609,31 @@ class McpOAuthEndpointDiscovery:
                             "oauth_response_too_large",
                             "The MCP endpoint response is too large.",
                         )
-        except AuthorizationError:
+        except AuthorizationError as exc:
+            _record_probe(request_id, probe_started, None, exc.code, probe_phases)
+            raise
+        except asyncio.CancelledError:
+            _record_probe(request_id, probe_started, None, "cancelled", probe_phases)
             raise
         except Exception as exc:  # noqa: BLE001
+            _record_probe(request_id, probe_started, None, "oauth_mcp_endpoint_unreachable", probe_phases)
             # The exception class says whether the endpoint timed out, refused
             # the connection or dropped it; its text may carry the URL and is
             # not kept.
             unreachable = AuthorizationError(
                 "oauth_mcp_endpoint_unreachable",
                 "The MCP endpoint could not be reached for OAuth discovery "
-                f"({type(exc).__name__}).",
+                f"({type(exc).__name__}, request_id {request_id}).",
             )
             unreachable.details = {
                 "phase": "mcp_probe",
                 "method": "POST",
                 "url": _safe_request_url(target, failure_code=""),
                 "failure_kind": type(exc).__name__,
+                "request_id": request_id,
             }
             raise unreachable from None
+        _record_probe(request_id, probe_started, response.status_code, "ok", probe_phases)
         if response.status_code != 401:
             raise AuthorizationError(
                 "oauth_challenge_not_advertised",

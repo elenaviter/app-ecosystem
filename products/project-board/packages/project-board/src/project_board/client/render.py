@@ -859,6 +859,32 @@ def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
             f"NOTE: {total_held - len(items)} held lease(s) are not in this batch. "
             + _cmd(["pb", "worker", "leases"], flags)
         )
+    selection = result.get("selection")
+    if isinstance(selection, Mapping):
+        lines.append(
+            "selection: {} · matched pending {} · claimed now {} · unselected pending {}".format(
+                selection.get("state") or "unknown",
+                selection.get("matched_pending_count", 0),
+                selection.get("claimed_now_count", 0),
+                selection.get("unselected_count", 0),
+            )
+        )
+        if selection.get("oldest_unselected_at"):
+            lines.append(f"oldest unselected pending: {selection['oldest_unselected_at']}")
+        if selection.get("previous_state"):
+            lines.append(f"previous message state: {selection['previous_state']}")
+        if selection.get("held_count"):
+            lines.append(f"matching held leases: {selection['held_count']}")
+            for held in selection.get("held") or []:
+                if isinstance(held, Mapping):
+                    lines.append(
+                        "  {} · lease {} · expires {}".format(
+                            held.get("message_ref") or "?",
+                            held.get("lease_id") or "?",
+                            held.get("expires_at") or "?",
+                        )
+                    )
+        lines.append(str(selection.get("instruction") or "Run ordinary pb worker receive."))
     # A signal is produced once (an unlink, a control-plane change); brief
     # output is the only place the agent sees it.
     for signal in result.get("signals") or []:

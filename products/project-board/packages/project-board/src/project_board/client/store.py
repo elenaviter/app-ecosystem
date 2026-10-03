@@ -8,6 +8,8 @@ import mimetypes
 mimetypes.add_type("text/markdown", ".md")
 import logging
 import os
+import uuid
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -84,6 +86,12 @@ from .mail_attachments import (
     materialized_attachment_manifest,
     stored_attachment_manifest,
     verified_attachment,
+    safe_attachment_filename,
+)
+from ..contract.mail_attachments import (
+    MAX_MAIL_ATTACHMENT_BYTES,
+    MAX_MAIL_ATTACHMENTS,
+    validate_mail_attachment,
 )
 from .local_wake import notify_worker_watch
 from .mail_history import MailHistoryStore
@@ -3510,6 +3518,7 @@ class SharedFieldStore:
                     5, min(int(check_interval_seconds), 3600)
                 ),
                 "last_inbox_check_at": str(previous.get("last_inbox_check_at") or ""),
+                "general_receive_due": bool(previous.get("general_receive_due")),
                 "last_message_refs": list(previous.get("last_message_refs") or []),
                 "last_control_refs": list(previous.get("last_control_refs") or []),
                 "observed_control_plane_state": str(
@@ -3561,6 +3570,7 @@ class SharedFieldStore:
         *,
         state: str = "waiting",
         inbox_checked: bool = False,
+        selective_receive: bool = False,
         message_refs: Sequence[str] = (),
         control_refs: Sequence[str] = (),
         observed_control_plane_state: str | None = None,
@@ -3591,7 +3601,10 @@ class SharedFieldStore:
                 heartbeat_at=now,
                 revision=int(listener.get("revision") or 0) + 1,
             )
+            if selective_receive:
+                listener["general_receive_due"] = True
             if inbox_checked:
+                listener["general_receive_due"] = False
                 observed_message_refs = _bounded_message_refs(message_refs)
                 listener.update(
                     last_inbox_check_at=now,
@@ -5948,6 +5961,57 @@ class SharedFieldStore:
             ),
         }
 
+    def forward_worker_mail(
+        self,
+        project_id: str,
+        *,
+        worker_name: str,
+        message_ref: str,
+        lease_id: str,
+        lease_owner: str,
+        recipient: str,
+        idempotency_key: str,
+        kind: str = "",
+    ) -> dict[str, Any]:
+        """Forward exactly one currently leased message and its verified files.
+
+        No arbitrary payload, private operator route, signed URL or sender path
+        crosses this boundary. The new envelope names the original as evidence,
+        never as authority. Forwarding does not settle the original lease.
+        """
+        message = self.read_worker_mail_lease(
+            project_id, worker_name=worker_name, message_ref=message_ref,
+            lease_id=lease_id, lease_owner=lease_owner,
+        )
+        files = []
+        for entry in stored_attachment_manifest(message):
+            verified = self.read_worker_mail_attachment(
+                project_id, worker_name=worker_name, message_ref=message_ref,
+                lease_id=lease_id, lease_owner=lease_owner, file_ref=entry["file_ref"],
+            )["attachment"]
+            files.append({"path": verified["local_path"], "filename": verified["filename"], "sha256": verified["sha256"]})
+        common = dict(
+            project_id=project_id, sender=worker_name, recipient=recipient,
+            kind=kind or str(message.get("kind") or "request"),
+            subject=str(message.get("subject") or "Forwarded message"),
+            body=str(message.get("body") or ""),
+            payload={"forwarded_message_ref": message_ref,
+                     "forwarded_sender": str(message.get("sender") or ""),
+                     "forwarded_kind": str(message.get("kind") or "")},
+            work_ref=str(message.get("work_ref") or ""),
+            correlation_id=str(message.get("correlation_id") or ""),
+            reply_to="", idempotency_key=idempotency_key,
+        )
+        # Direct worker mail is always adjudicated by the board, even when
+        # the recipient is absent from this host's directory (W304).
+        direct = str(recipient or "").strip().lower()
+        if not project_id and direct not in {"operator", "owner", "coordinator"}:
+            return self.enqueue_remote_mail(**common, attachments=files)
+        resolution = self.resolve_mail_recipient(project_id, recipient)
+        if files or resolution["route"] == "remote":
+            return self.enqueue_remote_mail(**common, attachments=files)
+        return self.send_mail(**common)
+
     def record_worker_mail_settlement(
         self, worker_name: str, *, message_ref: str
     ) -> dict[str, Any]:
@@ -6514,6 +6578,7 @@ class SharedFieldStore:
         reply_to: str = "",
         idempotency_key: str,
         sender_identity: Mapping[str, Any] | None = None,
+        admitted_operator_control: bool = False,
         board_routed: bool = False,
         idempotency_identity: Mapping[str, Any] | None = None,
         idempotency_alias_keys: Sequence[str] = (),
@@ -6694,7 +6759,24 @@ class SharedFieldStore:
                 status = "ignored_sender_limbo"
             elif recipient_row and recipient_row.get("pool_status") == "limbo":
                 status = "ignored_recipient_limbo"
-            message_id = new_id("mail")
+            operator_admitted = bool(
+                admitted_operator_control
+                and clean_sender == "control-plane"
+                and identity.get("kind") == "user"
+                and clean_kind in {"request", "reply"}
+            )
+            # Share the admitted-control boundary with selective receive:
+            # worker display identities and routed peer mail cannot assert it.
+            # Sort trusted new controls before random-ID worker mail without
+            # reading the whole inbox for each bounded receive.
+            message_id = (
+                "mail-priority_"
+                + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+                + "_"
+                + uuid.uuid4().hex
+                if operator_admitted
+                else new_id("mail")
+            )
             now = utc_now()
             envelope = {
                 "schema": MAIL_SCHEMA,
@@ -6720,6 +6802,10 @@ class SharedFieldStore:
                 "created_at": now,
                 "updated_at": now,
             }
+            if operator_admitted:
+                # Only materialize_control passes this for a board-admitted
+                # person; peer display labels and public payloads cannot.
+                envelope["admitted_operator_control"] = True
             envelope["message_ref"] = reference_for_record("mail", envelope)
             envelope["content_hash"] = content_hash(envelope)
             if status == "pending":
@@ -6812,7 +6898,7 @@ class SharedFieldStore:
         idempotency_key: str,
         attachments: Sequence[Mapping[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Queue mail for a worker whose inbox belongs to another host relay.
+        """Queue governed Board mail, including files addressed on this host.
 
         Files named in ``attachments`` (``path``, optional ``filename``) are
         copied next to the outbox row now, so the relay uploads a stable copy
@@ -6846,7 +6932,9 @@ class SharedFieldStore:
         key = bounded_text(
             idempotency_key, field="idempotency_key", maximum=512, required=True
         )
-        attachment_sources: list[tuple[Path, str]] = []
+        attachment_sources: list[tuple[bytes, str]] = []
+        if len(attachments or []) > MAX_MAIL_ATTACHMENTS:
+            raise DomainError("field_attachment_count", f"At most {MAX_MAIL_ATTACHMENTS} attachments per message.")
         for item in attachments or []:
             source = Path(str((item or {}).get("path") or "")).expanduser()
             if not source.is_file():
@@ -6855,10 +6943,20 @@ class SharedFieldStore:
                     "An attachment path does not name a readable file.",
                     details={"path": str(source)},
                 )
-            filename = bounded_text(
-                (item or {}).get("filename") or source.name, field="attachment.filename", maximum=512, required=True
+            filename = safe_attachment_filename((item or {}).get("filename") or source.name)
+            try:
+                with source.open("rb") as stream:
+                    data = stream.read(MAX_MAIL_ATTACHMENT_BYTES + 1)
+            except OSError as exc:
+                raise DomainError("field_attachment_missing", "An attachment is not readable.") from exc
+            # W475: the platform's per-kind ceilings apply at send, not
+            # after the message was queued.
+            validate_mail_attachment(
+                data, filename=filename, mime=mimetypes.guess_type(filename)[0] or ""
             )
-            attachment_sources.append((source, Path(filename).name))
+            if item.get("sha256") and hashlib.sha256(data).hexdigest() != item["sha256"]:
+                raise DomainError("field_attachment_integrity_mismatch", "Attachment bytes changed after their leased read.", status=409)
+            attachment_sources.append((data, filename))
         resolution = (
             # W304 decision 3: without a project the board resolves the exact
             # stable name and decides; this host's directory is not asked.
@@ -6866,7 +6964,7 @@ class SharedFieldStore:
             if not clean_project and requested_recipient not in {"operator", "owner"}
             else self.resolve_mail_recipient(clean_project, requested_recipient)
         )
-        if resolution["route"] != "remote":
+        if resolution["route"] != "remote" and not attachment_sources:
             raise DomainError(
                 "field_mail_route_mismatch",
                 "The addressed worker belongs to this host; use the local route.",
@@ -6877,11 +6975,6 @@ class SharedFieldStore:
                 },
             )
         clean_recipient = str(resolution["worker_name"])
-        if attachment_sources and clean_recipient not in {"operator", "owner"}:
-            raise DomainError(
-                "field_attachments_operator_only",
-                "Attachments travel to the operator inbox; worker-to-worker mail carries refs.",
-            )
         mail = {
             "kind": clean_kind,
             "subject": bounded_text(
@@ -6934,7 +7027,9 @@ class SharedFieldStore:
                 },
             )
         request_hash = content_hash(
-            {"route": "remote", "recipient": clean_recipient, **mail}
+            {"route": "remote", "recipient": clean_recipient, **mail,
+             **({"attachments": [{"filename": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+                                 for data, name in attachment_sources]} if attachment_sources else {})}
         )
         with exclusive_lock(self._mail_lock(clean_project, clean_sender)):
             if clean_project:
@@ -6981,15 +7076,18 @@ class SharedFieldStore:
                     / outbox_id
                 )
                 folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-                for source, filename in attachment_sources:
-                    target = folder / filename
-                    target.write_bytes(source.read_bytes())
+                for index, (data, filename) in enumerate(attachment_sources):
+                    # Distinct directories preserve equal display names.
+                    target = folder / str(index) / filename
+                    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    target.write_bytes(data)
                     attachment_files.append(
                         {
                             "filename": filename,
                             "path": str(target),
                             "mime": mimetypes.guess_type(filename)[0] or "application/octet-stream",
                             "size": target.stat().st_size,
+                            "sha256": hashlib.sha256(data).hexdigest(),
                         }
                     )
                 routed_mail["attachment_files"] = attachment_files
@@ -7198,6 +7296,131 @@ class SharedFieldStore:
                     atomic_write_json(path, row)
                     os.replace(path, root / "inbox" / path.name)
 
+    @staticmethod
+    def _is_admitted_operator_mail(row: Mapping[str, Any]) -> bool:
+        identity = row.get("sender_identity")
+        identity = identity if isinstance(identity, Mapping) else {}
+        payload = row.get("payload")
+        payload = payload if isinstance(payload, Mapping) else {}
+        return bool(
+            str(row.get("sender") or "") == "control-plane"
+            and str(row.get("kind") or "") in {"request", "reply"}
+            and str(identity.get("kind") or "") == "user"
+            and (
+                row.get("admitted_operator_control") is True
+                # Controls already materialized by an older client carry the
+                # board's sender identity and control ref, but not the marker.
+                or str(payload.get("command_ref") or "").startswith("work:control:")
+            )
+        )
+
+    def select_mail_candidates(
+        self,
+        project_ids: Sequence[str],
+        *,
+        worker_name: str,
+        message_ref: str = "",
+        correlation_id: str = "",
+        sender: str = "",
+        project_id: str | None = None,
+        work_ref: str = "",
+        maximum_scanned: int = 4096,
+    ) -> dict[str, Any]:
+        """Inspect this worker's locked shards before any selective lease.
+
+        The caller holds every listed ``.mail.lock`` in sorted path order.
+        Files remain where they are; pull_mail uses the returned paths while
+        those locks are still held. A scan beyond the cap refuses closed.
+        """
+        clean_worker = component(worker_name, field="worker_name").lower()
+        selected: dict[str, list[Path]] = {scope: [] for scope in project_ids}
+        held: list[dict[str, str]] = []
+        pending_count = 0
+        unselected_count = 0
+        oldest_unselected_at = ""
+        operator_pending = False
+        scanned = 0
+
+        def matches(row: Mapping[str, Any], scope: str) -> bool:
+            if project_id is not None and scope != project_id:
+                return False
+            if str(row.get("recipient") or "").lower() != clean_worker:
+                return False
+            if message_ref and str(row.get("message_ref") or "") != message_ref:
+                return False
+            if correlation_id and str(row.get("correlation_id") or "") != correlation_id:
+                return False
+            if sender and str(row.get("sender") or "").lower() != sender:
+                return False
+            if work_ref:
+                try:
+                    if plan_node_identity_ref(str(row.get("work_ref") or "")) != work_ref:
+                        return False
+                except DomainError:
+                    return False
+            return True
+
+        for scope in project_ids:
+            root = self._mail_root(scope, clean_worker)
+            self._recover_expired_mail(scope, clean_worker)
+            for path in sorted((root / "inbox").glob("*.json")):
+                scanned += 1
+                if scanned > maximum_scanned:
+                    raise DomainError(
+                        "field_mail_selection_scan_limit",
+                        "Selective receive cannot safely scan this backlog. Use ordinary receive.",
+                        status=409,
+                        details={"maximum_scanned": maximum_scanned},
+                    )
+                row = read_json(path)
+                pending_count += 1
+                if self._is_admitted_operator_mail(row):
+                    operator_pending = True
+                if matches(row, scope):
+                    selected[scope].append(path)
+                else:
+                    unselected_count += 1
+                    created_at = str(row.get("created_at") or "")
+                    if created_at and (not oldest_unselected_at or created_at < oldest_unselected_at):
+                        oldest_unselected_at = created_at
+            for path in sorted((root / "leased").glob("*.json")):
+                scanned += 1
+                if scanned > maximum_scanned:
+                    raise DomainError(
+                        "field_mail_selection_scan_limit",
+                        "Selective receive cannot safely scan this backlog. Use ordinary receive.",
+                        status=409,
+                        details={"maximum_scanned": maximum_scanned},
+                    )
+                row = read_json(path)
+                if matches(row, scope):
+                    lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
+                    held.append({
+                        "message_ref": str(row.get("message_ref") or ""),
+                        "project_ref": make_ref("project", scope) if scope else "",
+                        "lease_id": str(lease.get("lease_id") or ""),
+                        "lease_owner": str(lease.get("owner") or ""),
+                        "expires_at": str(lease.get("expires_at") or ""),
+                    })
+
+        previous_state = ""
+        if message_ref and not any(selected.values()) and not held:
+            for scope in project_ids:
+                row = self._mail_record_unlocked(scope, clean_worker, message_ref)
+                if row and matches(row, scope):
+                    previous_state = str(row.get("state") or row.get("delivery_status") or "")
+                    break
+        return {
+            "selected": selected,
+            "operator_pending": operator_pending,
+            "pending_count": pending_count,
+            "unselected_count": unselected_count,
+            "oldest_unselected_at": oldest_unselected_at,
+            "held": held[:10],
+            "held_count": len(held),
+            "previous_state": previous_state,
+        }
+
     def pull_mail(
         self,
         project_id: str,
@@ -7209,6 +7432,8 @@ class SharedFieldStore:
         byte_budget: MailPullBudget | None = None,
         measure_response: Callable[[Sequence[Mapping[str, Any]]], int] | None = None,
         measure_message: Callable[[Mapping[str, Any]], int] | None = None,
+        selected_paths: Sequence[Path] | None = None,
+        lock_held: bool = False,
     ) -> list[dict[str, Any]]:
         """Lease one bounded mailbox batch.
 
@@ -7237,9 +7462,16 @@ class SharedFieldStore:
         (root / "inbox").mkdir(parents=True, exist_ok=True, mode=0o700)
         (root / "leased").mkdir(parents=True, exist_ok=True, mode=0o700)
         claimed: list[dict[str, Any]] = []
-        with exclusive_lock(root / ".mail.lock"):
+        with nullcontext() if lock_held else exclusive_lock(root / ".mail.lock"):
             self._recover_expired_mail(clean_project, clean_worker)
-            sources = sorted((root / "inbox").glob("*.json"))
+            sources = (
+                sorted((root / "inbox").glob("*.json"))
+                if selected_paths is None
+                else [
+                    path for path in selected_paths
+                    if path.parent == root / "inbox" and path.exists()
+                ]
+            )
             with PartitionedStore(root, store="mailbox").reading("receive") as read:
                 read.opened_pending(clean_worker, len(sources))
             take = max(0, min(int(limit), 100))
@@ -8708,6 +8940,11 @@ class SharedFieldStore:
             reply_to=reply_to,
             idempotency_key=f"control:{command_ref}",
             sender_identity=sender_identity,
+            admitted_operator_control=(
+                control_kind in {"request", "reply"}
+                and isinstance(sender_identity, Mapping)
+                and str(sender_identity.get("kind") or "") == "user"
+            ),
             board_routed=control_kind == "mail",
         )
         if control_kind == "mail" and kind == "delivery_failed":
@@ -11703,6 +11940,7 @@ class SharedFieldStore:
             {
                 "path": str(item.get("path") or ""),
                 "filename": str(item.get("filename") or ""),
+                "sha256": str(item.get("sha256") or ""),
             }
             for item in payload.get("attachment_files") or []
             if isinstance(item, Mapping)
@@ -11725,13 +11963,8 @@ class SharedFieldStore:
             "idempotency_key": replay_key,
         }
         if resolution["route"] == "local":
-            if attachments:
-                raise DomainError(
-                    "field_attachments_operator_only",
-                    "A retained attachment can only be replayed to the operator inbox.",
-                    status=409,
-                )
-            replay = self.send_mail(**common)
+            replay = (self.enqueue_remote_mail(**common, attachments=attachments)
+                      if attachments else self.send_mail(**common))
         else:
             replay = self.enqueue_remote_mail(**common, attachments=attachments)
 

@@ -173,7 +173,10 @@ coordinator included, and for every read and write of project state:
   attendance adapters. While it is running, heartbeats return `refresh_pending`
   and controls and peer channels continue normally; repeated heartbeats do not
   queue jobs. A later heartbeat applies only the matching binding's result and
-  reports any local failure. The job uses separate index connections and a
+  reports any local failure. Polling and the view lock stay on the event loop;
+  completed incident/field writes use the channel's separate store executor.
+  Slow journal work never occupies that serialized field-I/O queue. The job
+  uses separate index connections and a
   cooperative 30-second maintenance budget, including cancellable catalog and
   index lock waits. Channel shutdown cancels pending work and drains the tracked
   job before replacement; it never abandons a thread that can still mutate the

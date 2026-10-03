@@ -6,8 +6,10 @@ import asyncio
 import inspect
 import json
 import logging
+import re
 import time
 import uuid
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -83,6 +85,55 @@ def _transport_failed(error: BaseException) -> bool:
         current = current.__cause__ or current.__context__
     return False
 
+
+_STATUS_CODE = re.compile(r"\bstatus code (\d{3})\b")
+
+
+def _failure_chain(error: BaseException) -> str:
+    """The exception types of a failure chain, outermost first (W461).
+
+    python-socketio reports every transport failure as "Connection error";
+    the chain says whether it was DNS, a refused or reset TCP connection, a
+    TLS failure, a timeout or an HTTP status from the ingress.
+    """
+
+    seen: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in seen and len(seen) < 8:
+        seen.append(current)
+        current = current.__cause__ or current.__context__
+    return ">".join(f"{type(item).__module__.split('.')[0]}.{type(item).__name__}" for item in seen)
+
+
+def _failure_facts(error: BaseException) -> str:
+    """Safe, allowlisted facts about a failure chain (W461).
+
+    Exception text can carry hosts, headers or response bodies, so none of it
+    is copied. What is kept: the first OS error number in the chain, and an
+    HTTP status, read from a ``status``/``status_code`` attribute or from
+    engine.io's "status code NNN" phrase (only the three digits).
+    """
+
+    errno_value = "-"
+    status = "-"
+    seen: list[BaseException] = []
+    current: BaseException | None = error
+    while current is not None and current not in seen and len(seen) < 8:
+        seen.append(current)
+        if errno_value == "-" and isinstance(current, OSError) and isinstance(current.errno, int):
+            errno_value = str(current.errno)
+        if status == "-":
+            for name in ("status", "status_code"):
+                value = getattr(current, name, None)
+                if isinstance(value, int) and 100 <= value <= 599:
+                    status = str(value)
+                    break
+            else:
+                match = _STATUS_CODE.search(" ".join(str(arg) for arg in current.args if isinstance(arg, str)))
+                if match:
+                    status = match.group(1)
+        current = current.__cause__ or current.__context__
+    return f"error_errno={errno_value} error_status={status}"
 
 def _refusal_payload(value: Any) -> dict[str, Any]:
     """The server's refusal as a flat mapping: message, and a code when it sent one.
@@ -265,6 +316,20 @@ def _is_socketio_timeout(error: BaseException) -> bool:
 _NAMESPACE_ADMISSION_TIMEOUT_SECONDS = 30.0
 _RECONNECT_DELAY_SECONDS = 1.0
 _RECONNECT_DELAY_MAX_SECONDS = 10.0
+# An ingress acknowledgement that times out on a socket that delivered nothing
+# since the request was sent marks the transport as silent, and the client
+# replaces it at once instead of waiting for Engine.IO to notice. A timer that
+# fired this much late or more means the event loop was not running, so the
+# silence is not evidence about the transport (W448).
+_SILENT_TRANSPORT_MAX_TIMER_OVERRUN_SECONDS = 1.0
+# How long after a transport drop the client still calls its own reconnect a
+# transient recovery. Past it, an owner that would replace the session does so.
+_TRANSPORT_RECOVERY_WINDOW_SECONDS = 60.0
+# A replaced transport gets this long to disconnect gracefully, and each
+# release step this long, before its resources are released anyway. Beyond
+# this many transports retiring at once, a new one is released at once.
+_RETIRE_TRANSPORT_GRACE_SECONDS = 5.0
+_MAX_RETIRING_TRANSPORTS = 4
 
 
 class FederatedDataBusClient:
@@ -318,6 +383,10 @@ class FederatedDataBusClient:
         self._handshakes = 0
         self._episode_attempt = 0
         self._episode_refusal: dict[str, Any] | None = None
+        # Whether the server refused any handshake since the last connect.
+        # _episode_refusal describes only the previous attempt and is cleared
+        # when the next one starts; this stays set for the whole episode.
+        self._episode_refused = False
         self._socket_factory = socket_factory or _default_socket_factory
         # A custom socket factory owns its reconnect policy. The production
         # factory deliberately disables python-socketio reconnects so
@@ -354,6 +423,29 @@ class FederatedDataBusClient:
         # request compares it before and after, so a failure says whether the
         # transport dropped while it waited (W448).
         self._disconnect_count = 0
+        # When the active transport last dropped (monotonic), until the next
+        # connect. It bounds what transport_recovering calls transient.
+        self._disconnected_at: float | None = None
+        # The last packet the client saw from the server, as the socket token
+        # it arrived on and a monotonic time: a namespace connect, a service
+        # event or an ingress acknowledgement. Engine.IO pings are answered
+        # inside python-engineio and never reach this client, so a quiet but
+        # healthy socket can look silent here; only an acknowledgement that
+        # times out turns that silence into a decision.
+        self._last_inbound: tuple[object, float] | None = None
+        # Old transports being closed after the client replaced them as
+        # silent: each retirement task and the socket it owns until released.
+        self._retiring_transports: dict[asyncio.Task[None], Any] = {}
+        # Every retired transport not yet verifiably released, held strongly
+        # with its current release: a failed release keeps the transport owned
+        # until close() retries it. A release that closes the HTTP session
+        # removes its entry, so released transports do not accumulate; they
+        # are remembered only weakly. close() never shuts a retired one down.
+        self._release_tasks: dict[Any, asyncio.Task[None]] = {}
+        self._released_transports: weakref.WeakSet[Any] = weakref.WeakSet()
+        # Monotonic start of the current namespace attempt, for the reconnect
+        # handshake to report how long the transport took to open.
+        self._attempt_started_at: float | None = None
         # The server's answer when it refuses the namespace: python-socketio
         # delivers it to connect_error and then raises a generic
         # ConnectionError from connect(), so the reason has to be caught here
@@ -424,6 +516,231 @@ class FederatedDataBusClient:
             and self._connected.is_set()
             and getattr(self.socket, "connected", True)
         )
+
+    @property
+    def transport_recovering(self) -> bool:
+        """True while a plain transport drop is being repaired by this client.
+
+        An owner that would replace the session after a failure can keep it
+        instead: the client is bringing the transport back on its own, and
+        receipts fan out to the re-authenticated session, so requests that
+        were waiting still get their outcome. It is False whenever the drop is
+        not just transport: the client is closed or connected, a custom socket
+        factory owns the reconnect, the credential has expired on this side's
+        clock, the server refused a handshake in this episode, no reconnect is
+        running, or the drop is older than the recovery window. The owner
+        still fences Card replacement, revocation and cancellation itself.
+        """
+
+        if self._closed or not self._owns_reconnect or self.connected:
+            return False
+        if self._expired() or self._episode_refused:
+            return False
+        dropped_at = self._disconnected_at
+        task = self._reconnect_task
+        if dropped_at is None or task is None or task.done():
+            return False
+        return time.monotonic() - dropped_at <= _TRANSPORT_RECOVERY_WINDOW_SECONDS
+
+    def _note_inbound(self, token: object) -> None:
+        self._last_inbound = (token, time.monotonic())
+
+    def _inbound_since(self, token: object, since: float) -> bool:
+        last = self._last_inbound
+        return bool(last is not None and last[0] is token and last[1] >= since)
+
+    async def _replace_silent_transport(
+        self, socket: Any, token: object, *, silent_seconds: float
+    ) -> bool:
+        """Drop a transport that answered nothing, so the reconnect starts now.
+
+        Only the transport the timed-out request was sent on is touched, and
+        only while it is still the active one: a request that outlived a
+        reconnect never closes the newer socket. The drop goes through the
+        same path as one Engine.IO reports, so pending outcome waits keep
+        waiting for the reconnected session. Closing the old socket can wait
+        on a dead network, so it runs beside the request.
+        """
+
+        if not self._socket_is_active(socket, token):
+            return False
+        logger.warning(
+            "Data Bus socket lifecycle event=silent_transport_replaced "
+            "connection_generation=%d socket_id=%s silent_seconds=%.3f%s",
+            self._connection_generation,
+            self._socket_id or "unassigned",
+            silent_seconds,
+            self._lifecycle_log_suffix(),
+        )
+        await self._on_disconnect(socket, token, "silent transport")
+        graceful = len(self._retiring_transports) < _MAX_RETIRING_TRANSPORTS
+        retiring = asyncio.ensure_future(
+            self._retire_transport(socket, graceful=graceful)
+        )
+        self._retiring_transports[retiring] = socket
+        retiring.add_done_callback(
+            lambda task: self._retiring_transports.pop(task, None)
+        )
+        return True
+
+    async def _retire_transport(self, socket: Any, *, graceful: bool) -> None:
+        """Close a replaced transport, and release its resources whatever happens.
+
+        The client owns the old transport until its network resources are
+        gone. A graceful disconnect gets a bounded time; when it times out,
+        fails, is skipped because too many transports are retiring, or is
+        cancelled by close(), the release still runs.
+        """
+
+        try:
+            if graceful:
+                await asyncio.wait_for(
+                    socket.disconnect(), timeout=_RETIRE_TRANSPORT_GRACE_SECONDS
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the transport is already replaced
+            logger.info(
+                "Data Bus socket lifecycle event=silent_transport_close_failed "
+                "error=%s%s",
+                type(exc).__name__,
+                self._lifecycle_log_suffix(),
+            )
+        finally:
+            # The release is its own task: cancelling this retirement, as
+            # close() does, never stops a release that has started.
+            release = self._start_release(socket)
+            if release is not None:
+                await asyncio.shield(release)
+
+    def _start_release(
+        self, socket: Any, *, again: bool = False
+    ) -> asyncio.Task[None] | None:
+        """The release of ``socket``, started now unless one is running or done.
+
+        None when ``socket`` is already released. ``again`` starts a new one
+        when the last release ended without closing the transport's HTTP
+        session; close() asks for that once.
+        """
+
+        if socket in self._released_transports:
+            return None
+        task = self._release_tasks.get(socket)
+        if task is None or (again and task.done()):
+            task = asyncio.ensure_future(self._release_transport(socket))
+            self._release_tasks[socket] = task
+        return task
+
+    async def _release_step(self, step: str, run: Callable[[], Awaitable[Any]]) -> bool:
+        """Run one bounded release step; True when it was cancelled.
+
+        A failed or cancelled step never skips the steps after it.
+        """
+
+        try:
+            await run()
+        except asyncio.CancelledError:
+            return True
+        except Exception as exc:  # noqa: BLE001 - the next steps still run
+            logger.warning(
+                "Data Bus socket lifecycle event=silent_transport_release_failed "
+                "step=%s error=%s%s",
+                step,
+                type(exc).__name__,
+                self._lifecycle_log_suffix(),
+            )
+        return False
+
+    @staticmethod
+    def _mark_transport_disconnected(socket: Any, eio: Any) -> None:
+        """Leave a released transport's state saying what it is: disconnected.
+
+        Engine.IO's abort sets this itself before anything that can block. When
+        the abort never got that far, its loops are already cancelled and its
+        HTTP session closed, so only the bookkeeping is left: the Engine.IO
+        state, its process-wide list of connected clients, and Socket.IO's flag.
+        """
+
+        if getattr(eio, "state", "disconnected") != "disconnected":
+            eio.state = "disconnected"
+            try:
+                from engineio import base_client
+
+                base_client.connected_clients.remove(eio)
+            except (ImportError, AttributeError, ValueError):
+                pass
+        if getattr(socket, "connected", False) is True:
+            socket.connected = False
+
+    async def _release_transport(self, socket: Any) -> None:
+        """Abort a retired transport's Engine.IO session and close its resources.
+
+        First Engine.IO's own abort, which marks the session disconnected and
+        closes its WebSocket and HTTP session without waiting for the read
+        loop. Whatever that leaves running is then cancelled and closed:
+        closing the aiohttp session closes every connection it holds, the
+        WebSocket included. So nothing of the old transport stays open even
+        when its disconnect never returned. Every step is bounded and runs
+        even when an earlier one failed or was cancelled; the transport counts
+        as released only once its HTTP session is closed.
+        """
+
+        cancelled = False
+        eio = getattr(socket, "eio", None)
+        if eio is not None:
+            if getattr(eio, "state", "") == "connected":
+                cancelled |= await self._release_step(
+                    "abort",
+                    lambda: asyncio.wait_for(
+                        eio.disconnect(abort=True),
+                        timeout=_RETIRE_TRANSPORT_GRACE_SECONDS,
+                    ),
+                )
+            loops = [
+                task
+                for task in (
+                    getattr(eio, "read_loop_task", None),
+                    getattr(eio, "write_loop_task", None),
+                )
+                if isinstance(task, asyncio.Future) and not task.done()
+            ]
+            for task in loops:
+                task.cancel()
+            if loops:
+                cancelled |= await self._release_step(
+                    "loops",
+                    lambda: asyncio.wait(loops, timeout=_RETIRE_TRANSPORT_GRACE_SECONDS),
+                )
+            http = getattr(eio, "http", None)
+            if (
+                http is not None
+                and not getattr(eio, "external_http", False)
+                and not http.closed
+            ):
+                cancelled |= await self._release_step(
+                    "http",
+                    lambda: asyncio.wait_for(
+                        http.close(), timeout=_RETIRE_TRANSPORT_GRACE_SECONDS
+                    ),
+                )
+            self._mark_transport_disconnected(socket, eio)
+        http = getattr(eio, "http", None) if eio is not None else None
+        if http is None or getattr(http, "closed", True):
+            try:
+                self._released_transports.add(socket)
+            except TypeError:  # pragma: no cover - a socket that cannot be weakly referenced
+                pass
+            # Verifiably released: the client stops owning it. Only this
+            # release's own entry is removed, never a newer retry's.
+            if self._release_tasks.get(socket) is asyncio.current_task():
+                del self._release_tasks[socket]
+        else:
+            logger.warning(
+                "Data Bus socket lifecycle event=silent_transport_release_incomplete%s",
+                self._lifecycle_log_suffix(),
+            )
+        if cancelled:
+            raise asyncio.CancelledError()
 
     @property
     def connection_generation(self) -> int:
@@ -501,6 +818,9 @@ class FederatedDataBusClient:
         self._socket_id = self._current_socket_id(socket)
         self._episode_attempt = 0
         self._episode_refusal = None
+        self._episode_refused = False
+        self._disconnected_at = None
+        self._note_inbound(token)
         self._connected.set()
         outcome = self._namespace_outcome
         if outcome is not None and not outcome.done():
@@ -529,6 +849,7 @@ class FederatedDataBusClient:
             return
         self._connect_refusal = _refusal_payload(data)
         self._episode_refusal = dict(self._connect_refusal)
+        self._episode_refused = True
         outcome = self._namespace_outcome
         if outcome is not None and not outcome.done():
             outcome.set_result(("refused", dict(self._connect_refusal)))
@@ -559,6 +880,7 @@ class FederatedDataBusClient:
             return
         self._connected.clear()
         self._disconnect_count += 1
+        self._disconnected_at = time.monotonic()
         reason = _connection_reason(args[0] if args else None)
         logger.info(
             "Data Bus socket lifecycle event=disconnected connection_generation=%d "
@@ -599,6 +921,7 @@ class FederatedDataBusClient:
     ) -> None:
         if not self._socket_is_active(socket, token):
             return
+        self._note_inbound(token)
         envelope = _mapping(payload)
         body = _mapping(envelope.get("data"))
         message_id = str(body.get("message_id") or "").strip()
@@ -673,6 +996,7 @@ class FederatedDataBusClient:
             loop.create_future()
         )
         self._namespace_outcome = outcome
+        self._attempt_started_at = time.monotonic()
         try:
             # The auth is a coroutine function, not a payload: python-socketio
             # resolves a callable once per namespace handshake, on this connect
@@ -694,6 +1018,16 @@ class FederatedDataBusClient:
                 self._namespace_outcome = None
             refusal = self._connect_refusal
             self._deactivate_socket(socket, socket_token)
+            logger.warning(
+                "Data Bus socket lifecycle event=connect_failed attempted_generation=%d "
+                "transport_failed=%s refusal=%s error_chain=%s %s%s",
+                self._connection_generation + 1,
+                str(_transport_failed(exc)).lower(),
+                str(refusal is not None).lower(),
+                _failure_chain(exc),
+                _failure_facts(exc),
+                self._lifecycle_log_suffix(),
+            )
             if refusal is None or _transport_failed(exc):
                 # The transport failed before the server answered. python-socketio
                 # still fires connect_error for that, with "Connection error", so
@@ -715,6 +1049,13 @@ class FederatedDataBusClient:
                 timeout=self.namespace_admission_timeout_seconds,
             )
         except asyncio.TimeoutError as exc:
+            logger.warning(
+                "Data Bus socket lifecycle event=namespace_admission_timeout "
+                "attempted_generation=%d timeout_seconds=%s%s",
+                self._connection_generation + 1,
+                self.namespace_admission_timeout_seconds,
+                self._lifecycle_log_suffix(),
+            )
             self._deactivate_socket(socket, socket_token)
             await socket.disconnect()
             try:
@@ -785,6 +1126,13 @@ class FederatedDataBusClient:
         self._handshakes += 1
         if self._handshakes == 1 or self._credential_source is None:
             return self.credential.auth_payload()
+        # python-socketio asks for the auth once Engine.IO is open, so the
+        # time since the attempt began is the transport's, and the source's
+        # own time is measured apart. A reconnect that takes tens of seconds
+        # then says which of the two it was waiting on.
+        entered = time.monotonic()
+        started = self._attempt_started_at
+        dropped_at = self._disconnected_at
         self._episode_attempt += 1
         attempt = HandshakeAttempt(
             connection_generation=self._connection_generation,
@@ -815,13 +1163,19 @@ class FederatedDataBusClient:
                 self._lifecycle_log_suffix(),
                 exc_info=True,
             )
+        resolved_at = time.monotonic()
         logger.info(
             "Data Bus socket lifecycle event=handshake attempt=%d "
-            "connection_generation=%d credential=%s after_refusal=%s%s",
+            "connection_generation=%d credential=%s after_refusal=%s "
+            "since_disconnect_seconds=%s transport_open_seconds=%s "
+            "bearer_resolve_seconds=%.3f%s",
             attempt.attempt,
             attempt.connection_generation,
             presented,
             str(attempt.previous_refusal is not None).lower(),
+            "unknown" if dropped_at is None else f"{entered - dropped_at:.3f}",
+            "unknown" if started is None else f"{entered - started:.3f}",
+            resolved_at - entered,
             self._lifecycle_log_suffix(),
         )
         return self.credential.auth_payload()
@@ -880,8 +1234,28 @@ class FederatedDataBusClient:
             if reconnect_task is not None and reconnect_task is not asyncio.current_task():
                 reconnect_task.cancel()
                 await asyncio.gather(reconnect_task, return_exceptions=True)
-            shutdown = getattr(self.socket, "shutdown", None)
-            if callable(shutdown):
+            # Cancelling a retirement never stops its release. A retirement
+            # cancelled before it ran never started one, so close() starts it,
+            # then waits for every release to end; each step is bounded.
+            retiring = dict(self._retiring_transports)
+            for task in retiring:
+                task.cancel()
+            if retiring:
+                await asyncio.gather(*retiring, return_exceptions=True)
+            for old in retiring.values():
+                self._start_release(old)
+            # A release that ended with the HTTP session still open is not
+            # done: the client still owns that transport and tries once more.
+            for old in list(self._release_tasks.keys()):
+                self._start_release(old, again=True)
+            releases = [task for task in self._release_tasks.values() if not task.done()]
+            if releases:
+                await asyncio.gather(*releases, return_exceptions=True)
+            if self.socket in self._release_tasks or self.socket in self._released_transports:
+                # The reconnect had not replaced the retired transport yet; its
+                # release already ran.
+                pass
+            elif callable(shutdown := getattr(self.socket, "shutdown", None)):
                 # python-socketio disconnect() is a no-op while disconnected and
                 # leaves its reconnect task alive. shutdown() covers both the
                 # connected and reconnecting states and waits for that task to end.
@@ -919,10 +1293,12 @@ class FederatedDataBusClient:
         future: asyncio.Future[DataBusOutcome] = loop.create_future()
         self._pending[resolved_message_id] = future
         accepted = False
+        sent_on = self.socket
+        sent_token = self._active_socket_token
         try:
             waited_from = time.monotonic()
             try:
-                ack = await self.socket.call(
+                ack = await sent_on.call(
                     "data_bus.publish",
                     {
                         "schema": "kdcube.data_bus.ingress.v1",
@@ -948,16 +1324,36 @@ class FederatedDataBusClient:
                     raise
                 if future.done() and not future.cancelled():
                     return future.result()
+                evidence = self._wait_evidence(
+                    disconnects_at_start=disconnects_at_start,
+                    waited_from=waited_from,
+                    timeout_seconds=self.ingress_timeout_seconds,
+                )
+                evidence["silent_transport_replaced"] = False
+                if (
+                    self._owns_reconnect
+                    and not self._closed
+                    and sent_token is not None
+                    and not evidence["disconnected_during_request"]
+                    and evidence["timer_overrun_seconds"]
+                    < _SILENT_TRANSPORT_MAX_TIMER_OVERRUN_SECONDS
+                    and not self._inbound_since(sent_token, waited_from)
+                ):
+                    evidence["silent_transport_replaced"] = (
+                        await self._replace_silent_transport(
+                            sent_on,
+                            sent_token,
+                            silent_seconds=time.monotonic() - waited_from,
+                        )
+                    )
                 raise DataBusOutcomeUnknown(
                     message_id=resolved_message_id,
                     accepted=False,
                     connection=connection,
-                    evidence=self._wait_evidence(
-                        disconnects_at_start=disconnects_at_start,
-                        waited_from=waited_from,
-                        timeout_seconds=self.ingress_timeout_seconds,
-                    ),
+                    evidence=evidence,
                 ) from exc
+            if self._socket_is_active(sent_on, sent_token):
+                self._note_inbound(sent_token)
             acknowledgement = _mapping(ack)
             accepted_rows = acknowledgement.get("accepted")
             accepted = bool(

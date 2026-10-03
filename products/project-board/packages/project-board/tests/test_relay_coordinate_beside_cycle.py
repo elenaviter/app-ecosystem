@@ -298,7 +298,13 @@ def test_the_cycle_reopens_a_session_whose_card_was_replaced_before_draining(tmp
 
 
 def test_dropping_a_session_waits_for_its_drain_beside_the_cycle(tmp_path):
-    """A routine replacement never closes a client a side drain is using."""
+    """A routine replacement never closes a client a side drain is using.
+
+    The drain's store work runs off the loop (W461), so the drop can mark the
+    session closing before the dispatch. A closing session carries nothing
+    new: the drain returns the claimed request to pending for the next
+    session, and the drop closes the client only after the drain has ended.
+    """
 
     host, _identity, channel = _host(tmp_path)
     queue = coordinate_queue.CoordinateQueue(host.field_root)
@@ -334,10 +340,13 @@ def test_dropping_a_session_waits_for_its_drain_beside_the_cycle(tmp_path):
         response = queue.take_response(
             worker_name=channel.worker_name, request_id=request["request_id"]
         )
-        assert response is not None and response["ok"] is True
+        assert response is None, "the closing session answered nothing"
+        assert queue.holds(worker_name=channel.worker_name, request_id=request["request_id"]), (
+            "the request waits for the next session"
+        )
 
     asyncio.run(scenario())
-    assert order == ["request_answered", "session_closed"]
+    assert order == ["session_closed"], "the client was closed after the drain, and never used"
 
 
 def test_a_card_replaced_while_the_channel_opens_never_drains_through_it(
@@ -441,8 +450,12 @@ def test_the_cycle_waits_for_a_side_drain_of_the_same_worker(tmp_path):
     async def scenario():
         earlier = _submit(queue, channel, object_ref="work:project:earlier")
         assert supervisor.serve_coordinate_once() == [channel.worker_name]
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
+        # The side drain first re-checks the Card off the loop (W461), then
+        # carries the earlier request; wait for that, bounded.
+        for _ in range(200):
+            if active["now"] == 1:
+                break
+            await asyncio.sleep(0.005)
         assert active["now"] == 1
         later = _submit(queue, channel, object_ref="work:project:later")
         cycle = asyncio.create_task(supervisor._poll_channel(host, channel))

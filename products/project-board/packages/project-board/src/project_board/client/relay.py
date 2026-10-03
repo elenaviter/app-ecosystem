@@ -6,9 +6,10 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
@@ -36,6 +37,7 @@ from .codex_quota import (
     read_codex_quota, account_fingerprint, SOURCE_CODEX_APP_SERVER, QUOTA_REFRESH_SECONDS,
 )
 from .runtime_model import session_with_runtime_model
+from .workspace_size import REMEASURE_SECONDS, WorkspaceSizes, directory_bytes  # noqa: F401 - directory_bytes re-exported
 from .worktree_files import (
     MAX_OBSERVED_PATHS as MAX_OBSERVED_PATHS_DEFAULT,
     WorktreeObserverCache,
@@ -43,6 +45,7 @@ from .worktree_files import (
     observe_assignments,
 )
 from ..contract.errors import DomainError
+from ..contract.mail_attachments import MAX_MAIL_ATTACHMENT_BYTES, validate_mail_attachment
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
 from ..contract.refs import parse_ref
@@ -160,21 +163,27 @@ JOURNAL_NOTICE_KIND = "worker.journal"
 # read controls; wake histories remain in the local shared field and never ride
 # every heartbeat through the Data Bus stream.
 HEARTBEAT_CONTROL_REF_LIMIT = 20
-# W423: how often the relay re-walks an agent's workspace to size it.
-DISK_USAGE_REMEASURE_SECONDS = 900
+# Adapters built without their channel's store executor (tests, one-shot
+# commands) still keep blocking work off the event loop (W461).
+_ADAPTER_EXECUTORS = ChannelExecutors(thread_name_prefix="problem-board-adapter")
 
+# W423: how often the relay re-measures an agent's workspace size (W461:
+# held per path by WorkspaceSizes, which the per-poll adapters share).
+DISK_USAGE_REMEASURE_SECONDS = REMEASURE_SECONDS
 
-def directory_bytes(root: Path) -> int:
-    """Bytes under ``root``, never following links, skipping what cannot be read."""
+def _disk_usage_of(workspace: str) -> tuple[Any, str] | None:
+    """``shutil.disk_usage`` and the resolved path of an existing workspace, else None.
 
-    total = 0
-    for current, _dirs, files in os.walk(root, followlinks=False):
-        for name in files:
-            try:
-                total += (Path(current) / name).lstat().st_size
-            except OSError:
-                pass
-    return total
+    Blocking file-system calls: the caller runs this off the event loop.
+    """
+
+    if not Path(workspace).is_dir():
+        return None
+    try:
+        return shutil.disk_usage(workspace), os.path.realpath(workspace)
+    except OSError:
+        return None
+
 
 HEARTBEAT_SESSION_FIELDS = (
     "session_id",
@@ -282,17 +291,95 @@ def _heartbeat_session_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     return projected
 
 
+# Upload answers that are the platform's decision about the file itself (too
+# large, a type or construct it refuses): the same bytes meet the same
+# decision, so asking again only repeats the refusal (W475). Every other
+# answer keeps the earlier retry, because the next attempt asks for a new
+# upload slot: a rejected or expired upload token (401, 403), a missing slot,
+# a timeout, a rate limit or a server error can all pass on that attempt.
+_UPLOAD_PERMANENT_STATUSES = frozenset({413, 415, 422})
+_UPLOAD_PERMANENT_CODES = frozenset({
+    "work_attachment_empty",
+    "work_attachment_too_large",
+    "work_attachment_rejected",
+    "work_attachment_executable_binary_refused",
+})
+_UPLOAD_ANSWER_BYTES = 8192
+_UPLOAD_CODE = re.compile(r"work_attachment_[a-z_]{1,64}")
+# The only platform words carried on: the preflight's fixed reasons, matched
+# whole. A response body can echo a signed URL, a token or headers, so it is
+# never copied; anything unmatched is replaced by a fixed sentence.
+_UPLOAD_REASONS = (
+    re.compile(r"(Text|SVG) too large: \d{1,12}>\d{1,12}"),
+    re.compile(r"Unsupported or unknown type: [a-z0-9.+-]{1,64}/[a-z0-9.+-]{1,64}"),
+    re.compile(r"Archives \(ZIP\) are disallowed by policy"),
+    re.compile(r"SVG not allowed by policy"),
+)
+_UPLOAD_REFUSAL_TEXT = {
+    400: "The platform refused the upload.",
+    413: "The file is larger than the platform accepts.",
+    415: "The platform does not accept this file type.",
+    422: "The file failed the platform's content checks.",
+}
+
+
+def _upload_refusal(status: int, body: bytes) -> tuple[str, list[str]]:
+    """The answer's error code and preflight reasons, only where they are allowlisted."""
+
+    try:
+        answer = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return "", []
+    error = answer.get("error") if isinstance(answer, Mapping) else None
+    if not isinstance(error, Mapping):
+        return "", []
+    code = error.get("code")
+    code = code if isinstance(code, str) and _UPLOAD_CODE.fullmatch(code) else ""
+    details = error.get("details") if isinstance(error.get("details"), Mapping) else {}
+    # Any other shape (a number, a flag, an object, null) carries no reason:
+    # the status alone then decides, and the sentence stays fixed.
+    listed = details.get("reasons")
+    if not isinstance(listed, list):
+        return code, []
+    reasons = [
+        reason
+        for reason in listed[:5]
+        if isinstance(reason, str) and any(pattern.fullmatch(reason) for pattern in _UPLOAD_REASONS)
+    ]
+    return code, reasons[:3]
+
+
 async def _http_upload(url: str, data: bytes, mime: str) -> None:
     import aiohttp
 
     async with aiohttp.ClientSession() as session:
         async with session.post(url, data=data, headers={"Content-Type": mime}) as response:
-            if response.status >= 300:
+            if response.status < 300:
+                return
+            try:
+                body = await response.content.read(_UPLOAD_ANSWER_BYTES)
+            except Exception:  # noqa: BLE001 - the status alone still decides
+                body = b""
+            try:
+                code, reasons = _upload_refusal(response.status, body)
+            except Exception:  # noqa: BLE001 - a body's shape never decides the classification
+                code, reasons = "", []
+            permanent = response.status in _UPLOAD_PERMANENT_STATUSES or (
+                response.status == 400 and code in _UPLOAD_PERMANENT_CODES
+            )
+            if not permanent:
                 raise DomainError(
                     "work_attachment_upload_failed",
                     f"Attachment upload answered {response.status}.",
                     status=502,
                 )
+            sentence = _UPLOAD_REFUSAL_TEXT.get(response.status, "The platform refused the upload.")
+            raise DomainError(
+                "work_attachment_upload_refused",
+                " ".join([sentence, *reasons]),
+                status=response.status,
+                details={"upload_status": response.status, "code": code, "reasons": reasons},
+            )
 
 
 async def _http_download(url: str) -> bytes:
@@ -746,8 +833,9 @@ class _JournalRefreshWorker:
     """One reusable, single-flight LOCAL job owned by a persistent channel.
 
     No heartbeat awaits file/Git/index work, and no repeated poll can enqueue
-    another job while one is running. Only the loop applies incident/field
-    side effects. Closing fences cooperative writes and drains the tracked
+    another job while one is running. The loop owns polling and view state;
+    incident/field side effects use the separate channel store executor.
+    Closing fences cooperative writes and drains the tracked
     job before the channel can be replaced; cancelling an await cannot detach
     its thread. An in-progress OS/index operation is drained, not pretend-killed.
     """
@@ -973,6 +1061,9 @@ class ProblemBoardHostRelayAdapter:
         runtime_account_error_state: dict[str, str] | None = None,
         outbox_drain_lock: asyncio.Lock | None = None,
         journal_refresh_worker: _JournalRefreshWorker | None = None,
+        workspace_sizes: WorkspaceSizes | None = None,
+        worktree_observer: WorktreeObserverCache | None = None,
+        store_executor: Executor | None = None,
     ) -> None:
         self.config = config
         self.field = field
@@ -995,7 +1086,16 @@ class ProblemBoardHostRelayAdapter:
         # published, so an unchanged set rides no heartbeat.
         self._assignment_files_signatures: dict[str, str] = {}
         self._store_reads_signatures: dict[str, str] = {}
-        self._worktree_observer = WorktreeObserverCache()
+        # Both live as long as the relay, not as long as this adapter:
+        # poll_attendances_once builds a new adapter per project on every
+        # poll, so state kept here alone reset each poll, and every heartbeat
+        # walked the whole workspace and ran git on every worktree (W461).
+        self._worktree_observer = worktree_observer if worktree_observer is not None else WorktreeObserverCache()
+        self._workspace_sizes = workspace_sizes if workspace_sizes is not None else WorkspaceSizes()
+        # This channel's own thread for blocking store and git work (W456,
+        # W461): never the event loop, never the default executor that the
+        # OAuth locks and DNS lookups share.
+        self._store_executor = store_executor or _ADAPTER_EXECUTORS.for_channel(config.worker_name)
         # Child adapters are rebuilt for attended projects every cycle. Share
         # this map with them so each discovery/project scope sends a full
         # session projection once, then omits it until that projection changes.
@@ -1190,15 +1290,26 @@ class ProblemBoardHostRelayAdapter:
         self._attendance_cache["initialized"] = False
         return True
 
-    def _materialize_after_board_read(self, item: Mapping[str, Any]) -> dict[str, Any] | None:
-        """Deliver on the board's own attendance when it lists the control's project, else None."""
+    def _board_project_refs(self) -> list[str]:
+        """The projects the board's last attendance read lists; loop state."""
 
-        project_ref = str(item.get("project_ref") or "")
-        board_refs = [
+        return [
             str(entry.get("project_ref") or "")
             for entry in self._attendance_cache.get("items") or []
             if isinstance(entry, Mapping) and entry.get("project_ref")
         ]
+
+    def _materialize_after_board_read(
+        self, item: Mapping[str, Any], board_refs: Sequence[str]
+    ) -> dict[str, Any] | None:
+        """Deliver on the board's own attendance when it lists the control's project, else None.
+
+        Writes the host record and the mailbox, so it runs in the channel's
+        store thread; ``board_refs`` is read on the loop before (W461).
+        """
+
+        project_ref = str(item.get("project_ref") or "")
+        board_refs = list(board_refs)
         if not project_ref or project_ref not in board_refs:
             return None
         try:
@@ -1775,9 +1886,12 @@ class ProblemBoardHostRelayAdapter:
             return self._journal_binding_error(binding, exc)
         return self._journal_binding_result(result)
 
-    def _reconcile_journal_binding_background(self, heartbeat: Mapping[str, Any]) -> dict[str, Any]:
+    async def _reconcile_journal_binding_background(self, heartbeat: Mapping[str, Any]) -> dict[str, Any]:
         if self.journal_workspace is None:
             return {"state": "disabled"}
+        # Poll and the view lock belong to this loop. Slow journal work has
+        # its own executor; only its completed incident/field effects share
+        # the channel's serialized store executor (W461).
         ready, result = self._journal_refresh_worker.poll(
             self.journal_workspace, heartbeat,
             create_home=self.config.create_missing_journal_home,
@@ -1786,11 +1900,16 @@ class ProblemBoardHostRelayAdapter:
             return {"state": "refresh_pending"}
         if isinstance(result, DomainError):
             binding = dict(heartbeat.get("journal_binding") or {})
-            return self._journal_binding_error(binding, result)
+            return await run_off_loop(
+                self._journal_binding_error, binding, result,
+                executor=self._store_thread(),
+            )
         if result and result.get("state") == "unbound":
             return {**result, "project_ref": f"work:project:{self.config.project_id}"}
         assert result is not None
-        return self._journal_binding_result(result)
+        return await run_off_loop(
+            self._journal_binding_result, result, executor=self._store_thread(),
+        )
 
     async def aclose(self) -> None:
         await self._journal_refresh_worker.aclose()
@@ -1919,7 +2038,9 @@ class ProblemBoardHostRelayAdapter:
         self._published_interval = interval
         remote = _object_result(response)
         self._record_attendance_observation(remote)
-        local = self.field.register_worker(
+        local = await run_off_loop(
+            self.field.register_worker,
+            executor=self._store_thread(),
             worker_name=self.config.worker_name,
             worker_alias=str(remote.get("worker_alias") or self.config.worker_alias),
             worker_identity=str(
@@ -2256,7 +2377,9 @@ class ProblemBoardHostRelayAdapter:
                 continue
             try:
                 await self._fetch_attachments(item)
-                receipt = self.field.materialize_control(item)
+                receipt = await run_off_loop(
+                    self.field.materialize_control, item, executor=self._store_thread()
+                )
                 self._attendance_cache.get("not_linked_deferrals", {}).pop(command_ref, None)
             except DomainError as exc:
                 if exc.code == "field_project_not_materialized":
@@ -2300,7 +2423,12 @@ class ProblemBoardHostRelayAdapter:
                         # The board lists the control's project when the local
                         # host record is what lags. Synchronize that attendance
                         # and deliver the already-leased control.
-                        receipt = self._materialize_after_board_read(item)
+                        receipt = await run_off_loop(
+                            self._materialize_after_board_read,
+                            item,
+                            self._board_project_refs(),
+                            executor=self._store_thread(),
+                        )
                         if receipt is not None:
                             await self._settle_leased_control(
                                 command_ref,
@@ -2361,7 +2489,22 @@ class ProblemBoardHostRelayAdapter:
         for item in files:
             path = Path(str(item.get("path") or ""))
             filename = str(item.get("filename") or path.name)
-            data = path.read_bytes()
+
+            def read_snapshot() -> bytes:
+                try:
+                    with path.open("rb") as stream:
+                        data = stream.read(MAX_MAIL_ATTACHMENT_BYTES + 1)
+                except OSError as exc:
+                    raise DomainError("field_attachment_missing", "The queued attachment snapshot is not readable.") from exc
+                validate_mail_attachment(data, filename=filename, mime=str(item.get("mime") or ""))
+                if ((item.get("size") is not None and int(item["size"]) != len(data))
+                        or (item.get("sha256") and hashlib.sha256(data).hexdigest() != item["sha256"])):
+                    raise DomainError("field_attachment_integrity_mismatch", "The queued attachment snapshot changed before upload.", status=409)
+                return data
+
+            # The existing tracked channel executor keeps a slow file read
+            # off the shared socket loop and drains it on cancellation.
+            data = await run_off_loop(read_snapshot, executor=self._store_executor)
             slot = _object_result(
                 await self.client.action(
                     object_ref="work:worker:self",
@@ -3927,13 +4070,21 @@ class ProblemBoardHostRelayAdapter:
         )
         return created, issues
 
-    async def _poll_project_once(
+    def _store_thread(self) -> Executor:
+        """This channel's store thread; adapters built without __init__ (tests) get the per-worker one."""
+
+        executor = getattr(self, "_store_executor", None)
+        return executor if executor is not None else _ADAPTER_EXECUTORS.for_channel(self.config.worker_name)
+
+    def _prepare_project_heartbeat(
         self,
         *,
+        project_ref: str,
         agent_sessions: Sequence[Mapping[str, Any]],
-        force_heartbeat: bool = False,
+        force_heartbeat: bool,
     ) -> dict[str, Any]:
-        project_ref = f"work:project:{self.config.project_id}"
+        """The heartbeat decision and payload: store reads and git, run off the loop (W461)."""
+
         session_delta, session_signature = self._session_report_delta(
             project_ref=project_ref,
             sessions=agent_sessions,
@@ -3963,13 +4114,9 @@ class ProblemBoardHostRelayAdapter:
             )
             <= 0
         )
-        heartbeat_result: dict[str, Any] = {}
-        journal_workspace: dict[str, Any] = {"state": "unchanged"}
-        mailbox_reconciliation: dict[str, Any] = {"state": "unchanged"}
-        assignment_notices_reconciled = 0
-        assignment_reconciliation_issues: list[dict[str, Any]] = []
+        heartbeat_payload: dict[str, Any] = {}
         if heartbeat_sent:
-            heartbeat_payload: dict[str, Any] = {
+            heartbeat_payload = {
                 "availability": "available",
                 "project_ref": project_ref,
             }
@@ -3983,6 +4130,107 @@ class ProblemBoardHostRelayAdapter:
             self._add_alias_request(heartbeat_payload, alias_request)
             self._add_project_record(heartbeat_payload, project_ref)
             self._add_workspace_report(heartbeat_payload, project_ref, workspace_report)
+        return {
+            "session_delta": session_delta,
+            "session_signature": session_signature,
+            "files_signature": files_signature,
+            "store_reads_delta": store_reads_delta,
+            "store_reads_signature": store_reads_signature,
+            "worker_info": worker_info,
+            "alias_request": alias_request,
+            "workspace_report": workspace_report,
+            "heartbeat_sent": heartbeat_sent,
+            "heartbeat_payload": heartbeat_payload,
+        }
+
+    def _record_project_heartbeat_result(
+        self,
+        *,
+        project_ref: str,
+        prepared: Mapping[str, Any],
+        heartbeat_result: Mapping[str, Any],
+    ) -> None:
+        """Record an answered heartbeat in the field store, off the loop (W461)."""
+
+        session_signature = prepared["session_signature"]
+        files_signature = prepared["files_signature"]
+        store_reads_delta = prepared["store_reads_delta"]
+        store_reads_signature = prepared["store_reads_signature"]
+        worker_info = prepared["worker_info"]
+        alias_request = prepared["alias_request"]
+        workspace_report = prepared["workspace_report"]
+        self._record_project_heartbeat(project_ref)
+        self._record_session_report(
+            project_ref=project_ref,
+            signature=session_signature,
+        )
+        self._assignment_files_signatures[project_ref] = files_signature
+        if store_reads_delta is not None:
+            self._store_reads_signatures[project_ref] = store_reads_signature
+        self._acknowledge_worker_info(worker_info, heartbeat_result)
+        self._acknowledge_alias_request(alias_request, heartbeat_result)
+        self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
+        self._record_attendance_observation(heartbeat_result)
+        self._materialize_attended_project(heartbeat_result)
+        # The team travels with every project heartbeat so a worker can
+        # address a teammate from its packet without asking the control
+        # plane. Runtime identity, when the board reports it, remains
+        # nested on that authoritative roster. Replacing the snapshot
+        # means an omitted model or account is never inherited or made up.
+        if isinstance(heartbeat_result.get("team"), list):
+            try:
+                self.field.sync_project_team(
+                    self.config.project_id, heartbeat_result["team"]
+                )
+            except DomainError:
+                # The project is not materialized here yet; the next cycle
+                # after its materialize control lands stores the team.
+                pass
+        # Who acts as coordinator now (W313): the holder, not the first
+        # labelled teammate. Absent from a board that predates it.
+        if isinstance(heartbeat_result.get("coordinator"), Mapping):
+            try:
+                self.field.sync_project_coordinator(
+                    self.config.project_id, heartbeat_result["coordinator"]
+                )
+            except DomainError:
+                # Like the team sync: a project not yet on this host keeps
+                # no holder; the next heartbeat after it lands writes one.
+                pass
+
+    async def _poll_project_once(
+        self,
+        *,
+        agent_sessions: Sequence[Mapping[str, Any]],
+        force_heartbeat: bool = False,
+    ) -> dict[str, Any]:
+        project_ref = f"work:project:{self.config.project_id}"
+        # Everything before the network call reads or writes the shared field
+        # store or runs git: in this channel's own thread, never on the event
+        # loop every channel shares (W461).
+        prepared = await run_off_loop(
+            self._prepare_project_heartbeat,
+            project_ref=project_ref,
+            agent_sessions=agent_sessions,
+            force_heartbeat=force_heartbeat,
+            executor=self._store_thread(),
+        )
+        session_delta = prepared["session_delta"]
+        session_signature = prepared["session_signature"]
+        files_signature = prepared["files_signature"]
+        store_reads_delta = prepared["store_reads_delta"]
+        store_reads_signature = prepared["store_reads_signature"]
+        worker_info = prepared["worker_info"]
+        alias_request = prepared["alias_request"]
+        workspace_report = prepared["workspace_report"]
+        heartbeat_sent = prepared["heartbeat_sent"]
+        heartbeat_result: dict[str, Any] = {}
+        journal_workspace: dict[str, Any] = {"state": "unchanged"}
+        mailbox_reconciliation: dict[str, Any] = {"state": "unchanged"}
+        assignment_notices_reconciled = 0
+        assignment_reconciliation_issues: list[dict[str, Any]] = []
+        if heartbeat_sent:
+            heartbeat_payload = prepared["heartbeat_payload"]
             await self._add_disk_usage(heartbeat_payload)
             await self._add_runtime_account(heartbeat_payload)
             try:
@@ -4021,46 +4269,15 @@ class ProblemBoardHostRelayAdapter:
                     "agent_sessions_reported": 0,
                     "journal_workspace": {"state": "waiting_for_link"},
                 }
-            self._record_project_heartbeat(project_ref)
-            self._record_session_report(
-                project_ref=project_ref,
-                signature=session_signature,
-            )
-            self._assignment_files_signatures[project_ref] = files_signature
-            if store_reads_delta is not None:
-                self._store_reads_signatures[project_ref] = store_reads_signature
             heartbeat_result = _object_result(heartbeat_response)
-            self._acknowledge_worker_info(worker_info, heartbeat_result)
-            self._acknowledge_alias_request(alias_request, heartbeat_result)
-            self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
-            self._record_attendance_observation(heartbeat_result)
-            self._materialize_attended_project(heartbeat_result)
-            journal_workspace = self._reconcile_journal_binding_background(heartbeat_result)
-            # The team travels with every project heartbeat so a worker can
-            # address a teammate from its packet without asking the control
-            # plane. Runtime identity, when the board reports it, remains
-            # nested on that authoritative roster. Replacing the snapshot
-            # means an omitted model or account is never inherited or made up.
-            if isinstance(heartbeat_result.get("team"), list):
-                try:
-                    self.field.sync_project_team(
-                        self.config.project_id, heartbeat_result["team"]
-                    )
-                except DomainError:
-                    # The project is not materialized here yet; the next cycle
-                    # after its materialize control lands stores the team.
-                    pass
-            # Who acts as coordinator now (W313): the holder, not the first
-            # labelled teammate. Absent from a board that predates it.
-            if isinstance(heartbeat_result.get("coordinator"), Mapping):
-                try:
-                    self.field.sync_project_coordinator(
-                        self.config.project_id, heartbeat_result["coordinator"]
-                    )
-                except DomainError:
-                    # Like the team sync: a project not yet on this host keeps
-                    # no holder; the next heartbeat after it lands writes one.
-                    pass
+            await run_off_loop(
+                self._record_project_heartbeat_result,
+                project_ref=project_ref,
+                prepared=prepared,
+                heartbeat_result=heartbeat_result,
+                executor=self._store_thread(),
+            )
+            journal_workspace = await self._reconcile_journal_binding_background(heartbeat_result)
             recipients = heartbeat_result.get("mail_recipients")
             if not isinstance(recipients, list):
                 recipients = heartbeat_result.get("team")
@@ -4077,13 +4294,15 @@ class ProblemBoardHostRelayAdapter:
             (
                 assignment_notices_reconciled,
                 assignment_reconciliation_issues,
-            ) = self._reconcile_assignments(heartbeat_result)
+            ) = await run_off_loop(
+                self._reconcile_assignments, heartbeat_result, executor=self._store_thread()
+            )
         with self._trace_stage(
             "attendance.controls",
             operation="control.pull",
         ):
             controls = await self._pull_controls()
-        self._report_dead_notification_path()
+        await run_off_loop(self._report_dead_notification_path, executor=self._store_thread())
         outbox = await self._flush_outbox()
         return {
             "worker_name": self.config.worker_name,
@@ -4234,52 +4453,34 @@ class ProblemBoardHostRelayAdapter:
         and total bytes of the workspace's file system are read every beat
         (one statvfs). The workspace's own size walks the tree, which takes
         tens of seconds on a large workspace and is slowest on the nearly full
-        disk this exists for, so the heartbeat never waits for it: the walk
-        runs as a background task at most every DISK_USAGE_REMEASURE_SECONDS,
-        and each beat carries the last measured size, or none until the
-        first measurement lands.
+        disk this exists for, so the heartbeat never waits for it: the
+        relay-wide WorkspaceSizes walks in a child process at most every
+        DISK_USAGE_REMEASURE_SECONDS per path, and each beat carries the last
+        measured size, or none until the first measurement lands.
         """
 
-        workspace = str(getattr(self.config, "workspace", "") or getattr(self.config, "working_directory", "") or "")
-        if not workspace or not Path(workspace).is_dir():
+        # Only the agent's workspace (agent_workspace names it), never the
+        # folder a session happened to start in.
+        workspace = str(getattr(self.config, "workspace", "") or "")
+        if not workspace:
             return
-        try:
-            usage = shutil.disk_usage(workspace)
-        except OSError:
+        measured_path = await run_off_loop(
+            _disk_usage_of, workspace, executor=getattr(self, "_store_executor", None)
+        )
+        if measured_path is None:
             return
-        self._schedule_workspace_measure(workspace)
+        usage, real_path = measured_path
+        # Keyed by the resolved path: one folder spelled two ways is one walk.
+        self._workspace_sizes.schedule(real_path, worker_name=self.config.worker_name)
         report: dict[str, Any] = {
             "host_free_bytes": int(usage.free),
             "host_total_bytes": int(usage.total),
             "workspace_path": workspace,
         }
-        measured = getattr(self, "_workspace_bytes", None)
-        if measured is not None and getattr(self, "_workspace_bytes_path", "") == workspace:
+        measured = self._workspace_sizes.last(real_path)
+        if measured is not None:
             report["workspace_bytes"] = int(measured)
         payload["disk_usage"] = report
-
-    def _schedule_workspace_measure(self, workspace: str) -> None:
-        running = getattr(self, "_workspace_measure_task", None)
-        if running is not None and not running.done():
-            return
-        measured_at = getattr(self, "_workspace_bytes_measured", None)
-        if (
-            measured_at is not None
-            and getattr(self, "_workspace_bytes_path", "") == workspace
-            and time.monotonic() - measured_at < DISK_USAGE_REMEASURE_SECONDS
-        ):
-            return
-
-        async def measure() -> None:
-            try:
-                size = await asyncio.to_thread(directory_bytes, Path(workspace))
-            except Exception:  # noqa: BLE001 - a failed walk leaves the last size and retries next interval
-                size = getattr(self, "_workspace_bytes", None)
-            self._workspace_bytes = size
-            self._workspace_bytes_path = workspace
-            self._workspace_bytes_measured = time.monotonic()
-
-        self._workspace_measure_task = asyncio.get_running_loop().create_task(measure())
 
     def _add_workspace_report(self, payload: dict[str, Any], project_ref: str, entry: Mapping[str, Any]) -> None:
         report = entry.get("report") if entry else None
@@ -4449,6 +4650,48 @@ class ProblemBoardHostRelayAdapter:
                 force_heartbeat=True,
             )
 
+    def _prepare_discovery_heartbeat(
+        self, sessions: Sequence[Mapping[str, Any]]
+    ) -> tuple[Any, str, Any, Any, bool, dict[str, Any]]:
+        """The discovery heartbeat decision and payload: store reads, off the loop (W461)."""
+
+        discovery_session_delta, session_signature = self._session_report_delta(
+            project_ref="",
+            sessions=sessions,
+        )
+        worker_info, info_pending = self._worker_info()
+        alias_request, alias_pending = self._alias_request()
+        sent = (
+            not self._attendance_cache.get("initialized")
+            or discovery_session_delta is not None
+            or info_pending
+            or alias_pending
+            or self._discovery_heartbeat_wait(sessions) <= 0
+        )
+        heartbeat_payload: dict[str, Any] = {}
+        if sent:
+            heartbeat_payload = {"availability": "available"}
+            if discovery_session_delta is not None:
+                heartbeat_payload["agent_sessions"] = discovery_session_delta
+            self._add_worker_info(heartbeat_payload, worker_info)
+            self._add_alias_request(heartbeat_payload, alias_request)
+        return discovery_session_delta, session_signature, worker_info, alias_request, sent, heartbeat_payload
+
+    def _record_discovery_heartbeat(
+        self,
+        session_signature: str,
+        worker_info: Any,
+        alias_request: Any,
+        discovery: Mapping[str, Any],
+    ) -> None:
+        """Record an answered discovery heartbeat in the field store, off the loop (W461)."""
+
+        self._record_project_heartbeat("")
+        self._record_session_report(project_ref="", signature=session_signature)
+        self._acknowledge_worker_info(worker_info, discovery)
+        self._acknowledge_alias_request(alias_request, discovery)
+        self._record_attendance_observation(discovery)
+
     async def poll_attendances_once(self) -> dict[str, Any]:
         """Discover and poll the current project of this session-bound worker."""
 
@@ -4457,7 +4700,7 @@ class ProblemBoardHostRelayAdapter:
         )
         if registration is not None and registration["remote"].get("pool_status") == "limbo":
             return await self._limbo_result()
-        sessions = self._listener_sessions()
+        sessions = await run_off_loop(self._listener_sessions, executor=self._store_thread())
         discovery: dict[str, Any] = {}
         discovery_heartbeat_sent = False
         discovery_session_delta: list[dict[str, Any]] | None = None
@@ -4469,25 +4712,17 @@ class ProblemBoardHostRelayAdapter:
             # known, its heartbeat refreshes the same authoritative snapshot.
             # An unrelated Data Bus push still starts a control reconciliation,
             # but it does not make unchanged discovery presence due.
-            discovery_session_delta, session_signature = self._session_report_delta(
-                project_ref="",
-                sessions=sessions,
-            )
-            worker_info, info_pending = self._worker_info()
-            alias_request, alias_pending = self._alias_request()
-            discovery_heartbeat_sent = (
-                not self._attendance_cache.get("initialized")
-                or discovery_session_delta is not None
-                or info_pending
-                or alias_pending
-                or self._discovery_heartbeat_wait(sessions) <= 0
+            (
+                discovery_session_delta,
+                session_signature,
+                worker_info,
+                alias_request,
+                discovery_heartbeat_sent,
+                heartbeat_payload,
+            ) = await run_off_loop(
+                self._prepare_discovery_heartbeat, sessions, executor=self._store_thread()
             )
             if discovery_heartbeat_sent:
-                heartbeat_payload: dict[str, Any] = {"availability": "available"}
-                if discovery_session_delta is not None:
-                    heartbeat_payload["agent_sessions"] = discovery_session_delta
-                self._add_worker_info(heartbeat_payload, worker_info)
-                self._add_alias_request(heartbeat_payload, alias_request)
                 with self._trace_stage(
                     "attendance.heartbeat",
                     operation="worker.heartbeat.discovery",
@@ -4500,14 +4735,14 @@ class ProblemBoardHostRelayAdapter:
                     and republished["remote"].get("pool_status") == "limbo"
                 ):
                     return await self._limbo_result()
-                self._record_project_heartbeat("")
-                self._record_session_report(
-                    project_ref="",
-                    signature=session_signature,
+                await run_off_loop(
+                    self._record_discovery_heartbeat,
+                    session_signature,
+                    worker_info,
+                    alias_request,
+                    discovery,
+                    executor=self._store_thread(),
                 )
-                self._acknowledge_worker_info(worker_info, discovery)
-                self._acknowledge_alias_request(alias_request, discovery)
-                self._record_attendance_observation(discovery)
         with self._trace_stage(
             "attendance.controls",
             operation="control.pull.discovery",
@@ -4541,6 +4776,9 @@ class ProblemBoardHostRelayAdapter:
                 runtime_account_error_state=self._runtime_account_error_state,
                 outbox_drain_lock=self._outbox_drain_lock,
                 journal_refresh_worker=self._journal_refresh_worker,
+                workspace_sizes=self._workspace_sizes,
+                worktree_observer=self._worktree_observer,
+                store_executor=self._store_thread(),
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -4550,9 +4788,11 @@ class ProblemBoardHostRelayAdapter:
             for item in self._attendance_cache.get("items") or []
             if isinstance(item, Mapping) and item.get("project_ref")
         ]
-        self.field.sync_worker_attendances(
+        await run_off_loop(
+            self.field.sync_worker_attendances,
             self.config.worker_name,
             [str(item["project_ref"]) for item in observed_attendances],
+            executor=self._store_thread(),
         )
         worker_alias = str(
             self._attendance_cache.get("worker_alias")
@@ -4695,6 +4935,9 @@ TRANSIENT_ERROR_CODES = frozenset(
         "data_bus_outcome_unknown",
         "oauth_metadata_request_failed",
         "oauth_profile_lock_timeout",
+        # The profile moved to another credential twice while one token
+        # operation read it (W464, the per-credential lock): over in moments.
+        "oauth_profile_credential_changed",
         "oauth_server_metadata_unavailable",
         "oauth_session_lock_timeout",
         "state_lock_timeout",
@@ -4780,6 +5023,27 @@ class _ChannelSession:
             await self.stack.aclose()
 
 
+def _transport_retained(session: Any) -> bool:
+    """The session's socket is up, or its client is repairing a plain transport drop.
+
+    A request whose outcome is unknown leaves the session in place in either
+    case: receipts fan out to the re-authenticated session, and the client
+    reconnects on its own within seconds. Replacing the session instead costs
+    a fresh credential and the channel backoff, 30 to 60 s (a remote host,
+    2026-10-02 21:03Z). The client says False for a refused handshake, an
+    expired credential or a drop past its recovery window; a closing session
+    is never retained.
+    """
+
+    if session is None or getattr(session, "closing", False):
+        return False
+    client = session.adapter.client
+    return bool(
+        getattr(client, "connected", False)
+        or getattr(client, "transport_recovering", False)
+    )
+
+
 class ProblemBoardRelaySupervisor:
     """One machine process multiplexing independently authorized workers."""
 
@@ -4799,6 +5063,10 @@ class ProblemBoardRelaySupervisor:
         self.connector = connector
         # How often the gateway may be called, per host and per channel
         # (local/relay_pacing.py). Kept beside the host config.
+        # One workspace-size registry for every channel on this host: at most
+        # two walks at once, once per interval per path, in a child process
+        # (W461, W469).
+        self._workspace_sizes = WorkspaceSizes()
         self._pacing = pacing or RelayPacing(
             self.config_path.parent / PACING_FILENAME, forget_permanent=True
         )
@@ -5303,10 +5571,23 @@ class ProblemBoardRelaySupervisor:
         )
         # The bounded account read can yield. Do not wake a detached session or
         # stale captured work that ceased to be pending while it was running.
-        pending_refs = field.pending_worker_mail_refs(channel.worker_name)
-        listener = field.worker_listener_session(channel.worker_name)
+        # This second read is the authoritative one and runs in the channel's
+        # store thread like the first: on the loop it held every channel for
+        # about 3.4 s on a slow mailbox (W476, 2026-10-03).
+        try:
+            pending_refs = await self._channel_off_loop(
+                channel, field.pending_worker_mail_refs, channel.worker_name
+            )
+            listener = await self._channel_off_loop(
+                channel, field.worker_listener_session, channel.worker_name
+            )
+        except DomainError as exc:
+            if exc.code != "field_record_not_found":
+                raise
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
-            field.clear_wake_hold(channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
         if quota_error or (limit_state and limit_state.get("source") == SOURCE_CODEX_APP_SERVER
                            and limit_state.get("kind") in {"rate_limited", "out_of_tokens"}
@@ -5315,7 +5596,10 @@ class ProblemBoardRelaySupervisor:
             # model turn. The next bounded read, not a tight native retry loop,
             # can establish capacity. Pending mail remains untouched.
             retry_at = (datetime.now(timezone.utc) + timedelta(seconds=QUOTA_REFRESH_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            field.record_wake_hold(channel.worker_name, until=retry_at, pending=len(pending_refs))
+            await self._channel_off_loop(
+                channel, field.record_wake_hold, channel.worker_name,
+                until=retry_at, pending=len(pending_refs),
+            )
             return {"wake_deferred": True, "wake_deferred_until": retry_at,
                     "reason": quota_error or "agent_rate_limited"}
         deferred_until = wake_deferred_until(limit_state, now=now)
@@ -5579,6 +5863,25 @@ class ProblemBoardRelaySupervisor:
             for key in ("access_id", "credential_ref", "endpoint", "auth_type")
         )
 
+    def _still_bound(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        session: _ChannelSession,
+    ) -> bool:
+        """``_session_matches`` for a session about to be kept; unreadable means no."""
+
+        try:
+            return self._session_matches(host, channel, session, require_card=False)
+        except Exception:  # noqa: BLE001 - a kept session must prove its binding
+            logger.warning(
+                "Problem Board relay channel lifecycle event=binding_unreadable "
+                "worker_name=%s: the session is not kept",
+                channel.worker_name,
+                exc_info=True,
+            )
+            return False
+
     def _session_matches(
         self,
         host: HostRelayConfig,
@@ -5625,8 +5928,7 @@ class ProblemBoardRelaySupervisor:
         retained_connected = bool(
             self._failure_code(error) == "data_bus_outcome_unknown"
             and session is not None
-            and not session.closing
-            and getattr(session.adapter.client, "connected", False)
+            and _transport_retained(session)
         )
         return pacing.record_failure(
             worker_name,
@@ -5830,6 +6132,8 @@ class ProblemBoardRelaySupervisor:
                 outbox_drain_lock=self._outbox_drain_lock(
                     channel.worker_name
                 ),
+                workspace_sizes=self._workspace_sizes,
+                store_executor=self._store_executors.for_channel(channel.worker_name),
             )
         except BaseException as exc:
             self._pacing.record_attempt_ended(channel.worker_name)
@@ -6012,8 +6316,15 @@ class ProblemBoardRelaySupervisor:
     ) -> dict[str, int]:
         """Run bounded local requests through this exact worker Card channel."""
 
-        queue = CoordinateQueue(host.field_root)
-        requests = queue.claim(worker_name=channel.worker_name)
+        # The queue's file reads and writes run in this channel's store thread
+        # (W461). run_off_loop submits a call before its first suspension and
+        # lets it finish when the caller is cancelled, so no queue step is
+        # split: a claim whose caller is gone is recovered by its lease expiry.
+        store_executor = self._store_executors.for_channel(channel.worker_name)
+        queue = await run_off_loop(CoordinateQueue, host.field_root, executor=store_executor)
+        requests = await run_off_loop(
+            queue.claim, worker_name=channel.worker_name, executor=store_executor
+        )
         counts = {
             "claimed": len(requests),
             "completed": 0,
@@ -6090,8 +6401,10 @@ class ProblemBoardRelaySupervisor:
             }
             if observed_identity != expected_identity:
                 try:
-                    queue.complete(
+                    await run_off_loop(
+                        queue.complete,
                         request,
+                        executor=store_executor,
                         error={
                             "code": "work_coordinate_worker_mismatch",
                             "message": (
@@ -6119,7 +6432,47 @@ class ProblemBoardRelaySupervisor:
                 )
                 continue
             try:
-                request = queue.mark_attempt(request)
+                request, card_now = await run_off_loop(
+                    self._mark_attempt_and_read_card, queue, request, host, channel,
+                    executor=store_executor,
+                )
+                # The session, its closing flag and the Card may have changed
+                # while the store thread ran: check them here, on the loop,
+                # with no await before the dispatch (W461 review). A request
+                # fenced off goes back to pending under its transport id, so
+                # the channel's current session carries it.
+                fence_reason = self._dispatch_fence_failure(channel, session, card_now)
+                if fence_reason:
+                    try:
+                        await run_off_loop(
+                            queue.defer_after_unknown,
+                            request,
+                            error=DomainError(
+                                "work_coordinate_session_changed",
+                                "The worker channel session changed before dispatch.",
+                                status=409,
+                            ),
+                            executor=store_executor,
+                        )
+                    except DomainError as queue_exc:
+                        if queue_exc.code == COORDINATE_LEASE_LOST:
+                            continue
+                        raise
+                    counts["deferred"] += 1
+                    logger.warning(
+                        "Problem Board coordinate dispatch fenced worker=%s request_id=%s reason=%s",
+                        channel.worker_name,
+                        str(request.get("request_id") or ""),
+                        fence_reason,
+                    )
+                    log_stages(
+                        request,
+                        outcome="session_changed_deferred",
+                        relay_started=relay_started,
+                        governed_action_seconds=governed_action_seconds,
+                        wait_context=wait_context,
+                    )
+                    continue
                 stable_action = getattr(
                     session.adapter.client,
                     "action_with_transport_identity",
@@ -6162,7 +6515,9 @@ class ProblemBoardRelaySupervisor:
                     and not queue.expired(request)
                 ):
                     try:
-                        queue.defer_after_unknown(request, error=exc)
+                        await run_off_loop(
+                            queue.defer_after_unknown, request, error=exc, executor=store_executor
+                        )
                     except DomainError as queue_exc:
                         if queue_exc.code == COORDINATE_LEASE_LOST:
                             continue
@@ -6171,7 +6526,7 @@ class ProblemBoardRelaySupervisor:
                     outcome = "outcome_unknown_deferred"
                 else:
                     try:
-                        queue.fail(request, exc)
+                        await run_off_loop(queue.fail, request, exc, executor=store_executor)
                     except DomainError as queue_exc:
                         if queue_exc.code == COORDINATE_LEASE_LOST:
                             continue
@@ -6180,7 +6535,9 @@ class ProblemBoardRelaySupervisor:
                     outcome = "refused"
             else:
                 try:
-                    queue.complete(request, result=dict(result))
+                    await run_off_loop(
+                        queue.complete, request, result=dict(result), executor=store_executor
+                    )
                 except DomainError as exc:
                     if exc.code == COORDINATE_LEASE_LOST:
                         continue
@@ -6508,10 +6865,14 @@ class ProblemBoardRelaySupervisor:
                 result = {**dict(result), "coordinate_requests": coordinate}
             return result
         except BaseException as exc:
+            # An unknown outcome keeps the session when its transport is up or
+            # only reconnecting, and only while it still belongs to this
+            # channel and Card. Anything else, cancellation included, drops it.
             keep_uncertain_session = bool(
                 isinstance(exc, DomainError)
                 and exc.code == "data_bus_outcome_unknown"
-                and getattr(session.adapter.client, "connected", False)
+                and _transport_retained(session)
+                and self._still_bound(host, channel, session)
             )
             if not keep_uncertain_session:
                 await self._drop_session(channel.worker_name)
@@ -7077,7 +7438,7 @@ class ProblemBoardRelaySupervisor:
 
         while True:
             try:
-                self.serve_coordinate_once()
+                await self.serve_coordinate_pass()
             except Exception:  # noqa: BLE001 - the next pass retries
                 logger.warning("Problem Board coordinate server pass failed", exc_info=True)
             await asyncio.sleep(self.COORDINATE_SERVE_INTERVAL_SECONDS)
@@ -7089,11 +7450,94 @@ class ProblemBoardRelaySupervisor:
         open session is left to the cycle. A retained connected session with
         unknown delivery may recover before periodic backoff, but its live
         channel/Card fences still apply; unavailable transport remains fenced.
+        This form reads files inline, for tests and one-shot callers; the
+        relay's own loop runs ``serve_coordinate_pass``.
         """
 
         host = HostRelayConfig.load(self.config_path)
-        queue = CoordinateQueue(host.field_root)
-        started: list[str] = []
+        return self._start_coordinate_drains(
+            host, self._coordinate_ready(host, self._coordinate_candidates(host))
+        )
+
+    async def serve_coordinate_pass(self) -> list[str]:
+        """``serve_coordinate_once`` with every file read off the event loop (W461).
+
+        It runs every 0.25 s for every channel. Inline, its host config read
+        and request-queue globs were the most frequent relay loop block on
+        2026-10-02 (51 of 128 before the upgrade).
+        """
+
+        executor = self._store_executors.for_channel("coordinate-server")
+        host = await run_off_loop(HostRelayConfig.load, self.config_path, executor=executor)
+        candidates = self._coordinate_candidates(host)
+        if not candidates:
+            return []
+        ready = await run_off_loop(self._coordinate_ready, host, candidates, executor=executor)
+        # A session may have closed, been replaced or had its Card replaced
+        # while the files were read. The loop state is checked again here; the
+        # Card is read once more off the loop, and only what still matches is
+        # dispatched in the same loop step as that answer (W461 review P1).
+        ready = self._still_coordinate_candidates(host, ready)
+        if not ready:
+            return []
+        bound = await run_off_loop(self._coordinate_cards_match, host, ready, executor=executor)
+        return self._start_coordinate_drains(
+            host,
+            [(name, session) for name, session in self._still_coordinate_candidates(host, ready) if name in bound],
+        )
+
+    def _still_coordinate_candidates(
+        self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> list[tuple[str, "_ChannelSession"]]:
+        still = {name: session for name, session in self._coordinate_candidates(host)}
+        return [(name, session) for name, session in ready if still.get(name) is session]
+
+    def _mark_attempt_and_read_card(
+        self,
+        queue: CoordinateQueue,
+        request: Mapping[str, Any],
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+    ) -> tuple[dict[str, Any], str]:
+        """Persist the attempt, then read the Card the dispatch must still match; store thread."""
+
+        marked = queue.mark_attempt(request)
+        return marked, self._card_fingerprint(host, channel)
+
+    def _dispatch_fence_failure(
+        self,
+        channel: WorkerChannelConfig,
+        session: "_ChannelSession",
+        card_now: str,
+    ) -> str:
+        """Why ``session`` may no longer carry a request now, or ``""``; loop state only."""
+
+        if self._sessions.get(channel.worker_name) is not session:
+            return "session_replaced"
+        if session.closing:
+            return "session_closing"
+        if session.profile != channel.profile or session.channel_identity != channel.worker_identity:
+            return "channel_changed"
+        if session.card_fingerprint != card_now:
+            return "card_changed"
+        return ""
+
+    def _coordinate_cards_match(
+        self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> set[str]:
+        """Names whose session still matches its channel and current Card; reads the profile record."""
+
+        channels = {channel.worker_name: channel for channel in host.workers}
+        return {
+            name
+            for name, session in ready
+            if self._session_matches(host, channels[name], session, require_card=True)
+        }
+
+    def _coordinate_candidates(self, host: HostRelayConfig) -> list[tuple[str, "_ChannelSession"]]:
+        """Channels whose open session may carry a coordinate drain now; loop state only."""
+
+        candidates: list[tuple[str, _ChannelSession]] = []
         for channel in host.workers:
             name = channel.worker_name
             if channel.state != "active" or name in self._coordinate_draining:
@@ -7107,18 +7551,47 @@ class ProblemBoardRelaySupervisor:
                 name, connected=bool(getattr(session.adapter.client, "connected", False))
             ):
                 continue
+            candidates.append((name, session))
+        return candidates
+
+    def _coordinate_ready(
+        self, host: HostRelayConfig, candidates: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> list[tuple[str, "_ChannelSession"]]:
+        """The candidates with ready requests whose session matches its channel and Card.
+
+        Reads files: the request queue, then the profile record. Only the
+        session opened for this exact channel and Card may carry its
+        requests. During a replacement the cached session can still belong to
+        the old one; the cycle drops and reopens it before its own drain, and
+        until then the requests wait. The Card is read only when there is
+        work to carry.
+        """
+
+        queue = CoordinateQueue(host.field_root)
+        channels = {channel.worker_name: channel for channel in host.workers}
+        # Runs in the coordinate-server thread and reads the loop-owned session
+        # attributes (closing, profile, Card fingerprint): plain attribute
+        # reads under the GIL, and the loop re-checks that each session is
+        # still the same before it starts a drain.
+        ready: list[tuple[str, _ChannelSession]] = []
+        for name, session in candidates:
             if not queue.has_ready_work(worker_names=[name]):
                 continue
-            # Only the session opened for this exact channel and Card may
-            # carry its requests. During a replacement the cached session can
-            # still belong to the old one; the cycle drops and reopens it
-            # before its own drain, and until then the requests wait. The
-            # check reads the profile record, so it runs only when there is
-            # work to carry.
-            if not self._session_matches(host, channel, session, require_card=True):
+            if not self._session_matches(host, channels[name], session, require_card=True):
+                continue
+            ready.append((name, session))
+        return ready
+
+    def _start_coordinate_drains(
+        self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
+    ) -> list[str]:
+        channels = {channel.worker_name: channel for channel in host.workers}
+        started: list[str] = []
+        for name, session in ready:
+            if name in self._coordinate_draining:
                 continue
             task = asyncio.create_task(
-                self._drain_coordinate_beside_cycle(host, channel, session),
+                self._drain_coordinate_beside_cycle(host, channels[name], session),
                 name=f"problem-board-coordinate-{name}",
             )
             self._coordinate_draining[name] = task
@@ -7132,6 +7605,25 @@ class ProblemBoardRelaySupervisor:
         session: _ChannelSession,
     ) -> None:
         try:
+            # The Card is checked again here, as the drain's first step: the
+            # pass that started it read the Card in a thread, and a Card
+            # replaced between that read and this task would otherwise carry
+            # requests under the old one (W461 review). Off the loop, fail
+            # closed: a mismatch leaves the requests to the cycle.
+            still_bound = await run_off_loop(
+                self._session_matches,
+                host,
+                channel,
+                session,
+                require_card=True,
+                executor=self._store_executors.for_channel("coordinate-server"),
+            )
+            if not still_bound:
+                logger.info(
+                    "Problem Board coordinate drain beside the cycle skipped worker=%s reason=card_changed",
+                    channel.worker_name,
+                )
+                return
             await self._drain_coordinate_for_worker(host, channel, session)
         except asyncio.CancelledError:
             raise

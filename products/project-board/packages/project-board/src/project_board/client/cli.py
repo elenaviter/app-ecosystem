@@ -819,6 +819,11 @@ def build_parser() -> argparse.ArgumentParser:
     _agent_identity(command)
     command.add_argument("--limit", type=int, default=5)
     command.add_argument("--lease-seconds", type=int, default=1800)
+    command.add_argument("--message-ref", default="", help="Lease one exact addressed mail message if pending.")
+    command.add_argument("--correlation-id", default="", help="Select a thread with --sender stable worker name.")
+    command.add_argument("--sender", default="", help="Stable sender worker name; required with --correlation-id.")
+    command.add_argument("--project-ref", default="", help="Optional attended project constraint for a selection.")
+    command.add_argument("--work-ref", default="", help="Optional canonical work-item constraint for a selection.")
     command.add_argument(
         "--wake-id",
         default="",
@@ -1128,6 +1133,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--reason", default="", help="With --end: why the job ended (change request closed, released, ...).")
     command.add_argument("--sweep", action="store_true", help="List every tree in this agent's workspace with its state and what --apply would remove.")
     command.add_argument("--apply", action="store_true", help="With --sweep: remove what the last dry run listed as removable and still is; never with force.")
+    command.add_argument("--measure", action="store_true", help="With --sweep: also measure each scratch run's size, which reads every file of every run.")
     command.add_argument("--pin", default="", metavar="CONSUMER", help="With --path: a review or release that still needs this tree; the sweep keeps it.")
     command.add_argument("--unpin", default="", metavar="CONSUMER", help="With --path: that consumer no longer needs this tree.")
     command.add_argument("--generated", default="", metavar="RELATIVE_PATH", help="With --path and --generated-by: an ignored path in this tree that a command makes again; the sweep may let it go.")
@@ -1250,9 +1256,19 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--work-ref", default="")
     command.add_argument("--correlation-id", default="")
     command.add_argument("--reply-to", default="")
-    command.add_argument("--attach", action="append", default=[], help="File to send with the message (repeatable); only to the operator inbox.")
+    command.add_argument("--attach", action="append", default=[], help="File to send through the board to any mailbox (repeatable). Executable binaries are refused; scripts and text are allowed.")
     command.add_argument("--idempotency-key", required=True)
     command.add_argument("--route", choices=("auto", "local", "remote"), default="auto")
+
+    command = worker_commands.add_parser("forward", help="Forward one leased message with all its attachments and original-message provenance; does not settle it.")
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", default="")
+    command.add_argument("--message-ref", required=True)
+    command.add_argument("--lease-id", required=True)
+    command.add_argument("--recipient", required=True)
+    command.add_argument("--kind", default="", help="Optional destination mail kind; otherwise preserves the original kind. Use an operator mail kind when forwarding a request to the operator.")
+    command.add_argument("--idempotency-key", required=True)
 
     command = worker_commands.add_parser(
         "deliveries",
@@ -3446,6 +3462,21 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
         refuse_unresolved_slots(data.decode("utf-8"), argument="--file")
     except UnicodeDecodeError:
         pass
+    import mimetypes
+
+    from ..contract.mail_attachments import attachment_kind, kind_limit_bytes
+
+    mime = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
+    # W475: the platform refuses a text file over 10 MiB and an SVG over
+    # 2 MiB at upload; say so before a slot is taken.
+    kind = attachment_kind(data, mime=mime)
+    kind_limit = kind_limit_bytes(kind)
+    if len(data) > kind_limit:
+        raise DomainError(
+            "work_attachment_too_large",
+            f"The platform accepts {kind} attachments up to {kind_limit} bytes.",
+            details={"maximum_bytes": kind_limit, "content_bytes": len(data), "kind": kind},
+        )
     slot_result = _reference_mapping_request(
         args,
         action="attachment.request_upload",
@@ -3466,9 +3497,7 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
     staged_ref = str(slot.get("staged_ref") or "")
     if not upload_url or not staged_ref:
         raise DomainError("work_attachment_upload_response_invalid", "The upload slot is incomplete.", status=502)
-    import mimetypes
-
-    asyncio.run(_http_upload(upload_url, data, mimetypes.guess_type(source.name)[0] or "application/octet-stream"))
+    asyncio.run(_http_upload(upload_url, data, mime))
     refs = [str(ref) for ref in item.get("attachment_refs") or []]
     updated = _reference_mapping_request(
         args,
@@ -5038,6 +5067,11 @@ def _worker_command(args: Any) -> dict[str, Any]:
             limit=args.limit,
             lease_seconds=args.lease_seconds,
             wake_id=args.wake_id,
+            message_ref=args.message_ref,
+            correlation_id=args.correlation_id,
+            sender=args.sender,
+            project_ref=args.project_ref,
+            work_ref=args.work_ref,
         )
         return _with_project_files_signals(received, config, field, identity)
     if args.worker_command == "leases":
@@ -5332,6 +5366,24 @@ def _worker_command(args: Any) -> dict[str, Any]:
             lease_seconds=args.lease_seconds,
             note=args.note,
         )
+    if args.worker_command == "forward":
+        _raise_if_channel_not_usable(path, channel, sending=True, idempotency_key=args.idempotency_key)
+        _raise_if_send_channel_reconnecting(path, identity.worker_name, idempotency_key=args.idempotency_key)
+        original = field.read_worker_mail_lease(
+            project_id, worker_name=identity.worker_name,
+            message_ref=args.message_ref, lease_id=args.lease_id,
+            lease_owner=identity.runtime_session_id,
+        )
+        require_plan_item(
+            field, project_id=project_id, worker_name=identity.worker_name,
+            work_ref=str(original.get("work_ref") or ""),
+        )
+        return field.forward_worker_mail(
+            project_id, worker_name=identity.worker_name,
+            message_ref=args.message_ref, lease_id=args.lease_id,
+            lease_owner=identity.runtime_session_id, recipient=args.recipient,
+            idempotency_key=args.idempotency_key, kind=args.kind,
+        )
     if args.worker_command == "send":
         payload = (
             _json_object(args.payload_file, field="payload-file")
@@ -5369,6 +5421,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             resolution = field.resolve_mail_recipient(project_id, args.recipient)
         recipient = str(resolution["worker_name"])
         route = str(resolution["route"])
+        if getattr(args, "attach", None):
+            route = "remote"  # Bytes use the governed board lane on every host.
         if args.route != "auto" and args.route != route:
             raise DomainError(
                 "field_mail_route_mismatch",
@@ -5409,11 +5463,6 @@ def _worker_command(args: Any) -> dict[str, Any]:
             work_ref=args.work_ref,
         )
         if route == "local":
-            if attachments:
-                raise DomainError(
-                    "field_attachments_operator_only",
-                    "Attachments travel to the operator inbox; local worker mail carries paths in its body.",
-                )
             return field.send_mail(
                 project_id,
                 sender=identity.worker_name,
@@ -6847,7 +6896,16 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
     found removable, and --apply removes only what that dry run listed and is
     still unchanged, then records the next dry run. The installed pb client
     itself is protected.
+
+    ``only_ended`` is the automatic triggers' sweep (session start, idle): it
+    leaves the scratch runs and loose entries out of the result, because the
+    trigger reports only what it would remove, and building the run detail it
+    then discarded cost a full read of every run (2026-10-03: 79 s, 623 MB on
+    one idle). The runs are still judged for the plan. Scratch sizes are
+    measured only on an explicit sweep with --measure.
     """
+
+    report_runs = not only_ended
 
     from . import scratch, sweep_plan, workspace_sweep
 
@@ -6900,8 +6958,9 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
     else:
         result.update(workspace_sweep.sweep_report(trees))
     runs = scratch.inspect_runs(workspace, worker_name=identity.worker_name, verify=verify,
-                                consumers=consumers, protected=protected)
-    if not apply:
+                                consumers=consumers, protected=protected,
+                                measure=report_runs and bool(getattr(args, "measure", False)))
+    if not apply and report_runs:
         result["scratch_runs"] = [run.to_mapping() for run in runs]
         result["loose"] = scratch.loose_entries(workspace, known=clones)
     if refusal:

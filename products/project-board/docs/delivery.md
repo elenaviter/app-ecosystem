@@ -72,10 +72,33 @@ exists; receive returns it; settlement records that it was handled.
 
 - A receive returns a complete batch with exact leases, or returns every
   provisional lease to the inbox before reporting failure.
+- Newly materialized operator `request` and `reply` controls carry a priority
+  mail ID assigned only after the server verifies the human sender. Within
+  that mailbox, they sort before ordinary worker mail when the item limit is
+  small. Worker-supplied sender labels cannot grant priority.
+- This does not reorder mail that was pending before the change. Older operator
+  controls keep their random IDs and can still be selected after worker mail;
+  existing queues are not migrated.
+- Priority applies within one mailbox. A receive reads direct mail before
+  project mail, so direct messages can exhaust the item limit before a project
+  approval. Continuing operator arrivals can keep worker mail pending under
+  strict priority; when that stream ends, the pending mail remains available
+  for later receives.
 - One size budget covers a receive. A message that would cross it stays
   pending and unleased for the next receive.
 - A session can always re-read what it already holds: it can page every
   lease it holds and re-read any one of them without waiting for expiry.
+- A worker can receive an exact pending message with `pb worker receive
+  --message-ref <work:mail:...>`, or a current thread with `--correlation-id
+  <id> --sender <stable-worker-address>`. Optional `--project-ref` and
+  `--work-ref` constrain that match. This leases only addressed matches from
+  one shard, leaving older nonmatches pending; it does not discard or settle
+  them. The response names held or already settled exact messages when known.
+  Selective receive refuses a claim while board-admitted operator mail is
+  pending in any local attended shard. It cannot accompany `--wake-id`, and
+  an ordinary receive is required before another selection. Native wakes
+  continue to use ordinary receive and the same direct-before-project mailbox
+  order.
 - Attached files are part of the message, each with an exact read command
   that checks the lease, size and content hash.
 
@@ -286,6 +309,18 @@ the fields as follows:
 - `timer_overrun_seconds` is how late the deadline (`timeout_seconds`)
   fired. When it is large, the relay's event loop or the whole process did
   not run, for example on a paging host. A slow server does not cause it.
+- `silent_transport_replaced: true` means the acknowledgement timed out on a
+  socket that delivered nothing since the request was sent, so the client
+  dropped that socket and reconnected at once. It is never set when the timer
+  fired a second or more late, because then the silence says nothing about the
+  network.
+
+When the outcome is unknown and the socket is connected or only reconnecting,
+the relay keeps the channel's session, as long as it still matches the
+channel and Card. The channel then shows as degraded, not reconnecting, and
+queued `pb coordinate` calls run once the socket is back. Any other failure,
+cancellation included, still replaces the session with a fresh credential
+after the channel backoff.
 
 The relay also measures its own loop. A sampler sleeps one second and records
 how late it wakes.
