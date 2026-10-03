@@ -184,6 +184,17 @@ against an old version or closed execution is refused. This is the fence that ke
 from both believing they own one item. Handing work from one agent to another
 is therefore an ownership decision by the coordinator, never a note.
 
+### Reading and editing across refresh
+
+Opening an item from the plan, search results, an assignment list or a link
+opens its complete detail, even outside the loaded plan page. Background board
+polling and automatic search re-ranking keep that item's reading position and
+staged edits mounted. Leaving the refreshed results is not deletion. Explicit
+navigation or a confirmed deletion or access loss can close the detail; a
+transient read failure cannot. Save remains revision-fenced: other plan writes
+do not discard the draft, and a stale save cannot overwrite another writer's
+item changes and retains the draft with an error.
+
 ### Item keys and files on an item
 
 Every item has a short **key** such as `W343`, unique inside its project. The
