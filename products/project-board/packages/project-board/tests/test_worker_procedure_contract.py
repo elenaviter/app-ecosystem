@@ -2645,11 +2645,11 @@ def test_asking_the_next_actor_is_handing_the_item_on() -> None:
     collaboration = _words(_read("references/collaboration.md"))
     rule16 = collaboration[collaboration.index("## Rule 16."):]
     assert "a route from planning to acceptance that every participant can read, kept whole through every reprioritization" in rule16
-    assert "The item's assignee and status always show the actual actor and step." in rule16
+    assert "The item's assignee always shows the actual actor, and its route the actual step." in rule16
     assert "and the status when it changes), in the same act as asking them and without waiting for the coordinator: a mail moves nothing." in rule16
     assert "route it as you ask (Rule 16)" in collaboration
     # The holder keeps the route; the coordinator only sees that one exists.
     assert "seeing that every route names its current actor and next action, which each holder keeps" in rule16
     assert "see that every item's route names a current next actor and action, which its holder keeps and completes" in _words(_read("references/coordinator.md"))
-    assert "whoever holds an item whose route is missing, or no longer fits after a reprioritization or a reassignment, completes it on the item at once" in rule16
+    assert "whoever holds an item whose route is missing, or no longer fits after a reprioritization or a reassignment, completes the route on the item at once" in rule16
     assert "Report it as you ask for the review: a mail moves nothing (collaboration Rule 16)." in _words(_read("SKILL.md"))

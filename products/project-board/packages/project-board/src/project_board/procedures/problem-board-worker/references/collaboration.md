@@ -1029,15 +1029,15 @@ merger, the installer and verifier where the task needs them, the current
 blockers with who decides each, and the handoff after each step. The default route is: analysis and implementation,
 exact-source and test evidence, direct independent review, the named merger,
 installation and live verification where needed, then acceptance. The route
-may change as the work does. The item's assignee and status always show the
-actual actor and step. Each actor who finishes a step records its evidence
+may change as the work does. The item's assignee always shows the actual actor,
+and its route the actual step. Each actor who finishes a step records its evidence
 and the next handoff on the item, and hands the item to the next actor the
 route names itself, the operator included (`assignment.assign`,
 `review.assign` or `work.assignee.set`, and the status when it changes), in
 the same act as asking them and without waiting for the coordinator: a mail
 moves nothing. The next actor reads the route there, not in old mail; whoever holds an item
 whose route is missing, or no longer fits after a reprioritization or a
-reassignment, completes it on the item at once. A missing technical detail never leaves the
+reassignment, completes the route on the item at once. A missing technical detail never leaves the
 route without an owner or waiting on an acknowledgement: the route names who
 finds it out.
 
