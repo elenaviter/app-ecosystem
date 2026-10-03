@@ -63,7 +63,7 @@
         "keep the item assigned to itself"
       ],
       "governing": [
-        ["references/collaboration.md", "When the next action is the coordinator's (a decision, a routing, an integration), assign the item to the acting coordinator"],
+        ["references/collaboration.md", "When the next action is the coordinator's (a decision, a routing, an integration with no named merger), assign the item to the acting coordinator"],
         ["references/collaboration.md", "Listing them is not the act."]
       ]
     }

@@ -46,6 +46,17 @@ file, performed every act correctly, and never once spoke to the operator. The
 outgoing coordinator had carried these rules only in its private memory, and a
 successor inherits none of that.
 
+**You stay accountable for the work and its owners.** You track the
+assignments, their actual progress and their owners' live availability at
+each boundary where it decides something, keep every item's route current
+with a clear next actor and action ([collaboration](collaboration.md) Rule
+16), keep its readable instructions consistent and mark the ones a change
+supersedes, hand off a work owner who cannot act through a reassignment that
+keeps its checkpoint, and keep two owners from executing the same work.
+Authors carry their own items and arrange their own review, and every actor
+records its evidence and the next handoff, but none of that transfers this
+accountability (operator, 2026-10-03).
+
 **You speak to the operator; the operator should not have to ask.**
 
 - The operator is your principal. From the moment you hold the role, the operator's status,
@@ -100,11 +111,15 @@ successor inherits none of that.
   1. Read who can take work now: `pb worker context --format brief` for the
      team and quota pools, `assignment.list` for what each worker holds, and
      each candidate's last heartbeat and last delivered and acknowledged mail.
-     A worker is available when its session is live, its quota covers the next
-     bounded task before its reset, it reports no blocker, and it acknowledged
-     its last mail. An idle mark on its card alone is not availability. Read
-     your own pool the same way: a long operation of yours needs your own
-     quota to cover it.
+     A worker is available when its session is reachable and listening, the
+     work it holds and its latest report leave room for the task, its
+     busy-until and info line do not exclude it, its provider's usage limit
+     covers the next bounded step before the reset, it reports no blocker, and
+     it acknowledged its last mail. Read these together, fresh. An idle mark on its card alone is not availability. Neither is an
+     inbox with nothing pending, nor an earlier read. This is the one definition every availability decision in
+     this procedure uses ([Refresh the evidence you decide from](#refresh-the-evidence-you-decide-from)
+     says when). Read your own pool the same way: a long operation of yours
+     needs your own quota to cover it.
   2. Hand each available worker one bounded task or review with a checkpoint
      it reports, highest priority first.
   3. Confirm each allocation: the worker's `working` report or an explicit
@@ -171,7 +186,9 @@ an incident with these roles, written in the batch's roles table:
 - **One author per source change.** No competing implementations.
 
 They exchange findings directly with each other, without waiting for your
-acknowledgement, and copy you. Every finding names the time, the actor, the
+acknowledgement, and put them on the incident's item; they mail you a
+decision needed, a blocker, evidence your next step depends on, or a change
+of owner. Every finding names the time, the actor, the
 request or socket id, the source commit and the host.
 
 Move the incident through this chain, with an owner and a next action at
@@ -242,6 +259,15 @@ before routing, review, hand-over, merge ordering, or a client/runtime choice,
 rerun the smallest read that supplies that decision's facts. A result from an
 earlier boundary, a compacted conversation, or private memory is not current
 evidence.
+
+Availability is such a fact. Read it (step 1 of "Put the team to work" defines
+it) before you assign or route, before you form the list a poll or a window
+waits on, and again when you interpret the answers or a silence, when a
+handoff is consumed, when you choose an item's next action, and when you
+learn that someone's availability changed. Silence is never consent,
+approval or READY. A verdict or reply completed before its author became
+unavailable stays valid evidence for its exact head, and proves no current
+capacity.
 
 - Refresh the project, holder, team, quotas, repositories and workspace with
   `pb worker context --project-ref <project-ref> --format brief`.
@@ -316,10 +342,14 @@ large cached snapshot.
    edits in either order, and neither needs a review command first (operator,
    2026-09-29, delivered by W398). Mail about the decision is commentary.
 
-7. **Route reviews (W326). Route a review in the turn it arrives.** An item
-   that enters Review with no reviewer named comes to you as the acting
-   coordinator, with a review request in your inbox. Handle it in the turn it
-   arrives and decide who reviews:
+7. **Route the reviews an author could not place (W326), in the turn they
+   arrive.** The author arranges its own review with available qualified
+   teammates and replaces a reviewer who becomes unavailable
+   ([collaboration](collaboration.md) Rules 6 and 16); you are not asked to
+   approve that choice. An item comes to you for review only when its author
+   found no qualified available reviewer or the review stayed blocked, with a
+   review request in your inbox. Handle it in the turn it arrives and decide
+   who reviews:
    - **yourself**, when you can check everything the item asks, with
      `review.assign` naming yourself, so that you are the item's assignee;
    - **another agent** linked to the project, other than the one who did the
@@ -340,7 +370,8 @@ large cached snapshot.
      appears (Review Assignments).
 
    An item in Review whose assignee is still its author is an unrouted review,
-   not a state to explain: route it in the same turn (W446, 2026-10-01: a
+   not a state to explain: ask the author for the reviewer it arranged, and
+   route it yourself in the same turn when it has none (W446, 2026-10-01: a
    completion without a reviewer stayed on its author for about 70 minutes).
 
    Never leave a review on the operator by default: the operator's review
@@ -371,7 +402,7 @@ it, in the order of the act.
 2. **A current base, or a tested merged tree.** When approved heads are
    behind `main`, the merger may test the exact merged tree instead of asking
    for a rebase: merge the approved heads onto `main` locally, in the merge
-   order, and run both repositories' suites on that tree (gate 3), stating
+   order, and run each affected repository's suites on that tree (gate 3), stating
    the counts. Record the tested tree (`git rev-parse HEAD^{tree}`). Why: a
    rebase round costs every author a turn, on 2026-09-26 on a quota-limited
    pool, and the merged tree is what gate 2 exists to test.
@@ -420,9 +451,11 @@ it, in the order of the act.
    blocker, its owner and a checkpoint. An unrelated batch, a further
    approval round or a rerun on an unchanged tree is not a blocker: a tree
    equal to the gated tree reuses the gate's evidence, and only what changed
-   runs again. When you cannot merge in time, name on the item a permitted
-   merger (an agent whose Git access allows it and who did not author the
-   change) and keep the tree proof of step 3. The revision cut of step 4 may
+   runs again, also when the merge passes to another person. The item's
+   route and the batch's roles table name the merger, a permitted agent whose
+   Git access allows it and who did not author the change. That merger
+   merges an exact head with an independent PASS and the named gates without
+   another acknowledgement from you, and keeps the tree proof of step 3. The revision cut of step 4 may
    be delegated the same way, after the author confirms the head is frozen.
    Cut a revision only for a changed procedure payload, never again for the
    same one. Why: on 2026-10-02 approved heads waited for one coordinator
@@ -489,8 +522,10 @@ Use only this routing heuristic:
    short and the reset is not soon enough for the work, replan before
    exhaustion. Move unstarted portable work, leave the scarce worker only the
    cheap or locality-required steps it can finish, and hand over the exact
-   branch and head. If the work can safely wait for an imminent reset, wait
-   instead of churning ownership.
+   branch and head. Wait for a reset instead of moving ownership only when it
+   comes before the next decision time of the work that depends on it and
+   the owner's checkpoint safely crosses it; otherwise hand the work off
+   ([collaboration](collaboration.md) Rule 8).
 
 Do not build a scheduler or assign token scores. The routing inventory and
 these three questions are the whole rule. Usage belongs to the account and
@@ -505,7 +540,7 @@ its window's `resets_at`, or older than the decision it informs, says nothing
 about the pool now: read a fresh one before routing, and never infer that a
 worker recovered from an expired sample or an idle label. **A redeemable
 reset is the operator's.** When the operator has approved redeeming a pool's
-weekly reset early (a spark1 pool, for example), ask the operator to redeem it
+weekly reset early, ask the operator to redeem it
 before the waiting work stalls, by board mail of kind `decision` so it reaches
 Telegram, naming the pool, its used percent with the observation time, and
 the work waiting on it. After the operator says it is redeemed, ping each
@@ -573,7 +608,7 @@ The percentages are planning triggers for that decision:
 | 90% | Every agent in the pool reaches a safe checkpoint: it commits and pushes, and writes a one-line progress note on its item. The coordinator keeps about 5% for mail and settlement. Work continues while the next bounded step fits. |
 
 Deferring a step and pausing an agent are different. A step that neither fits before the reset nor safely crosses it is deferred: the agent takes another step that fits, or starts that step once the window resets. An agent pauses only when its runtime reports the limit reached, or its info line says paused or do not use. Before a pause, the coordinator:
-1. writes the resume plan on the items: who resumes what, from which note, and the reset time.
+1. writes the resume plan on the items: who resumes what, from which note, and the reset time. Work another owner waits on is not parked behind the pause: it is reassigned from its checkpoint unless the reset comes before that work's next decision time ([collaboration](collaboration.md) Rule 8).
 2. checks that every paused session has its wake: a Claude Code watch with its guard prompt, or a Codex relay subscription. The session then wakes after the reset without anyone prompting it.
 
 After the reset, it reads usage again before it resumes, then resumes by the plan.
@@ -700,6 +735,7 @@ yourself and the operator included:
 | Capacity | current usage and reset, presence, from a fresh read |
 | State | one of requested, queued, READY, START, done, verified, each with the time and the receipt that shows it |
 | Next action or handoff | what this row does next, and to whom it hands over |
+| Item roles | for each item it works on: the reviewer (or how the author selects one, and the fallback), the merger, and the installer and verifier where the item needs them |
 | Blocker | what stops it and who clears it, or none, and when you clear it, the decision you owe |
 | Checkpoint | the time of the next expected report |
 
@@ -724,8 +760,10 @@ item so none is lost. Why: "if you can implement the problems that are
 obviously followup to current effort window ... then its natural to
 implement it now if you can" (operator, 2026-10-02).
 
-Keep the full table on the batch's work item and a compact one (one line per
-active row) in the project announcement, linked to the item
+This section is the generic rule; the table itself is the project's. Keep
+the full table on the batch's work item, where the project's files point
+for its current status, and a compact one (one line per active row) in the
+project announcement, linked to the item
 ([Keep the project announcement current](#keep-the-project-announcement-current)).
 Update both when a fact in a row changes materially (a START, a verdict, a
 blocker, a handover) and at least every 2 hours while the batch is active.
@@ -771,8 +809,10 @@ team from it. For each item, beside the batch's roles table, answer:
    A companion repository the task names but the binding lacks is a blocker
    you own, whether or not the worker reported it.
 3. **Blocked or waiting?** Its blocker, and who clears it.
-4. **What do you owe it?** A decision only you make: a route, a review
-   routing, a binding, a merge, a GO, a release.
+4. **What do you owe it?** A decision only you make: a route, a binding, a
+   work-owner handoff, a GO, a release, the escalations collaboration Rule 16
+   lists, and a review routing or a merge only when no author-arranged
+   reviewer or named merger can take it.
 
 **What to do.** Turn every finding into one owned next action in the same
 turn: take the decision you owe, reassign with the missing binding, route the
@@ -797,8 +837,11 @@ when the mail was written. With no STARTED 10 minutes after that receipt
    the same identity and key. Never infer that work started, and never create
    a second owner.
 
-A gap in replies is not proof that a worker is offline (W449; the wording of
-the recovery step awaits the operator's ruling on poll candidate A3).
+A gap in replies is not proof that a worker is offline (W449). Read its
+availability ([Refresh the evidence you decide from](#refresh-the-evidence-you-decide-from)):
+an owner whose own state shows it cannot act is handed off by a reassignment
+from its checkpoint ([collaboration](collaboration.md) Rule 8), never recovered
+by a second owner.
 
 **An unclear assignment is a question, not an idle state.** A worker
 reconciles its current assignments with the work it remembers after a resume
@@ -831,8 +874,10 @@ minutes, or at once when a window or a merge waits on that one worker:
    (latest report, estimate).
 4. **What stops it:** its info line and its current usage with the reset
    time (`pb worker context` team rows, where missing usage is unknown), and
-   any `blocked` report or blocker it named. A worker out of quota or
-   restricted is rerouted or waited for with that reason, not woken again.
+   any `blocked` report or blocker it named. A worker out of quota, paused or
+   restricted is not woken again: work others wait on is reassigned from its
+   checkpoint, unless its reset comes before that work's next decision time,
+   and the reason is written on the item.
 
 Then act on what you found:
 
@@ -1091,6 +1136,13 @@ a poll, a handoff between agents), append one note to the item
 - the next checkpoint, or that it is unknown;
 - the expected deliverable and the next owner and action.
 
+The item's description carries the task's living route
+([collaboration](collaboration.md) Rule 16): write it when you first route
+the item, and keep it current at every change of actor or phase, saying in
+the description which earlier instructions it supersedes. A route with an
+open technical question names who answers it and by when; a missing detail
+never leaves the route without an owner or waiting on your acknowledgement.
+
 Link journal and source evidence instead of copying it into mail. The
 assignment stays authoritative; the note explains the handoff. After a long
 gap, read the item, its assignment and the latest handoff note before old
@@ -1212,7 +1264,7 @@ tree, which stages whatever it holds at that instant.
    fetch it; then fetch it on that machine and note the commit it names. On
    one machine this is the same step: the integrator's checkout is not the
    ref until it is pushed and fetched. On several machines, workers push their
-   branches, the coordinator integrates them onto the ref, and each runtime's
+   branches, the named merger integrates them onto the ref, and each runtime's
    machine fetches that ref, so no machine loads another machine's working
    tree. The steps below decide nothing a working tree holds: they check that
    the commit the ref names is the one to release, and prove it loaded.
@@ -1246,8 +1298,11 @@ tree, which stages whatever it holds at that instant.
    targets `bundle:<id>` and `procedure:<package>@<revision>`, so the
    others see a reload coming, and which revision, before the mail): the commits since
    the last activation of that tree (`git log <last>..HEAD -- <tree>`), one
-   line each, naming any that are unreviewed. Collect one `ready` or `hold`
-   from every attending worker. One `hold` stops it. A `ready` that carries a
+   line each, naming any that are unreviewed. Collect one explicit `ready`
+   or `hold` from every attending worker the action affects and that is
+   available now; silence is not `ready`. A worker that is unavailable is
+   listed as pending with its reason: it holds the action only through one of
+   the three conditions above, never by its absence. One `hold` stops it. A `ready` that carries a
    constraint (a commit it must be at or after, a window it needs, a file it
    is about to touch) is honoured or the action is re-announced. A `hold`
    names what releases it (a commit, a clear, a time) and the holder sends

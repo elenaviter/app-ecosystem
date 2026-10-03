@@ -54,6 +54,8 @@ that keeps acting on the running system changes what the requester observes.
    releases. Answering mail is fine.
 6. Wait for the coordinator to say the window has closed, then continue.
 
-Only the coordinator deploys. In a freeze it starts once every worker has
-reported paused. If finishing cleanly will take longer than the requester
+Only the coordinator deploys. In a freeze it starts once every affected
+worker that is available has reported paused; an unavailable worker is
+recorded as pending with its reason and, being stopped already, does not
+hold the freeze ([collaboration](collaboration.md) Rule 10). If finishing cleanly will take longer than the requester
 would expect, say so, so they can decide whether to wait.

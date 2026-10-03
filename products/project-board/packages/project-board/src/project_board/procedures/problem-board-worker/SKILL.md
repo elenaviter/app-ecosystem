@@ -251,7 +251,7 @@ The `begin_work` reaction, in order:
    An item already in Review without the submission marker remains reviewable;
    leaving and re-entering Review requires both statements.
 5. Report `completed` with `pb worker report` against the exact
-   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names who reviews; with no specific reviewer, name the acting coordinator's stable worker name, so the review lands on it and not on you (operator, 2026-10-01; collaboration Rule 6).
+   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names the qualified teammate who took the review after you asked one or two who are available now; only when none is available, name the acting coordinator's stable worker name, so the review lands on it and not on you (operator, 2026-10-01 and 2026-10-03; collaboration Rules 6 and 16).
 
 `working` and `blocked` are progress reports; `completed` and `refused` are
 terminal. State plus `source_event_ref` identifies one immutable report: an
@@ -291,7 +291,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 - Before project work, run `pb worker context --project-ref <project-ref>` for
   this machine's workspace and journal coordinates. Read assignment, ownership
   version, dependencies, stop intent, and coordination policy only from
-  explicit project or message evidence; when it is absent, ask the coordinator.
+  explicit project or message evidence; when it is absent, put it in your one consolidated clarification ([collaboration](references/collaboration.md) Rule 16).
 - Inline prose (`--body`, `--summary`, `--note`, `--reason`, a review statement, a prose field in
   `--payload-json`) is one line, and the command refuses more (`problem_board_inline_prose_multiline`), naming the file argument.
   Longer text goes through `--body-file`, `--summary-file` or `--payload-file`. Two things no check catches: a single line with a
@@ -343,7 +343,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and
   marks it overdue once the time has passed ([collaboration](references/collaboration.md), rule 6). What the operator told you that the team must know about you goes on your cards with `pb worker info write` (same rule, The info line), and so does a pause you choose.
-- How the team collaborates is decided in rounds, ideas alone first, then read all, then talk, then a votes table to everyone (rule 7). Handoff is an ownership decision the coordinator takes (rule 8), what you publish is safe to publish (rule 9), a runtime window speaks one channel that survives it (rule 10), a shared name or field is settled in one exchange and crossed messages are decided by its owner with "do not reply" (rule 15): all in [collaboration](references/collaboration.md).
+- How the team collaborates is decided in rounds, ideas alone first, then read all, then talk, then a votes table to everyone (rule 7). Handoff is an ownership decision the coordinator takes (rule 8), what you publish is safe to publish (rule 9), a runtime window speaks one channel that survives it (rule 10), a shared name or field is settled in one exchange and crossed messages are decided by its owner with "do not reply" (rule 15), and every task has a living route on its item that names each actor's next step: you start at once with one consolidated clarification, arrange and if needed replace your reviewer, read availability before you wait on anyone and again before you read their silence, and raise an unavailable work owner to the coordinator, who hands it off (rule 16): all in [collaboration](references/collaboration.md).
 - When assigned work transitions to no work remaining, say so once with `pb worker idle`. When
   this exact session stops participating, run `pb worker detach`.
 
@@ -362,8 +362,7 @@ revised one rehearsal round at a time. What every worker does, from it:
   `work/<wN>-<short-slug>` from the pushed integration ref (`origin/main`), push
   it yourself (the operator's ruling of 2026-09-22), and open a change request
   against `main` when the work is ready for review. Commit each coherent piece
-  as you finish it. Put the link on the item and in your report. The coordinator, or a
-  merger it names on the item, merges after approval and pushes the integration ref.
+  as you finish it. Put the link on the item and in your report. The merger the item's route names (a permitted non-author), or the coordinator when none is named, merges after approval and pushes the integration ref, with no further acknowledgement.
   Deploying stays the operator's. A branch is closed by its merge, a later push is a
   new change request, and you delete your branch when it merges or you abandon it.
 - **Publish your intent before the first edit** on the shared-write dashboard

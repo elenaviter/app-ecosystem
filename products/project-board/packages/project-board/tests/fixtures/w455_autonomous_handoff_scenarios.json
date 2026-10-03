@@ -1,0 +1,131 @@
+{
+  "schema": "problem-board.procedure-scenarios.v1",
+  "purpose": "W455 ownership 8 forward test: give each situation, with the installed worker skill, to an agent that has not seen the expected answer, and compare its first actions with expected and forbidden. A reviewer runs it; the contract test checks that each governing rule is present and consistent.",
+  "scenarios": [
+    {
+      "id": "route-through-review-merge-install",
+      "situation": "An author finishes item A at an exact head with its suites green. The item's route names a reviewer selection (one or two available qualified teammates), merger M (not the author) and installer I with verifier V. The reviewer passes the exact head.",
+      "expected": [
+        "the author reads the route on the item and asks an available qualified teammate directly, naming it with --reviewer on the completed report",
+        "the reviewer records its verdict at the exact head and routes the item to merger M with the remaining gates",
+        "M merges without another coordinator acknowledgement, reusing the reviewer's counts for the unchanged head, and proves the merged tree",
+        "M records the merge and hands on to I and V, who record their receipts on the item for acceptance"
+      ],
+      "forbidden": [
+        "the reviewer hands the item back to the coordinator while a merger is named",
+        "M reruns every unchanged suite only because the merge passed to it",
+        "any actor waits for a routine coordinator acknowledgement between steps"
+      ],
+      "governing": [
+        ["references/collaboration.md", "The default route is: analysis and implementation, exact-source and test evidence, direct independent review, the named merger, installation and live verification where needed, then acceptance."],
+        ["references/collaboration.md", "Each actor who finishes a step records its evidence and the next handoff on the item, and the next actor reads the route there, not in old mail."],
+        ["references/collaboration.md", "the named merger when the next gate is a merge, else the coordinator."],
+        ["references/coordinator.md", "That merger merges an exact head with an independent PASS and the named gates without another acknowledgement from you"]
+      ]
+    },
+    {
+      "id": "quota-held-reviewer-replaced-by-author",
+      "situation": "An author is ready for review. The teammate it would usually ask shows a provider usage limit with its reset four hours away, and its busy-until is past. Another teammate who is not the author holds the review operations, is listening and has room.",
+      "expected": [
+        "read availability (assignments, busy-until and info line, reachable and listening, usage limit and reset) before asking",
+        "ask the available qualified teammate directly and name it with --reviewer",
+        "note the choice on the item"
+      ],
+      "forbidden": [
+        "wait for the limited teammate's reset",
+        "ask the coordinator to approve the reviewer choice",
+        "treat an inbox with nothing pending as availability"
+      ],
+      "governing": [
+        ["references/collaboration.md", "Arrange the review yourself: ask one or two qualified independent teammates who are available now (Rule 16)"],
+        ["references/collaboration.md", "An inbox with nothing pending, an idle label or an earlier read is not availability."]
+      ]
+    },
+    {
+      "id": "valid-review-preserved-after-reviewer-unavailable",
+      "situation": "Reviewer R posted a PASS at exact head H, then reached its usage limit and went offline. The head has not changed. The merger is available.",
+      "expected": [
+        "treat R's PASS at H as valid evidence and continue to the merger",
+        "not count R as available for any new review or as having agreed to anything beyond its verdict"
+      ],
+      "forbidden": [
+        "discard the verdict and restart review because R is offline",
+        "read R's earlier verdict as R's readiness for a later window"
+      ],
+      "governing": [
+        ["references/collaboration.md", "A verdict or reply its author completed before going offline stays valid evidence for its exact head; it is not current capacity, and it consents to nothing beyond what it said."],
+        ["references/coordinator.md", "A verdict or reply completed before its author became unavailable stays valid evidence for its exact head, and proves no current capacity."]
+      ]
+    },
+    {
+      "id": "owner-unavailable-after-poll-start",
+      "situation": "A coordinator starts a poll and a runtime window readiness round. After the questions go out, one participant becomes paused by its own state. Separately, approved item B does not depend on the poll's result.",
+      "expected": [
+        "read each participant's availability when the round is sent and again when it closes",
+        "show the paused participant as pending with its reason, never as agreeing or READY",
+        "let item B proceed",
+        "for the window, collect explicit READY or HOLD only from affected available owners"
+      ],
+      "forbidden": [
+        "count silence as READY or agreement",
+        "hold item B until the paused participant answers"
+      ],
+      "governing": [
+        ["references/collaboration.md", "an unavailable member is shown as `pending` with its reason, never counted as agreeing, and a pending poll never holds work that is already approved and does not depend on its result."],
+        ["references/collaboration.md", "Readiness for a window is explicit: each affected owner that is available and active answers READY, or HOLD naming its in-flight operation and when it ends, and silence is not READY."],
+        ["references/coordinator.md", "Collect one explicit `ready` or `hold` from every attending worker the action affects and that is available now; silence is not `ready`."]
+      ]
+    },
+    {
+      "id": "unavailable-merger-goes-to-coordinator",
+      "situation": "An author's item has an independent PASS. The merger the route names has been unreachable for longer than the item's next decision time.",
+      "expected": [
+        "the author tells the coordinator what it read and when, and continues with work that does not depend on the merge",
+        "the coordinator hands the merge role on through a reassignment or a new named merger"
+      ],
+      "forbidden": [
+        "the author picks a new merger itself",
+        "the author merges its own change"
+      ],
+      "governing": [
+        ["references/collaboration.md", "An unavailable reviewer is yours to replace; an unavailable work owner is the coordinator's to hand off."],
+        ["references/collaboration.md", "tell the coordinator what you read and when, and carry on with what does not depend on it: that handoff is the coordinator's (Rule 8)."]
+      ]
+    },
+    {
+      "id": "ownership-handoff-preserves-checkpoint",
+      "situation": "Worker W owns item C mid-implementation and knows it will hit its usage limit in ten minutes; its reset is after C's next decision time.",
+      "expected": [
+        "W pushes a checkpoint, writes the resume record and tells the coordinator and whoever its route says depends on it before it stops",
+        "the coordinator reassigns C from that checkpoint under a new ownership version instead of waiting for W's reset"
+      ],
+      "forbidden": [
+        "W stops silently",
+        "the coordinator waits indefinitely for W",
+        "a second owner starts from scratch without the checkpoint"
+      ],
+      "governing": [
+        ["references/collaboration.md", "An essential owner who cannot act is never waited on indefinitely."],
+        ["references/collaboration.md", "A worker who knows it will be absent (a usage limit ahead, a stop, a person's break) pushes a checkpoint, writes the resume record (Rule 6) and tells the coordinator and whoever its route says depends on it before it goes"],
+        ["references/coordinator.md", "hand off a work owner who cannot act through a reassignment that keeps its checkpoint"]
+      ]
+    },
+    {
+      "id": "second-project-generic",
+      "situation": "The same skill is installed for an agent on a different project with its own hosts, repositories and coordinator. Its first assignment arrives with a route naming that project's reviewer pool and merger.",
+      "expected": [
+        "start at once, send one consolidated clarification, and read the route and that project's files for names and bindings",
+        "apply the same availability, review and handoff rules without assuming the original project's hosts, agents or tickets"
+      ],
+      "forbidden": [
+        "look for another project's hosts or agents named in the procedure",
+        "ask the coordinator to approve each implementation step"
+      ],
+      "governing": [
+        ["references/collaboration.md", "the project's files and roles table hold the actual names; this procedure holds only the generic rule."],
+        ["references/collaboration.md", "A rule written here names no project's hosts, tickets or incidents"],
+        ["references/collaboration.md", "Start at once, and clarify in one round."]
+      ]
+    }
+  ]
+}

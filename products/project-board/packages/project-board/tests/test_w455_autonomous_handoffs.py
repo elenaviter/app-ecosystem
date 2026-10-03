@@ -1,0 +1,178 @@
+"""W455 ownership 8 (operator, 2026-10-03): every task has a living route, the
+responsibilities are split between coordinator, author, reviewer, merger and
+installer, availability is read live, and an unavailable owner is handed off.
+
+The scenarios fixture is the behavioural check: a reviewer gives each situation,
+with the installed skill, to an agent that has not seen the expected answer.
+These tests check that each governing rule is present, that the files agree with
+each other, and that the superseded wording is gone.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+
+from project_board.client.procedures import source_package_path
+
+
+PROCEDURE_ROOT = source_package_path()
+FIXTURE = Path(__file__).resolve().parent / "fixtures" / "w455_autonomous_handoff_scenarios.json"
+
+
+def _words(relative: str) -> str:
+    return " ".join((PROCEDURE_ROOT / relative).read_text(encoding="utf-8").split())
+
+
+def _section(relative: str, heading: str) -> str:
+    text = (PROCEDURE_ROOT / relative).read_text(encoding="utf-8")
+    start = text.index(heading)
+    following = re.search(r"^## ", text[start + len(heading):], flags=re.MULTILINE)
+    end = start + len(heading) + following.start() if following else len(text)
+    return " ".join(text[start:end].split())
+
+
+def test_the_scenarios_cover_the_required_situations_and_name_rules_that_exist() -> None:
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    ids = {scenario["id"] for scenario in data["scenarios"]}
+    assert ids == {
+        "route-through-review-merge-install",
+        "quota-held-reviewer-replaced-by-author",
+        "valid-review-preserved-after-reviewer-unavailable",
+        "owner-unavailable-after-poll-start",
+        "unavailable-merger-goes-to-coordinator",
+        "ownership-handoff-preserves-checkpoint",
+        "second-project-generic",
+    }
+    for scenario in data["scenarios"]:
+        assert scenario["situation"] and scenario["expected"] and scenario["forbidden"], scenario["id"]
+        for name, quote in scenario["governing"]:
+            assert quote in _words(name), (scenario["id"], name, quote)
+
+
+def test_every_task_has_a_living_route_with_each_field() -> None:
+    rule = _section("references/collaboration.md", "## Rule 16.")
+    for field in (
+        "the deliverable and its scope",
+        "the acceptance",
+        "the current actor and its next action",
+        "where reports go",
+        "the independent reviewer (or how the author selects one, and the fallback)",
+        "the named merger",
+        "the installer and verifier where the task needs them",
+        "the current blockers with who decides each",
+        "the handoff after each step",
+    ):
+        assert field in rule, field
+    assert "A missing technical detail never leaves the route without an owner or waiting on an acknowledgement" in rule
+    # The coordinator writes and keeps the route on the item at dispatch.
+    coordinator = _words("references/coordinator.md")
+    assert "The item's description carries the task's living route" in coordinator
+    assert "keep it current at every change of actor or phase, saying in the description which earlier instructions it supersedes" in coordinator
+
+
+def test_the_responsibility_table_splits_owner_handoff_from_reviewer_replacement() -> None:
+    rule = _section("references/collaboration.md", "## Rule 16.")
+    for row in ("| Coordinator |", "| Author |", "| Reviewer |", "| Merger |", "| Installer and verifier |"):
+        assert row in rule, row
+    coordinator_row = rule[rule.index("| Coordinator |"):rule.index("| Author |")]
+    author_row = rule[rule.index("| Author |"):rule.index("| Reviewer |")]
+    # The coordinator hands off work owners; the author replaces only its reviewer.
+    assert "handing off a work owner who cannot act, by a reassignment from its checkpoint (Rule 8)" in coordinator_row
+    assert "Nothing below transfers this." in coordinator_row
+    assert "replacing a reviewer who cannot act (Rule 6)" in author_row
+    assert "merger" not in author_row
+    assert "An unavailable reviewer is yours to replace; an unavailable work owner is the coordinator's to hand off." in rule
+    # The coordinator reference states the same accountability.
+    coordinator = _words("references/coordinator.md")
+    assert "**You stay accountable for the work and its owners.**" in coordinator
+    assert "none of that transfers this accountability" in coordinator
+
+
+def test_availability_has_one_definition_and_is_read_at_each_deciding_point() -> None:
+    coordinator = _words("references/coordinator.md")
+    assert "This is the one definition every availability decision in this procedure uses" in coordinator
+    for figure in ("reachable and listening", "busy-until and info line", "provider's usage limit"):
+        assert figure in coordinator, figure
+    assert "An idle mark on its card alone is not availability." in coordinator
+    assert (
+        "before you form the list a poll or a window waits on, and again when you interpret the answers or a silence, "
+        "when a handoff is consumed, when you choose an item's next action, and when you learn that someone's "
+        "availability changed"
+    ) in coordinator
+    rule = _section("references/collaboration.md", "## Rule 16.")
+    assert '([coordinator](coordinator.md), "What the coordinator is for")' in rule
+    for text in (coordinator, rule):
+        assert "Silence is never consent, approval or READY." in text
+
+
+def test_review_and_merge_need_no_routine_coordinator_acknowledgement() -> None:
+    collaboration = _words("references/collaboration.md")
+    coordinator = _words("references/coordinator.md")
+    skill = _words("SKILL.md")
+    assert "no coordinator acknowledgement is needed" in collaboration
+    assert "you are not asked to approve that choice" in coordinator
+    assert "never again only because the merge passed to another person" in collaboration
+    assert "also when the merge passes to another person" in coordinator
+    assert "merges after approval and pushes the integration ref, with no further acknowledgement" in skill
+    # The superseded defaults are gone from every file.
+    for text in (collaboration, coordinator, skill):
+        assert "With no specific reviewer, name the acting coordinator" not in text
+        assert "with no specific reviewer, name the acting coordinator" not in text
+        assert "You may propose a qualified reviewer in the summary" not in text
+        assert "the merger runs the suites on the exact head before merging" not in text
+        assert "route it with `review.assign` naming the coordinator" not in text
+        assert "or a merger it names on the item" not in text
+
+
+def test_an_unavailable_essential_owner_is_handed_off_not_awaited() -> None:
+    collaboration = _words("references/collaboration.md")
+    coordinator = _words("references/coordinator.md")
+    assert "paused, suspended or unreachable by its own state" in collaboration
+    assert "An essential owner who cannot act is never waited on indefinitely." in collaboration
+    assert "rerouted or waited for with that reason" not in coordinator
+    assert "If the work can safely wait for an imminent reset, wait instead of churning ownership" not in coordinator
+    assert "awaits the operator's ruling on poll candidate A3" not in coordinator
+    assert "Work another owner waits on is not parked behind the pause" in coordinator
+
+
+def test_readiness_is_explicit_from_affected_available_owners_everywhere() -> None:
+    collaboration = _words("references/collaboration.md")
+    assert "silence is not READY" in collaboration
+    assert "after collecting an explicit ready from every affected agent that is available (Rule 10)" in collaboration
+    assert "Silence is not ready." in _words("references/runtime-actions.md")
+    assert "once every affected worker that is available has reported paused" in _words("references/test-window.md")
+    assert "Collect one `ready` or `hold` from every attending worker. One" not in _words("references/coordinator.md")
+
+
+def test_mail_to_the_coordinator_carries_actions_and_old_mail_restarts_nothing() -> None:
+    rule = _section("references/collaboration.md", "## Rule 16.")
+    assert "Mail the coordinator when it has something to do." in rule
+    assert "Progress, receipts and acknowledgements go on the item" in rule
+    assert "it never restarts completed work or reruns unchanged checks" in rule
+    delivery = _words("references/delivery-and-recovery.md")
+    assert "neither restart superseded or completed work, rerun unchanged checks" in delivery
+    assert "without waiting for your acknowledgement, and copy you" not in _words("references/coordinator.md")
+
+
+def test_common_rules_stay_generic_and_project_bindings_live_in_project_files() -> None:
+    collaboration = _words("references/collaboration.md")
+    assert "**Where a rule lives.**" in collaboration
+    assert "A reusable runtime command of one product goes in that product's guide" in collaboration
+    assert "a project's primary product is its focus, not exclusive ownership of a repository" in collaboration
+    coordinator = _words("references/coordinator.md")
+    assert "This section is the generic rule; the table itself is the project's." in coordinator
+    assert "| Item roles |" in coordinator
+    # The new rule names no project's hosts, agents or tickets.
+    rule = _section("references/collaboration.md", "## Rule 16.")
+    for specific in ("spark1", "dev-main", "Quickstart", "claude-", "codex-", "W4", "PR "):
+        assert specific not in rule, specific
+    assert "(a spark1 pool, for example)" not in coordinator
+
+
+def test_the_skill_points_at_the_route_rule() -> None:
+    skill = _words("SKILL.md")
+    assert "every task has a living route on its item that names each actor's next step" in skill
+    assert "raise an unavailable work owner to the coordinator, who hands it off (rule 16)" in skill
+    assert "put it in your one consolidated clarification ([collaboration](references/collaboration.md) Rule 16)" in skill

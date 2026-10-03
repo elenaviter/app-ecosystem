@@ -241,8 +241,11 @@ it from that selection.
 To agree: announce what you restart and why with a shared-write entry of kind
 `relay_restart` whose target names the host (for example `host:development-one`,
 summary "I am restarting the relay: <why>"), and mail each agent on that host.
-Collect their ready: a worker in the middle of a call through the relay says
-wait, because the restart interrupts it. The restart reloads the recorded
+Collect an explicit ready from each of them that is available and active: a
+worker in the middle of a call through the relay says wait, because the
+restart interrupts it. Silence is not ready. A worker that is unavailable is
+recorded as pending with its reason and holds the restart only when it has a
+call in flight through this relay ([collaboration](collaboration.md) Rule 10). The restart reloads the recorded
 source, so nothing in a worker's own worktree is a reason to wait. Then
 restart, report the result, and clear the entry.
 
