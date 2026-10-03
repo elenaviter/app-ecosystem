@@ -309,12 +309,53 @@ class ProjectInvitationPendingCards:
         if isinstance(authorized, dict):
             return authorized
         _request, decision = authorized
-        return await self._view(
+        view = await self._view(
             project_ref=project_ref,
             invitation_ref=invitation_ref,
             control_id=control_id,
             decision=decision,
         )
+        if view.get("ok") is True:
+            view["viewer"] = await self._viewer(
+                actor_subject=actor_subject,
+                project_ref=project_ref,
+                invitation_ref=invitation_ref,
+                request_id=request_id,
+            )
+        return view
+
+    async def _viewer(
+        self,
+        *,
+        actor_subject: str,
+        project_ref: str,
+        invitation_ref: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """What this viewer may do with the invitation's Card (W489).
+
+        The widget gates Edit on ``viewer.can_edit`` for every project-held
+        person Card, an invitation's included. Without it a project admin saw
+        the invitation's Card read-only. The policy port answers the same
+        question an update asks, so the view and the save agree.
+        """
+
+        admin = await self._authorize(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            invitation_ref=invitation_ref,
+            operation=PROJECT_INVITATION_CONTROL_UPDATE,
+            request_id=f"{request_id}:viewer",
+        )
+        can_edit = not isinstance(admin, dict)
+        return {
+            "can_edit": can_edit,
+            "reason": (
+                "project_person_control_editable_by_project_admin"
+                if can_edit
+                else "project_person_control_decided_by_admin"
+            ),
+        }
 
     async def create(
         self,
