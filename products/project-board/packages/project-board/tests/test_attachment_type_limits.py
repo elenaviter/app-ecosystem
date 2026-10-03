@@ -301,12 +301,71 @@ def test_other_upload_answers_keep_the_earlier_retry(monkeypatch, status, body):
     assert failed.value.status == 502
 
 
+def _answer_with(reasons: Any, code: Any = "work_attachment_rejected") -> bytes:
+    import json
+
+    return json.dumps({"ok": False, "error": {"code": code, "details": {"reasons": reasons}}}).encode("utf-8")
+
+
+# Review after merge: a reasons value that is not a list raised TypeError
+# before the status was classified, for permanent and transient answers alike.
+FOREIGN_BODIES = {
+    "int": _answer_with(1),
+    "bool": _answer_with(True),
+    "object": _answer_with({"reason": "Text too large: 1>0"}),
+    "null": _answer_with(None),
+    "string": _answer_with("Text too large: 11534337>10485760"),
+    "code-not-string": _answer_with([], code=["work_attachment_rejected"]),
+    "details-list": b'{"ok": false, "error": {"code": "work_attachment_rejected", "details": [1, 2]}}',
+    "error-list": b'{"ok": false, "error": [1, 2]}',
+    "truncated": _answer_with(["Text too large: 1>0"])[:-7],
+    "deeply-nested": b"[" * 6000 + b"]" * 6000,
+}
+
+
+@pytest.mark.parametrize("status", [413, 415, 422])
+@pytest.mark.parametrize("shape", sorted(FOREIGN_BODIES))
+def test_a_permanent_refusal_with_a_foreign_body_shape_is_still_refused(monkeypatch, status, shape):
+    _answer(monkeypatch, status, FOREIGN_BODIES[shape])
+
+    with pytest.raises(DomainError) as refused:
+        asyncio.run(relay._http_upload("https://board.example/slot?upload_token=TOKEN-CANARY", b"x", "text/plain"))
+
+    assert refused.value.code == "work_attachment_upload_refused"
+    assert refused.value.status == status
+    assert refused.value.details["reasons"] == []
+    assert "TOKEN-CANARY" not in str(refused.value)
+
+
+@pytest.mark.parametrize("status", [403, 503])
+@pytest.mark.parametrize("shape", sorted(FOREIGN_BODIES))
+def test_a_transient_answer_with_a_foreign_body_shape_stays_retryable(monkeypatch, status, shape):
+    _answer(monkeypatch, status, FOREIGN_BODIES[shape])
+
+    with pytest.raises(DomainError) as failed:
+        asyncio.run(relay._http_upload("https://board.example/slot", b"x", "text/plain"))
+
+    assert failed.value.code == "work_attachment_upload_failed"
+    assert failed.value.status == 502
+
+
+def test_a_mixed_reasons_list_keeps_only_whole_matching_strings(monkeypatch):
+    body = _answer_with([1, None, {"x": 1}, "Text too large: 11534337>10485760", "free text", True])
+    _answer(monkeypatch, 422, body)
+
+    with pytest.raises(DomainError) as refused:
+        asyncio.run(relay._http_upload("https://board.example/slot", b"x", "text/plain"))
+
+    assert refused.value.details["reasons"] == ["Text too large: 11534337>10485760"]
+
+
 def test_a_successful_upload_returns(monkeypatch):
     _answer(monkeypatch, 204)
     asyncio.run(relay._http_upload("https://upload.example/slot", b"x", "text/plain"))
 
 
-def test_the_outbox_refuses_a_permanently_refused_upload_once_and_never_retries(tmp_path, monkeypatch):
+@pytest.mark.parametrize("body", ["service", "int-reasons"])
+def test_the_outbox_refuses_a_permanently_refused_upload_once_and_never_retries(tmp_path, monkeypatch, body):
     from test_connected_degraded_admission import _fixture
 
     host, _identity, channel, supervisor, session, client = _fixture(tmp_path)
@@ -329,7 +388,10 @@ def test_the_outbox_refuses_a_permanently_refused_upload_once_and_never_retries(
 
     monkeypatch.setattr(
         aiohttp, "ClientSession",
-        lambda: _CountingSession(_Response(422, _service_answer("work_attachment_rejected", ["Unsupported or unknown type: application/x-unknown"]))),
+        lambda: _CountingSession(_Response(422, (
+            _service_answer("work_attachment_rejected", ["Unsupported or unknown type: application/x-unknown"])
+            if body == "service" else _answer_with(1)
+        ))),
     )
 
     client.action = action
@@ -395,5 +457,5 @@ def test_the_outbox_refuses_a_permanently_refused_upload_once_and_never_retries(
     assert row["remote_result"]["error"]["details"] == {
         "upload_status": 422,
         "code": "work_attachment_rejected",
-        "reasons": ["Unsupported or unknown type: application/x-unknown"],
+        "reasons": ["Unsupported or unknown type: application/x-unknown"] if body == "service" else [],
     }
