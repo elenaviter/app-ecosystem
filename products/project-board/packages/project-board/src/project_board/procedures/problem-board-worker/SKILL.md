@@ -418,7 +418,7 @@ Mail to the operator takes one of these kinds and nothing else:
     progress   reply     update     result
 
 `progress`, `update`, `reply` and `result` stay on the board; only `question`, `decision`,
-`blocked`, `delivery_failed` reach their Telegram, and a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there. A board send is in the operator's board inbox; say it reached Telegram only when its kind or correlation sends it there and its receipt says delivered. Ask for their input this way, never in a terminal prompt
+`blocked`, `delivery_failed` reach their Telegram, and a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there. A board send is in the operator's board inbox; say it reached Telegram only when its kind or correlation sends it there and its receipt says delivered. Ask for their input this way, never in a terminal prompt: anything that waits on the operator is first a work item assigned to them, saying exactly what to do and what to expect, and then a `decision` or `question` naming it
 (collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`. Mail about a plan item carries `--work-ref` with its `--project-ref`; only direct operator mail that names no item leaves both out.
 
 ## Runtime Actions And Test Windows

@@ -44,6 +44,7 @@ def test_the_scenarios_cover_the_required_situations_and_name_rules_that_exist()
         "unavailable-merger-goes-to-coordinator",
         "ownership-handoff-preserves-checkpoint",
         "second-project-generic",
+        "operator-test-is-an-assigned-item",
     }
     for scenario in data["scenarios"]:
         assert scenario["situation"] and scenario["expected"] and scenario["forbidden"], scenario["id"]
@@ -176,3 +177,16 @@ def test_the_skill_points_at_the_route_rule() -> None:
     assert "every task has a living route on its item that names each actor's next step" in skill
     assert "raise an unavailable work owner to the coordinator, who hands it off (rule 16)" in skill
     assert "put it in your one consolidated clarification ([collaboration](references/collaboration.md) Rule 16)" in skill
+
+
+def test_anything_waiting_on_the_operator_is_an_item_assigned_to_them() -> None:
+    """Operator, 2026-10-03: an action for the operator is in their assignments, with exact steps, and a notifying message."""
+    rule = _section("references/collaboration.md", "## Rule 11.")
+    assert "**Anything that waits on the operator is a work item assigned to them.**" in rule
+    assert "Whoever needs the operator, worker or coordinator alike" in rule
+    assert "The item says exactly what to do and what to expect" in rule
+    assert "as `decision` or `question` so it also reaches their Telegram, saying \"urgent\" when it is" in rule
+    assert "read the item back (`project.plan.item`) and check that the operator is its assignee" in rule
+    assert "Never leave an operator action only in an agent's terminal or only in mail between agents" in rule
+    assert "anything that waits on the operator is first a work item assigned to them" in _words("SKILL.md")
+    assert "The same holds for anything else that waits on the operator, from you or from a worker" in _words("references/coordinator.md")

@@ -367,7 +367,9 @@ large cached snapshot.
      ruling, 2026-09-26).
      Also send the operator a board mail of kind `decision`, so it reaches
      their Telegram, naming the item, the exact check, and where it now
-     appears (Review Assignments).
+     appears (Review Assignments). The same holds for anything else that
+     waits on the operator, from you or from a worker
+     ([collaboration](collaboration.md) Rule 11).
 
    An item in Review whose assignee is still its author is an unrouted review,
    not a state to explain: ask the author for the reviewer it arranged, and

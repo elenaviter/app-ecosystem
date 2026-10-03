@@ -1043,11 +1043,11 @@ def test_operator_input_goes_through_the_board_not_a_terminal_prompt() -> None:
     # telegram." The skill points at the rule, the collaboration reference
     # carries it, and first-run names the launch flag.
     skill = _words(_read("SKILL.md"))
-    assert "Ask for their input this way, never in a terminal prompt (collaboration Rule 11)" in skill
+    assert "Ask for their input this way, never in a terminal prompt: anything that waits on the operator is first a work item assigned to them" in skill
     collaboration = _words(_read("references/collaboration.md"))
     assert "Rule 11. The operator is asked on the board, and on Telegram when it is urgent" in collaboration
-    assert "send it as mail to `operator` in the project conversation" in collaboration
-    assert "send it as `question`, `decision` or `blocked`" in collaboration
+    assert "send a board message to `operator` naming the item and the action, as `decision` or `question` so it also reaches their Telegram" in collaboration
+    assert "saying \"urgent\" when it is" in collaboration
     first_run = _words(_read("references/first-run.md"))
     # The official start command carries the flag (operator, 2026-09-26).
     assert "--disallowedTools AskUserQuestion" in first_run

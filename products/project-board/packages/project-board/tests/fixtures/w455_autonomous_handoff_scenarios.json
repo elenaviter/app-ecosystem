@@ -17,10 +17,22 @@
         "any actor waits for a routine coordinator acknowledgement between steps"
       ],
       "governing": [
-        ["references/collaboration.md", "The default route is: analysis and implementation, exact-source and test evidence, direct independent review, the named merger, installation and live verification where needed, then acceptance."],
-        ["references/collaboration.md", "Each actor who finishes a step records its evidence and the next handoff on the item, and the next actor reads the route there, not in old mail."],
-        ["references/collaboration.md", "the named merger when the next gate is a merge, else the coordinator."],
-        ["references/coordinator.md", "That merger merges an exact head with an independent PASS and the named gates without another acknowledgement from you"]
+        [
+          "references/collaboration.md",
+          "The default route is: analysis and implementation, exact-source and test evidence, direct independent review, the named merger, installation and live verification where needed, then acceptance."
+        ],
+        [
+          "references/collaboration.md",
+          "Each actor who finishes a step records its evidence and the next handoff on the item, and the next actor reads the route there, not in old mail."
+        ],
+        [
+          "references/collaboration.md",
+          "the named merger when the next gate is a merge, else the coordinator."
+        ],
+        [
+          "references/coordinator.md",
+          "That merger merges an exact head with an independent PASS and the named gates without another acknowledgement from you"
+        ]
       ]
     },
     {
@@ -37,8 +49,14 @@
         "treat an inbox with nothing pending as availability"
       ],
       "governing": [
-        ["references/collaboration.md", "Arrange the review yourself: ask one or two qualified independent teammates who are available now (Rule 16)"],
-        ["references/collaboration.md", "An inbox with nothing pending, an idle label or an earlier read is not availability."]
+        [
+          "references/collaboration.md",
+          "Arrange the review yourself: ask one or two qualified independent teammates who are available now (Rule 16)"
+        ],
+        [
+          "references/collaboration.md",
+          "An inbox with nothing pending, an idle label or an earlier read is not availability."
+        ]
       ]
     },
     {
@@ -53,8 +71,14 @@
         "read R's earlier verdict as R's readiness for a later window"
       ],
       "governing": [
-        ["references/collaboration.md", "A verdict or reply its author completed before going offline stays valid evidence for its exact head; it is not current capacity, and it consents to nothing beyond what it said."],
-        ["references/coordinator.md", "A verdict or reply completed before its author became unavailable stays valid evidence for its exact head, and proves no current capacity."]
+        [
+          "references/collaboration.md",
+          "A verdict or reply its author completed before going offline stays valid evidence for its exact head; it is not current capacity, and it consents to nothing beyond what it said."
+        ],
+        [
+          "references/coordinator.md",
+          "A verdict or reply completed before its author became unavailable stays valid evidence for its exact head, and proves no current capacity."
+        ]
       ]
     },
     {
@@ -71,9 +95,18 @@
         "hold item B until the paused participant answers"
       ],
       "governing": [
-        ["references/collaboration.md", "an unavailable member is shown as `pending` with its reason, never counted as agreeing, and a pending poll never holds work that is already approved and does not depend on its result."],
-        ["references/collaboration.md", "Readiness for a window is explicit: each affected owner that is available and active answers READY, or HOLD naming its in-flight operation and when it ends, and silence is not READY."],
-        ["references/coordinator.md", "Collect one explicit `ready` or `hold` from every attending worker the action affects and that is available now; silence is not `ready`."]
+        [
+          "references/collaboration.md",
+          "an unavailable member is shown as `pending` with its reason, never counted as agreeing, and a pending poll never holds work that is already approved and does not depend on its result."
+        ],
+        [
+          "references/collaboration.md",
+          "Readiness for a window is explicit: each affected owner that is available and active answers READY, or HOLD naming its in-flight operation and when it ends, and silence is not READY."
+        ],
+        [
+          "references/coordinator.md",
+          "Collect one explicit `ready` or `hold` from every attending worker the action affects and that is available now; silence is not `ready`."
+        ]
       ]
     },
     {
@@ -88,8 +121,14 @@
         "the author merges its own change"
       ],
       "governing": [
-        ["references/collaboration.md", "An unavailable reviewer is yours to replace; an unavailable work owner is the coordinator's to hand off."],
-        ["references/collaboration.md", "tell the coordinator what you read and when, and carry on with what does not depend on it: that handoff is the coordinator's (Rule 8)."]
+        [
+          "references/collaboration.md",
+          "An unavailable reviewer is yours to replace; an unavailable work owner is the coordinator's to hand off."
+        ],
+        [
+          "references/collaboration.md",
+          "tell the coordinator what you read and when, and carry on with what does not depend on it: that handoff is the coordinator's (Rule 8)."
+        ]
       ]
     },
     {
@@ -105,9 +144,18 @@
         "a second owner starts from scratch without the checkpoint"
       ],
       "governing": [
-        ["references/collaboration.md", "An essential owner who cannot act is never waited on indefinitely."],
-        ["references/collaboration.md", "A worker who knows it will be absent (a usage limit ahead, a stop, a person's break) pushes a checkpoint, writes the resume record (Rule 6) and tells the coordinator and whoever its route says depends on it before it goes"],
-        ["references/coordinator.md", "hand off a work owner who cannot act through a reassignment that keeps its checkpoint"]
+        [
+          "references/collaboration.md",
+          "An essential owner who cannot act is never waited on indefinitely."
+        ],
+        [
+          "references/collaboration.md",
+          "A worker who knows it will be absent (a usage limit ahead, a stop, a person's break) pushes a checkpoint, writes the resume record (Rule 6) and tells the coordinator and whoever its route says depends on it before it goes"
+        ],
+        [
+          "references/coordinator.md",
+          "hand off a work owner who cannot act through a reassignment that keeps its checkpoint"
+        ]
       ]
     },
     {
@@ -122,9 +170,43 @@
         "ask the coordinator to approve each implementation step"
       ],
       "governing": [
-        ["references/collaboration.md", "the project's files and roles table hold the actual names; this procedure holds only the generic rule."],
-        ["references/collaboration.md", "A rule written here names no project's hosts, tickets or incidents"],
-        ["references/collaboration.md", "Start at once, and clarify in one round."]
+        [
+          "references/collaboration.md",
+          "the project's files and roles table hold the actual names; this procedure holds only the generic rule."
+        ],
+        [
+          "references/collaboration.md",
+          "A rule written here names no project's hosts, tickets or incidents"
+        ],
+        [
+          "references/collaboration.md",
+          "Start at once, and clarify in one round."
+        ]
+      ]
+    },
+    {
+      "id": "operator-test-is-an-assigned-item",
+      "situation": "A worker's change is merged and deployed, and only the operator can do the live check (send one photo album from their phone and look at the deliveries). The operator rarely reads agent terminals.",
+      "expected": [
+        "route the item to the operator (pb worker report --reviewer operator with --merged and --deploy, or review.assign with operator)",
+        "write on the item exactly what to do and the result that means it works",
+        "send a decision or question message to operator naming the item and the action",
+        "read the item back and check the operator is its assignee"
+      ],
+      "forbidden": [
+        "ask for the check only in the terminal conversation",
+        "ask for it only in mail to the coordinator or another agent",
+        "leave the item assigned to the worker or the coordinator while it waits on the operator"
+      ],
+      "governing": [
+        [
+          "references/collaboration.md",
+          "Anything that waits on the operator is a work item assigned to them."
+        ],
+        [
+          "references/collaboration.md",
+          "Never leave an operator action only in an agent's terminal or only in mail between agents"
+        ]
       ]
     }
   ]
