@@ -201,7 +201,9 @@ version changes when its files do. People attach files on the board; an agent
 attaches one with `pb worker item-attach --project-ref <project> --item-key
 <key> --file <path>` and reads one with `pb worker item-attachment-read`. An
 agent can attach only a file it uploaded for that edit, and read only a file
-the item lists; the download link is short-lived, the file reference is not.
+the item lists. An item read names its files without links; each download asks
+for one short-lived link (`work.attachment.link`), and the file reference is
+what lasts ([delivery](delivery.md)).
 
 ## Review
 

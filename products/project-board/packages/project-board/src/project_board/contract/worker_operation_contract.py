@@ -66,7 +66,15 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     "project.plan.item": {
         "description": (
             "Read one complete authoritative plan item by canonical URI or its "
-            "case-insensitive key within the project, including attached file links."
+            "case-insensitive key within the project, naming its attached files "
+            "(W485: no download links; use work.attachment.link)."
+        ),
+        "grants": ("work:observe",),
+    },
+    "work.attachment.link": {
+        "description": (
+            "W485: issue one signed download link for one file attached to one "
+            "work item, bound to the caller. Item reads name files without links."
         ),
         "grants": ("work:observe",),
     },
@@ -499,6 +507,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.github.use",
         "project.plan.index",
         "project.plan.item",
+        "work.attachment.link",
         "project.plan.history",
         "project.plan.resolve",
         "project.plan.search",

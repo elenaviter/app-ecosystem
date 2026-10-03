@@ -356,8 +356,9 @@ before applying revision or generation fences. Reusing the key for different
 content is a conflict.
 
 Work-item attachment refs and their count live with the stable item's current
-body and row. The bytes use the platform attachment store; the item read
-returns authorized download links.
+body and row. The bytes use the platform attachment store. No download link is
+stored or returned by a read: `work.attachment.link` issues one per download
+(W485, [delivery](delivery.md)).
 
 `plan.notes.list` pages note rows by stable order and materializes only the
 selected page's body objects. A missing object is reported separately from an

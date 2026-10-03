@@ -3545,7 +3545,19 @@ def _worker_item_attachment_read(args: Any) -> dict[str, Any]:
             "The file is not attached to this item.",
             status=404,
         )
+    # W485: a board that keeps item reads link-free issues one link per
+    # download through work.attachment.link; an older board still puts the
+    # link in the read. The link is used once here and never printed.
     download_url = str(descriptor.get("download_url") or "")
+    if not download_url:
+        linked = _reference_mapping_request(
+            args,
+            action="work.attachment.link",
+            object_ref=args.project_ref,
+            payload={"item_key": args.item_key, "file_ref": args.file_ref},
+        )
+        issued = linked.get("object") if isinstance(linked.get("object"), Mapping) else {}
+        download_url = str(issued.get("download_url") or "") if issued.get("file_ref") == args.file_ref else ""
     if not download_url:
         raise DomainError(
             "work_item_attachment_unavailable",
