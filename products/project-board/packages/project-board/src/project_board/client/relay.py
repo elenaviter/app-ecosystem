@@ -5219,10 +5219,23 @@ class ProblemBoardRelaySupervisor:
         )
         # The bounded account read can yield. Do not wake a detached session or
         # stale captured work that ceased to be pending while it was running.
-        pending_refs = field.pending_worker_mail_refs(channel.worker_name)
-        listener = field.worker_listener_session(channel.worker_name)
+        # This second read is the authoritative one and runs in the channel's
+        # store thread like the first: on the loop it held every channel for
+        # about 3.4 s on a slow mailbox (W476, 2026-10-03).
+        try:
+            pending_refs = await self._channel_off_loop(
+                channel, field.pending_worker_mail_refs, channel.worker_name
+            )
+            listener = await self._channel_off_loop(
+                channel, field.worker_listener_session, channel.worker_name
+            )
+        except DomainError as exc:
+            if exc.code != "field_record_not_found":
+                raise
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
-            field.clear_wake_hold(channel.worker_name)
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
         if quota_error or (limit_state and limit_state.get("source") == SOURCE_CODEX_APP_SERVER
                            and limit_state.get("kind") in {"rate_limited", "out_of_tokens"}
@@ -5231,7 +5244,10 @@ class ProblemBoardRelaySupervisor:
             # model turn. The next bounded read, not a tight native retry loop,
             # can establish capacity. Pending mail remains untouched.
             retry_at = (datetime.now(timezone.utc) + timedelta(seconds=QUOTA_REFRESH_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            field.record_wake_hold(channel.worker_name, until=retry_at, pending=len(pending_refs))
+            await self._channel_off_loop(
+                channel, field.record_wake_hold, channel.worker_name,
+                until=retry_at, pending=len(pending_refs),
+            )
             return {"wake_deferred": True, "wake_deferred_until": retry_at,
                     "reason": quota_error or "agent_rate_limited"}
         deferred_until = wake_deferred_until(limit_state, now=now)
