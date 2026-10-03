@@ -308,6 +308,53 @@ def test_each_relay_serves_the_journal_of_its_own_clone(host):
     assert current.clone_stamp(PROJECT)["journal_clone"]["state"] == "current"
 
 
+@pytest.mark.parametrize("name,clone_state", [("behind", "behind"), ("current", "current")])
+def test_journal_view_transfers_bounded_freshness_not_local_paths(host, name, clone_state):
+    workspace = host["workers"][name]["relay"].journal_workspace
+    result = relay.ProblemBoardHostRelayAdapter._journal_view_payload(
+        workspace, {"query": "decision"}, PROJECT, "catalog", "journal.catalog",
+    )
+    assert result["source_commit"] == workspace.clone_stamp(PROJECT)["journal_home_commit"]
+    status = result["snapshot_status"]
+    assert status["schema"] == "problem-board.journal-snapshot-status.v1"
+    assert status["local_freshness"] == "current_local_source"
+    assert status["clone_state"] == clone_state
+    assert status["origin_freshness"] == "last_fetched_ref_only"
+    assert status["indexed_at"]
+    assert "journal_clone" not in result
+    assert str(host["workers"][name]["workspace"]) not in json.dumps(result)
+    assert result["content_hash"] == content_hash({
+        "entries": result["entries"], "next_cursor": result["next_cursor"],
+        "source_commit": result["source_commit"], "snapshot_status": status,
+    })
+
+
+def test_journal_view_status_reduces_private_issue_details_to_counts():
+    class Workspace:
+        def view_catalog_page(self, **kwargs):
+            return {"entries": [], "index_issues": [{"message": "/private/source SECRET"}],
+                    "index_exclusions": [{"local_path": "/private/source", "body": "SECRET"}]}
+
+        def clone_stamp(self, project_ref):
+            return {"journal_home_commit": "a" * 40, "journal_clone": {
+                "state": "behind", "compared_commit": "b" * 40, "behind": 2,
+                "path": "/private/source", "action": "SECRET"}}
+
+        def index_status(self):
+            return {"state": "partial", "freshness": "unverified", "issue_count": 1,
+                    "excluded_count": 1, "issues": [{"message": "SECRET"}],
+                    "sources": {"private": {"path": "/private/source"}}}
+
+    result = relay.ProblemBoardHostRelayAdapter._journal_view_payload(
+        Workspace(), {}, PROJECT, "catalog", "journal.catalog",
+    )
+    assert result["snapshot_status"]["index_state"] == "partial"
+    assert result["snapshot_status"]["issue_codes"] == ["index_issue"]
+    assert result["snapshot_status"]["exclusion_codes"] == ["excluded_entry"]
+    assert "SECRET" not in json.dumps(result)
+    assert "/private/" not in json.dumps(result)
+
+
 MERGED_ENTRY = "work:journal:20260930T143800Z:journal_20260930w407source:history-source-prs-and-final-verification"
 
 

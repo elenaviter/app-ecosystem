@@ -2655,10 +2655,62 @@ class ProblemBoardHostRelayAdapter:
         return view_ref
 
     @staticmethod
+    def _journal_snapshot_status(
+        workspace: JournalWorkspace, page: Mapping[str, Any], stamp: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """A bounded remote projection; local diagnostics and paths never travel."""
+        try:
+            index = workspace.index_status()
+        except (DomainError, OSError):
+            index = {"state": "unavailable", "freshness": "unverified", "issue_count": 1}
+        states = {"ready", "ready_with_issues", "partial", "stale", "not_built", "unavailable"}
+        state = str(index.get("state") or "unknown")
+        state = state if state in states else "unknown"
+        clone = stamp.get("journal_clone")
+        clone = clone if isinstance(clone, Mapping) else {}
+        clone_state = str(clone.get("state") or "unknown")
+        if clone_state not in {"current", "ahead", "behind", "diverged", "no_upstream", "missing"}:
+            clone_state = "unknown"
+
+        def count(value: Any) -> int:
+            try:
+                return max(0, min(int(value or 0), 1_000_000))
+            except (ValueError, TypeError, OverflowError):
+                return 0
+
+        issues = max(count(index.get("issue_count")), len(page.get("index_issues") or []))
+        excluded = max(count(index.get("excluded_count")), len(page.get("index_exclusions") or []))
+        recorded_at = str(index.get("recorded_at") or "")
+        try:
+            parsed = datetime.fromisoformat(recorded_at.replace("Z", "+00:00"))
+            if parsed.tzinfo is None or len(recorded_at) > 40:
+                recorded_at = ""
+        except ValueError:
+            recorded_at = ""
+        compared = str(clone.get("compared_commit") or "")
+        if not re.fullmatch(r"[0-9a-f]{40}", compared):
+            compared = ""
+        return {
+            "schema": "problem-board.journal-snapshot-status.v1",
+            "index_state": state,
+            "local_freshness": "current_local_source"
+            if index.get("freshness") == "current_local_source" else "unverified",
+            "indexed_at": recorded_at, "indexed_entries": count(index.get("indexed_entries")),
+            "issue_count": min(issues, 1_000_000), "excluded_count": min(excluded, 1_000_000),
+            "issue_codes": (["compatibility_warning" if state == "ready_with_issues" else "index_issue"]
+                            if issues else []),
+            "exclusion_codes": ["excluded_entry"] if excluded else [],
+            "clone_state": clone_state, "compared_commit": compared,
+            "behind": count(clone.get("behind")),
+            "origin_freshness": "last_fetched_ref_only" if compared else "unverified",
+        }
+
+    @staticmethod
     def _journal_view_payload(
         workspace: JournalWorkspace, payload: Mapping[str, Any],
         project_ref: str, mode: str, kind: str,
     ) -> dict[str, Any]:
+        before = workspace.clone_stamp(project_ref)
         if mode == "catalog" and kind == "journal.catalog":
             page = workspace.view_catalog_page(
                 project_ref=project_ref,
@@ -2673,17 +2725,19 @@ class ProblemBoardHostRelayAdapter:
             )
             entries = page["entries"]
             next_cursor = str(page.get("next_cursor") or "")
+            stamp = workspace.clone_stamp(project_ref)
+            snapshot_status = ProblemBoardHostRelayAdapter._journal_snapshot_status(workspace, page, stamp)
+            source_commit = str(stamp.get("journal_home_commit") or "")
+            hashed = {"entries": entries, "next_cursor": next_cursor,
+                      "source_commit": source_commit, "snapshot_status": snapshot_status}
             action_payload: dict[str, Any] = {
                 "entries": entries,
                 "title": "",
                 "content": "",
-                "content_hash": content_hash(
-                    {"entries": entries, "next_cursor": next_cursor}
-                ),
+                "content_hash": content_hash(hashed),
                 "next_cursor": next_cursor,
-                # W343: the clone commit the page was read at, and how current
-                # that clone is.
-                **workspace.clone_stamp(project_ref),
+                "source_commit": source_commit,
+                "snapshot_status": snapshot_status,
             }
         elif mode == "document" and kind == "journal.read":
             result = workspace.read_for_project(
@@ -2695,6 +2749,7 @@ class ProblemBoardHostRelayAdapter:
                 if isinstance(result.get("metadata"), Mapping)
                 else {}
             )
+            stamp = workspace.clone_stamp(project_ref)
             action_payload = {
                 "entries": [],
                 "title": str(metadata.get("title") or "Journal entry"),
@@ -2702,7 +2757,8 @@ class ProblemBoardHostRelayAdapter:
                 "content_hash": str(result.get("content_hash") or ""),
                 "repository_journal_ref": str(result["repository_journal_ref"]),
                 "next_cursor": "",
-                **workspace.clone_stamp(project_ref),
+                "source_commit": str(stamp.get("journal_home_commit") or ""),
+                "snapshot_status": ProblemBoardHostRelayAdapter._journal_snapshot_status(workspace, {}, stamp),
             }
         else:
             raise DomainError(
@@ -2710,6 +2766,8 @@ class ProblemBoardHostRelayAdapter:
                 "The journal-view mode does not match its control kind.",
                 status=409,
             )
+        if before.get("journal_home_commit") != stamp.get("journal_home_commit"):
+            raise DomainError("journal_source_changed", "The local journal checkout changed during this view; retry.", status=409)
         return action_payload
 
     async def _serve_file_edit(self, control: Mapping[str, Any]) -> tuple[str, str]:

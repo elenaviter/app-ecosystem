@@ -152,8 +152,10 @@ coordinator included, and for every read and write of project state:
   that is missing makes `journal_state` `unavailable` with
   `journal_repository_root_missing`, naming the alias and the folder. In
   neither case is another checkout read instead.
-- **The journal is the worker's too.** Entries are written in the worker's
-  clone and committed on its branch; `pb worker journal-index` and
+- **The journal is the worker's too.** When a journal repository is configured,
+  entries are authored in an item-scoped feature worktree, not the clean clone
+  or a shared cross-feature journal tree. After review and merge, the worker
+  fetches and fast-forwards its own clean clone; `pb worker journal-index` and
   `pb worker journal-search` use an index of that worker's own, under the
   host's journal root in `workers/<worker-name>/`; and a journal view the
   board asks a worker's relay for is read from that clone, with its commit and
@@ -189,6 +191,28 @@ coordinator included, and for every read and write of project state:
   scheduling and cancellable lock waits. Cancelling a request or closing its
   channel fences and drains its tracked work before releasing it; no late
   result is published. Only the loop publishes the completed response.
+- **Remote views disclose their snapshot limits.** Updated relays publish
+  `source_commit` plus a bounded `snapshot_status` on the existing expiring
+  view. It gives the index state/time, local-source freshness, issue and
+  exclusion counts with fixed summary codes, and checkout comparison against
+  the last fetched remote ref. It never transfers local paths, diagnostic
+  messages, raw source receipts or secrets. `current_local_source` does not
+  certify live origin freshness. Legacy publishers have unknown freshness,
+  not an implicitly current index. A catalog hash binds its rows, cursor,
+  source commit and status; replay cannot replace a ready view's status or
+  source commit. Closing or expiring the view erases its status metadata.
+  The existing table gains an additive JSONB column; deploying that schema
+  remains a separately governed runtime action.
+- **Serving selection is not author selection.** The reader offers online,
+  active, linked workers with `journal-view` capability, invalidates a selected
+  worker when these structured facts change, and fences late responses from
+  the old selection. The server applies the same eligibility check. Selecting
+  all offered journal statuses sends no status restriction, including historic
+  status values absent from the buttons. An empty page describes this local
+  snapshot and its filters; it does not claim the current project journal is
+  empty. Partial, unavailable and legacy status are visible beside results.
+  A separate product-work hold is not inferred from a worker's free-text info
+  line and does not authorize resuming that worker.
 - **An empty result is not a freshness diagnosis.** Search returns an `index`
   status with its source commits, recording time, compatibility issues and
   exclusions. A skipped invalid entry makes the index `partial`; historical
