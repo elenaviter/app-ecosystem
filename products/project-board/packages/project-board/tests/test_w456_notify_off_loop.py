@@ -346,6 +346,15 @@ def test_a_held_mail_read_in_an_active_turns_finishing_delays_only_its_channel(t
                     worker_name=fast.worker_name, request_id=request["request_id"]
                 )
             served_after = time.monotonic() - started
+            # A fast answer can arrive before the relay's next 50 ms poll, so
+            # keep watching, still inside the peer limit and only while the
+            # slow read stays held, for the fast channel's attendance poll.
+            while (
+                attendance.polls.get(fast.worker_name, 0) == polls_at_hold
+                and not gate.opened.is_set()
+                and time.monotonic() - started < PEER_LIMIT_SECONDS
+            ):
+                await asyncio.sleep(0.02)
             polled_while_held = attendance.polls.get(fast.worker_name, 0) - polls_at_hold
             still_held = not gate.opened.is_set()
             reopened = opened.count(fast.worker_name)
