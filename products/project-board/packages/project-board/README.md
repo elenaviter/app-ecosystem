@@ -96,7 +96,19 @@ python3 -m venv ~/.local/share/project-board-bootstrap
 ~/.local/share/project-board-bootstrap/bin/pb procedure install --target claude-code
 ```
 
-For Codex, use `--target codex`.
+For Codex, use `--target codex`. To install from source instead, replace the
+second line with one command that installs the four packages from your App
+Ecosystem git checkout (`<sources>`), and tell your agent that this machine
+selects that checkout with `pb source use-code`:
+
+```bash
+~/.local/share/project-board-bootstrap/bin/pip install "<sources>/packages/app-foundation[data-bus]" "<sources>/packages/service-foundation" "<sources>/products/connection-hub/packages/connection-hub[client]" "<sources>/products/project-board/packages/project-board"
+```
+
+The last line also puts `pb` at `~/.local/bin/pb`, so you and your agent run
+plain `pb` from then on. When it reports that `~/.local/bin` is not on your
+`PATH`, run the line it prints once and open a new terminal. Selecting a
+release or source later replaces that `pb` in place.
 
 **Start your agent as the worker.**
 

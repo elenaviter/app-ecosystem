@@ -460,6 +460,74 @@ def install_launcher(
     return launcher
 
 
+def ensure_install_launcher(
+    home: str | Path,
+    *,
+    pb: str | Path,
+    path_env: str | None = None,
+    shell: str | None = None,
+) -> dict[str, Any]:
+    """Give a fresh host one ``pb`` command at ``~/.local/bin/pb`` (W495).
+
+    ``pb procedure install`` calls this with the ``pb`` that ran it, so the
+    person and the agent run plain ``pb`` from the first install on, and
+    nobody needs to know where that ``pb`` was installed. It writes the same
+    marked launcher a source selection writes, so ``pb source use-code`` and
+    ``use-release`` later replace it in place. A launcher that already runs
+    another ``pb`` belongs to that selection and is left alone, and so is an
+    unrelated command: both are named, with what to do.
+    """
+
+    launcher = Path(home) / ".local" / "bin" / "pb"
+    target = Path(pb)
+    if os.path.lexists(launcher):
+        if launcher == target or _launcher_is_owned(launcher, target) and (
+            launcher.is_symlink() or str(target) in launcher.read_text(encoding="utf-8", errors="replace")
+        ):
+            state = "current"
+        elif _launcher_is_owned(launcher, target):
+            state = "selected"
+        else:
+            state = "other_command"
+    else:
+        install_launcher(launcher, expected_pb=target)
+        state = "installed"
+    directory = str(launcher.parent)
+    entries = [os.path.abspath(os.path.expanduser(item)) for item in (path_env if path_env is not None else os.environ.get("PATH", "")).split(os.pathsep) if item]
+    on_path = os.path.abspath(directory) in entries
+    shell_name = os.path.basename(shell if shell is not None else os.environ.get("SHELL", "")) or "sh"
+    rc_file = {"zsh": "~/.zshrc", "bash": "~/.bashrc"}.get(shell_name, "~/.profile")
+    first_pb = shutil.which("pb", path=path_env if path_env is not None else None)
+    result: dict[str, Any] = {
+        "path": str(launcher),
+        "state": state,
+        "pb": str(target),
+        "on_path": on_path,
+    }
+    if state == "selected":
+        result["note"] = (
+            f"{launcher} runs this host's selected pb; `pb source use-code` or `use-release` manages it. "
+            "Run plain pb."
+        )
+    elif state == "other_command":
+        result["note"] = (
+            f"{launcher} is another program, not a Problem Board launcher, so plain pb does not run this install. "
+            f"Remove or rename it, then run this command again with {target}."
+        )
+    if not on_path:
+        result["add_to_path"] = f"echo 'export PATH=\"$HOME/.local/bin:$PATH\"' >> {rc_file}"
+        result["note"] = (result.get("note", "") + " " if result.get("note") else "") + (
+            f"{directory} is not on PATH: run the add_to_path line once, then open a new terminal "
+            "and start your agent from it."
+        )
+    elif first_pb and os.path.abspath(first_pb) != os.path.abspath(str(launcher)):
+        result["shadowed_by"] = first_pb
+        result["note"] = (result.get("note", "") + " " if result.get("note") else "") + (
+            f"`pb` on PATH runs {first_pb} before {launcher}: remove it or put {directory} first on PATH."
+        )
+    return result
+
+
 def snapshot_launcher(path: str | Path) -> LauncherSnapshot:
     launcher = Path(path).expanduser()
     if not os.path.lexists(launcher):
@@ -692,6 +760,7 @@ def _utc_now() -> str:
 
 
 __all__ = [
+    "ensure_install_launcher",
     "CURRENT_LINK",
     "DEFAULT_IMPORT_SMOKE",
     "DEFAULT_RELEASE_RETENTION",
