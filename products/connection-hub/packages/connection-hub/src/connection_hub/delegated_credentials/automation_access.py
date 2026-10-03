@@ -107,6 +107,7 @@ from connection_hub.delegated_credentials.resource_operations import (
 )
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
+    CARD_STATE_REVOKED,
     CREDENTIALLESS_CARD_SOURCE,
     PROJECT_PERSON_SELECTION_SOURCE,
     CONTROL_COMPOSITION_AND,
@@ -2285,10 +2286,17 @@ class AutomationAccessService:
         if revoked_record is None:
             await self._cards().forget(authority, subject_hash=subject_hash)
             return
+        # W489: a record has no lifecycle state, and the authority rebuilt
+        # from it reads active. The revision handed over is the revoked one,
+        # so restore that state; the Card service still refuses any other
+        # difference from the current revision.
         await self._cards().forget(
             authority,
             subject_hash=subject_hash,
-            revoked_authority=card_authority_from_record(revoked_record),
+            revoked_authority=dataclasses.replace(
+                card_authority_from_record(revoked_record),
+                state=CARD_STATE_REVOKED,
+            ),
         )
 
     async def _list_active_records(

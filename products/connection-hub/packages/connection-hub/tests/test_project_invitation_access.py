@@ -33,6 +33,9 @@ from connection_hub.delegated_credentials.controls.project_person import (
 )
 from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationDecision,
+    PROJECT_INVITATION_CONTROL_UPDATE,
+    ProjectMembershipEvidence,
+    ResolverBackedProjectAuthorizationPort,
 )
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
     ProjectPersonCardIdentity,
@@ -841,3 +844,121 @@ async def test_bind_refuses_mismatched_session_or_email(
 
     assert result["error"] == error
     assert len(host.records) == 1
+
+
+class _Members:
+    """A project with one admin and one ordinary member (W489)."""
+
+    def __init__(self, roles: dict[str, str]) -> None:
+        self.roles = roles
+
+    async def resolve_project_membership(self, *, project_ref: str, subject: str):
+        role = self.roles.get(subject)
+        if role is None:
+            return None
+        return ProjectMembershipEvidence.build(
+            project_ref=project_ref, subject=subject, role=role, delegable_grants=(GRANT,)
+        )
+
+
+def _policy() -> ResolverBackedProjectAuthorizationPort:
+    return ResolverBackedProjectAuthorizationPort(
+        resolver=_Members({ADMIN: "admin", "member-1": "member"}),
+        administrative_roles=("owner", "admin"),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_project_admin_reads_an_invitation_card_as_editable() -> None:
+    """W489: the read told the widget nothing, so Edit was absent for the admin."""
+
+    host = _Host()
+    lifecycle = _lifecycle(host, port=_policy())
+    created = await _create(lifecycle)
+    pending_id = created["control_card"]["access_id"]
+
+    read = await lifecycle.get(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        invitation_ref=INVITATION_REF,
+        control_id=pending_id,
+        request_id="request-read",
+    )
+    assert read["ok"] is True
+    assert read["viewer"] == {
+        "can_edit": True,
+        "reason": "project_person_control_editable_by_project_admin",
+    }
+    # The view and the save agree: the same admin's update is accepted.
+    saved = await lifecycle.update(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        invitation_ref=INVITATION_REF,
+        control_id=pending_id,
+        request_id="request-update",
+        label="Reviewed invitation access",
+        expected_card_revision=1,
+    )
+    assert saved["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_a_non_admin_member_neither_reads_nor_edits_an_invitation_card() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, port=_policy())
+    created = await _create(lifecycle)
+    pending_id = created["control_card"]["access_id"]
+    asked = dict(
+        project_ref=PROJECT_REF,
+        invitation_ref=INVITATION_REF,
+        control_id=pending_id,
+    )
+
+    for actor in ("member-1", "not-a-member"):
+        read = await lifecycle.get(actor_subject=actor, request_id=f"read-{actor}", **asked)
+        assert read["ok"] is False and read["status"] == 403
+        assert "viewer" not in read
+        saved = await lifecycle.update(
+            actor_subject=actor,
+            request_id=f"update-{actor}",
+            label="Raised by a member",
+            expected_card_revision=1,
+            **asked,
+        )
+        assert saved["ok"] is False and saved["status"] == 403
+    stored, _state = next(iter(host.records.values()))
+    assert stored.label == "Invited project member"
+
+
+class _ReadOnlyPolicy:
+    """Answers a read, and fails on the edit question (W489)."""
+
+    def __init__(self, inner) -> None:
+        self.inner = inner
+
+    async def authorize_project_person_control(self, request):
+        if request.operation == PROJECT_INVITATION_CONTROL_UPDATE:
+            raise RuntimeError("policy host unavailable")
+        return await self.inner.authorize_project_person_control(request)
+
+
+@pytest.mark.asyncio
+async def test_the_viewer_fails_closed_when_the_edit_question_cannot_be_answered() -> None:
+    host = _Host()
+    lifecycle = _lifecycle(host, port=_policy())
+    created = await _create(lifecycle)
+    pending_id = created["control_card"]["access_id"]
+    lifecycle = _lifecycle(host, port=_ReadOnlyPolicy(_policy()))
+
+    read = await lifecycle.get(
+        actor_subject=ADMIN,
+        project_ref=PROJECT_REF,
+        invitation_ref=INVITATION_REF,
+        control_id=pending_id,
+        request_id="request-read",
+    )
+    assert read["ok"] is True
+    assert read["viewer"] == {
+        "can_edit": False,
+        "reason": "project_person_control_decided_by_admin",
+    }
