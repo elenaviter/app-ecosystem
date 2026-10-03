@@ -1372,7 +1372,8 @@ def test_the_coordinator_role_is_handed_over_with_its_note_and_addressed_as_a_ro
     assert "presses **Make worker** on you" in coordinator
     assert "A successor that must run a runtime window has to be able to deploy: an agent on the host that runs the runtime" in coordinator
     collaboration = _words(_read("references/collaboration.md"))
-    assert "Rule 8 covers work items. The coordinator role itself moves by" in collaboration
+    assert "Rule 8 covers work items. The fence is on the implementation assignment" in collaboration
+    assert "Only the coordinator reissues that assignment. The coordinator role itself moves by" in collaboration
     skill = _words(_read("SKILL.md"))
     assert "Mail for whoever coordinates goes to `--recipient coordinator`" in skill
 

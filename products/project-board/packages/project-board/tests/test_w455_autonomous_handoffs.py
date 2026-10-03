@@ -224,3 +224,25 @@ def test_the_skill_names_the_requirements_agents_keep_as_memories() -> None:
         "Never print, export or pass a credential",
     ):
         assert requirement in section, requirement
+
+
+def test_older_directives_agree_with_the_route_split() -> None:
+    """Infra review return, 13:16Z: Rule 2 and round-2 items 7 and 8 named the coordinator for every step."""
+    collaboration = _words("references/collaboration.md")
+    assert "the coordinator pushes `main` after merges" not in collaboration
+    assert "the merger the item's route names (the coordinator when none is named) pushes `main` after merges (Rule 16)" in collaboration
+    assert "the installer the route names installs procedure revisions and runs reloads and relay restarts" in collaboration
+    assert "the verifier the route names (the coordinator when none is named) verifies the way the operator would" in collaboration
+    assert "Where it names who merges, installs or verifies, Rules 2, 5 and 16 decide today." in collaboration
+
+
+def test_the_ownership_fence_is_on_the_implementation_not_on_review_routing() -> None:
+    collaboration = _words("references/collaboration.md")
+    assert "The fence is on the implementation assignment" in collaboration
+    assert "changes who acts next on the item, not who owns the implementation" in collaboration
+
+
+def test_a_window_retries_only_available_workers() -> None:
+    coordinator = _words("references/coordinator.md")
+    assert "is asked once more with the deadline only when it is available now" in coordinator
+    assert "A worker that has not answered is asked once more with the deadline. Running" not in coordinator

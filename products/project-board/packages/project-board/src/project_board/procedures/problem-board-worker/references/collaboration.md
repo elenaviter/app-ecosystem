@@ -165,7 +165,8 @@ exchanged as a change request against the integration ref.
   from what (round 2, finding five), and a carve needed a release of
   another repository's package that no order had named (finding four).
 - **The integration ref is the pushed `main`.** Operator ruling 2026-09-22
-  20:36Z: the coordinator pushes `main` after merges, audited each time
+  20:36Z: the merger the item's route names (the coordinator when none is
+  named) pushes `main` after merges (Rule 16), audited each time
   (names of the people and organizations we work with, the deployment host, co-author trailers), and deploying
   stays the operator's. A change request is expected to be reviewable only
   once the integration ref it targets is pushed: a reviewer reading 28 files
@@ -818,7 +819,12 @@ a stale version (`work_assignment_version_conflict`), which is the fence that
 keeps two workers from both believing they own the item. A predecessor that
 comes back after its reset reads the item first, like anyone else.
 
-Rule 8 covers work items. The coordinator role itself moves by
+Rule 8 covers work items. The fence is on the implementation assignment:
+routing an item in Review to its reviewer, to the named merger or to the
+operator (`review.assign`, Rule 6) changes who acts next on the item, not who
+owns the implementation, and leaves the author's assignment and its
+ownership version as they are. Only the coordinator reissues that
+assignment. The coordinator role itself moves by
 [coordinator](coordinator.md), Hand the coordinator role over, and take it back.
 
 Why: two members proposed this independently on 2026-09-23 (an atomic
@@ -1076,9 +1082,11 @@ they stand now. What every agent on the shared host does:
 6. **Approval is a board mail naming the head, quoted on the change request
    pinned to it.** The reviewer proves the path the finding is about, over a
    fake that models the constraints the proof depends on, or live.
-7. **The merger the item's route names (or the coordinator when none is named) merges, pushes the integration ref, names the merged ref on
-   the item, installs procedure revisions, and runs reloads and relay
-   restarts** after collecting an explicit ready from every affected agent that is available (Rule 10). Urgency from
+7. **The merger the item's route names (or the coordinator when none is
+   named) merges, pushes the integration ref and names the merged ref on the
+   item; the installer the route names installs procedure revisions and runs
+   reloads and relay restarts** after collecting an explicit ready from every
+   affected agent that is available (Rule 10). Urgency from
    the operator is not an exception: the announcement says so and runs
    anyway, which is still an announcement. The cost of a silent action
    lands on the agents who learn of it from their own broken channel
@@ -1087,8 +1095,9 @@ they stand now. What every agent on the shared host does:
    reads merged content from that clone rather than the item worktree (finding
    nine).
 8. **Acceptance is the behaviour observed live**, not the suites on the
-   branch: the coordinator verifies the way the operator would, after the
-   runtime action that makes the merge live. It is checked line by line
+   branch: the verifier the route names (the coordinator when none is named)
+   verifies the way the operator would, after the runtime action that makes
+   the merge live, and the coordinator accepts from that evidence. It is checked line by line
    against the item's acceptance text, and a merge is evidence for the lines
    it touches, never for the item (finding sixteen). Before accepting, the
    coordinator fetches and runs `git merge-base --is-ancestor <commit>
@@ -1100,6 +1109,9 @@ they stand now. What every agent on the shared host does:
    a note on W262.
 
 ## Interim, 2026-09-22 22:20Z: what is true now versus the target
+
+Historical record of that night, kept for its findings. Where it names who
+merges, installs or verifies, Rules 2, 5 and 16 decide today.
 
 | target | shared host now | second host now |
 | --- | --- | --- |

@@ -1313,7 +1313,10 @@ tree, which stages whatever it holds at that instant.
    the release. A hold without a condition is asked for one, and when its
    condition is met and verified (the named commit on `HEAD`, the row's paths
    clean) the action may run with the hold quoted. A worker that has not
-   answered is asked once more with the deadline. Running without its answer
+   answered is asked once more with the deadline only when it is available
+   now; a paused, limited or unreachable worker is not woken
+   ([Check a silent worker](#check-a-silent-worker-do-not-wait-for-it)) and is
+   handled as pending above. Running without its answer
    is allowed when the exact release tree is clean at the approved
    commit and the worker's dashboard row maps to another isolated worktree or
    otherwise meets none of the three hold conditions above. The announcement
