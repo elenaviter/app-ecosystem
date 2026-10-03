@@ -562,7 +562,7 @@ it, what you touched (Rule 3), and what you are waiting on.
   acting coordinator's stable worker name in `--reviewer`: the item then
   lands on the coordinator, who reviews it or routes it on. Sending work for
   review must never leave it on you (operator, 2026-10-01 and 2026-10-03):
-  you route it in the same step you ask (Rule 16, Asking is handing on),
+  route it as you ask (Rule 16, Work moves only on the item),
   and you never schedule your own acceptance. When an item you completed is still
   assigned to you in Review, the review is not routed: route it as above,
   and do not explain it as a state (W446, W449). The operator is named only once the work is integrated:
@@ -1036,19 +1036,9 @@ actor the route names itself, the operator included (`assignment.assign`,
 `review.assign` or `work.assignee.set`), without waiting for the
 coordinator. The next actor reads the route there, not in old mail.
 
-**Asking is handing on.** The moment you ask the next actor to act (review,
-merge, activate, verify, or the operator to check) is the moment the item
-moves to them on the board, in the same step: the `completed` report with
-`--reviewer <stable worker name>` for a review, `review.assign` to change the
-reviewer of an item already in Review, and `work.assignee.set` (with
-`work.status.set`, or `work.item.save` for both in one save, when the status
-changes too) for every later step. A mail, a `working` report that says the
-work is in review, or a verdict sent only by mail is not a hand-off: the item
-stays on your list, the next actor's list shows nothing, and the board shows
-the team and the operator a wrong picture of the work. Work with no item gets
-one before you ask. Why: the next actor and the operator see their work
-through the item's assignee and status, never through someone else's mail
-(operator, 2026-10-03).
+**Work moves only on the item.** Asking the next actor to act and moving the
+item to them are one act: set them as assignee, with the status when it
+changes, as you ask. A mail moves nothing.
 
 A missing technical detail never leaves the
 route without an owner or waiting on an acknowledgement: the route names who
