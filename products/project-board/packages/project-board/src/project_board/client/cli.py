@@ -3477,10 +3477,13 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
             f"The platform accepts {kind} attachments up to {kind_limit} bytes.",
             details={"maximum_bytes": kind_limit, "content_bytes": len(data), "kind": kind},
         )
+    # W479: the operation belongs to the project (its declared shape); the
+    # service mints the slot for this worker either way, so naming the project
+    # passes the shape check without widening anything.
     slot_result = _reference_mapping_request(
         args,
         action="attachment.request_upload",
-        object_ref="work:worker:self",
+        object_ref=args.project_ref,
         payload={"filename": source.name},
     )
     slot = slot_result.get("object")
@@ -3585,7 +3588,7 @@ def _upload_reference_mapping(
     response = _reference_mapping_request(
         args,
         action="attachment.request_upload",
-        object_ref="work:worker:self",
+        object_ref=project_ref,
         payload={"filename": "reference-mapping.json"},
     )
     slot = response.get("object")
