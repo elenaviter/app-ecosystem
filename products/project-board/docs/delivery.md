@@ -104,17 +104,42 @@ exists; receive returns it; settlement records that it was handled.
 
 **Nothing is lost silently.**
 
-- The sender gets a result. A rejected message produces one
+- The sender gets a result. Outside retirement, a rejected message produces one
   `delivery_failed` notice to the sender, naming the message, the recipient,
   the field, the code and the reason. The recipient keeps listening.
+- Failure notices are terminal: if a `delivery_failed` notice, or a
+  service/system `discard.notice`, itself becomes undeliverable, it is
+  archived or withdrawn without generating another failure notice or paging
+  the operator. Classification uses the admitted envelope, not a notice
+  claim in an ordinary message's subject, body or payload. A refused relay
+  outbox preserves its original envelope kind for this check. Existing terminal
+  evidence and retention rules still apply; this does not promise that a
+  withdrawn server control retains its original body.
 - Only stable worker names are addresses. A display alias, an unknown worker
   or a retired worker is refused before any mailbox is created, and the
   board records the refusal.
 - Refused mail stays recoverable. The sender keeps the complete message and
   can replay it, and only the sender, to a corrected stable address.
-- Retiring a worker and its pending mail change together: its pending
-  delivery is withdrawn, the refusal recorded, and its senders told. Nothing
-  is left in a mailbox nobody will read.
+- Retiring a worker and its pending server mail change together: pending
+  delivery is withdrawn and admitted ordinary originals are grouped into one
+  private receipt per sender and one operator summary for the retirement.
+  Earlier failure/system notices are withdrawn silently. Host-held originals
+  stay in pending private history until their exact canonical receipt covers
+  them; a pending verification is not a successful notification.
+- A lost original route response can leave a sender's author-only copy beside
+  a control-bound copy of the same reference. These use different hash forms;
+  sender identity and reference alone do not prove equal content. In either
+  arrival order, the later copy remains pending with
+  `canonical_server_member_exists_unverifiable_author_copy`, without replacing
+  the admitted member or borrowing its coverage. Even a changed author-only
+  copy cannot borrow coverage. True drift between comparable proofs remains a
+  content conflict. Cross-form equivalence recovery is not yet established.
+  A bounded publication preflights every audience before member writes and
+  skips only the unverifiable original. Valid batch peers commit and reuse
+  their once-only notices. The response includes exact-input `pending_refs`
+  and per-original pending reasons; clients apply a reason only to that
+  retained original, never to its covered peers. A true comparable-content
+  conflict still refuses and rolls back the whole publication.
 - A lease that expires unsettled returns the message for redelivery, marked
   with the prior handling so the work is not repeated.
 
@@ -146,6 +171,62 @@ exists; receive returns it; settlement records that it was handled.
 **Reachability is evidence.** Relay connection, session attachment, inbox
 check, a non-empty receive and settlement are separate timestamps, and the
 board shows them separately.
+
+## Retirement notice coverage
+
+Retirement uses one server-owned claim per immutable retired worker,
+exact server retirement timestamp and typed audience. The control-plane
+tenant/project/bundle scope participates in that identity; individual PB
+projects, reporting hosts, Cards and changing member sets do not split it.
+Worker senders use immutable worker IDs; person senders use their canonical
+principal. The operator is a separate audience, not an invented shared sender.
+
+Each sender gets at most one notice in its own inbox, with a private paged
+receipt listing its affected originals. Sender notices are not mirrored to
+Telegram. The operator gets at most one summary with counts per sender; the
+bounded initial summary lists up to 25 senders and links to the live private
+receipt. Later admitted originals update that receipt without another notice.
+If the operator is also an original sender, the two inbox notices represent
+different audiences; only the operator summary is pushed.
+
+Current admitted Card identity and current project permissions filter receipt
+members before both paging and totals. Hidden projects cannot contribute
+references, counts or continuation signals. Cursors bind the caller, receipt
+and authorized project set; a changed authority requires a fresh read. Private
+pages carry original references and canonical sender metadata, not subjects,
+bodies, files, original hashes or contributor attribution.
+
+An original is covered only after its immutable evidence is admitted and its
+canonical notice is durably enqueued in the same transaction, or its audience
+is recorded terminally unavailable. `queued` does not mean delivered or read.
+An unavailable sender does not create per-original fallbacks to the operator.
+Notice wakes and operator pushes occur only after the outer commit.
+
+Hosts publish retirement evidence through the existing
+`mail.reconciliation.publish` operation using purpose
+`retired_worker_delivery` and schema `problem-board.retirement-delivery.v1`.
+Known backlogs are submitted in bounded batches, retaining per-original proof
+bindings. Pending generation/evidence, an expired publication lease, a restart
+or a lost response retries the same durable evidence and canonical claim.
+The original remains pending until its exact covered reference is returned.
+A third-party host cannot attest another author's host-only original.
+
+Older person request/reply envelopes already retain their complete admitted
+command. New routed-mail envelopes also retain exact canonical proof in the
+existing private original, including when transport adapts a legacy work
+locator. An older lossy routed-mail envelope may lack that proof. It remains
+retained as `legacy_original_proof_incomplete`, rather than submitting a known
+bad reconstruction. True immutable-content conflicts remain explicit refusals,
+not coverage. Both appear as separate counts in the host reconciliation
+diagnostic's `retirement_pending` result, with private per-original details
+available for recovery. Neither causes deletion, invented delivery or a new
+failure-notice chain.
+
+The two retirement metadata tables live for the worker tombstone's lifetime.
+They store identities, references, hashes, finite notice/evidence states and
+bounded authenticated attribution only. Existing private-original and ordinary
+reconciliation retention rules are unchanged. Client and server changes require
+their separately approved deployment; a source test is not a live rollout.
 
 ## What the board does not do
 

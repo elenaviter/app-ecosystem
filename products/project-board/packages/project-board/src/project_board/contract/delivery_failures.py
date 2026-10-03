@@ -1,8 +1,92 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+from .errors import DomainError
+
+
+RETIREMENT_DELIVERY_SCHEMA = 'problem-board.retirement-delivery.v1'
+RETIREMENT_DELIVERY_PURPOSE = 'retired_worker_delivery'
+
+
+def retirement_control_member(
+    control: Mapping[str, Any], *, command_payload: Mapping[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """Reduce a verified canonical control to metadata, never a caller identity.
+
+    A retained payload hash proves the complete reconstructed command even
+    after settlement cleared its body. A hash plus an arbitrary claimed mail
+    ref is NOT evidence. Person request/reply originals bind directly to the
+    canonical control ref, which survives settlement.
+    """
+    payload = dict(command_payload if command_payload is not None else control.get('payload') or {})
+    digest = str(control.get('payload_hash') or '')
+    if command_payload is not None or payload:
+        observed = hashlib.sha256(json.dumps(payload, ensure_ascii=True, sort_keys=True,
+                                            separators=(',', ':')).encode()).hexdigest()
+        if observed != digest:
+            raise DomainError('work_retirement_content_conflict',
+                              'The evidence does not match the immutable control payload.', status=409)
+    if is_terminal_system_notice({**control, 'payload': payload}):
+        return None
+    sender_kind = str(control.get('sender_kind') or '')
+    if sender_kind == 'worker':
+        sender_id = str(control.get('sender_worker_id') or '')
+    elif sender_kind in {'user', 'person'}:
+        sender_kind, sender_id = 'person', str(control.get('sender_principal_key') or '')
+        if not sender_id.startswith('user:'):
+            sender_id = ''
+    else:
+        raise DomainError('work_retirement_evidence_pending', 'No canonical original sender is bound.', status=409)
+    if not sender_id or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+        raise DomainError('work_retirement_evidence_pending', 'The original identity/hash is incomplete.', status=409)
+    mail = payload.get('mail') if isinstance(payload.get('mail'), Mapping) else {}
+    if control.get('kind') == 'mail':
+        source_ref = str(mail.get('source_message_ref') or '')
+    elif control.get('kind') in {'request', 'reply'}:
+        source_ref = str(control.get('command_ref') or '')
+    else:
+        source_ref = ''
+    if not source_ref:
+        raise DomainError('work_retirement_evidence_pending', 'The original canonical reference is not proven.', status=409)
+    return {
+        'source_message_ref': source_ref, 'project_ref': str(control.get('project_ref') or ''),
+        'recipient_worker_id': str(control.get('recipient_worker_id') or ''),
+        'original_hash': digest, 'control_ref': str(control.get('command_ref') or ''),
+        'sender_kind': sender_kind, 'sender_id': sender_id, 'evidence_source': 'server',
+    }
+
+
+def is_terminal_system_notice(message: Mapping[str, Any]) -> bool:
+    """Classify the admitted envelope, never a claim inside its user payload.
+
+    A control's ``mail`` wrapper is transport-owned. Ordinary mail's subject,
+    body and arbitrary payload do not establish a notice kind. Failure notices
+    are terminal even when an older worker, rather than the service, sent them.
+    Discard notices additionally require the canonical service/system sender.
+    """
+
+    kind = str(message.get("kind") or "").strip().lower()
+    if kind == "mail":
+        payload = message.get("payload")
+        mail = payload.get("mail") if isinstance(payload, Mapping) else None
+        kind = (
+            str(mail.get("kind") or "").strip().lower()
+            if isinstance(mail, Mapping)
+            else ""
+        )
+    if kind == "delivery_failed":
+        return True
+    identity = message.get("sender_identity")
+    sender_kind = str(
+        message.get("sender_kind")
+        or (identity.get("kind") if isinstance(identity, Mapping) else "")
+        or ""
+    ).strip().lower()
+    return kind == "discard.notice" and sender_kind in {"service", "system"}
 
 
 @dataclass(frozen=True)
@@ -151,7 +235,11 @@ def delivery_failure_target_lines(target: DeliveryFailureTarget) -> tuple[str, s
 
 
 __all__ = [
+    "RETIREMENT_DELIVERY_SCHEMA",
+    "RETIREMENT_DELIVERY_PURPOSE",
+    "retirement_control_member",
     "DeliveryFailureTarget",
     "delivery_failure_target_lines",
+    "is_terminal_system_notice",
     "resolve_delivery_failure_target",
 ]
