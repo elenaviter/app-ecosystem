@@ -13,9 +13,11 @@ reconnected on its own within seconds.
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import socket
 import time
+import weakref
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -563,6 +565,77 @@ async def test_a_release_that_left_the_session_open_is_not_released_and_close_re
         assert len(attempts) == 2
         assert old.eio.http.closed
         assert old in client._released_transports
+
+
+@pytest.mark.asyncio
+async def test_the_client_itself_owns_a_failed_release_until_close_retries_it(monkeypatch) -> None:
+    # Third review: a weak registry let a failed release's socket be collected
+    # with its HTTP session still open, so close() had nothing to retry. Here
+    # the test keeps no reference to the old socket, only to its HTTP session.
+    monkeypatch.setattr(client_module, "_RETIRE_TRANSPORT_GRACE_SECONDS", 0.2)
+    async with _bus_server() as (url, bus):
+        client = await _owned_client(url)
+        attempts: list[bool] = []
+
+        async def fail_one_release() -> tuple[weakref.ref[Any], Any, Any]:
+            old = client.socket
+            http = old.eio.http
+            original_close = http.close
+            never = asyncio.Event()
+
+            async def hung_graceful() -> None:
+                await never.wait()
+
+            async def fails_once() -> None:
+                attempts.append(True)
+                if len(attempts) == 1:
+                    raise OSError("first close failed")
+                await original_close()
+
+            old.disconnect = hung_graceful
+            old.eio.disconnect = lambda *, abort=False: asyncio.sleep(0)
+            http.close = fails_once
+            bus.publish_plan = ["silent"]
+            with pytest.raises(DataBusOutcomeUnknown):
+                await _request(client, "message-1")
+            assert await client.wait_until_connected(3.0) is True
+            await _until(lambda: attempts and client._release_tasks[old].done())
+            return weakref.ref(old), http, original_close
+
+        old_ref, http, original_close = await fail_one_release()
+        try:
+            await asyncio.sleep(0.05)
+            gc.collect()
+            await asyncio.sleep(0)
+            assert old_ref() is not None, "the client still owns the unreleased transport"
+            assert not http.closed
+
+            await asyncio.wait_for(client.close(), 3.0)
+
+            assert len(attempts) == 2
+            assert http.closed
+            assert client._release_tasks == {}, "released transports are no longer owned"
+        finally:
+            await client.close()
+            if not http.closed:
+                await original_close()
+
+
+@pytest.mark.asyncio
+async def test_a_successful_release_stops_owning_the_transport() -> None:
+    async with _bus_server() as (url, bus):
+        client = await _owned_client(url)
+        old_ref = weakref.ref(client.socket)
+        bus.publish_plan = ["silent"]
+        with pytest.raises(DataBusOutcomeUnknown):
+            await _request(client, "message-1")
+        assert await client.wait_until_connected(3.0) is True
+
+        await _until(lambda: not client._retiring_transports and not client._release_tasks)
+        await asyncio.sleep(0.05)
+        gc.collect()
+        assert old_ref() is None or old_ref() in client._released_transports
+        await client.close()
 
 
 @pytest.mark.asyncio

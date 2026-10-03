@@ -436,12 +436,12 @@ class FederatedDataBusClient:
         # Old transports being closed after the client replaced them as
         # silent: each retirement task and the socket it owns until released.
         self._retiring_transports: dict[asyncio.Task[None], Any] = {}
-        # The release of each retired transport, started once and owned until
-        # it ends, and the transports whose HTTP session it verifiably closed.
-        # close() finishes every release and never shuts a retired one down.
-        self._release_tasks: weakref.WeakKeyDictionary[Any, asyncio.Task[None]] = (
-            weakref.WeakKeyDictionary()
-        )
+        # Every retired transport not yet verifiably released, held strongly
+        # with its current release: a failed release keeps the transport owned
+        # until close() retries it. A release that closes the HTTP session
+        # removes its entry, so released transports do not accumulate; they
+        # are remembered only weakly. close() never shuts a retired one down.
+        self._release_tasks: dict[Any, asyncio.Task[None]] = {}
         self._released_transports: weakref.WeakSet[Any] = weakref.WeakSet()
         # Monotonic start of the current namespace attempt, for the reconnect
         # handshake to report how long the transport took to open.
@@ -609,19 +609,24 @@ class FederatedDataBusClient:
         finally:
             # The release is its own task: cancelling this retirement, as
             # close() does, never stops a release that has started.
-            await asyncio.shield(self._start_release(socket))
+            release = self._start_release(socket)
+            if release is not None:
+                await asyncio.shield(release)
 
-    def _start_release(self, socket: Any, *, again: bool = False) -> asyncio.Task[None]:
+    def _start_release(
+        self, socket: Any, *, again: bool = False
+    ) -> asyncio.Task[None] | None:
         """The release of ``socket``, started now unless one is running or done.
 
-        ``again`` starts a new one when the last release ended without closing
-        the transport's HTTP session; close() asks for that once.
+        None when ``socket`` is already released. ``again`` starts a new one
+        when the last release ended without closing the transport's HTTP
+        session; close() asks for that once.
         """
 
+        if socket in self._released_transports:
+            return None
         task = self._release_tasks.get(socket)
-        if task is None or (
-            again and task.done() and socket not in self._released_transports
-        ):
+        if task is None or (again and task.done()):
             task = asyncio.ensure_future(self._release_transport(socket))
             self._release_tasks[socket] = task
         return task
@@ -725,6 +730,10 @@ class FederatedDataBusClient:
                 self._released_transports.add(socket)
             except TypeError:  # pragma: no cover - a socket that cannot be weakly referenced
                 pass
+            # Verifiably released: the client stops owning it. Only this
+            # release's own entry is removed, never a newer retry's.
+            if self._release_tasks.get(socket) is asyncio.current_task():
+                del self._release_tasks[socket]
         else:
             logger.warning(
                 "Data Bus socket lifecycle event=silent_transport_release_incomplete%s",
@@ -1242,9 +1251,9 @@ class FederatedDataBusClient:
             releases = [task for task in self._release_tasks.values() if not task.done()]
             if releases:
                 await asyncio.gather(*releases, return_exceptions=True)
-            if self.socket in self._release_tasks:
+            if self.socket in self._release_tasks or self.socket in self._released_transports:
                 # The reconnect had not replaced the retired transport yet; its
-                # retirement already released it.
+                # release already ran.
                 pass
             elif callable(shutdown := getattr(self.socket, "shutdown", None)):
                 # python-socketio disconnect() is a no-op while disconnected and
