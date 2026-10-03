@@ -2601,3 +2601,38 @@ def test_the_coordinator_reconciles_the_work_and_integrates_promptly() -> None:
     assert "one sender said; only the assignments" not in coordinator
     # The procedure installed is the one in the running release.
     assert "`pb procedure install` installs the procedure package of the release `pb` runs" in coordinator
+
+
+def test_every_wait_names_its_actor_and_the_inbox_is_received_before_repeating_it() -> None:
+    """W413: an approval sat unread for half an hour while the coordinator kept
+    reporting the policy as awaiting an unnamed approver."""
+
+    coordinator = _words(_read("references/coordinator.md"))
+    assert "## Name who a wait is on, and receive before you repeat it" in _read("references/coordinator.md")
+    for field in ("**Who acts.**", "**What exactly.**", "**The request.**", "**Since when.**"):
+        assert field in coordinator
+    assert "The role `project operator`, unless the decision needs one named person" in coordinator
+    assert "and the item it waits on ([collaboration](collaboration.md) Rule 11)" in coordinator
+    assert "record who actually made it and when" in coordinator
+    assert "**Receive before you declare or repeat an awaiting-operator blocker.**" in coordinator
+    assert "run `pb worker receive`, look for the reply correlated to the request" in coordinator
+    assert "A queued wake is not evidence of unanswered mail, and neither is your memory of having asked" in coordinator
+    assert "does not reach Telegram" in coordinator
+    assert "a delivered `decision` or `blocked` answer alone is refused with `field_operator_response_required`" in coordinator
+    assert "keep it to a pointer at that answer rather than a second report" in coordinator
+
+
+def test_the_full_json_fallback_never_prints_an_attachment_capability() -> None:
+    """W413 / W472: a full item read carried each file's signed download link,
+    and the procedure's own --format json fallback put it in agent context."""
+
+    brief = _words(_read("references/brief-output.md"))
+    assert "read the full envelope directly, but only when it carries no attachments" in brief
+    assert "can hold each file's signed download link, which works as a credential" in brief
+    assert "say the field cannot be read safely and ask the item's author or the coordinator to quote it" in brief
+    assert "Never print an attachment block from JSON." in brief
+    assert "do not write a JSON parser" in brief
+    # Every other place that names the fallback points at that rule.
+    assert "but never for an item or message with attachments, whose full envelope can hold a working download link" in _words(_read("SKILL.md"))
+    assert "read the full envelope directly, unless it carries attachments ([brief-output](brief-output.md))" in _words(_read("references/coordinator.md"))
+    assert "never for an item with attachments: [brief-output](brief-output.md))" in _words(_read("references/collaboration.md"))
