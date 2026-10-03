@@ -8870,9 +8870,19 @@ class SharedFieldStore:
             control.get("subject"), field="subject", maximum=2000, required=True
         )
         body = payload.get("body") or payload.get("instructions") or subject
+        # W485: when the admitted original travels separately (it is kept as
+        # retirement_command below), the served copy keeps no download link.
+        # A legacy row whose served copy is its own proof stays byte-exact.
+        command_copy = payload
+        if retirement_command != payload and isinstance(payload.get("attachments"), list):
+            command_copy = {**payload, "attachments": [
+                {key: value for key, value in dict(entry).items() if key != "download_url"}
+                if isinstance(entry, Mapping) else entry
+                for entry in payload["attachments"]
+            ]}
         message_payload: dict[str, Any] = {
             "command_ref": command_ref,
-            "command": payload,
+            "command": command_copy,
             "payload_hash": expected_hash,
         }
         if control_kind in {'request', 'reply'} and retirement_command != payload:

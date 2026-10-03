@@ -140,13 +140,23 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                              'item_key': 'exact project-scoped item key or key[]; '
                                                          'case-insensitive (optional)',
                                              'query': 'item key, title, or ref text (optional)'}},
-    'project.plan.item': {   'description': 'Read one complete authoritative plan item and its '
-                                            'file links by canonical URI or project-scoped key.',
+    'project.plan.item': {   'description': 'Read one complete authoritative plan item and the '
+                                            'files it names by canonical URI or project-scoped key.',
                              'object_ref': 'work:project:<project_id>',
                              'payload': {   'work_ref': 'canonical work:plan:node URI (use this or '
                                                         'item_key)',
                                             'item_key': 'case-insensitive project-scoped item key '
                                                         '(use this or work_ref)'}},
+    'work.attachment.link': {
+        'description': 'W485: one signed download link for one file attached to one work item, '
+                       'bound to the caller; reads never carry links.',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {
+            'work_ref': 'canonical work:plan:node URI (use this or item_key)',
+            'item_key': 'case-insensitive project-scoped item key (use this or work_ref)',
+            'file_ref': 'a file_ref the item names',
+        },
+    },
     'project.plan.history': {
         'description': 'Read one generation-pinned newest-first action-history page for one work item.',
         'object_ref': 'work:project:<project_id>',
@@ -949,6 +959,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
 # them. Only fields a refusal is known for are listed: a field missing from
 # this table is checked by the service, never guessed here.
 PROBLEM_BOARD_OPERATION_REQUIRED: dict[str, tuple[str, ...]] = {
+    "work.attachment.link": ("file_ref",),
     "assignment.assign": ("idempotency_key",),
     "assignment.return": ("idempotency_key",),
     "plan.item.create": ("item", "idempotency_key"),

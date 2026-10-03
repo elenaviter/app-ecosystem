@@ -246,6 +246,16 @@ their separately approved deployment; a source test is not a live rollout.
 message and `--format json` stay complete; a brief view leaves out only what
 the reader never acts on, and says so where it does.
 
+- **A signed link is never kept (W485).** The board stores a mail or control
+  attachment by its file reference, size and hash, marked
+  `attachment_custody: "delivery"`, and mints one link per file when a relay
+  pulls the control, for that relay's worker only. The served copy is hashed as
+  served; the admitted original travels beside it as `canonical_payload`, the
+  retirement proof, so stored controls, payload hashes and replays never hold a
+  link, and the local copy keeps the original and drops the delivery link. An
+  item read names its files without links; `work.attachment.link` issues one per
+  download. A control admitted before W485 still carries its link and is served
+  and kept exactly as admitted, so its proof stays valid until it ages out.
 - **A signed link is never printed.** An attachment's `download_url` is a
   short-lived credential: whoever holds it can download the file. Every brief
   view shows `(signed link withheld; use the attachment read command)` in its
