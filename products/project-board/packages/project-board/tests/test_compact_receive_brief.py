@@ -405,3 +405,210 @@ def test_a_falsey_reply_to_is_not_an_empty_one(value):
 def test_a_field_of_an_unexpected_type_is_printed(field, value):
     text = render_envelope(_receive(_routed(**{field: value})), worker_flags=FLAGS)
     assert f"retirement_command.mail.{field}" in text
+
+
+# W472 ownership 7: an attachment-bearing routed mail carries the admitted
+# attachment entries, each with a short-lived signed download_url. Brief output
+# never prints a signed link (Infra 2026-10-03), and entries that repeat the
+# message's own attachment fold into one line.
+
+SIGNED = "https://board.example/api/files/abc?sig=SECRETSIG123&expires=1791030000&token=TKN456"
+
+
+def _admitted_entry(local, **overrides):
+    entry = {
+        "filename": local["filename"], "mime": local["mime"], "size": local["size"],
+        "sha256": local["sha256"], "file_ref": local["file_ref"],
+        "stored_name": "stored.md", "owner_id": "owner", "conversation_id": "conv", "turn_id": "turn",
+        "download_path": "/resources/owner/conv/turn/stored.md", "download_url": SIGNED,
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _routed_with_attachment(**entry_overrides):
+    local = _attachment("plan.md")
+    message = _routed()
+    message["attachment_count"] = 1
+    message["attachments"] = [local]
+    message["payload"]["retirement_command"]["attachments"] = [_admitted_entry(local, **entry_overrides)]
+    message["payload"]["retirement_command"]["attachment_request_hash"] = "f" * 64
+    return message
+
+
+def _assert_no_secret(text):
+    for secret in ("SECRETSIG123", "TKN456", "sig=", "token="):
+        assert secret not in text, secret
+
+
+def test_a_signed_download_link_never_reaches_brief_output():
+    message = _routed_with_attachment()
+    receive = render_envelope(_receive(message), worker_flags=FLAGS)
+    full = render_envelope(_lease_read(message), worker_flags=FLAGS)
+    _assert_no_secret(receive)
+    _assert_no_secret(full)
+    assert "retirement_command.attachments[0].download_url = (signed link withheld; use the attachment read command)" in full
+    # The stored message and the JSON view are unchanged, for diagnosis.
+    assert message["payload"]["retirement_command"]["attachments"][0]["download_url"] == SIGNED
+
+
+def test_matching_admitted_attachment_entries_fold_to_one_line():
+    text = render_envelope(_receive(_routed_with_attachment()), worker_flags=FLAGS)
+    assert (
+        "  retirement_command.attachments = 1 admitted attachment entry match this message's attachments "
+        "by file_ref, filename, mime, size and sha256"
+    ) in text
+    assert "retirement_command.attachments[0]" not in text
+    assert "  retirement_command.mail = admitted copy of this message; matches its" in text
+    assert "  retirement_command.attachment_request_hash = " + "f" * 64 in text
+    # The message's own attachment summary and exact read command stay.
+    assert "  [1] plan.md · text/markdown · 3110 bytes" in text
+    assert "read: pb worker attachment-read" in text
+
+
+@pytest.mark.parametrize("overrides", [
+    {"sha256": "b" * 64},
+    {"size": 9},
+    {"file_ref": "pbfile:owner/session/other/plan.md"},
+    {"priority": "urgent"},
+    {"size": True},
+])
+def test_a_divergent_or_unknown_attachment_entry_prints_in_full_without_the_link(overrides):
+    text = render_envelope(_receive(_routed_with_attachment(**overrides)), worker_flags=FLAGS)
+    assert "retirement_command.attachments[0].file_ref = " in text
+    assert "retirement_command.attachments[0].download_url = (signed link withheld; use the attachment read command)" in text
+    _assert_no_secret(text)
+
+
+def test_a_signed_query_anywhere_in_a_payload_is_withheld_but_plain_links_stay():
+    message = _message(payload={
+        "command_ref": COMMAND_REF,
+        "evidence": {"artifact": SIGNED, "pr": "https://github.com/elenaviter/app-ecosystem/pull/465"},
+        "links": ["https://cdn.example/f.png?X-Amz-Signature=abc&X-Amz-Credential=def", "https://example.org/a?page=2"],
+    })
+    for envelope in (_receive(message), _lease_read(message)):
+        text = render_envelope(envelope, worker_flags=FLAGS)
+        _assert_no_secret(text)
+        assert "X-Amz-Signature" not in text and "abc" not in text.split("links[0] = ", 1)[1].split("\n", 1)[0]
+        assert "  evidence.artifact = https://board.example/api/files/abc?(signed query withheld: 3 parameters)" in text
+        assert "  evidence.pr = https://github.com/elenaviter/app-ecosystem/pull/465" in text
+        assert "  links[1] = https://example.org/a?page=2" in text
+
+
+def _routed_with_attachments(entries_overrides):
+    locals_ = [_attachment(f"part-{i}.md", sha=chr(ord("a") + i) * 64) for i in range(len(entries_overrides))]
+    message = _routed()
+    message["attachment_count"] = len(locals_)
+    message["attachments"] = locals_
+    message["payload"]["retirement_command"]["attachments"] = [
+        _admitted_entry(local, **overrides) for local, overrides in zip(locals_, entries_overrides)
+    ]
+    return message
+
+
+def test_two_matching_attachment_entries_fold_and_keep_both_read_commands():
+    text = render_envelope(_receive(_routed_with_attachments([{}, {}])), worker_flags=FLAGS)
+    assert "  retirement_command.attachments = 2 admitted attachment entries match this message's attachments" in text
+    assert "  [1] part-0.md · text/markdown · 3110 bytes" in text
+    assert "  [2] part-1.md · text/markdown · 3110 bytes" in text
+    assert text.count("read: pb worker attachment-read") == 2
+    _assert_no_secret(text)
+
+
+def test_one_divergent_entry_among_several_prints_every_entry_in_full():
+    text = render_envelope(_receive(_routed_with_attachments([{}, {"sha256": "0" * 64}])), worker_flags=FLAGS)
+    assert "retirement_command.attachments = " not in text
+    assert "retirement_command.attachments[0].sha256 = " + "a" * 64 in text
+    assert "retirement_command.attachments[1].sha256 = " + "0" * 64 in text
+    _assert_no_secret(text)
+
+
+@pytest.mark.parametrize("file_ref", [None, 7, ["pbfile:x"], {"ref": "x"}, ""])
+def test_a_malformed_entry_file_ref_neither_crashes_nor_folds(file_ref):
+    text = render_envelope(_receive(_routed_with_attachment(file_ref=file_ref)), worker_flags=FLAGS)
+    assert "retirement_command.attachments[0]" in text
+    assert "settle: pb worker settle" in text
+    _assert_no_secret(text)
+
+
+def test_the_delivery_doc_states_the_brief_rules_and_the_evidence_path():
+    from pathlib import Path
+
+    doc = " ".join(
+        (Path(__file__).resolve().parents[3] / "docs" / "delivery.md").read_text(encoding="utf-8").split()
+    )
+    assert "## What an agent reads, and how evidence travels" in doc
+    assert "(signed link withheld; use the attachment read command)" in doc
+    assert "(signed query withheld: N parameters)" in doc
+    assert "Values compare as JSON, so `0` and `false` never match." in doc
+    assert "goes as a file with `pb worker send --attach <file>`" in doc
+
+
+# Review return (CodeApp, 16:05Z) on 7eea60e7: links in prose and headers,
+# signed values under unexpected shapes, a parser-rejected link, and folding
+# that hid locator content or claimed identity fields an entry lacked.
+
+PROSE_SECRET = "https://files.example.test/report?token=SYNTHETIC_REVIEW_SECRET&expires=123"
+
+
+def _both_views(message):
+    return [render_envelope(_receive(message), worker_flags=FLAGS),
+            render_envelope(_lease_read(message), worker_flags=FLAGS)]
+
+
+@pytest.mark.parametrize("placement", ["body", "subject", "prose", "download_url_mapping", "download_url_nested"])
+def test_a_signed_value_is_withheld_in_every_placement(placement):
+    message = _message()
+    if placement == "body":
+        message["body"] = f"Evidence: {PROSE_SECRET}\nSecond line."
+    elif placement == "subject":
+        message["subject"] = f"Report at {PROSE_SECRET}"
+    elif placement == "prose":
+        message["payload"]["evidence"] = f"See {PROSE_SECRET} for the run."
+    elif placement == "download_url_mapping":
+        message["payload"]["download_url"] = {"opaque": "SYNTHETIC_REVIEW_SECRET"}
+    else:
+        message["payload"]["download_url"] = [["SYNTHETIC_REVIEW_SECRET"]]
+    for text in _both_views(message):
+        assert "SYNTHETIC_REVIEW_SECRET" not in text
+        assert "settle: pb worker settle" in text
+    if placement in ("body", "subject", "prose"):
+        assert "https://files.example.test/report?(signed query withheld: 2 parameters)" in _both_views(message)[0]
+
+
+def test_a_parser_rejected_link_never_stops_the_view_and_is_still_withheld():
+    message = _message()
+    message["payload"]["evidence"] = "https://[broken-host/report?token=SYNTHETIC_REVIEW_SECRET"
+    for text in _both_views(message):
+        assert "SYNTHETIC_REVIEW_SECRET" not in text
+        assert "https://[broken-host/report?(signed query withheld: 1 parameters)" in text
+        assert "settle: pb worker settle" in text
+
+
+def test_a_token_in_a_link_fragment_is_withheld_and_ordinary_fragments_stay():
+    message = _message()
+    message["payload"]["callback"] = "https://app.example/cb#access_token=SYNTHETIC_REVIEW_SECRET&state=1"
+    message["payload"]["doc"] = "https://docs.example/page#section-2"
+    for text in _both_views(message):
+        assert "SYNTHETIC_REVIEW_SECRET" not in text
+        assert "https://docs.example/page#section-2" in text
+
+
+@pytest.mark.parametrize("missing", ["filename", "mime", "size", "sha256"])
+def test_an_entry_missing_an_identity_field_is_not_claimed_to_match(missing):
+    message = _routed_with_attachment()
+    del message["payload"]["retirement_command"]["attachments"][0][missing]
+    text = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert "admitted attachment entry match" not in text
+    assert "retirement_command.attachments[0].file_ref = " in text
+    _assert_no_secret(text)
+
+
+@pytest.mark.parametrize("locator", ["owner_id", "download_path", "stored_name", "conversation_id", "turn_id"])
+def test_a_locator_with_nested_content_is_printed_not_folded(locator):
+    text = render_envelope(
+        _receive(_routed_with_attachment(**{locator: {"action": "VISIBLE_NEXT_ACTION"}})), worker_flags=FLAGS,
+    )
+    assert "admitted attachment entry match" not in text
+    assert f"retirement_command.attachments[0].{locator}.action = VISIBLE_NEXT_ACTION" in text
+    _assert_no_secret(text)
