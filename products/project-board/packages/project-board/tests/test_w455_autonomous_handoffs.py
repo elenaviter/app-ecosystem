@@ -256,3 +256,42 @@ def test_an_operator_request_says_how_to_report_respects_refusals_and_is_not_rep
     assert "When the routing or the message is refused, never work around the permission" in rule
     assert "report the refused action, its code and who can clear it" in rule
     assert "Do not send the same unchanged request again" in rule
+
+
+def test_every_file_names_the_same_actors_for_push_and_host_actions() -> None:
+    """CodeSpark review return, 13:32Z: older lines gave push, install and restart to the coordinator."""
+    collaboration = _words("references/collaboration.md")
+    runtime_actions = _words("references/runtime-actions.md")
+    skill = _words("SKILL.md")
+    # One owning statement of the order, in Rule 2.
+    assert (
+        "**Who runs a host-local action** (a relay restart, a source selection, a procedure install) on a machine: "
+        "the installer the item's route names for that host (Rule 16); when the route names none, the coordinator on "
+        "that host; on a host without one, its elected integrator."
+    ) in collaboration
+    assert "Who pushes the integration ref: the merger the route names" in collaboration
+    # Every passage that names an actor for these actions follows it.
+    assert "The installer the route names for that host restarts it" in runtime_actions
+    assert "run on each host by the installer the item's route names" in runtime_actions
+    assert "Before it, the merger the item's route names (the coordinator when none is named) integrates" in runtime_actions
+    assert "then the installer the route names for that host restarts it" in skill
+    assert "the installer the route names installs procedure revisions and runs reloads and relay restarts" in collaboration
+    # The superseded unconditional assignments are gone everywhere.
+    texts = {name: _words(name) for name in (
+        "SKILL.md", "references/collaboration.md", "references/coordinator.md",
+        "references/runtime-actions.md", "references/test-window.md",
+    )}
+    for name, text in texts.items():
+        for stale in (
+            "The coordinator on that host restarts it",
+            "then the coordinator on that host restarts it",
+            "run by the coordinator on the host",
+            "Before it, the coordinator integrates the commits",
+            "the coordinator fast-forwards the shared checkout",
+            "coordinator fast-forwards the shared checkouts to it before any runtime action",
+            "brings that machine's checkouts to the pushed integration ref before any runtime action",
+            "the coordinator pushes `main` after merges",
+        ):
+            assert stale not in text, (name, stale)
+    # A runtime action never depends on a checkout being fast-forwarded first.
+    assert "a runtime action loads the exact ref it releases, never a checkout" in collaboration

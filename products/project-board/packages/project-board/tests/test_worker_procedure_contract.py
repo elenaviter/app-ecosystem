@@ -727,7 +727,7 @@ def test_operator_runtime_and_conduct_rules() -> None:
     assert "question blocked decision delivery_failed progress reply update result" in words
     assert "work_mail_kind_invalid" in skill
     assert "decided and proven by the coordinator and executed by the delegates it names" in words
-    assert "A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves" in words
+    assert "A relay restart is host-local: the agents on that host agree, then the installer the route names for that host restarts it, else the coordinator on that host or its elected integrator (collaboration Rule 2)" in skill
     assert "A container-local patch is not an action this team has" in words
     assert "(references/runtime-actions.md)" in skill and "(references/test-window.md)" in skill
     assert "(references/coordinator.md)" in skill

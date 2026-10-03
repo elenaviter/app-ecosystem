@@ -101,8 +101,10 @@ Rules of the shape:
   that still exists is its author's to remove, asked first (Rule 2, branch
   ownership).
 - **Nobody edits the shared checkout any more**, not even to land: a merge
-  lands on the integration ref, and the coordinator fast-forwards the shared
-  checkout to it before any runtime action (step 6 of round 1). The landing
+  lands on the integration ref, and a runtime action loads the exact ref it
+  releases, never a checkout ([coordinator](coordinator.md), Reload, refresh,
+  restart, step 1). Keeping a shared checkout current for reading is that
+  machine's integrator's housekeeping, not a step before a runtime action. The landing
   steps in the worker skill remain for a machine that has no coordinator and
   no integrator yet.
 - **A worktree cannot check out a branch another tree holds.** The shared
@@ -178,12 +180,15 @@ exchanged as a change request against the integration ref.
   machine where no coordinator runs, the agents there elect one of themselves
   once as that machine's integrator, and the coordinator records who it is,
   per machine. Where a coordinator runs on the machine, it is the integrator.
-  The integrator brings that machine's checkouts to the pushed integration
-  ref before any runtime action there (the fast-forward in step 6), and runs
-  the host-local actions the runtime-actions reference gives to "the agents
-  on that host" (relay restart, procedure install). On a project with no
-  coordinator at all, the elected integrator also pushes the integration ref
-  after merges, and the project record names it.
+  The integrator keeps that machine's shared checkouts current for reading.
+  **Who runs a host-local action** (a relay restart, a source selection, a
+  procedure install) on a machine: the installer the item's route names for
+  that host (Rule 16); when the route names none, the coordinator on that
+  host; on a host without one, its elected integrator. Who pushes the
+  integration ref: the merger the route names; when it names none, the
+  coordinator, or on a project with no coordinator the elected integrator,
+  whom the project record names. Every other passage that names one of these
+  actors for these actions follows this order.
 - **Change request:** open it against the integration ref (`main` today) when
   the branch is ready for review, and put its link on the item and in the
   report. On GitHub a change request is a pull request. The board speaks of a
@@ -1072,8 +1077,8 @@ they stand now. What every agent on the shared host does:
    flight gets a sibling tree, removed with its branch when the change
    request merges.
 2. **Nobody edits the shared checkouts under `~/src`.** Not to develop, not
-   to land. A merge lands on the integration ref, and the coordinator
-   fast-forwards the shared checkouts to it before any runtime action.
+   to land. A merge lands on the integration ref, and a runtime action loads
+   the exact ref it releases, never a checkout (Rule 2).
 3. **Every item on a branch, every branch pushed, every review on a change
    request** at a named immutable head, with the link on the item and in the
    report. Delete your branch when it merges or you abandon it.
