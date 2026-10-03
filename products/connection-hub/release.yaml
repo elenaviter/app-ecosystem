@@ -6,6 +6,7 @@ product:
     - Host relay: a channel whose transport is only reconnecting keeps its session, so a call in flight across a short drop keeps its outcome and its idempotency, instead of the channel being replaced after a long backoff.
     - Reconnects log how long the transport open and the credential resolve took.
     - A relay timing test no longer depends on how quickly a response arrives.
+    - `pb worker workspace --sweep` reads only what a scratch decision needs, checks a run's manifest before asking the board or Git, measures a run before `--apply` judges it rather than after, and reports a bounded view; `--measure` asks for sizes explicitly.
   documentation: docs/connection-hub
 
 components:
