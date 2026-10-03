@@ -914,7 +914,12 @@ def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
         message = item.get("message") if isinstance(item.get("message"), Mapping) else item
         lease = lease_by_message.get(message.get("message_ref")) or {}
         lines.append(f"--- item {index} of {len(items)}")
-        lines.extend(_render_message(message, lease, item.get("project_ref") or message.get("project_ref"), flags))
+        lines.extend(
+            _render_message(
+                message, lease, item.get("project_ref") or message.get("project_ref"), flags,
+                compact=True,
+            )
+        )
     return lines
 
 
@@ -952,7 +957,24 @@ def _render_lease_read(result: Mapping[str, Any], flags: list[str]) -> list[str]
     return lines
 
 
-def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], project_ref: Any, flags: list[str]) -> list[str]:
+def _render_message(
+    message: Mapping[str, Any],
+    lease: Mapping[str, Any],
+    project_ref: Any,
+    flags: list[str],
+    *,
+    compact: bool = False,
+) -> list[str]:
+    """One message as brief lines.
+
+    ``compact`` is the receive view (W472): it leaves out empty envelope
+    defaults and a work_ref the header already shows, and prints each
+    attachment as one summary plus its exact read command. The W393 handling
+    ledger (refs, correlation, idempotency key, lease and every follow-up
+    command) and the body stay. ``pb worker lease-read`` and ``--format json``
+    keep the complete message.
+    """
+
     lines: list[str] = []
     for key in ("kind", "sender", "recipient", "subject", "created_at", "state", "delivery_status"):
         if message.get(key) not in (None, ""):
@@ -975,14 +997,20 @@ def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], projec
     count = message.get("attachment_count")
     if count:
         lines.append(f"attachments: {count}")
-        for attachment in message.get("attachments") or []:
+        for position, attachment in enumerate(message.get("attachments") or [], start=1):
             if isinstance(attachment, Mapping):
-                lines.extend(_flatten(attachment, prefix="  "))
+                lines.extend(
+                    _compact_attachment(attachment, position)
+                    if compact
+                    else _flatten(attachment, prefix="  ")
+                )
     body = message.get("body")
     if body not in (None, ""):
         lines.append("body:")
         lines.extend(_BODY_INDENT + line for line in str(body).splitlines())
     payload = message.get("payload")
+    if compact:
+        payload = _without_envelope_defaults(payload, header_work_ref=message.get("work_ref"))
     if payload:
         lines.append("payload:")
         lines.extend(_flatten(_payload_without_body_copies(payload, body), prefix="  "))
@@ -999,6 +1027,81 @@ def _render_message(message: Mapping[str, Any], lease: Mapping[str, Any], projec
         )
     )
     return lines
+
+
+_LOCAL_ATTACHMENT_SCHEMA = "problem-board.local-mail-attachment.v1"
+
+
+def _compact_attachment(attachment: Mapping[str, Any], position: int) -> list[str]:
+    """One attachment as a summary, its exact file_ref and one runnable read command.
+
+    The command is the same argv the receive returned, quoted as a shell line,
+    so a filename with spaces, quotes or non-ASCII text still runs as printed.
+    Anything that is not a well-formed local attachment, or a field the summary
+    does not name, is printed in full rather than dropped.
+    """
+
+    command = attachment.get("read_command")
+    well_formed = (
+        isinstance(command, list)
+        and command
+        and all(isinstance(part, str) for part in command)
+        and isinstance(attachment.get("file_ref"), str)
+        and attachment.get("file_ref")
+    )
+    if not well_formed:
+        return _flatten(attachment, prefix="  ")
+    summary = " · ".join(
+        str(attachment.get(name)) if attachment.get(name) not in (None, "") else f"{name} unknown"
+        for name in ("filename", "mime")
+    )
+    size = attachment.get("size")
+    summary += f" · {size} bytes" if size not in (None, "") else " · size unknown"
+    lines = [f"  [{position}] {summary}"]
+    if attachment.get("sha256"):
+        lines.append(f"      sha256 = {attachment['sha256']}")
+    lines.append(f"      file_ref = {attachment['file_ref']}")
+    lines.append("      read: " + " ".join(shlex.quote(part) for part in command))
+    named = {"filename", "mime", "size", "sha256", "file_ref", "read_command", "schema"}
+    rest = {name: value for name, value in attachment.items() if name not in named}
+    if attachment.get("schema") not in (None, _LOCAL_ATTACHMENT_SCHEMA):
+        rest["schema"] = attachment["schema"]
+    if rest:
+        lines.extend(_flatten(rest, prefix="      "))
+    return lines
+
+
+def _without_envelope_defaults(payload: Any, *, header_work_ref: Any) -> Any:
+    """The payload without its empty top-level envelope defaults (W472).
+
+    Only exact top-level values are left out: an empty ``identity_ref``,
+    ``work_ref`` or ``payload`` object, an ``operator_origin`` that names no
+    origin, and a ``work_ref`` equal to the one the header already prints.
+    Nothing nested is touched, so a task, review or instruction field always
+    stays, and every non-empty ref (``command_ref``, ``source_message_ref``,
+    ``payload_hash``) stays.
+    """
+
+    if not isinstance(payload, Mapping):
+        return payload
+    kept: dict[str, Any] = {}
+    for name, value in payload.items():
+        if name in ("identity_ref", "work_ref") and value == "":
+            continue
+        if name == "work_ref" and value and value == header_work_ref:
+            continue
+        if name == "payload" and isinstance(value, Mapping) and not value:
+            continue
+        if (
+            name == "operator_origin"
+            and isinstance(value, Mapping)
+            and set(value) <= {"channel", "ref"}
+            and str(value.get("channel") or "unknown") == "unknown"
+            and not value.get("ref")
+        ):
+            continue
+        kept[name] = value
+    return kept
 
 
 def _payload_without_body_copies(payload: Any, body: Any) -> Any:
