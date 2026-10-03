@@ -92,7 +92,9 @@ and operates a machine:
 - [Projects, runtimes and refs](projects-runtimes-and-refs.md): the four
   concepts behind a project's setup (runtimes, the integration ref, actions
   that release a ref, sources by alias and commit), the three kinds of
-  project, and where a project declares its instructions and runtimes.
+  project, and where a project declares its instructions and runtimes;
+  worker-owned journal snapshots, serving eligibility and the limits of
+  local versus remote freshness.
 - [Storage and retention](storage-and-retention.md): where state lives,
   remote and on each machine, what the relay publishes, and what survives a
   process ending.
