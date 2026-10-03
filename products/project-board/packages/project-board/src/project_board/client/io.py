@@ -6,6 +6,7 @@ import json
 import os
 import re
 import stat
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -227,15 +228,27 @@ class FileLockBusy(BlockingIOError):
 
 
 @contextmanager
-def exclusive_lock(path: Path, *, wait: bool = True) -> Iterator[None]:
+def exclusive_lock(
+    path: Path,
+    *,
+    wait: bool = True,
+    check_cancelled: Callable[[], None] | None = None,
+) -> Iterator[None]:
     """Hold the exclusive advisory lock on ``path`` for the block.
 
     ``wait=False`` never blocks: when another holder has the lock it raises
     :class:`FileLockBusy` before the block runs. An event-loop caller uses it
     to retry with an awaited backoff instead of stalling every channel while
     a thread or another process holds the lock (W456).
+
+    With ``wait=True``, a cancellation callback replaces the default blocking
+    acquisition with cancellable 20 ms nonblocking polls. When both arguments
+    are supplied, ``wait=False`` still makes just one acquisition attempt;
+    the callback checks before opening and after acquisition in either mode.
     """
 
+    if check_cancelled is not None:
+        check_cancelled()
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     no_follow = getattr(os, "O_NOFOLLOW", None)
     if no_follow is None:
@@ -257,14 +270,26 @@ def exclusive_lock(path: Path, *, wait: bool = True) -> Iterator[None]:
             os.close(descriptor)
         raise
     with handle:
-        if wait:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        else:
+        if not wait:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise FileLockBusy(f"The lock is held: {path}") from None
+        elif check_cancelled is not None:
+            # Background maintenance must not retain an uncancellable waiter
+            # when its channel closes. Keep the default CLI locking unchanged.
+            while True:
+                check_cancelled()
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    time.sleep(0.02)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
+            if check_cancelled is not None:
+                check_cancelled()
             yield
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)

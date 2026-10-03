@@ -26,7 +26,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from app_foundation.index.sqlite import (
     BruteForceVectorStore,
@@ -183,7 +183,10 @@ class JournalSearchIndex:
             self._index = self._configured()
         return self._index
 
-    def sync(self, documents: Iterable[JournalDocument]) -> int:
+    def sync(
+        self, documents: Iterable[JournalDocument],
+        *, check_cancelled: Callable[[], None] | None = None,
+    ) -> int:
         """Bring the index in line with the entries on disk, touching only changes.
 
         The wholesale rebuild this replaces re-read and re-wrote every entry
@@ -193,14 +196,19 @@ class JournalSearchIndex:
         Git is deleted rather than left behind as a hit nobody can open.
         """
 
+        check = check_cancelled or (lambda: None)
+        check()
         index = self._open()
         wanted = {doc.entry_ref: doc for doc in documents}
 
         async def run() -> int:
+            check()
             known = {doc_id for doc_id in index.ids()}
             stale = sorted(known - set(wanted))
             if stale:
+                check()
                 await index.delete(stale)
+                check()
 
             changed = [
                 Document(
@@ -215,7 +223,9 @@ class JournalSearchIndex:
             # about not building documents we would throw away rather than about
             # correctness.
             if changed:
+                check()
                 await index.upsert(changed)
+                check()
             return len(wanted)
 
         return _run_sync(run)

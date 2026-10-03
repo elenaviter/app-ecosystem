@@ -77,6 +77,64 @@ def test_a_non_waiting_lock_refuses_at_once_while_another_holder_has_it(field):
         pass
 
 
+def test_a_non_waiting_lock_with_cancellation_still_makes_one_attempt(tmp_path):
+    lock = tmp_path / "combined.lock"
+    held = threading.Event()
+    holder = _hold(lock, 0.5, held)
+    checks = []
+    started = time.monotonic()
+    try:
+        with pytest.raises(FileLockBusy):
+            with exclusive_lock(lock, wait=False, check_cancelled=lambda: checks.append(True)):
+                pytest.fail("the held lock must not enter the block")
+        assert time.monotonic() - started < 0.2
+        assert len(checks) == 1
+    finally:
+        holder.join()
+
+
+def test_a_non_waiting_lock_checks_cancellation_before_and_after_acquisition(tmp_path):
+    checks = []
+    with exclusive_lock(
+        tmp_path / "combined.lock", wait=False, check_cancelled=lambda: checks.append(True)
+    ):
+        assert len(checks) == 2
+
+
+@pytest.mark.parametrize("wait", [True, False])
+def test_a_lock_cancelled_before_acquisition_does_not_open_a_file(tmp_path, wait):
+    lock = tmp_path / "cancelled.lock"
+
+    def cancelled():
+        raise RuntimeError("cancelled before acquisition")
+
+    with pytest.raises(RuntimeError, match="cancelled before acquisition"):
+        with exclusive_lock(lock, wait=wait, check_cancelled=cancelled):
+            pytest.fail("a cancelled lock must not enter the block")
+    assert not lock.exists()
+
+
+@pytest.mark.parametrize("wait", [True, False])
+def test_cancellation_after_acquisition_releases_the_lock(tmp_path, wait):
+    lock = tmp_path / "cancelled.lock"
+    checks = 0
+    # Cancellable waiting also checks immediately before its flock attempt.
+    cancel_on = 3 if wait else 2
+
+    def cancelled():
+        nonlocal checks
+        checks += 1
+        if checks == cancel_on:
+            raise RuntimeError("cancelled after acquisition")
+
+    with pytest.raises(RuntimeError, match="cancelled after acquisition"):
+        with exclusive_lock(lock, wait=wait, check_cancelled=cancelled):
+            pytest.fail("post-acquisition cancellation must not enter the block")
+    assert checks == cancel_on
+    with exclusive_lock(lock, wait=False):
+        pass
+
+
 def test_a_held_outbox_lock_does_not_stall_the_event_loop(field):
     async def scenario():
         held = threading.Event()

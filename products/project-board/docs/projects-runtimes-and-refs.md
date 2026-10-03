@@ -158,6 +158,50 @@ coordinator included, and for every read and write of project state:
   host's journal root in `workers/<worker-name>/`; and a journal view the
   board asks a worker's relay for is read from that clone, with its commit and
   clone state beside the result.
+- **Search freshness follows the local source, not only the binding.** CLI
+  journal search and ordinary relay reconciliation share a locked freshness
+  check. Clone HEAD, binding revision, source identity and journal file
+  metadata identify the indexed generation. An unchanged generation does not
+  reread journal bodies; a clone advance, edit, addition or removal refreshes
+  the disposable index automatically. No panel-open request or manual reindex
+  is needed after an ordinary merge and clone update. This check never fetches:
+  `current_local_source` certifies the worker's local source only, and the
+  accompanying clone state compares the last fetched remote ref, not live
+  upstream availability.
+- **Heartbeat maintenance never waits on the shared relay loop.** Each worker
+  channel owns one reusable background journal job, shared by its transient
+  attendance adapters. While it is running, heartbeats return `refresh_pending`
+  and controls and peer channels continue normally; repeated heartbeats do not
+  queue jobs. A later heartbeat applies only the matching binding's result and
+  reports any local failure. Polling and the view lock stay on the event loop;
+  completed incident/field writes use the channel's separate store executor.
+  Slow journal work never occupies that serialized field-I/O queue. The job
+  uses separate index connections and a
+  cooperative 30-second maintenance budget, including cancellable catalog and
+  index lock waits. Channel shutdown cancels pending work and drains the tracked
+  job before replacement; it never abandons a thread that can still mutate the
+  index. An already-running OS/index operation must finish before that drain
+  completes, so cancellation is not a claim of hard preemption.
+- **Requested journal views use that same owned executor.** Catalog searches,
+  browsing, document reads and clone stamps never run synchronously on the
+  shared loop. One view at a time follows any tracked refresh; heartbeats do
+  not queue more jobs behind it. The cooperative 30-second view budget covers
+  scheduling and cancellable lock waits. Cancelling a request or closing its
+  channel fences and drains its tracked work before releasing it; no late
+  result is published. Only the loop publishes the completed response.
+- **An empty result is not a freshness diagnosis.** Search returns an `index`
+  status with its source commits, recording time, compatibility issues and
+  exclusions. A skipped invalid entry makes the index `partial`; historical
+  compatibility warnings remain `ready_with_issues`. A changed source is
+  `stale` until refresh succeeds. An unavailable source, a source changing
+  during refresh or an index failure refuses the search with an explicit
+  error and records unverified freshness. An inaccessible source is not synced
+  as an empty collection; the previous source receipt remains diagnostic
+  evidence, and an interrupted or failed write is never certified as ready.
+  It never borrows another worker's checkout. These are LOCAL
+  diagnostics; they do not publish journal bodies or absolute source paths to
+  the board. A restart reuses the persisted generation check rather than
+  trusting an old `ready` label.
 - **A relay channel never depends on a clone.** A missing clone is reported
   for the project whose journal needs it; controls keep flowing.
 
@@ -173,4 +217,3 @@ configurations keep loading; the relay's housekeeping still advances a
 configured read root, which nothing reads any more. Its removal is tracked as
 a separate change. `source_repository_urls`, which lets the board link
 portable `repo:` refs, is unaffected.
-

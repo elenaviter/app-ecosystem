@@ -9,11 +9,12 @@ import os
 import re
 import shutil
 import time
-from concurrent.futures import Executor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from threading import Event
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 try:
@@ -52,6 +53,7 @@ from ..contract.worker_identity import WorkerSessionIdentity, normalize_worker_a
 from ..contract.runtime_account import normalize_runtime_account
 from .io import FileLockBusy, content_hash, new_id, parse_utc, read_json, utc_now
 from .journals import (
+    JournalRefreshCancelled,
     JournalWorkspace,
     RepositoryMap,
     repository_entries,
@@ -139,6 +141,9 @@ LOCAL_JOURNAL_MAPPING_CODES = frozenset(
         "journal_repository_root_invalid",
         "journal_repository_alias_invalid",
         "journal_workspace_link_conflict",
+        "journal_index_refresh_failed",
+        "journal_index_unavailable",
+        "journal_source_changed",
     }
 )
 # Attendance adapters are rebuilt every cycle, so the once-per-gap log line
@@ -824,6 +829,218 @@ class RelayConfig:
         )
 
 
+class _JournalRefreshWorker:
+    """One reusable, single-flight LOCAL job owned by a persistent channel.
+
+    No heartbeat awaits file/Git/index work, and no repeated poll can enqueue
+    another job while one is running. The loop owns polling and view state;
+    incident/field side effects use the separate channel store executor.
+    Closing fences cooperative writes and drains the tracked
+    job before the channel can be replaced; cancelling an await cannot detach
+    its thread. An in-progress OS/index operation is drained, not pretend-killed.
+    """
+
+    def __init__(self, *, timeout_seconds: float = 30.0) -> None:
+        self.timeout_seconds = timeout_seconds
+        self._stop = Event()
+        self._cancel_job = Event()
+        self._pool: ThreadPoolExecutor | None = None
+        self._future: Future[dict[str, Any] | DomainError | None] | None = None
+        self._key: str = ""
+        self._view_lock = asyncio.Lock()
+        self._view_active = False
+        self._view_future: Future[dict[str, Any]] | None = None
+        self._view_cancel = Event()
+
+    def poll(
+        self, workspace: JournalWorkspace, heartbeat: Mapping[str, Any],
+        *, create_home: bool,
+    ) -> tuple[bool, dict[str, Any] | DomainError | None]:
+        if self._stop.is_set():
+            return False, None
+        raw_binding = heartbeat.get("journal_binding")
+        binding = dict(raw_binding) if isinstance(raw_binding, Mapping) else {}
+        key = content_hash({
+            "binding": binding, "root": str(workspace.root),
+            "repositories": {name: str(path) for name, path in workspace.repositories.roots.items()},
+            "missing": {name: str(path) for name, path in workspace.repositories.missing.items()},
+            "workspace": str(workspace.repositories.workspace or ""),
+            "create_home": create_home,
+        })
+        if self._view_active:
+            if self._future is not None and not self._future.done() and key != self._key:
+                self._cancel_job.set()
+            # A view takes the next executor turn after any tracked refresh.
+            # Do not queue another heartbeat behind it.
+            return False, None
+        completed = None
+        ready = False
+        if self._future is not None:
+            if not self._future.done():
+                if key != self._key:
+                    self._cancel_job.set()
+                return False, None
+            result = self._future.result()
+            self._future = None
+            if key == self._key and result is not None:
+                completed, ready = result, True
+            # Never apply an obsolete binding's result to a newer heartbeat.
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pb-journal")
+        self._key = key
+        self._cancel_job = Event()
+        self._future = self._pool.submit(
+            self._run, workspace, binding, create_home, self._cancel_job
+        )
+        # Every due heartbeat starts a check, even when it consumes a previous
+        # result. Otherwise a clone advance could wait two heartbeat intervals.
+        return ready, completed
+
+    def _run(
+        self, source: JournalWorkspace, binding: dict[str, Any], create_home: bool,
+        cancel_job: Event,
+    ) -> dict[str, Any] | DomainError | None:
+        deadline = time.monotonic() + self.timeout_seconds
+        expired = False
+
+        def check() -> None:
+            nonlocal expired
+            if self._stop.is_set() or cancel_job.is_set():
+                raise JournalRefreshCancelled()
+            if not expired and time.monotonic() >= deadline:
+                # Abort the operation once; its failure receipt can still be
+                # recorded, with stop/supersession fences remaining active.
+                expired = True
+                raise DomainError(
+                    "journal_index_refresh_failed",
+                    "The journal refresh exceeded its LOCAL maintenance time budget.",
+                    status=503, details={"error_type": "TimeoutError"},
+                )
+
+        # Separate index/SQLite objects: a loop-side view must never share a
+        # connection or a cancellation callback with this background job.
+        try:
+            check()
+            workspace = JournalWorkspace(source.root, source.repositories, check_cancelled=check)
+            if not binding.get("journal_home_ref"):
+                workspace.initialize()
+                return {"state": "unbound"}
+            return workspace.reconcile(binding, create_home=create_home)
+        except JournalRefreshCancelled:
+            return None
+        except DomainError as exc:
+            return exc
+        except Exception as exc:
+            return DomainError(
+                "journal_index_refresh_failed", "The LOCAL journal refresh failed.",
+                status=503, details={"error_type": type(exc).__name__},
+            )
+
+    async def run_view(
+        self, source: JournalWorkspace,
+        operation: Callable[[JournalWorkspace], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Serialize request work on the same owned executor, never on the loop."""
+        deadline = time.monotonic() + self.timeout_seconds
+
+        def budget_error() -> DomainError:
+            return DomainError(
+                "journal_index_refresh_failed",
+                "The LOCAL journal view exceeded its time budget.",
+                status=503, details={"error_type": "TimeoutError"},
+            )
+
+        if self._stop.is_set():
+            raise asyncio.CancelledError
+        try:
+            await asyncio.wait_for(self._view_lock.acquire(), timeout=self.timeout_seconds)
+        except asyncio.TimeoutError as exc:
+            raise budget_error() from exc
+        self._view_active = True
+        try:
+            if self._future is not None and not self._future.done():
+                # Cancellation of this request must not detach or cancel the
+                # background refresh; it remains tracked by poll/aclose.
+                remaining = max(0.0, deadline - time.monotonic())
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(asyncio.wrap_future(self._future)), timeout=remaining,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise budget_error() from exc
+            if self._stop.is_set():
+                raise asyncio.CancelledError
+            self._view_cancel = Event()
+            cancel = self._view_cancel
+
+            def check() -> None:
+                if self._stop.is_set() or cancel.is_set():
+                    raise JournalRefreshCancelled()
+                if time.monotonic() >= deadline:
+                    raise budget_error()
+
+            def run() -> dict[str, Any]:
+                check()
+                workspace = JournalWorkspace(source.root, source.repositories, check_cancelled=check)
+                result = operation(workspace)
+                check()
+                return result
+
+            if self._pool is None:
+                self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pb-journal")
+            self._view_future = self._pool.submit(run)
+            try:
+                result = await asyncio.shield(asyncio.wrap_future(self._view_future))
+            except asyncio.CancelledError:
+                cancel.set()
+                await self._drain(self._view_future)
+                raise
+            except JournalRefreshCancelled:
+                raise asyncio.CancelledError from None
+            except DomainError:
+                raise
+            except Exception as exc:
+                raise DomainError(
+                    "journal_index_refresh_failed", "The LOCAL journal view failed.",
+                    status=503, details={"error_type": type(exc).__name__},
+                ) from exc
+            if self._stop.is_set() or cancel.is_set():
+                raise asyncio.CancelledError
+            return result
+        finally:
+            self._view_future = None
+            self._view_active = False
+            self._view_lock.release()
+
+    @staticmethod
+    async def _drain(tracked: Future[Any]) -> bool:
+        cancelled = False
+        future = asyncio.wrap_future(tracked)
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                cancelled = True
+            except Exception:
+                break
+        if future.done() and not future.cancelled():
+            future.exception()
+        return cancelled
+
+    async def aclose(self) -> None:
+        self._stop.set()
+        cancelled = False
+        for tracked in (self._future, self._view_future):
+            if tracked is not None:
+                cancelled = await self._drain(tracked) or cancelled
+        self._future = None
+        if self._pool is not None:
+            self._pool.shutdown(wait=False, cancel_futures=True)
+            self._pool = None
+        if cancelled:
+            raise asyncio.CancelledError
+
+
 class ProblemBoardHostRelayAdapter:
     adapter_id = "problem-board"
 
@@ -843,6 +1060,7 @@ class ProblemBoardHostRelayAdapter:
         runtime_account_reader: Callable[[], Awaitable[Mapping[str, Any]]] | None = None,
         runtime_account_error_state: dict[str, str] | None = None,
         outbox_drain_lock: asyncio.Lock | None = None,
+        journal_refresh_worker: _JournalRefreshWorker | None = None,
         workspace_sizes: WorkspaceSizes | None = None,
         worktree_observer: WorktreeObserverCache | None = None,
         store_executor: Executor | None = None,
@@ -857,6 +1075,7 @@ class ProblemBoardHostRelayAdapter:
         self.uploader = uploader or _http_upload
         self.downloader = downloader or _http_download
         self.journal_workspace = config.journal_workspace()
+        self._journal_refresh_worker = journal_refresh_worker or _JournalRefreshWorker()
         # Publishing registers the worker once per connection. Afterwards the
         # heartbeat alone proves relay presence; the control plane answers
         # ``work_worker_unavailable`` when the registration is gone or in limbo,
@@ -1664,44 +1883,76 @@ class ProblemBoardHostRelayAdapter:
                 create_home=self.config.create_missing_journal_home,
             )
         except DomainError as exc:
-            if exc.code not in LOCAL_JOURNAL_MAPPING_CODES:
-                raise
-            details = dict(exc.details or {})
-            repository = str(details.get("repository") or details.get("alias") or "")
-            path = str(details.get("path") or "")
-            gap = {
-                "state": "unmapped",
-                "project_ref": project_ref,
-                "journal_home_ref": str(binding.get("journal_home_ref") or ""),
-                "error_code": exc.code,
-                "error_summary": str(exc),
-                "repository": repository,
-                "path": path,
-                # One sentence for the worker and the operator (W304 D13).
-                "message": (
-                    f"journal unavailable for {project_ref}: {repository} not found at {path}"
-                    if path
-                    else f"journal unavailable for {project_ref}: {exc}"
-                ),
-                "mapped_repositories": sorted(self.journal_workspace.repositories.roots),
-                # W343: the worker's own workspace, where the clone belongs.
-                "workspace": str(self.journal_workspace.repositories.workspace or ""),
-            }
-            self._journal_mapping_gap = gap
-            key = (self.config.relay_id, project_ref, exc.code)
-            if key not in _reported_journal_gaps:
-                _reported_journal_gaps.add(key)
-                logger.warning(
-                    "Problem Board %s (code=%s ref=%s workspace=%s); controls still flow, "
-                    "journal views refuse until the worker clones the repository into "
-                    "its workspace (project-workspace.md step 2)",
-                    gap["message"],
-                    exc.code,
-                    gap["journal_home_ref"],
-                    gap["workspace"] or "-",
-                )
-            self._report_journal_incident(project_ref, gap)
-            return gap
+            return self._journal_binding_error(binding, exc)
+        return self._journal_binding_result(result)
+
+    async def _reconcile_journal_binding_background(self, heartbeat: Mapping[str, Any]) -> dict[str, Any]:
+        if self.journal_workspace is None:
+            return {"state": "disabled"}
+        # Poll and the view lock belong to this loop. Slow journal work has
+        # its own executor; only its completed incident/field effects share
+        # the channel's serialized store executor (W461).
+        ready, result = self._journal_refresh_worker.poll(
+            self.journal_workspace, heartbeat,
+            create_home=self.config.create_missing_journal_home,
+        )
+        if not ready:
+            return {"state": "refresh_pending"}
+        if isinstance(result, DomainError):
+            binding = dict(heartbeat.get("journal_binding") or {})
+            return await run_off_loop(
+                self._journal_binding_error, binding, result,
+                executor=self._store_thread(),
+            )
+        if result and result.get("state") == "unbound":
+            return {**result, "project_ref": f"work:project:{self.config.project_id}"}
+        assert result is not None
+        return await run_off_loop(
+            self._journal_binding_result, result, executor=self._store_thread(),
+        )
+
+    async def aclose(self) -> None:
+        await self._journal_refresh_worker.aclose()
+
+    def _journal_binding_error(self, binding: Mapping[str, Any], exc: DomainError) -> dict[str, Any]:
+        if exc.code not in LOCAL_JOURNAL_MAPPING_CODES:
+            raise exc
+        assert self.journal_workspace is not None
+        project_ref = f"work:project:{self.config.project_id}"
+        details = dict(exc.details or {})
+        repository = str(details.get("repository") or details.get("alias") or "")
+        path = str(details.get("path") or "")
+        gap = {
+            "state": "index_unavailable" if exc.code.startswith(("journal_index_", "journal_source_")) else "unmapped",
+            "project_ref": project_ref,
+            "journal_home_ref": str(binding.get("journal_home_ref") or ""),
+            "error_code": exc.code,
+            "error_summary": str(exc),
+            "repository": repository,
+            "path": path,
+            # One sentence for the worker and the operator (W304 D13).
+            "message": (
+                f"journal unavailable for {project_ref}: {repository} not found at {path}"
+                if path else f"journal unavailable for {project_ref}: {exc}"
+            ),
+            "mapped_repositories": sorted(self.journal_workspace.repositories.roots),
+            "workspace": str(self.journal_workspace.repositories.workspace or ""),
+        }
+        self._journal_mapping_gap = gap
+        key = (self.config.relay_id, project_ref, exc.code)
+        if key not in _reported_journal_gaps:
+            _reported_journal_gaps.add(key)
+            logger.warning(
+                "Problem Board %s (code=%s ref=%s workspace=%s); controls still flow, "
+                "journal views refuse until the worker clones the repository into "
+                "its workspace (project-workspace.md step 2)",
+                gap["message"], exc.code, gap["journal_home_ref"], gap["workspace"] or "-",
+            )
+        self._report_journal_incident(project_ref, gap)
+        return gap
+
+    def _journal_binding_result(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        project_ref = f"work:project:{self.config.project_id}"
         self._report_journal_incident(project_ref, None)
         self._journal_mapping_gap = None
         _reported_journal_gaps.difference_update(
@@ -2384,8 +2635,32 @@ class ProblemBoardHostRelayAdapter:
             )
         mode = str(payload.get("mode") or "")
         kind = str(control.get("kind") or "")
+        if (mode, kind) not in {("catalog", "journal.catalog"), ("document", "journal.read")}:
+            raise DomainError(
+                "work_journal_view_mode_mismatch",
+                "The journal-view mode does not match its control kind.",
+                status=409,
+            )
+        action_payload = await self._journal_refresh_worker.run_view(
+            self.journal_workspace,
+            lambda workspace: ProblemBoardHostRelayAdapter._journal_view_payload(
+                workspace, payload, project_ref, mode, kind,
+            ),
+        )
+        await self.client.action(
+            object_ref=view_ref,
+            action="journal.view.publish",
+            payload=action_payload,
+        )
+        return view_ref
+
+    @staticmethod
+    def _journal_view_payload(
+        workspace: JournalWorkspace, payload: Mapping[str, Any],
+        project_ref: str, mode: str, kind: str,
+    ) -> dict[str, Any]:
         if mode == "catalog" and kind == "journal.catalog":
-            page = self.journal_workspace.view_catalog_page(
+            page = workspace.view_catalog_page(
                 project_ref=project_ref,
                 query=str(payload.get("query") or ""),
                 cursor=str(payload.get("cursor") or ""),
@@ -2408,10 +2683,10 @@ class ProblemBoardHostRelayAdapter:
                 "next_cursor": next_cursor,
                 # W343: the clone commit the page was read at, and how current
                 # that clone is.
-                **self.journal_workspace.clone_stamp(project_ref),
+                **workspace.clone_stamp(project_ref),
             }
         elif mode == "document" and kind == "journal.read":
-            result = self.journal_workspace.read_for_project(
+            result = workspace.read_for_project(
                 project_ref=project_ref,
                 repository_journal_ref=str(payload.get("repository_journal_ref") or ""),
             )
@@ -2427,7 +2702,7 @@ class ProblemBoardHostRelayAdapter:
                 "content_hash": str(result.get("content_hash") or ""),
                 "repository_journal_ref": str(result["repository_journal_ref"]),
                 "next_cursor": "",
-                **self.journal_workspace.clone_stamp(project_ref),
+                **workspace.clone_stamp(project_ref),
             }
         else:
             raise DomainError(
@@ -2435,12 +2710,7 @@ class ProblemBoardHostRelayAdapter:
                 "The journal-view mode does not match its control kind.",
                 status=409,
             )
-        await self.client.action(
-            object_ref=view_ref,
-            action="journal.view.publish",
-            payload=action_payload,
-        )
-        return view_ref
+        return action_payload
 
     async def _serve_file_edit(self, control: Mapping[str, Any]) -> tuple[str, str]:
         """Apply a project-file edit made on the card, in this coordinator's clone (W370).
@@ -3879,7 +4149,7 @@ class ProblemBoardHostRelayAdapter:
         project_ref: str,
         prepared: Mapping[str, Any],
         heartbeat_result: Mapping[str, Any],
-    ) -> dict[str, Any]:
+    ) -> None:
         """Record an answered heartbeat in the field store, off the loop (W461)."""
 
         session_signature = prepared["session_signature"]
@@ -3902,7 +4172,6 @@ class ProblemBoardHostRelayAdapter:
         self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
         self._record_attendance_observation(heartbeat_result)
         self._materialize_attended_project(heartbeat_result)
-        journal_workspace = self._reconcile_journal_binding(heartbeat_result)
         # The team travels with every project heartbeat so a worker can
         # address a teammate from its packet without asking the control
         # plane. Runtime identity, when the board reports it, remains
@@ -3928,7 +4197,6 @@ class ProblemBoardHostRelayAdapter:
                 # Like the team sync: a project not yet on this host keeps
                 # no holder; the next heartbeat after it lands writes one.
                 pass
-        return journal_workspace
 
     async def _poll_project_once(
         self,
@@ -4002,13 +4270,14 @@ class ProblemBoardHostRelayAdapter:
                     "journal_workspace": {"state": "waiting_for_link"},
                 }
             heartbeat_result = _object_result(heartbeat_response)
-            journal_workspace = await run_off_loop(
+            await run_off_loop(
                 self._record_project_heartbeat_result,
                 project_ref=project_ref,
                 prepared=prepared,
                 heartbeat_result=heartbeat_result,
                 executor=self._store_thread(),
             )
+            journal_workspace = await self._reconcile_journal_binding_background(heartbeat_result)
             recipients = heartbeat_result.get("mail_recipients")
             if not isinstance(recipients, list):
                 recipients = heartbeat_result.get("team")
@@ -4506,6 +4775,7 @@ class ProblemBoardHostRelayAdapter:
                 runtime_account_reader=self._runtime_account_reader,
                 runtime_account_error_state=self._runtime_account_error_state,
                 outbox_drain_lock=self._outbox_drain_lock,
+                journal_refresh_worker=self._journal_refresh_worker,
                 workspace_sizes=self._workspace_sizes,
                 worktree_observer=self._worktree_observer,
                 store_executor=self._store_thread(),
@@ -4747,7 +5017,10 @@ class _ChannelSession:
     close_failure: Exception | None = None
 
     async def aclose(self) -> None:
-        await self.stack.aclose()
+        try:
+            await self.adapter.aclose()
+        finally:
+            await self.stack.aclose()
 
 
 def _transport_retained(session: Any) -> bool:
