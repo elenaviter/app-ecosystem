@@ -3257,10 +3257,12 @@ class ProblemBoardHostRelayAdapter:
                     and exc.code in {'work_retirement_generation_pending', 'work_retirement_evidence_pending'}
                 )
                 if exc.status >= 500 or retirement_pending:
+                    pending_reason = str(exc.details.get('reason') or '') if retirement_pending else ''
                     await self._outbox_store(self.field.retry_outbox, finish=True)(
                         str(row.get("outbox_id") or ""),
                         relay_id=self.config.relay_id,
-                        error_code=exc.code,
+                        error_code=(pending_reason if pending_reason ==
+                            'canonical_server_member_exists_unverifiable_author_copy' else exc.code),
                         error_summary=str(exc),
                     )
                     counts["outbox_retried"] += 1

@@ -126,6 +126,14 @@ exists; receive returns it; settlement records that it was handled.
   Earlier failure/system notices are withdrawn silently. Host-held originals
   stay in pending private history until their exact canonical receipt covers
   them; a pending verification is not a successful notification.
+- A lost original route response can leave a sender's author-only copy beside
+  a control-bound copy of the same reference. These use different hash forms;
+  sender identity and reference alone do not prove equal content. In either
+  arrival order, the later copy remains pending with
+  `canonical_server_member_exists_unverifiable_author_copy`, without replacing
+  the admitted member or borrowing its coverage. Even a changed author-only
+  copy cannot borrow coverage. True drift between comparable proofs remains a
+  content conflict. Cross-form equivalence recovery is not yet established.
 - A lease that expires unsettled returns the message for redelivery, marked
   with the prior handling so the work is not repeated.
 

@@ -119,8 +119,11 @@ def retirement_delivery_publication(
                     'delivery_status': coverage['notice_state'], 'outbox_id': outbox_id,
                     'proof_hash': content_hash(proof),
                     'publication_bindings': bindings}
+    pending_reason = str(row.get('last_error_code') or '')
     return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending', 'outbox_id': outbox_id,
-            'reason': 'canonical_notice_coverage_pending', 'publication_bindings': bindings,
+            'reason': (pending_reason if pending_reason ==
+                'canonical_server_member_exists_unverifiable_author_copy' else 'canonical_notice_coverage_pending'),
+            'publication_bindings': bindings,
             'proof_hash': content_hash(proof)}
 
 

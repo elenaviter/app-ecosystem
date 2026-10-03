@@ -67,8 +67,12 @@ def test_legacy_routed_original_exposes_incomplete_proof_without_false_conflict(
     assert list(field._outbox.in_flight('pending')) == []
 
 
-@pytest.mark.parametrize('code', ['work_retirement_generation_pending', 'work_retirement_evidence_pending'])
-def test_retirement_pending_admission_retries_same_evidence_without_refusal(code):
+@pytest.mark.parametrize('code,reason', [
+    ('work_retirement_generation_pending', ''),
+    ('work_retirement_evidence_pending', ''),
+    ('work_retirement_evidence_pending', 'canonical_server_member_exists_unverifiable_author_copy'),
+])
+def test_retirement_pending_admission_retries_same_evidence_without_refusal(code, reason):
     publication = {'schema': 'problem-board.retirement-delivery.v1',
                    'purpose': 'retired_worker_delivery', 'retired_worker_name': 'codex-retired',
                    'members': [{'source_message_ref': 'work:mail:retained-original'}]}
@@ -94,7 +98,8 @@ def test_retirement_pending_admission_retries_same_evidence_without_refusal(code
     class Client:
         async def action(self, **kwargs):
             assert kwargs['payload'] == publication
-            raise DomainError(code, 'Canonical evidence is not yet admitted.', status=409)
+            raise DomainError(code, 'Canonical evidence is not yet admitted.', status=409,
+                              details={'reason': reason} if reason else {})
 
     field = Field()
     adapter = relay.ProblemBoardHostRelayAdapter.__new__(relay.ProblemBoardHostRelayAdapter)
@@ -103,7 +108,28 @@ def test_retirement_pending_admission_retries_same_evidence_without_refusal(code
     adapter.field, adapter.client, adapter._outbox_finishes = field, Client(), set()
     counts = asyncio.run(adapter._flush_outbox_unlocked())
     assert counts['outbox_retried'] == 1 and counts['outbox_refused'] == 0
-    assert field.retries == [('same-evidence', code)]
+    assert field.retries == [('same-evidence', reason or code)]
+
+
+def test_unverifiable_author_copy_retains_distinct_pending_reason_and_original(tmp_path):
+    from project_board.client.mail_delivery import retirement_delivery_publication
+    from project_board.client.outbox_store import OutboxStore
+    field = SimpleNamespace(control=tmp_path / 'control')
+    field._outbox = OutboxStore(field.control)
+    original = {'message_ref': 'work:mail:lost-route', 'kind': 'question', 'subject': 'Private',
+                'body': 'Retain exact original', 'sender': 'codex-author'}
+    kwargs = dict(project_ref='work:project:alpha', reporter_worker_name='codex-author',
+                  retired_worker_name='codex-retired', message=original)
+    first = retirement_delivery_publication(field, **kwargs)
+    row = field._outbox.read(first['outbox_id'], worker_name='codex-author', project_ref='work:project:alpha')
+    row['last_error_code'] = 'canonical_server_member_exists_unverifiable_author_copy'
+    field._outbox.write_pending(row)
+    replay = retirement_delivery_publication(field, **kwargs)
+    assert replay['delivery_status'] == 'pending'
+    assert replay['reason'] == row['last_error_code']
+    assert replay['outbox_id'] == first['outbox_id']
+    assert 'coverage' not in replay and 'Private' not in str(replay)
+    assert original['body'] == 'Retain exact original'
 
 
 def test_canonical_retirement_control_proof_survives_erased_payload_and_rejects_spoof():
