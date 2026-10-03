@@ -1163,31 +1163,56 @@ def _with_matching_retirement_command_folded(payload: Any, message: Mapping[str,
 def _retirement_field_matches(
     name: str, value: Any, payload: Mapping[str, Any], message: Mapping[str, Any]
 ) -> bool:
-    """Whether one field of the admitted mail command repeats what the message shows."""
+    """Whether one field of the admitted mail command repeats what the message shows.
+
+    Matching is strict: values compare as JSON, so ``0`` and ``false`` (or
+    ``1`` and ``true``) never match each other at any depth, and a value of
+    an unexpected type never matches, so it is printed in full.
+    """
 
     if name not in _RETIREMENT_MAIL_FIELDS:
         return False
     if name == "body":
         return isinstance(value, str) and value.strip() == str(message.get("body") or "").strip()
     if name in ("work_ref", "identity_ref"):
+        if value is None or value == "":
+            return _empty_text(payload.get(name))
+        if not isinstance(value, str):
+            return False
         # The server may adapt a work locator for older clients, so the copy
         # matches when it names a locator this message already shows.
-        if value in (None, ""):
-            return not str(payload.get(name) or "")
-        shown = {message.get("work_ref"), payload.get("work_ref"), payload.get("identity_ref"),
-                 payload.get("versioned_work_ref")}
-        return str(value) in {str(item) for item in shown if item not in (None, "")}
-    if name == "correlation_id" and value in (None, ""):
+        shown = (message.get("work_ref"), payload.get("work_ref"), payload.get("identity_ref"),
+                 payload.get("versioned_work_ref"))
+        return value in {item for item in shown if isinstance(item, str) and item}
+    if name == "correlation_id" and (value is None or value == ""):
         # An uncorrelated mail is delivered under its command's ref.
-        return message.get("correlation_id") == payload.get("command_ref")
+        command_ref = payload.get("command_ref")
+        return isinstance(command_ref, str) and bool(command_ref) and message.get("correlation_id") == command_ref
     if name == "reply_to":
-        return str(value or "") == str(message.get("reply_to") or "")
+        if value is None or value == "":
+            return _empty_text(message.get("reply_to"))
+        return isinstance(value, str) and value == message.get("reply_to")
     if name == "source_message_ref":
-        return value == payload.get("source_message_ref")
+        return isinstance(value, str) and _same_json(value, payload.get("source_message_ref"))
     if name == "payload":
         inner = payload.get("payload")
-        return isinstance(value, Mapping) and value == (inner if isinstance(inner, Mapping) else {})
-    return value == message.get(name)
+        return isinstance(value, Mapping) and _same_json(value, inner if isinstance(inner, Mapping) else {})
+    return isinstance(value, str) and _same_json(value, message.get(name))
+
+
+def _empty_text(value: Any) -> bool:
+    """Only an absent value or the empty string counts as empty, never 0, false or []."""
+
+    return value is None or (isinstance(value, str) and value == "")
+
+
+def _same_json(left: Any, right: Any) -> bool:
+    """Equal as JSON, so a boolean never equals a number; unserialisable values never match."""
+
+    try:
+        return json.dumps(left, sort_keys=True) == json.dumps(right, sort_keys=True)
+    except (TypeError, ValueError):
+        return False
 
 
 def _payload_without_body_copies(payload: Any, body: Any) -> Any:

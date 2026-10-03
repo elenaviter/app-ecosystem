@@ -359,3 +359,49 @@ def test_folding_the_admitted_copy_shrinks_a_routed_item():
     unfolded = render_envelope(_lease_read(_routed()), worker_flags=FLAGS)
     assert routed.count("\n") == plain.count("\n") + 1
     assert unfolded.count("retirement_command.mail.") == 9
+
+
+# Review return (CodeApp, 13:41Z): Python treats 0 == False and 1 == True,
+# a malformed locator crashed the renderer, and falsey reply_to values were
+# taken for an empty one.
+
+
+@pytest.mark.parametrize("delivered, admitted", [(0, False), (False, 0), (1, True), (True, 1)])
+def test_a_nested_type_change_is_never_folded(delivered, admitted):
+    message = _routed(payload={"task": {"value": admitted}})
+    message["payload"]["payload"] = {"task": {"value": delivered}}
+    text = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert f"  retirement_command.mail.payload.task.value = {admitted}" in text
+
+
+def test_identical_nested_zero_and_false_still_fold():
+    inner = {"task": {"instructions": "Run it", "attempt": 0, "dry_run": False}}
+    message = _routed(payload=inner)
+    message["payload"]["payload"] = copy.deepcopy(inner)
+    text = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert "retirement_command.mail." not in text
+    assert "  payload.task.attempt = 0" in text
+    assert "  payload.task.dry_run = False" in text
+
+
+@pytest.mark.parametrize("malformed", [[], {}, 7, None])
+def test_a_malformed_locator_neither_crashes_nor_matches(malformed):
+    message = _routed(work_ref=WORK_REF + ":v2")
+    message["payload"]["versioned_work_ref"] = malformed
+    text = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert f"  retirement_command.mail.work_ref = {WORK_REF}:v2" in text
+    assert "settle: pb worker settle" in text
+
+
+@pytest.mark.parametrize("value", [False, 0, [], {}])
+def test_a_falsey_reply_to_is_not_an_empty_one(value):
+    text = render_envelope(_receive(_routed(reply_to=value)), worker_flags=FLAGS)
+    assert "  retirement_command.mail.(matching fields) = admitted copy of this message;" in text
+    assert "retirement_command.mail.reply_to" in text
+
+
+@pytest.mark.parametrize("field, value", [("kind", 1), ("subject", None), ("source_message_ref", True),
+                                          ("identity_ref", 0), ("correlation_id", False)])
+def test_a_field_of_an_unexpected_type_is_printed(field, value):
+    text = render_envelope(_receive(_routed(**{field: value})), worker_flags=FLAGS)
+    assert f"retirement_command.mail.{field}" in text
