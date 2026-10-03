@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from project_board.client.limit_state import limit_state_line, usage_windows_line, window_length_label
 
@@ -1137,11 +1139,22 @@ def _with_matching_retirement_command_folded(payload: Any, message: Mapping[str,
     if not isinstance(payload, Mapping):
         return payload
     command = payload.get("retirement_command")
-    if not isinstance(command, Mapping) or set(command) != {"mail"}:
+    if not isinstance(command, Mapping) or "mail" not in command:
+        return payload
+    if not set(command) <= {"mail", "attachments", "attachment_request_hash"}:
         return payload
     mail = command.get("mail")
     if not isinstance(mail, Mapping):
         return payload
+    extra: dict[str, Any] = {}
+    if "attachments" in command:
+        folded_attachments = _retirement_attachments_summary(command.get("attachments"), message)
+        if folded_attachments is None:
+            extra["attachments"] = command.get("attachments")
+        else:
+            extra["attachments"] = folded_attachments
+    if "attachment_request_hash" in command:
+        extra["attachment_request_hash"] = command.get("attachment_request_hash")
     matched: list[str] = []
     differing: dict[str, Any] = {}
     for name, value in mail.items():
@@ -1153,11 +1166,56 @@ def _with_matching_retirement_command_folded(payload: Any, message: Mapping[str,
         return payload
     folded = dict(payload)
     summary = "admitted copy of this message; matches its " + ", ".join(matched)
-    if differing:
-        folded["retirement_command"] = {"mail": {"(matching fields)": summary, **differing}}
+    if differing or extra:
+        mail_view: Any = {"(matching fields)": summary, **differing} if differing else summary
+        folded["retirement_command"] = {"mail": mail_view, **extra}
     else:
         folded["retirement_command"] = summary + " (full copy: pb worker lease-read or --format json)"
     return folded
+
+
+# Fields of an admitted attachment entry that only locate or carry the stored
+# file (they are encoded in its file_ref, or are the signed transport link).
+_RETIREMENT_ATTACHMENT_LOCATORS = frozenset({
+    "download_url", "download_path", "stored_name", "owner_id", "conversation_id", "turn_id",
+})
+# Fields that must equal the message's own attachment for the entry to fold.
+_RETIREMENT_ATTACHMENT_IDENTITY = ("filename", "mime", "size", "sha256")
+
+
+def _retirement_attachments_summary(entries: Any, message: Mapping[str, Any]) -> str | None:
+    """One line for admitted attachment entries that repeat the message's attachments, else None.
+
+    Each entry folds only when its file_ref names one of the message's own
+    attachments, every identity field it carries equals that attachment's, and
+    it carries nothing beyond those and the file's locators. Anything else
+    returns None, and the entries are printed in full (signed links withheld).
+    """
+
+    if not isinstance(entries, list) or not entries:
+        return None
+    local = {
+        str(item.get("file_ref")): item
+        for item in message.get("attachments") or []
+        if isinstance(item, Mapping) and isinstance(item.get("file_ref"), str) and item.get("file_ref")
+    }
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            return None
+        ref = entry.get("file_ref")
+        if not isinstance(ref, str) or ref not in local:
+            return None
+        allowed = {"file_ref", *_RETIREMENT_ATTACHMENT_IDENTITY, *_RETIREMENT_ATTACHMENT_LOCATORS}
+        if not set(entry) <= allowed:
+            return None
+        for name in _RETIREMENT_ATTACHMENT_IDENTITY:
+            if name in entry and not _same_json(entry[name], local[ref].get(name)):
+                return None
+    return (
+        f"{len(entries)} admitted attachment entr{'y' if len(entries) == 1 else 'ies'} match this "
+        "message's attachments by file_ref, filename, mime, size and sha256; their locators and "
+        "signed links are not printed (read each file with its attachment read command)"
+    )
 
 
 def _retirement_field_matches(
@@ -2608,12 +2666,46 @@ def _flatten(value: Any, *, prefix: str, path: str = "") -> list[str]:
         for index, child in enumerate(value):
             lines.extend(_flatten(child, prefix=prefix, path=f"{path}[{index}]"))
     else:
+        value = _without_signed_link(path, value)
         if isinstance(value, str) and "\n" in value:
             lines.append(f"{prefix}{path} =")
             lines.extend(f"{prefix}{_BODY_INDENT}{line}" for line in value.splitlines())
         else:
             lines.append(f"{prefix}{path} = {value}")
     return lines
+
+
+# A signed link is a short-lived credential: whoever holds it can download the
+# file. Brief output never prints one (W472, Infra 2026-10-03). The attachment
+# read command and the file ref are the way to the file; --format json keeps
+# the stored value for diagnosis.
+_SIGNED_LINK_KEYS = frozenset({"download_url", "upload_url", "signed_url"})
+_SIGNED_QUERY_NAME = re.compile(
+    r"(sig|signature|token|credential|secret|key|auth|session|policy|hmac|expires|x-amz-|x-goog-)",
+    re.IGNORECASE,
+)
+_SIGNED_LINK_WITHHELD = "(signed link withheld; use the attachment read command)"
+
+
+def _without_signed_link(path: str, value: Any) -> Any:
+    """A leaf as brief output may print it: a signed link or signed query is withheld."""
+
+    if not isinstance(value, str) or not value:
+        return value
+    leaf = re.sub(r"\[\d+\]$", "", path.rsplit(".", 1)[-1])
+    if leaf in _SIGNED_LINK_KEYS:
+        return _SIGNED_LINK_WITHHELD
+    if "://" not in value:
+        return value
+    parts = urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.query:
+        return value
+    names = [name for name, _ in parse_qsl(parts.query, keep_blank_values=True)]
+    if not any(_SIGNED_QUERY_NAME.search(name) for name in names):
+        return value
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, "", "")) + (
+        f"?(signed query withheld: {len(names)} parameters)"
+    )
 
 
 def worker_flags_from_argv(argv: Sequence[str]) -> list[str]:

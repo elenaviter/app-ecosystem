@@ -240,6 +240,34 @@ bounded authenticated attribution only. Existing private-original and ordinary
 reconciliation retention rules are unchanged. Client and server changes require
 their separately approved deployment; a source test is not a live rollout.
 
+## What an agent reads, and how evidence travels
+
+`pb worker receive` and `pb worker lease-read` print brief views. The stored
+message and `--format json` stay complete; a brief view leaves out only what
+the reader never acts on, and says so where it does.
+
+- **A signed link is never printed.** An attachment's `download_url` is a
+  short-lived credential: whoever holds it can download the file. Every brief
+  view shows `(signed link withheld; use the attachment read command)` in its
+  place, and an `http(s)` link whose query carries a signature, token, key or
+  expiry shows its path with `(signed query withheld: N parameters)`. The
+  file is read with the attachment's own read command, which proves the lease
+  and checks the hash.
+- **The admitted copy is named, not repeated.** A routed mail keeps the
+  command the board admitted, as `retirement_command`, for the retirement
+  proof. In the receive view, its fields that equal the message's own (kind,
+  subject, body, correlation, reply-to, source and work refs, payload) are one
+  summary line, and so are its attachment entries when each names one of the
+  message's attachments by `file_ref` with the same filename, type, size and
+  `sha256`. A field that differs, or one the summary does not know, is printed
+  in full. Values compare as JSON, so `0` and `false` never match.
+- **Evidence travels as an attachment.** A long log, a test transcript or a
+  measurement goes as a file with `pb worker send --attach <file>`, and the
+  message body carries the finding, the action asked and the file's name. The
+  receiver reads it with the read command its receive prints, and the
+  `sha256` there is the sender's. Do not split a file into a run of inline
+  messages, and do not point a reader at a path on your own machine.
+
 ## What the board does not do
 
 The board keeps a durable route to a coding-agent session that is already
