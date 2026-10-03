@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import time
 from concurrent.futures import Executor
@@ -285,17 +286,87 @@ def _heartbeat_session_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     return projected
 
 
+# Upload answers that are the platform's decision about the file itself (too
+# large, a type or construct it refuses): the same bytes meet the same
+# decision, so asking again only repeats the refusal (W475). Every other
+# answer keeps the earlier retry, because the next attempt asks for a new
+# upload slot: a rejected or expired upload token (401, 403), a missing slot,
+# a timeout, a rate limit or a server error can all pass on that attempt.
+_UPLOAD_PERMANENT_STATUSES = frozenset({413, 415, 422})
+_UPLOAD_PERMANENT_CODES = frozenset({
+    "work_attachment_empty",
+    "work_attachment_too_large",
+    "work_attachment_rejected",
+    "work_attachment_executable_binary_refused",
+})
+_UPLOAD_ANSWER_BYTES = 8192
+_UPLOAD_CODE = re.compile(r"work_attachment_[a-z_]{1,64}")
+# The only platform words carried on: the preflight's fixed reasons, matched
+# whole. A response body can echo a signed URL, a token or headers, so it is
+# never copied; anything unmatched is replaced by a fixed sentence.
+_UPLOAD_REASONS = (
+    re.compile(r"(Text|SVG) too large: \d{1,12}>\d{1,12}"),
+    re.compile(r"Unsupported or unknown type: [a-z0-9.+-]{1,64}/[a-z0-9.+-]{1,64}"),
+    re.compile(r"Archives \(ZIP\) are disallowed by policy"),
+    re.compile(r"SVG not allowed by policy"),
+)
+_UPLOAD_REFUSAL_TEXT = {
+    400: "The platform refused the upload.",
+    413: "The file is larger than the platform accepts.",
+    415: "The platform does not accept this file type.",
+    422: "The file failed the platform's content checks.",
+}
+
+
+def _upload_refusal(status: int, body: bytes) -> tuple[str, list[str]]:
+    """The answer's error code and preflight reasons, only where they are allowlisted."""
+
+    try:
+        answer = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return "", []
+    error = answer.get("error") if isinstance(answer, Mapping) else None
+    if not isinstance(error, Mapping):
+        return "", []
+    code = str(error.get("code") or "")
+    code = code if _UPLOAD_CODE.fullmatch(code) else ""
+    details = error.get("details") if isinstance(error.get("details"), Mapping) else {}
+    reasons = [
+        str(reason)
+        for reason in (details.get("reasons") or [])[:5]
+        if isinstance(reason, str) and any(pattern.fullmatch(reason) for pattern in _UPLOAD_REASONS)
+    ]
+    return code, reasons[:3]
+
+
 async def _http_upload(url: str, data: bytes, mime: str) -> None:
     import aiohttp
 
     async with aiohttp.ClientSession() as session:
         async with session.post(url, data=data, headers={"Content-Type": mime}) as response:
-            if response.status >= 300:
+            if response.status < 300:
+                return
+            try:
+                body = await response.content.read(_UPLOAD_ANSWER_BYTES)
+            except Exception:  # noqa: BLE001 - the status alone still decides
+                body = b""
+            code, reasons = _upload_refusal(response.status, body)
+            permanent = response.status in _UPLOAD_PERMANENT_STATUSES or (
+                response.status == 400 and code in _UPLOAD_PERMANENT_CODES
+            )
+            if not permanent:
                 raise DomainError(
                     "work_attachment_upload_failed",
                     f"Attachment upload answered {response.status}.",
                     status=502,
                 )
+            sentence = _UPLOAD_REFUSAL_TEXT.get(response.status, "The platform refused the upload.")
+            raise DomainError(
+                "work_attachment_upload_refused",
+                " ".join([sentence, *reasons]),
+                status=response.status,
+                details={"upload_status": response.status, "code": code, "reasons": reasons},
+            )
 
 
 async def _http_download(url: str) -> bytes:
@@ -2166,7 +2237,7 @@ class ProblemBoardHostRelayAdapter:
                         data = stream.read(MAX_MAIL_ATTACHMENT_BYTES + 1)
                 except OSError as exc:
                     raise DomainError("field_attachment_missing", "The queued attachment snapshot is not readable.") from exc
-                validate_mail_attachment(data)
+                validate_mail_attachment(data, filename=filename, mime=str(item.get("mime") or ""))
                 if ((item.get("size") is not None and int(item["size"]) != len(data))
                         or (item.get("sha256") and hashlib.sha256(data).hexdigest() != item["sha256"])):
                     raise DomainError("field_attachment_integrity_mismatch", "The queued attachment snapshot changed before upload.", status=409)
