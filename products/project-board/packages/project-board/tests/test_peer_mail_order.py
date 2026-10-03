@@ -235,6 +235,66 @@ def test_zero_capacity_reads_no_pending_bodies(field, monkeypatch):
     assert _refs(_pull(field)) == [message["message_ref"]]
 
 
+@pytest.mark.parametrize("filename", ["000-corrupt.json", "zzzz-corrupt.json"])
+@pytest.mark.parametrize("limit", [1, 3])
+@pytest.mark.parametrize("contents,error_type,code", [
+    (b"{not json", DomainError, "field_record_unreadable"),
+    (b"[]", DomainError, "field_record_invalid"),
+    (b"\xff", UnicodeDecodeError, None),
+])
+def test_unreadable_candidates_never_rollback_valid_mail(
+    field, monkeypatch, filename, limit, contents, error_type, code,
+):
+    messages = [
+        _send(field, monkeypatch, f"valid-{i}", f"2026-10-03T10:00:0{i}Z")
+        for i in range(2)
+    ]
+    root = field._mail_root(PROJECTS[0], WORKER)
+    unreadable = root / "inbox" / filename
+    unreadable.write_bytes(contents)
+    received = _pull(field, limit=limit)
+    assert _refs(received) == _refs(messages[:min(limit, 2)])
+    if limit == 1:
+        received += _pull(field, limit=limit)
+    assert _refs(received) == _refs(messages)
+    assert len(list((root / "leased").glob("*.json"))) == 2
+    # Once no readable mail remains, preserve the original reporting path.
+    with pytest.raises(error_type) as failure:
+        _pull(field, limit=limit)
+    if code is not None:
+        assert failure.value.code == code
+        assert failure.value.details["path"] == str(unreadable)
+    assert unreadable.read_bytes() == contents
+    assert list((root / "inbox").glob("*.json")) == [unreadable]
+    assert len(list((root / "leased").glob("*.json"))) == 2
+
+
+def test_unreadable_candidate_stays_in_receive_continuation_count(field, monkeypatch):
+    message = _send(field, monkeypatch, "readable", "2026-10-03T10:00:00Z")
+    unreadable = field._mail_root(PROJECTS[0], WORKER) / "inbox" / "zzzz-corrupt.json"
+    unreadable.write_bytes(b"{not json")
+    result = pull_worker_input(field, worker_name=WORKER)
+    assert _refs([item["message"] for item in result["items"]]) == [message["message_ref"]]
+    assert result["delivery"]["remaining_count"] == 1
+    assert result["delivery"]["has_more"] is True
+    assert unreadable.read_bytes() == b"{not json"
+
+
+def test_unrelated_candidate_errors_are_not_hidden(field, monkeypatch):
+    _send(field, monkeypatch, "pending", "2026-10-03T10:00:00Z")
+    original = store_module.read_json
+
+    def unrelated_error(path, *args, **kwargs):
+        if path.parent.name == "inbox":
+            raise DomainError("fixture_unrelated_failure", "Not a record-read failure")
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(store_module, "read_json", unrelated_error)
+    with pytest.raises(DomainError) as failure:
+        _pull(field)
+    assert failure.value.code == "fixture_unrelated_failure"
+
+
 def test_failed_ordered_batch_rolls_back_all_claims_then_retries_in_order(field, monkeypatch):
     messages = [_send(field, monkeypatch, f"mail-{i}", f"2026-10-03T10:00:0{i}Z") for i in range(3)]
     original = store_module.atomic_write_json

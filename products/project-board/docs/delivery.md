@@ -74,11 +74,23 @@ exists; receive returns it; settlement records that it was handled.
   provisional lease to the inbox before reporting failure.
 - Newly materialized operator `request` and `reply` controls carry a priority
   mail ID assigned only after the server verifies the human sender. Within
-  that mailbox, they sort before ordinary worker mail when the item limit is
-  small. Worker-supplied sender labels cannot grant priority.
-- This does not reorder mail that was pending before the change. Older operator
-  controls keep their random IDs and can still be selected after worker mail;
-  existing queues are not migrated.
+  that mailbox, receive uses the existing admitted-operator predicate to sort
+  them before ordinary worker mail, including older admitted controls with
+  board sender identity and a control reference. Worker-supplied sender labels
+  cannot grant priority. Existing records and IDs are not migrated.
+- Within each priority class, readable mail is ordered by its stored UTC
+  `created_at` instant, then stable message identity (and filename as a final
+  tie-break). Missing or malformed creation dates remain after valid dates in
+  deterministic identity order; filesystem creation or modification times are
+  not used to repair them.
+- Unreadable records sort after all readable mail, by filename. Valid mail
+  can still receive leases; the bad files remain untouched, pending and counted
+  in continuation. If an unreadable candidate is reached without any valid
+  claims, its original read error is reported. Receive does not silently
+  delete, repair or quarantine these local files.
+- Ordering scans the pending candidates in a locked shard, with O(N) reads
+  and only the capped requested batch retained in memory. This is bounded
+  batch memory, not a measured throughput improvement.
 - Priority applies within one mailbox. A receive reads direct mail before
   project mail, so direct messages can exhaust the item limit before a project
   approval. Continuing operator arrivals can keep worker mail pending under
