@@ -121,7 +121,7 @@ included. Why: a JSON envelope you print lands in your context whole, and a
 session that reads full envelopes compacts every few turns (a Codex agent,
 2026-09-23). Brief output starts with `OK` or `ERROR <code>`. Delivery and mutation output remains a complete handling ledger, including bodies and each follow-up command (`lease-read`, `settle`, and for a question or request the correlated `send`).
 Read-heavy `worker context`, `worker journal-search`, `source status`, `project.plan.search`, `project.plan.item`, and `assignment.list` instead print bounded decision summaries. Every displayed ref, id, key, cursor, commit and path stays whole.
-When the exact omitted field or full prose is required, rerun that same narrow command with `--format json` and read its envelope directly; do not widen the query or write a parser. `pb render --file <path>` renders saved output the same way.
+When the exact omitted field or full prose is required, rerun that same narrow command with `--format json` and read its envelope directly, but never for an item or message with attachments, whose full envelope can hold a working download link ([brief-output](references/brief-output.md)); do not widen the query or write a parser. `pb render --file <path>` renders saved output the same way.
 
 A governed mutation's receipt names its outcome in `state`: `applied` or
 `refused`. `ERROR <code>` is not a receipt, and its code decides the retry

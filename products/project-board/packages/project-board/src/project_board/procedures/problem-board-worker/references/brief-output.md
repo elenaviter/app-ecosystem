@@ -31,7 +31,14 @@ applies the same brief rendering to saved output.
 
 When one of those summaries omits a field or clips prose that the decision
 actually needs, rerun the same narrow command with `--format json` and read the
-full envelope directly. Do not broaden or page a query to compensate, and do
+full envelope directly, but only when it carries no attachments. A full
+envelope of an item or message with attachments can hold each file's signed
+download link, which works as a credential, and printing it puts that
+credential in your context. For such an item or message, read the brief view,
+which withholds the link and prints each file's read command; when the field
+you need is still clipped there, say the field cannot be read safely and ask
+the item's author or the coordinator to quote it. Never print an attachment
+block from JSON. Do not broaden or page a query to compensate, and do
 not write a JSON parser. A result retained from an earlier decision boundary
 is not current evidence: rerun the targeted read.
 

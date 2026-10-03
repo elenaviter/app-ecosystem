@@ -206,7 +206,7 @@ def test_the_worker_rereads_its_assignments_periodically():
     assert "Read them again once per native wake batch (the addressed mail one wake delivers, received together)" in collaboration
     assert "once about 30 minutes of active work have passed since the last full read, at the next safe boundary" in collaboration
     assert "a command, a leased message within a batch, a guard prompt or a work boundary is not a reason for a full read" in collaboration
-    assert "`assignment.task`), which the brief view does not show" in collaboration
+    assert "[brief-output](brief-output.md)), which the brief view does not show" in collaboration
     assert "An addressed change to one assignment or its ownership, or a doubt about one item, reads only that item, including the assignment's own task" in collaboration
     for text in (skill, collaboration):
         assert "at every work boundary and on each guard prompt or wake" not in text
