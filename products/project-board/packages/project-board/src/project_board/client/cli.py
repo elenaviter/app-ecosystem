@@ -6178,6 +6178,13 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             "package": package,
             "installed": installed,
         }
+        installing = _installing_pb()
+        if installing and installing.get("pb"):
+            # W495: one pb command at ~/.local/bin/pb from the first install on.
+            from .procedures import _home_path
+            from .release_install import ensure_install_launcher
+
+            result["launcher"] = ensure_install_launcher(_home_path(args.home), pb=installing["pb"])
         if claude_code:
             # The status line and hooks a Claude Code worker needs (W304 finding 45).
             from .claude_settings import merge_claude_code_settings
