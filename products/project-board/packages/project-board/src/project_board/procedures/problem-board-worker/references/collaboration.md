@@ -897,10 +897,40 @@ carries states:
 - your recommendation
 - what you do while you wait
 
+**The item itself carries what the operator needs.** The operator works from
+the board, their inbox and Telegram, not from an agent's terminal, and the
+board shows them the item's fields: its Result, "How to check this"
+(`review.look_at`) and "What could not be verified"
+(`review.could_not_verify`). Routing (`review.assign`, `work.assignee.set`)
+changes who acts next; it does not rewrite those fields. A checklist an author
+wrote for an agent reviewer stays on the item and tells the operator
+the wrong thing. So whoever routes an item to the operator rewrites
+them for the operator with `plan.item.update`, in the same step:
+
+- `result`: what is true now, in plain words: what was merged (exact
+  commit), where it runs, and what proved it, with the evidence ref;
+- `review.look_at`: the operator's steps: what changed, in one sentence;
+  what to look at or try, and where (board, inbox, a page); the result that
+  means it works; and the decision, each option with what follows from it;
+- `review.could_not_verify`: what is not proven and not claimed.
+
+Write them so the operator can act from the item alone, with no other
+message. The `decision` or `question` message names the item and points
+to these fields.
+
+**An operator's question is answered where the operator works.** When the
+operator asks you about an item, in any channel, your terminal included,
+the answer goes on the item (its fields, or a note when it is history) and in a
+board message to `operator`. An answer only in your terminal is not durable.
+When the question shows the item was unclear, correct the item: answering the
+question does not fix the item. Then tell them where the answer is.
+
 Their reply arrives as a correlated message you answer like any other. After
-routing, read the item back (`project.plan.item`) and check that the
-operator is its assignee: an action that is not in the operator's lists does
-not exist for them. Never leave an operator action only in an agent's
+routing, read the item back (`project.plan.item`). Check that the operator is
+its assignee and that its Result, "How to check this" and "What could not
+be verified" are the ones you wrote for them: an action that is not in the
+operator's lists, or that they cannot follow from the item, does not exist
+for them. Never leave an operator action only in an agent's
 terminal or only in mail between agents (operator, 2026-10-03: "if something
 waits for me i expect to see it in my assignments"). When the routing or the
 message is refused, never work around the permission: report the refused
@@ -918,7 +948,13 @@ they happen to look at that screen. On 2026-09-23 a coordinator asked the operat
 approval question in a terminal dialog. The operator's ruling: "in PB the agents cannot
 be sure the operator is looking into their terminals. and if there are inputs
 needed, the agent must send this in project chat to operator, or if urgent
-then also in telegram."
+then also in telegram." On 2026-10-03 an item was routed to the operator
+with the author's source-review checklist still shown as "How to check this".
+The operator asked about it in a terminal and the answer stayed there. The
+operator's ruling: "this "here" is not a durable place. i expected you to edit
+the work item and put the nornal steps for operator (me) to follow to check"
+and "the tickets assigned to operator must contain the information for
+operator."
 
 ## Rule 12. Cards are edited only in Connection Hub
 
