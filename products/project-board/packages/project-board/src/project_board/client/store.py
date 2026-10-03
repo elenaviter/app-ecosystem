@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import mimetypes
 
@@ -7316,6 +7317,50 @@ class SharedFieldStore:
             )
         )
 
+    @classmethod
+    def _mail_receive_order(
+        cls, row: Mapping[str, Any] | None, path: Path
+    ) -> tuple[int, int, datetime, str, str]:
+        """Order one locked shard without treating a filename as a clock.
+
+        Trusted operator admission remains the first priority. Within each
+        class, valid stored creation instants precede unknown ones, with the
+        immutable message identity breaking ties. Missing/invalid timestamps
+        are retained in deterministic identity order, never repaired from
+        file metadata or allowed to prevent valid mail from being received.
+        """
+        if row is None:
+            # No trustworthy identity or priority can be read from this file.
+            # Keep it after every readable row, deterministically by filename.
+            return (2, 1, datetime.max.replace(tzinfo=timezone.utc), path.name, path.name)
+        try:
+            created_at = parse_utc(str(row.get("created_at") or ""))
+            unknown_timestamp = 0
+        except DomainError:
+            created_at = datetime.max.replace(tzinfo=timezone.utc)
+            unknown_timestamp = 1
+        identity = str(row.get("message_id") or row.get("message_ref") or path.name)
+        return (
+            0 if cls._is_admitted_operator_mail(row) else 1,
+            unknown_timestamp,
+            created_at,
+            identity,
+            path.name,
+        )
+
+    @staticmethod
+    def _mail_receive_candidate(
+        path: Path,
+    ) -> tuple[Path, dict[str, Any] | None, Exception | None]:
+        try:
+            return path, read_json(path), None
+        except DomainError as error:
+            if error.code not in {"field_record_unreadable", "field_record_invalid"}:
+                raise
+            return path, None, error
+        except UnicodeDecodeError as error:
+            return path, None, error
+
     def select_mail_candidates(
         self,
         project_ids: Sequence[str],
@@ -7466,8 +7511,8 @@ class SharedFieldStore:
         claimed: list[dict[str, Any]] = []
         with nullcontext() if lock_held else exclusive_lock(root / ".mail.lock"):
             self._recover_expired_mail(clean_project, clean_worker)
-            sources = (
-                sorted((root / "inbox").glob("*.json"))
+            paths = (
+                list((root / "inbox").glob("*.json"))
                 if selected_paths is None
                 else [
                     path for path in selected_paths
@@ -7475,13 +7520,29 @@ class SharedFieldStore:
                 ]
             )
             with PartitionedStore(root, store="mailbox").reading("receive") as read:
-                read.opened_pending(clean_worker, len(sources))
+                read.opened_pending(clean_worker, len(paths))
             take = max(0, min(int(limit), 100))
+            # Read each candidate once, but retain only the bounded batch's
+            # rows, not the backlog's full bodies. Reuse them for the claim
+            # while this shard's lock stays held. A zero-capacity shard reads
+            # no bodies; selective receive uses this same ordering.
+            sources = heapq.nsmallest(
+                take,
+                (self._mail_receive_candidate(path) for path in paths),
+                key=lambda candidate: self._mail_receive_order(candidate[1], candidate[0]),
+            )
             claimed_paths: list[Path] = []
             limited_by = ""
             try:
-                for source in sources[:take]:
-                    row = read_json(source)
+                for source, row, read_error in sources:
+                    if row is None:
+                        # A bad candidate must not roll back readable mail.
+                        # Leave it pending and report its original error when
+                        # it is reached without any valid claims in the batch.
+                        if claimed:
+                            break
+                        assert read_error is not None
+                        raise read_error
                     lease_id = new_id("lease")
                     now = utc_now()
                     row.update(
@@ -7630,9 +7691,9 @@ class SharedFieldStore:
             if byte_budget is not None:
                 remaining_count = max(
                     0,
-                    len(sources) - len(claimed_paths),
+                    len(paths) - len(claimed_paths),
                 )
-                if not limited_by and remaining_count and take < len(sources):
+                if not limited_by and remaining_count and take < len(paths):
                     limited_by = "item_limit"
                 byte_budget.record_mailbox(
                     remaining=remaining_count,
