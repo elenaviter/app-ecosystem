@@ -4671,6 +4671,27 @@ class _ChannelSession:
         await self.stack.aclose()
 
 
+def _transport_retained(session: Any) -> bool:
+    """The session's socket is up, or its client is repairing a plain transport drop.
+
+    A request whose outcome is unknown leaves the session in place in either
+    case: receipts fan out to the re-authenticated session, and the client
+    reconnects on its own within seconds. Replacing the session instead costs
+    a fresh credential and the channel backoff, 30 to 60 s (a remote host,
+    2026-10-02 21:03Z). The client says False for a refused handshake, an
+    expired credential or a drop past its recovery window; a closing session
+    is never retained.
+    """
+
+    if session is None or getattr(session, "closing", False):
+        return False
+    client = session.adapter.client
+    return bool(
+        getattr(client, "connected", False)
+        or getattr(client, "transport_recovering", False)
+    )
+
+
 class ProblemBoardRelaySupervisor:
     """One machine process multiplexing independently authorized workers."""
 
@@ -5474,6 +5495,25 @@ class ProblemBoardRelaySupervisor:
             for key in ("access_id", "credential_ref", "endpoint", "auth_type")
         )
 
+    def _still_bound(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        session: _ChannelSession,
+    ) -> bool:
+        """``_session_matches`` for a session about to be kept; unreadable means no."""
+
+        try:
+            return self._session_matches(host, channel, session, require_card=False)
+        except Exception:  # noqa: BLE001 - a kept session must prove its binding
+            logger.warning(
+                "Problem Board relay channel lifecycle event=binding_unreadable "
+                "worker_name=%s: the session is not kept",
+                channel.worker_name,
+                exc_info=True,
+            )
+            return False
+
     def _session_matches(
         self,
         host: HostRelayConfig,
@@ -5520,8 +5560,7 @@ class ProblemBoardRelaySupervisor:
         retained_connected = bool(
             self._failure_code(error) == "data_bus_outcome_unknown"
             and session is not None
-            and not session.closing
-            and getattr(session.adapter.client, "connected", False)
+            and _transport_retained(session)
         )
         return pacing.record_failure(
             worker_name,
@@ -6458,10 +6497,14 @@ class ProblemBoardRelaySupervisor:
                 result = {**dict(result), "coordinate_requests": coordinate}
             return result
         except BaseException as exc:
+            # An unknown outcome keeps the session when its transport is up or
+            # only reconnecting, and only while it still belongs to this
+            # channel and Card. Anything else, cancellation included, drops it.
             keep_uncertain_session = bool(
                 isinstance(exc, DomainError)
                 and exc.code == "data_bus_outcome_unknown"
-                and getattr(session.adapter.client, "connected", False)
+                and _transport_retained(session)
+                and self._still_bound(host, channel, session)
             )
             if not keep_uncertain_session:
                 await self._drop_session(channel.worker_name)

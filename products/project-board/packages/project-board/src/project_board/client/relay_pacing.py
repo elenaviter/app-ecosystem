@@ -350,7 +350,10 @@ class RelayPacing:
         attempts never feed the doubling.
         ``retained_connected`` distinguishes an unknown outcome on a socket
         the relay kept from a transport failure; it grants no authority and
-        never clears the failed request or its retry identity.
+        never clears the failed request or its retry identity. The relay keeps
+        a socket that is connected, and one whose client is repairing a plain
+        transport drop on its own; foreground work waits until it is connected
+        again (``channel_request_due``).
         """
 
         now = self._clock()
