@@ -409,9 +409,20 @@ def _judge(
         run.age_hours = round((now - created).total_seconds() / 3600, 1)
     except ValueError:
         run.age_hours = None
+    # Run-level reasons, cheapest first. Any of them keeps the run, and nothing
+    # in its files can change that, so the run is returned before the next,
+    # costlier check: the manifest alone, then the board, then git. A kept run
+    # is never listed by the plan, so it needs no fingerprint.
     if run.owner != worker_name:
         run.keep.append(f"owned by {run.owner or 'nobody named'}")
     closed = manifest.get("closed") or {}
+    if not closed:
+        run.keep.append("not closed by its owner: the job is not over")
+    open_consumers = sorted(name for name, state in (manifest.get("consumers") or {}).items() if (state or {}).get("open"))
+    if open_consumers:
+        run.keep.append(f"still used by {', '.join(open_consumers)}")
+    if run.keep:
+        return run
     semantic: list[str] = []
     if consumers is not None:
         found = consumers(run.item)
@@ -420,20 +431,13 @@ def _judge(
             run.keep.append(f"consumer state unknown (item {run.item}; offline or unreadable)")
         elif found:
             run.keep.append(f"still needed: {', '.join(found)}")
-    if not closed:
-        run.keep.append("not closed by its owner: the job is not over")
-    else:
-        findings = str(closed.get("findings") or "")
-        proved = verify(findings)
-        semantic.append(f"findings:{findings}:{proved}")
-        if proved is not True:
-            run.keep.append(f"findings publication {'disproved' if proved is False else 'not verifiable here'}: {findings}")
-    open_consumers = sorted(name for name, state in (manifest.get("consumers") or {}).items() if (state or {}).get("open"))
-    if open_consumers:
-        run.keep.append(f"still used by {', '.join(open_consumers)}")
     if run.keep:
-        # Kept for a run-level reason: no file can change that, so none is
-        # read. The plan never lists a kept run, so it needs no fingerprint.
+        return run
+    findings = str(closed.get("findings") or "")
+    proved = verify(findings)
+    semantic.append(f"findings:{findings}:{proved}")
+    if proved is not True:
+        run.keep.append(f"findings publication {'disproved' if proved is False else 'not verifiable here'}: {findings}")
         return run
     recorded: Mapping[str, Mapping[str, Any]] = manifest.get("files") or {}
     fingerprint_parts: list[str] = [json.dumps(closed, sort_keys=True), *semantic,

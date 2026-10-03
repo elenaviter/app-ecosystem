@@ -200,6 +200,66 @@ def test_a_removable_run_keeps_the_fingerprint_the_plan_and_apply_rely_on(ws, mo
     assert result["freed_bytes"] == on_disk
 
 
+def test_a_change_beyond_the_report_sample_still_invalidates_the_plan(ws):
+    # The 20-file sample is presentation only: the plan's fingerprint and the
+    # re-judging apply read every file.
+    names = {f"logs/{index:03d}.log": f"line {index}" for index in range(scratch.FILE_SAMPLE + 10)}
+    run = _closed_published_run(ws, {"report.md": "the finding", **names})
+    verify = scratch.repository_verifier(ws["ws"])
+    judged = _judge_one(ws, run, verify=verify)
+    assert judged.removable, judged.keep
+    late = f"logs/{scratch.FILE_SAMPLE + 5:03d}.log"
+    assert late not in judged.files and judged.files_count == len(names) + 1
+    planned = {str(run): judged.fingerprint}
+
+    (run / late).write_text("changed after the dry run", encoding="utf-8")
+    result = scratch.apply_runs(ws["ws"], worker_name=OWNER, planned=planned, verify=verify)
+
+    assert result["removed"] == [] and run.exists()
+    (kept,) = result["kept"]
+    assert f"changed since it was recorded: {late}" in kept["keep"]
+
+
+@pytest.mark.parametrize("denial", ["owner", "open", "consumer"])
+def test_a_run_denied_by_its_manifest_never_reaches_the_board_or_git(ws, denial):
+    if denial == "owner":
+        run = Path(scratch.new_run(ws["ws"], item="W9", purpose="theirs", worker_name="someone-else")["run"])
+    else:
+        run = _closed_published_run(ws, {"report.md": "the finding"})
+        if denial == "open":
+            scratch.record(ws["ws"], run, worker_name=OWNER, consumer="review:W423")
+    asked: list[str] = []
+    verified: list[str] = []
+
+    def consumers(item: str):
+        asked.append(item)
+        return ["item is working"] if denial == "consumer" else []
+
+    def verify(ref: str, sha256: str = ""):
+        verified.append(ref)
+        return True
+
+    judged = _judge_one(ws, run, verify=verify, consumers=consumers)
+
+    assert not judged.removable
+    assert verified == [], "git was asked about a run its manifest or the board already keeps"
+    if denial == "consumer":
+        assert asked == [judged.item] and any("still needed" in reason for reason in judged.keep)
+    else:
+        assert asked == [], "the board was asked about a run its manifest already keeps"
+
+
+def test_unknown_size_and_count_render_as_unknown_not_zero(ws):
+    from project_board.client import render
+
+    run = make_run(ws)
+    lines = render._flatten({"scratch_runs": [_judge_one(ws, run).to_mapping()]}, prefix="")
+
+    text = "\n".join(lines)
+    assert "not measured" in text and "not counted" in text
+    assert "size_bytes = 0" not in text and "files_count = 0" not in text
+
+
 # Size is measured only when asked ----------------------------------------------
 
 
