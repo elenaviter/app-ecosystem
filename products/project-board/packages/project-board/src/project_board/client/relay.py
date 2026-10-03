@@ -3287,6 +3287,10 @@ class ProblemBoardHostRelayAdapter:
                                 # dropping it makes a refused failure notice
                                 # look like ordinary mail and bounce again.
                                 "kind": str(original.get("kind") or ""),
+                                "body": str(original.get('body') or ''),
+                                "payload": dict(original.get('payload') or {}),
+                                "work_ref": str(original.get('work_ref') or ''),
+                                "reply_to": str(original.get('reply_to') or ''),
                                 "message_ref": source_message_ref,
                                 "subject": str(original.get("subject") or ""),
                                 "outbox_id": str(row.get("outbox_id") or ""),
@@ -3314,6 +3318,13 @@ class ProblemBoardHostRelayAdapter:
                                 "delivery."
                             ),
                         )
+                        if failure_report.get('schema') == 'problem-board.retirement-delivery.v1' and failure_report.get('delivery_status') == 'pending':
+                            await self._outbox_store(self.field.retry_outbox, finish=True)(
+                                str(row.get('outbox_id') or ''), relay_id=self.config.relay_id,
+                                error_code='canonical_notice_coverage_pending',
+                                error_summary='Retirement evidence/notice is pending; the original is retained.')
+                            counts['outbox_retried'] += 1
+                            continue
                     except DomainError as report_error:
                         # Do not turn a sender-notification failure into silent
                         # terminal loss. The original payload stays leased only
@@ -3372,6 +3383,18 @@ class ProblemBoardHostRelayAdapter:
             disposition = str(remote.get("disposition") or "accepted")
             outcome = "ignored" if disposition.startswith("ignored_") else "sent"
             remote_result = None
+            if kind == 'mail.reconciliation.publish' and payload.get('purpose') == 'retired_worker_delivery':
+                expected = {str(m.get('source_message_ref') or '') for m in payload.get('members') or []}
+                covered = {str(m.get('source_message_ref') or '') for m in remote.get('coverage') or []
+                    if isinstance(m, Mapping) and m.get('notice_state') in {'queued', 'unavailable'} and m.get('receipt_ref')}
+                if remote.get('schema') != 'problem-board.retirement-delivery.v1' or not expected <= covered:
+                    await self._outbox_store(self.field.retry_outbox, finish=True)(
+                        str(row.get('outbox_id') or ''), relay_id=self.config.relay_id,
+                        error_code='canonical_notice_coverage_pending',
+                        error_summary='The canonical receipt did not cover every exact original; retry the same evidence.')
+                    counts['outbox_retried'] += 1
+                    continue
+                remote_result = remote
             if kind == "project.plan.index":
                 requested_ref = str(payload.get("item_ref") or "")
                 requested = parse_plan_node_ref(requested_ref)

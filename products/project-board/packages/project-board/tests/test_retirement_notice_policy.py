@@ -15,6 +15,62 @@ from project_board.contract.delivery_failures import is_terminal_system_notice
 from project_board.contract.errors import DomainError
 
 
+def test_retirement_publication_is_durable_pending_until_exact_notice_coverage(tmp_path):
+    from project_board.client.mail_delivery import retirement_delivery_publication
+    from project_board.client.outbox_store import OutboxStore
+    field = SimpleNamespace(control=tmp_path / 'control')
+    field._outbox = OutboxStore(field.control)
+    original = {'message_ref': 'work:mail:original', 'recipient': 'codex-retired',
+                'kind': 'question', 'subject': 'Private', 'body': 'Retained original body',
+                'sender': 'codex-author', 'sender_identity': {'kind': 'worker', 'worker_name': 'codex-author'}}
+    kwargs = dict(project_ref='work:project:alpha', reporter_worker_name='codex-author',
+                  retired_worker_name='codex-retired', message=original)
+    first = retirement_delivery_publication(field, **kwargs)
+    assert first['delivery_status'] == 'pending'
+    replay = retirement_delivery_publication(field, **kwargs)
+    assert replay['outbox_id'] == first['outbox_id']
+    row = field._outbox.read(first['outbox_id'], worker_name='codex-author', project_ref='work:project:alpha')
+    assert row['payload']['purpose'] == 'retired_worker_delivery'
+    # A successful transport status, or another original's coverage, is not
+    # proof that this retained original may leave pending history.
+    row.update(state='sent', remote_result={'coverage': [{'source_message_ref': 'work:mail:other',
+        'notice_state': 'queued', 'receipt_ref': 'work:mail_reconciliation:other'}]})
+    field._outbox.write_pending(row)
+    assert retirement_delivery_publication(field, **kwargs)['delivery_status'] == 'pending'
+    row['remote_result'] = {'schema': 'problem-board.retirement-delivery.v1',
+                           'coverage': [{'source_message_ref': 'work:mail:original',
+                           'notice_state': 'queued', 'receipt_ref': 'work:mail_reconciliation:canonical'}]}
+    field._outbox.write_pending(row)
+    assert retirement_delivery_publication(field, **kwargs)['delivery_status'] == 'queued'
+    assert original['body'] == 'Retained original body'
+
+
+def test_canonical_retirement_control_proof_survives_erased_payload_and_rejects_spoof():
+    from project_board.contract.delivery_failures import retirement_control_member
+    import hashlib
+    import json
+    command = {'mail': {'kind': 'question', 'source_message_ref': 'work:mail:original',
+                        'subject': 'Private original', 'body': 'Must not enter metadata'}}
+    digest = hashlib.sha256(json.dumps(command, ensure_ascii=True, sort_keys=True,
+                                      separators=(',', ':')).encode()).hexdigest()
+    control = {'command_ref': 'work:control:original', 'project_ref': 'work:project:alpha',
+               'kind': 'mail', 'recipient_worker_id': 'retired-id',
+               'sender_kind': 'worker', 'sender_worker_id': 'immutable-author',
+               'sender_principal_key': 'real-card-author', 'payload_hash': digest, 'payload': {}}
+    member = retirement_control_member(control, command_payload=command)
+    assert member['sender_id'] == 'immutable-author'
+    assert member['source_message_ref'] == 'work:mail:original'
+    assert member['original_hash'] == digest
+    assert 'body' not in member and 'payload' not in member
+    with pytest.raises(DomainError, match='immutable'):
+        retirement_control_member(control, command_payload={'mail': {**command['mail'], 'source_message_ref': 'work:mail:forged'}})
+    person = retirement_control_member({**control, 'kind': 'request', 'sender_kind': 'user',
+                                       'sender_worker_id': '', 'sender_principal_key': 'user:canonical-person'})
+    assert person['sender_kind'] == 'person'
+    assert person['sender_id'] == 'user:canonical-person'
+    assert person['source_message_ref'] == control['command_ref']
+
+
 @pytest.mark.parametrize("message,terminal", [
     ({"kind": "delivery_failed", "sender_identity": {"kind": "worker"}}, True),
     ({"kind": "discard.notice", "sender_kind": "service"}, True),

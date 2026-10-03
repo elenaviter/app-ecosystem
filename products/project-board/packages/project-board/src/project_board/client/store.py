@@ -69,6 +69,7 @@ from .io import (
     utc_now,
 )
 from .mail_delivery import (
+    retirement_delivery_publication,
     ACTIVE_MAILBOX_STATES,
     UNLEASED_MAILBOX_STATES,
     ALL_MAILBOX_STATES,
@@ -7859,6 +7860,10 @@ class SharedFieldStore:
             maximum=512,
             required=True,
         )
+        if error_code in {'retired_recipient', 'work_worker_retired', 'field_worker_retired'}:
+            return retirement_delivery_publication(
+                self, project_ref=make_ref('project', clean_project) if clean_project else '',
+                reporter_worker_name=clean_receiver, retired_worker_name=clean_failed_recipient, message=message)
         source_ref = bounded_text(
             message.get("message_ref"),
             field="message_ref",
@@ -8874,6 +8879,9 @@ class SharedFieldStore:
             )
             message_payload = {
                 "command_ref": command_ref,
+                # Retain already hash-verified admitted control evidence in the
+                # existing private original, not the retirement metadata ledger.
+                "retirement_command": dict(payload),
                 "source_message_ref": str(routed_mail.get("source_message_ref") or ""),
                 "payload": dict(routed_mail.get("payload") or {}),
                 "payload_hash": expected_hash,
@@ -9849,8 +9857,17 @@ class SharedFieldStore:
             with exclusive_lock(self._project_lock(clean_project)):
                 current = read_json(archive_path, required=False)
                 if current:
+                    if report.get('schema') == 'problem-board.retirement-delivery.v1' and report.get('delivery_status') == 'pending':
+                        current['failure_notice_state'] = 'pending'
+                        current['retirement_publication'] = report
+                        current['updated_at'] = utc_now()
+                        atomic_write_json(archive_path, current)
+                        report_failures.append({'source_message_ref': str(message.get('message_ref') or ''),
+                            'failed_recipient': failed_recipient, 'code': 'canonical_notice_coverage_pending'})
+                        continue
                     current["failure_notice"] = report
-                    current["failure_notice_state"] = "delivered"
+                    current["failure_notice_state"] = (
+                        'covered' if report.get('receipt_ref') else 'delivered')
                     current.pop("failure_notice_error", None)
                     current["updated_at"] = utc_now()
                     self._mail_history().settle_pending(

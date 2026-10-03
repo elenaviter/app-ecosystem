@@ -1,8 +1,63 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+from .errors import DomainError
+
+
+RETIREMENT_DELIVERY_SCHEMA = 'problem-board.retirement-delivery.v1'
+RETIREMENT_DELIVERY_PURPOSE = 'retired_worker_delivery'
+
+
+def retirement_control_member(
+    control: Mapping[str, Any], *, command_payload: Mapping[str, Any] | None = None,
+) -> dict[str, str] | None:
+    """Reduce a verified canonical control to metadata, never a caller identity.
+
+    A retained payload hash proves the complete reconstructed command even
+    after settlement cleared its body. A hash plus an arbitrary claimed mail
+    ref is NOT evidence. Person request/reply originals bind directly to the
+    canonical control ref, which survives settlement.
+    """
+    payload = dict(command_payload if command_payload is not None else control.get('payload') or {})
+    digest = str(control.get('payload_hash') or '')
+    if command_payload is not None or payload:
+        observed = hashlib.sha256(json.dumps(payload, ensure_ascii=True, sort_keys=True,
+                                            separators=(',', ':')).encode()).hexdigest()
+        if observed != digest:
+            raise DomainError('work_retirement_content_conflict',
+                              'The evidence does not match the immutable control payload.', status=409)
+    if is_terminal_system_notice({**control, 'payload': payload}):
+        return None
+    sender_kind = str(control.get('sender_kind') or '')
+    if sender_kind == 'worker':
+        sender_id = str(control.get('sender_worker_id') or '')
+    elif sender_kind in {'user', 'person'}:
+        sender_kind, sender_id = 'person', str(control.get('sender_principal_key') or '')
+        if not sender_id.startswith('user:'):
+            sender_id = ''
+    else:
+        raise DomainError('work_retirement_evidence_pending', 'No canonical original sender is bound.', status=409)
+    if not sender_id or len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest):
+        raise DomainError('work_retirement_evidence_pending', 'The original identity/hash is incomplete.', status=409)
+    mail = payload.get('mail') if isinstance(payload.get('mail'), Mapping) else {}
+    if control.get('kind') == 'mail':
+        source_ref = str(mail.get('source_message_ref') or '')
+    elif control.get('kind') in {'request', 'reply'}:
+        source_ref = str(control.get('command_ref') or '')
+    else:
+        source_ref = ''
+    if not source_ref:
+        raise DomainError('work_retirement_evidence_pending', 'The original canonical reference is not proven.', status=409)
+    return {
+        'source_message_ref': source_ref, 'project_ref': str(control.get('project_ref') or ''),
+        'recipient_worker_id': str(control.get('recipient_worker_id') or ''),
+        'original_hash': digest, 'control_ref': str(control.get('command_ref') or ''),
+        'sender_kind': sender_kind, 'sender_id': sender_id, 'evidence_source': 'server',
+    }
 
 
 def is_terminal_system_notice(message: Mapping[str, Any]) -> bool:
