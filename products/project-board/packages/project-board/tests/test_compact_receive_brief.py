@@ -245,3 +245,117 @@ def test_the_compact_view_is_materially_smaller_on_a_routed_item_with_attachment
     compact, full = _item_block(message)
     assert len(compact.encode()) < 0.8 * len(full.encode()), (len(compact.encode()), len(full.encode()))
     assert len(compact.splitlines()) < 0.5 * len(full.splitlines())
+
+
+# W472 ownership 4: since W474 a routed mail carries the command the server
+# admitted, as ``retirement_command``. Its ``mail`` fields repeat the message.
+
+
+def _routed(**mail_overrides):
+    """A routed mail exactly as the client stores it: header, payload and admitted copy."""
+    message = _message(kind="update", correlation_id="w455-procedure-review-and-adoption", reply_to="")
+    mail = {
+        "kind": message["kind"],
+        "subject": message["subject"],
+        "body": message["body"],
+        "correlation_id": message["correlation_id"],
+        "reply_to": "",
+        "source_message_ref": SOURCE_REF,
+        "work_ref": "",
+        "identity_ref": "",
+        "payload": {},
+    }
+    mail.update(mail_overrides)
+    message["payload"] = {**message["payload"], "retirement_command": {"mail": mail}}
+    return message
+
+
+def test_a_matching_admitted_copy_is_one_summary_line_in_receive():
+    message = _routed()
+    text = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert "retirement_command.mail." not in text
+    assert (
+        "  retirement_command = admitted copy of this message; matches its kind, subject, body, correlation_id, "
+        "reply_to, source_message_ref, work_ref, identity_ref, payload (full copy: pb worker lease-read or --format json)"
+    ) in text
+    # The handling ledger and every distinct ref stay.
+    for line in (f"message_ref: {MESSAGE_REF}", "correlation_id: w455-procedure-review-and-adoption",
+                 f"idempotency_key: {IDEMPOTENCY}", f"  command_ref = {COMMAND_REF}",
+                 f"  source_message_ref = {SOURCE_REF}", "settle: pb worker settle"):
+        assert line in text, line
+    assert "    Keep provenance.\n    Quote attachment commands." in text
+
+
+def test_lease_read_and_json_keep_the_whole_admitted_copy():
+    message = _routed()
+    full = render_envelope(_lease_read(message), worker_flags=FLAGS)
+    assert "  retirement_command.mail.subject = W472 design feedback" in full
+    assert f"  retirement_command.mail.source_message_ref = {SOURCE_REF}" in full
+    original = copy.deepcopy(message)
+    rendered = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert message == original, "rendering must not change the message"
+    assert json.loads(json.dumps(_receive(message)))["result"]["items"][0]["message"]["payload"]["retirement_command"] == (
+        original["payload"]["retirement_command"]
+    )
+    assert rendered != full
+
+
+@pytest.mark.parametrize("field, value", [
+    ("subject", "A different subject"),
+    ("body", "A different instruction that must stay visible."),
+    ("correlation_id", "another-thread"),
+    ("reply_to", "work:mail:20261003T100000Z:mail_9:earlier"),
+    ("source_message_ref", "work:mail:20261003T100000Z:mail_8:other-source"),
+    ("work_ref", "work:plan:node:20261001T000000Z:w999:unrelated"),
+    ("payload", {"task": {"instructions": "Unique task text", "attempt": 0, "dry_run": False}}),
+])
+def test_a_divergent_field_is_printed_in_full_beside_the_summary(field, value):
+    text = render_envelope(_receive(_routed(**{field: value})), worker_flags=FLAGS)
+    assert "  retirement_command.mail.(matching fields) = admitted copy of this message; matches its" in text
+    if isinstance(value, dict):
+        assert "  retirement_command.mail.payload.task.instructions = Unique task text" in text
+        assert "  retirement_command.mail.payload.task.attempt = 0" in text
+        assert "  retirement_command.mail.payload.task.dry_run = False" in text
+    else:
+        assert f"  retirement_command.mail.{field} = {value}" in text
+
+
+def test_an_unknown_field_or_shape_is_never_folded_away():
+    extra = render_envelope(_receive(_routed(attachments=[{"filename": "plan.md"}], priority="urgent")), worker_flags=FLAGS)
+    assert "  retirement_command.mail.priority = urgent" in extra
+    assert "retirement_command.mail.attachments" in extra
+    message = _routed()
+    message["payload"]["retirement_command"] = {"mail": message["payload"]["retirement_command"]["mail"], "note": "x"}
+    other_shape = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert "  retirement_command.mail.subject = W472 design feedback" in other_shape
+    assert "  retirement_command.note = x" in other_shape
+    not_a_mapping = _routed()
+    not_a_mapping["payload"]["retirement_command"] = {"mail": "opaque"}
+    assert "  retirement_command.mail = opaque" in render_envelope(_receive(not_a_mapping), worker_flags=FLAGS)
+
+
+def test_an_adapted_work_locator_matches_a_locator_the_message_shows():
+    versioned = WORK_REF + ":20261003T120000Z-abc"
+    message = _routed(work_ref=versioned, identity_ref=WORK_REF)
+    message["work_ref"] = versioned
+    message["payload"].update({"work_ref": WORK_REF, "identity_ref": WORK_REF})
+    text = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert "retirement_command.mail." not in text
+    assert f"work_ref: {versioned}" in text
+
+
+def test_an_uncorrelated_mail_matches_its_command_ref():
+    message = _routed(correlation_id="")
+    message["correlation_id"] = COMMAND_REF
+    text = render_envelope(_receive(message), worker_flags=FLAGS)
+    assert "retirement_command.mail." not in text
+
+
+def test_folding_the_admitted_copy_shrinks_a_routed_item():
+    # Measured on this fixture (2026-10-03): 9 copy lines become 1.
+    plain = render_envelope(_receive(_message(kind="update", correlation_id="w455-procedure-review-and-adoption",
+                                              reply_to="")), worker_flags=FLAGS)
+    routed = render_envelope(_receive(_routed()), worker_flags=FLAGS)
+    unfolded = render_envelope(_lease_read(_routed()), worker_flags=FLAGS)
+    assert routed.count("\n") == plain.count("\n") + 1
+    assert unfolded.count("retirement_command.mail.") == 9
