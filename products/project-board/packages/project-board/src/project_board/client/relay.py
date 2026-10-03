@@ -3251,7 +3251,12 @@ class ProblemBoardHostRelayAdapter:
                     counts["outbox_refused"] += 1
                     continue
             except DomainError as exc:
-                if exc.status >= 500:
+                retirement_pending = (
+                    kind == 'mail.reconciliation.publish'
+                    and payload.get('purpose') == 'retired_worker_delivery'
+                    and exc.code in {'work_retirement_generation_pending', 'work_retirement_evidence_pending'}
+                )
+                if exc.status >= 500 or retirement_pending:
                     await self._outbox_store(self.field.retry_outbox, finish=True)(
                         str(row.get("outbox_id") or ""),
                         relay_id=self.config.relay_id,
@@ -3276,7 +3281,8 @@ class ProblemBoardHostRelayAdapter:
                         project_id = (
                             parse_ref(project_ref).object_id if project_ref else ""
                         )
-                        failure_report = self.field.report_mail_delivery_failure(
+                        failure_report = await run_off_loop(
+                            self.field.report_mail_delivery_failure,
                             project_id,
                             receiver_worker_name=str(
                                 row.get("worker_name") or self.config.worker_name
@@ -3317,6 +3323,7 @@ class ProblemBoardHostRelayAdapter:
                                 "rejected field and replay the retained outbox "
                                 "delivery."
                             ),
+                            executor=self._store_thread(),
                         )
                         if failure_report.get('schema') == 'problem-board.retirement-delivery.v1' and failure_report.get('delivery_status') == 'pending':
                             await self._outbox_store(self.field.retry_outbox, finish=True)(

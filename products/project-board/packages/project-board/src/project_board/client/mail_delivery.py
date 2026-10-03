@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -11,24 +12,17 @@ from ..contract.errors import DomainError
 from .io import atomic_write_json, content_hash, exclusive_lock, read_json, utc_now
 
 
-def retirement_delivery_publication(
-    field: Any, *, project_ref: str, reporter_worker_name: str,
-    retired_worker_name: str, message: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Durably publish evidence, retaining originals until exact server coverage.
-
-    The original holder's history/outbox remains pending. A sent publication
-    alone is insufficient: only this original's queued/unavailable canonical
-    notice binding covers it. Restart and lost response reuse the same input
-    outbox key, while the server merges late evidence into its global claim.
-    """
+def _retirement_original_proof(message: Mapping[str, Any], retired_worker_name: str) -> tuple[str, dict[str, Any] | None, str]:
+    """Build exact private evidence, or name why a retained original is pending."""
     payload = dict(message.get('payload') or {})
     control_ref = str(payload.get('command_ref') or '')
     source_ref = str(payload.get('source_message_ref') or control_ref or message.get('message_ref') or '')
     proof: dict[str, Any] = {'source_message_ref': source_ref}
     if control_ref:
         proof['control_ref'] = control_ref
-        command = payload.get('retirement_command') or payload.get('command')
+        command = payload.get('retirement_command')
+        if not isinstance(command, Mapping):
+            command = payload.get('command')
         if isinstance(command, Mapping):
             proof['command_payload'] = dict(command)
         else:
@@ -42,6 +36,11 @@ def retirement_delivery_publication(
                 'reply_to': message.get('reply_to') or '', 'work_ref': payload.get('work_ref') or '',
                 'identity_ref': payload.get('identity_ref') or '',
             }}
+            if not payload.get('payload_hash') or content_hash(proof['command_payload']) != payload['payload_hash']:
+                # A lossy old envelope is incomplete proof, not evidence that
+                # the canonical original changed. Keep it local and visibly
+                # pending rather than sending a known false content conflict.
+                return source_ref, None, 'legacy_original_proof_incomplete'
     else:
         identity = dict(message.get('sender_identity') or {})
         proof['sender_worker_name'] = str(identity.get('worker_name') or message.get('sender') or '')
@@ -52,33 +51,77 @@ def retirement_delivery_publication(
             'correlation_id': message.get('correlation_id') or '', 'reply_to': message.get('reply_to') or '',
             'work_ref': message.get('work_ref') or '',
         }
-    if not source_ref or not project_ref:
+    return source_ref, proof, ''
+
+
+def retirement_delivery_publication(
+    field: Any, *, project_ref: str, reporter_worker_name: str,
+    retired_worker_name: str, message: Mapping[str, Any],
+    additional_messages: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Publish a bounded backlog together; retain originals until exact coverage.
+
+    A lost response/restart uses the same durable publication binding. Each
+    binding also hashes this original's proof, so a changed retained original
+    cannot borrow an earlier batch's coverage. A queued notice is not delivery.
+    """
+    source_ref, proof, reason = _retirement_original_proof(message, retired_worker_name)
+    if not source_ref or not project_ref or proof is None:
         return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending',
-                'reason': 'canonical_original_context_pending'}
+                'reason': reason or 'canonical_original_context_pending',
+                'guidance': 'Recover the complete admitted command; the original remains retained.'}
+    proofs = [proof]
+    # Stable input order and an encoded byte cap make each batch bounded.
+    # Invalid extra originals remain unbound and get their own diagnostic.
+    for other in additional_messages:
+        _, extra, _ = _retirement_original_proof(other, retired_worker_name)
+        if extra is None or extra in proofs:
+            continue
+        if len(proofs) >= 100 or len(json.dumps([*proofs, extra], ensure_ascii=True).encode()) > 900_000:
+            break
+        proofs.append(extra)
+    proofs.sort(key=lambda item: item['source_message_ref'])
     publication = {'schema': RETIREMENT_DELIVERY_SCHEMA, 'purpose': RETIREMENT_DELIVERY_PURPOSE,
-                   'retired_worker_name': retired_worker_name, 'members': [proof]}
+                   'retired_worker_name': retired_worker_name, 'members': proofs}
     digest = content_hash(publication)
     outbox_id = 'outbox_retirement_' + digest
     outbox = field._outbox
     with exclusive_lock(outbox.lock):
-        row = outbox.read(outbox_id, worker_name=reporter_worker_name, project_ref=project_ref)
+        binding = message.get('retirement_publication')
+        binding = binding if isinstance(binding, Mapping) else {}
+        bound_id = str(binding.get('outbox_id') or '')
+        if bound_id and binding.get('proof_hash') != content_hash(proof):
+            raise DomainError('field_retirement_publication_conflict', 'The retained original proof changed.', status=409)
+        row = outbox.read(bound_id or outbox_id, worker_name=reporter_worker_name, project_ref=project_ref)
         if row is None:
             row = {'schema': 'problem-board.service-outbox.v1', 'outbox_id': outbox_id,
                    'kind': 'mail.reconciliation.publish', 'worker_name': reporter_worker_name,
                    'project_ref': project_ref, 'content_hash': digest, 'payload': publication,
                    'state': 'pending', 'created_at': utc_now(), 'retry_count': 0, 'next_attempt_at': ''}
             outbox.write_pending(row)
-        elif row.get('content_hash') != digest:
+        elif not bound_id and row.get('content_hash') != digest:
             raise DomainError('field_retirement_publication_conflict', 'Immutable retirement evidence changed.', status=409)
+        else:
+            outbox_id = str(row['outbox_id'])
+    bindings = [{'source_message_ref': item['source_message_ref'], 'proof_hash': content_hash(item)} for item in proofs]
     result = dict(row.get('remote_result') or {})
-    for coverage in result.get('coverage') or []:
+    if row.get('state') == 'refused':
+        error = result.get('error') if isinstance(result.get('error'), Mapping) else {}
+        return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending', 'outbox_id': outbox_id,
+                'reason': 'canonical_publication_refused', 'error_code': str(error.get('code') or ''),
+                'proof_hash': content_hash(proof), 'publication_bindings': bindings,
+                'guidance': 'Inspect the private publication refusal; no original has been marked covered.'}
+    for coverage in (result.get('coverage') or []) if row.get('state') == 'sent' else []:
         if (isinstance(coverage, Mapping) and result.get('schema') == RETIREMENT_DELIVERY_SCHEMA
             and coverage.get('source_message_ref') == source_ref
             and coverage.get('notice_state') in {'queued', 'unavailable'} and coverage.get('receipt_ref')):
             return {**dict(coverage), 'schema': RETIREMENT_DELIVERY_SCHEMA,
-                    'delivery_status': coverage['notice_state'], 'outbox_id': outbox_id}
+                    'delivery_status': coverage['notice_state'], 'outbox_id': outbox_id,
+                    'proof_hash': content_hash(proof),
+                    'publication_bindings': bindings}
     return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending', 'outbox_id': outbox_id,
-            'reason': 'canonical_notice_coverage_pending'}
+            'reason': 'canonical_notice_coverage_pending', 'publication_bindings': bindings,
+            'proof_hash': content_hash(proof)}
 
 
 ACTIVE_MAILBOX_STATES = ("inbox", "leased")

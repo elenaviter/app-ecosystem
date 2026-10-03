@@ -45,6 +45,67 @@ def test_retirement_publication_is_durable_pending_until_exact_notice_coverage(t
     assert original['body'] == 'Retained original body'
 
 
+def test_legacy_routed_original_exposes_incomplete_proof_without_false_conflict(tmp_path):
+    from project_board.client.mail_delivery import retirement_delivery_publication
+    from project_board.client.outbox_store import OutboxStore
+    from project_board.client.io import content_hash
+    field = SimpleNamespace(control=tmp_path / 'control')
+    field._outbox = OutboxStore(field.control)
+    command = {'mail': {'kind': 'question', 'source_message_ref': 'work:mail:legacy',
+                       'subject': 'Private', 'body': 'Private body', 'payload': {},
+                       'correlation_id': 'thread', 'reply_to': 'work:mail:question',
+                       'attachments': [{'filename': 'original.txt', 'sha256': '0' * 64}]}}
+    original = {'message_ref': 'work:mail:local', 'kind': 'question', 'subject': 'Private',
+                'body': 'Private body', 'correlation_id': 'thread', 'reply_to': 'work:mail:question',
+                'payload': {'command_ref': 'work:control:legacy', 'source_message_ref': 'work:mail:legacy',
+                            'payload_hash': content_hash(command), 'payload': {}}}
+    result = retirement_delivery_publication(field, project_ref='work:project:alpha',
+        reporter_worker_name='codex-reporter', retired_worker_name='codex-retired', message=original)
+    assert result['delivery_status'] == 'pending'
+    assert result['reason'] == 'legacy_original_proof_incomplete'
+    assert 'Private' not in str(result)
+    assert list(field._outbox.in_flight('pending')) == []
+
+
+@pytest.mark.parametrize('code', ['work_retirement_generation_pending', 'work_retirement_evidence_pending'])
+def test_retirement_pending_admission_retries_same_evidence_without_refusal(code):
+    publication = {'schema': 'problem-board.retirement-delivery.v1',
+                   'purpose': 'retired_worker_delivery', 'retired_worker_name': 'codex-retired',
+                   'members': [{'source_message_ref': 'work:mail:retained-original'}]}
+
+    class Field:
+        def __init__(self):
+            self.claimed = False
+            self.retries = []
+
+        def pull_outbox(self, **kwargs):
+            if self.claimed:
+                return []
+            self.claimed = True
+            return [{'outbox_id': 'same-evidence', 'kind': 'mail.reconciliation.publish',
+                     'worker_name': 'codex-author', 'project_ref': 'work:project:alpha', 'payload': publication}]
+
+        def retry_outbox(self, outbox_id, **kwargs):
+            self.retries.append((outbox_id, kwargs['error_code']))
+
+        def settle_outbox(self, *_args, **_kwargs):
+            raise AssertionError('Pending evidence cannot be terminally refused or covered.')
+
+    class Client:
+        async def action(self, **kwargs):
+            assert kwargs['payload'] == publication
+            raise DomainError(code, 'Canonical evidence is not yet admitted.', status=409)
+
+    field = Field()
+    adapter = relay.ProblemBoardHostRelayAdapter.__new__(relay.ProblemBoardHostRelayAdapter)
+    adapter.config = SimpleNamespace(relay_id='synthetic-relay', worker_name='codex-author',
+                                     project_id='alpha', connection_hub_profile='synthetic-profile')
+    adapter.field, adapter.client, adapter._outbox_finishes = field, Client(), set()
+    counts = asyncio.run(adapter._flush_outbox_unlocked())
+    assert counts['outbox_retried'] == 1 and counts['outbox_refused'] == 0
+    assert field.retries == [('same-evidence', code)]
+
+
 def test_canonical_retirement_control_proof_survives_erased_payload_and_rejects_spoof():
     from project_board.contract.delivery_failures import retirement_control_member
     import hashlib

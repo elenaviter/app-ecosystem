@@ -235,6 +235,9 @@ def delivery_failure_target_lines(target: DeliveryFailureTarget) -> tuple[str, s
 
 
 __all__ = [
+    "RETIREMENT_DELIVERY_SCHEMA",
+    "RETIREMENT_DELIVERY_PURPOSE",
+    "retirement_control_member",
     "DeliveryFailureTarget",
     "delivery_failure_target_lines",
     "is_terminal_system_notice",

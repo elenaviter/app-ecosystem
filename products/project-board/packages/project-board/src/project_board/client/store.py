@@ -8723,6 +8723,13 @@ class SharedFieldStore:
         control_kind = bounded_text(
             control.get("kind"), field="kind", maximum=128, required=True
         )
+        retirement_command = payload
+        if control_kind in {'mail', 'request', 'reply'} and 'canonical_payload' in control:
+            canonical_payload = control.get('canonical_payload')
+            if (not isinstance(canonical_payload, Mapping)
+                or content_hash(canonical_payload) != control.get('canonical_payload_hash')):
+                raise DomainError('field_control_hash_invalid', 'The canonical admitted command proof is invalid.', status=409)
+            retirement_command = dict(canonical_payload)
         if not project_ref:
             if control_kind not in DIRECT_CONTROL_KINDS and control_kind != "mail":
                 raise DomainError(
@@ -8803,6 +8810,8 @@ class SharedFieldStore:
             "command": payload,
             "payload_hash": expected_hash,
         }
+        if control_kind in {'request', 'reply'} and retirement_command != payload:
+            message_payload['retirement_command'] = retirement_command
         correlation_id = command_ref
         reply_to = ""
         sender_identity = (
@@ -8881,7 +8890,7 @@ class SharedFieldStore:
                 "command_ref": command_ref,
                 # Retain already hash-verified admitted control evidence in the
                 # existing private original, not the retirement metadata ledger.
-                "retirement_command": dict(payload),
+                "retirement_command": retirement_command,
                 "source_message_ref": str(routed_mail.get("source_message_ref") or ""),
                 "payload": dict(routed_mail.get("payload") or {}),
                 "payload_hash": expected_hash,
@@ -9786,6 +9795,45 @@ class SharedFieldStore:
 
         failure_notices: list[dict[str, Any]] = []
         report_failures: list[dict[str, Any]] = []
+        retirement_pending_reasons: dict[str, int] = {}
+        # Admit the already-observed backlog together before the first summary
+        # is enqueued. Each private original retains its own immutable proof
+        # binding; later passes/restarts read that same bounded publication.
+        retirement_groups: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+        for path, message in moved:
+            failure = message.get('recipient_failure') or {}
+            if (failure.get('code') in {'retired_recipient', 'work_worker_retired', 'field_worker_retired'}
+                and not is_terminal_system_notice(message) and not message.get('retirement_publication')):
+                retirement_groups.setdefault(str(message.get('recipient') or ''), []).append((path, message))
+        for retired_name, originals in retirement_groups.items():
+            while originals:
+                first_path, first_message = originals[0]
+                try:
+                    batch = retirement_delivery_publication(self, project_ref=project_ref,
+                        reporter_worker_name=reporter, retired_worker_name=retired_name,
+                        message=first_message, additional_messages=[message for _, message in originals[1:100]])
+                except DomainError:
+                    # The per-original path below records the exact visible
+                    # refusal. One failed batch input cannot block other mail.
+                    originals = originals[1:]
+                    continue
+                bindings = {entry['source_message_ref']: entry for entry in batch.get('publication_bindings') or []}
+                remaining = []
+                for path, message in originals:
+                    payload = message.get('payload') or {}
+                    ref = str(payload.get('source_message_ref') or payload.get('command_ref') or message.get('message_ref') or '')
+                    binding = bindings.get(ref)
+                    if binding is None:
+                        if path != first_path:
+                            remaining.append((path, message))
+                        continue
+                    message['retirement_publication'] = {'outbox_id': batch['outbox_id'], 'proof_hash': binding['proof_hash']}
+                    with exclusive_lock(self._project_lock(clean_project)):
+                        current = read_json(path, required=False)
+                        if current:
+                            current['retirement_publication'] = message['retirement_publication']
+                            atomic_write_json(path, current)
+                originals = remaining
         seen_paths: set[Path] = set()
         for archive_path, message in moved:
             if archive_path in seen_paths:
@@ -9842,6 +9890,8 @@ class SharedFieldStore:
                         current["failure_notice_error"] = exc.to_dict()
                         current["updated_at"] = utc_now()
                         atomic_write_json(archive_path, current)
+                if failure.get('code') in {'retired_recipient', 'work_worker_retired', 'field_worker_retired'}:
+                    retirement_pending_reasons[exc.code] = retirement_pending_reasons.get(exc.code, 0) + 1
                 report_failures.append(
                     {
                         "source_message_ref": str(
@@ -9858,12 +9908,15 @@ class SharedFieldStore:
                 current = read_json(archive_path, required=False)
                 if current:
                     if report.get('schema') == 'problem-board.retirement-delivery.v1' and report.get('delivery_status') == 'pending':
+                        reason = str(report.get('error_code') or report.get('reason') or 'canonical_notice_coverage_pending')
+                        retirement_pending_reasons[reason] = retirement_pending_reasons.get(reason, 0) + 1
                         current['failure_notice_state'] = 'pending'
                         current['retirement_publication'] = report
                         current['updated_at'] = utc_now()
                         atomic_write_json(archive_path, current)
                         report_failures.append({'source_message_ref': str(message.get('message_ref') or ''),
-                            'failed_recipient': failed_recipient, 'code': 'canonical_notice_coverage_pending'})
+                            'failed_recipient': failed_recipient, 'code': reason,
+                            'reason': str(report.get('guidance') or 'Canonical retirement notice coverage remains pending.')})
                         continue
                     current["failure_notice"] = report
                     current["failure_notice_state"] = (
@@ -9942,6 +9995,10 @@ class SharedFieldStore:
             "failure_notices": len(failure_notices),
             "failure_notice_deliveries": failure_notices,
             "report_failures": report_failures,
+            # Count-only host diagnostic; unverified identities/bodies are not
+            # admitted to a server receipt or exposed in this summary.
+            "retirement_pending": {'original_count': sum(retirement_pending_reasons.values()),
+                                   'reasons': retirement_pending_reasons},
         }
 
     def record_journal_receipt(
