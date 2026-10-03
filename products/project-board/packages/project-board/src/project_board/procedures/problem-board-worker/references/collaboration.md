@@ -619,7 +619,11 @@ it, what you touched (Rule 3), and what you are waiting on.
   ownership version and your last checkpoint: never an idle wait, an invented
   role or a kept stale tree. When the next action is the coordinator's (a decision, a routing, an integration with no named merger), assign the item to the acting coordinator, unless you were told otherwise: `assignment.assign`, or
   `review.assign` for an item in Review, with a note on the item naming the
-  reason, the next action and the time, then mail it. A wait on the
+  reason, the next action and the time, then mail it. When the next action is the operator's (a test, a decision, an approval,
+  a choice of behaviour), assign the item to the operator yourself, without
+  waiting for the coordinator, with the exact steps and the expected result
+  on the item and a `decision` or `question` message naming it (Rule 11).
+  A wait on the
   coordinator that stays on you is hidden from it (operator, 2026-10-01: "if
   you wait for coordinator you assign it to it"). Why: an assignment's notice is sent once, so the
   board is the record; on 2026-10-01 an agent listed nine items in Review as
@@ -970,8 +974,10 @@ blockers with who decides each, and the handoff after each step. The default rou
 exact-source and test evidence, direct independent review, the named merger,
 installation and live verification where needed, then acceptance. The route
 may change as the work does. Each actor who finishes a step records its
-evidence and the next handoff on the item, and the next actor reads the
-route there, not in old mail. A missing technical detail never leaves the
+evidence and the next handoff on the item, and hands the item to the next
+actor the route names itself, the operator included (`assignment.assign`,
+`review.assign` or `work.assignee.set`), without waiting for the
+coordinator. The next actor reads the route there, not in old mail. A missing technical detail never leaves the
 route without an owner or waiting on an acknowledgement: the route names who
 finds it out.
 

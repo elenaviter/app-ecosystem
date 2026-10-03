@@ -23,7 +23,7 @@
         ],
         [
           "references/collaboration.md",
-          "Each actor who finishes a step records its evidence and the next handoff on the item, and the next actor reads the route there, not in old mail."
+          "Each actor who finishes a step records its evidence and the next handoff on the item, and hands the item to the next actor the route names itself, the operator included"
         ],
         [
           "references/collaboration.md",

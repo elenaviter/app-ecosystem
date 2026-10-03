@@ -190,3 +190,10 @@ def test_anything_waiting_on_the_operator_is_an_item_assigned_to_them() -> None:
     assert "Never leave an operator action only in an agent's terminal or only in mail between agents" in rule
     assert "anything that waits on the operator is first a work item assigned to them" in _words("SKILL.md")
     assert "The same holds for anything else that waits on the operator, from you or from a worker" in _words("references/coordinator.md")
+
+
+def test_each_actor_hands_on_along_the_route_including_to_the_operator() -> None:
+    """Operator, 2026-10-03: workers assign along the concluded route, the operator included."""
+    collaboration = _words("references/collaboration.md")
+    assert "hands the item to the next actor the route names itself, the operator included" in collaboration
+    assert "When the next action is the operator's (a test, a decision, an approval, a choice of behaviour), assign the item to the operator yourself, without waiting for the coordinator" in collaboration
