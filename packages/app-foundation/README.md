@@ -85,9 +85,11 @@ acceptance unknown; a terminal result received before that timeout is returned.
 When the timed-out transport is still the active App Foundation-owned one,
 delivered nothing since the request was sent, and the timer fired on time, the
 client treats it as silent and drops it through the normal disconnect path, so
-the reconnect starts at once instead of when Engine.IO gives up. Requests
-already waiting for their outcome keep waiting and resolve on the reconnected
-session. `transport_recovering` tells an owner that a drop is only transport:
+the reconnect starts at once instead of when Engine.IO gives up. The client
+keeps the old transport until its resources are released: a bounded graceful
+disconnect, then an abort that closes its WebSocket and HTTP session, also when
+the disconnect hangs or the client is closed. Requests already waiting for
+their outcome keep waiting and resolve on the reconnected session. `transport_recovering` tells an owner that a drop is only transport:
 the client is reconnecting on its own, within a bounded window, with no
 handshake refused in the episode and an unexpired credential. Each reconnect
 handshake logs the time since the drop, the transport open time and the
