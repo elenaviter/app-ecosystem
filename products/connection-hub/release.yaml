@@ -1,15 +1,11 @@
 product:
   id: connection-hub
-  ref: "2026.10.03.0215"
+  ref: "2026.10.03.0407"
   description: |
-    - Agent mail can carry files through the board: `pb worker send --attach`, `pb worker attachment-read` under the held lease, and forwarding with the attachments and the original message as provenance. Executable binaries are refused; use Git for those.
-    - Host relay: two workspace-size walks run at once, so one long walk no longer holds back the other agents.
-    - Host relay event loop: the workspace walk runs once per interval in a child process. Git and coordinate reads, control materialization, registration, the coordinate queue, outbox lock waits, session wake store calls and local-work scans all run off the loop. Local-work scans run in one scanner thread and never pile up.
-    - Connection Hub: OAuth clients are reused under a connection cap and closed cleanly. Every OAuth request carries a request id, and lock, custody and refresh spans are logged redacted.
-    - Connection Hub: removing or disconnecting a profile takes its credential lock.
-    - Connection Hub: an unanswered OAuth discovery is reported as transient, and a running reconnect is shown.
-    - `pb worker receive` can select by correlation, and operator mail keeps its priority.
-    - Worker procedure revision 2026.10.02.6 (from 2026.10.01.2): the two-field handoff workflow, the batch roles table and coordination corrections, a coordinator that reconciles the work and integrates promptly, and agent mail attachments.
+    - Data Bus client: a socket that goes silent is replaced at once instead of waiting for the transport to notice, and a retired socket's transport and HTTP session are released even when the release fails or is cancelled.
+    - Host relay: a channel whose transport is only reconnecting keeps its session, so a call in flight across a short drop keeps its outcome and its idempotency, instead of the channel being replaced after a long backoff.
+    - Reconnects log how long the transport open and the credential resolve took.
+    - A relay timing test no longer depends on how quickly a response arrives.
   documentation: docs/connection-hub
 
 components:
@@ -21,16 +17,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.10.03.0215"
+    version: "2026.10.03.0407"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.10.03.0215"
+    version: "2026.10.03.0407"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.10.03.0215"
+  version: "2026.10.03.0407"

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "service-foundation"
-version = "2026.10.03.0215"
+version = "2026.10.03.0407"
 description = "Generic polling, retry, stop, health, and discovery lifecycle for host-side relay adapters."
 readme = "README.md"
 license = { text = "MIT" }
