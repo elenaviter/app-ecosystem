@@ -511,6 +511,11 @@ class _Bucket:
         }
 
 
+def _consume_outcome(waiter: "asyncio.Future[Any]") -> None:
+    if not waiter.cancelled():
+        waiter.exception()
+
+
 class DiagnosticWriter:
     """Writes diagnostic lines in one daemon thread of its own, one at a time.
 
@@ -562,6 +567,10 @@ class DiagnosticWriter:
         }
         self.failure_classes: dict[str, int] = {}
         self.last_appended: tuple[str, int] | None = None
+        # Told once about each write whose outcome arrived after its caller
+        # stopped waiting: (key, appended). The accounting counts a bucket
+        # that definitely failed as lost there, exactly once.
+        self.on_late: Callable[[tuple[str, int], bool], None] | None = None
 
     def _run(self) -> None:
         while True:
@@ -607,14 +616,25 @@ class DiagnosticWriter:
         key = self._outstanding_key
         self._outstanding = None
         self._outstanding_key = None
-        if self._failed(future):
-            self.receipts["late_failed"] += 1
-        else:
+        appended = not self._failed(future)
+        if appended:
             self.receipts["late_appended"] += 1
             self.last_appended = key
+        else:
+            self.receipts["late_failed"] += 1
+        if self.on_late is not None and key is not None:
+            try:
+                self.on_late(key, appended)
+            except Exception:  # noqa: BLE001 - accounting never fails a write
+                pass
 
     async def write(self, key: tuple[str, int], line: str) -> str:
-        """``appended``, ``failed``, ``unknown`` (still running), ``dropped`` or ``busy``."""
+        """``appended``, ``failed``, ``unknown`` (still running), ``dropped`` or ``busy``.
+
+        The single in-flight slot is taken before the first suspension, so a
+        second caller sees ``busy``, and it stays taken when this caller is
+        cancelled while waiting: that write is reconciled once when it ends.
+        """
 
         import concurrent.futures
 
@@ -630,19 +650,24 @@ class DiagnosticWriter:
             self._ensure_thread()
             future = concurrent.futures.Future()
             self._jobs.put_nowait((future, line))
-        waiter = asyncio.wrap_future(future)
-        done, _ = await asyncio.wait({waiter}, timeout=self.timeout_seconds)
-        if waiter in done:
-            if self._failed(future):
-                self.receipts["failed"] += 1
-                return "failed"
-            self.receipts["appended"] += 1
-            self.last_appended = key
-            return "appended"
         self._outstanding = future
         self._outstanding_key = key
-        self.receipts["unknown_at_timeout"] += 1
-        return "unknown"
+        waiter = asyncio.wrap_future(future)
+        # Retrieve the wrapper's outcome whenever it comes, so its exception
+        # (whose text may name a path) never reaches the loop's handler.
+        waiter.add_done_callback(_consume_outcome)
+        done, _ = await asyncio.wait({waiter}, timeout=self.timeout_seconds)
+        if waiter not in done:
+            self.receipts["unknown_at_timeout"] += 1
+            return "unknown"
+        self._outstanding = None
+        self._outstanding_key = None
+        if self._failed(future):
+            self.receipts["failed"] += 1
+            return "failed"
+        self.receipts["appended"] += 1
+        self.last_appended = key
+        return "appended"
 
     def close(self) -> None:
         """Stop taking writes; never waits for one in flight (its outcome stays unknown)."""
@@ -693,6 +718,12 @@ class TurnAccounting:
         self._rate_window_bytes = 0
         self._announced = False
         self._shut_down = False
+        if writer is not None:
+            writer.on_late = self._late_receipt
+
+    def _late_receipt(self, key: tuple[str, int], appended: bool) -> None:
+        if not appended and key[0] == "bucket":
+            self.buckets_lost_unwritten += 1
 
     def _open_bucket(self) -> _Bucket:
         self._next_seq += 1
@@ -918,7 +949,12 @@ class TurnAccounting:
         return abandoned
 
     async def flush(self, *, max_writes: int = 8) -> dict[str, int]:
-        """Hand queued lines to the writer, one at a time, never waiting on a stuck one."""
+        """Hand queued lines to the writer, one at a time, never waiting on a stuck one.
+
+        A line leaves the queue when it is handed over, before the wait: if
+        this flush is cancelled while waiting, the line is the writer's
+        in-flight write and is reconciled once, never handed over twice.
+        """
 
         written = {"appended": 0, "failed": 0, "unknown": 0, "busy": 0, "dropped": 0}
         if self._writer is None:
@@ -926,19 +962,30 @@ class TurnAccounting:
         for _ in range(max(0, max_writes)):
             if not self._pending:
                 break
-            kind, seq, line, size = self._pending[0]
+            if self._writer.busy():
+                written["busy"] += 1
+                break
+            item = self._pending[0]
+            self._pop_pending()
+            kind, seq, line, _size = item
             receipt = await self._writer.write((kind, seq), line)
             written[receipt] += 1
-            if receipt in ("busy", "unknown"):
-                if receipt == "unknown":
-                    # The line is with the writer now; its outcome is reconciled later.
-                    self._pop_pending()
+            if receipt == "busy":
+                self._restore_pending(item)
                 break
             if receipt in ("failed", "dropped") and kind == "bucket":
                 # Not appended: this bucket's counts are lost, counted once here.
                 self.buckets_lost_unwritten += 1
-            self._pop_pending()
+            if receipt == "unknown":
+                break
         return written
+
+    def _restore_pending(self, item: tuple[str, int, str, int]) -> None:
+        kind, _seq, _line, size = item
+        self._pending.appendleft(item)
+        self._pending_bytes += size
+        if kind == "bucket":
+            self._pending_buckets += 1
 
     def _pop_pending(self) -> None:
         kind, _seq, _line, size = self._pending.popleft()

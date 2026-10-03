@@ -76,11 +76,12 @@ def test_lines_over_the_bound_are_dropped_counted_and_reported() -> None:
     time.sleep(0.05)  # the owner holds "hold" in the handler
     for index in range(20):
         log.warning("line %d", index)
-    assert owner.pending()[0] <= 5
-    assert owner.dropped_records == 15
+    # The record being written still counts: four more wait, sixteen drop.
+    assert owner.pending()[0] == 5
+    assert owner.dropped_records == 16
     handler.gate.set()
     assert owner.close(5.0)
-    assert any("relay log dropped records=15" in line for line in handler.lines)
+    assert any("relay log dropped records=16" in line for line in handler.lines)
 
 
 def test_a_diagnostic_receipt_succeeds_only_after_the_owner_wrote_and_flushed(tmp_path: Path) -> None:
@@ -170,7 +171,7 @@ def test_a_stuck_owner_never_holds_process_exit(tmp_path: Path) -> None:
         configure_relay_logging(Path({str(tmp_path / "relay.json")!r}), mirror_to_stderr=False)
         never = threading.Event()
         owner = relay_log_owner()
-        owner.handler.emit = lambda record: never.wait()
+        owner.handler.shouldRollover = lambda record: never.wait()  # a file system that never answers
         logging.getLogger("x").warning("stuck forever")
         logging.getLogger("x").warning("queued behind it")
         print("exiting")
@@ -191,11 +192,11 @@ def test_configured_relay_logging_writes_through_the_owner(tmp_path: Path) -> No
         configure_relay_logging(Path({str(tmp_path / "relay.json")!r}), mirror_to_stderr=False)
         seen = []
         owner = relay_log_owner()
-        original = owner.handler.emit
-        def emit(record):
+        original = owner.handler.shouldRollover
+        def should_rollover(record):
             seen.append(threading.current_thread().name)
-            original(record)
-        owner.handler.emit = emit
+            return original(record)
+        owner.handler.shouldRollover = should_rollover
         logging.getLogger("x").warning("through the owner")
         logging.shutdown()
         print(sorted(set(seen)))

@@ -146,7 +146,14 @@ RELAY_DIAGNOSTIC_LOGGER_NAME = "project_board.relay.diagnostics"
 
 
 class RelayLogOwner:
-    """The single writer of the relay's rotating log file."""
+    """The single writer of the relay's rotating log file.
+
+    Only this daemon thread touches the handler: it writes, rotates, reports
+    drops and finally closes it. A line keeps its place in the count and
+    byte bounds until its write has ended, so what waits plus what is being
+    written never exceeds them. A failed write is counted by error class; the
+    handler's ``handleError`` (which prints to stderr) is never used.
+    """
 
     def __init__(
         self,
@@ -166,10 +173,10 @@ class RelayLogOwner:
         self.dropped_records = 0
         self.dropped_bytes = 0
         self._reported_drops = (0, 0)
-        # A line the owner could not hand on (an error outside the handler's
-        # own handleError path). The owner counts it and keeps running: a
-        # dead owner would lose every later relay line without a trace.
+        # Lines the owner could not write, by error class; the owner keeps
+        # running (a dead owner would lose every later relay line).
         self.owner_errors = 0
+        self.owner_error_classes: dict[str, int] = {}
         self.enqueue_errors = 0
         self._closed = False
         _detach_from_logging_shutdown(handler)
@@ -182,6 +189,8 @@ class RelayLogOwner:
         return self._thread.ident
 
     def pending(self) -> tuple[int, int]:
+        """Lines waiting or being written, and their accounted bytes."""
+
         with self._lock:
             return self._pending_records, self._pending_bytes
 
@@ -228,43 +237,63 @@ class RelayLogOwner:
         while True:
             item = self._queue.get()
             if item is None:
+                self._close_handler()
                 return
             kind, payload, size, future = item
-            with self._lock:
-                self._pending_records -= 1
-                self._pending_bytes -= size
             try:
                 if kind == "record":
-                    # The existing handler contract for ordinary lines,
-                    # unchanged: a failure goes to the handler's handleError.
-                    self.handler.handle(payload)
+                    self._emit_strict(payload)
                 elif future.set_running_or_notify_cancel():
                     try:
-                        self._append(payload)
+                        self._emit_strict(self._diagnostic_record(payload))
                     except BaseException as exc:  # noqa: BLE001 - the receipt carries it
                         future.set_exception(exc)
                     else:
                         future.set_result(None)
-                self._report_drops()
-            except Exception:  # noqa: BLE001 - counted; the owner never dies of one line
+            except Exception as exc:  # noqa: BLE001 - counted by class, never printed
+                self._count_error(exc)
+            finally:
                 with self._lock:
-                    self.owner_errors += 1
+                    self._pending_records -= 1
+                    self._pending_bytes -= size
+            try:
+                self._report_drops()
+            except Exception as exc:  # noqa: BLE001 - counted by class, never printed
+                self._count_error(exc)
 
-    def _append(self, line: str) -> None:
-        handler = self.handler
-        record = logging.LogRecord(
+    def _count_error(self, exc: BaseException) -> None:
+        name = type(exc).__name__
+        if name not in {"OSError", "PermissionError", "ValueError", "RuntimeError", "UnicodeEncodeError"}:
+            name = "other"
+        with self._lock:
+            self.owner_errors += 1
+            self.owner_error_classes[name] = self.owner_error_classes.get(name, 0) + 1
+
+    @staticmethod
+    def _diagnostic_record(line: str) -> logging.LogRecord:
+        return logging.LogRecord(
             RELAY_DIAGNOSTIC_LOGGER_NAME, logging.INFO, __file__, 0, line, None, None
         )
-        if isinstance(handler, RotatingFileHandler):
-            if handler.shouldRollover(record):
+
+    def _emit_strict(self, record: logging.LogRecord) -> None:
+        """What ``RotatingFileHandler.emit`` does, raising instead of ``handleError``."""
+
+        handler = self.handler
+        if not isinstance(handler, logging.StreamHandler):
+            handler.emit(record)
+            return
+        handler.acquire()
+        try:
+            if isinstance(handler, RotatingFileHandler) and handler.shouldRollover(record):
                 handler.doRollover()
-            if handler.stream is None:
+            if handler.stream is None and isinstance(handler, logging.FileHandler):
                 handler.stream = handler._open()
-        stream = getattr(handler, "stream", None)
-        if stream is None:
-            raise RuntimeError("relay_log_not_open")
-        stream.write(handler.format(record) + getattr(handler, "terminator", "\n"))
-        stream.flush()
+            if handler.stream is None:
+                raise RuntimeError("relay_log_not_open")
+            handler.stream.write(handler.format(record) + handler.terminator)
+            handler.stream.flush()
+        finally:
+            handler.release()
 
     def _report_drops(self) -> None:
         with self._lock:
@@ -272,7 +301,7 @@ class RelayLogOwner:
             if drops == self._reported_drops:
                 return
             self._reported_drops = drops
-        self.handler.handle(
+        self._emit_strict(
             logging.LogRecord(
                 RELAY_LOGGER_NAME,
                 logging.WARNING,
@@ -284,23 +313,27 @@ class RelayLogOwner:
             )
         )
 
-    def close(self, wait_seconds: float = RELAY_LOG_CLOSE_WAIT_SECONDS) -> bool:
-        """Write what is queued, waiting at most ``wait_seconds``; True when the owner ended."""
-
-        with self._lock:
-            if self._closed:
-                return not self._thread.is_alive()
-            self._closed = True
-        self._queue.put(None)
-        self._thread.join(max(0.0, float(wait_seconds)))
-        if self._thread.is_alive():
-            return False
+    def _close_handler(self) -> None:
         try:
             self.handler.close()
-        except Exception:  # noqa: BLE001 - a failed final flush is counted, never raised into shutdown
-            with self._lock:
-                self.owner_errors += 1
-        return True
+        except Exception as exc:  # noqa: BLE001 - a failed final flush is counted, never raised
+            self._count_error(exc)
+
+    def close(self, wait_seconds: float = RELAY_LOG_CLOSE_WAIT_SECONDS) -> bool:
+        """Stop taking lines and let the owner write the rest and close the file.
+
+        The caller waits at most ``wait_seconds``; the owner itself closes the
+        handler, so no file I/O or handler lock is taken by the caller. True
+        when the owner has ended.
+        """
+
+        with self._lock:
+            already = self._closed
+            self._closed = True
+        if not already:
+            self._queue.put(None)
+        self._thread.join(max(0.0, float(wait_seconds)))
+        return not self._thread.is_alive()
 
 
 class RelayQueueHandler(QueueHandler):
