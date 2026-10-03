@@ -74,13 +74,15 @@ operation below declares which of them it needs.
 
 A worker needs `work:coordinate` only because a few operations it must have
 sit under it. For a worker the **ticked operations** are the real limit: tick
-these three, and beyond them only what the operator chooses to add.
+these, and beyond them only what the operator chooses to add.
 
 | operation | why a worker has it |
 | --- | --- |
 | `work.status.set` | It sets the status of the work it is doing. |
 | `plan.note.append` | It writes its findings onto the item it is assigned. Granted to every agent on 2026-09-23, after a worker with an open assignment was refused it and had to route its finding through the coordinator, which made the record depend on the coordinator being awake. |
 | `plan.item.update` | It corrects the wording of the item it works on. Granted to every agent on 2026-09-22, with `plan.notes.list`. |
+| `plan.item.delete` | It removes an unassigned leaf item it filed by mistake. Granted to every agent on 2026-10-03 (W490). |
+| `work.item.save` | It hands an item on, setting the next actor and the status in one save. Granted to every agent on 2026-10-03 (W490). |
 
 Two more sit under `work:coordinate` and are optional for a worker, by the
 operator's decision rather than by default: `plan.item.create`, when workers
@@ -89,7 +91,7 @@ workers. The operations table marks both.
 
 This list and the **worker** column of the operations table are the same
 statement written twice; when they drift, the grant-level row is the one
-people read first. A narrower permission that holds these three without the
+people read first. A narrower permission that holds these without the
 rest of `work:coordinate` is an open question.
 
 ## How to read the table
@@ -97,7 +99,8 @@ rest of `work:coordinate` is an open question.
 - **yes**: the actor needs it for its normal role.
 - **optional**: give it only when that actor is meant to take on this part.
 - **no**: the actor should not hold it. A worker does not hold operations that
-  remove, suspend or re-route other workers, or that close work. Directing
+  remove, suspend or re-route other workers. Deleting an unassigned leaf item
+  is a default worker operation (W490). Directing
   other workers with `control.enqueue` is optional.
 - The **permission** column is the service permission each operation declares
   in the app descriptor. On the Card screen these are the **Service
@@ -197,7 +200,8 @@ at consent", which sent the team to the catalog.
 | `project.people.card.update` | retired | no | no | no | Retired by H1: a person's Card is edited in Connection Hub. It answers everyone `work_control_card_edit_in_connection_hub` (410) and writes nothing; it stays in the catalog so an older client gets that answer instead of an unknown operation. | A project admin opens the person's Control Card from Team > People and edits it in Connection Hub, which asks the board only whether they are a project admin ([Cards](cards.md#the-rules)). |
 | `plan.item.update` | `work:coordinate` | yes | yes | yes | Update one plan item under its current revision. | Operator ruling 2026-09-22: every agent gets it, with `plan.notes.list`. A worker that cannot correct the wording of the item it works on has to ask the coordinator to type for it. A person needs it on their own project Card (both presets tick it; the owner always may). |
 | `work.status.set` | `work:coordinate` | yes | yes | yes | Set one work item's canonical status without changing its assignee. | Operator rulings, 2026-09-22 and 2026-09-29: status is set by whoever holds this, including the agent moving its own work to working; `item.assignee` remains the assignee for every status. |
-| `plan.item.delete` | `work:coordinate` | no | optional | yes | Delete one unassigned leaf item under its current revision. | A person needs it on their own project Card (both presets tick it; the owner always may). |
+| `work.item.save` | `work:coordinate` | yes | yes | yes | Save an item's status, assignee or both in one transaction under its current revision; each supplied field needs its own operation. | Operator ruling 2026-10-03 (W490): a default worker operation, so a hand-off moves status and assignee together. |
+| `plan.item.delete` | `work:coordinate` | yes | yes | yes | Delete one unassigned leaf item under its current revision. | Operator ruling 2026-10-03 (W490): a default worker operation. The board still refuses an assigned or non-leaf item. |
 | `plan.note.append` | `work:coordinate` | yes | yes | yes | Append one note and advance the item revision atomically. | Notes carry findings and rulings on the item. A person needs it on their own project Card (both presets tick it; the owner always may). |
 | `plan.notes.list` | `work:observe` | yes | yes | yes | Page the authoritative notes attached to one plan item. | Operator ruling 2026-09-22: every agent gets it. The notes carry the decisions on an item, and a route that points at them is useless to a worker that cannot read them. |
 | `project.plan.embedding_status` | `work:observe` | no | optional | optional | Read which plan items have missing or stale embeddings without model use or writes. |  |

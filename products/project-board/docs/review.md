@@ -267,8 +267,8 @@ their Telegram.
   (with nobody named) the coordinator that reviews by default. Anyone else is
   refused `work_review_not_reviewer`, naming the reviewer and the acting
   coordinator. A person is not limited by this rule.
-- **The default worker Card holds the review operations** and
-  `plan.item.create`, so a named reviewer records its own verdict and a
+- **The default worker Card holds the review operations**,
+  `plan.item.create`, `plan.item.delete` and `work.item.save`, so a named reviewer records its own verdict and a
   worker files items (Rule 14 of the worker procedure's collaboration page).
   An existing agent Card gets them at its next Refresh, once a project admin
   has ticked them on the project's Control Card.
