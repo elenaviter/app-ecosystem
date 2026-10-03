@@ -869,8 +869,8 @@ what the window says to the team.
 
 **Anything that waits on the operator is a work item assigned to them.**
 Whoever needs the operator, worker or coordinator alike, for a test, a
-decision, an approval or a choice, puts it on a work item whose assignee is
-the operator, so it appears in the operator's own lists:
+decision, an approval, a choice or an acceptance, puts it on a work item
+whose assignee is the operator, so it appears in the operator's own lists:
 
 - a finished change that needs their check: `pb worker report --reviewer
   operator` with `--merged` and `--deploy` (Rule 6), or `review.assign` with
@@ -879,8 +879,9 @@ the operator, so it appears in the operator's own lists:
   assignee to the operator (`work.assignee.set`), or file a small decision
   item assigned to them (Rule 14).
 
-The item says exactly what to do and what to expect: the steps, where, and
-the result that means it works. Then send a board message to `operator`
+The item says exactly what to do and what to expect: the steps, where, the
+result that means it works, and how to report the result (a review verdict
+on the item, or a reply to the message). Then send a board message to `operator`
 naming the item and the action, as `decision` or `question` so it also
 reaches their Telegram, saying "urgent" when it is. A question the message
 carries states:
@@ -895,7 +896,11 @@ routing, read the item back (`project.plan.item`) and check that the
 operator is its assignee: an action that is not in the operator's lists does
 not exist for them. Never leave an operator action only in an agent's
 terminal or only in mail between agents (operator, 2026-10-03: "if something
-waits for me i expect to see it in my assignments").
+waits for me i expect to see it in my assignments"). When the routing or the
+message is refused, never work around the permission: report the refused
+action, its code and who can clear it (the coordinator, or the operator for a
+Card) on the item and to the coordinator. Do not send the same unchanged
+request again; a reminder names what changed or the deadline that passed.
 
 A Claude Code worker session runs without an interactive prompt tool. It is
 started with `--disallowedTools AskUserQuestion` (first-run reference), so the

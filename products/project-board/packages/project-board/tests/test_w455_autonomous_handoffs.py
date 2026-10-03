@@ -246,3 +246,13 @@ def test_a_window_retries_only_available_workers() -> None:
     coordinator = _words("references/coordinator.md")
     assert "is asked once more with the deadline only when it is available now" in coordinator
     assert "A worker that has not answered is asked once more with the deadline. Running" not in coordinator
+
+
+def test_an_operator_request_says_how_to_report_respects_refusals_and_is_not_repeated() -> None:
+    """Root GO 13:24Z with the operator instruction: acceptance included, report path, permission caps, no duplicates."""
+    rule = _section("references/collaboration.md", "## Rule 11.")
+    assert "a test, a decision, an approval, a choice or an acceptance" in rule
+    assert "and how to report the result (a review verdict on the item, or a reply to the message)" in rule
+    assert "When the routing or the message is refused, never work around the permission" in rule
+    assert "report the refused action, its code and who can clear it" in rule
+    assert "Do not send the same unchanged request again" in rule
