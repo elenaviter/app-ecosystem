@@ -211,8 +211,13 @@ def test_the_skill_names_the_requirements_agents_keep_as_memories() -> None:
     """Operator, 2026-10-03: memories come from the skill, tagged with its revision; no self-written PB rules."""
     skill = _words("SKILL.md")
     assert "## Keep The Critical Requirements As Memories" in skill
-    assert "tagged `source: problem-board-worker <installed revision>`, and replace the whole set when the installed revision changes" in skill
-    assert "Do not save your own versions of Problem Board workflow rules" in skill
+    # Ops and Root, 14:27Z and 14:40Z: Codex has no persistent-memory writer, so the rule is per runtime.
+    assert "A runtime with a persistent memory facility (Claude Code's memory directory) saves each one below as one entry, tagged `source: problem-board-worker <installed revision>`" in skill
+    assert "and replaces the whole set when the installed revision changes" in skill
+    assert "A runtime with none (Codex) keeps them through this skill itself, which it loads in full once per installed-revision change; it writes no substitute file and claims no memory entries." in skill
+    assert "Adoption is `pb procedure verify` plus, by runtime, the tagged entries or the agent's confirmation that it loaded that revision." in skill
+    assert "save each one below as one entry in your runtime's persistent memory" not in skill
+    assert "In every runtime, do not save your own versions of Problem Board workflow rules" in skill
     assert "goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory" in skill
     section = skill[skill.index("## Keep The Critical Requirements As Memories"):skill.index("## Read pb Output")]
     for requirement in (
