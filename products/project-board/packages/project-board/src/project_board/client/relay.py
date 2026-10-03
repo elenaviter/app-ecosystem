@@ -3396,11 +3396,16 @@ class ProblemBoardHostRelayAdapter:
                 expected = {str(m.get('source_message_ref') or '') for m in payload.get('members') or []}
                 covered = {str(m.get('source_message_ref') or '') for m in remote.get('coverage') or []
                     if isinstance(m, Mapping) and m.get('notice_state') in {'queued', 'unavailable'} and m.get('receipt_ref')}
-                if remote.get('schema') != 'problem-board.retirement-delivery.v1' or not expected <= covered:
+                # A partial canonical response accounts for pending originals
+                # without covering them. Persist it so valid peers can settle
+                # locally and each pending original keeps its own reason.
+                pending_refs = remote.get('pending_refs')
+                pending = {ref for ref in pending_refs if isinstance(ref, str) and ref} if isinstance(pending_refs, list) else set()
+                if remote.get('schema') != 'problem-board.retirement-delivery.v1' or not expected <= covered | pending:
                     await self._outbox_store(self.field.retry_outbox, finish=True)(
                         str(row.get('outbox_id') or ''), relay_id=self.config.relay_id,
                         error_code='canonical_notice_coverage_pending',
-                        error_summary='The canonical receipt did not cover every exact original; retry the same evidence.')
+                        error_summary='The canonical response did not cover or explicitly retain every exact original; retry the same evidence.')
                     counts['outbox_retried'] += 1
                     continue
                 remote_result = remote

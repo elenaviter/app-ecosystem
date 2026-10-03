@@ -133,6 +133,101 @@ def test_unverifiable_author_copy_retains_distinct_pending_reason_and_original(t
 
 
 
+def _retirement_relay_batch(tmp_path, response):
+    from project_board.client.mail_delivery import retirement_delivery_publication
+
+    field = SharedFieldStore(tmp_path / "field")
+    field.initialize()
+    messages = [{"message_ref": f"work:mail:{ref}", "kind": "question", "subject": "Private",
+                 "body": f"Retain private {ref}", "sender": "codex-author"}
+                for ref in ("ordinary-0", "overlap", "ordinary-1")]
+    kwargs = dict(project_ref="work:project:alpha", reporter_worker_name="codex-author",
+                  retired_worker_name="codex-retired")
+    first = retirement_delivery_publication(field, **kwargs, message=messages[0], additional_messages=messages[1:])
+    bindings = {entry["source_message_ref"]: entry for entry in first["publication_bindings"]}
+    for message in messages:
+        message["retirement_publication"] = {
+            "outbox_id": first["outbox_id"], "proof_hash": bindings[message["message_ref"]]["proof_hash"]}
+
+    class Client:
+        def __init__(self):
+            self.calls = []
+
+        async def action(self, **call):
+            assert call["action"] == "mail.reconciliation.publish"
+            assert call["object_ref"] == kwargs["project_ref"]
+            assert {entry["source_message_ref"] for entry in call["payload"]["members"]} == set(bindings)
+            self.calls.append(call)
+            return response
+
+    adapter = relay.ProblemBoardHostRelayAdapter.__new__(relay.ProblemBoardHostRelayAdapter)
+    adapter.config = SimpleNamespace(relay_id="synthetic-relay", worker_name="codex-author",
+                                     project_id="alpha", connection_hub_profile="synthetic-profile")
+    adapter.field, adapter.client, adapter._outbox_finishes = field, Client(), set()
+    return adapter, field, messages, kwargs, first
+
+
+@pytest.mark.parametrize("notice_state", ["queued", "unavailable"])
+def test_retirement_relay_flush_accepts_mixed_coverage_and_exact_pending(tmp_path, notice_state):
+    from project_board.client.mail_delivery import retirement_delivery_publication
+
+    response = {
+        "schema": "problem-board.retirement-delivery.v1",
+        "coverage": [{"source_message_ref": f"work:mail:ordinary-{number}", "notice_state": notice_state,
+                      "receipt_ref": "work:mail_reconciliation:canonical"} for number in (0, 1)],
+        "pending_refs": ["work:mail:overlap"],
+        "pending": [{"source_message_ref": "work:mail:overlap",
+                     "reason": "canonical_server_member_exists_unverifiable_author_copy"}]}
+    adapter, field, messages, kwargs, first = _retirement_relay_batch(tmp_path, response)
+    counts = asyncio.run(adapter._flush_outbox_unlocked())
+    assert counts["outbox_sent"] == 1 and counts["outbox_retried"] == 0
+    row = field._outbox.read(first["outbox_id"], worker_name="codex-author", project_ref=kwargs["project_ref"])
+    assert row["state"] == "sent" and row["remote_result"] == response
+    assert "payload" not in row
+    assert list(field._outbox.in_flight("leased")) == []
+    for _ in range(2):
+        results = [retirement_delivery_publication(field, **kwargs, message=message) for message in messages]
+        assert [result["delivery_status"] for result in results] == [notice_state, "pending", notice_state]
+        assert results[1]["reason"] == "canonical_server_member_exists_unverifiable_author_copy"
+        assert "coverage" not in results[1]
+        assert all(result["outbox_id"] == first["outbox_id"] for result in results)
+        assert all("Private" not in str(result) for result in results)
+        replay = asyncio.run(adapter._flush_outbox_unlocked())
+        assert replay["outbox_sent"] == replay["outbox_retried"] == 0
+    assert len(adapter.client.calls) == 1
+    assert list(field._outbox.in_flight("pending")) == []
+    assert [message["body"] for message in messages] == [
+        "Retain private ordinary-0", "Retain private overlap", "Retain private ordinary-1"]
+
+
+@pytest.mark.parametrize("schema,pending_refs,notice_state,receipt_ref", [
+    ("problem-board.retirement-delivery.v1", [], "queued", "work:mail_reconciliation:canonical"),
+    ("problem-board.retirement-delivery.v1", ["work:mail:other"], "queued", "work:mail_reconciliation:canonical"),
+    ("problem-board.retirement-delivery.v1", "work:mail:overlap", "queued", "work:mail_reconciliation:canonical"),
+    ("wrong-schema", ["work:mail:overlap"], "queued", "work:mail_reconciliation:canonical"),
+    ("problem-board.retirement-delivery.v1", ["work:mail:overlap"], "pending", "work:mail_reconciliation:canonical"),
+    ("problem-board.retirement-delivery.v1", ["work:mail:overlap"], "queued", ""),
+])
+def test_retirement_relay_flush_retries_unaccounted_originals(
+        tmp_path, schema, pending_refs, notice_state, receipt_ref):
+    from project_board.client.mail_delivery import retirement_delivery_publication
+
+    response = {"schema": schema, "pending_refs": pending_refs,
+        "pending": [{"source_message_ref": "work:mail:overlap",
+                     "reason": "canonical_server_member_exists_unverifiable_author_copy"}],
+        "coverage": [{"source_message_ref": f"work:mail:ordinary-{number}", "notice_state": notice_state,
+                      "receipt_ref": receipt_ref} for number in (0, 1)]}
+    adapter, field, messages, kwargs, first = _retirement_relay_batch(tmp_path, response)
+    counts = asyncio.run(adapter._flush_outbox_unlocked())
+    assert counts["outbox_sent"] == counts["outbox_refused"] == 0 and counts["outbox_retried"] == 1
+    row = field._outbox.read(first["outbox_id"], worker_name="codex-author", project_ref=kwargs["project_ref"])
+    assert row["state"] == "pending" and row["payload"]["purpose"] == "retired_worker_delivery"
+    assert row["last_error_code"] == "canonical_notice_coverage_pending"
+    assert "remote_result" not in row
+    assert all(retirement_delivery_publication(field, **kwargs, message=message)["delivery_status"] == "pending"
+               for message in messages)
+
+
 def test_retirement_mixed_batch_marks_only_exact_unverifiable_original_pending(tmp_path):
     from project_board.client.mail_delivery import retirement_delivery_publication
     from project_board.client.outbox_store import OutboxStore
