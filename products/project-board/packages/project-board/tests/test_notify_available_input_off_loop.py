@@ -129,6 +129,41 @@ def test_a_held_second_mail_read_leaves_the_loop_and_a_peer_wake_running(tmp_pat
     assert sorted(pushed) == sorted([slow.worker_name, peer.worker_name])
 
 
+def test_a_non_codex_channel_held_in_its_second_read_leaves_the_loop_free(tmp_path, monkeypatch):
+    # The second read is unconditional: the quota read returns at once for a
+    # healthy or non-Codex channel, and the read still follows it.
+    from project_board.client import host_config
+    from project_board.contract.worker_identity import WorkerSessionIdentity
+    from relay_helpers import make_host
+    from test_w456_notify_off_loop import _register
+
+    host, codex_identity, _codex = make_host(tmp_path)
+    claude_identity = WorkerSessionIdentity.create("claude-code", "22222222-2222-4222-8222-222222222222")
+    host_config.enroll_worker_channel(
+        host.path, identity=claude_identity, profile="problem-board-claude-two", authorized=True
+    )
+    host = host_config.HostRelayConfig.load(host.path)
+    field = SharedFieldStore(host.field_root)
+    field.initialize(field_id="w476-non-codex")
+    _register(field, claude_identity, 2)
+    _register(field, codex_identity, 1)
+    slow, peer = host.worker(claude_identity), host.worker(codex_identity)
+    peer_expected = field.pending_worker_mail_refs(peer.worker_name)
+    gate = SecondReadGate(monkeypatch, slow.worker_name)
+    pushed: list[str] = []
+    supervisor = _with_session_stubs(make_supervisor(host), pushed)
+
+    peer_delivery, peer_seconds, still_held, gap_while_held, _slow_delivery = _run_held(
+        host, slow, peer, gate, supervisor
+    )
+
+    assert gate.on_loop == [], f"wake-tail store calls ran on the event loop: {gate.on_loop}"
+    assert still_held
+    assert peer_seconds < PEER_LIMIT_SECONDS
+    assert gap_while_held < MAX_LOOP_GAP_SECONDS, f"the event loop stalled {gap_while_held:.2f}s on the second read"
+    _assert_wake_carries_the_mail(field, peer, peer_delivery, peer_expected)
+
+
 def test_a_wake_cancelled_during_the_held_second_read_keeps_its_channel_and_pushes_nothing(tmp_path, monkeypatch):
     # Same rule as the first read (W456): the cancelled wake keeps its
     # channel until the read in flight ends, then pushes and records nothing.
