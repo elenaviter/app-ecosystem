@@ -291,7 +291,12 @@ def test_every_file_names_the_same_actors_for_push_and_host_actions() -> None:
             "coordinator fast-forwards the shared checkouts to it before any runtime action",
             "brings that machine's checkouts to the pushed integration ref before any runtime action",
             "the coordinator pushes `main` after merges",
+            "After the merge the coordinator names the merged ref on the item",
+            "Only the coordinator deploys.",
         ):
             assert stale not in text, (name, stale)
+    # CodeSpark return, 13:40Z: the merger records the merged ref; the installer deploys.
+    assert "After the merge the merger names the merged ref on the item and hands it to the next actor the route names; the coordinator tracks it (Rule 16)." in collaboration
+    assert "Only the installer the route names deploys (the coordinator when none is named;" in _words("references/test-window.md")
     # A runtime action never depends on a checkout being fast-forwarded first.
     assert "a runtime action loads the exact ref it releases, never a checkout" in collaboration

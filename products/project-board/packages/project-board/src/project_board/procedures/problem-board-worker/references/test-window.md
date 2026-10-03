@@ -54,7 +54,8 @@ that keeps acting on the running system changes what the requester observes.
    releases. Answering mail is fine.
 6. Wait for the coordinator to say the window has closed, then continue.
 
-Only the coordinator deploys. In a freeze it starts once every affected
+Only the installer the route names deploys (the coordinator when none is
+named; [collaboration](collaboration.md) Rule 2). In a freeze it starts once every affected
 worker that is available has reported paused. For a worker that is
 unavailable, the coordinator first establishes from evidence that it has no
 operation in flight the freeze would conflict with (its tree clean at its

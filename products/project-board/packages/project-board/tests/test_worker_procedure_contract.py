@@ -815,7 +815,7 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "A worker answers the announcement with the same three conditions" in coordinator
     assert "targets `bundle:<id>` and `procedure:<package>@<revision>`" in coordinator
     assert "Read this when the coordinator announces a runtime action or relays a test window" in _words(window)
-    assert "Only the coordinator deploys" in window
+    assert "Only the installer the route names deploys (the coordinator when none is named;" in window
     assert "Read this when starting or resuming a Claude Code worker" in wake
 
 

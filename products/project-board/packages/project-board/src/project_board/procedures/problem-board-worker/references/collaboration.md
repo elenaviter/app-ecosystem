@@ -466,7 +466,8 @@ is a verification. One that stops at printing JSON is a report.
    wrapped like its neighbours, so the count is honest. The reviewer diffs
    the skill for facts that left, not only for lines that arrived.
 
-After the merge the coordinator names the merged ref on the item. A runtime
+After the merge the merger names the merged ref on the item and hands it to
+the next actor the route names; the coordinator tracks it (Rule 16). A runtime
 action releases that ref, never a working tree (see
 `problem-board-worker/references/runtime-actions.md`).
 
