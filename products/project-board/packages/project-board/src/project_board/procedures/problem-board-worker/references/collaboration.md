@@ -561,7 +561,7 @@ it, what you touched (Rule 3), and what you are waiting on.
   qualified teammate is available, or the review stays blocked, name the
   acting coordinator's stable worker name in `--reviewer`: the item then
   lands on the coordinator, who reviews it or routes it on. Sending work for
-  review must never leave it on you (operator, 2026-10-01 and 2026-10-03),
+  review must never leave it on you: route it as you ask (Rule 16),
   and you never schedule your own acceptance. When an item you completed is still
   assigned to you in Review, the review is not routed: route it as above,
   and do not explain it as a state (W446, W449). The operator is named only once the work is integrated:
@@ -1021,25 +1021,29 @@ was worth.
 
 ## Rule 16. Every task has a living route, and each actor knows its next step
 
-Every task carries, on its item, a route from assignment to acceptance that
-every participant can read: the deliverable and its scope, the acceptance,
+Every task carries, on its item, a route from planning to acceptance that
+every participant can read, kept whole through every reprioritization: the deliverable and its scope, the acceptance,
 the current actor and its next action, where reports go, the independent
 reviewer (or how the author selects one, and the fallback), the named
 merger, the installer and verifier where the task needs them, the current
 blockers with who decides each, and the handoff after each step. The default route is: analysis and implementation,
 exact-source and test evidence, direct independent review, the named merger,
 installation and live verification where needed, then acceptance. The route
-may change as the work does. Each actor who finishes a step records its
-evidence and the next handoff on the item, and hands the item to the next
-actor the route names itself, the operator included (`assignment.assign`,
-`review.assign` or `work.assignee.set`), without waiting for the
-coordinator. The next actor reads the route there, not in old mail. A missing technical detail never leaves the
+may change as the work does. The item's assignee always shows the actual actor,
+and its route the actual step. Each actor who finishes a step records its evidence
+and the next handoff on the item, and hands the item to the next actor the
+route names itself, the operator included (`assignment.assign`,
+`review.assign` or `work.assignee.set`, and the status when it changes), in
+the same act as asking them and without waiting for the coordinator: a mail
+moves nothing. The next actor reads the route there, not in old mail; whoever holds an item
+whose route is missing, or no longer fits after a reprioritization or a
+reassignment, completes the route on the item at once. A missing technical detail never leaves the
 route without an owner or waiting on an acknowledgement: the route names who
 finds it out.
 
 | Role | Responsible for |
 |---|---|
-| Coordinator | Tracking assignments, actual progress and live availability where they decide something; every route's current actor and next action; readable instructions that are consistent, with superseded ones marked; handing off a work owner who cannot act, by a reassignment from its checkpoint (Rule 8); the batch roles table; the decisions in point 2. Nothing below transfers this. |
+| Coordinator | Tracking assignments, actual progress and live availability where they decide something; seeing that every route names its current actor and next action, which each holder keeps; readable instructions that are consistent, with superseded ones marked; handing off a work owner who cannot act, by a reassignment from its checkpoint (Rule 8); the batch roles table; the decisions in point 2. Nothing below transfers this. |
 | Author | Starting at once; one consolidated clarification; implementing within the bound scope; exact-source and test evidence; arranging its review and replacing a reviewer who cannot act (Rule 6); a visible next action and checkpoint; a checkpoint and a notice before a known absence (Rule 8). |
 | Reviewer | Verifying the exact changed source and proportionate test evidence; a verdict at the exact head; handing the item to the named merger (Rule 6). |
 | Merger | Merging an exact head with an independent PASS and the named gates without another routine acknowledgement, reusing unchanged evidence, proving the merged tree (Rule 5); handing on to the installer or verifier. |

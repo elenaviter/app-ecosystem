@@ -262,7 +262,7 @@ The `begin_work` reaction, in order:
    An item already in Review without the submission marker remains reviewable;
    leaving and re-entering Review requires both statements.
 5. Report `completed` with `pb worker report` against the exact
-   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names the qualified teammate who took the review after you asked one or two who are available now; only when none is available, name the acting coordinator's stable worker name, so the review lands on it and not on you (operator, 2026-10-01 and 2026-10-03; collaboration Rules 6 and 16).
+   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names the qualified teammate who took the review after you asked one or two who are available now; only when none is available, name the acting coordinator's stable worker name, so the review lands on it and not on you. Report it as you ask for the review: a mail moves nothing (collaboration Rule 16).
 
 `working` and `blocked` are progress reports; `completed` and `refused` are
 terminal. State plus `source_event_ref` identifies one immutable report: an

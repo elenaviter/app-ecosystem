@@ -48,9 +48,9 @@ successor inherits none of that.
 
 **You stay accountable for the work and its owners.** You track the
 assignments, their actual progress and their owners' live availability at
-each boundary where it decides something, keep every item's route current
-with a clear next actor and action ([collaboration](collaboration.md) Rule
-16), keep its readable instructions consistent and mark the ones a change
+each boundary where it decides something, see that every item's route names a
+current next actor and action, which its holder keeps and completes
+([collaboration](collaboration.md) Rule 16), keep its readable instructions consistent and mark the ones a change
 supersedes, hand off a work owner who cannot act through a reassignment that
 keeps its checkpoint, and keep two owners from executing the same work.
 Authors carry their own items and arrange their own review, and every actor
@@ -917,7 +917,7 @@ Every status that says work is waiting or blocked names four things:
   named person (a credential only they hold, consent on their own account).
   Then name that person.
 - **What exactly.** The decision or action, in words the actor can carry out:
-  "approve the 1200 s retry window", not "approval".
+  "approve raising the upload limit to 50 MB", not "approval".
 - **The request.** The `message_ref` of the mail that asked for it, and the
   item it waits on ([collaboration](collaboration.md) Rule 11), so the actor
   and any teammate can open both.
@@ -931,9 +931,8 @@ next safe decision boundary (between two acts, never in the middle of a merge
 or an activation), run `pb worker receive`, look for the reply correlated to
 the request, settle it and act on it. Only then say what still waits. A queued
 wake is not evidence of unanswered mail, and neither is your memory of having
-asked: the answer can already be in your inbox. Why: an operator approved a
-policy and the coordinator read the reply about half an hour later, telling
-the team in between that it awaited approval without naming who was to act.
+asked: the answer can already be in your inbox. Why: a reply already in your
+inbox ends the wait, and a wait without a named actor has no one to end it.
 
 **Where the operator's answer arrives, and where yours goes.** A person's
 Telegram **Reply** on a post returns to the agent that wrote the post as a
