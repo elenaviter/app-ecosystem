@@ -197,3 +197,22 @@ def test_each_actor_hands_on_along_the_route_including_to_the_operator() -> None
     collaboration = _words("references/collaboration.md")
     assert "hands the item to the next actor the route names itself, the operator included" in collaboration
     assert "When the next action is the operator's (a test, a decision, an approval, a choice of behaviour), assign the item to the operator yourself, without waiting for the coordinator" in collaboration
+
+
+def test_the_skill_names_the_requirements_agents_keep_as_memories() -> None:
+    """Operator, 2026-10-03: memories come from the skill, tagged with its revision; no self-written PB rules."""
+    skill = _words("SKILL.md")
+    assert "## Keep The Critical Requirements As Memories" in skill
+    assert "tagged `source: problem-board-worker <installed revision>`, and replace the whole set when the installed revision changes" in skill
+    assert "Do not save your own versions of Problem Board workflow rules" in skill
+    assert "goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory" in skill
+    section = skill[skill.index("## Keep The Critical Requirements As Memories"):skill.index("## Read pb Output")]
+    for requirement in (
+        "Anything that waits on the operator is a work item assigned to them",
+        "Every task's route on its item names the next actor",
+        "Work others wait on is handed off, never parked",
+        "names its exact head, tree and evidence",
+        "quoted verbatim with its reference",
+        "Never print, export or pass a credential",
+    ):
+        assert requirement in section, requirement

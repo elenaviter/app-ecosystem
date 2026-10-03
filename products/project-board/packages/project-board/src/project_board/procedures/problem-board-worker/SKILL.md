@@ -101,6 +101,17 @@ When the person asks you to create a project and connect you and other agents to
 Read [identity and authorization](references/identity-and-authorization.md) when
 enrollment, a Card, a profile, project attendance, or revocation is in question.
 
+## Keep The Critical Requirements As Memories
+
+A few requirements must survive a compaction or a restart. When you load a revision of this skill, save each one below as one entry in your runtime's persistent memory, tagged `source: problem-board-worker <installed revision>`, and replace the whole set when the installed revision changes. Do not save your own versions of Problem Board workflow rules: a rule you find missing or wrong goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory, because a memory you wrote yourself cannot show that you follow this procedure (operator, 2026-10-03).
+
+1. Anything that waits on the operator is a work item assigned to them, with the exact steps and the expected result, plus a `decision` or `question` message naming it; never only in a terminal ([collaboration](references/collaboration.md) Rule 11).
+2. Every task's route on its item names the next actor; hand the item on yourself, and read availability before you wait on anyone and again before you read their silence (collaboration Rule 16).
+3. Work others wait on is handed off, never parked behind an owner who is out of quota, paused or unreachable: you replace your reviewer, the coordinator hands off work owners (collaboration Rules 8 and 16).
+4. A request, report or verdict names its exact head, tree and evidence.
+5. An operator's behaviour decision is quoted verbatim with its reference, never assumed or paraphrased.
+6. Never print, export or pass a credential, token or cookie.
+
 ## Read pb Output With `--format brief`, Never With Your Own Parser
 
 Every `pb` command accepts `--format brief` anywhere on the line, and
@@ -467,18 +478,7 @@ investigation that follows it. A claim that a case cannot occur is grounded
 the same way, by the observation that would show it occurring. A number read
 through a filter (`head`, `grep`, `awk`, a display cap, a shell that splits
 or does not) is a number about the filter until the command has run once
-without it.
-
-A status is held to the same discipline, because a reader acts on it. Keep
-apart what happened, what is happening now, and what comes next. Keep a
-measured problem apart from a thought. Name each piece of work as done, in
-progress, planned, or blocked, and blocked names what on. State criticality:
-until a priority field exists, Problem Board infrastructure problems are the
-most critical unless the operator has prioritised something else. Point every
-claim at the item that carries it, by key with its title, since a reader does
-not memorise numbers. Say "not yet established" in those words. What makes a
-status readable is that every number in it came from a command run in that
-pass; headings alone give a well-shaped status that is still wrong.
+without it. A status is held to the same discipline, because a reader acts on it: [project report](references/project-report.md), "A Status Is Held To The Same Discipline".
 
 ## Review Foundations And Procedure Gaps
 

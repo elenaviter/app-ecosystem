@@ -743,13 +743,17 @@ def test_operator_runtime_and_conduct_rules() -> None:
     assert "State the mechanism, not a category" in words
     assert "say what you do not know and what would settle it" in words
     # A status is held to the grounding discipline (operator, 2026-09-19).
+    # It moved to the project report reference to make room in the skill (W455, 2026-10-03).
     assert "A status is held to the same discipline" in words
-    assert "Keep apart what happened, what is happening now, and what comes next" in words
-    assert "Keep a measured problem apart from a thought" in words
-    assert "done, in progress, planned, or blocked, and blocked names what on" in words
-    assert "Problem Board infrastructure problems are the most critical unless the operator has prioritised something else" in words
-    assert "by key with its title" in words
-    assert "every number in it came from a command run in that pass" in words
+    assert '[project report](references/project-report.md), "A Status Is Held To The Same Discipline"' in words
+    report = _words(_read("references/project-report.md"))
+    assert "## A Status Is Held To The Same Discipline" in report
+    assert "Keep apart what happened, what is happening now, and what comes next" in report
+    assert "Keep a measured problem apart from a thought" in report
+    assert "done, in progress, planned, or blocked, and blocked names what on" in report
+    assert "Problem Board infrastructure problems are the most critical unless the operator has prioritised something else" in report
+    assert "by key with its title" in report
+    assert "every number in it came from a command run in that pass" in report
     assert "Coordination does not waive this duty" in words
     assert "re-read the complete package" in words
     # The capture does not wait for the operator to ask (2026-09-20).
