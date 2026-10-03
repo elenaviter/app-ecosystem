@@ -23,9 +23,10 @@ later on the project's Control Card). The four concepts behind them are in
   loads (a platform refresh loads the platform and the packages it stages, an
   app reload its app), the ref it releases (`releases`). The commit each ref
   names is fetched onto the runtime's machine and loaded; never whatever a
-  working tree holds at that moment. Before it, the coordinator integrates the
-  commits to go live onto that ref and pushes it ([coordinator](coordinator.md),
-  Reload, refresh, restart, step 1).
+  working tree holds at that moment. Before it, the merger the item's route names
+  (the coordinator when none is named) integrates the commits to go live onto
+  that ref and pushes it ([coordinator](coordinator.md), Reload, refresh,
+  restart, step 1; [collaboration](collaboration.md) Rule 2).
 - **Its result names what loaded:** each repository, its ref, and the commit
   the ref named when it loaded. A result that names another commit is a failed action.
 - **Only who the action names triggers it**, from the runtime's host.
@@ -50,7 +51,7 @@ the wrong one reports a fix as live that has never executed.
 | A released Problem Board host client | `pb source use-release --expect-version <version>` builds a new release environment, resolves that version's complete dependency graph, smokes its `pb --version` and imports, atomically activates it, and verifies the restarted relay | upgrading a permanent bootstrap environment, which leaves the launcher and relay on a different dependency set |
 | A committed Problem Board client under development | `pb source use-code` with the App Ecosystem repository path, ref, and full approved commit exports all four first-party packages, resolves them together inside the release environment, smokes it, atomically activates it, and accepts only the restarted relay's matching startup record | independent installs, an editable install, a live-checkout launcher, or selecting only one repository or the relay |
 | The already selected Problem Board relay source | `pb relay-service restart`. A relay restart is host-local and reloads the recorded source without advancing it | a runtime action such as a reload; a restart cannot select a newer checkout or package version |
-| The worker procedure package inside `project-board` | `pb procedure install`, run by the coordinator on the host after the selected release or code commit carries the new revision | editing package source, which installed sessions never read |
+| The worker procedure package inside `project-board` | `pb procedure install`, run on each host by the installer the item's route names (otherwise the coordinator on that host, or its elected integrator; [collaboration](collaboration.md) Rule 2) after the selected release or code commit carries the new revision | editing package source, which installed sessions never read |
 
 Copying a file into a container and restarting a container are not actions
 this team has: a container-local patch is invisible to everyone, vanishes
@@ -227,8 +228,9 @@ deleted. The source checkout remains a build input for future reviewed
 
 Each machine runs one relay, and it carries only that machine's channels. A
 relay restart is host-local. The agents on that host agree first. The
-coordinator on that host restarts it, and on a host without a coordinator the
-agents there pick one of themselves to do it. Agents on other hosts are not
+installer the route names for that host restarts it; when none is named, the
+coordinator on that host, or on a host without one its elected integrator
+([collaboration](collaboration.md) Rule 2). Agents on other hosts are not
 affected and need not agree. `pb worker list` lists the workers on your host,
 which are the agents who must agree.
 
@@ -241,8 +243,13 @@ it from that selection.
 To agree: announce what you restart and why with a shared-write entry of kind
 `relay_restart` whose target names the host (for example `host:development-one`,
 summary "I am restarting the relay: <why>"), and mail each agent on that host.
-Collect their ready: a worker in the middle of a call through the relay says
-wait, because the restart interrupts it. The restart reloads the recorded
+Collect an explicit ready from each of them that is available and active: a
+worker in the middle of a call through the relay says wait, because the
+restart interrupts it. Silence is not ready. A worker that is unavailable is
+recorded as pending with its reason, and the restarter first establishes
+from the relay's evidence whether it has a call in flight through this relay:
+one in flight holds the restart, none lets it proceed. Its absence proves
+neither ([collaboration](collaboration.md) Rule 10). The restart reloads the recorded
 source, so nothing in a worker's own worktree is a reason to wait. Then
 restart, report the result, and clear the entry.
 

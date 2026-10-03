@@ -79,3 +79,16 @@ partial answer that does not say so reads as a complete one.
 id says the machine wrote your intent down, and only the service's answer says
 what happened. Say "published" when the result says `published: true`, and at
 no other time.
+
+## A Status Is Held To The Same Discipline
+
+A status is held to the same discipline, because a reader acts on it. Keep
+apart what happened, what is happening now, and what comes next. Keep a
+measured problem apart from a thought. Name each piece of work as done, in
+progress, planned, or blocked, and blocked names what on. State criticality:
+until a priority field exists, Problem Board infrastructure problems are the
+most critical unless the operator has prioritised something else. Point every
+claim at the item that carries it, by key with its title, since a reader does
+not memorise numbers. Say "not yet established" in those words. What makes a
+status readable is that every number in it came from a command run in that
+pass; headings alone give a well-shaped status that is still wrong.

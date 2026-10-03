@@ -383,9 +383,10 @@ end-to-end delivery claim.
 
 Old input is answered with the current state. Compare each item's creation time
 with now. When the item, its assignment or an operator ruling has moved on
-since it was written, act on the current state, settle the old item naming
-what superseded it, and neither restart superseded work nor repeat a reply or
-side effect already given. Why a message arrived late (a queued wake, a
+since it was written, act on the current state, read against the item's
+current route and description and the exact evidence, settle the old item
+naming what superseded it, and neither restart superseded or completed work,
+rerun unchanged checks, nor repeat a reply or side effect already given. Why a message arrived late (a queued wake, a
 transport fault) is a separate finding: report it with the wake's provenance
 and do not assume a cause. Why: on 2026-10-01 a request written at 12:18Z
 reached its reader at 14:39Z and was answered as if new (W455).

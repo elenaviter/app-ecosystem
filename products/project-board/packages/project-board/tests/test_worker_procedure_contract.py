@@ -367,7 +367,7 @@ def test_the_first_poll_s_adopted_practices_are_rule_text() -> None:
     assert "marks an overdue estimate apart from a blocked state" in collaboration
     # P12, P13, P14
     assert "Rule 8. Handoff is an ownership decision, not a note" in collaboration
-    assert "the coordinator decides: wait for the reset, or reassign" in collaboration
+    assert "coordinator decides: wait only when the owner's return fits the next decision time of the work that depends on it, otherwise reassign from the last checkpoint" in collaboration
     assert "the predecessor cannot report or mutate under the old version" in collaboration
     assert "Rule 9. What is published is safe to publish" in collaboration
     assert "observed files in flight are tracked paths only" in collaboration
@@ -648,7 +648,7 @@ def test_repository_sharing_rules() -> None:
     assert "work/<wN>-<short-slug>" in skill
     assert "push it yourself" in words
     assert "Commit each coherent piece as you finish it" in words
-    assert "The coordinator, or a merger it names on the item, merges after approval and pushes the integration ref" in words
+    assert "The merger the item's route names (a permitted non-author), or the coordinator when none is named, merges after approval and pushes the integration ref, with no further acknowledgement" in words
     assert "Deploying stays the operator's" in words
     assert "A branch is closed by its merge, a later push is a new change request" in words
     assert "Publish your intent before the first edit" in words
@@ -727,7 +727,7 @@ def test_operator_runtime_and_conduct_rules() -> None:
     assert "question blocked decision delivery_failed progress reply update result" in words
     assert "work_mail_kind_invalid" in skill
     assert "decided and proven by the coordinator and executed by the delegates it names" in words
-    assert "A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves" in words
+    assert "A relay restart is host-local: the agents on that host agree, then the installer the route names for that host restarts it, else the coordinator on that host or its elected integrator (collaboration Rule 2)" in skill
     assert "A container-local patch is not an action this team has" in words
     assert "(references/runtime-actions.md)" in skill and "(references/test-window.md)" in skill
     assert "(references/coordinator.md)" in skill
@@ -743,13 +743,17 @@ def test_operator_runtime_and_conduct_rules() -> None:
     assert "State the mechanism, not a category" in words
     assert "say what you do not know and what would settle it" in words
     # A status is held to the grounding discipline (operator, 2026-09-19).
+    # It moved to the project report reference to make room in the skill (W455, 2026-10-03).
     assert "A status is held to the same discipline" in words
-    assert "Keep apart what happened, what is happening now, and what comes next" in words
-    assert "Keep a measured problem apart from a thought" in words
-    assert "done, in progress, planned, or blocked, and blocked names what on" in words
-    assert "Problem Board infrastructure problems are the most critical unless the operator has prioritised something else" in words
-    assert "by key with its title" in words
-    assert "every number in it came from a command run in that pass" in words
+    assert '[project report](references/project-report.md), "A Status Is Held To The Same Discipline"' in words
+    report = _words(_read("references/project-report.md"))
+    assert "## A Status Is Held To The Same Discipline" in report
+    assert "Keep apart what happened, what is happening now, and what comes next" in report
+    assert "Keep a measured problem apart from a thought" in report
+    assert "done, in progress, planned, or blocked, and blocked names what on" in report
+    assert "Problem Board infrastructure problems are the most critical unless the operator has prioritised something else" in report
+    assert "by key with its title" in report
+    assert "every number in it came from a command run in that pass" in report
     assert "Coordination does not waive this duty" in words
     assert "re-read the complete package" in words
     # The capture does not wait for the operator to ask (2026-09-20).
@@ -789,7 +793,7 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "the same filesystem tree the action will stage" in coordinator
     assert "the approved candidate is meant to include the worker's in-flight commit" in coordinator
     assert "the runtime action would interrupt or conflict with the worker's current" in coordinator
-    assert "Collect one `ready` or `hold` from every attending worker" in coordinator
+    assert "Collect one explicit `ready` or `hold` from every attending worker the action affects and that is available now; silence is not `ready`" in coordinator
     assert "neither is the guarantee" in coordinator
     assert "A bundle reload returns before the widget build finishes" in _words(profile)
     assert "Verify the deployed artifact, never the commit" in coordinator
@@ -811,7 +815,7 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "A worker answers the announcement with the same three conditions" in coordinator
     assert "targets `bundle:<id>` and `procedure:<package>@<revision>`" in coordinator
     assert "Read this when the coordinator announces a runtime action or relays a test window" in _words(window)
-    assert "Only the coordinator deploys" in window
+    assert "Only the installer the route names deploys" in window
     assert "Read this when starting or resuming a Claude Code worker" in wake
 
 
@@ -832,7 +836,7 @@ def test_a_release_waits_only_on_a_real_hold_and_a_freeze_is_named() -> None:
     assert "a commit of yours that is not yet integrated onto the released ref" in window
     assert "the action would interrupt or conflict with a local or runtime operation you are running" in window
     assert "asks for a global test freeze by that name, and then every attending worker stops" in window
-    assert "In a freeze it starts once every worker has reported paused" in window
+    assert "In a freeze it starts once every affected worker that is available has reported paused" in window
     assert "Answering mail is fine" in window
     assert "the deploy lands in the middle of the next change" not in window
     assert "only once every worker has reported clean" not in window
@@ -1043,11 +1047,11 @@ def test_operator_input_goes_through_the_board_not_a_terminal_prompt() -> None:
     # telegram." The skill points at the rule, the collaboration reference
     # carries it, and first-run names the launch flag.
     skill = _words(_read("SKILL.md"))
-    assert "Ask for their input this way, never in a terminal prompt (collaboration Rule 11)" in skill
+    assert "Ask for their input this way, never in a terminal prompt: anything that waits on the operator is first a work item assigned to them" in skill
     collaboration = _words(_read("references/collaboration.md"))
     assert "Rule 11. The operator is asked on the board, and on Telegram when it is urgent" in collaboration
-    assert "send it as mail to `operator` in the project conversation" in collaboration
-    assert "send it as `question`, `decision` or `blocked`" in collaboration
+    assert "send a board message to `operator` naming the item and the action, as `decision` or `question` so it also reaches their Telegram" in collaboration
+    assert "saying \"urgent\" when it is" in collaboration
     first_run = _words(_read("references/first-run.md"))
     # The official start command carries the flag (operator, 2026-09-26).
     assert "--disallowedTools AskUserQuestion" in first_run
@@ -1087,7 +1091,7 @@ def test_coordinator_rebalances_work_when_a_worker_runs_short_on_tokens() -> Non
     assert "Route portable work, including review, research and planning" in coordinator
     assert "to another host or an independent quota pool first" in coordinator
     assert "the reset is not soon enough for the work, replan before exhaustion" in coordinator
-    assert "If the work can safely wait for an imminent reset, wait instead of churning ownership" in coordinator
+    assert "Wait for a reset instead of moving ownership only when it comes before the next decision time of the work that depends on it" in coordinator
     assert "Do not build a scheduler or assign token scores" in coordinator
     assert "these three questions are the whole rule" in coordinator
     assert "acts without waiting to be asked" in coordinator
@@ -1368,7 +1372,8 @@ def test_the_coordinator_role_is_handed_over_with_its_note_and_addressed_as_a_ro
     assert "presses **Make worker** on you" in coordinator
     assert "A successor that must run a runtime window has to be able to deploy: an agent on the host that runs the runtime" in coordinator
     collaboration = _words(_read("references/collaboration.md"))
-    assert "Rule 8 covers work items. The coordinator role itself moves by" in collaboration
+    assert "Rule 8 covers work items. The fence is on the implementation assignment" in collaboration
+    assert "Only the coordinator reissues that assignment. The coordinator role itself moves by" in collaboration
     skill = _words(_read("SKILL.md"))
     assert "Mail for whoever coordinates goes to `--recipient coordinator`" in skill
 
@@ -1729,7 +1734,7 @@ def test_a_review_is_routed_in_the_turn_it_arrives():
     # 2026-09-26: W15 waited in Review for hours with the coordinator as default
     # reviewer while its last check needed the operator's browser.
     coordinator = " ".join(_read("references/coordinator.md").split())
-    assert "Route a review in the turn it arrives.**" in coordinator
+    assert "**Route the reviews an author could not place (W326), in the turn they arrive.**" in coordinator
     assert "board mail of kind `decision`, so it reaches their Telegram" in coordinator
     assert "whenever `review.look_at` or `review.could_not_verify` needs a person's browser or account" in coordinator
     assert "tell the operator at once with a notifying kind (`blocked`)" in coordinator
@@ -1924,7 +1929,7 @@ def test_the_merger_retargets_a_stacked_change_request_and_proves_the_merged_tre
     assert "Before merging a change request whose base is not the integration branch, retarget it to `main` (`gh pr edit <number> --base main`), or merge it only after its base has merged and it has been retargeted." in merge
     assert "Never merge a stacked change request into its base branch after that base landed" in merge
     assert "When approved heads are behind `main`, the merger may test the exact merged tree instead of asking for a rebase" in merge
-    assert "run both repositories' suites on that tree (gate 3)" in merge
+    assert "run each affected repository's suites on that tree (gate 3)" in merge
     assert "After merging, prove `main`'s tree equals the tested tree." in merge
     assert "git rev-parse origin/main^{tree}" in merge
     collaboration = " ".join(_read("references/collaboration.md").split())
@@ -2085,7 +2090,7 @@ def test_the_coordinator_reconciles_an_overdue_worker_before_rerouting() -> None
     # W403 acceptance 4: the check covers unstarted work, quota and blockers.
     assert "or an assignment or a review has no reported start" in coordinator
     assert "its info line and its current usage with the reset time" in coordinator
-    assert "A worker out of quota or restricted is rerouted or waited for with that reason, not woken again" in coordinator
+    assert "A worker out of quota, paused or restricted is not woken again: work others wait on is reassigned from its checkpoint" in coordinator
     # Assignee and status are independent edits (operator, via codex-main 2026-09-29 22:00Z).
     assert "To hand returned work to someone else, change its assignee: that one edit notifies the new assignee and makes the item theirs" in coordinator
     assert "Assignee and status are independent edits in either order, and neither needs a review command first" in coordinator
@@ -2352,8 +2357,8 @@ def test_the_coordinator_procedure_carries_the_w449_poll_result() -> None:
     assert "you never schedule your own acceptance" in collaboration
     # Review return at 0e28848f (claude-app@e-home): without a specific reviewer the
     # completion names the acting coordinator, so it never stays on its author.
-    assert "With no specific reviewer, name the acting coordinator's stable worker name in `--reviewer`" in collaboration
-    assert "with no specific reviewer, name the acting coordinator's stable worker name, so the review lands on it and not on you" in skill
+    assert "Only when no qualified teammate is available, or the review stays blocked, name the acting coordinator's stable worker name in `--reviewer`" in collaboration
+    assert "only when none is available, name the acting coordinator's stable worker name, so the review lands on it and not on you" in skill
     assert "else the coordinator does (collaboration Rule 6)" not in skill
     # A14: reconcile assignments and ask when one is unclear.
     assert "**Reconcile your assignments, act on each, and ask when one is unclear.**" in collaboration
@@ -2438,7 +2443,7 @@ def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
     assert "Holding an operation is not authority over every item" in identity
     # Review return at 1c5e2979 (claude-app): a wait on the coordinator is assigned to it;
     # a missing permission never hides ownership in mail; today vs target for review.assign.
-    assert "When the next action is the coordinator's (a decision, a routing, an integration), assign the item to the acting coordinator" in collaboration
+    assert "When the next action is the coordinator's (a decision, a routing, an integration with no named merger), assign the item to the acting coordinator" in collaboration
     assert "if you wait for coordinator you assign it to it" in collaboration
     assert "A missing permission is never a reason to hide ownership in mail" in collaboration
     assert "otherwise mail the coordinator (kind `decision`) naming the item and the gates, and it routes the item in its turn" not in collaboration
@@ -2449,7 +2454,7 @@ def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
     # Root, 14:44Z: old queued input is answered with the current state, not replayed.
     delivery = _words(_read("references/delivery-and-recovery.md"))
     assert "## Old input" in _read("references/delivery-and-recovery.md")
-    assert "neither restart superseded work nor repeat a reply or side effect already given" in delivery
+    assert "neither restart superseded or completed work, rerun unchanged checks, nor repeat a reply or side effect already given" in delivery
     assert 'Old input is answered with the current state ([delivery and recovery](references/delivery-and-recovery.md), "Old input")' in skill
     # Operator, 14:41Z: trees are not a buffer.
     workspace = _words(_read("references/project-workspace.md"))
@@ -2476,7 +2481,7 @@ def test_the_w455_amendment_carries_the_batch_table_and_the_seven_corrections() 
     for column in ("| Agent and machine |", "| Item and phase |", "| Capacity |", "| State |", "| Next action or handoff |", "| Blocker |", "| Checkpoint |"):
         assert column in coordinator
     assert "one of requested, queued, READY, START, done, verified" in coordinator
-    assert "Keep the full table on the batch's work item and a compact one" in coordinator
+    assert "Keep the full table on the batch's work item, where the project's files point for its current status, and a compact one" in coordinator
     # 1. The coordinator decides and proves; named delegates execute.
     assert "you own the decisions and the proof, and named delegates do the mechanics" in coordinator
     assert "Reuse an independent reviewer's or gate's evidence on the exact source instead of rerunning unchanged suites" in coordinator
@@ -2581,15 +2586,15 @@ def test_the_coordinator_reconciles_the_work_and_integrates_promptly() -> None:
     # Prompt integration after an independent PASS, a permitted merger, one cut per payload.
     assert "**Integrate promptly after an independent PASS.**" in coordinator
     assert "a tree equal to the gated tree reuses the gate's evidence" in coordinator
-    assert "name on the item a permitted merger" in coordinator
+    assert "The item's route and the batch's roles table name the merger, a permitted agent whose Git access allows it and who did not author the change" in coordinator
     assert "after the author confirms the head is frozen" in coordinator
     assert "Cut a revision only for a changed procedure payload" in coordinator
     # One home for merge authority: collaboration and the skill agree with Merge step 7.
     collaboration = _words(_read("references/collaboration.md"))
-    assert "**The coordinator, or a merger it names on the item, merges after approval**" in collaboration
-    assert "The coordinator, or the merger it names on the item, merges a change request when all of these hold" in collaboration
+    assert "**The merger the item's route names, or the coordinator when none is named, merges after approval**" in collaboration
+    assert "The merger the item's route names (Rule 16), or the coordinator when none is named, merges a change request when all of these hold" in collaboration
     assert "The coordinator merges after approval." not in collaboration
-    assert "or a merger it names on the item, merges after approval and pushes the integration ref" in _words(_read("SKILL.md"))
+    assert "or the coordinator when none is named, merges after approval and pushes the integration ref" in _words(_read("SKILL.md"))
     # Reader prose added here uses no semicolon inside a sentence.
     assert "named delegates. A turn limit" in coordinator
     assert "or none; when you clear it" not in coordinator

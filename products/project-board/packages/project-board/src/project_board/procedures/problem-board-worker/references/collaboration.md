@@ -101,8 +101,10 @@ Rules of the shape:
   that still exists is its author's to remove, asked first (Rule 2, branch
   ownership).
 - **Nobody edits the shared checkout any more**, not even to land: a merge
-  lands on the integration ref, and the coordinator fast-forwards the shared
-  checkout to it before any runtime action (step 6 of round 1). The landing
+  lands on the integration ref, and a runtime action loads the exact ref it
+  releases, never a checkout ([coordinator](coordinator.md), Reload, refresh,
+  restart, step 1). Keeping a shared checkout current for reading is that
+  machine's integrator's housekeeping, not a step before a runtime action. The landing
   steps in the worker skill remain for a machine that has no coordinator and
   no integrator yet.
 - **A worktree cannot check out a branch another tree holds.** The shared
@@ -165,7 +167,8 @@ exchanged as a change request against the integration ref.
   from what (round 2, finding five), and a carve needed a release of
   another repository's package that no order had named (finding four).
 - **The integration ref is the pushed `main`.** Operator ruling 2026-09-22
-  20:36Z: the coordinator pushes `main` after merges, audited each time
+  20:36Z: the merger the item's route names (the coordinator when none is
+  named) pushes `main` after merges (Rule 16), audited each time
   (names of the people and organizations we work with, the deployment host, co-author trailers), and deploying
   stays the operator's. A change request is expected to be reviewable only
   once the integration ref it targets is pushed: a reviewer reading 28 files
@@ -177,12 +180,15 @@ exchanged as a change request against the integration ref.
   machine where no coordinator runs, the agents there elect one of themselves
   once as that machine's integrator, and the coordinator records who it is,
   per machine. Where a coordinator runs on the machine, it is the integrator.
-  The integrator brings that machine's checkouts to the pushed integration
-  ref before any runtime action there (the fast-forward in step 6), and runs
-  the host-local actions the runtime-actions reference gives to "the agents
-  on that host" (relay restart, procedure install). On a project with no
-  coordinator at all, the elected integrator also pushes the integration ref
-  after merges, and the project record names it.
+  The integrator keeps that machine's shared checkouts current for reading.
+  **Who runs a host-local action** (a relay restart, a source selection, a
+  procedure install) on a machine: the installer the item's route names for
+  that host (Rule 16); when the route names none, the coordinator on that
+  host; on a host without one, its elected integrator. Who pushes the
+  integration ref: the merger the route names; when it names none, the
+  coordinator, or on a project with no coordinator the elected integrator,
+  whom the project record names. Every other passage that names one of these
+  actors for these actions follows this order.
 - **Change request:** open it against the integration ref (`main` today) when
   the branch is ready for review, and put its link on the item and in the
   report. On GitHub a change request is a pull request. The board speaks of a
@@ -211,8 +217,9 @@ exchanged as a change request against the integration ref.
   the coordinator to make such an item operator-final (W414, 2026-09-30).
   [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
   owns the rule.
-- **The coordinator, or a merger it names on the item, merges after
-  approval** ([coordinator](coordinator.md), Merge, step 7). Nobody merges
+- **The merger the item's route names, or the coordinator when none is
+  named, merges after approval**, with no further acknowledgement
+  ([coordinator](coordinator.md), Merge, step 7). Nobody merges
   their own change request. A merge advances the integration ref, from which runtimes release.
 - **A change across several repositories** links every change request to the
   one item, states the merge order, and they merge together.
@@ -308,8 +315,8 @@ this twice on 2026-09-22 and both times the work kept moving.
 
 ## Rule 5. The merge gate
 
-The coordinator, or the merger it names on the item, merges a change request
-when all of these hold, and refuses
+The merger the item's route names (Rule 16), or the coordinator when none
+is named, merges a change request when all of these hold, and refuses
 it naming the one that does not. A gate names what a reader does to satisfy
 it, with a pointer to the means, or it is not a gate yet: gate 3's merger
 clause and finding ten's stamp rule were both written without the thing that
@@ -384,15 +391,19 @@ is a verification. One that stops at printing JSON is a report.
    a pipeline's. Why: on 2026-09-23 a chain read `grep`'s status over a
    failing pytest and pushed 4a8f487b as green (round 2, finding twelve).
    The merger's counterpart: a reported count is a claim about evidence, so
-   the merger runs the suites on the exact head before merging. The command,
+   the merger relies on the independent reviewer's counts at that exact head
+   and runs the suites itself for what changed since that run (a new head, a
+   moved base, a merged tree, another environment), never again only because
+   the merge passed to another person ([coordinator](coordinator.md), Merge,
+   step 7). The command,
    its interpreter and the source overlays it needs are written once, in the
    application's `procedures/testing.md`, section Run The Package Suite. Do
    not rediscover them: a bare interpreter or the relay's fails on imports
    that read like regressions and are not. That section keeps checkout
    variables, not machine paths, so it reads the same on every host: fill
    them from your own machine. A placeholder is not a missing value.
-   The second counterpart, for reviewer and merger alike: compare your count
-   with the author's and ask about the difference. A skipped test names its
+   The second counterpart, for the reviewer and for a merger that ran a
+   suite: compare your count with the author's and ask about the difference. A skipped test names its
    missing input, and a suite that skips what the change touches is green
    about everything except the thing under review. Why: on 2026-09-23 the
    merger's 663 against the author's 667 at 0518f213 were the four PostgreSQL
@@ -455,7 +466,8 @@ is a verification. One that stops at printing JSON is a report.
    wrapped like its neighbours, so the count is honest. The reviewer diffs
    the skill for facts that left, not only for lines that arrived.
 
-After the merge the coordinator names the merged ref on the item. A runtime
+After the merge the merger names the merged ref on the item and hands it to
+the next actor the route names; the coordinator tracks it (Rule 16). A runtime
 action releases that ref, never a working tree (see
 `problem-board-worker/references/runtime-actions.md`).
 
@@ -537,16 +549,22 @@ it, what you touched (Rule 3), and what you are waiting on.
   anyone. Earlier implementers and reviewers stay in the item's history. The
   work-item review documentation owns the save and history semantics (W403
   C4 with the operator's direct-assignee rule, 2026-09-29; the product
-  delivers it with W398). Name the reviewer on the completed
-  report with `--reviewer <stable worker name>` or `--reviewer operator`.
-  With no specific reviewer, name the acting coordinator's stable worker
-  name in `--reviewer`: the item then lands on the coordinator, who reviews
-  it or routes it on (`review.assign`). Sending work for review must never
-  leave it on you (operator, 2026-10-01). You may propose a qualified
-  reviewer in the summary; you never schedule your own acceptance. When an
-  item you completed is still assigned to you in Review, the review is not
-  routed: tell the coordinator, naming the item, and do not explain it as a
-  state (W446, W449). The operator is named only once the work is integrated:
+  delivers it with W398). Arrange the review yourself: ask one or two
+  qualified independent teammates who are available now (Rule 16) and name
+  the one who takes it on the completed report with `--reviewer <stable
+  worker name>`. A qualified reviewer is not the author, holds the Card
+  operations the review needs and can judge the code and repositories the
+  change touches; the project's roles table names who is permitted where.
+  When that reviewer cannot act before its verdict, ask the next qualified
+  available teammate and route the review to it (`review.assign`), with a
+  note on the item; no coordinator acknowledgement is needed. Only when no
+  qualified teammate is available, or the review stays blocked, name the
+  acting coordinator's stable worker name in `--reviewer`: the item then
+  lands on the coordinator, who reviews it or routes it on. Sending work for
+  review must never leave it on you (operator, 2026-10-01 and 2026-10-03),
+  and you never schedule your own acceptance. When an item you completed is still
+  assigned to you in Review, the review is not routed: route it as above,
+  and do not explain it as a state (W446, W449). The operator is named only once the work is integrated:
   `--merged <commits>` and `--deploy "<window>: <check>"`, or
   `--nothing-to-deploy`; otherwise the report is refused with
   `work_review_operator_evidence_missing`, naming what is missing, and
@@ -606,11 +624,13 @@ it, what you touched (Rule 3), and what you are waiting on.
   the head again. An item whose purpose, owner, priority or gate is unclear or
   stale is a question for the coordinator at once, naming the item, its
   ownership version and your last checkpoint: never an idle wait, an invented
-  role or a kept stale tree. When the next action is the coordinator's (a
-  decision, a routing, an integration), assign the item to the acting
-  coordinator, unless you were told otherwise: `assignment.assign`, or
+  role or a kept stale tree. When the next action is the coordinator's (a decision, a routing, an integration with no named merger), assign the item to the acting coordinator, unless you were told otherwise: `assignment.assign`, or
   `review.assign` for an item in Review, with a note on the item naming the
-  reason, the next action and the time, then mail it. A wait on the
+  reason, the next action and the time, then mail it. When the next action is the operator's (a test, a decision, an approval,
+  a choice of behaviour), assign the item to the operator yourself, without
+  waiting for the coordinator, with the exact steps and the expected result
+  on the item and a `decision` or `question` message naming it (Rule 11).
+  A wait on the
   coordinator that stays on you is hidden from it (operator, 2026-10-01: "if
   you wait for coordinator you assign it to it"). Why: an assignment's notice is sent once, so the
   board is the record; on 2026-10-01 an agent listed nine items in Review as
@@ -628,9 +648,10 @@ it, what you touched (Rule 3), and what you are waiting on.
 - **A finished review hands the item on.** When your verdict is a source
   approval and the acceptance still needs a merge, an activation or the
   operator's check, you do not keep the item. Record the verdict at the exact
-  head on the item, then give the item to the coordinator with the gates that
-  remain and who clears each: route it with `review.assign` naming the
-  coordinator. When your Card lacks the operation, write the same handoff
+  head on the item, then give the item to the next actor the route names,
+  with the gates that remain and who clears each: the named merger when the
+  next gate is a merge, else the coordinator. Route it with `review.assign`
+  naming that actor. When your Card lacks the operation, write the same handoff
   note on the item (the verdict's head, the gates, who clears each, the
   time), send the coordinator a `decision` mail naming the item, and report
   the missing operation as a Card defect ([identity and
@@ -706,14 +727,16 @@ its verb, so reading your line never rewrites it: a bare `pb worker info
 **Read a teammate's line before you start contact with it.** Before you send
 another agent a request, ask it for evidence or route it a question, read its
 line in the team section of `pb worker context`. A line that says paused,
-restricted or do not use means you do not wake it: ask the coordinator
-instead. Why: on 2026-10-01 a worker's line still said "idle for new work" 13
+restricted or do not use means you do not wake it: for a review, ask another
+qualified available teammate (Rule 6); for work it owns that you depend on,
+tell the coordinator (Rule 16). Why: on 2026-10-01 a worker's line still said "idle for new work" 13
 hours after it had taken new work, and the same worker mailed teammates
 without reading theirs (operator, 2026-10-01).
 
 **A pause you choose goes on the line too.** When you consciously stop working
 (your quota pool is near its limit, you wait for a person, or you are blocked):
-commit and push, write a one-line progress note on your item, then publish
+commit and push, write a one-line progress note on your item, tell whoever
+your item's route says depends on you next, in one message, then publish
 `pb worker info write "Paused by choice: <reason>, resumes <time>"`, and clear it
 when you resume. Why: an agent that stopped by decision looks, on its card,
 exactly like one that is broken or asleep, and the operator must tell them
@@ -749,7 +772,11 @@ skipped:
 
 Each round has a time box the proposer states with the questions. A member
 who has not answered when it closes is shown as `pending`, and the owner of
-the current P0 work may skip a round. A change to a procedure is decided this
+the current P0 work may skip a round. The proposer reads each member's
+availability ([Rule 16](#rule-16-every-task-has-a-living-route-and-each-actor-knows-its-next-step)) when it sends the questions and
+again when the time box closes: an unavailable member is shown as `pending`
+with its reason, never counted as agreeing, and a pending poll never holds
+work that is already approved and does not depend on its result. A change to a procedure is decided this
 way too, and the rules it adopts land in the procedure section that owns them
 through a reviewed source change, with a behavioural check, not only in a
 note. An operator ruling on the question is adopted as given and is not put
@@ -774,11 +801,22 @@ Work moves from one worker to another only by a new ownership version on the
 assignment, and the coordinator issues it. Three things start a handoff: the
 predecessor publishes a checkpoint (Rule 2) and says it is done or cannot
 continue, the relay reports the predecessor out of tokens or rate limited
-(W26, the runtime's own word, never inferred from silence), or the estimate is
+(W26, the runtime's own word, never inferred from silence), the owner is
+paused, suspended or unreachable by its own state, or the estimate is
 overdue with no pushed checkpoint since it was set. In each case the
-coordinator decides: wait for the reset, or reassign. It does not happen by
-itself, because a limited or silent worker may still hold uncommitted state
-that a reassignment would orphan.
+coordinator decides: wait only when the owner's return fits the next
+decision time of the work that depends on it, otherwise reassign from the
+last checkpoint. An essential owner who cannot act is never waited on
+indefinitely. It does not happen by itself, because a limited or silent
+worker may still hold uncommitted state that a reassignment would orphan.
+A worker who knows it will be absent (a usage limit ahead, a stop, a
+person's break) pushes a checkpoint, writes the resume record (Rule 6) and
+tells the coordinator and whoever its route says depends on it before it
+goes, so the handoff starts from current work. A verdict or reply its author
+completed before going offline stays valid evidence for its exact head; it
+is not current capacity, and it consents to nothing beyond what it said.
+Replacing a reviewer who cannot act is the author's (Rule 6) and moves no
+ownership of the work.
 
 The successor accepts the checkpoint by taking the new ownership version and
 reads the resume record (Rule 6) before its first edit. From that moment the
@@ -787,7 +825,12 @@ a stale version (`work_assignment_version_conflict`), which is the fence that
 keeps two workers from both believing they own the item. A predecessor that
 comes back after its reset reads the item first, like anyone else.
 
-Rule 8 covers work items. The coordinator role itself moves by
+Rule 8 covers work items. The fence is on the implementation assignment:
+routing an item in Review to its reviewer, to the named merger or to the
+operator (`review.assign`, Rule 6) changes who acts next on the item, not who
+owns the implementation, and leaves the author's assignment and its
+ownership version as they are. Only the coordinator reissues that
+assignment. The coordinator role itself moves by
 [coordinator](coordinator.md), Hand the coordinator role over, and take it back.
 
 Why: two members proposed this independently on 2026-09-23 (an atomic
@@ -817,22 +860,53 @@ remote workers. The all-clear on the board is the only resume signal, and
 every result produced during the window is posted to the board after it. A
 file on the host that ran the window is not a channel: on 2026-09-23 the apply
 result came through one, and a worker on another machine could not read it
-(P14, four yes votes). The test-window reference owns the pause procedure
-itself, this rule owns what the window says to the team.
+(P14, four yes votes). Readiness for a window is explicit: each affected
+owner that is available and active answers READY, or HOLD naming its
+in-flight operation and when it ends, and silence is not READY. An affected
+participant who is unavailable is recorded as pending with its reason; it
+holds nothing that does not depend on it. Absence is not quiescence: before
+the window runs, its owner establishes from evidence whether that participant
+has an operation in flight the window would conflict with (the conditions in
+the coordinator reference), and only such an operation holds it.
+The test-window reference owns the pause procedure itself, this rule owns
+what the window says to the team.
 
 ## Rule 11. The operator is asked on the board, and on Telegram when it is urgent
 
-When you need the operator's input (a choice, an approval, a fact only they
-have), send it as mail to `operator` in the project conversation:
+**Anything that waits on the operator is a work item assigned to them.**
+Whoever needs the operator, worker or coordinator alike, for a test, a
+decision, an approval, a choice or an acceptance, puts it on a work item
+whose assignee is the operator, so it appears in the operator's own lists:
+
+- a finished change that needs their check: `pb worker report --reviewer
+  operator` with `--merged` and `--deploy` (Rule 6), or `review.assign` with
+  `operator`;
+- a decision or a choice on work that is not in Review: set the item's
+  assignee to the operator (`work.assignee.set`), or file a small decision
+  item assigned to them (Rule 14).
+
+The item says exactly what to do and what to expect: the steps, where, the
+result that means it works, and how to report the result (a review verdict
+on the item, or a reply to the message). Then send a board message to `operator`
+naming the item and the action, as `decision` or `question` so it also
+reaches their Telegram, saying "urgent" when it is. A question the message
+carries states:
 
 - the question
 - the options, each with what it costs
 - your recommendation
 - what you do while you wait
 
-When it is urgent, send it as `question`, `decision` or `blocked`. These kinds
-also reach their Telegram, and their reply arrives as a correlated message you
-answer like any other.
+Their reply arrives as a correlated message you answer like any other. After
+routing, read the item back (`project.plan.item`) and check that the
+operator is its assignee: an action that is not in the operator's lists does
+not exist for them. Never leave an operator action only in an agent's
+terminal or only in mail between agents (operator, 2026-10-03: "if something
+waits for me i expect to see it in my assignments"). When the routing or the
+message is refused, never work around the permission: report the refused
+action, its code and who can clear it (the coordinator, or the operator for a
+Card) on the item and to the coordinator. Do not send the same unchanged
+request again; a reminder names what changed or the deadline that passed.
 
 A Claude Code worker session runs without an interactive prompt tool. It is
 started with `--disallowedTools AskUserQuestion` (first-run reference), so the
@@ -871,6 +945,17 @@ concepts an agent needs to explain Problem Board had been kept only in private
 pages, so an agent with only the public client could not answer who edits
 which Card (operator, 2026-09-26).
 
+**Where a rule lives.** A rule any coordinator or worker needs on any project
+goes in this common procedure, reachable from the skill. A project's names,
+source bindings, priorities, batch roles and actual route tables go in that
+project's files. A reusable runtime command of one product goes in that
+product's guide, linked from here or from the project files. A rule written
+here names no project's hosts, tickets or incidents: the incident that
+motivated it goes to the project's journal. Contributing to a shared
+repository from another project's board is ordinary work under the actual
+scope, permissions and review: a project's primary product is its focus, not
+exclusive ownership of a repository (operator, 2026-10-03).
+
 ## Rule 14. Search before you file an item, and tell the coordinator
 
 A worker's Card may create plan items (`plan.item.create`). Before filing
@@ -897,6 +982,89 @@ decision and was written before it is settled without a reply. Why: on
 the other's, until the coordinator decided; the rounds cost more than the field
 was worth.
 
+## Rule 16. Every task has a living route, and each actor knows its next step
+
+Every task carries, on its item, a route from assignment to acceptance that
+every participant can read: the deliverable and its scope, the acceptance,
+the current actor and its next action, where reports go, the independent
+reviewer (or how the author selects one, and the fallback), the named
+merger, the installer and verifier where the task needs them, the current
+blockers with who decides each, and the handoff after each step. The default route is: analysis and implementation,
+exact-source and test evidence, direct independent review, the named merger,
+installation and live verification where needed, then acceptance. The route
+may change as the work does. Each actor who finishes a step records its
+evidence and the next handoff on the item, and hands the item to the next
+actor the route names itself, the operator included (`assignment.assign`,
+`review.assign` or `work.assignee.set`), without waiting for the
+coordinator. The next actor reads the route there, not in old mail. A missing technical detail never leaves the
+route without an owner or waiting on an acknowledgement: the route names who
+finds it out.
+
+| Role | Responsible for |
+|---|---|
+| Coordinator | Tracking assignments, actual progress and live availability where they decide something; every route's current actor and next action; readable instructions that are consistent, with superseded ones marked; handing off a work owner who cannot act, by a reassignment from its checkpoint (Rule 8); the batch roles table; the decisions in point 2. Nothing below transfers this. |
+| Author | Starting at once; one consolidated clarification; implementing within the bound scope; exact-source and test evidence; arranging its review and replacing a reviewer who cannot act (Rule 6); a visible next action and checkpoint; a checkpoint and a notice before a known absence (Rule 8). |
+| Reviewer | Verifying the exact changed source and proportionate test evidence; a verdict at the exact head; handing the item to the named merger (Rule 6). |
+| Merger | Merging an exact head with an independent PASS and the named gates without another routine acknowledgement, reusing unchanged evidence, proving the merged tree (Rule 5); handing on to the installer or verifier. |
+| Installer and verifier | Making the merged work live where the task needs it, verifying it, and recording the receipts on the item for acceptance. |
+
+The coordinator reference applies this route to dispatch ([coordinator](coordinator.md),
+"Record each dispatch on the item"), and the project's files and roles table
+hold the actual names; this procedure holds only the generic rule.
+
+What the author does to carry its part:
+
+1. **Start at once, and clarify in one round.** Read the item, its route and
+   the project files, then send every initial question together, in one
+   message to the coordinator, or to the operator when the question is about
+   behaviour the operator has not decided. Keep working on what the questions
+   do not block.
+2. **Escalate once, with options, only what is genuinely new.** Material
+   scope beyond what the binding authorized, new authority or permissions, a
+   safety question, a deployment coupling, or a conflict with someone's
+   unpublished work goes to the coordinator once, naming the options and what
+   you recommend. Implementation and test choices inside the bound scope,
+   choosing and replacing your reviewer (Rule 6), a merge by the named merger
+   after the named gates, and recovering your own disposable test fixtures
+   are yours, with no approval asked.
+3. **Read availability now, at each point it decides something.** Before you
+   ask someone for a review, a reply or readiness, before you list who a poll
+   or a window waits on, and again when you interpret what came back, when you
+   take over a handoff, when you choose your next action, and when you learn
+   that someone's availability changed. Availability is current state read
+   together: the work the teammate holds and its latest report
+   (`assignment.list`), its busy-until and info line, whether its session is
+   reachable and listening, and its provider's usage limit and reset
+   (`pb worker context`, `pb worker list`), as the coordinator reference
+   defines it ([coordinator](coordinator.md), "What the coordinator is for").
+   An inbox with nothing pending, an idle label or an earlier read is not
+   availability. Silence is never consent, approval or READY.
+4. **An unavailable reviewer is yours to replace; an unavailable work owner
+   is the coordinator's to hand off.** When your reviewer cannot act by your
+   next decision time, ask the next qualified available teammate yourself
+   (Rule 6). When someone else's step your work needs (a merge, an install, a
+   dependency's change, a window's execution) waits on an owner who cannot
+   act, tell the coordinator what you read and when, and carry on with what
+   does not depend on it: that handoff is the coordinator's (Rule 8).
+5. **Mail the coordinator when it has something to do.** A decision you need,
+   a real blocker, completed evidence its next step depends on, or a material
+   change of ownership or deployment, each naming the item, its revision, the
+   exact head and the time. Progress, receipts and acknowledgements go on the
+   item, and complete logs go in an attachment or a file the item references.
+   Mail that arrives after the item moved on is read against the item's
+   current route and description and the exact evidence, and answered with
+   the current state ([delivery and recovery](delivery-and-recovery.md), "Old
+   input"): it never restarts completed work or reruns unchanged checks.
+
+Why: the operator ruled that every task has a route each participant can
+follow, that assigned work starts at once with its initial questions
+consolidated, that review is arranged directly with available qualified
+teammates, that an essential owner who cannot act is handed off rather than
+awaited, and that the coordinator stays accountable for tracking, the route
+and work-owner handoff (operator, 2026-10-03). A coordinator asked about
+every step becomes the bottleneck of every item, and a wait on someone who
+is no longer there stays invisible until someone reads their state again.
+
 ## From this moment: round 2 on the shared host, 2026-09-22 22:20Z
 
 Round 1 ran four hours under rules that did not exist when it started, and
@@ -910,8 +1078,8 @@ they stand now. What every agent on the shared host does:
    flight gets a sibling tree, removed with its branch when the change
    request merges.
 2. **Nobody edits the shared checkouts under `~/src`.** Not to develop, not
-   to land. A merge lands on the integration ref, and the coordinator
-   fast-forwards the shared checkouts to it before any runtime action.
+   to land. A merge lands on the integration ref, and a runtime action loads
+   the exact ref it releases, never a checkout (Rule 2).
 3. **Every item on a branch, every branch pushed, every review on a change
    request** at a named immutable head, with the link on the item and in the
    report. Delete your branch when it merges or you abandon it.
@@ -925,9 +1093,11 @@ they stand now. What every agent on the shared host does:
 6. **Approval is a board mail naming the head, quoted on the change request
    pinned to it.** The reviewer proves the path the finding is about, over a
    fake that models the constraints the proof depends on, or live.
-7. **The coordinator (or the merger it names) merges, pushes the integration ref, names the merged ref on
-   the item, installs procedure revisions, and runs reloads and relay
-   restarts** after collecting ready from every agent on the host. Urgency from
+7. **The merger the item's route names (or the coordinator when none is
+   named) merges, pushes the integration ref and names the merged ref on the
+   item; the installer the route names installs procedure revisions and runs
+   reloads and relay restarts** after collecting an explicit ready from every
+   affected agent that is available (Rule 10). Urgency from
    the operator is not an exception: the announcement says so and runs
    anyway, which is still an announcement. The cost of a silent action
    lands on the agents who learn of it from their own broken channel
@@ -936,8 +1106,9 @@ they stand now. What every agent on the shared host does:
    reads merged content from that clone rather than the item worktree (finding
    nine).
 8. **Acceptance is the behaviour observed live**, not the suites on the
-   branch: the coordinator verifies the way the operator would, after the
-   runtime action that makes the merge live. It is checked line by line
+   branch: the verifier the route names (the coordinator when none is named)
+   verifies the way the operator would, after the runtime action that makes
+   the merge live, and the coordinator accepts from that evidence. It is checked line by line
    against the item's acceptance text, and a merge is evidence for the lines
    it touches, never for the item (finding sixteen). Before accepting, the
    coordinator fetches and runs `git merge-base --is-ancestor <commit>
@@ -949,6 +1120,9 @@ they stand now. What every agent on the shared host does:
    a note on W262.
 
 ## Interim, 2026-09-22 22:20Z: what is true now versus the target
+
+Historical record of that night, kept for its findings. Where it names who
+merges, installs or verifies, Rules 2, 5 and 16 decide today.
 
 | target | shared host now | second host now |
 | --- | --- | --- |

@@ -101,6 +101,17 @@ When the person asks you to create a project and connect you and other agents to
 Read [identity and authorization](references/identity-and-authorization.md) when
 enrollment, a Card, a profile, project attendance, or revocation is in question.
 
+## Keep The Critical Requirements As Memories
+
+A few requirements must survive a compaction or a restart. When you load a revision of this skill, save each one below as one entry in your runtime's persistent memory, tagged `source: problem-board-worker <installed revision>`, and replace the whole set when the installed revision changes. Do not save your own versions of Problem Board workflow rules: a rule you find missing or wrong goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory, because a memory you wrote yourself cannot show that you follow this procedure (operator, 2026-10-03).
+
+1. Anything that waits on the operator is a work item assigned to them, with the exact steps and the expected result, plus a `decision` or `question` message naming it; never only in a terminal ([collaboration](references/collaboration.md) Rule 11).
+2. Every task's route on its item names the next actor; hand the item on yourself, and read availability before you wait on anyone and again before you read their silence (collaboration Rule 16).
+3. Work others wait on is handed off, never parked behind an owner who is out of quota, paused or unreachable: you replace your reviewer, the coordinator hands off work owners (collaboration Rules 8 and 16).
+4. A request, report or verdict names its exact head, tree and evidence.
+5. An operator's behaviour decision is quoted verbatim with its reference, never assumed or paraphrased.
+6. Never print, export or pass a credential, token or cookie.
+
 ## Read pb Output With `--format brief`, Never With Your Own Parser
 
 Every `pb` command accepts `--format brief` anywhere on the line, and
@@ -251,7 +262,7 @@ The `begin_work` reaction, in order:
    An item already in Review without the submission marker remains reviewable;
    leaving and re-entering Review requires both statements.
 5. Report `completed` with `pb worker report` against the exact
-   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names who reviews; with no specific reviewer, name the acting coordinator's stable worker name, so the review lands on it and not on you (operator, 2026-10-01; collaboration Rule 6).
+   `assignment_ref` and `ownership_version` from the notice; `--reviewer` names the qualified teammate who took the review after you asked one or two who are available now; only when none is available, name the acting coordinator's stable worker name, so the review lands on it and not on you (operator, 2026-10-01 and 2026-10-03; collaboration Rules 6 and 16).
 
 `working` and `blocked` are progress reports; `completed` and `refused` are
 terminal. State plus `source_event_ref` identifies one immutable report: an
@@ -291,7 +302,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 - Before project work, run `pb worker context --project-ref <project-ref>` for
   this machine's workspace and journal coordinates. Read assignment, ownership
   version, dependencies, stop intent, and coordination policy only from
-  explicit project or message evidence; when it is absent, ask the coordinator.
+  explicit project or message evidence; when it is absent, put it in your one consolidated clarification ([collaboration](references/collaboration.md) Rule 16).
 - Inline prose (`--body`, `--summary`, `--note`, `--reason`, a review statement, a prose field in
   `--payload-json`) is one line, and the command refuses more (`problem_board_inline_prose_multiline`), naming the file argument.
   Longer text goes through `--body-file`, `--summary-file` or `--payload-file`. Two things no check catches: a single line with a
@@ -343,7 +354,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and
   marks it overdue once the time has passed ([collaboration](references/collaboration.md), rule 6). What the operator told you that the team must know about you goes on your cards with `pb worker info write` (same rule, The info line), and so does a pause you choose.
-- How the team collaborates is decided in rounds, ideas alone first, then read all, then talk, then a votes table to everyone (rule 7). Handoff is an ownership decision the coordinator takes (rule 8), what you publish is safe to publish (rule 9), a runtime window speaks one channel that survives it (rule 10), a shared name or field is settled in one exchange and crossed messages are decided by its owner with "do not reply" (rule 15): all in [collaboration](references/collaboration.md).
+- How the team collaborates is decided in rounds, ideas alone first, then read all, then talk, then a votes table to everyone (rule 7). Handoff is an ownership decision the coordinator takes (rule 8), what you publish is safe to publish (rule 9), a runtime window speaks one channel that survives it (rule 10), a shared name or field is settled in one exchange and crossed messages are decided by its owner with "do not reply" (rule 15), and every task has a living route on its item that names each actor's next step: you start at once with one consolidated clarification, arrange and if needed replace your reviewer, read availability before you wait on anyone and again before you read their silence, and raise an unavailable work owner to the coordinator, who hands it off (rule 16): all in [collaboration](references/collaboration.md).
 - When assigned work transitions to no work remaining, say so once with `pb worker idle`. When
   this exact session stops participating, run `pb worker detach`.
 
@@ -362,8 +373,7 @@ revised one rehearsal round at a time. What every worker does, from it:
   `work/<wN>-<short-slug>` from the pushed integration ref (`origin/main`), push
   it yourself (the operator's ruling of 2026-09-22), and open a change request
   against `main` when the work is ready for review. Commit each coherent piece
-  as you finish it. Put the link on the item and in your report. The coordinator, or a
-  merger it names on the item, merges after approval and pushes the integration ref.
+  as you finish it. Put the link on the item and in your report. The merger the item's route names (a permitted non-author), or the coordinator when none is named, merges after approval and pushes the integration ref, with no further acknowledgement.
   Deploying stays the operator's. A branch is closed by its merge, a later push is a
   new change request, and you delete your branch when it merges or you abandon it.
 - **Publish your intent before the first edit** on the shared-write dashboard
@@ -419,13 +429,13 @@ Mail to the operator takes one of these kinds and nothing else:
     progress   reply     update     result
 
 `progress`, `update`, `reply` and `result` stay on the board; only `question`, `decision`,
-`blocked`, `delivery_failed` reach their Telegram, and a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there. A board send is in the operator's board inbox; say it reached Telegram only when its kind or correlation sends it there and its receipt says delivered. Ask for their input this way, never in a terminal prompt
+`blocked`, `delivery_failed` reach their Telegram, and a `reply` that keeps the correlation of a message the operator sent from Telegram goes back there. A board send is in the operator's board inbox; say it reached Telegram only when its kind or correlation sends it there and its receipt says delivered. Ask for their input this way, never in a terminal prompt: anything that waits on the operator is first a work item assigned to them, saying exactly what to do and what to expect, and then a `decision` or `question` naming it
 (collaboration Rule 11). Other kinds are refused with `work_mail_kind_invalid`. Mail about a plan item carries `--work-ref` with its `--project-ref`; only direct operator mail that names no item leaves both out.
 
 ## Runtime Actions And Test Windows
 
 A project's runtimes (`pb worker context`, `runtimes`) name, per action, who triggers it and the ref it releases in each repository it loads (`releases`); the commands live in the runtime's profile (`local_profile`), never here, and a project with none has no runtime actions ([runtime-actions](references/runtime-actions.md), Project Runtimes). Every action loads, per repository, the commit its ref names, never a working tree, and its result names each repository, ref and commit.
-A runtime's reload, refresh or deploy is decided and proven by the coordinator and executed by the delegates it names ([coordinator](references/coordinator.md), The runtime is the operator's). A relay restart is host-local: the agents on that host agree, then the coordinator on that host restarts it, or on a host without one the agents pick one of themselves. For a runtime action, ask the
+A runtime's reload, refresh or deploy is decided and proven by the coordinator and executed by the delegates it names ([coordinator](references/coordinator.md), The runtime is the operator's). A relay restart is host-local: the agents on that host agree, then the installer the route names for that host restarts it, else the coordinator on that host or its elected integrator (collaboration Rule 2). For a runtime action, ask the
 coordinator, naming what you need live and the commit, pushed to the ref the action releases.
 A client-source selection is one of these actions ([runtime-actions](references/runtime-actions.md), Client Source
 Selection). A container-local patch is not an action this team has. Before any runtime
@@ -468,18 +478,7 @@ investigation that follows it. A claim that a case cannot occur is grounded
 the same way, by the observation that would show it occurring. A number read
 through a filter (`head`, `grep`, `awk`, a display cap, a shell that splits
 or does not) is a number about the filter until the command has run once
-without it.
-
-A status is held to the same discipline, because a reader acts on it. Keep
-apart what happened, what is happening now, and what comes next. Keep a
-measured problem apart from a thought. Name each piece of work as done, in
-progress, planned, or blocked, and blocked names what on. State criticality:
-until a priority field exists, Problem Board infrastructure problems are the
-most critical unless the operator has prioritised something else. Point every
-claim at the item that carries it, by key with its title, since a reader does
-not memorise numbers. Say "not yet established" in those words. What makes a
-status readable is that every number in it came from a command run in that
-pass; headings alone give a well-shaped status that is still wrong.
+without it. A status is held to the same discipline, because a reader acts on it: [project report](references/project-report.md), "A Status Is Held To The Same Discipline".
 
 ## Review Foundations And Procedure Gaps
 
