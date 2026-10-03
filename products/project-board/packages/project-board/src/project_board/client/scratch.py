@@ -290,6 +290,13 @@ def repository_verifier(workspace: Path | str) -> Verifier:
     return verify
 
 
+# How much of one run a report shows. A run can hold hundreds of thousands of
+# files (2026-10-03: a sweep report of 350 MB), so the report names a sample
+# and counts the rest; the decision itself still reads every file it needs.
+FILE_SAMPLE = 20
+FILE_REASON_DETAIL = 5
+
+
 @dataclass
 class Run:
     path: Path
@@ -298,10 +305,14 @@ class Run:
     purpose: str = ""
     created_at: str = ""
     age_hours: float | None = None
+    # The first FILE_SAMPLE files, and how many there are. None: not counted,
+    # because a run-level reason already keeps the run.
     files: list[str] = field(default_factory=list)
+    files_count: int | None = None
     fingerprint: str = ""
     keep: list[str] = field(default_factory=list)
-    size_bytes: int = 0
+    # None: not measured (measurement is opt-in), never a claim of zero.
+    size_bytes: int | None = None
 
     @property
     def removable(self) -> bool:
@@ -317,10 +328,46 @@ class Run:
             "created_at": self.created_at,
             "age_hours": self.age_hours,
             "files": list(self.files),
+            "files_count": "not counted" if self.files_count is None else self.files_count,
             "keep": list(self.keep),
             "action": "remove" if self.removable else "keep",
-            "size_bytes": self.size_bytes,
+            "size_bytes": "not measured" if self.size_bytes is None else self.size_bytes,
         }
+
+
+def _size_of(path: Path) -> int:
+    total = 0
+    for current in path.rglob("*"):
+        try:
+            if current.is_file() and not current.is_symlink():
+                total += current.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+class _FileReasons:
+    """File-level keep reasons: the first few in full, the rest counted by class."""
+
+    def __init__(self, run: Run) -> None:
+        self._run = run
+        self._detailed = 0
+        self._more: dict[str, int] = {}
+
+    def add(self, kind: str, detail: str) -> None:
+        if self._detailed < FILE_REASON_DETAIL:
+            self._run.keep.append(f"{kind}: {detail}")
+            self._detailed += 1
+        else:
+            self._more[kind] = self._more.get(kind, 0) + 1
+
+    def close(self, unchecked: int) -> None:
+        for kind, count in sorted(self._more.items()):
+            self._run.keep.append(f"and {count} more files: {kind}")
+        if unchecked:
+            self._run.keep.append(
+                f"{unchecked} files after the first kept file were not hashed or verified"
+            )
 
 
 def _judge(
@@ -332,17 +379,20 @@ def _judge(
     consumers: Consumers | None,
     protected: Sequence[Path],
     now: datetime,
+    measure: bool = False,
 ) -> Run:
+    """Decide one run. The run-level reasons are read first and cheaply; a run
+    one of them keeps is not walked or hashed, because nothing in its files can
+    make it removable. A run that passes them is read file by file exactly as
+    the plan and --apply need; hashing stops at the first file that keeps it,
+    and the remaining files are only counted."""
+
     run = Run(path=path)
     if path.is_symlink() or not _inside(path, root):
         run.keep.append("a link or a folder outside scratch/: owner not proved")
         return run
-    for current in path.rglob("*"):
-        try:
-            if current.is_file() and not current.is_symlink():
-                run.size_bytes += current.stat().st_size
-        except OSError:
-            pass
+    if measure:
+        run.size_bytes = _size_of(path)
     if any(_inside(path, guard) or _inside(guard, path) for guard in protected):
         run.keep.append("protected path")
     try:
@@ -381,31 +431,44 @@ def _judge(
     open_consumers = sorted(name for name, state in (manifest.get("consumers") or {}).items() if (state or {}).get("open"))
     if open_consumers:
         run.keep.append(f"still used by {', '.join(open_consumers)}")
+    if run.keep:
+        # Kept for a run-level reason: no file can change that, so none is
+        # read. The plan never lists a kept run, so it needs no fingerprint.
+        return run
     recorded: Mapping[str, Mapping[str, Any]] = manifest.get("files") or {}
     fingerprint_parts: list[str] = [json.dumps(closed, sort_keys=True), *semantic,
                                     json.dumps(manifest.get("consumers") or {}, sort_keys=True)]
+    reasons = _FileReasons(run)
+    files_count = 0
+    unchecked = 0
     for current in sorted(path.rglob("*")):
         relative = current.relative_to(path).as_posix()
         if relative == MANIFEST_NAME or relative.startswith(f"{MANIFEST_NAME}.lock"):
             continue
         if current.is_symlink():
-            run.keep.append(f"link inside the run: {relative}")
+            reasons.add("link inside the run", relative)
             continue
         if current.is_dir():
             continue
-        run.files.append(relative)
+        files_count += 1
+        if len(run.files) < FILE_SAMPLE:
+            run.files.append(relative)
         entry = recorded.get(relative)
         if entry is None:
-            run.keep.append(f"not in the manifest: {relative}")
+            reasons.add("not in the manifest", relative)
+            continue
+        if run.keep:
+            # A file already keeps the run: the rest are counted, not hashed.
+            unchecked += 1
             continue
         try:
             digest = _sha256(current)
         except OSError:
-            run.keep.append(f"unreadable: {relative}")
+            reasons.add("unreadable", relative)
             continue
         fingerprint_parts.append(f"{relative}:{digest}")
         if digest != entry.get("sha256"):
-            run.keep.append(f"changed since it was recorded: {relative}")
+            reasons.add("changed since it was recorded", relative)
             continue
         published = str(entry.get("published") or "")
         if published:
@@ -413,10 +476,16 @@ def _judge(
             proved = verify(published, sha256=digest)
             fingerprint_parts.append(f"{relative}:published:{published}:{proved}")
             if proved is not True:
-                run.keep.append(f"publication {'disproved' if proved is False else 'not verifiable here'}: {relative} -> {published}")
+                reasons.add(
+                    f"publication {'disproved' if proved is False else 'not verifiable here'}",
+                    f"{relative} -> {published}",
+                )
         elif not str(entry.get("generated_by") or ""):
-            run.keep.append(f"unpublished: {relative}")
-    run.fingerprint = hashlib.sha256("\n".join(fingerprint_parts).encode("utf-8")).hexdigest()
+            reasons.add("unpublished", relative)
+    reasons.close(unchecked)
+    run.files_count = files_count
+    if not run.keep:
+        run.fingerprint = hashlib.sha256("\n".join(fingerprint_parts).encode("utf-8")).hexdigest()
     return run
 
 
@@ -428,11 +497,13 @@ def inspect_runs(
     consumers: Consumers | None = None,
     protected: Sequence[Path | str] = (),
     now: datetime | None = None,
+    measure: bool = False,
 ) -> list[Run]:
     """Every run under scratch/ with its state and the decision. Reads only.
 
     ``consumers`` answers, for an item key, what still needs it: an empty list
     when the item is Done or Cancelled, None when its state cannot be read.
+    ``measure`` adds each run's size, which walks every file of every run.
     """
 
     root = scratch_root(workspace)
@@ -451,7 +522,7 @@ def inspect_runs(
                 runs.append(Run(path=path, item=item.name, keep=["not a run folder (a link or a loose file)"]))
                 continue
             runs.append(_judge(path, root, worker_name=worker_name, verify=check, consumers=consumers,
-                               protected=guards, now=moment))
+                               protected=guards, now=moment, measure=measure))
     return runs
 
 
@@ -512,6 +583,8 @@ def apply_runs(
             continue
         receipt = receipts / f"{moment.strftime('%Y%m%dT%H%M%SZ')}-{run.item}-{run.path.name}.json"
         try:
+            # Only a run about to go is measured, for its receipt.
+            run.size_bytes = _size_of(run.path)
             receipt.parent.mkdir(parents=True, exist_ok=True)
             manifest = _read_manifest(run.path)
             atomic_write_json(receipt, {
