@@ -451,6 +451,140 @@ async def test_a_hung_disconnect_is_released_after_its_bound_without_close(monke
 
 
 @pytest.mark.asyncio
+async def test_close_during_the_abort_step_still_releases_the_old_transport(monkeypatch) -> None:
+    # Second review: close() cancelled a retirement already inside its release,
+    # which skipped the remaining steps and still counted the socket released.
+    monkeypatch.setattr(client_module, "_RETIRE_TRANSPORT_GRACE_SECONDS", 0.2)
+    async with _bus_server() as (url, bus):
+        client = await _owned_client(url)
+        old = client.socket
+        original_abort = old.eio.disconnect
+        abort_entered = asyncio.Event()
+        never = asyncio.Event()
+
+        async def hung_graceful() -> None:
+            await never.wait()
+
+        async def held_abort(*, abort: bool = False) -> None:
+            if abort:
+                abort_entered.set()
+                await never.wait()
+            await original_abort(abort=abort)
+
+        old.disconnect = hung_graceful
+        old.eio.disconnect = held_abort
+        bus.publish_plan = ["silent"]
+        with pytest.raises(DataBusOutcomeUnknown):
+            await _request(client, "message-1")
+        assert await client.wait_until_connected(3.0) is True
+        await asyncio.wait_for(abort_entered.wait(), 3.0)
+        newest = client.socket
+
+        await asyncio.wait_for(client.close(), 3.0)
+
+        assert _released(old), "HTTP closed, loops done, Engine.IO and Socket.IO disconnected"
+        assert old in client._released_transports
+        assert newest.eio.http.closed, "close() still shut the newest socket down"
+        await _until(lambda: bus.sids[0] in bus.ended)
+
+
+@pytest.mark.asyncio
+async def test_close_during_the_http_close_step_finishes_that_release(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "_RETIRE_TRANSPORT_GRACE_SECONDS", 0.2)
+    async with _bus_server() as (url, bus):
+        client = await _owned_client(url)
+        old = client.socket
+        original_close = old.eio.http.close
+        http_close_entered = asyncio.Event()
+        release_http = asyncio.Event()
+        never = asyncio.Event()
+
+        async def hung_graceful() -> None:
+            await never.wait()
+
+        async def slow_http_close() -> None:
+            http_close_entered.set()
+            await release_http.wait()
+            await original_close()
+
+        old.disconnect = hung_graceful
+        # Make the abort leave the HTTP session to the release's own close step.
+        old.eio.disconnect = lambda *, abort=False: asyncio.sleep(0)
+        old.eio.http.close = slow_http_close
+        bus.publish_plan = ["silent"]
+        with pytest.raises(DataBusOutcomeUnknown):
+            await _request(client, "message-1")
+        # The graceful step waits out its bound, then the release reaches HTTP.
+        await asyncio.wait_for(http_close_entered.wait(), 3.0)
+
+        closing = asyncio.create_task(client.close())
+        await asyncio.sleep(0.05)
+        assert not closing.done(), "close() waits for the release in progress"
+        assert not old.eio.http.closed
+        release_http.set()
+        await asyncio.wait_for(closing, 3.0)
+
+        assert old.eio.http.closed
+        assert old in client._released_transports
+
+
+@pytest.mark.asyncio
+async def test_a_release_that_left_the_session_open_is_not_released_and_close_retries_it(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "_RETIRE_TRANSPORT_GRACE_SECONDS", 0.2)
+    async with _bus_server() as (url, bus):
+        client = await _owned_client(url)
+        old = client.socket
+        original_close = old.eio.http.close
+        attempts = []
+        never = asyncio.Event()
+
+        async def hung_graceful() -> None:
+            await never.wait()
+
+        async def fails_once() -> None:
+            attempts.append(True)
+            if len(attempts) == 1:
+                raise OSError("first close failed")
+            await original_close()
+
+        old.disconnect = hung_graceful
+        old.eio.disconnect = lambda *, abort=False: asyncio.sleep(0)
+        old.eio.http.close = fails_once
+        bus.publish_plan = ["silent"]
+        with pytest.raises(DataBusOutcomeUnknown):
+            await _request(client, "message-1")
+        await _until(lambda: attempts and client._release_tasks[old].done())
+
+        assert not old.eio.http.closed
+        assert old not in client._released_transports, "a failed release is not a release"
+
+        await asyncio.wait_for(client.close(), 3.0)
+
+        assert len(attempts) == 2
+        assert old.eio.http.closed
+        assert old in client._released_transports
+
+
+@pytest.mark.asyncio
+async def test_close_right_after_a_replacement_still_releases_the_old_transport() -> None:
+    # The retirement task is cancelled before it ever ran, so it never started
+    # a release; close() starts it.
+    async with _bus_server() as (url, bus):
+        client = await _owned_client(url)
+        client._reconnect_delay_seconds = 30.0
+        old = client.socket
+        bus.publish_plan = ["silent"]
+        with pytest.raises(DataBusOutcomeUnknown):
+            await _request(client, "message-1")
+        assert len(client._retiring_transports) == 1
+
+        await asyncio.wait_for(client.close(), 3.0)
+
+        assert _released(old)
+        assert old in client._released_transports
+
+
+@pytest.mark.asyncio
 async def test_too_many_retiring_transports_release_a_new_one_at_once(monkeypatch) -> None:
     monkeypatch.setattr(client_module, "_MAX_RETIRING_TRANSPORTS", 0)
     async with _bus_server() as (url, bus):

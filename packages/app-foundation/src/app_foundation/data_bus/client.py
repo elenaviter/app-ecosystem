@@ -436,8 +436,12 @@ class FederatedDataBusClient:
         # Old transports being closed after the client replaced them as
         # silent: each retirement task and the socket it owns until released.
         self._retiring_transports: dict[asyncio.Task[None], Any] = {}
-        # Retired transports whose resources were released; close() must not
-        # shut one down again.
+        # The release of each retired transport, started once and owned until
+        # it ends, and the transports whose HTTP session it verifiably closed.
+        # close() finishes every release and never shuts a retired one down.
+        self._release_tasks: weakref.WeakKeyDictionary[Any, asyncio.Task[None]] = (
+            weakref.WeakKeyDictionary()
+        )
         self._released_transports: weakref.WeakSet[Any] = weakref.WeakSet()
         # Monotonic start of the current namespace attempt, for the reconnect
         # handshake to report how long the transport took to open.
@@ -603,7 +607,65 @@ class FederatedDataBusClient:
                 self._lifecycle_log_suffix(),
             )
         finally:
-            await self._release_transport(socket)
+            # The release is its own task: cancelling this retirement, as
+            # close() does, never stops a release that has started.
+            await asyncio.shield(self._start_release(socket))
+
+    def _start_release(self, socket: Any, *, again: bool = False) -> asyncio.Task[None]:
+        """The release of ``socket``, started now unless one is running or done.
+
+        ``again`` starts a new one when the last release ended without closing
+        the transport's HTTP session; close() asks for that once.
+        """
+
+        task = self._release_tasks.get(socket)
+        if task is None or (
+            again and task.done() and socket not in self._released_transports
+        ):
+            task = asyncio.ensure_future(self._release_transport(socket))
+            self._release_tasks[socket] = task
+        return task
+
+    async def _release_step(self, step: str, run: Callable[[], Awaitable[Any]]) -> bool:
+        """Run one bounded release step; True when it was cancelled.
+
+        A failed or cancelled step never skips the steps after it.
+        """
+
+        try:
+            await run()
+        except asyncio.CancelledError:
+            return True
+        except Exception as exc:  # noqa: BLE001 - the next steps still run
+            logger.warning(
+                "Data Bus socket lifecycle event=silent_transport_release_failed "
+                "step=%s error=%s%s",
+                step,
+                type(exc).__name__,
+                self._lifecycle_log_suffix(),
+            )
+        return False
+
+    @staticmethod
+    def _mark_transport_disconnected(socket: Any, eio: Any) -> None:
+        """Leave a released transport's state saying what it is: disconnected.
+
+        Engine.IO's abort sets this itself before anything that can block. When
+        the abort never got that far, its loops are already cancelled and its
+        HTTP session closed, so only the bookkeeping is left: the Engine.IO
+        state, its process-wide list of connected clients, and Socket.IO's flag.
+        """
+
+        if getattr(eio, "state", "disconnected") != "disconnected":
+            eio.state = "disconnected"
+            try:
+                from engineio import base_client
+
+                base_client.connected_clients.remove(eio)
+            except (ImportError, AttributeError, ValueError):
+                pass
+        if getattr(socket, "connected", False) is True:
+            socket.connected = False
 
     async def _release_transport(self, socket: Any) -> None:
         """Abort a retired transport's Engine.IO session and close its resources.
@@ -613,58 +675,63 @@ class FederatedDataBusClient:
         loop. Whatever that leaves running is then cancelled and closed:
         closing the aiohttp session closes every connection it holds, the
         WebSocket included. So nothing of the old transport stays open even
-        when its disconnect never returned. Bounded, and never raises.
+        when its disconnect never returned. Every step is bounded and runs
+        even when an earlier one failed or was cancelled; the transport counts
+        as released only once its HTTP session is closed.
         """
 
-        try:
-            self._released_transports.add(socket)
-        except TypeError:  # pragma: no cover - a socket that cannot be weakly referenced
-            pass
+        cancelled = False
         eio = getattr(socket, "eio", None)
-        if eio is None:
-            return
-        if getattr(eio, "state", "") == "connected":
-            try:
-                await asyncio.wait_for(
-                    eio.disconnect(abort=True),
-                    timeout=_RETIRE_TRANSPORT_GRACE_SECONDS,
+        if eio is not None:
+            if getattr(eio, "state", "") == "connected":
+                cancelled |= await self._release_step(
+                    "abort",
+                    lambda: asyncio.wait_for(
+                        eio.disconnect(abort=True),
+                        timeout=_RETIRE_TRANSPORT_GRACE_SECONDS,
+                    ),
                 )
-            except Exception as exc:  # noqa: BLE001 - the forced steps below still run
-                logger.info(
-                    "Data Bus socket lifecycle event=silent_transport_abort_failed "
-                    "error=%s%s",
-                    type(exc).__name__,
-                    self._lifecycle_log_suffix(),
+            loops = [
+                task
+                for task in (
+                    getattr(eio, "read_loop_task", None),
+                    getattr(eio, "write_loop_task", None),
                 )
-        loops = [
-            task
-            for task in (
-                getattr(eio, "read_loop_task", None),
-                getattr(eio, "write_loop_task", None),
-            )
-            if isinstance(task, asyncio.Future) and not task.done()
-        ]
-        for task in loops:
-            task.cancel()
-        try:
+                if isinstance(task, asyncio.Future) and not task.done()
+            ]
+            for task in loops:
+                task.cancel()
             if loops:
-                await asyncio.wait(loops, timeout=_RETIRE_TRANSPORT_GRACE_SECONDS)
+                cancelled |= await self._release_step(
+                    "loops",
+                    lambda: asyncio.wait(loops, timeout=_RETIRE_TRANSPORT_GRACE_SECONDS),
+                )
             http = getattr(eio, "http", None)
             if (
                 http is not None
                 and not getattr(eio, "external_http", False)
                 and not http.closed
             ):
-                await asyncio.wait_for(
-                    http.close(), timeout=_RETIRE_TRANSPORT_GRACE_SECONDS
+                cancelled |= await self._release_step(
+                    "http",
+                    lambda: asyncio.wait_for(
+                        http.close(), timeout=_RETIRE_TRANSPORT_GRACE_SECONDS
+                    ),
                 )
-        except Exception as exc:  # noqa: BLE001 - release is best effort, never fatal
+            self._mark_transport_disconnected(socket, eio)
+        http = getattr(eio, "http", None) if eio is not None else None
+        if http is None or getattr(http, "closed", True):
+            try:
+                self._released_transports.add(socket)
+            except TypeError:  # pragma: no cover - a socket that cannot be weakly referenced
+                pass
+        else:
             logger.warning(
-                "Data Bus socket lifecycle event=silent_transport_release_failed "
-                "error=%s%s",
-                type(exc).__name__,
+                "Data Bus socket lifecycle event=silent_transport_release_incomplete%s",
                 self._lifecycle_log_suffix(),
             )
+        if cancelled:
+            raise asyncio.CancelledError()
 
     @property
     def connection_generation(self) -> int:
@@ -1158,14 +1225,24 @@ class FederatedDataBusClient:
             if reconnect_task is not None and reconnect_task is not asyncio.current_task():
                 reconnect_task.cancel()
                 await asyncio.gather(reconnect_task, return_exceptions=True)
-            # Cancelling a retirement still runs its release, so every replaced
-            # transport's resources are closed before close() returns.
+            # Cancelling a retirement never stops its release. A retirement
+            # cancelled before it ran never started one, so close() starts it,
+            # then waits for every release to end; each step is bounded.
             retiring = dict(self._retiring_transports)
             for task in retiring:
                 task.cancel()
             if retiring:
                 await asyncio.gather(*retiring, return_exceptions=True)
-            if self.socket in self._released_transports:
+            for old in retiring.values():
+                self._start_release(old)
+            # A release that ended with the HTTP session still open is not
+            # done: the client still owns that transport and tries once more.
+            for old in list(self._release_tasks.keys()):
+                self._start_release(old, again=True)
+            releases = [task for task in self._release_tasks.values() if not task.done()]
+            if releases:
+                await asyncio.gather(*releases, return_exceptions=True)
+            if self.socket in self._release_tasks:
                 # The reconnect had not replaced the retired transport yet; its
                 # retirement already released it.
                 pass
