@@ -2636,3 +2636,23 @@ def test_the_full_json_fallback_never_prints_an_attachment_capability() -> None:
     assert "but never for an item or message with attachments, whose full envelope can hold a working download link" in _words(_read("SKILL.md"))
     assert "read the full envelope directly, unless it carries attachments ([brief-output](brief-output.md))" in _words(_read("references/coordinator.md"))
     assert "never for an item with attachments: [brief-output](brief-output.md))" in _words(_read("references/collaboration.md"))
+
+
+def test_asking_the_next_actor_is_handing_the_item_on() -> None:
+    """W491 (operator, 2026-10-03): reviews asked for by mail only left W489, an
+    urgent repair, assigned to its author, invisible to the reviewer's list and
+    to the operator's picture of the work."""
+
+    collaboration = _words(_read("references/collaboration.md"))
+    rule16 = collaboration[collaboration.index("## Rule 16."):]
+    assert "**Asking is handing on.**" in rule16
+    assert "is the moment the item moves to them on the board, in the same step" in rule16
+    assert "the `completed` report with `--reviewer <stable worker name>` for a review" in rule16
+    assert "`work.assignee.set` (with `work.status.set`, or `work.item.save` for both in one save, when the status changes too) for every later step" in rule16
+    assert "A mail, a `working` report that says the work is in review, or a verdict sent only by mail is not a hand-off" in rule16
+    assert "Work with no item gets one before you ask." in rule16
+    # Rule 6 and the skill point to the owning rule instead of restating it.
+    assert "you route it in the same step you ask (Rule 16, Asking is handing on)" in collaboration
+    skill = _words(_read("SKILL.md"))
+    assert "Report it in the same step you ask for the review: a review asked for by mail only, or a `working` report saying it is in review, leaves the item on you" in skill
+    assert "collaboration Rule 16, Asking is handing on" in skill
