@@ -35,12 +35,12 @@ def field(tmp_path: Path) -> SharedFieldStore:
     return store
 
 
-def _deliver(field: SharedFieldStore, ref: str, *, served: dict, canonical: dict | None) -> dict:
+def _deliver(field: SharedFieldStore, ref: str, *, served: dict, canonical: dict | None, kind: str = "request") -> dict:
     path = field._mail_root("project-one", WORKER) / "attachments" / "evidence.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"abc")
     envelope = {
-        "ref": ref, "kind": "request", "project_ref": "work:project:project-one", "recipient": WORKER,
+        "ref": ref, "kind": kind, "project_ref": "work:project:project-one", "recipient": WORKER,
         "subject": "Files", "payload": served, "payload_hash": content_hash(served),
         "sender_identity": {"kind": "user", "label": "Operator"},
         "attachment_local_paths": {FILE_REF: str(path)},
@@ -57,10 +57,12 @@ def _attachment(**extra) -> dict:
             "sha256": hashlib.sha256(b"abc").hexdigest(), **extra}
 
 
-def test_a_link_minted_for_delivery_is_not_kept_and_the_original_is_the_proof(field):
+@pytest.mark.parametrize("kind", ["request", "ping", "stop"])
+def test_a_link_minted_for_delivery_is_not_kept_and_the_original_is_the_proof(field, kind):
+    # Any control kind can carry an operator's files; the original is the proof for all of them.
     canonical = {"body": "See the file.", "attachments": [_attachment()], "attachment_custody": "delivery"}
     served = {**canonical, "attachments": [_attachment(download_url=LINK)]}
-    saved = _deliver(field, "work:control:custody", served=served, canonical=canonical)
+    saved = _deliver(field, f"work:control:custody-{kind}", served=served, canonical=canonical, kind=kind)
     assert saved["payload"]["retirement_command"] == canonical
     assert LINK not in json.dumps(saved), "no copy of the delivery link is kept"
     assert saved["payload"]["command"]["attachments"][0]["file_ref"] == FILE_REF

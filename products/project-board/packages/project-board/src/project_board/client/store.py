@@ -8789,7 +8789,13 @@ class SharedFieldStore:
             control.get("kind"), field="kind", maximum=128, required=True
         )
         retirement_command = payload
-        if control_kind in {'mail', 'request', 'reply'} and 'canonical_payload' in control:
+        # W485: a board that mints attachment links at delivery sends the
+        # admitted original for any kind; its marker says so.
+        delivered_custody = (
+            isinstance(control.get('canonical_payload'), Mapping)
+            and control['canonical_payload'].get('attachment_custody') == 'delivery'
+        )
+        if (control_kind in {'mail', 'request', 'reply'} or delivered_custody) and 'canonical_payload' in control:
             canonical_payload = control.get('canonical_payload')
             if (not isinstance(canonical_payload, Mapping)
                 or content_hash(canonical_payload) != control.get('canonical_payload_hash')):
@@ -8885,7 +8891,7 @@ class SharedFieldStore:
             "command": command_copy,
             "payload_hash": expected_hash,
         }
-        if control_kind in {'request', 'reply'} and retirement_command != payload:
+        if (control_kind in {'request', 'reply'} or delivered_custody) and retirement_command != payload:
             message_payload['retirement_command'] = retirement_command
         correlation_id = command_ref
         reply_to = ""
