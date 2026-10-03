@@ -111,7 +111,17 @@ def retirement_delivery_publication(
                 'reason': 'canonical_publication_refused', 'error_code': str(error.get('code') or ''),
                 'proof_hash': content_hash(proof), 'publication_bindings': bindings,
                 'guidance': 'Inspect the private publication refusal; no original has been marked covered.'}
-    for coverage in (result.get('coverage') or []) if row.get('state') == 'sent' else []:
+    canonical_result = row.get('state') == 'sent' and result.get('schema') == RETIREMENT_DELIVERY_SCHEMA
+    exact_pending = next((entry for entry in result.get('pending') or []
+                          if isinstance(entry, Mapping) and entry.get('source_message_ref') == source_ref), None) if canonical_result else None
+    pending_refs = (result.get('pending_refs') or []) if canonical_result else []
+    if exact_pending is not None or source_ref in pending_refs:
+        reason = str((exact_pending or {}).get('reason') or '')
+        return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending', 'outbox_id': outbox_id,
+                'reason': (reason if reason == 'canonical_server_member_exists_unverifiable_author_copy'
+                           else 'canonical_notice_coverage_pending'),
+                'publication_bindings': bindings, 'proof_hash': content_hash(proof)}
+    for coverage in (result.get('coverage') or []) if canonical_result else []:
         if (isinstance(coverage, Mapping) and result.get('schema') == RETIREMENT_DELIVERY_SCHEMA
             and coverage.get('source_message_ref') == source_ref
             and coverage.get('notice_state') in {'queued', 'unavailable'} and coverage.get('receipt_ref')):
@@ -119,7 +129,7 @@ def retirement_delivery_publication(
                     'delivery_status': coverage['notice_state'], 'outbox_id': outbox_id,
                     'proof_hash': content_hash(proof),
                     'publication_bindings': bindings}
-    pending_reason = str(row.get('last_error_code') or '')
+    pending_reason = str(row.get('last_error_code') or '') if row.get('state') != 'sent' else ''
     return {'schema': RETIREMENT_DELIVERY_SCHEMA, 'delivery_status': 'pending', 'outbox_id': outbox_id,
             'reason': (pending_reason if pending_reason ==
                 'canonical_server_member_exists_unverifiable_author_copy' else 'canonical_notice_coverage_pending'),

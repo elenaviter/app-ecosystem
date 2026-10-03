@@ -134,6 +134,12 @@ exists; receive returns it; settlement records that it was handled.
   the admitted member or borrowing its coverage. Even a changed author-only
   copy cannot borrow coverage. True drift between comparable proofs remains a
   content conflict. Cross-form equivalence recovery is not yet established.
+  A bounded publication preflights every audience before member writes and
+  skips only the unverifiable original. Valid batch peers commit and reuse
+  their once-only notices. The response includes exact-input `pending_refs`
+  and per-original pending reasons; clients apply a reason only to that
+  retained original, never to its covered peers. A true comparable-content
+  conflict still refuses and rolls back the whole publication.
 - A lease that expires unsettled returns the message for redelivery, marked
   with the prior handling so the work is not repeated.
 

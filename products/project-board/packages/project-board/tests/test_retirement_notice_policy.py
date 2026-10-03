@@ -132,6 +132,85 @@ def test_unverifiable_author_copy_retains_distinct_pending_reason_and_original(t
     assert original['body'] == 'Retain exact original'
 
 
+
+def test_retirement_mixed_batch_marks_only_exact_unverifiable_original_pending(tmp_path):
+    from project_board.client.mail_delivery import retirement_delivery_publication
+    from project_board.client.outbox_store import OutboxStore
+    field = SimpleNamespace(control=tmp_path / "control")
+    field._outbox = OutboxStore(field.control)
+    messages = [{"message_ref": f"work:mail:{ref}", "kind": "question", "subject": "Private",
+                 "body": f"Retain private {ref}", "sender": "codex-author"}
+                for ref in ("ordinary-0", "overlap", "ordinary-1")]
+    kwargs = dict(project_ref="work:project:alpha", reporter_worker_name="codex-author",
+                  retired_worker_name="codex-retired")
+    first = retirement_delivery_publication(field, **kwargs, message=messages[0], additional_messages=messages[1:])
+    bindings = {entry["source_message_ref"]: entry for entry in first["publication_bindings"]}
+    for message in messages:
+        entry = bindings[message["message_ref"]]
+        message["retirement_publication"] = {"outbox_id": first["outbox_id"], "proof_hash": entry["proof_hash"]}
+    row = field._outbox.read(first["outbox_id"], worker_name="codex-author", project_ref="work:project:alpha")
+    row.update(state="sent", remote_result={
+        "schema": "problem-board.retirement-delivery.v1",
+        "coverage": [{"source_message_ref": message["message_ref"], "notice_state": "queued",
+                      "receipt_ref": "work:mail_reconciliation:canonical"} for message in (messages[0], messages[2])],
+        "pending_refs": ["work:mail:overlap"],
+        "pending": [{"source_message_ref": "work:mail:overlap",
+                     "reason": "canonical_server_member_exists_unverifiable_author_copy"}]})
+    field._outbox.write_pending(row)
+    for _ in range(2):  # repeat passes consume the same durable response, not another publication
+        results = [retirement_delivery_publication(field, **kwargs, message=message) for message in messages]
+        assert [result["delivery_status"] for result in results] == ["queued", "pending", "queued"]
+        assert results[1]["reason"] == "canonical_server_member_exists_unverifiable_author_copy"
+        assert all(result["outbox_id"] == first["outbox_id"] for result in results)
+        assert "coverage" not in results[1]
+        assert all("Private" not in str(result) for result in results)
+    assert [message["body"] for message in messages] == [
+        "Retain private ordinary-0", "Retain private overlap", "Retain private ordinary-1"]
+
+
+
+@pytest.mark.parametrize("state,schema,pending_ref,reason,covered,expected_status,expected_reason", [
+    ("sent", "problem-board.retirement-delivery.v1", "work:mail:original",
+     "canonical_server_member_exists_unverifiable_author_copy", True, "pending",
+     "canonical_server_member_exists_unverifiable_author_copy"),
+    ("sent", "problem-board.retirement-delivery.v1", "work:mail:original",
+     "unrecognized-private-value", True, "pending", "canonical_notice_coverage_pending"),
+    ("sent", "problem-board.retirement-delivery.v1", "work:mail:other",
+     "canonical_server_member_exists_unverifiable_author_copy", True, "queued", ""),
+    ("sent", "wrong-schema", "work:mail:original",
+     "canonical_server_member_exists_unverifiable_author_copy", True, "pending", "canonical_notice_coverage_pending"),
+    ("pending", "problem-board.retirement-delivery.v1", "work:mail:original",
+     "canonical_server_member_exists_unverifiable_author_copy", True, "pending", "canonical_notice_coverage_pending"),
+    ("sent", "problem-board.retirement-delivery.v1", "",
+     "", False, "pending", "canonical_notice_coverage_pending"),
+])
+def test_retirement_pending_result_is_exact_ref_sent_schema_and_whitelisted(
+        tmp_path, state, schema, pending_ref, reason, covered, expected_status, expected_reason):
+    from project_board.client.mail_delivery import retirement_delivery_publication
+    from project_board.client.outbox_store import OutboxStore
+    field = SimpleNamespace(control=tmp_path / "control")
+    field._outbox = OutboxStore(field.control)
+    original = {"message_ref": "work:mail:original", "kind": "question", "body": "Private retained body",
+                "sender": "codex-author"}
+    kwargs = dict(project_ref="work:project:alpha", reporter_worker_name="codex-author",
+                  retired_worker_name="codex-retired", message=original)
+    first = retirement_delivery_publication(field, **kwargs)
+    row = field._outbox.read(first["outbox_id"], worker_name="codex-author", project_ref="work:project:alpha")
+    row.update(state=state, remote_result={"schema": schema,
+        "pending_refs": [pending_ref] if pending_ref else [],
+        "pending": [{"source_message_ref": pending_ref, "reason": reason}] if pending_ref else [],
+        "coverage": [{"source_message_ref": "work:mail:original", "notice_state": "queued",
+                      "receipt_ref": "work:mail_reconciliation:canonical"}] if covered else []})
+    if state == "sent":
+        row["last_error_code"] = "canonical_server_member_exists_unverifiable_author_copy"
+    field._outbox.write_pending(row)
+    result = retirement_delivery_publication(field, **kwargs)
+    assert result["delivery_status"] == expected_status
+    assert result.get("reason", "") == expected_reason
+    assert "unrecognized-private-value" not in str(result) and "Private" not in str(result)
+    assert original["body"] == "Private retained body"
+
+
 def test_canonical_retirement_control_proof_survives_erased_payload_and_rejects_spoof():
     from project_board.contract.delivery_failures import retirement_control_member
     import hashlib
