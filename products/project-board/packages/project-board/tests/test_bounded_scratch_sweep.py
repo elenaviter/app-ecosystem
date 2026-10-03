@@ -220,6 +220,41 @@ def test_a_change_beyond_the_report_sample_still_invalidates_the_plan(ws):
     assert f"changed since it was recorded: {late}" in kept["keep"]
 
 
+def test_a_change_while_apply_measures_a_run_keeps_the_changed_file(ws, monkeypatch):
+    # Review of the first head: apply measured a run after its last check, so
+    # a file changed during that walk was deleted unchecked. The measurement
+    # now happens while the run is judged again, before its files are hashed.
+    names = {f"f{index:04d}.log": "recorded" for index in range(50)}
+    run = _closed_published_run(ws, {"report.md": "the finding", **names})
+    verify = scratch.repository_verifier(ws["ws"])
+    judged = _judge_one(ws, run, verify=verify)
+    assert judged.removable, judged.keep
+    tail = run / "f0049.log"
+    assert tail.name not in judged.files
+    planned = {str(run): judged.fingerprint}
+    original = Path.rglob
+    mutated: list[str] = []
+
+    def change_during_measurement(self: Path, pattern: str, *args: Any, **kwargs: Any):
+        if self == run and not mutated:
+            import inspect
+
+            caller = inspect.currentframe().f_back.f_code.co_name
+            if caller == "_size_of":
+                tail.write_text("UNPUBLISHED CHANGE DURING SIZE WALK", encoding="utf-8")
+                mutated.append(caller)
+        return original(self, pattern, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rglob", change_during_measurement)
+    result = scratch.apply_runs(ws["ws"], worker_name=OWNER, planned=planned, verify=verify)
+
+    assert mutated == ["_size_of"], "apply measured the planned run"
+    assert result["removed"] == []
+    assert tail.read_text(encoding="utf-8") == "UNPUBLISHED CHANGE DURING SIZE WALK"
+    (kept,) = result["kept"]
+    assert "changed since it was recorded: f0049.log" in kept["keep"]
+
+
 @pytest.mark.parametrize("denial", ["owner", "open", "consumer"])
 def test_a_run_denied_by_its_manifest_never_reaches_the_board_or_git(ws, denial):
     if denial == "owner":

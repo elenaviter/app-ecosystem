@@ -43,7 +43,7 @@ import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Collection, Mapping, Sequence
 
 from ..contract.errors import DomainError
 from .io import atomic_write_json, exclusive_lock, read_json
@@ -502,12 +502,15 @@ def inspect_runs(
     protected: Sequence[Path | str] = (),
     now: datetime | None = None,
     measure: bool = False,
+    measure_paths: Collection[str] = (),
 ) -> list[Run]:
     """Every run under scratch/ with its state and the decision. Reads only.
 
     ``consumers`` answers, for an item key, what still needs it: an empty list
     when the item is Done or Cancelled, None when its state cannot be read.
-    ``measure`` adds each run's size, which walks every file of every run.
+    ``measure`` adds each run's size, which walks every file of every run;
+    ``measure_paths`` adds it for those runs only. A run is measured before
+    it is judged, so a change during the measurement fails the judgment.
     """
 
     root = scratch_root(workspace)
@@ -526,7 +529,8 @@ def inspect_runs(
                 runs.append(Run(path=path, item=item.name, keep=["not a run folder (a link or a loose file)"]))
                 continue
             runs.append(_judge(path, root, worker_name=worker_name, verify=check, consumers=consumers,
-                               protected=guards, now=moment, measure=measure))
+                               protected=guards, now=moment,
+                               measure=measure or str(path) in measure_paths))
     return runs
 
 
@@ -573,8 +577,11 @@ def apply_runs(
     """
 
     moment = now or _now()
+    # A run the plan lists is measured for its receipt while it is judged
+    # again, before its files are hashed: a measurement after the last check
+    # would leave a window in which a changed file is deleted unchecked.
     runs = inspect_runs(workspace, worker_name=worker_name, verify=verify, consumers=consumers,
-                        protected=protected, now=moment)
+                        protected=protected, now=moment, measure_paths=set(planned))
     removed: list[dict[str, Any]] = []
     kept: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
@@ -587,8 +594,6 @@ def apply_runs(
             continue
         receipt = receipts / f"{moment.strftime('%Y%m%dT%H%M%SZ')}-{run.item}-{run.path.name}.json"
         try:
-            # Only a run about to go is measured, for its receipt.
-            run.size_bytes = _size_of(run.path)
             receipt.parent.mkdir(parents=True, exist_ok=True)
             manifest = _read_manifest(run.path)
             atomic_write_json(receipt, {
