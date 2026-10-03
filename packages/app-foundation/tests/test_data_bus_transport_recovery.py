@@ -59,7 +59,14 @@ class _Bus:
         # Handshakes the server refuses, by order (0 is the first connect).
         self.refuse_handshakes: set[int] = set()
         self.admission_delays: dict[int, float] = {}
+        # Sessions the server saw end: proof that a client's old transport
+        # actually closed, not only that the client forgot it.
+        self.ended: list[str] = []
         self._release = asyncio.Event()
+
+        @self.sio.event
+        async def disconnect(sid: str, *args: Any) -> None:
+            self.ended.append(sid)
 
         @self.sio.event
         async def connect(sid: str, environ: dict[str, Any], auth: Any) -> bool:
@@ -365,27 +372,133 @@ async def test_a_custom_socket_factory_keeps_its_own_transport() -> None:
     await client.close()
 
 
+def _released(socket: Any) -> bool:
+    """The old transport's network resources are gone, not just forgotten."""
+
+    eio = socket.eio
+    loops_done = all(
+        task is None or task.done()
+        for task in (eio.read_loop_task, eio.write_loop_task)
+    )
+    return bool(
+        eio.http is not None
+        and eio.http.closed
+        and loops_done
+        and eio.state != "connected"
+        and socket.connected is False
+    )
+
+
+async def _replace_with_hung_disconnect(
+    client: FederatedDataBusClient, bus: _Bus, message_id: str
+) -> Any:
+    """One silent replacement whose old socket never finishes disconnecting."""
+
+    old = client.socket
+    hung = asyncio.Event()
+
+    async def hung_disconnect() -> None:
+        await hung.wait()
+
+    old.disconnect = hung_disconnect
+    bus.publish_plan = ["silent"]
+    with pytest.raises(DataBusOutcomeUnknown) as captured:
+        await _request(client, message_id)
+    assert captured.value.details["silent_transport_replaced"] is True
+    assert await client.wait_until_connected(3.0) is True
+    return old
+
+
 @pytest.mark.asyncio
-async def test_close_cancels_a_retiring_transport_that_is_still_closing() -> None:
+async def test_close_releases_every_retired_transport_even_when_its_disconnect_hangs() -> None:
+    # Review of the first head: close() cancelled the retirement tasks but
+    # left every old socket and its HTTP session open.
     async with _bus_server() as (url, bus):
         client = await _owned_client(url)
-        bus.publish_plan = ["silent"]
-        closing_forever = asyncio.Event()
-
-        async def hung_disconnect() -> None:
-            await closing_forever.wait()
-
-        client.socket.disconnect = hung_disconnect
-        with pytest.raises(DataBusOutcomeUnknown):
-            await _request(client, "message-1")
-        assert len(client._retiring_transports) == 1
-        (retiring,) = client._retiring_transports
-        # The replacement reconnects while the old transport is still closing.
-        assert await client.wait_until_connected(3.0) is True
+        old_sockets = []
+        retiring_counts = []
+        for index in range(3):
+            old_sockets.append(await _replace_with_hung_disconnect(client, bus, f"message-{index}"))
+            retiring_counts.append(len(client._retiring_transports))
+        old_sids = bus.sids[:3]
+        newest = client.socket
 
         await asyncio.wait_for(client.close(), 3.0)
-        assert client._retiring_transports == set()
-        assert retiring.cancelled()
+
+        assert retiring_counts == [1, 2, 3]
+        assert client._retiring_transports == {}
+        assert all(_released(old) for old in old_sockets)
+        await _until(lambda: set(old_sids) <= set(bus.ended))
+        assert newest not in old_sockets
+
+
+@pytest.mark.asyncio
+async def test_a_hung_disconnect_is_released_after_its_bound_without_close(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "_RETIRE_TRANSPORT_GRACE_SECONDS", 0.2)
+    async with _bus_server() as (url, bus):
+        client = await _owned_client(url)
+        old = await _replace_with_hung_disconnect(client, bus, "message-1")
+        newer = client.socket
+
+        await _until(lambda: not client._retiring_transports)
+        assert _released(old)
+        await _until(lambda: bus.sids[0] in bus.ended)
+        # Only the old transport was touched: the newer one still serves.
+        assert client.connected
+        assert client.socket is newer
+        assert bus.sids[1] not in bus.ended
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_too_many_retiring_transports_release_a_new_one_at_once(monkeypatch) -> None:
+    monkeypatch.setattr(client_module, "_MAX_RETIRING_TRANSPORTS", 0)
+    async with _bus_server() as (url, bus):
+        client = await _owned_client(url)
+        old = client.socket
+        graceful_calls = []
+
+        async def counted_disconnect() -> None:
+            graceful_calls.append(True)
+
+        old.disconnect = counted_disconnect
+        bus.publish_plan = ["silent"]
+        with pytest.raises(DataBusOutcomeUnknown):
+            await _request(client, "message-1")
+
+        await _until(lambda: not client._retiring_transports)
+        assert graceful_calls == [], "past the cap the graceful step is skipped"
+        assert _released(old)
+        assert await client.wait_until_connected(3.0) is True
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_close_before_the_reconnect_lands_does_not_shut_the_released_socket_again() -> None:
+    async with _bus_server() as (url, bus):
+        client = await _owned_client(url)
+        # The reconnect waits, so the retired socket is still the client's
+        # current one when close() runs.
+        client._reconnect_delay_seconds = 30.0
+        old = client.socket
+        shutdowns = []
+        original_shutdown = old.shutdown
+
+        async def counted_shutdown() -> None:
+            shutdowns.append(True)
+            await original_shutdown()
+
+        old.shutdown = counted_shutdown
+        bus.publish_plan = ["silent"]
+        with pytest.raises(DataBusOutcomeUnknown):
+            await _request(client, "message-1")
+        await _until(lambda: not client._retiring_transports)
+        assert client.socket is old
+
+        await asyncio.wait_for(client.close(), 3.0)
+
+        assert _released(old)
+        assert shutdowns == []
 
 
 # -- C: the client tells its owner when a drop is only transport -------------
