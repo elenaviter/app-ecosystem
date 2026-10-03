@@ -561,7 +561,7 @@ it, what you touched (Rule 3), and what you are waiting on.
   qualified teammate is available, or the review stays blocked, name the
   acting coordinator's stable worker name in `--reviewer`: the item then
   lands on the coordinator, who reviews it or routes it on. Sending work for
-  review must never leave it on you: route it as you ask (Rule 16, Work moves only on the item),
+  review must never leave it on you: route it as you ask (Rule 16),
   and you never schedule your own acceptance. When an item you completed is still
   assigned to you in Review, the review is not routed: route it as above,
   and do not explain it as a state (W446, W449). The operator is named only once the work is integrated:
@@ -1021,25 +1021,21 @@ was worth.
 
 ## Rule 16. Every task has a living route, and each actor knows its next step
 
-Every task carries, on its item, a route from assignment to acceptance that
-every participant can read: the deliverable and its scope, the acceptance,
+Every task carries, on its item, a route from planning to acceptance that
+every participant can read, kept whole through every reprioritization: the deliverable and its scope, the acceptance,
 the current actor and its next action, where reports go, the independent
 reviewer (or how the author selects one, and the fallback), the named
 merger, the installer and verifier where the task needs them, the current
 blockers with who decides each, and the handoff after each step. The default route is: analysis and implementation,
 exact-source and test evidence, direct independent review, the named merger,
 installation and live verification where needed, then acceptance. The route
-may change as the work does. Each actor who finishes a step records its
-evidence and the next handoff on the item, and hands the item to the next
-actor the route names itself, the operator included (`assignment.assign`,
-`review.assign` or `work.assignee.set`), without waiting for the
-coordinator. The next actor reads the route there, not in old mail.
-
-**Work moves only on the item.** Asking the next actor to act and moving the
-item to them are one act: set them as assignee, with the status when it
-changes, as you ask. A mail moves nothing.
-
-A missing technical detail never leaves the
+may change as the work does. The item's assignee and status always show the
+actual actor and step. Each actor who finishes a step records its evidence
+and the next handoff on the item, and hands the item to the next actor the
+route names itself, the operator included (`assignment.assign`,
+`review.assign` or `work.assignee.set`, and the status when it changes), in
+the same act as asking them and without waiting for the coordinator: a mail
+moves nothing. The next actor reads the route there, not in old mail. A missing technical detail never leaves the
 route without an owner or waiting on an acknowledgement: the route names who
 finds it out.
 

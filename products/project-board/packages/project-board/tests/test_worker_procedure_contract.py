@@ -2639,16 +2639,13 @@ def test_the_full_json_fallback_never_prints_an_attachment_capability() -> None:
 
 
 def test_asking_the_next_actor_is_handing_the_item_on() -> None:
-    """W491 (operator, 2026-10-03): reviews asked for by mail only left an urgent
-    repair assigned to its author, invisible to its reviewer and the operator."""
+    """W491: the item's assignee and status show the actual actor and step, and
+    the hand-off happens in the same act as asking; a mail moves nothing."""
 
     collaboration = _words(_read("references/collaboration.md"))
     rule16 = collaboration[collaboration.index("## Rule 16."):]
-    assert (
-        "**Work moves only on the item.** Asking the next actor to act and moving the item to them are one act: "
-        "set them as assignee, with the status when it changes, as you ask. A mail moves nothing."
-    ) in rule16
-    assert "route it as you ask (Rule 16, Work moves only on the item)" in collaboration
-    skill = _words(_read("SKILL.md"))
-    assert "Report it as you ask for the review: a mail moves nothing" in skill
-    assert "collaboration Rule 16, Work moves only on the item" in skill
+    assert "a route from planning to acceptance that every participant can read, kept whole through every reprioritization" in rule16
+    assert "The item's assignee and status always show the actual actor and step." in rule16
+    assert "and the status when it changes), in the same act as asking them and without waiting for the coordinator: a mail moves nothing." in rule16
+    assert "route it as you ask (Rule 16)" in collaboration
+    assert "Report it as you ask for the review: a mail moves nothing (collaboration Rule 16)." in _words(_read("SKILL.md"))
