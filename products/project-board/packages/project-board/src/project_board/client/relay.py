@@ -3283,6 +3283,10 @@ class ProblemBoardHostRelayAdapter:
                             ),
                             failed_recipient=failed_recipient,
                             message={
+                                # The outbox envelope owns the original kind;
+                                # dropping it makes a refused failure notice
+                                # look like ordinary mail and bounce again.
+                                "kind": str(original.get("kind") or ""),
                                 "message_ref": source_message_ref,
                                 "subject": str(original.get("subject") or ""),
                                 "outbox_id": str(row.get("outbox_id") or ""),

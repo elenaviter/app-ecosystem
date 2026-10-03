@@ -111,7 +111,8 @@ exists; receive returns it; settlement records that it was handled.
   service/system `discard.notice`, itself becomes undeliverable, it is
   archived or withdrawn without generating another failure notice or paging
   the operator. Classification uses the admitted envelope, not a notice
-  claim in an ordinary message's subject, body or payload. Existing terminal
+  claim in an ordinary message's subject, body or payload. A refused relay
+  outbox preserves its original envelope kind for this check. Existing terminal
   evidence and retention rules still apply; this does not promise that a
   withdrawn server control retains its original body.
 - Only stable worker names are addresses. A display alias, an unknown worker
