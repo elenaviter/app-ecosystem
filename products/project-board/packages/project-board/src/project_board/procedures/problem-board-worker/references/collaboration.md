@@ -1035,7 +1035,9 @@ and the next handoff on the item, and hands the item to the next actor the
 route names itself, the operator included (`assignment.assign`,
 `review.assign` or `work.assignee.set`, and the status when it changes), in
 the same act as asking them and without waiting for the coordinator: a mail
-moves nothing. The next actor reads the route there, not in old mail. A missing technical detail never leaves the
+moves nothing. The next actor reads the route there, not in old mail; whoever holds an item
+whose route is missing, or no longer fits after a reprioritization or a
+reassignment, completes it on the item at once. A missing technical detail never leaves the
 route without an owner or waiting on an acknowledgement: the route names who
 finds it out.
 
