@@ -7,6 +7,7 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-10-01 | Explicit interactive account selection through hosted login | Optional host-selected account chooser policy, Cognito authorization extras with reserved-parameter rejection, and focused security/noninteractive regression evidence. |
 | 2026-08-29 | Design note: the ecosystem components repo, Prokura to PyPI first | The founding decisions: the repository's purpose and name, the original Prokura naming and its rationale, the two-phase packaging shape, and the stability constraints. |
 | 2026-08-29 | Handoff: the Connection Hub implementation moves into the prokura package | The original extraction plan: implementation and tests moved here, KDCube re-referenced the package, and behavior and its acceptance evidence remained unchanged. |
 | 2026-08-29 | Prokura extraction boundary and execution plan | The measured dependency boundary, original package and host ownership, compatibility rule, staged implementation plan, and acceptance gates. |

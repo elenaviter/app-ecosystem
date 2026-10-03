@@ -89,6 +89,14 @@ cookie while the server decides. Nothing in the browser renews anything.
   Discovery, the code exchange and ID-token verification are injectable;
   the defaults use `httpx` and the injected verifier. The `nonce` claim must
   equal the attempt's nonce.
+  Both the generic configuration and Cognito factory accept
+  `extra_authorize_params`, for example `{"prompt": "select_account"}` for
+  interactive account selection. The configuration copies the supplied map;
+  reserved response type, client, redirect, scope, state, nonce and PKCE fields,
+  and `client_secret`, are rejected rather than overridden. Extras are checked
+  again before the browser redirect and never copied into the token exchange.
+  With no extras, authorization behavior is unchanged. A host selects this
+  policy explicitly; it is not a default or a silent-renewal policy.
 - `google_identity.GoogleIdentityUpstream`: the Google Identity Services
   credential posted to the host's login page, verified against Google's
   issuers and the web client id, bound to the attempt by nonce. This is the
