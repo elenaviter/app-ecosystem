@@ -561,8 +561,7 @@ it, what you touched (Rule 3), and what you are waiting on.
   qualified teammate is available, or the review stays blocked, name the
   acting coordinator's stable worker name in `--reviewer`: the item then
   lands on the coordinator, who reviews it or routes it on. Sending work for
-  review must never leave it on you (operator, 2026-10-01 and 2026-10-03):
-  route it as you ask (Rule 16, Work moves only on the item),
+  review must never leave it on you: route it as you ask (Rule 16, Work moves only on the item),
   and you never schedule your own acceptance. When an item you completed is still
   assigned to you in Review, the review is not routed: route it as above,
   and do not explain it as a state (W446, W449). The operator is named only once the work is integrated:
