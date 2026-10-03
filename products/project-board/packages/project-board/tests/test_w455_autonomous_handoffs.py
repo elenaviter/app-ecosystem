@@ -194,11 +194,28 @@ def test_anything_waiting_on_the_operator_is_an_item_assigned_to_them() -> None:
     assert "Whoever needs the operator, worker or coordinator alike" in rule
     assert "The item says exactly what to do and what to expect" in rule
     assert "as `decision` or `question` so it also reaches their Telegram, saying \"urgent\" when it is" in rule
-    assert "read the item back (`project.plan.item`) and check that the operator is its assignee" in rule
+    assert "read the item back (`project.plan.item`). Check that the operator is its assignee" in rule
     assert "Never leave an operator action only in an agent's terminal or only in mail between agents" in rule
     assert "anything that waits on the operator is first a work item assigned to them" in _words("SKILL.md")
     assert "The same holds for anything else that waits on the operator, from you or from a worker" in _words("references/coordinator.md")
 
+
+
+def test_an_item_routed_to_the_operator_carries_their_steps_on_its_own_fields() -> None:
+    """Operator, 2026-10-03: "the tickets assigned to operator must contain the information for operator"."""
+    rule = _section("references/collaboration.md", "## Rule 11.")
+    assert "**The item itself carries what the operator needs.**" in rule
+    assert "Routing (`review.assign`, `work.assignee.set`) changes who acts next; it does not rewrite those fields." in rule
+    assert "rewrites them for the operator with `plan.item.update`, in the same step" in rule
+    for field in ("`result`:", "`review.look_at`: the operator's steps", "`review.could_not_verify`:"):
+        assert field in rule, field
+    assert "**An operator's question is answered where the operator works.**" in rule
+    assert "An answer only in your terminal is not durable." in rule
+    assert "When the question shows the item was unclear, correct the item" in rule
+    assert "are the ones you wrote for them" in rule
+    skill = _words("SKILL.md")
+    assert "rewritten for them when you route it" in skill
+    assert "or your answer to an operator's question, only in a terminal" in skill
 
 def test_each_actor_hands_on_along_the_route_including_to_the_operator() -> None:
     """Operator, 2026-10-03: workers assign along the concluded route, the operator included."""
