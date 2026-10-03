@@ -107,6 +107,13 @@ exists; receive returns it; settlement records that it was handled.
 - The sender gets a result. A rejected message produces one
   `delivery_failed` notice to the sender, naming the message, the recipient,
   the field, the code and the reason. The recipient keeps listening.
+- Failure notices are terminal: if a `delivery_failed` notice, or a
+  service/system `discard.notice`, itself becomes undeliverable, it is
+  archived or withdrawn without generating another failure notice or paging
+  the operator. Classification uses the admitted envelope, not a notice
+  claim in an ordinary message's subject, body or payload. Existing terminal
+  evidence and retention rules still apply; this does not promise that a
+  withdrawn server control retains its original body.
 - Only stable worker names are addresses. A display alias, an unknown worker
   or a retired worker is refused before any mailbox is created, and the
   board records the refusal.

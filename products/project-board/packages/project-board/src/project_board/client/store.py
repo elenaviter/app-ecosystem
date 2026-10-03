@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 from ..contract.delivery_failures import (
     DeliveryFailureTarget,
     delivery_failure_target_lines,
+    is_terminal_system_notice,
     resolve_delivery_failure_target,
 )
 from ..contract.errors import DomainError
@@ -7835,6 +7836,15 @@ class SharedFieldStore:
     ) -> dict[str, Any]:
         """Queue one idempotent failure notice back to the original sender."""
 
+        if is_terminal_system_notice(message):
+            return {
+                "delivery_route": "",
+                "delivery_status": "not_required",
+                "recipient": "",
+                "message_ref": "",
+                "reason": "An undeliverable system notice is terminal; no failure notice is generated.",
+            }
+
         clean_project = (
             component(project_id, field="project_id")
             if str(project_id or "").strip()
@@ -9728,10 +9738,15 @@ class SharedFieldStore:
                     if isinstance(row.get("recipient_failure"), Mapping)
                     else {}
                 )
-                if not bool(failure.get("notify_sender", True)):
+                terminal_notice = is_terminal_system_notice(row)
+                if terminal_notice or not bool(failure.get("notify_sender", True)):
                     row["failure_notice"] = {
                         "delivery_status": "not_required",
-                        "reason": "The archived record had already left the active mailbox.",
+                        "reason": (
+                            "An undeliverable system notice is terminal."
+                            if terminal_notice
+                            else "The archived record had already left the active mailbox."
+                        ),
                     }
                     row["failure_notice_state"] = "not_required"
                     row["updated_at"] = utc_now()

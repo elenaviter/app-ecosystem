@@ -5,6 +5,35 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 
 
+def is_terminal_system_notice(message: Mapping[str, Any]) -> bool:
+    """Classify the admitted envelope, never a claim inside its user payload.
+
+    A control's ``mail`` wrapper is transport-owned. Ordinary mail's subject,
+    body and arbitrary payload do not establish a notice kind. Failure notices
+    are terminal even when an older worker, rather than the service, sent them.
+    Discard notices additionally require the canonical service/system sender.
+    """
+
+    kind = str(message.get("kind") or "").strip().lower()
+    if kind == "mail":
+        payload = message.get("payload")
+        mail = payload.get("mail") if isinstance(payload, Mapping) else None
+        kind = (
+            str(mail.get("kind") or "").strip().lower()
+            if isinstance(mail, Mapping)
+            else ""
+        )
+    if kind == "delivery_failed":
+        return True
+    identity = message.get("sender_identity")
+    sender_kind = str(
+        message.get("sender_kind")
+        or (identity.get("kind") if isinstance(identity, Mapping) else "")
+        or ""
+    ).strip().lower()
+    return kind == "discard.notice" and sender_kind in {"service", "system"}
+
+
 @dataclass(frozen=True)
 class DeliveryFailureTarget:
     field: str
@@ -153,5 +182,6 @@ def delivery_failure_target_lines(target: DeliveryFailureTarget) -> tuple[str, s
 __all__ = [
     "DeliveryFailureTarget",
     "delivery_failure_target_lines",
+    "is_terminal_system_notice",
     "resolve_delivery_failure_target",
 ]

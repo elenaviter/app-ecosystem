@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from ..contract.delivery_failures import is_terminal_system_notice
 from .io import atomic_write_json, read_json, utc_now
 
 
@@ -71,7 +72,10 @@ def archive_mailbox_messages(
                     "code": disposition,
                     "reason": str(reason or ""),
                     "details": dict(details or {}),
-                    "notify_sender": state in ACTIVE_MAILBOX_STATES,
+                    "notify_sender": (
+                        state in ACTIVE_MAILBOX_STATES
+                        and not is_terminal_system_notice(row)
+                    ),
                 },
             )
             row.pop("lease", None)
