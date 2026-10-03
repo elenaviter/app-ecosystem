@@ -1,12 +1,11 @@
 product:
   id: connection-hub
-  ref: "2026.10.03.0407"
+  ref: "2026.10.03.0811"
   description: |
-    - Data Bus client: a socket that goes silent is replaced at once instead of waiting for the transport to notice, and a retired socket's transport and HTTP session are released even when the release fails or is cancelled.
-    - Host relay: a channel whose transport is only reconnecting keeps its session, so a call in flight across a short drop keeps its outcome and its idempotency, instead of the channel being replaced after a long backoff.
-    - Reconnects log how long the transport open and the credential resolve took.
-    - A relay timing test no longer depends on how quickly a response arrives.
-    - `pb worker workspace --sweep` reads only what a scratch decision needs, checks a run's manifest before asking the board or Git, measures a run before `--apply` judges it rather than after, and reports a bounded view; `--measure` asks for sizes explicitly.
+    - Attachments: a file the platform would refuse for its type and size (text over 10 MiB, SVG over 2 MiB) is refused when it is sent, not after it was queued. PDF and ZIP content is never held to the text or SVG ceiling.
+    - Attachments: an upload the platform refuses permanently (413, 415, 422, or 400 with an attachment refusal code) is refused once and reported, instead of being retried. The error carries only the status, an allowlisted code and the platform's fixed reasons, never the response body. A response body of an unexpected shape no longer changes how the refusal is classified.
+    - Host relay: the second, authoritative pending-mail read of a wake, and the hold writes after it, run in the channel's own store thread instead of on the shared event loop, so a slow mailbox no longer stalls every other channel.
+    - Project journal: the local journal search index follows the worker's local checkout automatically, so a merge pulled into the clone is searchable without a manual reindex. The check runs in the background on its own worker, so a heartbeat never waits for Git or index work, and it never fetches. Search now reports a stale, partial or unavailable index explicitly instead of returning an empty result. Only the finished result's incident and record writes use the channel's store thread.
   documentation: docs/connection-hub
 
 components:
@@ -18,16 +17,16 @@ components:
     distribution: connection-hub
     import_name: connection_hub
     path: products/connection-hub/packages/connection-hub
-    version: "2026.10.03.0407"
+    version: "2026.10.03.0811"
     version_source: products/connection-hub/packages/connection-hub/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
   cli_package:
     distribution: connection-hub-cli
     import_name: connection_hub_cli
     path: products/connection-hub/packages/connection-hub-cli
-    version: "2026.10.03.0407"
+    version: "2026.10.03.0811"
     version_source: products/connection-hub/packages/connection-hub-cli/pyproject.toml
     workflow: .github/workflows/publish-python-package.yml
 
 config:
-  version: "2026.10.03.0407"
+  version: "2026.10.03.0811"
