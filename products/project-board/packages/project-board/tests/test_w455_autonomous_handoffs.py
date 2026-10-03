@@ -143,7 +143,15 @@ def test_readiness_is_explicit_from_affected_available_owners_everywhere() -> No
     assert "silence is not READY" in collaboration
     assert "after collecting an explicit ready from every affected agent that is available (Rule 10)" in collaboration
     assert "Silence is not ready." in _words("references/runtime-actions.md")
-    assert "once every affected worker that is available has reported paused" in _words("references/test-window.md")
+    window = _words("references/test-window.md")
+    assert "once every affected worker that is available has reported paused" in window
+    # Infra review, 13:13Z: an unavailable participant is not proof that its operation stopped.
+    assert "being stopped already" not in window
+    assert "Absence is not quiescence" in window
+    assert "establishes from evidence that it has no operation in flight the freeze would conflict with" in window
+    assert "Absence is not quiescence" in collaboration
+    assert "Its absence proves neither" in _words("references/runtime-actions.md")
+    assert "Its absence neither holds the action nor shows that none applies." in _words("references/coordinator.md")
     assert "Collect one `ready` or `hold` from every attending worker. One" not in _words("references/coordinator.md")
 
 

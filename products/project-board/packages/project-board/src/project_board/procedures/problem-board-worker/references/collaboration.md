@@ -852,8 +852,10 @@ result came through one, and a worker on another machine could not read it
 owner that is available and active answers READY, or HOLD naming its
 in-flight operation and when it ends, and silence is not READY. An affected
 participant who is unavailable is recorded as pending with its reason; it
-holds nothing that does not depend on it, and the window's owner decides
-from the conditions in the coordinator reference whether it holds this one.
+holds nothing that does not depend on it. Absence is not quiescence: before
+the window runs, its owner establishes from evidence whether that participant
+has an operation in flight the window would conflict with (the conditions in
+the coordinator reference), and only such an operation holds it.
 The test-window reference owns the pause procedure itself, this rule owns
 what the window says to the team.
 

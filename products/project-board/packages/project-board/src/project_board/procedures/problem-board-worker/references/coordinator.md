@@ -1303,8 +1303,10 @@ tree, which stages whatever it holds at that instant.
    line each, naming any that are unreviewed. Collect one explicit `ready`
    or `hold` from every attending worker the action affects and that is
    available now; silence is not `ready`. A worker that is unavailable is
-   listed as pending with its reason: it holds the action only through one of
-   the three conditions above, never by its absence. One `hold` stops it. A `ready` that carries a
+   listed as pending with its reason: you establish from evidence whether one
+   of the three conditions above applies to it, and it holds the action only
+   through one of them. Its absence neither holds the action nor shows that
+   none applies. One `hold` stops it. A `ready` that carries a
    constraint (a commit it must be at or after, a window it needs, a file it
    is about to touch) is honoured or the action is re-announced. A `hold`
    names what releases it (a commit, a clear, a time) and the holder sends

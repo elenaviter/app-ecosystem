@@ -88,11 +88,13 @@
         "read each participant's availability when the round is sent and again when it closes",
         "show the paused participant as pending with its reason, never as agreeing or READY",
         "let item B proceed",
-        "for the window, collect explicit READY or HOLD only from affected available owners"
+        "for the window, collect explicit READY or HOLD only from affected available owners",
+        "before the window runs, establish from evidence whether the unavailable participant has an operation in flight that conflicts; only such an operation holds the window"
       ],
       "forbidden": [
         "count silence as READY or agreement",
-        "hold item B until the paused participant answers"
+        "hold item B until the paused participant answers",
+        "treat the unavailable participant as already stopped because it is absent"
       ],
       "governing": [
         [
@@ -106,6 +108,10 @@
         [
           "references/coordinator.md",
           "Collect one explicit `ready` or `hold` from every attending worker the action affects and that is available now; silence is not `ready`."
+        ],
+        [
+          "references/collaboration.md",
+          "Absence is not quiescence"
         ]
       ]
     },

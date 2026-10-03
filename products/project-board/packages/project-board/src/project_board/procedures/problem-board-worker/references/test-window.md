@@ -55,7 +55,12 @@ that keeps acting on the running system changes what the requester observes.
 6. Wait for the coordinator to say the window has closed, then continue.
 
 Only the coordinator deploys. In a freeze it starts once every affected
-worker that is available has reported paused; an unavailable worker is
-recorded as pending with its reason and, being stopped already, does not
-hold the freeze ([collaboration](collaboration.md) Rule 10). If finishing cleanly will take longer than the requester
+worker that is available has reported paused. For a worker that is
+unavailable, the coordinator first establishes from evidence that it has no
+operation in flight the freeze would conflict with (its tree clean at its
+last pushed commit, no runtime or relay call running, nothing writing to the
+system under test) and records it as pending with that evidence. Absence is
+not quiescence: an unreachable or limited worker may still have an operation
+running, and its absence neither pauses it nor holds the freeze by itself
+([collaboration](collaboration.md) Rule 10). If finishing cleanly will take longer than the requester
 would expect, say so, so they can decide whether to wait.
