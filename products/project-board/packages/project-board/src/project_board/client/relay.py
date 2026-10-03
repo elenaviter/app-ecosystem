@@ -328,12 +328,17 @@ def _upload_refusal(status: int, body: bytes) -> tuple[str, list[str]]:
     error = answer.get("error") if isinstance(answer, Mapping) else None
     if not isinstance(error, Mapping):
         return "", []
-    code = str(error.get("code") or "")
-    code = code if _UPLOAD_CODE.fullmatch(code) else ""
+    code = error.get("code")
+    code = code if isinstance(code, str) and _UPLOAD_CODE.fullmatch(code) else ""
     details = error.get("details") if isinstance(error.get("details"), Mapping) else {}
+    # Any other shape (a number, a flag, an object, null) carries no reason:
+    # the status alone then decides, and the sentence stays fixed.
+    listed = details.get("reasons")
+    if not isinstance(listed, list):
+        return code, []
     reasons = [
-        str(reason)
-        for reason in (details.get("reasons") or [])[:5]
+        reason
+        for reason in listed[:5]
         if isinstance(reason, str) and any(pattern.fullmatch(reason) for pattern in _UPLOAD_REASONS)
     ]
     return code, reasons[:3]
@@ -350,7 +355,10 @@ async def _http_upload(url: str, data: bytes, mime: str) -> None:
                 body = await response.content.read(_UPLOAD_ANSWER_BYTES)
             except Exception:  # noqa: BLE001 - the status alone still decides
                 body = b""
-            code, reasons = _upload_refusal(response.status, body)
+            try:
+                code, reasons = _upload_refusal(response.status, body)
+            except Exception:  # noqa: BLE001 - a body's shape never decides the classification
+                code, reasons = "", []
             permanent = response.status in _UPLOAD_PERMANENT_STATUSES or (
                 response.status == 400 and code in _UPLOAD_PERMANENT_CODES
             )
