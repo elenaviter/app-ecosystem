@@ -170,6 +170,7 @@ class WorkspaceSizes:
         walk: Callable[[str], Awaitable[int]] | None = None,
         clock: Callable[[], float] | None = None,
         max_concurrent_walks: int = MAX_CONCURRENT_WALKS,
+        observer: Callable[..., None] | None = None,
     ) -> None:
         if max_concurrent_walks < 1:
             raise ValueError("max_concurrent_walks must be at least 1")
@@ -180,6 +181,17 @@ class WorkspaceSizes:
         self._entries: dict[str, _Entry] = {}
         # Created on first use, inside the relay's running loop.
         self._walk_slots: asyncio.Semaphore | None = None
+        # W461: counts every schedule decision and walk (kind, event[,
+        # seconds, phase]); timing evidence only, it changes no decision.
+        self._observer = observer
+
+    def _observe(self, event: str, seconds: float | None = None, *, phase: str = "") -> None:
+        if self._observer is None:
+            return
+        try:
+            self._observer("workspace_size", event, seconds, phase=phase)
+        except Exception:  # noqa: BLE001 - accounting never affects a walk
+            pass
 
     def last(self, path: str) -> int | None:
         entry = self._entries.get(path)
@@ -189,10 +201,14 @@ class WorkspaceSizes:
         """Start a measurement of ``path`` when it is due; never waits for it."""
 
         entry = self._entries.setdefault(path, _Entry())
+        self._observe("schedule_attempted")
         if entry.task is not None and not entry.task.done():
+            self._observe("coalesced_in_flight")
             return None
         if entry.measured_at is not None and self._clock() - entry.measured_at < self.interval_seconds:
+            self._observe("not_due")
             return None
+        self._observe("accepted")
         entry.task = asyncio.get_running_loop().create_task(
             self._measure(path, entry, worker_name), name="problem-board-workspace-size"
         )
@@ -204,10 +220,12 @@ class WorkspaceSizes:
         queued_at = self._clock()
         async with self._walk_slots:
             started = self._clock()
+            self._observe("walk_started", started - queued_at, phase="queue_wait")
             outcome = "ok"
             try:
                 entry.size = await self._walk(path)
             except asyncio.CancelledError:
+                self._observe("cancelled", self._clock() - started, phase="run")
                 raise
             except Exception as exc:  # noqa: BLE001 - the last size stays, the next interval retries
                 outcome = type(exc).__name__
@@ -215,6 +233,7 @@ class WorkspaceSizes:
                     outcome = f"{outcome}:{exc.returncode}:{exc.exception_type}"
             ended = self._clock()
             entry.measured_at = ended
+        self._observe("completed" if outcome == "ok" else "failed", ended - started, phase="run")
         walk_seconds = ended - started
         logger.log(
             logging.WARNING if walk_seconds >= WALK_SLOW_SECONDS or outcome != "ok" else logging.INFO,

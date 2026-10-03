@@ -75,7 +75,8 @@ from .runtime_account import read_runtime_account
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
-from .relay_trace import RelayActivityTrace
+from .relay_logging import relay_log_owner
+from .relay_trace import DiagnosticWriter, RelayActivityTrace
 from .relay_admission import is_namespace_handshake_timeout, is_runtime_unavailable
 from .session_delivery import (
     WAKE_EVENT_KINDS,
@@ -5165,7 +5166,9 @@ class ProblemBoardRelaySupervisor:
         # One workspace-size registry for every channel on this host: at most
         # two walks at once, once per interval per path, in a child process
         # (W461, W469).
-        self._workspace_sizes = WorkspaceSizes()
+        self._workspace_sizes = WorkspaceSizes(
+            observer=lambda *args, **kwargs: self._trace.record_job(*args, **kwargs)
+        )
         self._pacing = pacing or RelayPacing(
             self.config_path.parent / PACING_FILENAME, forget_permanent=True
         )
@@ -5174,7 +5177,18 @@ class ProblemBoardRelaySupervisor:
         self.session_queue_reconciler = (
             session_queue_reconciler or reconcile_agent_session_queue
         )
-        self._trace = trace or RelayActivityTrace(log=logger)
+        # W461: turn accounting lines go to the relay log through its single
+        # owner thread, with a receipt each, and only when relay logging made
+        # that owner (a test or a stderr-only run writes nothing).
+        log_owner = relay_log_owner()
+        self._trace = trace or RelayActivityTrace(
+            log=logger,
+            writer=(
+                DiagnosticWriter(submit=log_owner.submit_line)
+                if log_owner is not None
+                else None
+            ),
+        )
         # Keyed by worker name. A session carries one live, Card-scoped Data
         # Bus connection and the adapter's registration state. The Card itself
         # opens the connection; terminal authority failure drops the session
@@ -6483,7 +6497,32 @@ class ProblemBoardRelaySupervisor:
                 int(request.get("transport_attempts") or 0),
             )
 
+        # W461: the request being executed, for this drain's stages and the
+        # turn's summary. Reset on every way out of the loop.
+        request_scope = self._trace.request_scope()
+        try:
+            return await self._drain_claimed_requests(
+                host, channel, session, queue, store_executor, requests, counts,
+                expected_identity, log_stages, request_scope,
+            )
+        finally:
+            request_scope.close()
+
+    async def _drain_claimed_requests(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        session: _ChannelSession,
+        queue: Any,
+        store_executor: Any,
+        requests: Sequence[Mapping[str, Any]],
+        counts: dict[str, int],
+        expected_identity: Mapping[str, str],
+        log_stages: Callable[..., None],
+        request_scope: Any,
+    ) -> dict[str, int]:
         for request in requests:
+            request_scope.enter(str(request.get("request_id") or ""))
             relay_started = time.monotonic()
             governed_action_seconds = 0.0
             outcome = "refused"
@@ -6992,6 +7031,13 @@ class ProblemBoardRelaySupervisor:
         await self.stop_outbox_server()
         await self.stop_local_state_maintenance()
         await self.stop_loop_lag_sampler()
+        # W461: turns still running now are counted once as abandoned at
+        # shutdown, before their cancellation below, and the final bucket is
+        # handed to the writer with one bounded wait.
+        try:
+            await self._trace.close_accounting()
+        except Exception:  # noqa: BLE001 - accounting never blocks shutdown
+            logger.warning("Problem Board relay turn accounting close failed", exc_info=True)
         for worker_name in list(self._channel_turns):
             await self._cancel_channel_turn(worker_name)
         for worker_name in list(self._beside_notifies):
@@ -7418,6 +7464,7 @@ class ProblemBoardRelaySupervisor:
             # The sampler's beat feeds the watchdog thread, which names the
             # frames holding the loop while a stall is happening (W456).
             self._trace.watchdog.start()
+            self._trace.accounting.announce_process_start()
 
     async def stop_loop_lag_sampler(self) -> None:
         self._trace.watchdog.stop()
@@ -7836,6 +7883,47 @@ class ProblemBoardRelaySupervisor:
         *,
         fingerprint: str | None,
     ) -> dict[str, Any]:
+        """One channel turn, counted once with its own opaque id (W461).
+
+        The id is set in this task's context before the body task is made, so
+        the body, its stages, its coordinate requests and its executor calls
+        carry it. Every way out (result, deadline, failure, cancellation) is
+        classified once; nothing about the turn itself changes.
+        """
+
+        turn = self._trace.begin_turn(channel.worker_name)
+        outcome, code = "cancelled", ""
+        try:
+            result = await self._channel_turn_under_deadline(
+                host, channel, fingerprint=fingerprint
+            )
+            failure = result.get("failure")
+            if failure is None:
+                outcome = "succeeded"
+            else:
+                code = self._failure_code(failure)
+                outcome = (
+                    "deadline"
+                    if code == "work_relay_channel_turn_deadline_exceeded"
+                    else "failed"
+                )
+            return result
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        except BaseException as exc:
+            outcome, code = "failed", self._failure_code(exc)
+            raise
+        finally:
+            self._trace.end_turn(turn, outcome, code=code)
+
+    async def _channel_turn_under_deadline(
+        self,
+        host: HostRelayConfig,
+        channel: WorkerChannelConfig,
+        *,
+        fingerprint: str | None,
+    ) -> dict[str, Any]:
         """One channel's whole turn under its own deadline.
 
         ``fingerprint`` is set for a channel waiting on authorization. The
@@ -8134,7 +8222,12 @@ class ProblemBoardRelaySupervisor:
             )
             return outcome
 
-        async with self._notify_lock(channel.worker_name):
+        async with self._trace.timed_lock(
+            self._notify_lock(channel.worker_name),
+            "session.notify_lock_wait",
+            channel=channel.worker_name,
+            operation="input.available",
+        ):
             # Local mail and the native session wake do not depend on a healthy
             # Data Bus reconciliation. A poisoned outbox or remote operation
             # refusal must not make an already-running coding session deaf.
@@ -8380,6 +8473,12 @@ class ProblemBoardRelaySupervisor:
             raise
         finally:
             self._trace.finish_cycle(cycle, outcome=outcome)
+            # W461: a due bucket and queued lines go to the writer's own
+            # thread; a stuck write is left running, never waited on here.
+            try:
+                await self._trace.flush_accounting()
+            except Exception:  # noqa: BLE001 - accounting never fails the cycle
+                logger.warning("Problem Board relay turn accounting flush failed", exc_info=True)
 
     async def _poll_once_body(self) -> dict[str, Any]:
         if self._late_turn_finished is None:

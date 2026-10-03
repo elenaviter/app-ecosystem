@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
+import queue
 import sys
 import threading
 from datetime import datetime, timezone
-from logging.handlers import RotatingFileHandler
+from logging.handlers import QueueHandler, RotatingFileHandler
 from pathlib import Path
 
 
@@ -130,6 +132,233 @@ def rotating_relay_handler(
     return handler
 
 
+
+# W461: one thread owns the relay log file. Every relay line, an ordinary
+# warning included, is only formatted and queued by the thread that logs it;
+# the owner alone writes and rotates the file. A file system that hangs then
+# holds the owner, never the relay's event loop, and nothing else waits on
+# the file handler's lock. What waits is bounded by count and bytes; past
+# that a line is dropped, counted, and the owner writes how many when it can.
+RELAY_LOG_PENDING_MAX_RECORDS = 10_000
+RELAY_LOG_PENDING_MAX_BYTES = 4 * 1024 * 1024
+RELAY_LOG_CLOSE_WAIT_SECONDS = 1.0
+RELAY_DIAGNOSTIC_LOGGER_NAME = "project_board.relay.diagnostics"
+
+
+class RelayLogOwner:
+    """The single writer of the relay's rotating log file."""
+
+    def __init__(
+        self,
+        handler: logging.Handler,
+        *,
+        max_records: int = RELAY_LOG_PENDING_MAX_RECORDS,
+        max_bytes: int = RELAY_LOG_PENDING_MAX_BYTES,
+        thread_name: str = "problem-board-relay-log",
+    ) -> None:
+        self.handler = handler
+        self.max_records = max(1, int(max_records))
+        self.max_bytes = max(1, int(max_bytes))
+        self._queue: queue.SimpleQueue = queue.SimpleQueue()
+        self._lock = threading.Lock()
+        self._pending_records = 0
+        self._pending_bytes = 0
+        self.dropped_records = 0
+        self.dropped_bytes = 0
+        self._reported_drops = (0, 0)
+        # A line the owner could not hand on (an error outside the handler's
+        # own handleError path). The owner counts it and keeps running: a
+        # dead owner would lose every later relay line without a trace.
+        self.owner_errors = 0
+        self.enqueue_errors = 0
+        self._closed = False
+        _detach_from_logging_shutdown(handler)
+        # A daemon: a write stuck in the file system never holds exit.
+        self._thread = threading.Thread(target=self._run, name=thread_name, daemon=True)
+        self._thread.start()
+
+    @property
+    def thread_ident(self) -> int | None:
+        return self._thread.ident
+
+    def pending(self) -> tuple[int, int]:
+        with self._lock:
+            return self._pending_records, self._pending_bytes
+
+    def _admit(self, size: int) -> bool:
+        with self._lock:
+            if (
+                self._closed
+                or self._pending_records + 1 > self.max_records
+                or self._pending_bytes + size > self.max_bytes
+            ):
+                self.dropped_records += 1
+                self.dropped_bytes += size
+                return False
+            self._pending_records += 1
+            self._pending_bytes += size
+            return True
+
+    def submit_record(self, record: logging.LogRecord) -> bool:
+        """Queue a prepared record; never blocks. False when it was dropped."""
+
+        size = len(str(record.msg).encode("utf-8", "replace")) + 128
+        if not self._admit(size):
+            return False
+        self._queue.put(("record", record, size, None))
+        return True
+
+    def submit_line(self, line: str) -> concurrent.futures.Future[None] | None:
+        """Queue one diagnostic line with a receipt; None when it was dropped.
+
+        The receipt succeeds only when the owner rolled over (if due), wrote
+        and flushed the line without an exception: an append under the
+        handler's file contract, not a durability guarantee. A failure keeps
+        its exception for the caller to classify; nothing is printed.
+        """
+
+        size = len(line.encode("utf-8", "replace")) + 128
+        if not self._admit(size):
+            return None
+        future: concurrent.futures.Future[None] = concurrent.futures.Future()
+        self._queue.put(("line", line, size, future))
+        return future
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is None:
+                return
+            kind, payload, size, future = item
+            with self._lock:
+                self._pending_records -= 1
+                self._pending_bytes -= size
+            try:
+                if kind == "record":
+                    # The existing handler contract for ordinary lines,
+                    # unchanged: a failure goes to the handler's handleError.
+                    self.handler.handle(payload)
+                elif future.set_running_or_notify_cancel():
+                    try:
+                        self._append(payload)
+                    except BaseException as exc:  # noqa: BLE001 - the receipt carries it
+                        future.set_exception(exc)
+                    else:
+                        future.set_result(None)
+                self._report_drops()
+            except Exception:  # noqa: BLE001 - counted; the owner never dies of one line
+                with self._lock:
+                    self.owner_errors += 1
+
+    def _append(self, line: str) -> None:
+        handler = self.handler
+        record = logging.LogRecord(
+            RELAY_DIAGNOSTIC_LOGGER_NAME, logging.INFO, __file__, 0, line, None, None
+        )
+        if isinstance(handler, RotatingFileHandler):
+            if handler.shouldRollover(record):
+                handler.doRollover()
+            if handler.stream is None:
+                handler.stream = handler._open()
+        stream = getattr(handler, "stream", None)
+        if stream is None:
+            raise RuntimeError("relay_log_not_open")
+        stream.write(handler.format(record) + getattr(handler, "terminator", "\n"))
+        stream.flush()
+
+    def _report_drops(self) -> None:
+        with self._lock:
+            drops = (self.dropped_records, self.dropped_bytes)
+            if drops == self._reported_drops:
+                return
+            self._reported_drops = drops
+        self.handler.handle(
+            logging.LogRecord(
+                RELAY_LOGGER_NAME,
+                logging.WARNING,
+                __file__,
+                0,
+                "Problem Board relay log dropped records=%d bytes=%d (totals since start)",
+                drops,
+                None,
+            )
+        )
+
+    def close(self, wait_seconds: float = RELAY_LOG_CLOSE_WAIT_SECONDS) -> bool:
+        """Write what is queued, waiting at most ``wait_seconds``; True when the owner ended."""
+
+        with self._lock:
+            if self._closed:
+                return not self._thread.is_alive()
+            self._closed = True
+        self._queue.put(None)
+        self._thread.join(max(0.0, float(wait_seconds)))
+        if self._thread.is_alive():
+            return False
+        try:
+            self.handler.close()
+        except Exception:  # noqa: BLE001 - a failed final flush is counted, never raised into shutdown
+            with self._lock:
+                self.owner_errors += 1
+        return True
+
+
+class RelayQueueHandler(QueueHandler):
+    """What the relay's loggers write to: format, queue, return (W461)."""
+
+    def __init__(self, owner: RelayLogOwner) -> None:
+        super().__init__(queue=None)  # type: ignore[arg-type]
+        self.owner = owner
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # QueueHandler.emit sends a formatting failure to handleError, which
+        # prints a traceback to stderr on the logging thread. Here it is
+        # counted instead, and the line is lost visibly (W461 review).
+        try:
+            self.owner.submit_record(self.prepare(record))
+        except Exception:  # noqa: BLE001 - counted, never printed
+            with self.owner._lock:
+                self.owner.enqueue_errors += 1
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        self.owner.submit_record(record)
+
+    def close(self) -> None:
+        try:
+            self.owner.close()
+        finally:
+            super().close()
+
+
+def _detach_from_logging_shutdown(handler: logging.Handler) -> None:
+    """Leave the owned handler to its owner alone, at exit too.
+
+    ``logging.shutdown`` (run at interpreter exit) takes every handler's lock
+    and closes it. The owner may be holding this handler's lock in a write the
+    file system never finishes, and exit would then wait forever. The owner
+    closes the handler itself once it has ended (``RelayLogOwner.close``).
+    """
+
+    references = getattr(logging, "_handlerList", None)
+    if not isinstance(references, list):
+        return
+    for reference in list(references):
+        try:
+            if reference() is handler:
+                references.remove(reference)
+        except (TypeError, ValueError):
+            continue
+
+
+def relay_log_owner() -> RelayLogOwner | None:
+    """The owner behind the relay's root log handler, when relay logging set one up."""
+
+    for handler in logging.getLogger().handlers:
+        if isinstance(handler, RelayQueueHandler):
+            return handler.owner
+    return None
+
+
 def configure_relay_logging(
     config_path: Path | None,
     *,
@@ -140,7 +369,7 @@ def configure_relay_logging(
     if config_path is not None:
         path = relay_log_path(config_path)
         prepare_relay_crash_log(relay_crash_log_path(config_path))
-        handlers.append(rotating_relay_handler(path))
+        handlers.append(RelayQueueHandler(RelayLogOwner(rotating_relay_handler(path))))
     if mirror_to_stderr or not handlers:
         stream = logging.StreamHandler()
         stream.setFormatter(UtcPerLineFormatter("%(message)s"))
@@ -148,6 +377,7 @@ def configure_relay_logging(
     logging.basicConfig(level=logging.INFO, handlers=handlers, force=True)
     install_relay_exception_hooks()
     return path
+
 
 
 def _relay_sys_excepthook(exc_type, exc_value, exc_traceback) -> None:
