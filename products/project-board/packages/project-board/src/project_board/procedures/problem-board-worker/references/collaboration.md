@@ -1046,9 +1046,9 @@ changes too) for every later step. A mail, a `working` report that says the
 work is in review, or a verdict sent only by mail is not a hand-off: the item
 stays on your list, the next actor's list shows nothing, and the board shows
 the team and the operator a wrong picture of the work. Work with no item gets
-one before you ask. Why: on 2026-10-03 three reviews were asked for by mail
-only, and an urgent onboarding repair stayed assigned to its author until the
-operator saw it (operator, 2026-10-03).
+one before you ask. Why: the next actor and the operator see their work
+through the item's assignee and status, never through someone else's mail
+(operator, 2026-10-03).
 
 A missing technical detail never leaves the
 route without an owner or waiting on an acknowledgement: the route names who
