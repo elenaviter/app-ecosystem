@@ -315,6 +315,15 @@ def _is_socketio_timeout(error: BaseException) -> bool:
 _NAMESPACE_ADMISSION_TIMEOUT_SECONDS = 30.0
 _RECONNECT_DELAY_SECONDS = 1.0
 _RECONNECT_DELAY_MAX_SECONDS = 10.0
+# An ingress acknowledgement that times out on a socket that delivered nothing
+# since the request was sent marks the transport as silent, and the client
+# replaces it at once instead of waiting for Engine.IO to notice. A timer that
+# fired this much late or more means the event loop was not running, so the
+# silence is not evidence about the transport (W448).
+_SILENT_TRANSPORT_MAX_TIMER_OVERRUN_SECONDS = 1.0
+# How long after a transport drop the client still calls its own reconnect a
+# transient recovery. Past it, an owner that would replace the session does so.
+_TRANSPORT_RECOVERY_WINDOW_SECONDS = 60.0
 
 
 class FederatedDataBusClient:
@@ -368,6 +377,10 @@ class FederatedDataBusClient:
         self._handshakes = 0
         self._episode_attempt = 0
         self._episode_refusal: dict[str, Any] | None = None
+        # Whether the server refused any handshake since the last connect.
+        # _episode_refusal describes only the previous attempt and is cleared
+        # when the next one starts; this stays set for the whole episode.
+        self._episode_refused = False
         self._socket_factory = socket_factory or _default_socket_factory
         # A custom socket factory owns its reconnect policy. The production
         # factory deliberately disables python-socketio reconnects so
@@ -404,6 +417,21 @@ class FederatedDataBusClient:
         # request compares it before and after, so a failure says whether the
         # transport dropped while it waited (W448).
         self._disconnect_count = 0
+        # When the active transport last dropped (monotonic), until the next
+        # connect. It bounds what transport_recovering calls transient.
+        self._disconnected_at: float | None = None
+        # The last packet the client saw from the server, as the socket token
+        # it arrived on and a monotonic time: a namespace connect, a service
+        # event or an ingress acknowledgement. Engine.IO pings are answered
+        # inside python-engineio and never reach this client, so a quiet but
+        # healthy socket can look silent here; only an acknowledgement that
+        # times out turns that silence into a decision.
+        self._last_inbound: tuple[object, float] | None = None
+        # Old transports being closed after the client replaced them as silent.
+        self._retiring_transports: set[asyncio.Task[None]] = set()
+        # Monotonic start of the current namespace attempt, for the reconnect
+        # handshake to report how long the transport took to open.
+        self._attempt_started_at: float | None = None
         # The server's answer when it refuses the namespace: python-socketio
         # delivers it to connect_error and then raises a generic
         # ConnectionError from connect(), so the reason has to be caught here
@@ -474,6 +502,80 @@ class FederatedDataBusClient:
             and self._connected.is_set()
             and getattr(self.socket, "connected", True)
         )
+
+    @property
+    def transport_recovering(self) -> bool:
+        """True while a plain transport drop is being repaired by this client.
+
+        An owner that would replace the session after a failure can keep it
+        instead: the client is bringing the transport back on its own, and
+        receipts fan out to the re-authenticated session, so requests that
+        were waiting still get their outcome. It is False whenever the drop is
+        not just transport: the client is closed or connected, a custom socket
+        factory owns the reconnect, the credential has expired on this side's
+        clock, the server refused a handshake in this episode, no reconnect is
+        running, or the drop is older than the recovery window. The owner
+        still fences Card replacement, revocation and cancellation itself.
+        """
+
+        if self._closed or not self._owns_reconnect or self.connected:
+            return False
+        if self._expired() or self._episode_refused:
+            return False
+        dropped_at = self._disconnected_at
+        task = self._reconnect_task
+        if dropped_at is None or task is None or task.done():
+            return False
+        return time.monotonic() - dropped_at <= _TRANSPORT_RECOVERY_WINDOW_SECONDS
+
+    def _note_inbound(self, token: object) -> None:
+        self._last_inbound = (token, time.monotonic())
+
+    def _inbound_since(self, token: object, since: float) -> bool:
+        last = self._last_inbound
+        return bool(last is not None and last[0] is token and last[1] >= since)
+
+    async def _replace_silent_transport(
+        self, socket: Any, token: object, *, silent_seconds: float
+    ) -> bool:
+        """Drop a transport that answered nothing, so the reconnect starts now.
+
+        Only the transport the timed-out request was sent on is touched, and
+        only while it is still the active one: a request that outlived a
+        reconnect never closes the newer socket. The drop goes through the
+        same path as one Engine.IO reports, so pending outcome waits keep
+        waiting for the reconnected session. Closing the old socket can wait
+        on a dead network, so it runs beside the request.
+        """
+
+        if not self._socket_is_active(socket, token):
+            return False
+        logger.warning(
+            "Data Bus socket lifecycle event=silent_transport_replaced "
+            "connection_generation=%d socket_id=%s silent_seconds=%.3f%s",
+            self._connection_generation,
+            self._socket_id or "unassigned",
+            silent_seconds,
+            self._lifecycle_log_suffix(),
+        )
+        await self._on_disconnect(socket, token, "silent transport")
+        retiring = asyncio.ensure_future(self._retire_transport(socket))
+        self._retiring_transports.add(retiring)
+        retiring.add_done_callback(self._retiring_transports.discard)
+        return True
+
+    async def _retire_transport(self, socket: Any) -> None:
+        try:
+            await socket.disconnect()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the transport is already replaced
+            logger.info(
+                "Data Bus socket lifecycle event=silent_transport_close_failed "
+                "error=%s%s",
+                type(exc).__name__,
+                self._lifecycle_log_suffix(),
+            )
 
     @property
     def connection_generation(self) -> int:
@@ -551,6 +653,9 @@ class FederatedDataBusClient:
         self._socket_id = self._current_socket_id(socket)
         self._episode_attempt = 0
         self._episode_refusal = None
+        self._episode_refused = False
+        self._disconnected_at = None
+        self._note_inbound(token)
         self._connected.set()
         outcome = self._namespace_outcome
         if outcome is not None and not outcome.done():
@@ -579,6 +684,7 @@ class FederatedDataBusClient:
             return
         self._connect_refusal = _refusal_payload(data)
         self._episode_refusal = dict(self._connect_refusal)
+        self._episode_refused = True
         outcome = self._namespace_outcome
         if outcome is not None and not outcome.done():
             outcome.set_result(("refused", dict(self._connect_refusal)))
@@ -609,6 +715,7 @@ class FederatedDataBusClient:
             return
         self._connected.clear()
         self._disconnect_count += 1
+        self._disconnected_at = time.monotonic()
         reason = _connection_reason(args[0] if args else None)
         logger.info(
             "Data Bus socket lifecycle event=disconnected connection_generation=%d "
@@ -649,6 +756,7 @@ class FederatedDataBusClient:
     ) -> None:
         if not self._socket_is_active(socket, token):
             return
+        self._note_inbound(token)
         envelope = _mapping(payload)
         body = _mapping(envelope.get("data"))
         message_id = str(body.get("message_id") or "").strip()
@@ -723,6 +831,7 @@ class FederatedDataBusClient:
             loop.create_future()
         )
         self._namespace_outcome = outcome
+        self._attempt_started_at = time.monotonic()
         try:
             # The auth is a coroutine function, not a payload: python-socketio
             # resolves a callable once per namespace handshake, on this connect
@@ -852,6 +961,13 @@ class FederatedDataBusClient:
         self._handshakes += 1
         if self._handshakes == 1 or self._credential_source is None:
             return self.credential.auth_payload()
+        # python-socketio asks for the auth once Engine.IO is open, so the
+        # time since the attempt began is the transport's, and the source's
+        # own time is measured apart. A reconnect that takes tens of seconds
+        # then says which of the two it was waiting on.
+        entered = time.monotonic()
+        started = self._attempt_started_at
+        dropped_at = self._disconnected_at
         self._episode_attempt += 1
         attempt = HandshakeAttempt(
             connection_generation=self._connection_generation,
@@ -882,13 +998,19 @@ class FederatedDataBusClient:
                 self._lifecycle_log_suffix(),
                 exc_info=True,
             )
+        resolved_at = time.monotonic()
         logger.info(
             "Data Bus socket lifecycle event=handshake attempt=%d "
-            "connection_generation=%d credential=%s after_refusal=%s%s",
+            "connection_generation=%d credential=%s after_refusal=%s "
+            "since_disconnect_seconds=%s transport_open_seconds=%s "
+            "bearer_resolve_seconds=%.3f%s",
             attempt.attempt,
             attempt.connection_generation,
             presented,
             str(attempt.previous_refusal is not None).lower(),
+            "unknown" if dropped_at is None else f"{entered - dropped_at:.3f}",
+            "unknown" if started is None else f"{entered - started:.3f}",
+            resolved_at - entered,
             self._lifecycle_log_suffix(),
         )
         return self.credential.auth_payload()
@@ -947,6 +1069,11 @@ class FederatedDataBusClient:
             if reconnect_task is not None and reconnect_task is not asyncio.current_task():
                 reconnect_task.cancel()
                 await asyncio.gather(reconnect_task, return_exceptions=True)
+            retiring = list(self._retiring_transports)
+            for task in retiring:
+                task.cancel()
+            if retiring:
+                await asyncio.gather(*retiring, return_exceptions=True)
             shutdown = getattr(self.socket, "shutdown", None)
             if callable(shutdown):
                 # python-socketio disconnect() is a no-op while disconnected and
@@ -986,10 +1113,12 @@ class FederatedDataBusClient:
         future: asyncio.Future[DataBusOutcome] = loop.create_future()
         self._pending[resolved_message_id] = future
         accepted = False
+        sent_on = self.socket
+        sent_token = self._active_socket_token
         try:
             waited_from = time.monotonic()
             try:
-                ack = await self.socket.call(
+                ack = await sent_on.call(
                     "data_bus.publish",
                     {
                         "schema": "kdcube.data_bus.ingress.v1",
@@ -1015,16 +1144,36 @@ class FederatedDataBusClient:
                     raise
                 if future.done() and not future.cancelled():
                     return future.result()
+                evidence = self._wait_evidence(
+                    disconnects_at_start=disconnects_at_start,
+                    waited_from=waited_from,
+                    timeout_seconds=self.ingress_timeout_seconds,
+                )
+                evidence["silent_transport_replaced"] = False
+                if (
+                    self._owns_reconnect
+                    and not self._closed
+                    and sent_token is not None
+                    and not evidence["disconnected_during_request"]
+                    and evidence["timer_overrun_seconds"]
+                    < _SILENT_TRANSPORT_MAX_TIMER_OVERRUN_SECONDS
+                    and not self._inbound_since(sent_token, waited_from)
+                ):
+                    evidence["silent_transport_replaced"] = (
+                        await self._replace_silent_transport(
+                            sent_on,
+                            sent_token,
+                            silent_seconds=time.monotonic() - waited_from,
+                        )
+                    )
                 raise DataBusOutcomeUnknown(
                     message_id=resolved_message_id,
                     accepted=False,
                     connection=connection,
-                    evidence=self._wait_evidence(
-                        disconnects_at_start=disconnects_at_start,
-                        waited_from=waited_from,
-                        timeout_seconds=self.ingress_timeout_seconds,
-                    ),
+                    evidence=evidence,
                 ) from exc
+            if self._socket_is_active(sent_on, sent_token):
+                self._note_inbound(sent_token)
             acknowledgement = _mapping(ack)
             accepted_rows = acknowledgement.get("accepted")
             accepted = bool(
