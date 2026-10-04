@@ -92,9 +92,24 @@ export function findAccessCardFocus<T extends { access_id: string; source?: stri
 
 const MY_CARD_PREFIX = 'person-my-card-';
 
+/** The platform's request limit, in the words its gateway refuses with:
+ *  "Burst limit exceeded (161/160)", "Hourly limit exceeded (601/600)". */
+export function isRequestLimitRefusal(reason = ''): boolean {
+  return /\b(burst|hourly) limit exceeded\b/i.test(reason);
+}
+
 /** Why a requested Card did not open, with Connection Hub's own reason when it
  *  gave one (W260: "Open my Control Card" showed only "does not exist"). */
 export function unavailableAccessCardMessage(focus: AccessCardFocus, reason = ''): string {
+  // W435: a refusal by the request limit says nothing about the Card. It
+  // said "does not exist or is not visible" and sent people looking for a
+  // missing Card that opened a minute later.
+  if (isRequestLimitRefusal(reason)) {
+    const hourly = /hourly/i.test(reason);
+    return `Card ${focus.accessId} was not loaded: this account sent more requests than the platform allows `
+      + `${hourly ? 'in an hour' : 'in one minute'} (${reason.trim().replace(/\.$/, '')}). `
+      + `Nothing is wrong with the Card. Refresh ${hourly ? 'later' : 'in about a minute'} to open it.`;
+  }
   const base = `Card ${focus.accessId} does not exist or is not visible to this account.`;
   const why = reason.trim() ? ` Connection Hub answered: ${reason.trim().replace(/\.$/, '')}.` : '';
   // A person's own Card (My Card) is not a Control Card: a link that asks for

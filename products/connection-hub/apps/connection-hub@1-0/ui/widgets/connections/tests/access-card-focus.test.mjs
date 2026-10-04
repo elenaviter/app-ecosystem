@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   accessCardFocusFromParams,
   findAccessCardFocus,
+  isRequestLimitRefusal,
   matchesAccessCardFocus,
   projectPersonControlNotice,
   unavailableAccessCardMessage,
@@ -128,4 +129,16 @@ test('W260: a My Card opens by access_id among the person\'s own Cards', () => {
   assert.equal(matchesAccessCardFocus(myCard, focus({ access_id: myCard.access_id })), true)
   // Asked for as a Control Card it can never match: that link is the defect.
   assert.equal(matchesAccessCardFocus(myCard, focus({ control_card_id: myCard.access_id })), false)
+})
+
+test('W435: a refusal by the request limit says so and never calls the Card missing', () => {
+  const request = focus({ control_card_id: 'person-control-7c43016d992ae974fc9c5f1b' })
+  const burst = unavailableAccessCardMessage(request, 'Burst limit exceeded (161/160)')
+  assert.doesNotMatch(burst, /does not exist|not visible/)
+  assert.equal(burst, 'Card person-control-7c43016d992ae974fc9c5f1b was not loaded: this account sent more requests than the platform allows in one minute (Burst limit exceeded (161/160)). Nothing is wrong with the Card. Refresh in about a minute to open it.')
+  const hourly = unavailableAccessCardMessage(request, 'Hourly limit exceeded (601/600).')
+  assert.match(hourly, /in an hour \(Hourly limit exceeded \(601\/600\)\)\. Nothing is wrong with the Card\. Refresh later to open it\.$/)
+  assert.equal(isRequestLimitRefusal('Burst limit exceeded (161/160)'), true)
+  assert.equal(isRequestLimitRefusal('control_card_not_found'), false)
+  assert.match(unavailableAccessCardMessage(request, 'control_card_not_found'), /does not exist or is not visible/)
 })

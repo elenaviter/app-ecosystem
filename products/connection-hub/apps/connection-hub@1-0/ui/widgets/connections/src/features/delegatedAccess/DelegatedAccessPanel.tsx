@@ -159,6 +159,7 @@ import {
   accessCardFocusRequestsEdit,
   findAccessCardFocus,
   matchesAccessCardFocus,
+  isRequestLimitRefusal,
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import {
@@ -5787,7 +5788,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       ) : null}
       {accessCardFocus && accessCardFocusState === 'unavailable' ? (
         <div className="error" role="alert">
-          <strong>Card unavailable.</strong>{' '}
+          <strong>{isRequestLimitRefusal(delegatedAccessError) ? 'Too many requests.' : 'Card unavailable.'}</strong>{' '}
           {unavailableAccessCardMessage(accessCardFocus, delegatedAccessError)}
         </div>
       ) : null}
