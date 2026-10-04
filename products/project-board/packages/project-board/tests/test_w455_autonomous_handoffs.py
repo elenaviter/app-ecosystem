@@ -275,7 +275,7 @@ def test_an_operator_request_says_how_to_report_respects_refusals_and_is_not_rep
     """Root GO 13:24Z with the operator instruction: acceptance included, report path, permission caps, no duplicates."""
     rule = _section("references/collaboration.md", "## Rule 11.")
     assert "a test, a decision, an approval, a choice or an acceptance" in rule
-    assert "and how to report the result (a review verdict on the item, or a reply to the message)" in rule
+    assert "and how to report the result with the controls the person has (below)" in rule
     assert "When the routing or the message is refused, never work around the permission" in rule
     assert "report the refused action, its code and who can clear it" in rule
     assert "Do not send the same unchanged request again" in rule

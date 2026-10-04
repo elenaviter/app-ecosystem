@@ -928,8 +928,8 @@ whose assignee is the operator, so it appears in the operator's own lists:
   item assigned to them (Rule 14).
 
 The item says exactly what to do and what to expect: the steps, where, the
-result that means it works, and how to report the result (a review verdict
-on the item, or a reply to the message). Then send a board message to `operator`
+result that means it works, and how to report the result with the controls
+the person has (below). Then send a board message to `operator`
 naming the item and the action, as `decision` or `question` so it also
 reaches their Telegram, saying "urgent" when it is. A question the message
 carries states:
@@ -953,8 +953,24 @@ them for the operator with `plan.item.update`, in the same step:
   commit), where it runs, and what proved it, with the evidence ref;
 - `review.look_at`: the operator's steps: what changed, in one sentence;
   what to look at or try, and where (board, inbox, a page); the result that
-  means it works; and the decision, each option with what follows from it;
+  means it works; and the decision, in the controls below;
 - `review.could_not_verify`: what is not proven and not claimed.
+
+**The person decides with Notes, Status and Assignee, and nothing else.**
+The item dialog a person sees has those controls and the fields above; it has
+no Accept, Return or verdict button, and none is added for this. So the
+decision is always written as:
+
+- write what you found, and your decision, in **Notes**;
+- if it is fine, set **Status** to **Done** and save;
+- if it is not, set **Status** to **Working**, choose the agent in
+  **Assignee**, and say in Notes what differs.
+
+Never name a control the dialog does not have. Why: the operator, 2026-10-04,
+"there's no such thing as "Accept"? there's the status change and assignment
+... you keep recommend me what i do not have and do not want to have", and
+"i want to be able to change the status and put assignee. i do not want any
+"accept" and other 100 buttons please".
 
 Write them so the operator can act from the item alone, with no other
 message. The `decision` or `question` message names the item and points
