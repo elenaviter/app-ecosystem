@@ -23,6 +23,7 @@ see_also:
   - ./architecture.md
   - ./flows.md
   - ./review.md
+  - ./domain-model-and-activity.md
   - ./operations-by-actor.md
   - ./operations-and-rules.md
   - ./delivery.md
@@ -71,6 +72,10 @@ only this repository can open every page.
 - [Refs and identifiers](refs-and-identifiers.md): how Problem Board names its
   objects, a plan item's stable identity and exact versions, item keys, and
   the references other systems own.
+- [Domain model and activity evidence](domain-model-and-activity.md): the
+  project, people, agent, item, ownership and delivery records; actor versus
+  subject/recipient/assignee; historical facts versus mutable snapshots; and
+  the current agent-history query coverage and retention limits.
 - [Review](review.md): work item states and transitions, who reviews and how
   a review is routed, `review.look_at` and `review.could_not_verify`,
   returns, and what done means.
