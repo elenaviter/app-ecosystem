@@ -99,6 +99,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-02 | Mail files cross hosts as content, not paths or inherited authority | Board-backed worker files, content-bound retries, exact-lease forwarding without inherited routing authority, executable-binary content policy, and the limits of source-only acceptance. |
 
+| 2026-10-04 | Host readiness must hold future calls before a client switch | — |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).

@@ -868,7 +868,11 @@ participant who is unavailable is recorded as pending with its reason; it
 holds nothing that does not depend on it. Absence is not quiescence: before
 the window runs, its owner establishes from evidence whether that participant
 has an operation in flight the window would conflict with (the conditions in
-the coordinator reference), and only such an operation holds it.
+the coordinator reference). For a runtime-only exact-commit release, only
+such an operation holds it. A host client switch or relay restart additionally
+requires [Host Client Window Quiescence](runtime-actions.md#host-client-window-quiescence),
+which holds future calls before execution; neither a queued START wake nor a
+missing answer waives it.
 The test-window reference owns the pause procedure itself, this rule owns
 what the window says to the team.
 

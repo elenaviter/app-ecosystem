@@ -819,16 +819,17 @@ def test_situational_references_open_on_their_trigger() -> None:
     assert "Read this when starting or resuming a Claude Code worker" in wake
 
 
-def test_a_release_waits_only_on_a_real_hold_and_a_freeze_is_named() -> None:
+def test_runtime_only_release_holds_are_distinct_from_host_quiescence() -> None:
     # W368 (coordinator review of PR358, 2026-09-29): every worker develops in
     # its own worktree, so an exact-commit release holds only on the same
-    # three conditions everywhere, and pausing every worker is reserved for a
-    # global test freeze the requester names.
+    # three conditions for runtime-only releases. Host client windows additionally
+    # hold future calls before execution; a queued wake cannot create that hold.
     window = _words(_read("references/test-window.md"))
     signals = _words(_read("references/signals.md"))
     runtime = _words(_read("references/runtime-actions.md"))
 
-    assert "## An exact-commit release" in _read("references/test-window.md")
+    assert "## A runtime-only exact-commit release" in _read("references/test-window.md")
+    assert "## A host client switch or relay restart" in _read("references/test-window.md")
     assert "## A global test freeze" in _read("references/test-window.md")
     assert "Your own worktree is not that tree, so what you have in it, committed or not, cannot change what loads" in window
     assert "Answer `ready`, and keep working" in window
@@ -845,8 +846,9 @@ def test_a_release_waits_only_on_a_real_hold_and_a_freeze_is_named() -> None:
     assert "A global test freeze the requester names: finish, commit, report paused, stop, wait" in signals
     assert "an uncommitted patch a reload would run" not in signals
 
-    assert "a worker in the middle of a call through the relay says wait, because the restart interrupts it" in runtime
-    assert "nothing in a worker's own worktree is a reason to wait" in runtime
+    assert "READY means calls drained and held" in runtime
+    assert "Every required START send must return OK" in runtime
+    assert "The restart reloads the recorded source, so nothing in an isolated worktree changes the candidate" in runtime
     assert "uncommitted relay patch" not in runtime
 
 
