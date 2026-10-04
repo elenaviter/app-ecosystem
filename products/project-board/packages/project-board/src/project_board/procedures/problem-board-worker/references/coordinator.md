@@ -551,10 +551,13 @@ agent of that pool, and route to it only when its fresh limit state shows the
 new window and it answers with a receipt or a STARTED (operator, 2026-10-01,
 W455; the client side is W438).
 
-**The coordinator routes implementation** (operator, 2026-09-29). A
-coordinator investigates, diagnoses and designs. Once an implementable
-deliverable exists, it routes the implementation to a capable, usable worker
-with a durable assignment. It implements itself only when no suitable worker
+**The coordinator routes implementation** (operator, 2026-09-29). A reported
+issue goes to a capable, usable worker whole, its investigation included: the
+coordinator's own reading before routing is what the brief needs, and its first
+reply to the report names, per issue, the item key and the assigned worker, or
+why no worker can take it. Once an implementable deliverable exists, it routes
+the implementation to a capable, usable worker with a durable assignment. It
+investigates or implements itself only when no suitable worker
 exists, when a machine-local resource or an authority only the coordinator
 holds requires it, or when briefing and reviewing a delegate would cost more
 than the bounded task, and it records that reason on the item. Being able to
