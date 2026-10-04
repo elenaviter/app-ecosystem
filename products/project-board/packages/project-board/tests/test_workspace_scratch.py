@@ -365,6 +365,9 @@ def test_the_procedures_own_scratch_runs_and_where_knowledge_goes():
     assert 'pb worker scratch --close --run <run> --reason "<why the job is over>" --findings' in workspace
     assert "Anything unknown, unreadable, changed or offline keeps the run, and age only flags it for review." in workspace
     assert "Files loose at the workspace root are listed by the sweep and never removed" in workspace
+    # W423 criterion 6: both publication forms verify, each with the content rule.
+    assert "an applied note on the run's own item, read from the board when the sweep runs" in workspace
+    assert "a recorded file published as a note must be the note's exact text" in workspace
     assert "| How an app feature works now: its contract, nuances, rejected approaches and open gaps | The feature's owning doc" in journaling
     assert "| A unique finding from a scratch run" in journaling
     # One owning rule: journaling points at the workspace section, it does not restate it.
@@ -516,3 +519,110 @@ def test_the_procedure_names_the_suspended_end():
     assert 'pb worker workspace --end --path <tree> --reason "suspended: PR <n> pushed at <head>"' in text
     assert "Ending a tree this way never ends or releases the assignment" in text
 
+
+
+# W423 criterion 6: a finding published as an applied item note --------------
+
+NOTE = "work:note:20261004T030000000000Z:note_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:w423-finding"
+
+
+def _notes(by_item):
+    """A board note reader over a fixed map: item key -> notes, or an exception to raise."""
+
+    def read(item):
+        found = by_item.get(item)
+        if isinstance(found, Exception):
+            raise found
+        return found
+
+    return read
+
+
+def _note_run(ws, *, file_text="the finding", item="W423"):
+    run = make_run(ws, item=item)
+    (run / "report.md").write_text(file_text, encoding="utf-8")
+    scratch.record(ws["ws"], run, worker_name=OWNER, file="report.md", published=NOTE)
+    scratch.close(ws["ws"], run, worker_name=OWNER, reason="item done", findings=NOTE)
+    return run
+
+
+def _done(item):
+    return [] if item == "W423" else None
+
+
+def test_a_finding_published_as_a_note_on_its_own_item_is_removable(ws):
+    run = _note_run(ws)
+    verify = scratch.publication_verifier(ws["ws"], read_notes=_notes({"W423": [{"note_ref": NOTE, "text": "the finding"}]}))
+    found = judge(ws, verify=verify, consumers=_done)[str(run)]
+    assert found.removable, found.keep
+
+
+def test_a_note_on_another_item_or_a_missing_note_keeps_the_run(ws):
+    run = _note_run(ws)
+    elsewhere = scratch.publication_verifier(ws["ws"], read_notes=_notes({"W423": [], "W9": [{"note_ref": NOTE, "text": "the finding"}]}))
+    found = judge(ws, verify=elsewhere, consumers=_done)[str(run)]
+    assert any("findings publication disproved" in r for r in found.keep)
+    assert not found.removable
+
+
+def test_an_unreadable_board_keeps_the_run_as_not_verifiable(ws):
+    run = _note_run(ws)
+    for reader in (_notes({"W423": None}), _notes({"W423": RuntimeError("relay offline")})):
+        found = judge(ws, verify=scratch.publication_verifier(ws["ws"], read_notes=reader), consumers=_done)[str(run)]
+        assert any("not verifiable here" in r for r in found.keep), found.keep
+
+
+def test_a_file_published_as_a_note_must_hold_the_same_content(ws):
+    """One byte of difference between the file and the note's text keeps the run."""
+
+    run = _note_run(ws, file_text="the finding.")
+    verify = scratch.publication_verifier(ws["ws"], read_notes=_notes({"W423": [{"note_ref": NOTE, "text": "the finding"}]}))
+    found = judge(ws, verify=verify, consumers=_done)[str(run)]
+    assert any("publication disproved: report.md" in r for r in found.keep)
+    # The findings reference stays an existence check.
+    assert not any("findings publication" in r for r in found.keep)
+
+
+def test_repository_references_are_unchanged_by_the_board_verifier(ws):
+    run = make_run(ws)
+    (run / "report.md").write_text("the finding", encoding="utf-8")
+    scratch.record(ws["ws"], run, worker_name=OWNER, file="report.md", published=published_ref(ws))
+    scratch.close(ws["ws"], run, worker_name=OWNER, reason="item done", findings=published_ref(ws))
+    never = _notes({})
+    found = judge(ws, verify=scratch.publication_verifier(ws["ws"], read_notes=never), consumers=_done)[str(run)]
+    assert found.removable, found.keep
+    # Without a board reader a note reference stays unverifiable, as before.
+    noted = _note_run(ws, item="W423")
+    assert any("not verifiable here" in r for r in judge(ws, consumers=_done)[str(noted)].keep)
+
+
+def test_the_cli_reads_every_note_page_once_and_unknown_keeps(monkeypatch):
+    from types import SimpleNamespace
+
+    from project_board.client import cli
+
+    pages = {"": {"items": [{"note_ref": "work:note:a"}], "next_cursor": "c2"},
+             "c2": {"items": [{"note_ref": NOTE, "text": "t"}], "next_cursor": ""}}
+    calls = []
+
+    def board(request):
+        payload = json.loads(request.payload_json)
+        assert 1 <= payload["limit"] <= 100  # the canonical plan.notes.list page size
+        calls.append((payload["item_key"], payload.get("cursor", "")))
+        if payload["item_key"] == "W4":
+            raise RuntimeError("relay offline")
+        if payload["item_key"] == "W5":
+            return {"object": {"items": None}}
+        return {"object": pages[payload.get("cursor", "")]}
+
+    monkeypatch.setattr(cli, "_attended_project_ref", lambda _field, _name: "work:project:p")
+    monkeypatch.setattr(cli, "_coordinate_command", board)
+    read = cli._sweep_item_notes(object(), SimpleNamespace(worker_name="w"), SimpleNamespace())  # noqa: SLF001
+    assert [n["note_ref"] for n in read("W1")] == ["work:note:a", NOTE]
+    read("W1")
+    assert calls.count(("W1", "")) == 1  # read once per sweep
+    assert read("W4") is None and read("W5") is None and read("") is None
+
+    endless = {"object": {"items": [], "next_cursor": "again"}}
+    monkeypatch.setattr(cli, "_coordinate_command", lambda _request: endless)
+    assert cli._sweep_item_notes(object(), SimpleNamespace(worker_name="w"), SimpleNamespace())("W6") is None  # noqa: SLF001

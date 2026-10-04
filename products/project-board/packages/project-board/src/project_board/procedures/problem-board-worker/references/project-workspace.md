@@ -407,9 +407,11 @@ the job is over, naming where its findings are published. Publish a unique
 finding first, in an applied item note or a tracked file, then record it.
 The sweep removes a run only when you closed it, its item is Done or Cancelled
 on the board, every file is recorded, unchanged, not a link and published or
-regenerable, the published references verify in your clone's default branch
-(a file's reference must hold the same content, not only the same path),
-no consumer is open, and the last `--sweep` listed it unchanged. A receipt of
+regenerable, the published references verify (a tracked file at a commit in
+your clone's default branch, or an applied note on the run's own item, read
+from the board when the sweep runs; a file's reference must hold the same
+content, not only the same path, so a recorded file published as a note must
+be the note's exact text), no consumer is open, and the last `--sweep` listed it unchanged. A receipt of
 what was removed is written first, under `.problem-board/scratch-receipts/`.
 Anything unknown, unreadable, changed or offline keeps the run, and age only
 flags it for review. Files loose at the workspace root are listed by the sweep
