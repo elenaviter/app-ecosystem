@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from dataclasses import replace as replace_fields
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 
+from connection_hub.concurrency import bounded_gather
 from connection_hub.authority_inventory import (
     AuthorityGrantInventory,
     PlatformAuthorityInventoryProvider,
@@ -3033,10 +3034,14 @@ class AutomationAccessService:
         )
         resource_option_rows = await self.resource_options(user)
         platform_admin = _is_platform_admin(user)
+        # W419: each Card's control view is its own read; read them together,
+        # a few at a time, instead of one after another.
+        control_views = await bounded_gather(
+            [self._effective_control_view(record) for record in records_found]
+        )
         records = []
-        for record in records_found:
+        for record, effective_control in zip(records_found, control_views):
             item = record.to_public_dict()
-            effective_control = await self._effective_control_view(record)
             item["control_card"] = effective_control
             item["project_control"] = effective_control
             # Expired cards stay listed so their grants can be renewed; the

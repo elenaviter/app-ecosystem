@@ -23,6 +23,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.telegram import (
     validate_telegram_init_data,
 )
 from kdcube_ai_app.apps.chat.sdk.config import get_secret, get_settings, set_bundle_prop
+from connection_hub.concurrency import bounded_gather
 from connection_hub.authenticators.models import RequestEnvelope
 from connection_hub.authority_registry_config import (
     authority_registry_config,
@@ -4196,13 +4197,20 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         owner = str(response.get("platform_user_id") or "").strip()
         try:
             policy_service = _invocation_policy_service(self)
-            for item in response.get("items") or []:
-                item["invocation_policies"] = [
-                    policy.to_public_dict()
-                    for policy in await policy_service.list_for_card(
+            items = list(response.get("items") or [])
+            # W419: one policy read per Card, read together a few at a time.
+            policies = await bounded_gather(
+                [
+                    policy_service.list_for_card(
                         owner_subject=owner,
                         access_id=str(item.get("access_id") or ""),
                     )
+                    for item in items
+                ]
+            )
+            for item, card_policies in zip(items, policies):
+                item["invocation_policies"] = [
+                    policy.to_public_dict() for policy in card_policies
                 ]
         except Exception as exc:
             return _invocation_policy_failure(exc)
