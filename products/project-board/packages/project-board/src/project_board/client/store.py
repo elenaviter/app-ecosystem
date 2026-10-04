@@ -9,6 +9,7 @@ import mimetypes
 mimetypes.add_type("text/markdown", ".md")
 import logging
 import os
+import re
 import uuid
 from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
@@ -849,6 +850,16 @@ def _same_work(declared: str, ended: str) -> bool:
         return str(ref or "")
 
     return bool(declared and ended) and identity(declared) == identity(ended)
+
+
+# The mail ids the board and this client mint (W534): ``new_id("mail")``,
+# operator-admitted controls, server digests, and delivery-failure notices.
+_MINTED_MAIL_ID = re.compile(
+    r"mail_[0-9a-f]{32}"
+    r"|mail-priority_[0-9]{8}T[0-9]{12}Z_[0-9a-f]{32}"
+    r"|delivery_failed_[0-9a-f]{24}"
+)
+
 
 class SharedFieldStore:
     """Canonical project state shared directly by local workers.
@@ -5765,6 +5776,102 @@ class SharedFieldStore:
             "next_cursor": next_cursor,
         }
 
+    def _held_mail_lease(
+        self,
+        clean_worker: str,
+        *,
+        lease_id: str,
+        lease_owner: str,
+    ) -> dict[str, str] | None:
+        """The unexpired lease this session holds under ``lease_id``, if any.
+
+        It sees exactly what ``list_worker_mail_leases`` lists for the same
+        session: the same mailboxes, the same owner, nothing expired. It reads
+        without the mailbox lock (writes are atomic replaces) because settle
+        calls it while already holding one mailbox's lock.
+        """
+
+        wanted = str(lease_id or "")
+        if not wanted:
+            return None
+        now = datetime.now(timezone.utc)
+        _, scopes = self._worker_mail_scopes(clean_worker)
+        for _, scope in scopes:
+            for path in sorted((self._mail_root(scope, clean_worker) / "leased").glob("*.json")):
+                message = read_json(path, required=False)
+                lease = message.get("lease") if isinstance(message, Mapping) else None
+                if not isinstance(lease, Mapping):
+                    continue
+                if str(lease.get("lease_id") or "") != wanted:
+                    continue
+                if str(lease.get("owner") or "") != lease_owner:
+                    return None
+                try:
+                    if parse_utc(str(lease.get("expires_at") or "")) <= now:
+                        return None
+                except (TypeError, ValueError, DomainError):
+                    return None
+                message_ref = str(message.get("message_ref") or "")
+                if not message_ref:
+                    return None
+                return {
+                    "message_ref": message_ref,
+                    "project_ref": make_ref("project", scope) if scope else "",
+                }
+        return None
+
+    def _unknown_mail_lease_error(
+        self,
+        clean_worker: str,
+        *,
+        message_ref: str,
+        lease_id: str,
+        lease_owner: str,
+        requested_ref: str,
+    ) -> DomainError:
+        """Why no record matched: a held lease under another ref, a ref no
+        mail can have, or genuinely absent mail, in that order (W534)."""
+
+        held = self._held_mail_lease(
+            clean_worker, lease_id=lease_id, lease_owner=lease_owner
+        )
+        if held is not None and held["message_ref"] != message_ref:
+            return DomainError(
+                "field_mail_lease_ref_mismatch",
+                f"This session holds lease {lease_id} for "
+                f"{held['message_ref']}, not for the message ref supplied. "
+                "Use that ref, copied whole.",
+                status=409,
+                details={
+                    "message_ref": message_ref,
+                    "lease_id": lease_id,
+                    "requested_project_ref": requested_ref,
+                    "actual_message_ref": held["message_ref"],
+                    "actual_project_ref": held["project_ref"],
+                },
+            )
+        # Only on this not-found path: a ref is never refused for its shape
+        # while a message under it exists, whatever shape older mail has.
+        if _MINTED_MAIL_ID.fullmatch(parse_ref(message_ref).object_id) is None:
+            return DomainError(
+                "field_mail_ref_malformed",
+                "No mail can have this message ref: its id is not one the board "
+                "mints. Copy the ref whole from the receive or leases output.",
+                status=400,
+                details={"message_ref": message_ref, "lease_id": lease_id},
+            )
+        return DomainError(
+            "field_mail_lease_not_found",
+            "This worker has no mailbox record for the requested message.",
+            status=404,
+            details={
+                "message_ref": message_ref,
+                "lease_id": lease_id,
+                "requested_project_ref": requested_ref,
+                "reason": "absent",
+            },
+        )
+
     def read_worker_mail_lease(
         self,
         project_id: str,
@@ -5898,16 +6005,12 @@ class SharedFieldStore:
                             "delivery_status": str(previous.get("delivery_status") or ""),
                         },
                     )
-        raise DomainError(
-            "field_mail_lease_not_found",
-            "This worker has no mailbox record for the requested message.",
-            status=404,
-            details={
-                "message_ref": message_ref,
-                "lease_id": lease_id,
-                "requested_project_ref": requested_ref,
-                "reason": "absent",
-            },
+        raise self._unknown_mail_lease_error(
+            clean_worker,
+            message_ref=message_ref,
+            lease_id=str(lease_id),
+            lease_owner=clean_owner,
+            requested_ref=requested_ref,
         )
 
     def read_worker_mail_attachment(
@@ -8434,8 +8537,17 @@ class SharedFieldStore:
                             "outcome": str(settled.get("state") or ""),
                         },
                     )
-                # Genuinely unknown here: fall through to the original error.
-                row = read_json(source)
+                # Genuinely unknown here. Name it, or name the held lease's
+                # actual ref; never surface a storage path (W534).
+                raise self._unknown_mail_lease_error(
+                    clean_worker,
+                    message_ref=message_ref,
+                    lease_id=str(lease_id),
+                    lease_owner=str(lease_owner),
+                    requested_ref=(
+                        make_ref("project", clean_project) if clean_project else ""
+                    ),
+                )
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
             if str(lease.get("lease_id") or "") != str(lease_id) or str(lease.get("owner") or "") != str(lease_owner):
                 raise DomainError("field_mail_lease_mismatch", "Only the current lease owner may settle this mail.", status=409)
