@@ -26,9 +26,18 @@ export function openPendingAuthorizationWindow(): PendingAuthorizationWindow {
         pending.location.replace(url);
         return true;
       }
-      // The blank tab was blocked or closed: one direct attempt, which
-      // browsers that allow it still honour.
-      return Boolean(window.open(url, '_blank', 'noopener,noreferrer'));
+      // The blank tab was blocked or closed: one direct attempt. It is opened
+      // without the noopener feature because a noopener open returns null
+      // even when the tab opened, which read as "blocked" (W435 review); the
+      // handle's opener is cut at once instead, before the provider page loads.
+      const direct = window.open(url, '_blank');
+      if (!direct) return false;
+      try {
+        direct.opener = null;
+      } catch {
+        // A handle that refuses the assignment still opened the tab.
+      }
+      return true;
     },
     cancel(): void {
       if (pending && !pending.closed) pending.close();

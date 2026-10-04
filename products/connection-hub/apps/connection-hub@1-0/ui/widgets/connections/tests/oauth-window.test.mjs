@@ -8,17 +8,24 @@ import test from 'node:test'
 
 const source = (path) => readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8')
 
-function fakeWindow({ blockBlank = false } = {}) {
+// Browser-faithful: a refused open returns null, and so does an open with the
+// noopener feature even when the tab opened (W435 review: a Chromium probe
+// opened the provider tab while the helper reported it blocked).
+function fakeWindow({ blockBlank = false, blockDirect = false } = {}) {
   const calls = []
+  const opened = []
   const tab = { closed: false, opener: 'connection-hub', replaced: '', location: { replace(url) { tab.replaced = url } }, close() { tab.closed = true } }
   globalThis.window = {
     open(url, target, features) {
       calls.push([url, target, features || ''])
-      if (url === 'about:blank') return blockBlank ? null : tab
-      return blockBlank ? { closed: false } : null
+      const refused = url === 'about:blank' ? blockBlank : blockDirect
+      if (refused) return null
+      const handle = url === 'about:blank' ? tab : { closed: false, opener: 'connection-hub', url }
+      opened.push(handle)
+      return String(features || '').includes('noopener') ? null : handle
     },
   }
-  return { calls, tab }
+  return { calls, tab, opened }
 }
 
 const { openPendingAuthorizationWindow } = await import('../src/features/oauthWindow.ts')
@@ -39,11 +46,19 @@ test('a failed start closes the blank tab', () => {
   assert.equal(tab.closed, true)
 })
 
-test('a blocked blank tab falls back to one direct open, and says whether it worked', () => {
-  const { calls } = fakeWindow({ blockBlank: true })
+test('a blocked blank tab falls back to one direct open that reports success truthfully and cuts the opener', () => {
+  const { calls, opened } = fakeWindow({ blockBlank: true })
   const signIn = openPendingAuthorizationWindow()
-  assert.equal(signIn.go('https://github.com/login/oauth/authorize'), true)
-  assert.deepEqual(calls[1], ['https://github.com/login/oauth/authorize', '_blank', 'noopener,noreferrer'])
+  assert.equal(signIn.go('https://github.com/login/oauth/authorize'), true, 'an opened tab is never reported as blocked')
+  assert.deepEqual(calls[1], ['https://github.com/login/oauth/authorize', '_blank', ''])
+  assert.equal(opened.length, 1)
+  assert.equal(opened[0].opener, null, 'the provider page cannot reach back')
+})
+
+test('only a really refused fallback reports blocked', () => {
+  const { opened } = fakeWindow({ blockBlank: true, blockDirect: true })
+  assert.equal(openPendingAuthorizationWindow().go('https://github.com/login/oauth/authorize'), false)
+  assert.equal(opened.length, 0)
 })
 
 test('every Connect opens its tab before the start call and never after it', () => {
