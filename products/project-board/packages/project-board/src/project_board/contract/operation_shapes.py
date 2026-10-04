@@ -369,6 +369,18 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                       'payload': {   'principal_key': "the person's principal key "
                                                                       'from the people list',
                                                      'operations': 'operation names'}},
+    'project.role.get': {   'description': "Read an optional project role (knowledge-keeper): its state, holder and the holder's availability.",
+                   'object_ref': 'work:project:<project_id>',
+                   'payload': {'role': 'knowledge-keeper'}},
+    'project.role.manage': {   'description': "Declare or undeclare an optional project role, or name or clear its holder, under the role's revision; a person only.",
+                   'object_ref': 'work:project:<project_id>',
+                   'payload': {'role': 'knowledge-keeper', 'expected_revision': 'the role revision you read', 'declared': 'true or false: declare or undeclare (use this or worker_name)', 'worker_name': 'the stable name of an attending agent, or empty to clear (use this or declared)'}},
+    'project.role.declare': {   'description': 'Alias of project.role.manage that declares or undeclares the role.',
+                   'object_ref': 'work:project:<project_id>',
+                   'payload': {'role': 'knowledge-keeper', 'expected_revision': 'the role revision you read', 'declared': 'true or false'}},
+    'project.role.assign': {   'description': 'Alias of project.role.manage that names or clears the holder.',
+                   'object_ref': 'work:project:<project_id>',
+                   'payload': {'role': 'knowledge-keeper', 'expected_revision': 'the role revision you read', 'worker_name': 'the stable name of an attending agent, or empty to clear'}},
     'project.coordinator.get': {   'description': 'Read who holds the coordinator role now, the '
                                                   'home coordinator, and whether the home '
                                                   'coordinator is available.',
@@ -959,6 +971,10 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
 # them. Only fields a refusal is known for are listed: a field missing from
 # this table is checked by the service, never guessed here.
 PROBLEM_BOARD_OPERATION_REQUIRED: dict[str, tuple[str, ...]] = {
+    "project.role.get": ("role",),
+    "project.role.manage": ("role", "expected_revision"),
+    "project.role.declare": ("role", "declared", "expected_revision"),
+    "project.role.assign": ("role", "expected_revision"),
     "work.attachment.link": ("file_ref",),
     "assignment.assign": ("idempotency_key",),
     "assignment.return": ("idempotency_key",),

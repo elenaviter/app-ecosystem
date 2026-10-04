@@ -83,6 +83,10 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project.people.set_role` | people | `work:admin` | Identity rule `project_admin_by_role` | A role writes no Card. A person does not change their own role while no other admin remains (last_admin, own_role). |
 | `project.people.card.update` | people | `work:admin` | Retired | Answers work_control_card_edit_in_connection_hub: Cards are edited in Connection Hub. |
 | `project.coordinator.get` | coordinator | `work:observe` | Membership (`project_membership`) | Agents also receive it on every heartbeat. |
+| `project.role.get` | roles | `work:observe` | Membership (`project_membership`) | W517: an optional role the board carries (knowledge-keeper) and its holder. |
+| `project.role.manage` | roles | `work:admin` | Their project Card | W517: a person who is an owner or admin only (work_human_operator_required, work_project_admin_required); revision-fenced (work_role_holder_revision_conflict). The holder is an attending, active agent named by its stable worker name (work_role_holder_not_attending, work_role_holder_not_active). Opt-in: no preset ticks it. The role grants no permission. |
+| `project.role.declare` | roles | `work:admin` | Their project Card | An alias of project.role.manage that declares or undeclares the role. |
+| `project.role.assign` | roles | `work:admin` | Their project Card | An alias of project.role.manage that names or clears the holder. |
 | `project.coordinator.hand_over` | coordinator | `work:admin` | Identity rule `project_admin_by_role` | A signed-in person only; revision-fenced. |
 | `project.coordinator.return` | coordinator | `work:admin` | Identity rule `project_admin_by_role` | A signed-in person only; revision-fenced. |
 | `project.coordinator.set_away` | coordinator | `work:admin` | Identity rule `project_admin_by_role` | Away reads as unavailable whatever the session reports. |

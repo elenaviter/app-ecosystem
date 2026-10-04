@@ -190,6 +190,30 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     # Coordinator handover (W313): several agents may carry the coordinator
     # label; the holder record says which one acts now. Moving it is the
     # operator's decision, so the three writes are people-only on the board.
+    # Optional project roles the board carries (W517): only knowledge-keeper.
+    # The role grants no permission; changing it is a person's decision.
+    "project.role.get": {
+        "description": (
+            "Read an optional project role, such as the knowledge keeper: its "
+            "state, its holder and whether the holder is available."
+        ),
+        "grants": ("work:observe",),
+    },
+    "project.role.manage": {
+        "description": (
+            "Declare or undeclare an optional project role, or name or clear "
+            "the agent holding it, under the role's revision. A person only."
+        ),
+        "grants": ("work:admin",),
+    },
+    "project.role.declare": {
+        "description": "Alias of project.role.manage that declares or undeclares the role.",
+        "grants": ("work:admin",),
+    },
+    "project.role.assign": {
+        "description": "Alias of project.role.manage that names or clears the holder.",
+        "grants": ("work:admin",),
+    },
     "project.coordinator.get": {
         "description": (
             "Read who holds the project's coordinator role now, the home "
@@ -523,6 +547,10 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.people.invite",
         "project.people.set_role",
         "project.people.card.update",
+        "project.role.get",
+        "project.role.manage",
+        "project.role.declare",
+        "project.role.assign",
         "project.coordinator.get",
         "project.coordinator.hand_over",
         "project.coordinator.return",
