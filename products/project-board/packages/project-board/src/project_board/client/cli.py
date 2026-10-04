@@ -7065,6 +7065,7 @@ def _sweep_item_consumers(field: Any, identity: Any, args: argparse.Namespace) -
 
 
 _SWEEP_NOTE_PAGES = 50
+_SWEEP_NOTE_PAGE_LIMIT = 100  # plan.notes.list accepts 1..100 per page
 
 
 def _sweep_item_notes(field: Any, identity: Any, args: argparse.Namespace) -> Callable[[str], list[dict[str, Any]] | None]:
@@ -7091,7 +7092,7 @@ def _sweep_item_notes(field: Any, identity: Any, args: argparse.Namespace) -> Ca
             cursor = ""
             try:
                 for _page in range(_SWEEP_NOTE_PAGES):
-                    payload: dict[str, Any] = {"item_key": key, "limit": 200}
+                    payload: dict[str, Any] = {"item_key": key, "limit": _SWEEP_NOTE_PAGE_LIMIT}
                     if cursor:
                         payload["cursor"] = cursor
                     request = argparse.Namespace(

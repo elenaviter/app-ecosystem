@@ -607,6 +607,7 @@ def test_the_cli_reads_every_note_page_once_and_unknown_keeps(monkeypatch):
 
     def board(request):
         payload = json.loads(request.payload_json)
+        assert 1 <= payload["limit"] <= 100  # the canonical plan.notes.list page size
         calls.append((payload["item_key"], payload.get("cursor", "")))
         if payload["item_key"] == "W4":
             raise RuntimeError("relay offline")
