@@ -145,7 +145,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.10.04.3"
+    assert package["revision"] == "2026.10.04.4"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     assert references == {
@@ -163,6 +163,7 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
             "references/pb-command-interface.md",
             "references/project-workspace.md",
         "references/journaling.md",
+        "references/knowledge-keeper.md",
         "references/signals.md",
     }
     for reference in references:
@@ -1958,28 +1959,29 @@ def test_the_merger_retargets_a_stacked_change_request_and_proves_the_merged_tre
     assert "PB_REQUIRE_REVISION_RECORDED=1" in agent_worker
 
 
-def test_journaling_describes_the_optional_knowledge_role_and_its_hand_over() -> None:
-    # W340 line 5 (returned 2026-09-26): the optional knowledge role (W302)
-    # must be described in the public procedure, reachable from journaling.
+def test_the_knowledge_keeper_role_is_generic_and_owns_its_hand_over() -> None:
+    # W302 (operator, 2026-10-04): an optional knowledge keeper, a role like the
+    # coordinator's; the journal is a different thing; PB holds only the general
+    # contract, and each project's files hold its implementation.
+    keeper = _words(_read("references/knowledge-keeper.md"))
     journaling = _words(_read("references/journaling.md"))
-    skill = _read("SKILL.md")
+    skill = _words(_read("SKILL.md"))
 
-    assert "[journaling](references/journaling.md)" in skill
-    assert "## The knowledge role" in _read("references/journaling.md")
-    assert "It is optional, per project." in journaling
-    assert "teammates address the role, not a particular agent" in journaling
-    assert "Until a project has the role, the journal entry is the whole hand-over" in journaling
-    assert "`Knowledge handover: W<n> <title>`" in journaling
-    for part in (
-        "changed features and concepts",
-        "fixes and semantic corrections",
-        "terms and aliases",
-        "do-not-misunderstand points",
-        "source documents to link",
-        "a retrieval-facing summary",
-    ):
-        assert part in journaling
-
+    assert "a role like the coordinator's, optional per project" in keeper
+    assert "The journal and the knowledge base are different things" in keeper
+    assert "never in this procedure" in keeper
+    assert "**After the merge.**" in keeper
+    assert "**When unsure, send it,** marked \"keeper decides\"" in keeper
+    assert "separate agent, with no maintenance context, ask one retrieval question per changed concept" in keeper
+    assert "confirms the wrong answer is gone" in keeper
+    assert "When the project has a keeper, search its knowledge once for the subject before designing" in keeper
+    assert "[knowledge keeper](knowledge-keeper.md)" in journaling
+    assert "## The knowledge role" not in _read("references/journaling.md")
+    assert "search its knowledge for the subject too ([knowledge keeper](references/knowledge-keeper.md))" in skill
+    # The general procedure names no implementation of ours.
+    raw = _read("references/knowledge-keeper.md")
+    for private in ("knowledge@1-0", "applications", "local_mcp_sqlite", "six-part", "W302"):
+        assert private not in raw, private
 
 def test_worker_budgets_name_the_usage_field_and_where_the_caps_live() -> None:
     # W351: the coordinator could not find usage figures from the CLI across
