@@ -662,6 +662,20 @@ it, what you touched (Rule 3), and what you are waiting on.
   merge, deployment, live behaviour or the operator. Why: on 2026-10-01 source
   approvals sat on their reviewers while the coordinator waited for them,
   and nobody saw the wait (W455).
+- **Unmet criteria go back; a review never waits for unowned work.** When a
+  criterion is unmet and needs new work (a fix, a test, a document, a
+  disposition someone must make), decide `review.return` now. Name each
+  unmet criterion, the work it needs, and who you propose does it. The item
+  is then Working with an owner, and the coordinator reassigns it if the
+  worker is not the right author. You keep a review only while every
+  remaining step already has a **named actor working on it** and a **due
+  time**, both recorded on the item in a note: who, what, until when. When
+  that time passes, or that actor stops attending, decide again at once:
+  return, or hand the item on. "I keep the review open" without a named
+  actor and a time is a parked item. Why: on 2026-10-04 W416 and W403 sat in
+  Review behind source approvals while their remaining work had no author,
+  and only the operator's question moved them (operator: "if i did not
+  notice the work item would hang in review"; W537).
 
 Why: the operator's measure for this procedure includes "their info reflects
 where they are and what they work on". A status that lags reality is a

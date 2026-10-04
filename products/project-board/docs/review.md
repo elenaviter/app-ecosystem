@@ -304,6 +304,13 @@ their Telegram.
 | `review.return` | `working` | rework routed to the contributor, under a new ownership version |
 | `review.cancel` | `cancelled` | settled as cancelled |
 
+A review ends in a decision. When a criterion is unmet and needs new work,
+the reviewer returns the item with the reason, naming each unmet criterion
+and who should do the work, so the item has an owner again. A reviewer keeps
+a review only while every remaining step has a named actor working on it and
+a due time, recorded on the item; past that time it decides again. The
+coordinator checks for reviews that sit without a decision (W537).
+
 Return and cancel take a reason. Each decision is fenced by the item
 revision the reviewer read and carries an idempotency key: a retry with the
 same key and content returns the same receipt, and a retry with different
