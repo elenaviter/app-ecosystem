@@ -344,3 +344,91 @@ def test_path_command_prints_only_the_receipted_interpreter(tmp_path: Path) -> N
     )
 
     assert result.stdout.strip() == str(runner_python)
+
+
+def test_prepare_repairs_a_drifted_runner_instead_of_rewriting_its_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """W396 return: after `pip uninstall jwcrypto`, an unchanged prepare said
+    reused/ready, ran no pip and rewrote the receipt without jwcrypto."""
+
+    module = _module()
+    kdcube, app_ecosystem = _sources(tmp_path / "sources")
+    runner_root = tmp_path / "runner"
+    complete = {
+        "execnet": "2.1.1",
+        "jwcrypto": "1.5.6",
+        "pytest": "8.4.2",
+        "pytest-asyncio": "1.2.0",
+        "pytest-xdist": "3.8.0",
+    }
+    state = {"inventory": dict(complete)}
+    pip_installs: list[tuple[str, ...]] = []
+
+    def probe(*_args):
+        inventory = dict(state["inventory"])
+        return {
+            "interpreter": {"executable": "python", "implementation": "CPython", "version": "3.13.3"},
+            "installed_distributions": inventory,
+            "test_dependencies": {name: inventory.get(name) for name in ("execnet", "pytest", "pytest-asyncio", "pytest-xdist")},
+            "failures": [],
+        }
+
+    monkeypatch.setattr(module, "_git_commit", lambda _path: "a" * 40)
+    monkeypatch.setattr(module, "_environment_probe", probe)
+    real_run = module._run
+
+    def fake_run(arguments, *, capture_output=False):
+        command = tuple(str(value) for value in arguments)
+        if command[1:3] == ("-m", "venv"):
+            runner_python = Path(command[3]) / "bin/python"
+            runner_python.parent.mkdir(parents=True)
+            runner_python.write_text("", encoding="utf-8")
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[1:4] == ("-m", "pip", "install"):
+            pip_installs.append(command)
+            state["inventory"] = dict(complete)  # the install restores what the receipt needs
+            return subprocess.CompletedProcess(command, 0, "", "")
+        return real_run(arguments, capture_output=capture_output)
+
+    monkeypatch.setattr(module, "_run", fake_run)
+    arguments = dict(runner_root=runner_root, kdcube_root=kdcube, app_ecosystem_root=app_ecosystem, base_python=Path(sys.executable))
+
+    assert module.prepare(**arguments)["action"] == "prepared"
+    installs_after_first = len(pip_installs)
+
+    state["inventory"].pop("jwcrypto")  # pip uninstall jwcrypto
+    repaired = module.prepare(**arguments)
+
+    assert repaired["action"] == "prepared", "drift is repaired, never reported as reused"
+    assert len(pip_installs) > installs_after_first, "the repair runs pip"
+    receipt = json.loads((runner_root / "receipt.json").read_text(encoding="utf-8"))
+    assert receipt["installed_distributions"]["jwcrypto"] == "1.5.6"
+    # And an unchanged runner is still reused without pip.
+    installs = len(pip_installs)
+    assert module.prepare(**arguments)["action"] == "reused"
+    assert len(pip_installs) == installs
+
+
+def test_environment_probe_requires_the_overlay_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe asks for the overlay runtime (jwcrypto among it), not only the test extra."""
+
+    module = _module()
+    seen: list[tuple[str, ...]] = []
+
+    def fake_run(arguments, *, capture_output=False):
+        command = tuple(str(value) for value in arguments)
+        seen.append(command)
+        return subprocess.CompletedProcess(
+            command, 0, json.dumps({"installed_distributions": {}, "test_dependencies": {}, "failures": ["missing distribution: jwcrypto"]}), ""
+        )
+
+    monkeypatch.setattr(module, "_run", fake_run)
+    with pytest.raises(module.RunnerError, match="missing distribution: jwcrypto"):
+        module._environment_probe(Path("python"), ("pytest>=8,<10",))
+
+    asked = seen[0][3:]
+    assert "jwcrypto>=1.5.6,<2" in asked
+    assert set(module.OVERLAY_RUNTIME_REQUIREMENTS) <= set(asked)
+    assert "execnet" in asked

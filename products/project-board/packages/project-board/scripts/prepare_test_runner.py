@@ -314,7 +314,9 @@ def _environment_probe(
     python: Path,
     test_requirements: Sequence[str],
 ) -> dict[str, object]:
-    requirements = tuple(test_requirements) + ("execnet",)
+    # W396 return: the overlay runtime the suites import (jwcrypto among them)
+    # is part of a complete runner, so a missing one fails the probe as well.
+    requirements = tuple(test_requirements) + OVERLAY_RUNTIME_REQUIREMENTS + ("execnet",)
     code = r"""
 import importlib
 import importlib.metadata
@@ -474,6 +476,12 @@ def prepare(
                 probe = _environment_probe(runner_python, test_requirements)
             except RunnerError:
                 reusable = False
+            # W396 return: reuse only the environment the receipt records. A
+            # changed inventory (an uninstalled or upgraded distribution) is
+            # drift, repaired by the install below, never rewritten as ready.
+            if reusable and probe is not None and probe["installed_distributions"] != existing.get("installed_distributions"):
+                reusable = False
+                probe = None
         if reusable:
             action = "reused"
         else:
