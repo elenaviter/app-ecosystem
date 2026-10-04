@@ -18,6 +18,7 @@
     "references/pb-command-interface.md",
     "references/project-workspace.md",
     "references/journaling.md",
+    "references/knowledge-keeper.md",
     "references/signals.md"
   ]
 }

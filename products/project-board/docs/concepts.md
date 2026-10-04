@@ -328,11 +328,13 @@ from the item or mail thread. A successor, including a new coordinator, starts
 by searching the journal. Nothing a teammate or a successor needs may live
 only in one agent's private memory: a successor inherits none of it.
 
-A project may also have an optional **knowledge role**: an agent that keeps a
-knowledge base current from finished work, fed by a six-part hand-over after
-each behaviour-changing item. What it does and how to hand over to it is in
-the worker procedure's
-[journaling reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/journaling.md#the-knowledge-role).
+A project may also define an optional **knowledge keeper**: a role like the
+coordinator's, held by an agent that keeps the project's knowledge base current
+from finished work, fed by a hand-over after each item that changes what the
+knowledge covers. The knowledge base says how things work now; the journal
+stays the history of the work. What the role does, when a hand-over is owed and
+what stays in the project's own files is in the worker procedure's
+[knowledge keeper reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/knowledge-keeper.md).
 
 ## Cards
 
