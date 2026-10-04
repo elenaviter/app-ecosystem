@@ -29,7 +29,7 @@ from ..contract.mailbox_reconciliation_contract import (
     MAILBOX_RECONCILIATION_RECEIPT_SCHEMA,
 )
 from ..contract.operator_mail_contract import (
-    COORDINATOR_RECIPIENT,
+    ROLE_RECIPIENTS,
     OPERATOR_RECIPIENTS,
     require_operator_mail_kind,
 )
@@ -6119,7 +6119,7 @@ class SharedFieldStore:
         # Direct worker mail is always adjudicated by the board, even when
         # the recipient is absent from this host's directory (W304).
         direct = str(recipient or "").strip().lower()
-        if not project_id and direct not in {"operator", "owner", "coordinator"}:
+        if not project_id and direct not in {"operator", "owner", *ROLE_RECIPIENTS}:
             return self.enqueue_remote_mail(**common, attachments=files)
         resolution = self.resolve_mail_recipient(project_id, recipient)
         if files or resolution["route"] == "remote":
@@ -6536,14 +6536,14 @@ class SharedFieldStore:
                 "route": "remote",
                 "pool_status": "active",
             }
-        if address == COORDINATOR_RECIPIENT:
-            # W313 step 5: the role, not a person. Only the board knows who
-            # holds it at send time, so this address always goes to the board,
-            # even when the holder is a session on this host.
+        if address in ROLE_RECIPIENTS:
+            # W313 step 5, W517: a role, not a person. Only the board knows who
+            # holds it at send time, so a role address always goes to the
+            # board, even when the holder is a session on this host.
             if not str(project_id or "").strip():
                 raise DomainError(
                     "field_project_context_required",
-                    "Mail to the coordinator names the project whose coordinator it is.",
+                    f"Mail to the {address} names the project whose role it is.",
                     status=409,
                     details={"recipient": address, "argument": "--project-ref"},
                 )
@@ -9662,6 +9662,72 @@ class SharedFieldStore:
                 return None
             atomic_write_json(path, record)
             return record
+
+    def sync_project_roles(
+        self, project_id: str, roles: Mapping[str, Any]
+    ) -> dict[str, Any] | None:
+        """Keep the optional roles the board carries, as the board said (W517).
+
+        Per role: its state, holder, the holder's availability, its revision
+        and its pending hand-overs (count, oldest, overdue). A heartbeat
+        answered earlier never replaces a role at a later revision.
+        """
+
+        clean_id = component(project_id, field="project_id")
+        path = self._project_dir(clean_id) / "roles.json"
+
+        def role_record(value: Any) -> dict[str, Any]:
+            value = value if isinstance(value, Mapping) else {}
+            holder = value.get("holder") if isinstance(value.get("holder"), Mapping) else None
+            pending = value.get("pending_handovers")
+            pending = pending if isinstance(pending, Mapping) else {}
+            return {
+                "state": str(value.get("state") or ""),
+                "address": str(value.get("address") or ""),
+                "holder": (
+                    {
+                        "worker_name": str(holder.get("worker_name") or "").lower(),
+                        "worker_alias": str(holder.get("worker_alias") or ""),
+                    }
+                    if holder
+                    else None
+                ),
+                "available": bool(value.get("available")),
+                "unavailable_reason": str(value.get("unavailable_reason") or ""),
+                "revision": int(value.get("revision") or 0),
+                "pending_handovers": {
+                    "count": int(pending.get("count") or 0),
+                    "oldest_at": str(pending.get("oldest_at") or ""),
+                    "overdue": bool(pending.get("overdue")),
+                },
+            }
+
+        incoming = {
+            str(name): role_record(value)
+            for name, value in roles.items()
+            if isinstance(name, str) and name
+        }
+        with exclusive_lock(self._project_lock(clean_id)):
+            self.read_project(clean_id)
+            current = read_json(path, required=False) or {}
+            kept = dict(current.get("roles") or {})
+            for name, record in incoming.items():
+                previous = kept.get(name) or {}
+                if int(previous.get("revision") or 0) > record["revision"]:
+                    continue
+                kept[name] = record
+            written = {
+                "schema": FIELD_SCHEMA,
+                "project_id": clean_id,
+                "roles": kept,
+                "updated_at": utc_now(),
+            }
+            atomic_write_json(path, written)
+            return written
+
+    def read_project_roles(self, project_id: str) -> dict[str, Any]:
+        path = self._project_dir(component(project_id, field="project_id")) / "roles.json"
+        return dict((read_json(path, required=False) or {}).get("roles") or {})
 
     def read_project_coordinator(self, project_id: str) -> dict[str, Any]:
         path = self._project_dir(component(project_id, field="project_id")) / "coordinator.json"

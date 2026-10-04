@@ -18,6 +18,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from ..contract.errors import DomainError
+from ..contract.operator_mail_contract import ROLE_RECIPIENTS
 from ..contract.operation_outcomes import require_successful_operation_envelope
 from ..contract.plan_nodes import plan_node_identity_ref
 from ..contract.reference_artifacts import (
@@ -1245,7 +1246,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument(
         "--recipient",
         required=True,
-        help="A project teammate, operator for this worker's owner, or coordinator for whoever holds the project's coordinator role now (needs --project-ref).",
+        help="A project teammate, operator for this worker's owner, or a role address for whoever holds that role now: coordinator, or knowledge-keeper where the project declares it (needs --project-ref).",
     )
     command.add_argument("--kind", required=True)
     command.add_argument("--subject", required=True)
@@ -1676,7 +1677,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _project(command)
     command.add_argument("--sender", required=True)
-    command.add_argument("--recipient", required=True, help="A worker name, coordinator for the project's acting coordinator, or operator for the project owner's board inbox (kinds question, blocked, decision, progress, reply, update, result). Without --project-ref, a worker name reaches only an agent that attends no project, by its exact stable name (kinds request, reply, ping).")
+    command.add_argument("--recipient", required=True, help="A worker name, a role address (coordinator for the project's acting coordinator, knowledge-keeper for its knowledge keeper), or operator for the project owner's board inbox (kinds question, blocked, decision, progress, reply, update, result). Without --project-ref, a worker name reaches only an agent that attends no project, by its exact stable name (kinds request, reply, ping).")
     command.add_argument("--kind", required=True)
     command.add_argument("--subject", required=True)
     body = command.add_mutually_exclusive_group(required=True)
@@ -5426,7 +5427,7 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 details={"argument": "--project-ref", "work_ref": str(args.work_ref)},
             )
         direct_address = str(args.recipient or "").strip().lower()
-        if not project_id and direct_address not in {"operator", "owner", "coordinator"}:
+        if not project_id and direct_address not in {"operator", "owner", *ROLE_RECIPIENTS}:
             # W304 decision 3: worker mail without a project always goes to the
             # board, which delivers it only to an agent that attends no
             # project, addressed by its exact stable name. A session on this
@@ -5909,6 +5910,7 @@ def _worker_project_context(
     on_host = field._project_path(parsed.object_id).exists()
     team = field.read_project_team(parsed.object_id) if on_host else []
     coordinator = field.read_project_coordinator(parsed.object_id) if on_host else {}
+    roles = field.read_project_roles(parsed.object_id) if on_host else {}
     repositories = (
         field.read_project_repositories(parsed.object_id)
         if on_host
@@ -6023,6 +6025,9 @@ def _worker_project_context(
             )
             if key in coordinator
         },
+        # The optional roles the board carries (W517), beside the coordinator:
+        # address knowledge-keeper mail to the role, never to the holder.
+        "roles": roles,
         "team": team,
         # This worker's own owner and provider account (W304 finding 47).
         "self": _own_board_record(field, channel),

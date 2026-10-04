@@ -34,10 +34,12 @@ implementation lives in that project's files (instructions, facts,
 environment) and in the knowledge package's own instructions, never in this
 procedure:
 
-- which agent holds the role, until the board carries it as a role of its own
-  (then the board is the authority, and the files only point to it). A project
-  that declares the role without a holder says so: hand-overs then go to the
-  coordinator, and nobody infers a holder from a repository or an alias. A
+- which agent holds the role, where the installed board does not carry it yet.
+  Where it does, the board is the authority (`pb worker context` shows the
+  role, and mail goes to `--recipient knowledge-keeper`), and the files only
+  point to it. A project that declares the role without a holder says so:
+  hand-overs then go to the coordinator, and nobody infers a holder from a
+  repository or an alias. A
   holder who is unavailable is handled like any owner others wait on
   ([collaboration](collaboration.md) Rule 16). The role grants no permission of
   its own;
@@ -67,7 +69,10 @@ workflow, an operational fact), and the project has a keeper, hand it over:
   shape.
 - **On the item and by mail:** record the hand-over as a note on the item and
   send it to the keeper by board mail naming that note, so it survives an unread
-  inbox.
+  inbox. Where the board carries the role, send it with
+  `--recipient knowledge-keeper` **and** `--work-ref <the item>`: the board
+  records a hand-over only for mail that names its item, and mail without one
+  is delivered but never counted as pending.
 - **When unsure, send it,** marked "keeper decides". Either way the item gets
   one line: the hand-over, or why none is owed; the keeper may overrule it. A
   hand-over that turns out unnecessary costs the keeper one look; a missing one
@@ -89,7 +94,10 @@ non-author merge. A round names the hand-overs it consumed and, for each
 changed claim, its source at an exact version; the originating item records
 whether its hand-over is queued, incorporated, declined with the reason, or
 waiting for evidence. Settling the hand-over message is receipt, not
-incorporation: only the published round incorporates it.
+incorporation: only the published round incorporates it. Where the board carries the
+role, the keeper records that outcome on the hand-over itself with
+`project.role.handover.decide` (incorporated with the round's result, declined
+or needing evidence with the reason).
 
 The reviewer checks the content against those sources and has a **separate
 agent, with no maintenance context, ask one retrieval question per changed

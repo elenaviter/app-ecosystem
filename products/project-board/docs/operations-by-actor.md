@@ -137,6 +137,7 @@ generated page [Operations and rules](operations-and-rules.md).
 | `own_role` | A person does not change their own project role. | Named as the gates move (W260). | Another project admin. |
 | `worker_pool_is_its_grantors` | An agent belongs to the person who approved it. Someone else's agent is linked, unlinked or managed only as that person allows, through a share or a project it is linked to. | `work_worker_not_owned` ("a rule, not a missing permission") | The agent's owner, or a project admin the owner shared it with. |
 | `shared_write_agents_only` | Shared workspace writes are made by agents, each as itself. | Named as the gates move (W260). | An agent. |
+| `role_holder_decides_handovers` | The agent holding an optional project role, such as the knowledge keeper, decides the hand-overs mailed to that role; holding the role is a condition, never authority by itself. | `project.role.handover.decide` (W517). | The agent holding the role, with the operation on its Card. |
 | `coordinator_publishes_reports` | A project report is published, or failed, by the project's coordinator. | Named as the gates move (W260). | The acting coordinator. |
 | `attachment_upload_people_only` | Attachments are staged by a signed-in person. | Named as the gates move (W260). | A person on the project. |
 

@@ -25,6 +25,10 @@ OPERATOR_RECIPIENTS = frozenset({"operator", "owner"})
 # W313 step 5: the project's acting coordinator, whoever holds the role when
 # the mail is sent. The board resolves it; a client never resolves it locally.
 COORDINATOR_RECIPIENT = "coordinator"
+# W517: an optional project role the board carries; its holder at send time.
+KNOWLEDGE_KEEPER_RECIPIENT = "knowledge-keeper"
+# Role addresses: the board resolves each to its holder when the mail is sent.
+ROLE_RECIPIENTS = frozenset({COORDINATOR_RECIPIENT, KNOWLEDGE_KEEPER_RECIPIENT})
 OPERATOR_CHANNELS = frozenset({"board", "telegram", "unknown"})
 
 
@@ -64,6 +68,8 @@ def require_operator_mail_kind(kind: str) -> str:
 
 __all__ = [
     "COORDINATOR_RECIPIENT",
+    "KNOWLEDGE_KEEPER_RECIPIENT",
+    "ROLE_RECIPIENTS",
     "OPERATOR_MAIL_KINDS",
     "OPERATOR_NOTIFY_KINDS",
     "OPERATOR_RECIPIENTS",
