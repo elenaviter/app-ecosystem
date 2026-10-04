@@ -2677,3 +2677,14 @@ def test_the_named_merger_checks_publication_and_attribution_by_the_projects_pol
     assert "merged history is never rewritten" in collaboration
     for text in (_read("references/collaboration.md"), _read("references/coordinator.md"), _read("SKILL.md")):
         assert "Co-Authored-By" not in text, "repository trailer policy belongs in project Facts"
+
+
+def test_operator_steps_use_only_notes_status_and_assignee() -> None:
+    # Operator, 2026-10-04: no "Accept" button exists, and none is wanted; the
+    # person changes Status and Assignee and writes Notes.
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "**The person decides with Notes, Status and Assignee, and nothing else.**" in collaboration
+    assert "if it is fine, set **Status** to **Done** and save" in collaboration
+    assert "set **Status** to **Working**, choose the agent in **Assignee**, and say in Notes what differs" in collaboration
+    assert "Never name a control the dialog does not have." in collaboration
+    assert "a review verdict on the item, or a reply to the message" not in collaboration
