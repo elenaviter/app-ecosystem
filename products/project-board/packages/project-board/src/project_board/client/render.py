@@ -313,6 +313,28 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
                 lines.append(f"project_facts[{index}] = {label}: {value}")
         _note_omitted(lines, "project facts", shown=len(facts), total=fact_count)
 
+    roles = result.get("roles")
+    if isinstance(roles, Mapping):
+        # W517: the optional roles the board carries, beside the coordinator.
+        for name, role in sorted(roles.items()):
+            if not isinstance(role, Mapping):
+                continue
+            holder = role.get("holder") if isinstance(role.get("holder"), Mapping) else {}
+            pending = role.get("pending_handovers")
+            pending = pending if isinstance(pending, Mapping) else {}
+            lines.append(
+                "role {}: state {} · holder {} · revision {} · pending hand-overs {}{}".format(
+                    name,
+                    role.get("state") or "none",
+                    holder.get("worker_name") or "-",
+                    role.get("revision", 0),
+                    pending.get("count", 0),
+                    " (overdue)" if pending.get("overdue") else "",
+                )
+            )
+            if role.get("unavailable_reason"):
+                lines.append(f"role {name}.unavailable_reason = {role['unavailable_reason']}")
+
     coordinator = result.get("coordinator")
     if isinstance(coordinator, Mapping):
         lines.append(

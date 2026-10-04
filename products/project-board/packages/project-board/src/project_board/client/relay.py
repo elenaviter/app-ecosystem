@@ -4297,6 +4297,15 @@ class ProblemBoardHostRelayAdapter:
                 # Like the team sync: a project not yet on this host keeps
                 # no holder; the next heartbeat after it lands writes one.
                 pass
+        # W517: the optional roles the board carries (knowledge-keeper).
+        # Absent from a board that predates them.
+        if isinstance(heartbeat_result.get("roles"), Mapping):
+            try:
+                self.field.sync_project_roles(
+                    self.config.project_id, heartbeat_result["roles"]
+                )
+            except DomainError:
+                pass
 
     async def _poll_project_once(
         self,
