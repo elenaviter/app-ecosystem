@@ -304,11 +304,16 @@ their Telegram.
 | `review.return` | `working` | rework routed to the contributor, under a new ownership version |
 | `review.cancel` | `cancelled` | settled as cancelled |
 
-A review ends in a decision. When a criterion is unmet and needs new work,
-the reviewer returns the item with the reason, naming each unmet criterion
-and who should do the work, so the item has an owner again. A reviewer keeps
-a review only while every remaining step has a named actor working on it and
-a due time, recorded on the item; past that time it decides again. The
+A review ends in a decision, chosen by what remains. Source rework, a
+criterion the submitted source does not meet and that needs new work, is
+returned with the reason, naming each unmet criterion and who should do the
+work, so the item has an owner again. Post-source gates, a merge, an
+activation or the operator's check after the source is approved, are neither
+held nor returned: the item is routed on with `review.assign` to whoever
+clears the next gate. Only unfinished verification may be held: the
+reviewer's own check waits on one step someone else is doing, and the hold
+lasts while that step has a named actor working on it and a due time,
+recorded on the item; past that time the reviewer decides again. The
 coordinator checks for reviews that sit without a decision (W537).
 
 Return and cancel take a reason. Each decision is fenced by the item
