@@ -103,11 +103,19 @@ worker procedure owns that return workflow, not this data-model page.
 
 | Question | Governed read surface | Limit |
 | --- | --- | --- |
-| What is this worker responsible for now? | `assignment.list` for implementation ownership; `project.plan.index` filtered by current assignee for all item responsibilities, including reviews. | Current state, not a historical participation list. |
+| What is this worker responsible for now? | `assignment.list` with `visibility: current`; `project.plan.index` filtered by current assignee also reads current item responsibilities. | The current-assignee projection includes reviews and items without an implementation-assignment ledger; it is not limited to implementation ownership. |
+| What retained assignments involve this worker? | `assignment.list` with explicit `visibility: current_and_settled` or `all_history`. | The former covers assigned, working, blocked, completed and accepted; the latter also covers refused, returned and cancelled. Neither is every kind of participation or a complete per-agent activity history. |
 | What happened to one item? | `project.plan.history`, through the worker CLI or the board. | One item per query, default 20/max 50 actions, newest first with action-ID tie-breaker and reader/item/generation-bound cursor. Restart on `collection_cursor_stale`. |
 | What project artifacts involve a worker? | Browser-page `timeline.list`: worker, text, status and date filters over controls, person-visible inbox and service events. | Default 30/max 100 rows, frozen ranked-search snapshot and cursor. The worker filter matches associated/sender/recipient worker fields, not an exhaustive join of every actor principal or ownership ledger. |
 | Who changed project membership? | Browser-page `project.people.history`. | Actor/subject people-change history; not worker handling history. Thread-privacy events are excluded. |
 | What is this session's latest local state? | `pb worker inspect` and context/presence projections. | A snapshot and bounded operational diagnostics, not paged historical activity. |
+
+Omitting `visibility` selects `current` unless an explicit assignment-state
+filter is supplied; that legacy combination selects `all_history`. Name the
+scope explicitly when distinguishing current responsibility from retained
+assignments. Current scope filters on the item's current assignee, rather
+than requiring an implementation-assignment row. Historical scopes select
+that worker's assignment-ledger rows within the chosen state coverage.
 
 For example, the worker CLI can read one item's history without copying the
 whole plan or ledger:
@@ -161,6 +169,9 @@ the live-assignment return check.
 
 The serving application owns `ProblemBoardStore.ensure_schema` (domain
 records), `ensure_history` (item action capture and legacy backfill),
+`ProblemBoardControlService.list_assignments` and
+`ProblemBoardStore.assignments_page` (current-assignee and retained-assignment
+projections),
 `ProblemBoardControlService.timeline` and
 `ProblemBoardStore.create_ranked_timeline_search_snapshot` (timeline filters
 and frozen pages). `PAGE_OPERATION_RULES` distinguishes browser-page reads
