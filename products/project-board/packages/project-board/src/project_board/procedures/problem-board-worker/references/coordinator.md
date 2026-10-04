@@ -247,7 +247,10 @@ While it lasts:
   through its normal runtime action, and useful on its own, run its approved
   window and mark that layer live while the unfinished layers remain Working. A
   later layer may hold it only when the earlier layer's own compatibility or
-  acceptance depends on that later layer. Report each layer separately with its
+  acceptance depends on that later layer, and that hold names its evidence and
+  clearing actor ([collaboration](collaboration.md) Rule 16, "A hold is a claim
+  with evidence"). Deferred hardening, another host's window and proximity are
+  never such a dependency. Report each layer separately with its
   source head, review state, activation receipt and live verification. Why: W393's
   safe compact client was held behind unfinished server evidence, leaving the
   expensive reads live after their replacement was ready (operator, 2026-09-29).
