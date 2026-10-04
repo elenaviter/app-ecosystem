@@ -36,10 +36,12 @@ def _attempt(**over):
     return LoginAttempt(**base)
 
 
-def _flow(claims=None, *, secret="", exchange=None, discovered=None):
+def _flow(claims=None, *, secret="", exchange=None, discovered=None, extra_authorize_params=None):
+    extras = {} if extra_authorize_params is None else {"extra_authorize_params": extra_authorize_params}
     config = OidcClientConfig.cognito(
         issuer=ISSUER, client_id="cid", client_secret=secret,
         redirect_uri="https://app.test/api/platform/session/callback", hosted_ui_domain="https://auth.example.test",
+        **extras,
     )
     calls = {"discover": 0, "exchange": []}
 
@@ -72,6 +74,40 @@ async def test_begin_builds_the_authorize_url_with_state_nonce_and_pkce():
     assert query["code_challenge"] == expected == pkce_challenge("v" * 43)
     await flow.begin(_attempt())
     assert calls["discover"] == 1, "discovery is fetched once"
+    assert "prompt" not in query
+
+
+async def test_cognito_account_selection_uses_the_normal_hosted_authorization_path():
+    extras = {"prompt": "select_account"}
+    flow, verifier, calls = _flow(extra_authorize_params=extras)
+    extras["prompt"] = "consent"  # configuration owns a snapshot, not the caller's mutable input
+    query = parse_qs(urlsplit(await flow.begin(_attempt())).query)
+    assert query["prompt"] == ["select_account"]
+    assert "identity_provider" not in query and "login_hint" not in query
+    assert query["state"] == ["st"] and query["nonce"] == ["n1"]
+    assert query["code_challenge"] == [pkce_challenge("v" * 43)]
+    assert query["code_challenge_method"] == ["S256"]
+    identity = await flow.complete({"state": "st", "code": "abc"}, _attempt())
+    assert identity.subject == "u1" and verifier.calls == [("good", "cid", ISSUER)]
+    assert "prompt" not in calls["exchange"][0][1]
+
+
+@pytest.mark.parametrize("factory", [OidcClientConfig, OidcClientConfig.cognito])
+@pytest.mark.parametrize("reserved", [
+    "response_type", "client_id", "redirect_uri", "scope", "state", "nonce",
+    "code_challenge", "code_challenge_method", "client_secret",
+])
+def test_authorization_extras_cannot_override_security_parameters(factory, reserved):
+    with pytest.raises(ValueError, match="reserved authorization parameter"):
+        factory(issuer=ISSUER, client_id="cid", redirect_uri="https://app.test/cb",
+                extra_authorize_params={reserved: "override"})
+
+
+async def test_authorization_extras_are_rechecked_before_browser_redirect():
+    flow, _, _ = _flow()
+    flow.config.extra_authorize_params["state"] = "override"
+    with pytest.raises(ValueError, match="reserved authorization parameter"):
+        await flow.begin(_attempt())
 
 
 async def test_complete_exchanges_the_code_with_pkce_and_binds_the_nonce():
