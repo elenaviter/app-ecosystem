@@ -243,15 +243,95 @@ it from that selection.
 To agree: announce what you restart and why with a shared-write entry of kind
 `relay_restart` whose target names the host (for example `host:development-one`,
 summary "I am restarting the relay: <why>"), and mail each agent on that host.
-Collect an explicit ready from each of them that is available and active: a
-worker in the middle of a call through the relay says wait, because the
-restart interrupts it. Silence is not ready. A worker that is unavailable is
-recorded as pending with its reason, and the restarter first establishes
-from the relay's evidence whether it has a call in flight through this relay:
-one in flight holds the restart, none lets it proceed. Its absence proves
-neither ([collaboration](collaboration.md) Rule 10). The restart reloads the recorded
-source, so nothing in a worker's own worktree is a reason to wait. Then
-restart, report the result, and clear the entry.
+Collect an explicit ready from each affected active session using
+[Host Client Window Quiescence](#host-client-window-quiescence), including the
+installer's other work. Silence is not ready. A worker that is unavailable is
+recorded as pending with its reason; it is not exempt from that quiescence
+gate. Its absence proves neither that a call ended nor that another cannot
+start ([collaboration](collaboration.md) Rule 10). The restart reloads the
+recorded source, so nothing in an isolated worktree changes the candidate.
+Then restart, report the result, and clear the entry.
+
+## Host Client Window Quiescence
+
+This is the additional gate for a host's client-source switch or relay
+restart, not for a runtime-only release from an isolated exact-commit tree.
+READY means calls drained and held **before** the switch: finish or safely
+stop conflicting work and make no new PB/relay calls or project mutations
+until the window's ALL CLEAR or explicit cancellation. Before execution,
+only the window's readiness/control exchange is allowed; after acknowledging
+STARTING NOW, end the turn in a waiting state and issue no commands. Passive
+notification transport continues. A queued START wake cannot stop a busy
+model response and is never the mechanism that establishes the hold.
+The final acknowledgement is the session's last control call, after its
+leases and earlier calls are settled. If a reply is due before settlement,
+send a non-final status, settle, then acknowledge the drained hold. Only the
+named installer executes the planned window and its prescribed verification
+and control exchange; it starts no unrelated work while the hold is active.
+
+The installer names the host, stable affected session identities, exact
+candidate, window correlation, rollback owner and a bounded UTC
+acknowledgement deadline in the announcement. For each session, record on
+the window's item either **acknowledged STARTING NOW** (its explicit reply
+that calls are drained and it will remain waiting) or an evidenced
+**idle/waiting session state** under this same window's no-calls hold.
+A presence label, transport heartbeat, send receipt, lease settlement alone,
+or a quiet relay at one instant proves neither that the model handled the
+request nor that future calls are held. Transport acceptance is not session handling.
+If the runtime cannot establish that waiting state, require the explicit
+acknowledgement; do not infer it. READY is not permission to keep working
+until the next wake, and an earlier READY for another window is not reusable.
+
+A busy, HOLD, unavailable or missing-ACK session without that evidence is
+**non-quiesced**, with its reason, last evidence, clearing actor and deadline
+recorded. Ask an available missing participant once more before the deadline.
+At timeout, record **window not started**, cancel and release already-held
+participants on the same channel, or re-announce a new bounded window after
+the blocker clears. A deadline is not consent. Never waive this gate because
+the release tree is clean or no call is currently visible; an unavailable
+session may be excluded only with evidence that it cannot issue a conflicting
+call throughout the interval. The machine-restart freeze below remains stronger.
+
+**Every required START send must return OK (exit zero). Any refusal or unknown
+send outcome stops the window before execution.** Use a body file for multiline
+prose; never continue a shell loop past a failed send. This checked example
+uses the announced `project_ref`, `work_ref`, `window_id`, prepared
+`start_body_file` and nonempty `affected_workers` array of stable identities:
+
+<!-- host-start-send-guard -->
+```bash
+announce_host_start() {
+  if [ "$#" -eq 0 ]; then
+    printf 'Window not started: affected-session inventory missing\n' >&2
+    return 1
+  fi
+  for worker in "$@"; do
+    if pb worker send --project-ref "$project_ref" --work-ref "$work_ref" \
+      --recipient "$worker" --kind update --subject "STARTING NOW: $window_id" \
+      --body-file "$start_body_file" --correlation-id "$window_id" \
+      --idempotency-key "$window_id-start-$worker" --format brief; then
+      :
+    else
+      printf 'Window not started: START send failed for %s\n' "$worker" >&2
+      return 1
+    fi
+  done
+}
+announce_host_start "${affected_workers[@]}" || exit 1
+```
+
+Successful sends only permit the next **acknowledgement/evidence check**, not
+execution. Execute only after every affected session meets the quiescence
+gate above and the action's other preflight gates hold. A failed send cancels
+the unstarted window; notify already-held participants rather than leaving
+them waiting. Do not retry an unknown write with a new identity: resolve it
+under its original identity and idempotency key.
+
+After execution, the ALL CLEAR records the actual UTC switch interval and
+either zero calls within it or each overlapping call, its effect/outcome and
+recovery. Unknown writes retain their original identity and idempotency key.
+Source tests prove the procedure/guard only; they do not prove a real window
+was quiescent, that an installer adopted it, or that every call was accounted for.
 
 **Verify in the running artifact, not in the checkout.** A green suite says the
 source is correct and nothing about what is running, and a commit hash says

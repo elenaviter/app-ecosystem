@@ -1334,7 +1334,9 @@ tree, which stages whatever it holds at that instant.
    A worker answers the announcement with the same three conditions
    ([test-window](test-window.md)). Why: every worker develops in its own
    worktree, so only a shared tree, a missing commit or a running operation can
-   change what the action loads.
+   change what a runtime-only action loads. A host client switch or relay
+   restart additionally follows [Host Client Window Quiescence](runtime-actions.md#host-client-window-quiescence):
+   drain and hold future calls before execution, not only those visible now.
 3. **Announce** the action, the tree, the approved commit per tree (full
    sha: that commit, not the tree, is what the action loads), and what it
    releases (a worker may
@@ -1363,7 +1365,10 @@ tree, which stages whatever it holds at that instant.
    commit and the worker's dashboard row maps to another isolated worktree or
    otherwise meets none of the three hold conditions above. The announcement
    records the missing answer, the mapped worktree or runtime boundary, and
-   that reason.
+   that reason. This missing-answer waiver never applies to a host client window:
+   use the owning quiescence gate, its bounded acknowledgement deadline and
+   non-quiesced record. Every required START send must return OK; a refusal
+   stops before execution. Transport acceptance never replaces session handling.
 4. **Immediately before**: `git status --porcelain` on the tree and a
    `pb worker receive`. Both are evidence about that moment and neither is the
    guarantee: the tree can change between the check and the staging, and the
