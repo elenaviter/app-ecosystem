@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { openPendingAuthorizationWindow } from '../oauthWindow';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { postOp } from '../../api/client';
 import { armOAuthReturn } from '../delegatedToKdcube/oauthReturn';
@@ -133,21 +134,32 @@ export function MyCardGithubSection({
   };
 
   const connect = (hint: GithubConnectHint, accountId?: string) => act(async () => {
-    const result = await dispatch(startDelegatedToKdcubeOAuth({
-      providerId: hint.provider_id,
-      connectorAppId: hint.connector_app_id,
-      claims: hint.claims,
-      returnHint: window.location.href,
-      accountId,
-    })).unwrap();
-    if (!result?.authorize_url) throw new Error('GitHub sign-in could not start');
+    // Opened now, inside the click: Safari blocks a tab opened after the awaits below.
+    const signIn = openPendingAuthorizationWindow();
+    let result;
+    try {
+      result = await dispatch(startDelegatedToKdcubeOAuth({
+        providerId: hint.provider_id,
+        connectorAppId: hint.connector_app_id,
+        claims: hint.claims,
+        returnHint: window.location.href,
+        accountId,
+      })).unwrap();
+    } catch (err) {
+      signIn.cancel();
+      throw err;
+    }
+    if (!result?.authorize_url) {
+      signIn.cancel();
+      throw new Error('GitHub sign-in could not start');
+    }
     // A new connection links this project when it lands; a reconnect keeps its link.
     if (!accountId) {
       linkPending.current = true;
       writeFlag(pendingKey, true);
     }
     armOAuthReturn();
-    window.open(result.authorize_url, '_blank', 'noopener,noreferrer');
+    if (!signIn.go(result.authorize_url)) throw new Error('The browser blocked the GitHub sign-in tab; allow pop-ups for this site and press Connect again.');
   });
 
   // Point 2: the account a Connect made here brought back is linked for this

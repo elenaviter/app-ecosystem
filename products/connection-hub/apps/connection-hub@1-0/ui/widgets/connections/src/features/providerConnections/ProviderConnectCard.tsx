@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { openPendingAuthorizationWindow } from '../oauthWindow';
 import { useAppDispatch } from '../../app/hooks';
 import { AccountRow } from '../../components/AccountRow';
 import type { ConnectionsAccount, ConnectionsClaimTier, ConnectionsProviderRow } from '../../api/types';
@@ -107,6 +108,8 @@ export function ProviderConnectCard({
   };
 
   const connect = async () => {
+    // Opened now, inside the click: Safari blocks a tab opened after the await below.
+    const signIn = openPendingAuthorizationWindow();
     const result = await dispatch(startProviderConnectionsOAuth({
       provider: row.provider,
       appId: apps.length > 1 ? selectedAppId : undefined,
@@ -120,7 +123,9 @@ export function ProviderConnectCard({
       } catch {
         // Storage unavailable: the user can refresh manually.
       }
-      window.open(result.authorize_url, '_blank', 'noopener,noreferrer');
+      signIn.go(result.authorize_url);
+    } else {
+      signIn.cancel();
     }
   };
 
