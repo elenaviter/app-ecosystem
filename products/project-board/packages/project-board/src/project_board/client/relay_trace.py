@@ -511,6 +511,22 @@ class _Bucket:
         }
 
 
+@dataclass
+class _InFlight:
+    """One write handed to the writer: its outcome is delivered exactly once.
+
+    ``waiting`` is true while the caller that started it is still waiting for
+    it. Another caller may then free the writer's slot once the write has
+    ended, but the outcome stays the waiting caller's; only a write nobody is
+    waiting for any more is reported as late (W461 review).
+    """
+
+    future: Any
+    key: tuple[str, int]
+    waiting: bool = True
+    delivered: bool = False
+
+
 def _consume_outcome(waiter: "asyncio.Future[Any]") -> None:
     if not waiter.cancelled():
         waiter.exception()
@@ -610,23 +626,35 @@ class DiagnosticWriter:
         return self._outstanding is not None
 
     def _reconcile(self) -> None:
-        future = self._outstanding
-        if future is None or not future.done():
+        slot = self._outstanding
+        if slot is None or not slot.future.done():
             return
-        key = self._outstanding_key
+        # The write has ended: the slot is free for the next write. Its
+        # outcome is delivered here only when no caller is waiting for it.
         self._outstanding = None
         self._outstanding_key = None
-        appended = not self._failed(future)
-        if appended:
-            self.receipts["late_appended"] += 1
-            self.last_appended = key
+        if not slot.waiting:
+            self._deliver(slot, late=True)
+
+    def _deliver(self, slot: _InFlight, *, late: bool) -> str:
+        """Classify one ended write once; a later call for it returns its first answer."""
+
+        if slot.delivered:
+            return "delivered"
+        slot.delivered = True
+        appended = not self._failed(slot.future)
+        if late:
+            self.receipts["late_appended" if appended else "late_failed"] += 1
+            if self.on_late is not None:
+                try:
+                    self.on_late(slot.key, appended)
+                except Exception:  # noqa: BLE001 - accounting never fails a write
+                    pass
         else:
-            self.receipts["late_failed"] += 1
-        if self.on_late is not None and key is not None:
-            try:
-                self.on_late(key, appended)
-            except Exception:  # noqa: BLE001 - accounting never fails a write
-                pass
+            self.receipts["appended" if appended else "failed"] += 1
+        if appended:
+            self.last_appended = slot.key
+        return "appended" if appended else "failed"
 
     async def write(self, key: tuple[str, int], line: str) -> str:
         """``appended``, ``failed``, ``unknown`` (still running), ``dropped`` or ``busy``.
@@ -650,24 +678,36 @@ class DiagnosticWriter:
             self._ensure_thread()
             future = concurrent.futures.Future()
             self._jobs.put_nowait((future, line))
-        self._outstanding = future
+        slot = _InFlight(future=future, key=key)
+        self._outstanding = slot
         self._outstanding_key = key
         waiter = asyncio.wrap_future(future)
         # Retrieve the wrapper's outcome whenever it comes, so its exception
         # (whose text may name a path) never reaches the loop's handler.
         waiter.add_done_callback(_consume_outcome)
-        done, _ = await asyncio.wait({waiter}, timeout=self.timeout_seconds)
+        try:
+            done, _ = await asyncio.wait({waiter}, timeout=self.timeout_seconds)
+        except asyncio.CancelledError:
+            slot.waiting = False
+            if future.done():
+                # Ended while this caller was being cancelled: free the slot
+                # if it is still this write's, and deliver the outcome once.
+                if self._outstanding is slot:
+                    self._outstanding = None
+                    self._outstanding_key = None
+                self._deliver(slot, late=True)
+            raise
+        slot.waiting = False
         if waiter not in done:
+            # Still running: the slot stays this write's; reconciled once later.
             self.receipts["unknown_at_timeout"] += 1
             return "unknown"
-        self._outstanding = None
-        self._outstanding_key = None
-        if self._failed(future):
-            self.receipts["failed"] += 1
-            return "failed"
-        self.receipts["appended"] += 1
-        self.last_appended = key
-        return "appended"
+        # Never clear a newer write's slot: another caller may already have
+        # freed this one and started the next.
+        if self._outstanding is slot:
+            self._outstanding = None
+            self._outstanding_key = None
+        return self._deliver(slot, late=False)
 
     def close(self) -> None:
         """Stop taking writes; never waits for one in flight (its outcome stays unknown)."""
