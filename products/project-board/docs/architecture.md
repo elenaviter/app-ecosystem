@@ -83,6 +83,34 @@ and on each machine, is in [Storage and retention](storage-and-retention.md).
 The board never starts a model. It carries addressed work to sessions that
 people started themselves.
 
+### What the board costs a browser
+
+The platform limits each signed-in person's requests: a registered (non-admin)
+person gets 160 per rolling minute, across everything their browser sends, the
+board and Connection Hub together. A refused request answers 429 with the
+platform's reason, such as `Burst limit exceeded (161/160)`.
+
+- **Each operation is a POST and one single-use CSRF token.** The token is
+  bound to the person and the operation endpoint and is spent once, so it
+  can never be reused. The board keeps a small pool of spare tokens per
+  endpoint, fetched in the background after a call, so a call does not wait
+  for its token. A call that spends a spare mints exactly one replacement. A
+  call that found none fetches its own and adds a spare only while the pool
+  is smaller than the calls running together.
+- **Cold versus warm.** The board refreshes every 15 s with four reads sent
+  at once. The first batch finds no spares: 4 fetched tokens and 4 minted
+  spares and 4 POSTs, 12 requests. Each later batch spends the 4 spares and
+  mints 4: 8 requests, about 32 a minute while the board sits open. Reads
+  that follow a change (timeline, plan, assignments) cost the same 2 each,
+  on top.
+- **The board page stays loaded.** The site's scene reads the board's deep
+  link (project, view, worker, message) once, when it loads. The address bar
+  then follows the selected project, and back and forward select projects by
+  message, so opening or closing Connection Hub beside the board never
+  reloads the board.
+- Connection Hub's own requests, and what it shows when the limit refuses
+  one, are in the [Connection Hub design](../../../docs/connection-hub/frontend/application/README.md).
+
 ## The pb client and the host relay
 
 The Project Board client (`pb`, the `project-board` package) runs on each

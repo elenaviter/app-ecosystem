@@ -131,13 +131,19 @@ test('W260: a My Card opens by access_id among the person\'s own Cards', () => {
   assert.equal(matchesAccessCardFocus(myCard, focus({ control_card_id: myCard.access_id })), false)
 })
 
-test('W435: a refusal by the request limit says so and never calls the Card missing', () => {
+test('W435: a refusal by the request limit says so, and claims nothing about the Card either way', () => {
   const request = focus({ control_card_id: 'person-control-7c43016d992ae974fc9c5f1b' })
   const burst = unavailableAccessCardMessage(request, 'Burst limit exceeded (161/160)')
-  assert.doesNotMatch(burst, /does not exist|not visible/)
-  assert.equal(burst, 'Card person-control-7c43016d992ae974fc9c5f1b was not loaded: this account sent more requests than the platform allows in one minute (Burst limit exceeded (161/160)). Nothing is wrong with the Card. Refresh in about a minute to open it.')
+  assert.equal(burst, 'Card person-control-7c43016d992ae974fc9c5f1b was not loaded: the platform refused the request because this account reached its request limit for one minute (Burst limit exceeded (161/160)). Wait about a minute and try again.')
   const hourly = unavailableAccessCardMessage(request, 'Hourly limit exceeded (601/600).')
-  assert.match(hourly, /in an hour \(Hourly limit exceeded \(601\/600\)\)\. Nothing is wrong with the Card\. Refresh later to open it\.$/)
+  assert.match(hourly, /reached its request limit for the hour \(Hourly limit exceeded \(601\/600\)\)\. Wait and try again later\.$/)
+  // An unknown Card refused by the limit: no missing-Card diagnosis and no
+  // promise that it exists or will open.
+  const unknown = unavailableAccessCardMessage(focus({ access_id: 'oauth-never-existed' }), 'Burst limit exceeded (161/160)')
+  for (const message of [burst, hourly, unknown]) {
+    assert.doesNotMatch(message, /does not exist|not visible/)
+    assert.doesNotMatch(message, /nothing is wrong|to open it|will open|is fine/i)
+  }
   assert.equal(isRequestLimitRefusal('Burst limit exceeded (161/160)'), true)
   assert.equal(isRequestLimitRefusal('control_card_not_found'), false)
   assert.match(unavailableAccessCardMessage(request, 'control_card_not_found'), /does not exist or is not visible/)
