@@ -75,6 +75,9 @@ class JournalDocument:
     frontmatter: str
     body: str
     index_issues: tuple[Mapping[str, Any], ...] = ()
+    # W220: the entry_ref this entry corrects. It travels into the immutable
+    # receipt, so a correction chain is recorded, not only searchable text.
+    supersedes_ref: str = ""
 
     def searchable_text(self) -> str:
         """What a person would search for, in one blob.
@@ -117,6 +120,7 @@ class JournalDocument:
             "content_hash": self.content_hash,
             "recorded_at": self.recorded_at,
             "index_issues": [dict(issue) for issue in self.index_issues],
+            "supersedes_ref": self.supersedes_ref,
         }
 
 

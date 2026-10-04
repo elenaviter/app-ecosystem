@@ -1252,6 +1252,7 @@ class JournalWorkspace:
             ).rstrip(),
             body=body,
             index_issues=tuple(issues),
+            supersedes_ref=str(metadata.get("supersedes_ref") or metadata.get("supersedes") or "").strip(),
         )
 
     @staticmethod
