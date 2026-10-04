@@ -1994,7 +1994,7 @@ def test_worker_budgets_name_the_usage_field_and_where_the_caps_live() -> None:
     assert "live on the project's facts page" in coordinator
 
 
-def test_a_worker_searches_before_filing_and_tells_the_coordinator():
+def test_a_worker_searches_before_filing():
     # W359: workers may file plan items on the operator's two conditions, and
     # small things go onto an open item (operator, 2026-09-26).
     collaboration = " ".join(_read("references/collaboration.md").split())
@@ -2002,7 +2002,9 @@ def test_a_worker_searches_before_filing_and_tells_the_coordinator():
     assert "search the plan (`project.plan.search`" in rule
     assert "update it or add a note or an acceptance line to it instead of filing a duplicate" in rule
     assert "A small change or lesson is never its own item" in rule
-    assert "mail the coordinator the new item's key and title" in rule
+    # 2026-10-04: routing reads new items from the plan; no filing mail.
+    assert "mail the coordinator the new item's key and title" not in rule
+    assert "Routing finds new items in the plan; mail the coordinator about one only when it needs a routing decision now" in rule
     skill = " ".join(_read("SKILL.md").split())
     assert "Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14" in skill
 

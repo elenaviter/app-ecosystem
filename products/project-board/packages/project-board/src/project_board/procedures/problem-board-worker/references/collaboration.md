@@ -1026,15 +1026,16 @@ repository from another project's board is ordinary work under the actual
 scope, permissions and review: a project's primary product is its focus, not
 exclusive ownership of a repository (operator, 2026-10-03).
 
-## Rule 14. Search before you file an item, and tell the coordinator
+## Rule 14. Search before you file an item
 
 A worker's Card may create plan items (`plan.item.create`). Before filing
 one, search the plan (`project.plan.search` with the subject's words) and
 read what comes back. When a related item exists, update it or add a note or
 an acceptance line to it instead of filing a duplicate. A small change or
 lesson is never its own item: it goes onto an open item. A new item is for a
-distinct deliverable with its own review. After filing, mail the coordinator
-the new item's key and title, so routing sees it. Why: the operator allowed
+distinct deliverable with its own review. Routing finds new items in the
+plan; mail the coordinator about one only when it needs a routing decision
+now (Rule 16, point 5). Why: the operator allowed
 workers to file items on these two conditions (2026-09-26 21:1xZ), and asked
 for no items for very small things (23:38Z).
 
@@ -1076,7 +1077,7 @@ finds it out.
 
 | Role | Responsible for |
 |---|---|
-| Coordinator | Tracking assignments, actual progress and live availability where they decide something; seeing that every route names its current actor and next action, which each holder keeps; readable instructions that are consistent, with superseded ones marked; handing off a work owner who cannot act, by a reassignment from its checkpoint (Rule 8); the batch roles table; the decisions in point 2. Nothing below transfers this. |
+| Coordinator | Tracking assignments, actual progress and live availability where they decide something, by reading the items, reports and team state (a bounded pull), not by asking for status mail; seeing that every route names its current actor and next action, which each holder keeps; readable instructions that are consistent, with superseded ones marked; handing off a work owner who cannot act, by a reassignment from its checkpoint (Rule 8); the batch roles table; the decisions in point 2. Nothing below transfers this. |
 | Author | Starting at once; one consolidated clarification; implementing within the bound scope; exact-source and test evidence; arranging its review and replacing a reviewer who cannot act (Rule 6); a visible next action and checkpoint; a checkpoint and a notice before a known absence (Rule 8). |
 | Reviewer | Verifying the exact changed source and proportionate test evidence; a verdict at the exact head; handing the item to the named merger (Rule 6). |
 | Merger | Merging an exact head with an independent PASS and the named gates without another routine acknowledgement, reusing unchanged evidence, proving the merged tree (Rule 5); handing on to the installer or verifier. |
@@ -1158,11 +1159,21 @@ What the author does to carry its part:
    dependency's change, a window's execution) waits on an owner who cannot
    act, tell the coordinator what you read and when, and carry on with what
    does not depend on it: that handoff is the coordinator's (Rule 8).
-5. **Mail the coordinator when it has something to do.** A decision you need,
-   a real blocker, completed evidence its next step depends on, or a material
-   change of ownership or deployment, each naming the item, its revision, the
-   exact head and the time. Progress, receipts and acknowledgements go on the
-   item, and complete logs go in an attachment or a file the item references.
+5. **The item is the status; mail goes to whoever acts next.** Progress,
+   receipts, evidence and acknowledgements go once, on the item (complete logs
+   in an attachment or a file it references), and the item is what everyone
+   reads. A handoff is one actionable mail to the named next actor (your
+   reviewer, the merger, the installer), not a copy to everyone. The
+   coordinator gets mail only for: a genuinely new scope, authority or safety
+   decision; a blocker you cannot resolve with the actor in front of you; or a
+   ready result whose next step is the coordinator's own (an activation, a
+   routing only it can make). Each names the item, its revision, the exact
+   head and the time, and points to the evidence on the item rather than
+   repeating it. Never: a routine acknowledgement, a "still waiting" or
+   progress mail, the same evidence in a mail and a note, or a team-wide
+   fan-out. A mail that supersedes an earlier one names that one's reference.
+   Why: the operator named message volume itself a broken process
+   (2026-10-04).
    Mail that arrives after the item moved on is read against the item's
    current route and description and the exact evidence, and answered with
    the current state ([delivery and recovery](delivery-and-recovery.md), "Old

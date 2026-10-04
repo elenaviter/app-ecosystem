@@ -157,8 +157,9 @@ def test_readiness_is_explicit_from_affected_available_owners_everywhere() -> No
 
 def test_mail_to_the_coordinator_carries_actions_and_old_mail_restarts_nothing() -> None:
     rule = _section("references/collaboration.md", "## Rule 16.")
-    assert "Mail the coordinator when it has something to do." in rule
-    assert "Progress, receipts and acknowledgements go on the item" in rule
+    # 2026-10-04: the item is the status; mail goes to whoever acts next.
+    assert "The item is the status; mail goes to whoever acts next." in rule
+    assert "Progress, receipts, evidence and acknowledgements go once, on the item" in rule
     assert "it never restarts completed work or reruns unchanged checks" in rule
     delivery = _words("references/delivery-and-recovery.md")
     assert "neither restart superseded or completed work, rerun unchanged checks" in delivery
