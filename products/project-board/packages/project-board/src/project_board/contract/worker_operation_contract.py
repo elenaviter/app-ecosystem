@@ -206,6 +206,13 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:admin",),
     },
+    "project.role.handover.decide": {
+        "description": (
+            "The agent holding an optional role records a hand-over as "
+            "incorporated, declined or needing evidence."
+        ),
+        "grants": ("work:coordinate",),
+    },
     "project.role.declare": {
         "description": "Alias of project.role.manage that declares or undeclares the role.",
         "grants": ("work:admin",),
@@ -549,6 +556,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.people.card.update",
         "project.role.get",
         "project.role.manage",
+        "project.role.handover.decide",
         "project.role.declare",
         "project.role.assign",
         "project.coordinator.get",

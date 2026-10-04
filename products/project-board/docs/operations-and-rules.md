@@ -35,6 +35,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 
 | Rule id | Rule |
 | --- | --- |
+| `role_holder_decides_handovers` | The agent holding an optional project role, such as the knowledge keeper, decides the hand-overs mailed to that role; a person never does, and holding the role is a condition on the operation, never authority by itself. |
 | `project_membership` | A person on the project reads it: the plan, items, notes, reports, people, workers, the board and the timeline. Membership scopes a person to a project; it is not an operation on a Card. |
 | `operator_inbox_people_only` | The operator inbox is for people: its threads, replies, read state and worker directory are read and written by a signed-in person on the project (not an older read-only viewer), never by an agent. |
 | `private_thread` | A thread its person made private is visible only to that person, the timeline included. |
@@ -85,6 +86,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project.coordinator.get` | coordinator | `work:observe` | Membership (`project_membership`) | Agents also receive it on every heartbeat. |
 | `project.role.get` | roles | `work:observe` | Membership (`project_membership`) | W517: an optional role the board carries (knowledge-keeper) and its holder. |
 | `project.role.manage` | roles | `work:admin` | Their project Card | W517: a person who is an owner or admin only (work_human_operator_required, work_project_admin_required); revision-fenced (work_role_holder_revision_conflict). The holder is an attending, active agent named by its stable worker name (work_role_holder_not_attending, work_role_holder_not_active). Opt-in: no preset ticks it. The role grants no permission. |
+| `project.role.handover.decide` | roles | `work:coordinate` | An agent's channel; not a person's | W517: the agent holding the role only (work_role_handover_agent_only, work_role_handover_not_holder), under the hand-over's revision (work_role_handover_revision_conflict). Incorporated names its result_ref; declined and needs_evidence give a reason. Settling the mail is not a decision. Opt-in: no default worker profile holds it. |
 | `project.role.declare` | roles | `work:admin` | Their project Card | An alias of project.role.manage that declares or undeclares the role. |
 | `project.role.assign` | roles | `work:admin` | Their project Card | An alias of project.role.manage that names or clears the holder. |
 | `project.coordinator.hand_over` | coordinator | `work:admin` | Identity rule `project_admin_by_role` | A signed-in person only; revision-fenced. |

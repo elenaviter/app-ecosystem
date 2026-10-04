@@ -375,6 +375,9 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
     'project.role.manage': {   'description': "Declare or undeclare an optional project role, or name or clear its holder, under the role's revision; a person only.",
                    'object_ref': 'work:project:<project_id>',
                    'payload': {'role': 'knowledge-keeper', 'expected_revision': 'the role revision you read', 'declared': 'true or false: declare or undeclare (use this or worker_name)', 'worker_name': 'the stable name of an attending agent, or empty to clear (use this or declared)'}},
+    'project.role.handover.decide': {   'description': 'The agent holding an optional role records a hand-over as incorporated (with result_ref), declined or needs_evidence (with reason).',
+                   'object_ref': 'work:project:<project_id>',
+                   'payload': {'handover_ref': "the hand-over's ref from project.role.get", 'decision': 'incorporated, declined or needs_evidence', 'reason': 'why (declined or needs_evidence)', 'result_ref': 'the published result (incorporated)', 'expected_revision': 'the hand-over revision you read'}},
     'project.role.declare': {   'description': 'Alias of project.role.manage that declares or undeclares the role.',
                    'object_ref': 'work:project:<project_id>',
                    'payload': {'role': 'knowledge-keeper', 'expected_revision': 'the role revision you read', 'declared': 'true or false'}},
@@ -973,6 +976,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
 PROBLEM_BOARD_OPERATION_REQUIRED: dict[str, tuple[str, ...]] = {
     "project.role.get": ("role",),
     "project.role.manage": ("role", "expected_revision"),
+    "project.role.handover.decide": ("handover_ref", "decision", "expected_revision"),
     "project.role.declare": ("role", "declared", "expected_revision"),
     "project.role.assign": ("role", "expected_revision"),
     "work.attachment.link": ("file_ref",),
