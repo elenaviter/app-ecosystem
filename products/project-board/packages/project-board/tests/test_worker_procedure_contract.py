@@ -2664,3 +2664,16 @@ def test_asking_the_next_actor_is_handing_the_item_on() -> None:
     assert "see that every item's route names a current next actor and action, which its holder keeps and completes" in _words(_read("references/coordinator.md"))
     assert "whoever holds an item whose route is missing, or no longer fits after a reprioritization or a reassignment, completes the route on the item at once" in rule16
     assert "Report it as you ask for the review: a mail moves nothing (collaboration Rule 16)." in _words(_read("SKILL.md"))
+
+
+def test_the_named_merger_checks_publication_and_attribution_by_the_projects_policy() -> None:
+    # W537: the trailer check belonged to the coordinator alone while named
+    # non-author mergers were landing changes. Gate 7 makes it the merger's,
+    # and the repository-specific policy stays in the project's Facts.
+    collaboration = _words(_read("references/collaboration.md"))
+    assert "7. **Publication and attribution as the project rules them.**" in collaboration
+    assert "follow the policy the project's Facts state for that repository" in collaboration
+    assert "The named merger checks this on the exact head before it merges" in collaboration
+    assert "merged history is never rewritten" in collaboration
+    for text in (_read("references/collaboration.md"), _read("references/coordinator.md"), _read("SKILL.md")):
+        assert "Co-Authored-By" not in text, "repository trailer policy belongs in project Facts"

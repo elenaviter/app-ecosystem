@@ -452,8 +452,16 @@ is a verification. One that stops at printing JSON is a report.
    about the place that was not listed.
 6. **Docs move with behaviour**, in the same change request, one home per
    concept, no link to a gitignored path.
-7. **Nothing that should not be public** in the branch, the commits, the
-   description or the comments, for a public repository.
+7. **Publication and attribution as the project rules them.** Nothing that
+   should not be public in the branch, the commits, the description or the
+   comments, for a public repository; and every commit's trailers and the
+   description's attribution lines follow the policy the project's Facts
+   state for that repository. The named merger checks this on the exact head
+   before it merges, because it is the one who lands it, and returns a change
+   that breaks it; merged history is never rewritten. The repository-specific
+   policy lives only in the project's Facts, never here. Why: on 2026-10-03
+   Ops found the trailer check still written as the coordinator's alone
+   while named non-author mergers were landing changes (W537).
 8. **A skill change fits by moving, not by compressing.** `SKILL.md` holds
    fewer than 520 newlines, enforced by `test_skill_carries_rules_not_stories`.
    Why: every worker session loads the skill into context, so the operator
