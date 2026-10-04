@@ -678,7 +678,8 @@ it, what you touched (Rule 3), and what you are waiting on.
     not done because it waits on one step someone else is doing, such as a
     run on another host): only this may be held, and only while that step
     has a **named actor working on it** and a **due time**, both recorded on
-    the item in a note: who, what, until when. When that time passes, or
+    the item in a note: who, what, until when. It is a hold like any other (Rule 16, "A hold is a
+    claim with evidence"). When that time passes, or
     that actor stops attending, decide again at once: return, or hand the
     item on.
 
@@ -832,7 +833,8 @@ paused, suspended or unreachable by its own state, or the estimate is
 overdue with no pushed checkpoint since it was set. In each case the
 coordinator decides: wait only when the owner's return fits the next
 decision time of the work that depends on it, otherwise reassign from the
-last checkpoint. An essential owner who cannot act is never waited on
+last checkpoint. Such a wait is a hold, and names its evidence and clearing
+actor on the item (Rule 16, "A hold is a claim with evidence"). An essential owner who cannot act is never waited on
 indefinitely. It does not happen by itself, because a limited or silent
 worker may still hold uncommitted state that a reassignment would orphan.
 A worker who knows it will be absent (a usage limit ahead, a stop, a
@@ -890,7 +892,7 @@ result came through one, and a worker on another machine could not read it
 owner that is available and active answers READY, or HOLD naming its
 in-flight operation and when it ends, and silence is not READY. An affected
 participant who is unavailable is recorded as pending with its reason; it
-holds nothing that does not depend on it. Absence is not quiescence: before
+holds nothing that does not depend on it (a hold names its evidence, Rule 16). Absence is not quiescence: before
 the window runs, its owner establishes from evidence whether that participant
 has an operation in flight the window would conflict with (the conditions in
 the coordinator reference). For a runtime-only exact-commit release, only
@@ -1081,6 +1083,44 @@ finds it out.
 The coordinator reference applies this route to dispatch ([coordinator](coordinator.md),
 "Record each dispatch on the item"), and the project's files and roles table
 hold the actual names; this procedure holds only the generic rule.
+
+**A hold is a claim with evidence.** A hold is anything that stops or defers
+an item's next step: a gate on a merge, a deployment or an activation, a
+blocker named on the route, a reviewer keeping a review, a window
+participant's HOLD. It stands only while it names, on the item:
+
+- the **requirement or resource** the held step would affect (a contract, a
+  schema, a running counterpart, a host, a credential) and the **evidence**
+  that it would: a failing check, a version or field the other side has not
+  shipped, a resource both steps change;
+- the **actor or event that clears it**, the **smallest action** that does,
+  and the **checkpoint** when it is decided again.
+
+A hold that cannot name these is not a hold, and the step goes ahead, subject
+to its other gates. A window is the exception that keeps its gate: a
+participant that answers HOLD without naming its operation is **not READY**,
+and a host window still starts only with every affected session's READY or
+evidenced quiescence (Rule 10); it is never started over an unexplained
+HOLD. These never make one: deferred or future hardening the step does not depend on; a
+window on another host, or one the step's own runtime does not take part in;
+proximity (the same files, the same day, the same people, a related item).
+A real compatibility dependency is one: the held layer reads a contract or
+schema field the other has not shipped, or the running counterpart would
+refuse it. A runtime-only release is held only by an operation in flight it
+would conflict with; a host client switch or relay restart also needs the
+host window's quiescence (Rule 10). A doubt about whether a dependency is real
+is settled by one bounded check with the owner of the other side, one
+question and one reply by a stated time, not by waiting. A demonstrated
+authority or safety conflict is a **stop**, and stays one until the actor it
+names clears it. The coordinator decides a hold and keeps it current on the
+item; a worker who sees a real conflict flags it with its evidence; when a
+hold is contested, an available non-author reviewer checks what the gate
+actually guards. The review case is Rule 6 ("Unmet criteria go back"), the
+window case Rule 10, and the cross-layer case the coordinator's "Deliver a
+cross-layer item". Why: on 2026-10-04 a deployment was held behind deferred
+permissions hardening that it did not depend on, with no requirement,
+evidence or clearing actor named, and only the operator's correction released
+it (W541).
 
 What the author does to carry its part:
 
