@@ -19,7 +19,7 @@ from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Iterator
 
-from .off_loop import OFF_LOOP_OBSERVER
+from .off_loop import HOLDER_MIN_WAIT_SECONDS, OFF_LOOP_OBSERVER
 
 
 SLOW_RELAY_SECONDS = 5.0
@@ -59,6 +59,10 @@ ACCOUNTING_STARTUP_SECONDS = 120.0
 SUMMARY_MAX_BYTES = 8 * 1024
 SUMMARY_MAX_STAGES = 24
 SUMMARY_MAX_REQUESTS = 16
+# W448: executor waits of a turn and of a bucket name at most this many calls
+# and holders; a bucket keeps at most EXECUTOR_LABELS distinct labels of each.
+EXECUTOR_TOP = 5
+EXECUTOR_LABELS = 32
 SUMMARY_BYTES_PER_MINUTE = 1024 * 1024
 # The relay formatter puts a UTC timestamp, the level and the logger name in
 # front of each line; the byte bounds count it.
@@ -379,17 +383,35 @@ class _TurnState:
     executor_wait_seconds: float = 0.0
     executor_wait_max_seconds: float = 0.0
     executor_run_seconds: float = 0.0
+    # W448: the call behind the longest wait and what held its thread meanwhile.
+    executor_wait_max_callable: str = ""
+    executor_wait_max_holders: list[tuple[str, float]] = field(default_factory=list)
+    # (label, wait, holders) of each call that waited HOLDER_MIN_WAIT_SECONDS or more.
+    executor_long_waits: list[tuple[str, float, list[tuple[str, float]]]] = field(
+        default_factory=list
+    )
     requests: list[str] = field(default_factory=list)
     omitted_requests: int = 0
     tokens: tuple[Any, ...] = field(default=(), repr=False)
 
-    def record_executor(self, wait_seconds: float, run_seconds: float) -> None:
+    def record_executor(
+        self,
+        wait_seconds: float,
+        run_seconds: float,
+        label: str = "",
+        holders: list[tuple[str, float]] | tuple[()] = (),
+    ) -> None:
         if self.finished:
             return
         self.executor_calls += 1
         self.executor_wait_seconds += wait_seconds
+        if wait_seconds >= self.executor_wait_max_seconds:
+            self.executor_wait_max_callable = label
+            self.executor_wait_max_holders = list(holders)
         self.executor_wait_max_seconds = max(self.executor_wait_max_seconds, wait_seconds)
         self.executor_run_seconds += run_seconds
+        if wait_seconds >= HOLDER_MIN_WAIT_SECONDS and len(self.executor_long_waits) < EXECUTOR_TOP:
+            self.executor_long_waits.append((label, wait_seconds, list(holders)))
 
     def add_request(self, request_id: str) -> None:
         if not request_id or self.finished:
@@ -429,6 +451,25 @@ def _new_counts() -> dict[str, Any]:
     }
 
 
+def _count_label(table: dict[str, dict[str, float]], label: str, key: str, seconds: float) -> None:
+    """Count one ``label`` in a bounded table; labels past the bound count as ``other``."""
+
+    if label not in table and len(table) >= EXECUTOR_LABELS:
+        label = "other"
+    entry = table.setdefault(label, {"count": 0, f"{key}_sum": 0.0, f"{key}_max": 0.0})
+    entry["count"] += 1
+    entry[f"{key}_sum"] += seconds
+    entry[f"{key}_max"] = max(entry[f"{key}_max"], seconds)
+
+
+def _top_labels(table: dict[str, dict[str, float]], rank: str) -> list[dict[str, Any]]:
+    ranked = sorted(table.items(), key=lambda item: item[1][rank], reverse=True)[:EXECUTOR_TOP]
+    return [
+        {"callable": label, **{k: (round(v, 3) if isinstance(v, float) else v) for k, v in entry.items()}}
+        for label, entry in ranked
+    ]
+
+
 class _Bucket:
     def __init__(self, *, seq: int, started_monotonic: float, started_at: float) -> None:
         self.seq = seq
@@ -445,6 +486,10 @@ class _Bucket:
             "run_seconds_sum": 0.0,
             "wait_histogram": _new_histogram(),
         }
+        # W448: label -> counts, for calls that waited HOLDER_MIN_WAIT_SECONDS
+        # or more and for the calls that held their thread meanwhile.
+        self.slow_waits: dict[str, dict[str, float]] = {}
+        self.holders: dict[str, dict[str, float]] = {}
         self.jobs: dict[str, dict[str, Any]] = {}
         self.summaries_queued = 0
         self.summaries_dropped_rate = 0
@@ -501,6 +546,8 @@ class _Bucket:
                 "wait_seconds_sum": round(self.executor["wait_seconds_sum"], 3),
                 "wait_seconds_max": round(self.executor["wait_seconds_max"], 3),
                 "run_seconds_sum": round(self.executor["run_seconds_sum"], 3),
+                "slow_waits": _top_labels(self.slow_waits, "wait_seconds_max"),
+                "holders": _top_labels(self.holders, "held_seconds_sum"),
             },
             "jobs": dict(sorted(self.jobs.items())),
             "summaries": {
@@ -827,6 +874,10 @@ class TurnAccounting:
         )
         if turn.executor_calls:
             bucket.executor["wait_histogram"][duration_bucket(turn.executor_wait_max_seconds)] += 1
+        for label, wait, holders in turn.executor_long_waits:
+            _count_label(bucket.slow_waits, label, "wait_seconds", wait)
+            for holder, held in holders:
+                _count_label(bucket.holders, holder, "held_seconds", held)
         if outcome == "succeeded" and seconds < self.slow_seconds:
             return None
         summary = self._summary(turn, outcome, code, seconds, stages or [])
@@ -869,6 +920,10 @@ class TurnAccounting:
                 "wait_seconds_sum": round(turn.executor_wait_seconds, 3),
                 "wait_seconds_max": round(turn.executor_wait_max_seconds, 3),
                 "run_seconds_sum": round(turn.executor_run_seconds, 3),
+                "wait_max_callable": turn.executor_wait_max_callable,
+                "wait_max_holders": [
+                    [label, round(held, 3)] for label, held in turn.executor_wait_max_holders
+                ],
             },
             "requests": list(turn.requests),
             "omitted_requests": turn.omitted_requests,
