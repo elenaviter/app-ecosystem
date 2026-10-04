@@ -16,6 +16,7 @@ from project_board.client.github_key import (
     clone_config,
     credential_answer,
     credential_repository,
+    gh_forwarded_args,
     gh_repository,
     helper_command,
     issue_token,
@@ -107,6 +108,61 @@ def test_gh_acts_on_its_repo_flag_else_the_clones_origin():
     assert gh_repository(["pr", "list", "--repo=example-org/y"], "") == "example-org/y"
     assert gh_repository(["pr", "list"], "git@github.com:example-org/z.git") == "example-org/z"
     assert gh_repository(["pr", "list"], "") == ""
+
+
+def test_ssh_alias_origins_name_their_repository_and_other_hosts_do_not():
+    # W416: the add-a-worker-host procedure clones through `Host github-<alias>`
+    # (HostName github.com); such an origin names its GitHub repository.
+    assert repository_name("github-applications:example-org/app-ecosystem.git") == "example-org/app-ecosystem"
+    assert repository_name("git@github-applications:example-org/app-ecosystem.git") == "example-org/app-ecosystem"
+    assert repository_name("ssh://git@github-applications/example-org/app-ecosystem.git") == "example-org/app-ecosystem"
+    assert repository_name("ssh://git@github.com/example-org/app-ecosystem.git") == "example-org/app-ecosystem"
+    # Anything else stays "not a GitHub repository".
+    assert repository_name("gitlab-applications:example-org/app-ecosystem.git") == ""
+    assert repository_name("git@gitlab.com:example-org/app-ecosystem.git") == ""
+    assert repository_name("bob@github-applications:example-org/app-ecosystem.git") == ""
+    assert repository_name("https://github-applications/example-org/app-ecosystem.git") == ""
+    assert repository_name("ssh://git@example.test/example-org/app-ecosystem.git") == ""
+    assert repository_name("github-:example-org/app-ecosystem.git") == ""
+    assert repository_name("github-applications:example-org/a/b") == ""
+    # gh picks the repository from an alias origin too.
+    assert gh_repository(["pr", "list"], "git@github-app:example-org/z.git") == "example-org/z"
+
+
+def test_gh_api_takes_its_repository_from_the_repo_flag_but_gh_never_sees_it():
+    # W416: `gh api` has no -R/--repo and refuses one; the flag only selects the key.
+    assert gh_forwarded_args(["api", "-R", "example-org/x", "repos/example-org/x/pulls"]) == ["api", "repos/example-org/x/pulls"]
+    assert gh_forwarded_args(["api", "--repo", "example-org/x", "user"]) == ["api", "user"]
+    assert gh_forwarded_args(["api", "--repo=example-org/x", "user"]) == ["api", "user"]
+    # Every other gh command takes -R itself and keeps it.
+    assert gh_forwarded_args(["pr", "create", "-R", "example-org/x"]) == ["pr", "create", "-R", "example-org/x"]
+    assert gh_forwarded_args([]) == []
+
+
+def test_pb_worker_gh_selects_the_key_from_an_alias_origin_and_strips_repo_for_api(monkeypatch):
+    issued: list[str] = []
+
+    class _Recording(_Session):
+        def token(self, repository):
+            issued.append(repository)
+            return super().token(repository)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(cli, "_GitHubKeySession", _Recording)
+    monkeypatch.setattr(cli, "find_gh", lambda **_: "gh")
+    monkeypatch.setattr(
+        cli.subprocess,
+        "run",
+        lambda *a, **k: SimpleNamespace(returncode=0, stdout="git@github-app:example-org/app-ecosystem.git\n"),
+    )
+    monkeypatch.setattr(cli.subprocess, "call", lambda argv, env=None: calls.append(list(argv)) or 0)
+
+    assert cli._gh_command(SimpleNamespace(gh_args=["--", "pr", "list"])) == 0  # noqa: SLF001
+    assert cli._gh_command(  # noqa: SLF001
+        SimpleNamespace(gh_args=["--", "api", "-R", "example-org/app-ecosystem", "repos/example-org/app-ecosystem"])
+    ) == 0
+    assert issued == ["example-org/app-ecosystem", "example-org/app-ecosystem"]
+    assert calls == [["gh", "pr", "list"], ["gh", "api", "repos/example-org/app-ecosystem"]]
 
 
 class _Session:

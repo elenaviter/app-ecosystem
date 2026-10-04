@@ -243,7 +243,13 @@ deploy keys, as before ([add a machine](add-a-machine.md)).
 `gh` works the same way: `pb worker gh -- pr create …` (or any gh command)
 does steps 3 to 6 for the repository the command names (its `-R/--repo`, else
 the clone's origin), then runs gh with `GH_TOKEN` in that one process's
-environment. gh needs no login of its own.
+environment. gh needs no login of its own. `gh api` takes no `-R/--repo`, so
+for `api` that flag only selects the repository's key and gh does not receive
+it. A clone's origin may be github.com over HTTPS or SSH, or the
+`github-<alias>` SSH host alias a machine's deploy key uses
+([add a machine](add-a-machine.md)). Any other host names no GitHub
+repository, and the key is still issued only for a repository on the project
+card.
 
 ## The board's decision: a signed question
 

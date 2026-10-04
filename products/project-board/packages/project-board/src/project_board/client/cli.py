@@ -99,6 +99,7 @@ from .github_key import (
     credential_answer,
     credential_repository,
     find_gh,
+    gh_forwarded_args,
     gh_repository,
     helper_command,
     issue_token,
@@ -4511,7 +4512,7 @@ def _gh_command(args: Any) -> int:
     env.pop("GITHUB_TOKEN", None)
     env["GH_TOKEN"] = token.token
     try:
-        return subprocess.call([find_gh() or "gh", *gh_args], env=env)
+        return subprocess.call([find_gh() or "gh", *gh_forwarded_args(gh_args)], env=env)
     except FileNotFoundError:
         print("pb GitHub key: gh is not installed on this machine.", file=sys.stderr)
         return 127
