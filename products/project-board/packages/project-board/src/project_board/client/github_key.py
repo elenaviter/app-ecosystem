@@ -40,6 +40,17 @@ CARD_BEARER_HEADER = "X-Connection-Hub-Card-Bearer"
 GITHUB_HOST = "github.com"
 GIT_USERNAME = "x-access-token"
 _REPOSITORY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}$")
+# The SSH host alias the add-a-worker-host procedure writes for a repository's
+# deploy key (`Host github-<alias>` with `HostName github.com`). Its origin
+# names a GitHub repository; only this prefix is read as one (W416).
+_GITHUB_SSH_ALIAS = re.compile(r"^github-[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+def _github_host(host: str) -> bool:
+    """github.com itself, or the procedure's own `github-<alias>` SSH alias."""
+
+    name = host.lower()
+    return name == GITHUB_HOST or bool(_GITHUB_SSH_ALIAS.fullmatch(name))
 
 Post = Callable[[str, Mapping[str, Any], str], Awaitable[tuple[int, Any]]]
 
@@ -122,22 +133,39 @@ class GitHubToken:
 
 
 def repository_name(value: str) -> str:
-    """``owner/name`` from owner/name, a github.com URL or an SSH remote; empty otherwise."""
+    """``owner/name`` from owner/name, a github.com URL or an SSH remote; empty otherwise.
+
+    An SSH remote may name github.com or the procedure's `github-<alias>`
+    host alias (W416): ``git@github.com:o/r.git``, ``github-x:o/r.git``,
+    ``git@github-x:o/r.git`` and ``ssh://git@github-x/o/r.git``. Any other
+    host is not a GitHub repository. The name only selects which card
+    repository's key is asked for: the key is still issued only for a
+    repository on the project card, and only gh or git over HTTPS to
+    github.com ever receives it.
+    """
 
     text = str(value or "").strip()
-    if text.startswith("git@"):
-        host, _, path = text[len("git@"):].partition(":")
-        if host.lower() != GITHUB_HOST:
-            return ""
-        text = path
-    elif "://" in text:
+    if "://" in text:
         parts = urlsplit(text)
-        if (parts.hostname or "").lower() != GITHUB_HOST:
+        host = (parts.hostname or "").lower()
+        if parts.scheme.lower() == "ssh":
+            if not _github_host(host):
+                return ""
+        elif host != GITHUB_HOST:
             return ""
         text = parts.path
     elif text.startswith(("/", ".", "~")):
         # A local path, never a GitHub repository.
         return ""
+    elif ":" in text:
+        # scp-like SSH: [user@]host:owner/name(.git)
+        host, _, path = text.partition(":")
+        user, at, bare_host = host.rpartition("@")
+        if at and user != "git":
+            return ""
+        if not _github_host(bare_host if at else host):
+            return ""
+        text = path
     text = text.strip("/")
     if text.lower().endswith(".git"):
         text = text[:-4]
@@ -293,6 +321,31 @@ def gh_repository(args: list[str], origin_url: str) -> str:
     return repository_name(origin_url)
 
 
+def gh_forwarded_args(args: list[str]) -> list[str]:
+    """gh's arguments as gh receives them (W416).
+
+    `gh api` has no -R/--repo flag and refuses one, so for `api` the flag
+    only selects which repository's key is issued and is not forwarded.
+    Every other gh command takes -R itself and keeps it.
+    """
+
+    if not args or args[0] != "api":
+        return list(args)
+    forwarded: list[str] = []
+    skip = False
+    for index, arg in enumerate(args):
+        if skip:
+            skip = False
+            continue
+        if arg in ("-R", "--repo") and index + 1 < len(args):
+            skip = True
+            continue
+        if arg.startswith("--repo="):
+            continue
+        forwarded.append(arg)
+    return forwarded
+
+
 __all__ = [
     "CARD_BEARER_HEADER",
     "DEPLOY_KEY_REMOTE",
@@ -309,6 +362,7 @@ __all__ = [
     "clone_config",
     "credential_answer",
     "credential_repository",
+    "gh_forwarded_args",
     "gh_repository",
     "helper_command",
     "issue_token",
