@@ -278,6 +278,17 @@ their Telegram.
   reviewer may still return it. A requirement
   carried on the assignment takes precedence over the item's. See
   [Source approval and final acceptance](#source-approval-and-final-acceptance).
+
+  Every write that sets the requirement (create, import, publish and
+  `plan.item.update`) accepts only those two kinds and refuses any other
+  with `work_review_requirement_invalid` before anything is stored, the
+  item's files included. An item stored earlier with a kind the board does
+  not recognize stays readable and shows that kind as stored; it is never
+  treated as `qualified`. Every review decision on it is refused with
+  `work_review_requirement_legacy_repair_required` (409) until a
+  `plan.item.update` sets `qualified` or `operator`. That repair records
+  `legacy_repair`: the previous kind, who repaired it and when. Later edits
+  keep it. Nothing rewrites such items in bulk.
 - **Authority is a Card grant.** A reviewer needs `work:review` and the exact
   review operation on its Card. A missing operation is refused with
   `work_review_operation_required`, naming the operation and the Card to
