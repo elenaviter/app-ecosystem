@@ -819,6 +819,13 @@ team from it. For each item, beside the batch's roles table, answer:
    work-owner handoff, a GO, a release, the escalations collaboration Rule 16
    lists, and a review routing or a merge only when no author-arranged
    reviewer or named merger can take it.
+5. **A review that sits?** An item in Review whose reviewer has recorded no
+   decision, or a hold whose named actor or due time is missing, past, or no
+   longer attending ([collaboration](collaboration.md) Rule 6, "Unmet
+   criteria go back"). Ask that reviewer to decide now, return or hand on.
+   When the reviewer is unavailable, route the review to an available one.
+   An author nobody has named for a returned item is your route to give
+   (W537).
 
 **What to do.** Turn every finding into one owned next action in the same
 turn: take the decision you owe, reassign with the missing binding, route the
