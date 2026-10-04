@@ -40,3 +40,10 @@ def test_an_available_team_agent_still_keeps_the_gate():
     assert "An affected (available) session that is busy, answers HOLD or misses the acknowledgement without that evidence is **non-quiesced**" in runtime
     collaboration = _words("collaboration.md")
     assert "That gate waits only for the initiating team's available agents, and tells the operator on Telegram about the other agents on the machine" in collaboration
+
+
+def test_a_held_ready_carries_over_to_a_re_announced_window():
+    runtime = _words("runtime-actions.md")
+    assert "**A READY carries over to a re-announced window** for the same host and candidate when the participant has stayed held since it gave it" in runtime
+    assert "A participant that resumed work after a cancellation, or a window for another host or candidate, needs a fresh READY." in runtime
+    assert "an earlier READY for another window is not reusable" not in runtime

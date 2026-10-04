@@ -299,7 +299,14 @@ or a quiet relay at one instant proves neither that the model handled the
 request nor that future calls are held. Transport acceptance is not session handling.
 If the runtime cannot establish that waiting state, require the explicit
 acknowledgement; do not infer it. READY is not permission to keep working
-until the next wake, and an earlier READY for another window is not reusable.
+until the next wake. **A READY carries over to a re-announced window** for
+the same host and candidate when the participant has stayed held since it
+gave it (no PB or relay call and no project mutation since): the
+re-announcement lists those participants as already READY, and each confirms
+in one line that it is still held, or withdraws. A participant that resumed
+work after a cancellation, or a window for another host or candidate, needs a
+fresh READY. Why: on 2026-10-04 every cancelled attempt made the whole team
+answer again, and the window was cancelled five times.
 
 An affected (available) session that is busy, answers HOLD or misses the
 acknowledgement without that evidence is **non-quiesced**, with its reason,
