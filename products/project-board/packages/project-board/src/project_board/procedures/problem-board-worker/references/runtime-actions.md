@@ -269,6 +269,25 @@ send a non-final status, settle, then acknowledge the drained hold. Only the
 named installer executes the planned window and its prescribed verification
 and control exchange; it starts no unrelated work while the hold is active.
 
+**Who the window asks and waits for.** A relay restart or client switch
+affects every agent on the machine, but agents of different projects cannot
+yet message each other, and no per-machine upgrade procedure exists. Until
+one does, a machine upgrade initiated in a project does this:
+
+1. **It informs and waits for the available agents of its own team only.**
+   The affected sessions are this project's team members on this host that
+   the team availability read shows available now (`pb worker context`, the
+   coordinator reference's "What the coordinator is for"): attending, active
+   pool, quota left, session online and in sync. **Available, not all:** an
+   agent that is out of tokens, offline, out of sync or not on this team is
+   not asked and not waited for, and is recorded as not asked with its reason.
+2. **It tells the operator about the other agents on this machine.** When
+   other agents run on the host that do not belong to the initiating team,
+   the installer sends the operator a `decision` (it reaches their Telegram)
+   before the window, naming the host, the window id and its time, and each
+   such agent to inform (its alias, stable name and project). The window
+   does not wait for them.
+
 The installer names the host, stable affected session identities, exact
 candidate, window correlation, rollback owner and a bounded UTC
 acknowledgement deadline in the announcement. For each session, record on
@@ -282,15 +301,18 @@ If the runtime cannot establish that waiting state, require the explicit
 acknowledgement; do not infer it. READY is not permission to keep working
 until the next wake, and an earlier READY for another window is not reusable.
 
-A busy, HOLD, unavailable or missing-ACK session without that evidence is
-**non-quiesced**, with its reason, last evidence, clearing actor and deadline
-recorded. Ask an available missing participant once more before the deadline.
+An affected (available) session that is busy, answers HOLD or misses the
+acknowledgement without that evidence is **non-quiesced**, with its reason,
+last evidence, clearing actor and deadline recorded. Ask an available missing participant once more before the deadline.
 At timeout, record **window not started**, cancel and release already-held
 participants on the same channel, or re-announce a new bounded window after
-the blocker clears. A deadline is not consent. Never waive this gate because
-the release tree is clean or no call is currently visible; an unavailable
-session may be excluded only with evidence that it cannot issue a conflicting
-call throughout the interval. The machine-restart freeze below remains stronger.
+the blocker clears. A deadline is not consent. Never waive this gate for an
+affected session because the release tree is clean or no call is currently
+visible. A session the availability read shows unavailable, or one outside
+the team, is not an affected session (point 1 above); why: windows waited on
+agents that were out of team or could not answer, and were cancelled five
+times in one day (operator, 2026-10-04: "no one must wait for agents that are
+out of team or offline"). The machine-restart freeze below remains stronger.
 
 **Every required START send must return OK (exit zero). Any refusal or unknown
 send outcome stops the window before execution.** Use a body file for multiline

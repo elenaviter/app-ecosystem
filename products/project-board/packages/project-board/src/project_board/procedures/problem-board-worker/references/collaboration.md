@@ -899,7 +899,9 @@ the coordinator reference). For a runtime-only exact-commit release, only
 such an operation holds it. A host client switch or relay restart additionally
 requires [Host Client Window Quiescence](runtime-actions.md#host-client-window-quiescence),
 which holds future calls before execution; neither a queued START wake nor a
-missing answer waives it.
+missing answer waives it. That gate waits only for the initiating team's
+available agents, and tells the operator on Telegram about the other agents
+on the machine (the same section).
 The test-window reference owns the pause procedure itself, this rule owns
 what the window says to the team.
 
