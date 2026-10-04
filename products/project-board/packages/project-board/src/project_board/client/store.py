@@ -11,7 +11,7 @@ import logging
 import os
 import re
 import uuid
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -54,6 +54,10 @@ from ..contract.worker_identity import (
 )
 from .assignment_notice import assignment_notice_text
 from .io import (
+    FileLockBusy,
+    LOCK_LOGGER,
+    SLOW_LOCK_SECONDS,
+    read_lock_holder,
     atomic_write_json,
     id_stem,
     bounded_text,
@@ -860,6 +864,21 @@ _MINTED_MAIL_ID = re.compile(
     r"|delivery_failed_[0-9a-f]{24}"
 )
 
+
+
+def _log_busy_mail_lock(path: Path) -> None:
+    """Say who holds a busy mailbox lock, when it has held it a while (W448)."""
+
+    holder = read_lock_holder(path)
+    try:
+        held = (datetime.now(timezone.utc) - parse_utc(str(holder.get("acquired_at") or ""))).total_seconds()
+    except DomainError:
+        return
+    if held >= SLOW_LOCK_SECONDS:
+        LOCK_LOGGER.info(
+            "Problem Board mail lock busy: path=%s holder=%s pid=%s held_seconds=%.3f",
+            path, holder.get("holder") or "unknown", holder.get("pid") or "", held,
+        )
 
 class SharedFieldStore:
     """Canonical project state shared directly by local workers.
@@ -5576,7 +5595,7 @@ class SharedFieldStore:
             atomic_write_json(path, row)
             return self._session_with_presence(listener)
 
-    def pending_worker_mail_refs(self, worker_name: str) -> list[str]:
+    def pending_worker_mail_refs(self, worker_name: str, *, wait: bool = True) -> list[str]:
         """The authoritative list, under the lock, with expired mail recovered.
 
         This holds the mailbox lock on purpose: it recovers expired mail, which
@@ -5585,6 +5604,16 @@ class SharedFieldStore:
         acquisition deadlocks the process against itself. Reachability uses
         pending_worker_mail_count_snapshot instead, which is diagnostic and
         lock-free.
+
+        ``wait=False`` never waits for a mailbox lock (W448). The relay's wake
+        decision runs on the channel's store thread, and the worker's own CLI
+        (receive, settle, renew) holds the same lock while it scans its inbox:
+        on dev-main a 373-message inbox held one channel's heartbeat and
+        assignment reconcile for up to 31 s. When the lock is busy, that
+        mailbox is read lock-free instead (inbox mail plus expired leases, as
+        pending_worker_mail_count_snapshot counts it) and its expired leases are
+        left for the holder or the next wake to recover. The answer can be a
+        moment old; it never changes delivery state.
         """
 
         worker = self.read_worker(worker_name)
@@ -5592,7 +5621,14 @@ class SharedFieldStore:
         refs: list[str] = []
 
         def collect(project_id: str, root: Path) -> None:
-            with exclusive_lock(root.parent / ".mail.lock"):
+            with ExitStack() as held:
+                lock_path = root.parent / ".mail.lock"
+                try:
+                    held.enter_context(exclusive_lock(lock_path, wait=wait))
+                except FileLockBusy:
+                    _log_busy_mail_lock(lock_path)
+                    refs.extend(self._pending_mail_refs_lock_free(project_id, clean_name))
+                    return
                 self._recover_expired_mail(project_id, clean_name)
                 for path in sorted(root.glob("*.json")):
                     row = read_json(path)
@@ -5606,6 +5642,38 @@ class SharedFieldStore:
             if parsed.kind != "project":
                 continue
             collect(parsed.object_id, self._mail_root(parsed.object_id, clean_name) / "inbox")
+        return refs
+
+    def _pending_mail_refs_lock_free(self, project_id: str, worker_name: str) -> list[str]:
+        """One mailbox's readable and expired mail, read without its lock.
+
+        Atomic file replacement makes this safe: a concurrent move can make the
+        answer briefly old, but it cannot corrupt mail or change delivery state.
+        """
+
+        root = self._mail_root(project_id, worker_name)
+        refs: list[str] = []
+        now = datetime.now(timezone.utc)
+        for path in sorted((root / "inbox").glob("*.json")):
+            row = read_json(path, required=False)
+            message_ref = str(row.get("message_ref") or "")
+            if message_ref:
+                refs.append(message_ref)
+        for path in sorted((root / "leased").glob("*.json")):
+            row = read_json(path, required=False)
+            lease = (
+                row.get("lease")
+                if isinstance(row.get("lease"), Mapping)
+                else {}
+            )
+            expires_at = str(lease.get("expires_at") or "")
+            try:
+                expired = bool(expires_at and parse_utc(expires_at) <= now)
+            except DomainError:
+                expired = False
+            message_ref = str(row.get("message_ref") or "")
+            if expired and message_ref:
+                refs.append(message_ref)
         return refs
 
     def pending_worker_mail_count_snapshot(self, worker_name: str) -> int:
@@ -5627,29 +5695,8 @@ class SharedFieldStore:
                 project_ids.append(parsed.object_id)
 
         refs: set[str] = set()
-        now = datetime.now(timezone.utc)
         for project_id in project_ids:
-            root = self._mail_root(project_id, clean_name)
-            for path in sorted((root / "inbox").glob("*.json")):
-                row = read_json(path, required=False)
-                message_ref = str(row.get("message_ref") or "")
-                if message_ref:
-                    refs.add(message_ref)
-            for path in sorted((root / "leased").glob("*.json")):
-                row = read_json(path, required=False)
-                lease = (
-                    row.get("lease")
-                    if isinstance(row.get("lease"), Mapping)
-                    else {}
-                )
-                expires_at = str(lease.get("expires_at") or "")
-                try:
-                    expired = bool(expires_at and parse_utc(expires_at) <= now)
-                except DomainError:
-                    expired = False
-                message_ref = str(row.get("message_ref") or "")
-                if expired and message_ref:
-                    refs.add(message_ref)
+            refs.update(self._pending_mail_refs_lock_free(project_id, clean_name))
         return len(refs)
 
     def _worker_mail_scopes(self, worker_name: str) -> tuple[str, list[tuple[str, str]]]:

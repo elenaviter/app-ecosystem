@@ -63,7 +63,7 @@ def _decide(monkeypatch, host, channel, script: type[_Scripted]) -> tuple[dict[s
         def worker_listener_session(self, worker_name):
             return dict(script.listener) if script.listener is not None else None
 
-        def pending_worker_mail_refs(self, worker_name):
+        def pending_worker_mail_refs(self, worker_name, *, wait=True):
             return list(script.pending)
 
     monkeypatch.setattr(relay, "SharedFieldStore", Field)
