@@ -98,14 +98,6 @@ accountability (operator, 2026-10-03).
   to a worker. A finding kept only in mail is lost to the next reader (W449).
 - Before routing, discuss the need with the candidates, then decide, then route.
   A brief carries the intention and the need; the worker derives the constraints.
-- Route a reported issue whole: investigating it is part of handling it. When
-  the operator reports issues, file each one and hand its investigation to an
-  available suitable worker before you read into it yourself. Your own reading
-  before routing is what the brief needs. Your first reply to the report names,
-  per issue, the item key and the assigned worker, or why no worker can take
-  it. Why: on 2026-10-01 the coordinator ran source searches and a
-  documentation lookup on four reported issues before routing them ("investigation
-  is also handle these issues", "you have 2 agents that do nothing", operator).
 - Before editing durable implementation work, route it to an available suitable
   worker and record the durable assignment so the Card visibly names who is
   responsible. The coordinator implements it directly only when no suitable
@@ -559,10 +551,13 @@ agent of that pool, and route to it only when its fresh limit state shows the
 new window and it answers with a receipt or a STARTED (operator, 2026-10-01,
 W455; the client side is W438).
 
-**The coordinator routes implementation** (operator, 2026-09-29). A
-coordinator investigates, diagnoses and designs. Once an implementable
-deliverable exists, it routes the implementation to a capable, usable worker
-with a durable assignment. It implements itself only when no suitable worker
+**The coordinator routes implementation** (operator, 2026-09-29). A reported
+issue goes to a capable, usable worker whole, its investigation included: the
+coordinator's own reading before routing is what the brief needs, and its first
+reply to the report names, per issue, the item key and the assigned worker, or
+why no worker can take it. Once an implementable deliverable exists, it routes
+the implementation to a capable, usable worker with a durable assignment. It
+investigates or implements itself only when no suitable worker
 exists, when a machine-local resource or an authority only the coordinator
 holds requires it, or when briefing and reviewing a delegate would cost more
 than the bounded task, and it records that reason on the item. Being able to
