@@ -183,3 +183,52 @@ def test_a_genuinely_unknown_ref_and_lease_read_as_absent_without_a_path(field):
         assert refused.value.details["reason"] == "absent"
         assert "leased" not in str(refused.value)
         assert "/" not in str(refused.value)
+
+
+@pytest.mark.parametrize("shape", ["wrong", "shortened"])
+@pytest.mark.parametrize("call", [_read, _settle], ids=["lease-read", "settle"])
+def test_a_call_for_another_project_never_names_this_projects_lease(field, call, shape):
+    # W534 review: the held-lease lookup never searches another project's mailbox.
+    message_ref, lease_id = _leased(field)
+    field.create_project(
+        project_id="project-two", title="Other", goal="Another mailbox.", owner="operator"
+    )
+    object_id = message_ref.split(":")[3]
+    wrong = _with_id(
+        message_ref, "mail_" + "0" * 32 if shape == "wrong" else object_id[:-2]
+    )
+
+    with pytest.raises(DomainError) as refused:
+        call_args = dict(
+            worker_name=WORKER, message_ref=wrong, lease_id=lease_id, lease_owner=SESSION
+        )
+        if call is _read:
+            field.read_worker_mail_lease("project-two", **call_args)
+        else:
+            field.settle_mail("project-two", outcome="acknowledged", **call_args)
+    assert refused.value.code == (
+        "field_mail_lease_not_found" if shape == "wrong" else "field_mail_ref_malformed"
+    )
+    assert message_ref not in json.dumps(refused.value.details) + str(refused.value)
+    assert PROJECT not in json.dumps(refused.value.details) + str(refused.value)
+    # The lease in its own project is untouched.
+    assert _inventory(field) == [(message_ref, lease_id)]
+
+
+def test_a_project_call_still_names_this_sessions_direct_mail_lease(field):
+    # Direct (control-plane) mail lives in the worker's own mailbox; settle
+    # already falls back to it from a project call, and the diagnosis follows.
+    sent = field.send_mail(
+        "", sender="control-plane", recipient=WORKER, kind="request",
+        subject="Direct", body="From the operator.", idempotency_key="direct-one",
+    )
+    [leased] = field.pull_mail("", worker_name=WORKER, lease_owner=SESSION)
+    lease_id = leased["lease"]["lease_id"]
+    wrong = _with_id(sent["message_ref"], "mail_" + "0" * 32)
+
+    for call in (_read, _settle):
+        with pytest.raises(DomainError) as refused:
+            call(field, wrong, lease_id)
+        assert refused.value.code == "field_mail_lease_ref_mismatch"
+        assert refused.value.details["actual_message_ref"] == sent["message_ref"]
+        assert refused.value.details["actual_project_ref"] == ""

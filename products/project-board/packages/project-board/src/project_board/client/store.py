@@ -5780,24 +5780,28 @@ class SharedFieldStore:
         self,
         clean_worker: str,
         *,
+        scope: str,
         lease_id: str,
         lease_owner: str,
     ) -> dict[str, str] | None:
-        """The unexpired lease this session holds under ``lease_id``, if any.
+        """The unexpired lease this session holds under ``lease_id``.
 
-        It sees exactly what ``list_worker_mail_leases`` lists for the same
-        session: the same mailboxes, the same owner, nothing expired. It reads
-        without the mailbox lock (writes are atomic replaces) because settle
-        calls it while already holding one mailbox's lock.
+        It searches the mailbox the caller named (``scope``: a project id, or
+        "" for the direct mailbox) and, for a project call, the session's own
+        direct mailbox, which settle already falls back to for control-plane
+        mail. Another project's mailbox is never searched, so a call for one
+        project never reveals a lease in another (W534 review). Within those,
+        it sees what ``list_worker_mail_leases`` lists for the same session:
+        the same owner, nothing expired. It reads without the mailbox lock
+        (writes are atomic replaces) because settle calls it while holding one.
         """
 
         wanted = str(lease_id or "")
         if not wanted:
             return None
         now = datetime.now(timezone.utc)
-        _, scopes = self._worker_mail_scopes(clean_worker)
-        for _, scope in scopes:
-            for path in sorted((self._mail_root(scope, clean_worker) / "leased").glob("*.json")):
+        for mailbox in ([scope, ""] if scope else [""]):
+            for path in sorted((self._mail_root(mailbox, clean_worker) / "leased").glob("*.json")):
                 message = read_json(path, required=False)
                 lease = message.get("lease") if isinstance(message, Mapping) else None
                 if not isinstance(lease, Mapping):
@@ -5816,7 +5820,7 @@ class SharedFieldStore:
                     return None
                 return {
                     "message_ref": message_ref,
-                    "project_ref": make_ref("project", scope) if scope else "",
+                    "project_ref": make_ref("project", mailbox) if mailbox else "",
                 }
         return None
 
@@ -5827,13 +5831,17 @@ class SharedFieldStore:
         message_ref: str,
         lease_id: str,
         lease_owner: str,
-        requested_ref: str,
+        requested_scope: str,
     ) -> DomainError:
         """Why no record matched: a held lease under another ref, a ref no
         mail can have, or genuinely absent mail, in that order (W534)."""
 
+        requested_ref = make_ref("project", requested_scope) if requested_scope else ""
         held = self._held_mail_lease(
-            clean_worker, lease_id=lease_id, lease_owner=lease_owner
+            clean_worker,
+            scope=requested_scope,
+            lease_id=lease_id,
+            lease_owner=lease_owner,
         )
         if held is not None and held["message_ref"] != message_ref:
             return DomainError(
@@ -6010,7 +6018,7 @@ class SharedFieldStore:
             message_ref=message_ref,
             lease_id=str(lease_id),
             lease_owner=clean_owner,
-            requested_ref=requested_ref,
+            requested_scope=clean_project,
         )
 
     def read_worker_mail_attachment(
@@ -8544,9 +8552,7 @@ class SharedFieldStore:
                     message_ref=message_ref,
                     lease_id=str(lease_id),
                     lease_owner=str(lease_owner),
-                    requested_ref=(
-                        make_ref("project", clean_project) if clean_project else ""
-                    ),
+                    requested_scope=clean_project,
                 )
             lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
             if str(lease.get("lease_id") or "") != str(lease_id) or str(lease.get("owner") or "") != str(lease_owner):

@@ -106,9 +106,10 @@ exists; receive returns it; settlement records that it was handled.
   `field_mail_lease_ref_mismatch` and name that lease's actual ref; if the
   ref's id is not a shape the board mints, they refuse with
   `field_mail_ref_malformed`; otherwise the mail is absent. A ref is never
-  refused for its shape while a message under it exists. Neither command
-  reveals another session's or an expired lease, or prints a storage path
-  (W534).
+  refused for its shape while a message under it exists. Only the mailbox
+  the call names, and this session's own direct mailbox, are searched:
+  neither command reveals a lease in another project's mailbox, another
+  session's or an expired lease, or prints a storage path (W534).
 - A worker can receive an exact pending message with `pb worker receive
   --message-ref <work:mail:...>`, or a current thread with `--correlation-id
   <id> --sender <stable-worker-address>`. Optional `--project-ref` and
