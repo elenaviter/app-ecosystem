@@ -29,7 +29,20 @@ def test_every_hold_names_its_requirement_evidence_clearing_actor_and_checkpoint
     assert "the **requirement or resource** the held step would affect" in rule
     assert "and the **evidence** that it would" in rule
     assert "the **actor or event that clears it**, the **smallest action** that does, and the **checkpoint**" in rule
-    assert "A hold that cannot name these is not a hold, and the step goes ahead." in rule
+    assert "A hold that cannot name these is not a hold, and the step goes ahead, subject to its other gates." in rule
+
+
+def test_a_window_never_starts_over_an_unexplained_hold():
+    # Review of 01eb0fa6 (claude-app@e-home): "goes ahead" must not waive the
+    # host window's quiescence gate.
+    rule = _rule()
+    assert "a participant that answers HOLD without naming its operation is **not READY**" in rule
+    assert "a host window still starts only with every affected session's READY or evidenced quiescence (Rule 10)" in rule
+    assert "it is never started over an unexplained HOLD" in rule
+    window = rule.index("A window is the exception that keeps its gate")
+    assert window == rule.index("goes ahead, subject to its other gates.") + len("goes ahead, subject to its other gates. ")
+    runtime_actions = _words(REFERENCES / "runtime-actions.md")
+    assert "Never waive this gate" in runtime_actions
 
 
 def test_unrelated_deferred_work_and_proximity_never_make_a_hold():
@@ -63,6 +76,7 @@ def test_the_window_review_and_cross_layer_places_point_to_the_one_rule():
     coordinator = _words(REFERENCES / "coordinator.md")
     assert "it holds nothing that does not depend on it (a hold names its evidence, Rule 16)." in collaboration
     assert 'It is a hold like any other (Rule 16, "A hold is a claim with evidence").' in collaboration
+    assert 'Such a wait is a hold, and names its evidence and clearing actor on the item (Rule 16, "A hold is a claim with evidence").' in collaboration
     assert 'Rule 16, "A hold is a claim with evidence"). Deferred hardening, another host\'s window and proximity are never such a dependency.' in coordinator
     # One owning rule: the definition is not repeated elsewhere.
     assert collaboration.count("**A hold is a claim with evidence.**") == 1

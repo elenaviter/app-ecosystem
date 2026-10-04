@@ -833,7 +833,8 @@ paused, suspended or unreachable by its own state, or the estimate is
 overdue with no pushed checkpoint since it was set. In each case the
 coordinator decides: wait only when the owner's return fits the next
 decision time of the work that depends on it, otherwise reassign from the
-last checkpoint. An essential owner who cannot act is never waited on
+last checkpoint. Such a wait is a hold, and names its evidence and clearing
+actor on the item (Rule 16, "A hold is a claim with evidence"). An essential owner who cannot act is never waited on
 indefinitely. It does not happen by itself, because a limited or silent
 worker may still hold uncommitted state that a reassignment would orphan.
 A worker who knows it will be absent (a usage limit ahead, a stop, a
@@ -1095,8 +1096,12 @@ participant's HOLD. It stands only while it names, on the item:
 - the **actor or event that clears it**, the **smallest action** that does,
   and the **checkpoint** when it is decided again.
 
-A hold that cannot name these is not a hold, and the step goes ahead. These
-never make one: deferred or future hardening the step does not depend on; a
+A hold that cannot name these is not a hold, and the step goes ahead, subject
+to its other gates. A window is the exception that keeps its gate: a
+participant that answers HOLD without naming its operation is **not READY**,
+and a host window still starts only with every affected session's READY or
+evidenced quiescence (Rule 10); it is never started over an unexplained
+HOLD. These never make one: deferred or future hardening the step does not depend on; a
 window on another host, or one the step's own runtime does not take part in;
 proximity (the same files, the same day, the same people, a related item).
 A real compatibility dependency is one: the held layer reads a contract or
