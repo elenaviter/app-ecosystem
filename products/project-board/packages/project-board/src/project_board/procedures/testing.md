@@ -76,39 +76,80 @@ KD=<kdcube-ai-app checkout>/app/ai-app/src/kdcube-ai-app
 AE=<app-ecosystem checkout>
 PB=<the Problem Board server app directory in your checkout of its repository>
 PROJECT_BOARD=$AE/products/project-board/packages/project-board/src
+RUNNER_SCRIPT=$AE/products/project-board/packages/project-board/scripts/prepare_test_runner.py
+RUNNER_ROOT=${PB_TEST_RUNNER_ROOT:-$HOME/.kdcube/test-runners/problem-board}
+BASE_PYTHON=<the host Python 3.11 or 3.12 interpreter>
 
-unset PB_TEST_POSTGRES_DSN PROBLEM_BOARD_HOST_PYTHON
-PYTHONPATH="\
+"$BASE_PYTHON" "$RUNNER_SCRIPT" prepare \
+  --runner-root "$RUNNER_ROOT" \
+  --python "$BASE_PYTHON" \
+  --kdcube-root "$KD" \
+  --app-ecosystem-root "$AE"
+PY=$("$BASE_PYTHON" "$RUNNER_SCRIPT" path --runner-root "$RUNNER_ROOT")
+
+export PROJECT_PYTHONPATH="\
 $KD:\
 $KD/kdcube_cli/src:\
 $AE/packages/app-foundation/src:\
 $AE/packages/service-foundation/src:\
 $AE/products/connection-hub/packages/connection-hub/src:\
 $AE/products/connection-hub/packages/connection-hub-cli/src:\
-$PROJECT_BOARD" \
-  <ai-app chat-processor python3.11> -m pytest "$PB/tests" \
-    -q -rs -n auto -m "not slow" --durations=20
-```
+$PROJECT_BOARD"
 
-The interpreter is the ai-app chat-processor environment, which carries the
-platform's third-party dependencies and not necessarily what the overlays
-declare. It also needs the Project Board `test` extra, where `pytest-xdist` is
-declared; verify that `<interpreter> -c "import xdist"` succeeds before using
-`-n auto`. A bare system Python will fail on the platform dependencies before
-it reaches any Problem Board code. Before the suite, run the dependency
-preflight with the same interpreter over the six overlays' `pyproject.toml`
-files. It names the first declared distribution the interpreter lacks in one
-sentence, and every line it prints names the interpreter it asked, because the
-answer differs per host:
+# This must pass before any pytest collection. Its JSON names the selected
+# interpreter and the installed pytest-xdist and execnet versions.
+"$BASE_PYTHON" "$RUNNER_SCRIPT" check \
+  --runner-root "$RUNNER_ROOT" \
+  --python "$BASE_PYTHON" \
+  --kdcube-root "$KD" \
+  --app-ecosystem-root "$AE"
 
-```bash
-<ai-app chat-processor python3.11> "$AE/products/project-board/packages/project-board/src/project_board/procedures/dependency_preflight.py" \
+"$PY" "$AE/products/project-board/packages/project-board/src/project_board/procedures/dependency_preflight.py" \
   "$KD/pyproject.toml" "$KD/kdcube_cli/pyproject.toml" \
   "$AE/packages/app-foundation/pyproject.toml" \
   "$AE/packages/service-foundation/pyproject.toml" \
   "$AE/products/connection-hub/packages/connection-hub/pyproject.toml" \
   "$AE/products/connection-hub/packages/connection-hub-cli/pyproject.toml"
 ```
+
+`prepare` owns the third-party environment. It filters the three first-party
+distributions from the platform requirements because the suite uses source
+overlays, installs the explicit overlay runtime closure (including `readchar`
+for KDCube CLI and `jwcrypto` for Connection Hub), and reads the test
+requirements directly from Project Board's
+`project.optional-dependencies.test`. That test extra is the only declaration
+of `pytest-xdist`; `execnet` is its resolved dependency. The command writes a
+full installed-distribution receipt and reuses the environment when the input
+fingerprint is unchanged. Absolute include paths are written only into the
+generated pip input; the fingerprint uses the checkout-relative include plus
+the included file's content hash, so byte-identical checkouts on the same host
+reuse one environment. The default root is deliberately separate from both the
+installed `pb` client/relay and every KDCube runtime environment.
+
+Run a focused touched-area file first (replace the value with the file changed
+by the work):
+
+```bash
+PB_FOCUSED_TEST=$PB/tests/test_bundle_contract.py
+PYTHONPATH="$PROJECT_PYTHONPATH" \
+  "$PY" -m pytest "$PB_FOCUSED_TEST" -q -rs
+```
+
+Then run the fast pre-PR gate:
+
+```bash
+unset PB_TEST_POSTGRES_DSN PROBLEM_BOARD_HOST_PYTHON
+PYTHONPATH="$PROJECT_PYTHONPATH" \
+  "$PY" -m pytest "$PB/tests" \
+    -q -rs -n auto -m "not slow" --durations=20
+```
+
+The runner carries the platform's third-party dependencies and not necessarily
+what the overlays declare. A bare system Python will fail on those dependencies
+before it reaches any Problem Board code. The source dependency preflight over
+the six overlays names the first declared distribution the runner lacks in one
+sentence, while the runner preflight also covers the Project Board test extra.
+Every line names the interpreter it asked because the answer differs per host.
 
 Why: on 2026-09-23 a maintainer host's chat-processor venv lacked `jwcrypto`
 (connection-hub), `readchar` (kdcube-cli) and `json5` (connection-hub-cli), and
@@ -167,7 +208,7 @@ $AE/packages/service-foundation/src:\
 $AE/products/connection-hub/packages/connection-hub/src:\
 $AE/products/connection-hub/packages/connection-hub-cli/src:\
 $PROJECT_BOARD" \
-  <ai-app chat-processor python3.11> -m pytest "$PB/tests" \
+  "$PY" -m pytest "$PB/tests" \
     -q -rs -n 8 --durations=20
 ```
 
