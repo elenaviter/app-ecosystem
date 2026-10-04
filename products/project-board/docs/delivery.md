@@ -100,6 +100,16 @@ exists; receive returns it; settlement records that it was handled.
   pending and unleased for the next receive.
 - A session can always re-read what it already holds: it can page every
   lease it holds and re-read any one of them without waiting for expiry.
+- A mistyped message ref is named, not read as missing mail. When no
+  mailbox record matches, lease-read and settle check, in order: if this
+  session holds the supplied lease under a different ref, they refuse with
+  `field_mail_lease_ref_mismatch` and name that lease's actual ref; if the
+  ref's id is not a shape the board mints, they refuse with
+  `field_mail_ref_malformed`; otherwise the mail is absent. A ref is never
+  refused for its shape while a message under it exists. Only the mailbox
+  the call names, and this session's own direct mailbox, are searched:
+  neither command reveals a lease in another project's mailbox, another
+  session's or an expired lease, or prints a storage path (W534).
 - A worker can receive an exact pending message with `pb worker receive
   --message-ref <work:mail:...>`, or a current thread with `--correlation-id
   <id> --sender <stable-worker-address>`. Optional `--project-ref` and
@@ -399,6 +409,8 @@ itself is unchanged. The board drops a malformed recovery with the event
 | The receive reports quarantined messages | A message could not be built after repeated attempts and was set aside. Healthy mail continued. The sender was told. | List and read the quarantined message, then release it for a fresh attempt or discard it with a reason. It has no lease to settle. |
 | A receive fails | The whole batch was rolled back; nothing is half-leased. | Receive again. |
 | A receive looks partial or truncated | Some leases may be held without their body in view. | Stop changing things, page your held leases and re-read each one before continuing. |
+| `field_mail_ref_malformed` on lease-read or settle | No mail can have that id: the ref was probably copied incomplete. No mailbox was changed. | Copy the ref whole from the receive or `pb worker leases` output and retry. |
+| `field_mail_lease_ref_mismatch` | This session holds the lease, but under the ref the refusal names. | Use the named ref with the same lease id. |
 | A message comes back with prior handling | Its lease expired before it was settled. | Settle the new lease without repeating the work, unless the prior record says the effect was incomplete. |
 | Some referenced items were not delivered | Those items could not be read; the rest arrived with leases. | Handle what arrived. The named items retry once storage recovers. |
 | A send is refused as `work_worker_not_found` | The address is not a stable worker name (an alias, an unknown or a retired worker). | Correct the recipient to the stable name and replay from your outbox with the same idempotency key. |
