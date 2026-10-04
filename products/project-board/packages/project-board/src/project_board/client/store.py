@@ -6119,7 +6119,7 @@ class SharedFieldStore:
         # Direct worker mail is always adjudicated by the board, even when
         # the recipient is absent from this host's directory (W304).
         direct = str(recipient or "").strip().lower()
-        if not project_id and direct not in {"operator", "owner", "coordinator"}:
+        if not project_id and direct not in {"operator", "owner", *ROLE_RECIPIENTS}:
             return self.enqueue_remote_mail(**common, attachments=files)
         resolution = self.resolve_mail_recipient(project_id, recipient)
         if files or resolution["route"] == "remote":

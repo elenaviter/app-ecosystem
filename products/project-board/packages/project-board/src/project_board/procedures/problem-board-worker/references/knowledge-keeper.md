@@ -69,7 +69,10 @@ workflow, an operational fact), and the project has a keeper, hand it over:
   shape.
 - **On the item and by mail:** record the hand-over as a note on the item and
   send it to the keeper by board mail naming that note, so it survives an unread
-  inbox.
+  inbox. Where the board carries the role, send it with
+  `--recipient knowledge-keeper` **and** `--work-ref <the item>`: the board
+  records a hand-over only for mail that names its item, and mail without one
+  is delivered but never counted as pending.
 - **When unsure, send it,** marked "keeper decides". Either way the item gets
   one line: the hand-over, or why none is owed; the keeper may overrule it. A
   hand-over that turns out unnecessary costs the keeper one look; a missing one

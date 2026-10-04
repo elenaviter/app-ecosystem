@@ -322,13 +322,15 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
             holder = role.get("holder") if isinstance(role.get("holder"), Mapping) else {}
             pending = role.get("pending_handovers")
             pending = pending if isinstance(pending, Mapping) else {}
+            oldest = str(pending.get("oldest_at") or "")
             lines.append(
-                "role {}: state {} · holder {} · revision {} · pending hand-overs {}{}".format(
+                "role {}: state {} · holder {} · revision {} · pending hand-overs {}{}{}".format(
                     name,
                     role.get("state") or "none",
                     holder.get("worker_name") or "-",
                     role.get("revision", 0),
                     pending.get("count", 0),
+                    f" · oldest since {oldest}" if oldest and pending.get("count") else "",
                     " (overdue)" if pending.get("overdue") else "",
                 )
             )

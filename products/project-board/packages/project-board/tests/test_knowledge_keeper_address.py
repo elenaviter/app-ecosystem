@@ -90,14 +90,31 @@ def test_brief_context_shows_the_role_beside_the_coordinator():
                         "state": "held_unavailable", "revision": 3,
                         "holder": {"worker_name": "claude-code-keeper"},
                         "unavailable_reason": "rate_limited",
-                        "pending_handovers": {"count": 2, "overdue": True},
+                        "pending_handovers": {"count": 2, "oldest_at": "2026-10-03T08:00:00Z", "overdue": True},
                     }
                 },
             }
         )
     )
     assert (
-        "role knowledge-keeper: state held_unavailable · holder claude-code-keeper · revision 3 · pending hand-overs 2 (overdue)"
+        "role knowledge-keeper: state held_unavailable · holder claude-code-keeper · revision 3 · pending hand-overs 2 · oldest since 2026-10-03T08:00:00Z (overdue)"
         in text
     )
     assert "role knowledge-keeper.unavailable_reason = rate_limited" in text
+
+
+def test_forwarding_to_the_keeper_without_a_project_is_refused_locally(field):
+    # Review P2: the forward path treats every role address like coordinator.
+    sent = field.send_mail(
+        "", sender="control-plane", recipient=WORKER, kind="request",
+        subject="Direct", body="Forward me.", idempotency_key="direct-forward",
+    )
+    [leased] = field.pull_mail("", worker_name=WORKER, lease_owner="session-api")
+    with pytest.raises(DomainError) as refused:
+        field.forward_worker_mail(
+            "", worker_name=WORKER, message_ref=sent["message_ref"],
+            lease_id=leased["lease"]["lease_id"], lease_owner="session-api",
+            recipient="knowledge-keeper", idempotency_key="forward-to-keeper",
+        )
+    assert refused.value.code == "field_project_context_required"
+    assert not field.pull_outbox(relay_id="relay-01", kinds={"mail.route"})
