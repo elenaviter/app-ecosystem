@@ -6946,7 +6946,7 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
     )
     if only_ended:
         trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]
-    verify = scratch.repository_verifier(workspace)
+    verify = scratch.publication_verifier(workspace, read_notes=_sweep_item_notes(field, identity, args))
     clones = [tree.path.name for tree in trees if tree.kind == "clone"]
     result: dict[str, Any] = {"worker": identity.worker_name, "workspace": str(workspace)}
     # W423: removal needs a workspace whose ownership is proved: exactly this
@@ -7062,6 +7062,63 @@ def _sweep_item_consumers(field: Any, identity: Any, args: argparse.Namespace) -
         return cache[key]
 
     return consumers
+
+
+_SWEEP_NOTE_PAGES = 50
+
+
+def _sweep_item_notes(field: Any, identity: Any, args: argparse.Namespace) -> Callable[[str], list[dict[str, Any]] | None]:
+    """For an item key: every note on that item, read from the board once per sweep; None when unknown.
+
+    A scratch run published as an applied item note (``work:note:...``) is
+    verified against these notes (W423): the note must be on the run's own item.
+    Every page is read; an offline relay, no attended project, an unreadable
+    answer, or more pages than the bound is None, which keeps the run.
+    """
+
+    cache: dict[str, list[dict[str, Any]] | None] = {}
+    try:
+        project_ref = _attended_project_ref(field, identity.worker_name)
+    except Exception:  # noqa: BLE001 - no project means no proof
+        project_ref = ""
+
+    def read_notes(item: str) -> list[dict[str, Any]] | None:
+        key = str(item or "").strip()
+        if not key or not project_ref:
+            return None
+        if key not in cache:
+            notes: list[dict[str, Any]] | None = []
+            cursor = ""
+            try:
+                for _page in range(_SWEEP_NOTE_PAGES):
+                    payload: dict[str, Any] = {"item_key": key, "limit": 200}
+                    if cursor:
+                        payload["cursor"] = cursor
+                    request = argparse.Namespace(
+                        action="plan.notes.list",
+                        object_ref=project_ref,
+                        payload_json=json.dumps(payload),
+                        payload_file="",
+                        runtime_kind=getattr(args, "runtime_kind", ""),
+                        runtime_session_id=getattr(args, "runtime_session_id", ""),
+                        config=getattr(args, "config", None),
+                    )
+                    answer = _coordinate_command(request).get("object")
+                    if not isinstance(answer, Mapping) or not isinstance(answer.get("items"), list):
+                        notes = None
+                        break
+                    notes.extend(entry for entry in answer["items"] if isinstance(entry, Mapping))
+                    cursor = str(answer.get("next_cursor") or "")
+                    if not cursor:
+                        break
+                else:
+                    notes = None  # more pages than the bound: not proved
+            except Exception:  # noqa: BLE001 - unknown keeps the data
+                notes = None
+            cache[key] = notes
+        return cache[key]
+
+    return read_notes
 
 
 def _worker_scratch(identity: Any, args: argparse.Namespace) -> dict[str, Any]:

@@ -19,9 +19,9 @@ A run is removed only when every one of these holds:
 
 - this agent owns it and closed it, and its item is Done or Cancelled on the
   board (an open item, or a state that cannot be read, keeps it);
-- the findings it names are verified published (a tracked file at a commit in
-  the clone's default branch); a reference that cannot be verified here keeps
-  the run;
+- the findings it names are verified published: a tracked file at a commit in
+  the clone's default branch, or an applied note on the run's own item read
+  from the board now; a reference that cannot be verified keeps the run;
 - no consumer it lists is still open;
 - every file on disk is in the manifest, is not a link, still has its recorded
   hash, and is published or generated;
@@ -56,6 +56,7 @@ GIT_TIMEOUT_SECONDS = 20
 
 _ITEM = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 _REPOSITORY_REF = re.compile(r"^repo:(?P<alias>[A-Za-z0-9._-]+)/(?P<path>[^@]+)@(?P<commit>[0-9a-fA-F]{7,64})$")
+_NOTE_REF = re.compile(r"^work:note:\S+$")
 
 Verifier = Callable[..., "bool | None"]
 Consumers = Callable[[str], "Sequence[str] | None"]
@@ -236,7 +237,8 @@ def repository_verifier(workspace: Path | str) -> Verifier:
     another version of the file, or to another file, does not cover the
     content. Returns True when proved, False when disproved, None when this
     host cannot tell (no clone, no default branch, git unreadable). Board
-    references are not verified here and return None, so they keep the run.
+    references are not verified here and return None, so they keep the run;
+    ``publication_verifier`` adds the board.
     """
 
     base = Path(workspace).expanduser()
@@ -261,7 +263,7 @@ def repository_verifier(workspace: Path | str) -> Verifier:
             return None
         return hashlib.sha256(completed.stdout).hexdigest() if completed.returncode == 0 else None
 
-    def verify(ref: str, sha256: str = "") -> bool | None:
+    def verify(ref: str, sha256: str = "", item: str = "") -> bool | None:
         match = _REPOSITORY_REF.fullmatch(str(ref or "").strip())
         if not match:
             return None
@@ -286,6 +288,58 @@ def repository_verifier(workspace: Path | str) -> Verifier:
             return True
         published = blob_sha256(clone, f"{commit}:{match['path']}")
         return None if published is None else published == sha256
+
+    return verify
+
+
+NoteReader = Callable[[str], "Sequence[Mapping[str, Any]] | None"]
+
+
+def board_note_verifier(read_notes: NoteReader) -> Verifier:
+    """Verify ``work:note:<...>``: an applied note on the run's own item, read from the board now.
+
+    ``read_notes(item)`` returns that item's notes, every page, or None when the
+    board cannot be read. The note must be on the run's item: a note on another
+    item, or a run with no item, is not proved. With ``sha256`` (a recorded
+    file), the note's text must hash to it: the note holds the same content, not
+    a summary. Without it (the run's findings), the note's presence is enough.
+    Returns True when proved, False when disproved, None when this host cannot
+    tell, which keeps the run.
+    """
+
+    def verify(ref: str, sha256: str = "", item: str = "") -> bool | None:
+        ref = str(ref or "").strip()
+        if not _NOTE_REF.fullmatch(ref) or not str(item or "").strip():
+            return None
+        try:
+            notes = read_notes(str(item).strip())
+        except Exception:  # noqa: BLE001 - an unreadable board proves nothing
+            return None
+        if notes is None:
+            return None
+        note = next((entry for entry in notes if str((entry or {}).get("note_ref") or "") == ref), None)
+        if note is None:
+            return False
+        if not sha256:
+            return True
+        text = (note or {}).get("text")
+        if not isinstance(text, str):
+            return None
+        return hashlib.sha256(text.encode("utf-8")).hexdigest() == sha256
+
+    return verify
+
+
+def publication_verifier(workspace: Path | str, read_notes: NoteReader | None = None) -> Verifier:
+    """The verifier a sweep uses: repository references through git, item notes through the board."""
+
+    repository = repository_verifier(workspace)
+    board = board_note_verifier(read_notes) if read_notes is not None else None
+
+    def verify(ref: str, sha256: str = "", item: str = "") -> bool | None:
+        if board is not None and _NOTE_REF.fullmatch(str(ref or "").strip()):
+            return board(ref, sha256=sha256, item=item)
+        return repository(ref, sha256=sha256, item=item)
 
     return verify
 
@@ -434,7 +488,7 @@ def _judge(
     if run.keep:
         return run
     findings = str(closed.get("findings") or "")
-    proved = verify(findings)
+    proved = verify(findings, item=run.item)
     semantic.append(f"findings:{findings}:{proved}")
     if proved is not True:
         run.keep.append(f"findings publication {'disproved' if proved is False else 'not verifiable here'}: {findings}")
@@ -477,7 +531,7 @@ def _judge(
         published = str(entry.get("published") or "")
         if published:
             # A copy must be the same content, not only a file at that path.
-            proved = verify(published, sha256=digest)
+            proved = verify(published, sha256=digest, item=run.item)
             fingerprint_parts.append(f"{relative}:published:{published}:{proved}")
             if proved is not True:
                 reasons.add(
