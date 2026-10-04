@@ -31,11 +31,35 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import time
 from collections.abc import Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from typing import Any, TypeVar
 
 T = TypeVar("T")
+
+
+# W461: a relay channel turn sets this to receive how long each of its calls
+# waited for its executor thread and how long it ran there. The value is
+# carried by the task's context (and by ``copy_context`` into the thread), so
+# a call outside a turn reports nothing. It changes nothing about how a call is
+# awaited or cancelled.
+OFF_LOOP_OBSERVER: contextvars.ContextVar[Callable[[float, float], None] | None] = (
+    contextvars.ContextVar("problem_board_off_loop_observer", default=None)
+)
+
+
+def _observe(
+    observer: Callable[[float, float], None] | None,
+    submitted: float,
+    started: list[float],
+) -> None:
+    if observer is None or not started:
+        return
+    try:
+        observer(max(0.0, started[0] - submitted), max(0.0, time.monotonic() - started[0]))
+    except Exception:  # noqa: BLE001 - timing evidence never fails the call it measured
+        pass
 
 
 async def run_off_loop(
@@ -49,11 +73,17 @@ async def run_off_loop(
 
     loop = asyncio.get_running_loop()
     context = contextvars.copy_context()
-    future = loop.run_in_executor(
-        executor, functools.partial(context.run, call, *args, **kwargs)
-    )
+    observer = OFF_LOOP_OBSERVER.get()
+    started: list[float] = []
+
+    def timed() -> T:
+        started.append(time.monotonic())
+        return call(*args, **kwargs)
+
+    submitted = time.monotonic()
+    future = loop.run_in_executor(executor, functools.partial(context.run, timed))
     try:
-        return await asyncio.shield(future)
+        result = await asyncio.shield(future)
     except asyncio.CancelledError:
         while not future.done():
             try:
@@ -65,6 +95,11 @@ async def run_off_loop(
             # never retrieved. The caller was cancelled and acts on nothing.
             future.exception()
         raise
+    except BaseException:
+        _observe(observer, submitted, started)
+        raise
+    _observe(observer, submitted, started)
+    return result
 
 
 class ChannelExecutors:

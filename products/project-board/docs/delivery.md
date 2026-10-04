@@ -502,6 +502,44 @@ completes holds its channel and the process exit, as any worker thread does
 (W456, 2026-10-02: one pending-mail read held the loop 15.8 seconds, and the
 server closed every socket of the host).
 
+
+### Turn accounting and the relay log owner (W461)
+
+On 2026-10-03 a 31.7 s channel turn could not be explained. Its slow-turn line
+named a worker and a duration only, and its stages were in the 300 s volatile
+trace. The relay now correlates and counts its turns:
+
+- **Correlation, never by time.**
+  - Each channel turn gets an opaque `turn_id` (`<process_id>:<sequence>`) in its task's context before its body starts.
+  - Every stage, coordinate request (`request_id`) and executor call made in that task, or in a task it created, carries the id.
+  - A child task that outlives its turn names it only as `origin_turn_id`.
+  - Coordinate requests drained beside the cycle have no turn.
+  - The wait for a channel's notify lock is its own stage (`session.notify_lock_wait`). Each store call records how long it waited for its executor thread and how long it ran.
+- **Every turn counted.** 900 s buckets count started, succeeded, failed, cancelled, deadline and abandoned-at-shutdown turns, with sum, max and a fixed histogram (<1, 1–5, 5–10, 10–20, 20–40, ≥40 s).
+  - Host totals are split into startup (the first 120 s) and steady.
+  - Up to 16 workers are counted by name; more roll into `other`. Host totals stay exact.
+  - Workspace-size jobs count every schedule decision (attempted, coalesced, not due, accepted) and every walk (started, completed, failed, cancelled), with queue-wait and run histograms.
+- **Summaries only for slow, failed or cancelled turns.** One `relay turn summary v1` line per turn, at most 8 KiB as written (prefix included), the 24 longest stages and 16 requests, with omitted counts.
+  - Stage, operation and error names come from a fixed allowlist; anything else is `other`.
+  - No bodies, credentials, URLs, paths or exception text.
+  - Summaries are capped at 1 MiB per minute; drops are counted in the bucket.
+- **One owner of the log file.** Every relay line, ordinary warnings included, is formatted and queued by the thread that logs it.
+  - One daemon thread alone writes and rotates `relay.stderr.log`, so a file system that hangs holds that thread, never the event loop.
+  - What waits is bounded: 10,000 records and 4 MiB. A line over that is dropped and counted, and the owner writes the totals (`relay log dropped records=… bytes=…`) when it next can.
+  - The owner never dies of one line (errors are counted), and it closes its file itself. Exit waits for it at most one second.
+  - The stderr mirror (`mirror_to_stderr`, used when the relay is not installed as a service) is unchanged and still written by the logging thread.
+- **Receipts for accounting lines.** `relay turn accounting v1` lines (process start, each bucket, the final bucket at a clean stop) go through the owner, one at a time.
+  - A line counts as appended only when the owner rolled over (if due), wrote and flushed it without an exception: appended under the file handler's contract, not proven on disk.
+  - A failure is recorded by error class only.
+  - A write still running after 0.5 s is unknown and reconciled once when it ends; nothing else is written meanwhile.
+  - Unwritten buckets are bounded (48, 256 KiB); one that is lost is counted once.
+
+What this does not prove:
+- The ring is a nominal 40 MiB shared with every other relay line, so how far back it reaches depends on all of that traffic.
+- After an abrupt stop the unwritten tail is gone. The next `process_start` line says `prior_coverage: uncertain`, never a count.
+- While the owner is stuck, its loss counters live only in memory.
+- None of it is a performance result or the cause of a slow turn; it is the evidence to find one.
+
 The relay writes nothing else to files.
 
 A polling handshake that answers quickly proves that the ingress accepts new
