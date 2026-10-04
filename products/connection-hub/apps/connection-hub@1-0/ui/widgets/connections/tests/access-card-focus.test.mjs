@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   accessCardFocusFromParams,
   findAccessCardFocus,
+  isRequestLimitRefusal,
   matchesAccessCardFocus,
   projectPersonControlNotice,
   unavailableAccessCardMessage,
@@ -128,4 +129,22 @@ test('W260: a My Card opens by access_id among the person\'s own Cards', () => {
   assert.equal(matchesAccessCardFocus(myCard, focus({ access_id: myCard.access_id })), true)
   // Asked for as a Control Card it can never match: that link is the defect.
   assert.equal(matchesAccessCardFocus(myCard, focus({ control_card_id: myCard.access_id })), false)
+})
+
+test('W435: a refusal by the request limit says so, and claims nothing about the Card either way', () => {
+  const request = focus({ control_card_id: 'person-control-7c43016d992ae974fc9c5f1b' })
+  const burst = unavailableAccessCardMessage(request, 'Burst limit exceeded (161/160)')
+  assert.equal(burst, 'Card person-control-7c43016d992ae974fc9c5f1b was not loaded: the platform refused the request because this account reached its request limit for one minute (Burst limit exceeded (161/160)). Wait about a minute and try again.')
+  const hourly = unavailableAccessCardMessage(request, 'Hourly limit exceeded (601/600).')
+  assert.match(hourly, /reached its request limit for the hour \(Hourly limit exceeded \(601\/600\)\)\. Wait and try again later\.$/)
+  // An unknown Card refused by the limit: no missing-Card diagnosis and no
+  // promise that it exists or will open.
+  const unknown = unavailableAccessCardMessage(focus({ access_id: 'oauth-never-existed' }), 'Burst limit exceeded (161/160)')
+  for (const message of [burst, hourly, unknown]) {
+    assert.doesNotMatch(message, /does not exist|not visible/)
+    assert.doesNotMatch(message, /nothing is wrong|to open it|will open|is fine/i)
+  }
+  assert.equal(isRequestLimitRefusal('Burst limit exceeded (161/160)'), true)
+  assert.equal(isRequestLimitRefusal('control_card_not_found'), false)
+  assert.match(unavailableAccessCardMessage(request, 'control_card_not_found'), /does not exist or is not visible/)
 })

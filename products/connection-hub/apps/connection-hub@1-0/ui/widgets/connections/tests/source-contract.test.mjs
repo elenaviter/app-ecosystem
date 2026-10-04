@@ -199,7 +199,7 @@ test('an unresolved exact Card deep link is visible instead of becoming an unfil
   assert.match(panel, /accessCardFocusState === 'unavailable'/)
   // W260: the message carries Connection Hub's own reason.
   assert.match(panel, /unavailableAccessCardMessage\(accessCardFocus, delegatedAccessError\)/)
-  assert.match(panel, /<strong>Card unavailable\.<\/strong>/)
+  assert.match(panel, /<strong>\{isRequestLimitRefusal\(delegatedAccessError\) \? 'Too many requests\.' : 'Card unavailable\.'\}<\/strong>/)
 })
 
 test('permission claims are operation prerequisites and tool lists retain exact bulk and individual controls', () => {

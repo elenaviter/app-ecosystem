@@ -256,6 +256,21 @@ account at call time.
   explicit exemption inventory. Explicit token and authenticated internal
   calls keep their existing request proof. Manual named-service access accepts the exact
   `named_service_operations[resource][namespace][]` selector.
+- **A request the platform's limit refuses (W435).** The platform limits a
+  person's requests per minute and per hour, Connection Hub and the board
+  together, and answers 429 with `Burst limit exceeded (n/limit)` or
+  `Hourly limit exceeded (n/limit)`. In the browser each CSRF-protected
+  operation costs two requests: the one-time token, then the POST. When a
+  Card link opened beside the board (a person's Control Card, from Team) is
+  refused this way, the panel heads the notice **Too many requests.** and
+  says the Card was not loaded because this account reached its request
+  limit for one minute (or the hour), with the platform's reason, and to wait
+  and try again. It says nothing about the Card itself: a refused request
+  shows neither that the Card is missing nor that it exists. Every other
+  failure keeps "does not exist or is not visible to this account" with
+  Connection Hub's reason. The widget does not retry on its own. What the
+  board side costs is in the [Problem Board
+  architecture](../../../../products/project-board/docs/architecture.md).
 - `project_agent_card_get`, `project_agent_card_update`,
   `project_agent_card_apply_profile` (operations, W319) — open and change an
   agent's Card as someone other than its owner. The project host
