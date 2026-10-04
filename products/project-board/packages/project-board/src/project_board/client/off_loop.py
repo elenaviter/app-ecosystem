@@ -31,7 +31,10 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import functools
+import re
+import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from concurrent.futures import Executor, ThreadPoolExecutor
 from typing import Any, TypeVar
@@ -44,20 +47,77 @@ T = TypeVar("T")
 # carried by the task's context (and by ``copy_context`` into the thread), so
 # a call outside a turn reports nothing. It changes nothing about how a call is
 # awaited or cancelled.
-OFF_LOOP_OBSERVER: contextvars.ContextVar[Callable[[float, float], None] | None] = (
+#
+# W448: the observer also receives the call's label and, when the call waited
+# at least HOLDER_MIN_WAIT_SECONDS, the holders: the calls that ran in the same
+# thread while it waited, as (label, seconds) pairs, longest first. Each
+# channel's store executor has one thread, so those are exactly the calls the
+# wait was spent behind, whichever task (wake, coordinate drain, background
+# refresh) submitted them.
+OFF_LOOP_OBSERVER: contextvars.ContextVar[Callable[..., None] | None] = (
     contextvars.ContextVar("problem_board_off_loop_observer", default=None)
 )
 
+HOLDER_MIN_WAIT_SECONDS = 0.5
+HOLDER_HISTORY = 16
+HOLDERS_REPORTED = 3
+LABEL_MAX_CHARS = 96
+_LABEL_PATTERN = re.compile(r"[A-Za-z0-9_.<>]+")
+
+# Per executor thread: (label, started, ended) of its latest calls, oldest first.
+_THREAD_HISTORY = threading.local()
+
+
+def call_label(call: Callable[..., Any]) -> str:
+    """``module.Qualname`` of a callable from source names only; anything else is ``other``."""
+
+    while isinstance(call, functools.partial):
+        call = call.func
+    target = getattr(call, "__func__", call)
+    module = str(getattr(target, "__module__", "") or "").rsplit(".", 1)[-1]
+    name = str(getattr(target, "__qualname__", "") or type(call).__qualname__)
+    label = f"{module}.{name}" if module else name
+    if not _LABEL_PATTERN.fullmatch(label):
+        return "other"
+    # Keep the end: the method name, not the module, is what tells calls apart.
+    return label[-LABEL_MAX_CHARS:]
+
+
+def _history() -> deque[tuple[str, float, float]]:
+    history = getattr(_THREAD_HISTORY, "calls", None)
+    if history is None:
+        history = deque(maxlen=HOLDER_HISTORY)
+        _THREAD_HISTORY.calls = history
+    return history
+
+
+def _holders(submitted: float, started: float) -> list[tuple[str, float]]:
+    """Calls this thread ran between ``submitted`` and ``started``, by seconds held."""
+
+    held: dict[str, float] = {}
+    for label, began, ended in _history():
+        overlap = min(ended, started) - max(began, submitted)
+        if overlap > 0:
+            held[label] = held.get(label, 0.0) + overlap
+    return sorted(held.items(), key=lambda item: item[1], reverse=True)[:HOLDERS_REPORTED]
+
 
 def _observe(
-    observer: Callable[[float, float], None] | None,
+    observer: Callable[..., None] | None,
     submitted: float,
     started: list[float],
+    label: str,
+    holders: list[tuple[str, float]],
 ) -> None:
     if observer is None or not started:
         return
     try:
-        observer(max(0.0, started[0] - submitted), max(0.0, time.monotonic() - started[0]))
+        observer(
+            max(0.0, started[0] - submitted),
+            max(0.0, time.monotonic() - started[0]),
+            label,
+            holders,
+        )
     except Exception:  # noqa: BLE001 - timing evidence never fails the call it measured
         pass
 
@@ -75,10 +135,18 @@ async def run_off_loop(
     context = contextvars.copy_context()
     observer = OFF_LOOP_OBSERVER.get()
     started: list[float] = []
+    holders: list[tuple[str, float]] = []
+    label = call_label(call)
 
     def timed() -> T:
-        started.append(time.monotonic())
-        return call(*args, **kwargs)
+        began = time.monotonic()
+        started.append(began)
+        if began - submitted >= HOLDER_MIN_WAIT_SECONDS:
+            holders.extend(_holders(submitted, began))
+        try:
+            return call(*args, **kwargs)
+        finally:
+            _history().append((label, began, time.monotonic()))
 
     submitted = time.monotonic()
     future = loop.run_in_executor(executor, functools.partial(context.run, timed))
@@ -96,9 +164,9 @@ async def run_off_loop(
             future.exception()
         raise
     except BaseException:
-        _observe(observer, submitted, started)
+        _observe(observer, submitted, started, label, holders)
         raise
-    _observe(observer, submitted, started)
+    _observe(observer, submitted, started, label, holders)
     return result
 
 
