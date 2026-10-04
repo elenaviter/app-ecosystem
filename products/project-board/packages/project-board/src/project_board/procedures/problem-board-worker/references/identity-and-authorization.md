@@ -49,8 +49,20 @@ available, from the runtime on authorization and each heartbeat: Claude Code's
 public identity claims. It sends only account ID, email, and organization.
 Missing provider-account metadata is displayed as not reported and does not
 block Card authorization because it is identification rather than authority.
-When the account ID changes for the same session, Problem Board preserves the
-worker address and reports the change to the operator and worker.
+
+The relay reads the host's current login, and a running session keeps the
+account it started with when the host later logs in to another one. The board
+keeps the first host-login reading it takes for a session, shown with where it
+came from (the host's login when the board first saw the session). A later,
+different login is shown beside it as the host login, and the first reading
+stays (W310). `pb worker authorize` authorizes a Card: it is not a provider
+login, and it does not change the first reading. The host login
+is evidence about the host, never proof of the account a running session uses:
+a session first seen after the host moved to another login takes that login
+as its first reading. So the board reads each session's account state as `inferred`
+(the host is still on the first reading), `mismatch`, `unknown` or
+`unreported`, and no usage read under a host login counts as the session's
+confirmed capacity.
 
 `pb worker listen` is idempotent for the same target and native session. It may
 reattach that worker; it must not silently create a replacement identity.
