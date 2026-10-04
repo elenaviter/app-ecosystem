@@ -620,7 +620,12 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                                 'retaining its identity, history, and place in the '
                                                 "operator's pool.",
                                  'object_ref': 'work:project:<project_id>',
-                                 'payload': {'worker_name': 'string'}},
+                                 'payload': {   'worker_name': 'string',
+                                                'delete_conversations': 'boolean, optional; the '
+                                                                        "agent's owner only: also "
+                                                                        "delete this project's "
+                                                                        'messages from the '
+                                                                        'conversation store'}},
     'worker.publish': {   'description': "Register the caller's principal-bound coding-agent "
                                          'session. runtime_kind plus the native resumable session '
                                          'id determines the stable worker address; alias is '
@@ -700,7 +705,11 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                          'object_ref': 'work:worker:<runtime-kind>:<native-session-id>',
                          'payload': {   'worker_name': 'string',
                                         'confirm_worker_name': 'same stable worker name',
-                                        'reason': 'string'}},
+                                        'reason': 'string',
+                                        'delete_conversations': 'boolean, optional; also delete '
+                                                                'the whole conversation with this '
+                                                                'session from the conversation '
+                                                                'store'}},
     'control.enqueue': {   'description': 'Queue a bounded request, ping, stop, resume, '
                                           'materialize, or replan command for one linked worker. '
                                           'Use assignment.assign for ownership-changing work.',

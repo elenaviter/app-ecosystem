@@ -288,6 +288,21 @@ message ref, kind, and optional project tag. The bundle property
 `conversation_retention_days` controls indexed retention; the default is
 3,650 days and accepted values are clamped to 30 through 36,500 days.
 
+The platform keeps the most recent window of that index hot and moves older
+rows, embeddings included, to a verified cold tier in bundle storage; a
+date-filtered read reaches them by time (KDCube conversation retention).
+
+Unlinking and relinking keep the conversation. The agent's owner may choose,
+on unlink, to delete their own messages with the agent in that project, or, on
+retirement, their whole conversation with it (`delete_conversations: true`).
+Other people's exchanges with the agent stay. The choice
+is offered only to the owner and checked before anything changes; the platform
+deletes the hot rows, the archived records and the stored bodies, and records
+the deletion with its actor, time, scope and counts. A failed deletion never
+undoes the unlink or retirement and is reported in the result; asking again
+with the same choice runs only the deletion, also for an agent that already
+left the project.
+
 The Problem Board inbox row owns unread/read/replied state and preserves a
 bounded envelope for rendering and recovery. Controls own delivery and model
 handling state. These operational records let a mailbox render its latest
