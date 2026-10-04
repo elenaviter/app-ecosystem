@@ -3,9 +3,11 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import re
 import stat
+import sys
 import time
 import uuid
 from contextlib import contextmanager
@@ -227,6 +229,42 @@ class FileLockBusy(BlockingIOError):
     """A non-waiting ``exclusive_lock`` found the lock held by another holder."""
 
 
+LOCK_LOGGER = logging.getLogger("project_board.client.locks")
+# A lock waited for or held this long is logged once, with its holder (W448).
+SLOW_LOCK_SECONDS = 1.0
+
+
+def _lock_holder_label() -> str:
+    """The function that asked for the lock, past the context-manager frames."""
+
+    frame = sys._getframe(1)
+    while frame is not None and (
+        frame.f_code.co_filename.endswith(("contextlib.py", f"{os.sep}io.py"))
+    ):
+        frame = frame.f_back
+    if frame is None:
+        return "unknown"
+    code = frame.f_code
+    module = str(frame.f_globals.get("__name__") or "").rsplit(".", 1)[-1]
+    name = getattr(code, "co_qualname", code.co_name)
+    return f"{module}.{name}" if module else name
+
+
+def read_lock_holder(path: Path) -> dict[str, Any]:
+    """Who holds ``path`` now, as its holder recorded it, or empty.
+
+    Read without the lock: a holder rewrites the record while it holds it, so
+    a torn or stale read gives an empty answer, never an error (W448).
+    """
+
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        record = json.loads(text) if text else {}
+    except (OSError, ValueError):
+        return {}
+    return record if isinstance(record, dict) else {}
+
+
 @contextmanager
 def exclusive_lock(
     path: Path,
@@ -269,7 +307,12 @@ def exclusive_lock(
         if descriptor >= 0:
             os.close(descriptor)
         raise
+    label = _lock_holder_label()
+    # W448: a dedicated lock file names its current holder, so a caller that
+    # finds it busy can say who holds it and for how long.
+    records_holder = path.name.endswith(".lock")
     with handle:
+        started = time.monotonic()
         if not wait:
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -287,12 +330,46 @@ def exclusive_lock(
                     time.sleep(0.02)
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        acquired = time.monotonic()
+        waited = acquired - started
+        if waited >= SLOW_LOCK_SECONDS:
+            LOCK_LOGGER.info(
+                "Problem Board slow lock wait: path=%s waiter=%s waited_seconds=%.3f",
+                path, label, waited,
+            )
+        if records_holder:
+            _write_lock_holder(handle, label)
         try:
             if check_cancelled is not None:
                 check_cancelled()
             yield
         finally:
+            held = time.monotonic() - acquired
+            if records_holder:
+                _write_lock_holder(handle, "")
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if held >= SLOW_LOCK_SECONDS:
+                LOCK_LOGGER.info(
+                    "Problem Board slow lock hold: path=%s holder=%s held_seconds=%.3f",
+                    path, label, held,
+                )
+
+
+def _write_lock_holder(handle: Any, label: str) -> None:
+    """Replace the lock file's holder record; best effort, never fails the lock."""
+
+    try:
+        handle.flush()
+        os.ftruncate(handle.fileno(), 0)
+        if label:
+            handle.write(json.dumps({
+                "pid": os.getpid(),
+                "holder": label,
+                "acquired_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }) + "\n")
+            handle.flush()
+    except OSError:
+        pass
 
 
 def json_records(directory: Path) -> list[dict[str, Any]]:

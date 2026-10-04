@@ -245,18 +245,23 @@ def test_a_held_mailbox_lock_leaves_the_loop_and_a_peer_wake_running(tmp_path, m
         started = time.monotonic()
         await asyncio.wait_for(asyncio.shield(peer_task), PEER_LIMIT_SECONDS + 5)
         peer_seconds = time.monotonic() - started
-        still_held = not release.is_set() and not slow_task.done()
+        # W448: the held channel's own wake no longer waits for its mailbox
+        # lock either; it reads the mailbox lock-free and finishes while the
+        # other holder still has the lock.
+        slow_delivery = await asyncio.wait_for(asyncio.shield(slow_task), PEER_LIMIT_SECONDS + 5)
+        slow_seconds = time.monotonic() - started
+        still_held = not release.is_set()
         gap_while_held = beat.max_gap
         release.set()
-        slow_delivery = await slow_task
         await beat.stop()
-        return peer_seconds, still_held, gap_while_held, slow_delivery
+        return peer_seconds, slow_seconds, still_held, gap_while_held, slow_delivery
 
-    peer_seconds, still_held, gap_while_held, slow_delivery = asyncio.run(scenario())
+    peer_seconds, slow_seconds, still_held, gap_while_held, slow_delivery = asyncio.run(scenario())
     thread.join(2)
 
-    assert still_held, "the peer was checked while the mailbox lock was still held"
+    assert still_held, "both wakes finished while the mailbox lock was still held"
     assert peer_seconds < PEER_LIMIT_SECONDS
+    assert slow_seconds < PEER_LIMIT_SECONDS, f"the held channel's wake waited {slow_seconds:.2f}s for its mailbox lock"
     assert gap_while_held < MAX_LOOP_GAP_SECONDS, f"the event loop stalled {gap_while_held:.2f}s on a mailbox lock"
     _assert_wake_carries_the_mail(field, slow, slow_delivery, slow_expected)
 

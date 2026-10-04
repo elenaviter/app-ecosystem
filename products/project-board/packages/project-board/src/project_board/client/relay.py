@@ -5667,7 +5667,7 @@ class ProblemBoardRelaySupervisor:
         )
         try:
             pending_refs = await self._channel_off_loop(
-                channel, field.pending_worker_mail_refs, channel.worker_name
+                channel, field.pending_worker_mail_refs, channel.worker_name, wait=False
             )
             listener = await self._channel_off_loop(
                 channel, field.worker_listener_session, channel.worker_name
@@ -5705,7 +5705,7 @@ class ProblemBoardRelaySupervisor:
         # about 3.4 s on a slow mailbox (W476, 2026-10-03).
         try:
             pending_refs = await self._channel_off_loop(
-                channel, field.pending_worker_mail_refs, channel.worker_name
+                channel, field.pending_worker_mail_refs, channel.worker_name, wait=False
             )
             listener = await self._channel_off_loop(
                 channel, field.worker_listener_session, channel.worker_name
