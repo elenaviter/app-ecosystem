@@ -187,9 +187,6 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:admin",),
     },
-    # Coordinator handover (W313): several agents may carry the coordinator
-    # label; the holder record says which one acts now. Moving it is the
-    # operator's decision, so the three writes are people-only on the board.
     # Optional project roles the board carries (W517): only knowledge-keeper.
     # The role grants no permission; changing it is a person's decision.
     "project.role.get": {
@@ -221,6 +218,9 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "description": "Alias of project.role.manage that names or clears the holder.",
         "grants": ("work:admin",),
     },
+    # Coordinator handover (W313): several agents may carry the coordinator
+    # label; the holder record says which one acts now. Moving it is the
+    # operator's decision, so the three writes are people-only on the board.
     "project.coordinator.get": {
         "description": (
             "Read who holds the project's coordinator role now, the home "

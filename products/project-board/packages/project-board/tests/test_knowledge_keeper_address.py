@@ -118,3 +118,8 @@ def test_forwarding_to_the_keeper_without_a_project_is_refused_locally(field):
         )
     assert refused.value.code == "field_project_context_required"
     assert not field.pull_outbox(relay_id="relay-01", kinds={"mail.route"})
+
+
+def test_brief_context_omits_a_role_the_project_never_declared():
+    text = "\n".join(_render_worker_context({"roles": {"knowledge-keeper": {"state": "none", "revision": 0}}}))
+    assert "role knowledge-keeper" not in text

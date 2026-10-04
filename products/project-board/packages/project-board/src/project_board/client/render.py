@@ -317,7 +317,8 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
     if isinstance(roles, Mapping):
         # W517: the optional roles the board carries, beside the coordinator.
         for name, role in sorted(roles.items()):
-            if not isinstance(role, Mapping):
+            # A role the project never declared says nothing (review P3).
+            if not isinstance(role, Mapping) or str(role.get("state") or "none") == "none":
                 continue
             holder = role.get("holder") if isinstance(role.get("holder"), Mapping) else {}
             pending = role.get("pending_handovers")

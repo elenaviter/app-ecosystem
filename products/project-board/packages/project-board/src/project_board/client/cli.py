@@ -1246,7 +1246,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument(
         "--recipient",
         required=True,
-        help="A project teammate, operator for this worker's owner, or coordinator for whoever holds the project's coordinator role now (needs --project-ref).",
+        help="A project teammate, operator for this worker's owner, or a role address for whoever holds that role now: coordinator, or knowledge-keeper where the project declares it (needs --project-ref).",
     )
     command.add_argument("--kind", required=True)
     command.add_argument("--subject", required=True)
@@ -1677,7 +1677,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _project(command)
     command.add_argument("--sender", required=True)
-    command.add_argument("--recipient", required=True, help="A worker name, coordinator for the project's acting coordinator, or operator for the project owner's board inbox (kinds question, blocked, decision, progress, reply, update, result). Without --project-ref, a worker name reaches only an agent that attends no project, by its exact stable name (kinds request, reply, ping).")
+    command.add_argument("--recipient", required=True, help="A worker name, a role address (coordinator for the project's acting coordinator, knowledge-keeper for its knowledge keeper), or operator for the project owner's board inbox (kinds question, blocked, decision, progress, reply, update, result). Without --project-ref, a worker name reaches only an agent that attends no project, by its exact stable name (kinds request, reply, ping).")
     command.add_argument("--kind", required=True)
     command.add_argument("--subject", required=True)
     body = command.add_mutually_exclusive_group(required=True)
