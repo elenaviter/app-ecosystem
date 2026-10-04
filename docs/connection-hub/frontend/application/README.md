@@ -271,6 +271,20 @@ account at call time.
   Connection Hub's reason. The widget does not retry on its own. What the
   board side costs is in the [Problem Board
   architecture](../../../../products/project-board/docs/architecture.md).
+- **A provider sign-in tab opens inside the click (W435).** Every Connect asks
+  Connection Hub to start the sign-in (a one-time token, then the start call)
+  before it knows the provider's address. Safari blocks a window opened after
+  those awaits, silently, so the tab is reserved first:
+  `openPendingAuthorizationWindow` (`features/oauthWindow.ts`) opens a blank
+  tab during the click, cuts its opener, and sends it to the provider when the
+  address arrives. A failed start closes the blank tab, so none is left behind.
+  When the blank tab itself was refused, one direct open follows; it reports
+  "blocked" only when the browser really refused it (an open with the
+  `noopener` feature returns no handle even when it succeeds, so the opener is
+  cut on the handle instead). My Card's GitHub section then says to allow
+  pop-ups for the site and press Connect again. My Card's GitHub section, the
+  delegated-account panel and provider connections use it; the remote MCP
+  panel reserves its tab the same way.
 - `project_agent_card_get`, `project_agent_card_update`,
   `project_agent_card_apply_profile` (operations, W319) — open and change an
   agent's Card as someone other than its owner. The project host

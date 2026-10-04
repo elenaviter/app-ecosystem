@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { openPendingAuthorizationWindow } from '../oauthWindow';
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { AccountRow, type AccountStatusTone } from '../../components/AccountRow';
 import { PaneGroup } from '../../components/Pane';
@@ -287,6 +288,8 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
       provider: targetProviderId, connectorApp: targetConnectorAppId,
       claims: targetClaims, accountId: opts?.accountId || '', claimsMode: opts?.claimsMode || '',
     });
+    // Opened now, inside the click: Safari blocks a tab opened after the await below.
+    const signIn = openPendingAuthorizationWindow();
     const result = await dispatch(startDelegatedToKdcubeOAuth({
       providerId: targetProviderId,
       connectorAppId: targetConnectorAppId,
@@ -303,8 +306,9 @@ export function DelegatedToKdcubePanel({ openParams }: { openParams?: Record<str
       // Arms the return watch in App: the one-shot focus refresh and a
       // bounded re-read until the accounts change (oauthReturn.ts).
       armOAuthReturn();
-      window.open(result.authorize_url, '_blank', 'noopener,noreferrer');
+      if (!signIn.go(result.authorize_url)) console.warn('[connect-route] the browser blocked the provider tab');
     } else {
+      signIn.cancel();
       console.warn('[connect-route] launchOAuth got NO authorize_url — nothing opened', {
         provider: targetProviderId, connectorApp: targetConnectorAppId, result,
       });
