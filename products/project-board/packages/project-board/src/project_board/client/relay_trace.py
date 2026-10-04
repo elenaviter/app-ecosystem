@@ -698,10 +698,13 @@ class DiagnosticWriter:
                 self._deliver(slot, late=True)
             raise
         slot.waiting = False
-        if waiter not in done:
+        if waiter not in done and not future.done():
             # Still running: the slot stays this write's; reconciled once later.
             self.receipts["unknown_at_timeout"] += 1
             return "unknown"
+        # Ended, possibly after the timeout fired and before this caller
+        # resumed (another caller may already have freed the slot): the
+        # outcome is still this caller's to deliver, exactly once.
         # Never clear a newer write's slot: another caller may already have
         # freed this one and started the next.
         if self._outstanding is slot:

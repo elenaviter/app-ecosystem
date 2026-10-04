@@ -437,3 +437,30 @@ def test_flush_hands_lines_to_the_writer_and_stops_at_an_unknown_write() -> None
     assert first == {"appended": 1, "failed": 0, "unknown": 1, "busy": 0, "dropped": 0}
     assert second["busy"] in (0, 1) and second["appended"] == 0
     assert trace.accounting._pending_buckets == 0
+
+
+def test_a_write_whose_caller_was_cancelled_is_delivered_late_exactly_once() -> None:
+    import concurrent.futures
+
+    receipt: concurrent.futures.Future = concurrent.futures.Future()
+    receipt.set_running_or_notify_cancel()
+    late: list = []
+
+    async def scenario():
+        writer = DiagnosticWriter(submit=lambda line: receipt, timeout_seconds=5.0)
+        writer.on_late = lambda key, appended: late.append((key, appended))
+        task = asyncio.create_task(writer.write(("bucket", 7), "line"))
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert writer.busy(), "the cancelled caller's write still holds the slot"
+        receipt.set_exception(OSError("synthetic"))
+        await asyncio.sleep(0)
+        assert not writer.busy()
+        writer.busy()
+        return writer
+
+    writer = asyncio.run(scenario())
+    assert late == [(("bucket", 7), False)]
+    assert (writer.receipts["late_failed"], writer.receipts["failed"]) == (1, 0)
