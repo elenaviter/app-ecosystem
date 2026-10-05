@@ -162,13 +162,33 @@ accountability (operator, 2026-10-03).
     changed (the skill's Receive Addressed Input section). A wake, a mail or a
     compaction is not a reason to reread them. When it changed, `pb procedure
     verify` names the files in `changed_files`: read those whole, keep the rest.
-  - Before a read, name the decision it can change, and stop when that
-    decision is answered. The narrow reads (W563): `pb worker inbox` finds a
+  - Before a read, name the decision it can change, read the smallest
+    current authoritative projection, and stop when that decision is
+    answered. Answer the operator before any backlog or history
+    reconciliation. Technical verification goes to a named independent
+    reviewer; consume its verdict, exception and evidence ref, never review
+    it yourself (Quickstart facts, operator 2026-10-05). The narrow reads (W563): `pb worker inbox` finds a
     message behind a backlog and `pb worker receive --message-ref` takes it;
     `pb worker context --project-ref <project-ref> --routing` is the team for a dispatch;
     `pb worker item-read` and `pb worker note-read` print a clipped item field
     or note whole without links. A whole-history read, a recursive file
     search or the environment page is not a status read.
+  - Old mail is handled, not discarded, and never re-executed. Its age alone
+    is no reason to drop it: read the full leased message, compare it with
+    the current state only when it could change a decision, record in the
+    settlement why it is superseded, and settle it once. An old restart,
+    source, procedure or assignment instruction never causes a rollback, a
+    repeated activation, an older procedure load or a second reassignment.
+    A real contradiction between the message and the current state goes to
+    the operator or the item's owner; a Done status is not proof of every
+    acceptance line.
+  - A notification you send carries the action asked and the authoritative
+    item or result ref, not a narrative of it. Do not reply only to
+    acknowledge: a settlement records receipt.
+  - Say which milestone a change has reached, each by its evidence: merged
+    (the merge commit), installed (the host's revision readback), measured
+    (the figures and their scenario), complete (every acceptance line). Ship
+    a qualified slice without waiting for the rest.
   - Use GitHub only through the pb helper (`pb worker git-credential` for git,
     `pb worker gh -- …` for gh), never the host's own gh login
     ([GitHub access](repo:app-ecosystem/products/project-board/docs/github.md)).
@@ -1085,13 +1105,19 @@ Completed work is on the board and in the journal; the handoff names it by
 ref, never retells it. Write it under these headings, `none` when empty:
 
 1. **Operator constraints in force**: each quoted verbatim with its ref.
-2. **Open leases and unknown outcomes**: `message_ref`, `lease_id`, outbox
-   ids whose outcome is not known yet.
-3. **Windows**: an active runtime window, its step, rollback point, readies and holds.
+2. **Open leases and unknown outcomes**: `message_ref`, `lease_id`,
+   correlation, outbox ids and mutations whose outcome is not known yet.
+3. **Windows**: an active runtime window, its approved scope, step, rollback
+   point, readies and holds.
 4. **Responsibilities**: per item key, the current phase, the next actor and
-   the checkpoint time.
+   the checkpoint time; for each change, merged or deployed, by its evidence.
 5. **Waits**: who waits on whom, and who clears it.
-6. **Loaded procedure**: the installed revision you loaded.
+6. **Loaded procedure**: the installed revision you loaded, and the
+   sections of this file you have read under it.
+7. **Locators**: the exact commands and refs you will reuse (a payload
+   shape, a project ref), so no help or contract discovery is repeated.
+
+No transcript and no history: what is stable stays behind its ref.
 
 A longer handoff names the open item that needs the room and why, and stays
 bounded. On resume, reuse the loaded revision when `pb procedure verify`
