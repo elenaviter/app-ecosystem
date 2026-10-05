@@ -222,3 +222,16 @@ def test_an_empty_password_changes_nothing(tmp_path):
         assert "nothing changed" in result.stdout
         assert (keyrings / "login.keyring").read_text(encoding="utf-8") == "store"
         assert not (home / "called").exists()
+
+
+def test_every_start_or_resume_begins_with_the_machine_self_test():
+    """Operator, 2026-10-05 (W258 decision a): "agents when i resume them can check that and
+    say to a usr what he should do in order to restore the servuce (unlock keyring)"."""
+
+    skill = (ROOT / "src" / "project_board" / "procedures" / "problem-board-worker" / "SKILL.md").read_text(encoding="utf-8")
+    section = skill[skill.index("## Start Or Resume"):]
+    test_at = section.index("**First, the machine self-test.**")
+    assert test_at < section.index("1. Read the repository instructions")
+    paragraph = section[test_at:section.index("1. Read the repository instructions")]
+    assert "begins with `pb status`" in paragraph and "a session resumed after its machine restarted" in paragraph
+    assert "add-a-worker-host step 6" in paragraph and "no keyring command of your own" in paragraph
