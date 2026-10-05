@@ -1191,6 +1191,26 @@ def test_a_clipped_scope_is_readable_whole_without_download_links(monkeypatch) -
     args.field = ["description"]
     narrow = cli._worker_item_read(args)
     assert list(narrow["fields"]) == ["description"]
+    # A narrow read names the count and the paged listing, not every file.
+    assert narrow["attachments"] == [] and narrow["attachment_count"] == 26
+    narrow_text = render_envelope({"ok": True, "result": narrow})
+    assert "attachments: 26" in narrow_text and "list: pb worker item-attachment-list" in narrow_text
+    assert "pbfile:o/i/" not in narrow_text
+
+
+def test_a_summary_that_adds_to_the_description_start_is_never_dropped() -> None:
+    # Review of e35c5800: the dedup compared only the summary's first 120
+    # characters, so a short summary that shares them and then adds a hold
+    # was dropped, with no clipped pointer because it is short.
+    start = "Move the backup root to the managed folder and record every backup there for the project " + "x" * 40
+    description = start + " with the operator's window."
+    base = {"item_key": "W1", "status": "working", "title": "T", "identity_ref": IDENTITY_REF, "description": description}
+
+    divergent = _brief({"operation": "project.plan.item", "object": {**base, "summary": start + " HOLD: wait for Ops."}})
+    assert "HOLD: wait for Ops." in divergent
+
+    redundant = _brief({"operation": "project.plan.item", "object": {**base, "summary": start}})
+    assert "summary:" not in redundant
 
 
 def test_worker_context_names_one_identity_command_instead_of_one_per_clone() -> None:

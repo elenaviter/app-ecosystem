@@ -3605,10 +3605,12 @@ def _worker_item_read(args: Any) -> dict[str, Any]:
             for key in ("assignment_ref", "ownership_version", "state", "worker_name")
             if key in assignment
         }
-    result["attachments"] = [
-        {key: entry[key] for key in _ATTACHMENT_SAFE_FIELDS if key in entry}
-        for entry in item.get("attachments") or []
-        if isinstance(entry, Mapping)
+    entries = [entry for entry in item.get("attachments") or [] if isinstance(entry, Mapping)]
+    result["attachment_count"] = len(entries)
+    # A narrow read (--field) names the count; the files are paged by
+    # item-attachment-list (review of e35c5800). The whole read lists them.
+    result["attachments"] = [] if args.field else [
+        {key: entry[key] for key in _ATTACHMENT_SAFE_FIELDS if key in entry} for entry in entries
     ]
     result["note_count"] = item.get("note_count", 0)
     return result

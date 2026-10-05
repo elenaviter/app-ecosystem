@@ -349,7 +349,12 @@ def _render_item_read(result: Mapping[str, Any]) -> list[str]:
             lines.append(f"{name}:")
             lines.extend(_BODY_INDENT + line for line in str(value).splitlines() or [""])
     attachments = [entry for entry in result.get("attachments") or [] if isinstance(entry, Mapping)]
-    lines.append(f"attachments: {len(attachments)}")
+    lines.append(f"attachments: {result.get('attachment_count', len(attachments))}")
+    if not attachments and result.get("attachment_count"):
+        lines.append(
+            f"  list: pb worker item-attachment-list --project-ref {result.get('project_ref') or '<project-ref>'} "
+            f"--item-key {result.get('item_key') or '<Wn>'}"
+        )
     for entry in attachments:
         lines.append(f"  attachment: {entry.get('filename') or '-'} · {entry.get('file_ref') or '-'}")
     lines.append(f"notes: {result.get('note_count', 0)} (not read here; plan.notes.list)")
@@ -2152,8 +2157,10 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
     summary = _without_title_prefix(item.get("summary"), item.get("title"))
     description = " ".join(str(item.get("description") or "").split())
     # A summary that only restates the start of the description is not
-    # printed twice (W563: both previews carried the same text).
-    if _present(summary) and not description.startswith(summary[:120]):
+    # printed twice (W563: both previews carried the same text). Only the
+    # whole summary counts: one that adds anything, a hold or a constraint,
+    # is printed (review of e35c5800).
+    if _present(summary) and not description.startswith(summary):
         lines.append(f"summary: {_preview(summary, maximum_bytes=_ITEM_PROSE_BYTES)}")
     if _present(description):
         lines.append(f"description preview: {_preview(description, maximum_bytes=_ITEM_PROSE_BYTES)}")
