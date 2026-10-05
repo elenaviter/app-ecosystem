@@ -43,6 +43,9 @@ from ..contract.refs import make_ref, parse_ref
 from ..contract.scoped_collection import CollectionError, ScopedKeysetCursor
 
 
+# Selective receives allowed between two ordinary receives (W563, Q11).
+SELECTIVE_RECEIVE_BUDGET = 3
+
 # A local plan is a shard until a complete server generation is mirrored
 # here. These name the two states so no reader has to guess which it has.
 PLAN_AUTHORITY_LOCAL_SHARD = "local_shard"
@@ -3552,6 +3555,7 @@ class SharedFieldStore:
                 ),
                 "last_inbox_check_at": str(previous.get("last_inbox_check_at") or ""),
                 "general_receive_due": bool(previous.get("general_receive_due")),
+                "selective_receives_since_general": int(previous.get("selective_receives_since_general") or 0),
                 "last_message_refs": list(previous.get("last_message_refs") or []),
                 "last_control_refs": list(previous.get("last_control_refs") or []),
                 "observed_control_plane_state": str(
@@ -3635,9 +3639,15 @@ class SharedFieldStore:
                 revision=int(listener.get("revision") or 0) + 1,
             )
             if selective_receive:
-                listener["general_receive_due"] = True
+                # W563 (Q11, coordinator 2026-10-05): up to SELECTIVE_RECEIVE_BUDGET
+                # selective receives between ordinary ones; the ordinary receive
+                # still serves the oldest mail, so old mail keeps moving.
+                used = int(listener.get("selective_receives_since_general") or 0) + 1
+                listener["selective_receives_since_general"] = used
+                listener["general_receive_due"] = used >= SELECTIVE_RECEIVE_BUDGET
             if inbox_checked:
                 listener["general_receive_due"] = False
+                listener["selective_receives_since_general"] = 0
                 observed_message_refs = _bounded_message_refs(message_refs)
                 listener.update(
                     last_inbox_check_at=now,

@@ -264,7 +264,9 @@ def test_priority_and_selective_receive_share_admission_and_settle_once(field, m
 
     selected = pull_worker_input(field, worker_name=WORKER, message_ref=older["message_ref"])
     assert [row["message"]["message_ref"] for row in selected["items"]] == [older["message_ref"]]
-    assert selected["session"]["general_receive_due"] is True
+    # W563 (Q11): the first of three selective receives leaves two.
+    assert selected["session"]["general_receive_due"] is False
+    assert selected["session"]["selective_receives_since_general"] == 1
 
 
 def test_priority_materialization_replay_does_not_duplicate_or_reidentify_mail(field):

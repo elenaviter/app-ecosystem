@@ -15,7 +15,7 @@ from .io import bounded_text, exclusive_lock
 from .mail_attachments import worker_message_with_attachments
 from .mail_budget import MAX_WORKER_INPUT_BYTES, MailPullBudget
 from .quarantine import quarantine_summary
-from .store import SharedFieldStore
+from .store import SELECTIVE_RECEIVE_BUDGET, SharedFieldStore
 
 
 WORKER_INPUT_SCHEMA = "problem-board.worker-input.v2"
@@ -88,6 +88,7 @@ def _worker_input_session_view(session: Mapping[str, Any]) -> dict[str, Any]:
         "inbox_check_interval_seconds",
         "inbox_overdue_by_seconds",
         "general_receive_due",
+        "selective_receives_since_general",
         "last_inbox_result_at",
         "last_mail_settled_at",
         "last_settled_message_ref",
@@ -538,6 +539,7 @@ def _pull_worker_input(
             "This coding-agent session must run worker listen before receiving mail.",
             status=409,
         )
+    selective_used = int(listener.get("selective_receives_since_general") or 0)
     if selective and listener.get("general_receive_due"):
         raise DomainError(
             "field_mail_general_receive_due",
@@ -1048,8 +1050,13 @@ def _pull_worker_input(
                 "held": selected["held"],
                 "held_count": selected["held_count"],
                 "previous_state": selected["previous_state"],
-                "general_receive_due": True,
-                "instruction": "Run ordinary pb worker receive before another selection.",
+                "general_receive_due": selective_used + 1 >= SELECTIVE_RECEIVE_BUDGET,
+                "selective_receives_remaining": max(0, SELECTIVE_RECEIVE_BUDGET - selective_used - 1),
+                "instruction": (
+                    "Run ordinary pb worker receive before another selection."
+                    if selective_used + 1 >= SELECTIVE_RECEIVE_BUDGET
+                    else f"{SELECTIVE_RECEIVE_BUDGET - selective_used - 1} more selective receive(s) before an ordinary receive is due."
+                ),
             })
             if selected["operator_pending"]:
                 selection_view["state"] = "operator_pending"
