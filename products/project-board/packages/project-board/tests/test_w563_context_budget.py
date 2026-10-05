@@ -119,9 +119,15 @@ def test_worker_context_team_is_one_line_per_member():
     envelope, text = _brief("worker_context")
     team = envelope["result"]["team"]
     lines = text.splitlines()
+    # The team section only (owner, 18:28Z): the coordinator holder line names
+    # one member again outside it, which is not a duplicate team row.
+    start = next((n for n, line in enumerate(lines) if line.startswith("team:")), None)
+    assert start is not None, "no team section"
+    end = next((n for n, line in enumerate(lines[start + 1:], start + 1) if line.startswith("team detail")), len(lines))
+    section = lines[start:end]
     for member in team:
-        mentions = [line for line in lines if member["worker_name"] in line]
-        assert len(mentions) == 1, f"team member on {len(mentions)} lines"
+        mentions = [line for line in section if member["worker_name"] in line]
+        assert len(mentions) == 1, f"team member on {len(mentions)} lines of the team section"
     result = envelope["result"]
     assert result["workspace"] in text
     assert result["commit_identity"]["name"] in text and result["commit_identity"]["email"] in text
@@ -145,8 +151,8 @@ def test_worker_context_brief_meets_its_byte_target():
 
 
 # 5. Receive (owner's S5): admitted operator mail in a project mailbox behind a
-# direct-mailbox backlog arrives in the first receive batch. Strict xfail until
-# the coordinator answers W563 Q1 (the owner's instruction, 16:28Z).
+# direct-mailbox backlog arrives in the first receive batch. Was a strict xfail
+# pending Q1; the owner's packet 2 (88b54bae) passes it, so the mark is dropped.
 
 PROJECT_ID = "w563-project"
 WORKER = "claude-main"
@@ -181,7 +187,6 @@ def _control(ref: str, *, kind: str, body: str, project: bool, operator: bool) -
     return control
 
 
-@pytest.mark.xfail(strict=True, reason="W563 S5: priority_only receive pending coordinator Q1")
 def test_operator_mail_in_a_project_is_received_ahead_of_a_direct_backlog(mail_field):
     from project_board.client.session import pull_worker_input
 
