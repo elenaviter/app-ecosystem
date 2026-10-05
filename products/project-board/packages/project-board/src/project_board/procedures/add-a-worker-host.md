@@ -483,12 +483,13 @@ GitHub App is installed on the repository. `pb worker connect-project` then
 clones over HTTPS with `pb worker git-credential` as each clone's helper, and
 `pb worker gh` runs gh with the key for one command. This host stores no
 GitHub token and needs no deploy key for those repositories. The deploy keys
-below are the **fallback**: for a repository the key does not reach yet (its
-row's `github_key` names why), for a machine whose owner has not linked
-GitHub, and for pushing while Connection Hub cannot answer. When origin moves
-to HTTPS, connect-project keeps this machine's deploy-key route as the
-`deploykey` remote, and `pb worker push -- <git push arguments>` uses it only
-after the key was unavailable (never after a refusal), saying so on one line.
+below are the **fallback** for a repository the key does not reach yet (its
+row's `github_key` names why) and for a machine whose owner has not linked
+GitHub. They are never a fallback for a repository the key does reach: when
+the key is unavailable or refused there, `pb worker push` fails and names the
+key's answer, and nothing is pushed another way (the project's route rule,
+W416). When origin moves to HTTPS, connect-project keeps this machine's
+deploy-key route as the `deploykey` remote, which no push uses.
 
 One **deploy key per repository**: an SSH key that one repository accepts for
 itself. A personal key would reach every repository its owner can reach, and

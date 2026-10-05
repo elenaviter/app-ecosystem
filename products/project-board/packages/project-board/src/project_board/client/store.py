@@ -9587,8 +9587,8 @@ class SharedFieldStore:
     ) -> None:
         """The key's last answer for one repository: empty code when issued, else why not.
 
-        `pb worker push` reads it to fall back to the deploy key only after an
-        availability failure (Connection Hub unreachable), never a refusal.
+        A failed `pb worker push` reads it to name the key's answer; it never
+        falls back to another credential (W416).
         """
 
         clean_id = component(project_id, field="project_id")

@@ -265,7 +265,7 @@ def test_gh_is_found_without_the_service_path_and_named_when_missing(tmp_path):
 
 # --- the deploy-key fallback when the key is unavailable (Connection Hub down, 17:21Z) ---
 
-from project_board.client.github_key import classify_failure, push_through_deploy_key  # noqa: E402
+from project_board.client.github_key import classify_failure  # noqa: E402
 
 
 @pytest.mark.parametrize(
@@ -293,10 +293,3 @@ def test_transport_failures_are_availability_and_a_refused_card_is_not():
     assert classify_failure(UpstreamError("oauth_token_request_failed", "no answer"))[1] is True
     assert classify_failure(CredentialError("credential_missing", "gone"))[1] is False
 
-
-def test_the_same_push_is_aimed_at_the_deploy_key_remote():
-    remotes = {"origin", "deploykey", "upstream"}
-    assert push_through_deploy_key(["origin", "HEAD:refs/heads/x"], remotes) == ["deploykey", "HEAD:refs/heads/x"]
-    assert push_through_deploy_key(["-u", "origin", "feature"], remotes) == ["-u", "deploykey", "feature"]
-    assert push_through_deploy_key([], remotes) == ["deploykey"]
-    assert push_through_deploy_key(["--force-with-lease"], remotes) == ["--force-with-lease", "deploykey"]
