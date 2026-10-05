@@ -356,8 +356,28 @@ problem_board_service_events-+
 
 It supports text, date range, status, and worker filters. Project/time indexes
 bound normal paging, and each API page is capped at 100 rows; the widget uses
-30. The timeline stores no copied body and creates no second project-history
-table.
+30. The timeline creates no second project-history table.
+
+A search ranks the complete match set once and keeps that ranking as a
+snapshot, so later pages follow the same order and `matched_count` is exact:
+
+- **A snapshot holds ranks, not copies.** Each matched entry is one rank row in
+  `problem_board_timeline_search_snapshot_items`: rank, `artifact_ref` and the
+  search scores. A page rebuilds its entries (at most 100) from the live rows
+  by ref, under the same project scope and inbox visibility as the ranking. An
+  archived event has no live row, so its rank row keeps the entry itself.
+- **A page whose row is gone** (deleted, or no longer visible to the caller)
+  reads as incomplete, and its cursor answers `collection_cursor_stale` (409).
+  A new search starts again.
+- **Snapshots expire** 15 minutes after the search. The board's
+  `timeline-snapshot-sweep` job deletes expired ones every 10 minutes, one
+  instance per tenant and project, and each search deletes them too.
+  `enabled.cron.timeline-snapshot-sweep: false` turns the job off.
+- **One person keeps at most three** live snapshots per project: a new search
+  deletes their older ones, and a cursor into a deleted snapshot answers 409.
+
+The snapshot tables are a cache. Emptying them loses no data; open cursors
+answer 409 until the next search.
 
 Each row has an `artifact_ref`, which is the stable URI of the underlying
 control, inbox message, or event. A row also has `mailbox_ref` when the
