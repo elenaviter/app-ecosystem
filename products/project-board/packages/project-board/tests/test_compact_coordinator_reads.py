@@ -962,3 +962,69 @@ def test_json_format_is_the_explicit_full_detail_path(monkeypatch, capsys) -> No
     assert exit_code == 0 and captured.err == ""
     assert json.loads(captured.out) == {"ok": True, "result": full}
     assert "OMITTED_TAIL" in captured.out
+
+
+def _plan_index_item(index: int) -> dict[str, Any]:
+    return {
+        "item_key": f"W{500 + index}",
+        "status": "working",
+        "derived_state": "working",
+        "title": f"Index item {index} " + "t" * 40,
+        "identity_ref": f"{IDENTITY_REF}{index}",
+        "item_ref": f"{EXACT_REF}{index}",
+        "assignee": "codex-main",
+        "acting_assignee": "codex-main",
+        "reviewer": "",
+        "revision": 40 + index,
+        "updated_at": "2026-10-05T12:00:00Z",
+        "note_count": 86,
+        "attachment_count": 10,
+        "depends_on": [],
+        "keywords": ["channel reconnect", "Data Bus", "governed dispatch"],
+        "tags": ["priority-0", "relay"],
+        "search_content_hash": "h" * 64,
+        "source_content_hash": "s" * 64,
+        "embedding_model_id": "",
+        "embedding_present": False,
+        "version_slug": "v" * 64,
+        "available_transitions": [
+            {"label": "Cancel", "operation": "work.cancel", "requires_reason": True},
+            {"label": "Release assignment", "operation": "assignment.return", "requires_reason": True},
+        ],
+    }
+
+
+def test_plan_index_is_two_lines_per_item_and_keeps_paging() -> None:
+    items = [_plan_index_item(index) for index in range(7)]
+    result = {
+        "operation": "project.plan.index",
+        "object": {
+            "schema": "problem-board.plan-index.v2",
+            "project_ref": PROJECT_REF,
+            "plan_revision": 7872,
+            "item_count": 555,
+            "matched_count": 10,
+            "count": 7,
+            "page": 1,
+            "page_count": 2,
+            "generation_token": "generation-" + "g" * 96,
+            "next_cursor": CURSOR,
+            "state_counts": [{"state": "todo", "count": 154}, {"state": "working", "count": 10}],
+            "items": items,
+        },
+    }
+
+    text = _brief(result)
+
+    assert "plan index: matched 10 · returned 7 · page 1 of 2 · plan revision 7872" in text
+    assert f"next_cursor: {CURSOR}" in text
+    assert "state counts: todo 154 · working 10" in text
+    for index in range(7):
+        line = next(line for line in text.splitlines() if line.startswith(f"--- W{500 + index} "))
+        assert "working" in line and "assignee codex-main" in line and "notes 86" in line
+        assert f"identity_ref: {IDENTITY_REF}{index}" in text
+    for bulk in ("search_content_hash", "source_content_hash", "available_transitions", "embedding", "keywords", "version_slug"):
+        assert bulk not in text
+    # Two lines per item plus a fixed header; the flat form was 17 KB for a
+    # real seven-item page (W563 baseline B1).
+    _assert_budget(text, lines=7 * 2 + 8, bytes_=3_200)

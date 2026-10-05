@@ -2195,6 +2195,89 @@ def _render_plan_search(operation: str, page: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+# An index page is the caller's own bounded slice (its `limit`), and each item
+# costs two lines here, so the page is shown whole up to this many items.
+_INDEX_ITEMS = 100
+
+
+def _render_plan_index(operation: str, page: Mapping[str, Any]) -> list[str]:
+    """One plan-index page as a status table: two lines per item.
+
+    The flat form printed every item's content hashes, embedding fields,
+    transitions and keywords, so a seven-item page cost more bytes in brief
+    than in JSON (W563). What a status or dispatch decision reads is kept:
+    key, status, owner, reviewer, revision, freshness, the counts that say
+    whether a full read is needed, and the identity ref to act on.
+    """
+
+    all_items = page.get("items") or []
+    items, returned_count = _bounded(all_items, maximum=_INDEX_ITEMS)
+    lines = [
+        f"operation: {operation}",
+        "plan index: matched {} · returned {} · page {} of {} · plan revision {} · items in plan {}".format(
+            page.get("matched_count", page.get("count", "?")),
+            returned_count,
+            page.get("page", 1),
+            page.get("page_count", 1),
+            page.get("plan_revision", "?"),
+            page.get("item_count", "?"),
+        ),
+    ]
+    for key in ("project_ref", "generation_token", "next_cursor"):
+        if _present(page.get(key)):
+            lines.append(f"{key}: {page[key]}")
+    counts = page.get("state_counts")
+    if isinstance(counts, list) and counts:
+        lines.append(
+            "state counts: "
+            + " · ".join(
+                f"{entry.get('state')} {entry.get('count')}"
+                for entry in counts
+                if isinstance(entry, Mapping)
+            )
+        )
+    if not items:
+        lines.append("items: none")
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        status = str(item.get("status") or "-")
+        derived = str(item.get("derived_state") or "")
+        assignee = item.get("assignee") or "-"
+        acting = item.get("acting_assignee") or ""
+        owner = assignee if not acting or acting == assignee else f"{assignee} (acting {acting})"
+        facts = [
+            str(item.get("item_key") or "-"),
+            status if not derived or derived == status else f"{status} (derived {derived})",
+            f"assignee {owner}",
+            f"reviewer {item.get('reviewer') or '-'}",
+            f"rev {item.get('revision', item.get('item_revision', '?'))}",
+            f"updated {item.get('updated_at') or item.get('item_updated_at') or '-'}",
+        ]
+        for key, label in (
+            ("note_count", "notes"),
+            ("attachment_count", "attachments"),
+        ):
+            if item.get(key):
+                facts.append(f"{label} {item[key]}")
+        dependencies = item.get("depends_on") or []
+        if dependencies:
+            facts.append(f"depends on {len(dependencies)}")
+        lines.append(
+            "--- "
+            + " · ".join(facts)
+            + " · "
+            + (_preview(item.get("title"), maximum_bytes=160) or "(untitled)")
+        )
+        if _present(item.get("identity_ref")):
+            lines.append(f"identity_ref: {item['identity_ref']}")
+        if isinstance(item.get("reference_error"), Mapping):
+            lines.extend(_flatten(item["reference_error"], prefix="reference_error."))
+    _note_omitted(lines, "plan index items", shown=len(items), total=returned_count)
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
 def _render_plan_notes(operation: str, page: Mapping[str, Any]) -> list[str]:
     notes = page.get("items")
     notes = notes if isinstance(notes, list) else []
@@ -2478,6 +2561,8 @@ def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
         return _render_plan_item(operation, item)
     if isinstance(obj, Mapping) and operation == "project.plan.search":
         return _render_plan_search(operation, obj)
+    if isinstance(obj, Mapping) and operation == "project.plan.index":
+        return _render_plan_index(operation, obj)
     if isinstance(obj, Mapping) and operation == "plan.notes.list":
         return _render_plan_notes(operation, obj)
     if isinstance(obj, Mapping) and operation == "assignment.list":
