@@ -123,8 +123,9 @@ _CUSTODY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="connec
 # W558 (host mint, 2026-10-05): a keychain call that blocks for good (a locked
 # Secret Service waiting for an unlock prompt nobody sees) held the one custody
 # thread, and every later call of the process queued behind it until the relay
-# was restarted. A call still running after this bound is abandoned and the
-# next call runs on a fresh custody thread.
+# was restarted. A READ still running after this bound is abandoned and the
+# next call runs on a fresh custody thread; a write is never abandoned
+# (_in_custody_read).
 CUSTODY_DEADLINE_SECONDS = 30.0
 
 
@@ -706,7 +707,7 @@ class OAuthProfileSessionService:
         """The profile record and its stored token, read under the store lock."""
 
         async with self._custody_section(profile_name, operation="read_token") as profile:
-            return profile, await self._in_custody(self._load_token, profile)
+            return profile, await self._in_custody_read(self._load_token, profile)
 
     async def _commit_refreshed_token(
         self,
@@ -1387,9 +1388,7 @@ class OAuthProfileSessionService:
         (W461). One thread serves every custody call of the process, outside
         the default executor. A started call finishes even when its caller
         is cancelled, so a write is never observed half done; the caller's
-        cancellation is raised after it. A call still running after
-        CUSTODY_DEADLINE_SECONDS is abandoned instead (W558): the caller gets
-        oauth_credential_custody_timeout and the next call a fresh thread.
+        cancellation is raised after it.
         """
 
         loop = asyncio.get_running_loop()
@@ -1408,32 +1407,18 @@ class OAuthProfileSessionService:
                 marks["end"] = time.monotonic()
 
         submitted = time.monotonic()
-        deadline = submitted + CUSTODY_DEADLINE_SECONDS
-        executor = _CUSTODY_EXECUTOR
-        future = loop.run_in_executor(executor, timed)
+        future = loop.run_in_executor(_CUSTODY_EXECUTOR, timed)
         # Only plain assignments here: every diagnostic expression runs inside
         # _record_custody_call's fence, so none can replace the call's own
         # exception or the cancellation's failure signal (W464 review).
         ended: BaseException | None = None
         try:
-            done, _pending = await asyncio.wait({future}, timeout=CUSTODY_DEADLINE_SECONDS)
-            if not done:
-                _replace_stuck_custody_executor(executor)
-                raise AuthorizationError(
-                    "oauth_credential_custody_timeout",
-                    "The credential store did not answer in time (a locked store waiting for a "
-                    "prompt?); the next attempt uses a fresh custody thread.",
-                )
-            return future.result()
+            return await asyncio.shield(future)
         except asyncio.CancelledError as cancelled:
             ended = cancelled
             while not future.done():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    _replace_stuck_custody_executor(executor)
-                    raise
                 try:
-                    await asyncio.wait({future}, timeout=remaining)
+                    await asyncio.wait({future})
                 except asyncio.CancelledError:
                     continue
             failure = None if future.cancelled() else future.exception()
@@ -1444,6 +1429,51 @@ class OAuthProfileSessionService:
                 # (W461 review: a failed profile commit must revoke its grant).
                 raise _CancelledAfterFailure(failure) from failure
             raise
+        except BaseException as exc:
+            ended = exc
+            raise
+        finally:
+            _record_custody_call(call, seq, ended, submitted, marks)
+
+    @staticmethod
+    async def _in_custody_read(call: Callable[..., _T], /, *args: Any) -> _T:
+        """A custody READ that gives up after CUSTODY_DEADLINE_SECONDS (W558).
+
+        Only reads: an abandoned read changes nothing, and the next one runs
+        on a fresh custody thread. A write is never abandoned, because a late
+        write landing after a newer one would overwrite it with an older value
+        (claude-main, review of #528); writes keep `_in_custody`. Nothing waits
+        on an abandoned read: no task is left behind to block a shutdown.
+        """
+
+        loop = asyncio.get_running_loop()
+        context = contextvars.copy_context()
+        seq = request_records.next_custody_call()
+        marks: dict[str, float] = {}
+
+        def timed() -> _T:
+            marks["start"] = time.monotonic()
+            try:
+                return context.run(call, *args)
+            finally:
+                marks["end"] = time.monotonic()
+
+        executor = _CUSTODY_EXECUTOR
+        submitted = time.monotonic()
+        future = loop.run_in_executor(executor, timed)
+        ended: BaseException | None = None
+        try:
+            done, _pending = await asyncio.wait({future}, timeout=CUSTODY_DEADLINE_SECONDS)
+            if not done:
+                _replace_stuck_custody_executor(executor)
+                # Retrieve its outcome whenever it ends, so nothing logs it as unretrieved.
+                future.add_done_callback(lambda finished: finished.cancelled() or finished.exception())
+                raise AuthorizationError(
+                    "oauth_credential_custody_timeout",
+                    "The credential store did not answer in time (a locked store waiting for a "
+                    "prompt?); the next attempt uses a fresh custody thread.",
+                )
+            return future.result()
         except BaseException as exc:
             ended = exc
             raise

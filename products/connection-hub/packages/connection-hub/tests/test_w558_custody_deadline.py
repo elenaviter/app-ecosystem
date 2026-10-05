@@ -30,17 +30,17 @@ def short_deadline(monkeypatch):
     profile_session._CUSTODY_EXECUTOR = original
 
 
-def test_a_stuck_call_is_abandoned_and_the_next_one_runs_on_a_fresh_thread(short_deadline):
+def test_a_stuck_read_is_abandoned_and_the_next_one_runs_on_a_fresh_thread(short_deadline):
     release = threading.Event()
     stuck_executor = profile_session._CUSTODY_EXECUTOR
 
     async def scenario():
         with pytest.raises(AuthorizationError) as stuck:
-            await profile_session.OAuthProfileSessionService._in_custody(release.wait)
+            await profile_session.OAuthProfileSessionService._in_custody_read(release.wait)
         assert stuck.value.code == "oauth_credential_custody_timeout"
         assert profile_session._CUSTODY_EXECUTOR is not stuck_executor
         # The newly approved agent's read: answered at once, not queued behind the stuck one.
-        return await profile_session.OAuthProfileSessionService._in_custody(lambda: "token")
+        return await profile_session.OAuthProfileSessionService._in_custody_read(lambda: "token")
 
     try:
         assert asyncio.run(scenario()) == "token"
@@ -48,11 +48,11 @@ def test_a_stuck_call_is_abandoned_and_the_next_one_runs_on_a_fresh_thread(short
         release.set()
 
 
-def test_a_cancelled_caller_waits_no_longer_than_the_deadline(short_deadline):
+def test_a_cancelled_reader_returns_at_once(short_deadline):
     release = threading.Event()
 
     async def scenario():
-        task = asyncio.create_task(profile_session.OAuthProfileSessionService._in_custody(release.wait))
+        task = asyncio.create_task(profile_session.OAuthProfileSessionService._in_custody_read(release.wait))
         await asyncio.sleep(0.05)
         task.cancel()
         started = asyncio.get_running_loop().time()
@@ -70,7 +70,7 @@ def test_a_call_within_the_deadline_is_unchanged(short_deadline):
     executor = profile_session._CUSTODY_EXECUTOR
 
     async def scenario():
-        return await profile_session.OAuthProfileSessionService._in_custody(lambda a, b: a + b, 2, 3)
+        return await profile_session.OAuthProfileSessionService._in_custody_read(lambda a, b: a + b, 2, 3)
 
     assert asyncio.run(scenario()) == 5
     assert profile_session._CUSTODY_EXECUTOR is executor
@@ -122,7 +122,7 @@ def test_a_locked_store_refuses_at_once_and_the_same_process_reads_after_the_unl
     store = NativeCredentialStore(backend=SecretServiceBackend(), platform_name="Linux", enforce_native_backend=False)
 
     async def read():
-        return await profile_session.OAuthProfileSessionService._in_custody(store.get, "ref")
+        return await profile_session.OAuthProfileSessionService._in_custody_read(store.get, "ref")
 
     with pytest.raises(CredentialError) as locked:
         asyncio.run(read())
@@ -130,3 +130,28 @@ def test_a_locked_store_refuses_at_once_and_the_same_process_reads_after_the_unl
     state["locked"] = False  # the operator unlocks
     assert asyncio.run(read()) == "bearer-token-value"
     assert SecretServiceBackend.prompts == 0
+
+
+
+def test_a_slow_write_is_never_abandoned_so_writes_land_in_order(short_deadline):
+    """Review of #528 (claude-main, P2): an abandoned write kept running and landed after a
+    newer one, leaving the older value stored. Writes keep running to completion, in order."""
+
+    import time
+
+    stored = []
+    executor = profile_session._CUSTODY_EXECUTOR
+
+    def slow_write(value):
+        time.sleep(0.6)  # twice the read deadline
+        stored.append(value)
+        return value
+
+    async def scenario():
+        first = await profile_session.OAuthProfileSessionService._in_custody(slow_write, "r1-old")
+        second = await profile_session.OAuthProfileSessionService._in_custody(slow_write, "r2-new")
+        return first, second
+
+    assert asyncio.run(scenario()) == ("r1-old", "r2-new")
+    assert stored == ["r1-old", "r2-new"]
+    assert profile_session._CUSTODY_EXECUTOR is executor
