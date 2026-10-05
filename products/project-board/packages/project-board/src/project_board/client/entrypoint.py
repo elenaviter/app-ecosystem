@@ -41,6 +41,24 @@ def _top_level_command(argv: list[str]) -> str:
     return ""
 
 
+def _procedure_install(argv: list[str]) -> bool:
+    """Whether this is `pb procedure install` (W554)."""
+
+    words: list[str] = []
+    skip_value = False
+    for token in argv:
+        if skip_value:
+            skip_value = False
+            continue
+        if token == "--format":
+            skip_value = True  # `--format brief` may stand anywhere on the line
+            continue
+        if token.startswith("-"):
+            continue
+        words.append(token)
+    return words[:2] == ["procedure", "install"]
+
+
 def _configure_relay_logging(config_path: Path | None) -> None:
     configure_relay_file_logging(
         config_path,
@@ -94,7 +112,9 @@ def _selected_command(
     root = client_source_root(config)
     selected = effective_selection(root, release_source=observed)
     if selected.get("mode") == "released":
-        if not source_matches(observed, selected):
+        if not source_matches(observed, selected) and not _procedure_install(argv):
+            # W554: `pb procedure install` run by the package just installed
+            # makes it this host's pb, so it runs here instead of refusing.
             raise DomainError(
                 "work_client_release_selection_mismatch",
                 "The installed project-board package differs from the selected released version. Run pb source use-release with the approved installed version.",

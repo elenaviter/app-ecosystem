@@ -6182,12 +6182,19 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             "installed": installed,
         }
         installing = _installing_pb()
+        adopted = _adopt_installing_release()
+        if adopted:
+            result["selection"] = adopted
         if installing and installing.get("pb"):
             # W495: one pb command at ~/.local/bin/pb from the first install on.
             from .procedures import _home_path
-            from .release_install import ensure_install_launcher
+            from .release_install import ensure_install_launcher, install_launcher
 
-            result["launcher"] = ensure_install_launcher(_home_path(args.home), pb=installing["pb"])
+            home = _home_path(args.home)
+            if adopted:
+                # W554: the launcher follows the adopted selection.
+                install_launcher(Path(home) / ".local" / "bin" / "pb", expected_pb=installing["pb"])
+            result["launcher"] = ensure_install_launcher(home, pb=installing["pb"])
         if claude_code:
             # The status line and hooks a Claude Code worker needs (W304 finding 45).
             from .claude_settings import merge_claude_code_settings
@@ -6196,6 +6203,49 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             result["claude_code_settings"] = merge_claude_code_settings(_home_path(args.home), pb=hook_pb)
         return result
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")
+
+
+def _adopt_installing_release() -> dict[str, Any] | None:
+    """Make the released package running this install the host's selection (W554).
+
+    Operator, 2026-10-05: "the user should have no any idea if this is new
+    install or no. it simply must work smoothly and easy. with couple of
+    lines." A host that recorded another released version (an earlier install)
+    adopts the package that ran `pb procedure install`, the same end state as a
+    new host. A host that selected a source snapshot keeps it (W495), and so
+    does a host with no configuration (it has no selection yet). The installed
+    package is adopted whether it is newer or older than the recorded one: the
+    person chose it by installing it (only an older procedure is refused).
+    """
+
+    from .relay_source import client_source_root, read_selection, released_selection, write_selection
+    from .source_control import installed_release_source, source_matches
+
+    try:
+        config = resolve_host_config_path(None)
+    except DomainError:
+        return None
+    root = client_source_root(config)
+    try:
+        selected = read_selection(root)
+    except DomainError:
+        return None  # a selection this pb cannot read is left to pb source
+    if str(selected.get("mode") or "") != "released":
+        return None
+    try:
+        observed = installed_release_source()
+    except DomainError:
+        return None
+    if str(observed.get("mode") or "") != "released" or observed.get("release_id"):
+        return None
+    if source_matches(observed, selected):
+        return None
+    recorded = write_selection(root, released_selection(str(observed.get("version") or "")))
+    return {
+        "adopted": True,
+        "previous_version": str(selected.get("version") or ""),
+        "version": str(recorded.get("version") or ""),
+    }
 
 
 def _installing_pb() -> dict[str, Any] | None:
