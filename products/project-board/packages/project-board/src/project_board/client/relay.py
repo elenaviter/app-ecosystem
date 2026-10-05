@@ -5783,6 +5783,24 @@ class ProblemBoardRelaySupervisor:
             # Nothing to wake for, or nobody to wake: no hold (W334).
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
+
+        async def mailbox_empty() -> bool:
+            # W448 fix 3: a queued wake's refs stand in for the mailbox only on
+            # the way to the deduplicated return. Every branch that records or
+            # clears a hold, re-arms, or pushes decides on the mailbox itself,
+            # and an empty one ends the cycle as it always did (review of #518).
+            nonlocal pending_refs, mailbox_read
+            if not mailbox_read:
+                try:
+                    pending_refs = await self._channel_off_loop(
+                        channel, field.pending_worker_mail_refs, channel.worker_name, wait=False
+                    )
+                except DomainError as exc:
+                    if exc.code != "field_record_not_found":
+                        raise
+                    pending_refs = []
+                mailbox_read = True
+            return not pending_refs
         # W26: a wake to an agent the runtime says is out of tokens or rate
         # limited only piles up turns it cannot take. It waits for the reset
         # the runtime named, said once per reset in the log, and the mail
@@ -5821,6 +5839,9 @@ class ProblemBoardRelaySupervisor:
             # A failed/unmeasured read or continued exhaustion never spends a
             # model turn. The next bounded read, not a tight native retry loop,
             # can establish capacity. Pending mail remains untouched.
+            if await mailbox_empty():
+                await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+                return queue_reconciliation
             retry_at = (datetime.now(timezone.utc) + timedelta(seconds=QUOTA_REFRESH_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
             await self._channel_off_loop(
                 channel, field.record_wake_hold, channel.worker_name,
@@ -5830,6 +5851,9 @@ class ProblemBoardRelaySupervisor:
                     "reason": quota_error or "agent_rate_limited"}
         deferred_until = wake_deferred_until(limit_state, now=now)
         if deferred_until:
+            if await mailbox_empty():
+                await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+                return queue_reconciliation
             # W334: the card shows the hold from this same decision.
             await self._channel_off_loop(channel,
                 field.record_wake_hold,
@@ -5865,6 +5889,9 @@ class ProblemBoardRelaySupervisor:
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return None
         withheld = wake_withheld_by_reconciliation(queue_reconciliation, subscription)
+        if withheld and await mailbox_empty():
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            return queue_reconciliation
         if not withheld:
             # W334: the wake is eligible again, so a hold ends here and only
             # here. A wake still withheld by reconciliation keeps its hold.
@@ -5900,6 +5927,9 @@ class ProblemBoardRelaySupervisor:
             subscription.get("outstanding_wake_id") or ""
         )
         if outstanding_wake_id and _limit_ended_after_refusal(limit_state):
+            if await mailbox_empty():
+                await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+                return queue_reconciliation
             # W390: the wake was refused for usage, not ignored, and that
             # limit has ended: one more push, once per ended limit.
             if await self._channel_off_loop(channel,
@@ -5953,6 +5983,9 @@ class ProblemBoardRelaySupervisor:
                     subscription.get("outstanding_wake_id") or ""
                 )
                 if not outstanding_wake_id:
+                    if await mailbox_empty():
+                        await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+                        return queue_reconciliation
                     return await self._notify_session(
                         host,
                         channel,
@@ -5978,6 +6011,9 @@ class ProblemBoardRelaySupervisor:
             # never moved again.
             deadline = str(subscription.get("wake_ack_deadline_at") or "")
             if _deadline_passed(deadline):
+                if await mailbox_empty():
+                    await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+                    return queue_reconciliation
                 return await self._notify_session(
                     host,
                     channel,
@@ -6007,6 +6043,9 @@ class ProblemBoardRelaySupervisor:
                 "wake_id": outstanding_wake_id,
                 "retry_at": deadline,
             }
+        if await mailbox_empty():
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            return queue_reconciliation
         return await self._notify_session(
             host,
             channel,

@@ -154,6 +154,52 @@ def test_a_rate_limited_agent_with_a_queued_wake_is_still_deferred(tmp_path, mon
     assert field.wake_hold(identity.worker_name), "the card still shows the hold (W334)"
 
 
+def _drain_without_wake_id(field, worker_name):
+    """The worker took its mail at a work boundary, not in the wake's turn (review of #518)."""
+
+    worker = field.read_worker(worker_name)
+    root = field._mail_root("", str(worker.get("worker_name") or "")) / "inbox"
+    done = root.parent / "processed"
+    done.mkdir(parents=True, exist_ok=True)
+    for path in root.glob("*.json"):
+        path.replace(done / path.name)
+    assert field.pending_worker_mail_count_snapshot(worker_name) == 0
+
+
+def _rate_limited(monkeypatch):
+    monkeypatch.setattr(
+        relay, "session_with_limit_state",
+        lambda listener, **_: {**listener, "limit_state": {"kind": "rate_limited", "resets_at": "2999-01-01T00:00:00Z"}},
+    )
+
+
+def test_a_drained_inbox_under_a_queued_wake_records_no_hold(tmp_path, monkeypatch, driven):
+    _reads, drive = driven
+    host, identity, channel, field, _refs = _queued(tmp_path, monkeypatch)
+    _drain_without_wake_id(field, identity.worker_name)
+    subscription = field.worker_listener_session(identity.worker_name)["subscription"]
+    assert subscription["wake_delivery_state"] == "queued" and subscription["last_wake_message_refs"]
+    _rate_limited(monkeypatch)
+
+    drive(host, channel)
+
+    assert field.wake_hold(identity.worker_name) == {}, "the Card shows no hold for mail that is gone"
+
+
+def test_a_hold_under_a_queued_wake_counts_the_mailbox(tmp_path, monkeypatch, driven):
+    reads, drive = driven
+    host, identity, channel, field, refs = _queued(tmp_path, monkeypatch)
+    for number in range(4):
+        field.send_mail("", sender="control-plane", recipient=identity.worker_name, kind="request",
+                        subject=f"Later {number}", body="New.", idempotency_key=f"later-{number}")
+    _rate_limited(monkeypatch)
+
+    drive(host, channel)
+
+    assert field.wake_hold(identity.worker_name)["pending"] == len(refs) + 4
+    assert len(reads) == 1, "the hold branch reads the mailbox once, not the wake's refs"
+
+
 @pytest.mark.parametrize(
     ("subscription", "expected"),
     [
