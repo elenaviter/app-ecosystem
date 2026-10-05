@@ -14,8 +14,14 @@ from .session import probe_worker_input
 from .store import SharedFieldStore
 
 
-def _availability(result: dict[str, Any]) -> tuple[tuple[str, ...], dict[str, Any]]:
-    pending_refs = tuple(str(item) for item in result.get("pending_refs") or [])
+def _availability(
+    result: dict[str, Any], quiet: frozenset[str] = frozenset()
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    # W563 (Q2): a notice that needs no action does not change the wake
+    # signature, so it alone starts no turn; it is still counted as pending.
+    pending_refs = tuple(
+        str(item) for item in result.get("pending_refs") or [] if str(item) not in quiet
+    )
     held_refs = tuple(str(item) for item in result.get("held_lease_refs") or [])
     held_count = int(result.get("held_lease_count") or 0)
     signals = tuple(
@@ -26,6 +32,7 @@ def _availability(result: dict[str, Any]) -> tuple[tuple[str, ...], dict[str, An
     event = {
         "event": "problem_board.inbox_available",
         "pending_count": int(result.get("pending_count") or 0),
+        "quiet_pending_count": len(quiet & set(str(item) for item in result.get("pending_refs") or [])),
         "held_lease_count": held_count,
         "signals": list(result.get("signals") or []),
         "instruction": str(result.get("instruction") or ""),
@@ -45,6 +52,21 @@ def worker_watch_events(
     interval = max(5, min(int(check_interval_seconds), 300))
     coalesce = max(0.0, min(float(coalesce_seconds), 5.0))
     last_signature: tuple[str, ...] = ()
+    # W563: whether a pending message is quiet never changes, so each one is
+    # classified once, reading only its own file (review of PR 535).
+    classified: dict[str, bool] = {}
+
+    def quiet_now(result: dict[str, Any]) -> frozenset[str]:
+        pending = [str(item) for item in result.get("pending_refs") or []]
+        new = [ref for ref in pending if ref not in classified]
+        if new:
+            found = field.quiet_mail_refs(worker_name, refs=new)
+            classified.update({ref: ref in found for ref in new})
+        current = set(pending)
+        for ref in [ref for ref in classified if ref not in current]:
+            del classified[ref]
+        return frozenset(ref for ref in pending if classified.get(ref))
+
     failure_signature = ""
     failure_delay = 5
 
@@ -55,7 +77,8 @@ def worker_watch_events(
         while True:
             try:
                 result = probe_worker_input(field, worker_name=worker_name)
-                signature, event = _availability(result)
+                quiet = quiet_now(result)
+                signature, event = _availability(result, quiet)
                 if signature and signature != last_signature:
                     if result.get("pending_refs") and coalesce:
                         deadline = time.monotonic() + coalesce
@@ -67,7 +90,8 @@ def worker_watch_events(
                             # shorten its fixed coalescing window.
                             wake.wait(remaining)
                         result = probe_worker_input(field, worker_name=worker_name)
-                        signature, event = _availability(result)
+                        quiet = quiet_now(result)
+                        signature, event = _availability(result, quiet)
                     last_signature = signature
                     yield {**event, "worker": worker_name}
                 elif not signature:

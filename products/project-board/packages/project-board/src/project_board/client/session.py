@@ -15,7 +15,7 @@ from .io import bounded_text, exclusive_lock
 from .mail_attachments import worker_message_with_attachments
 from .mail_budget import MAX_WORKER_INPUT_BYTES, MailPullBudget
 from .quarantine import quarantine_summary
-from .store import SharedFieldStore
+from .store import SELECTIVE_RECEIVE_BUDGET, SharedFieldStore
 
 
 WORKER_INPUT_SCHEMA = "problem-board.worker-input.v2"
@@ -88,6 +88,7 @@ def _worker_input_session_view(session: Mapping[str, Any]) -> dict[str, Any]:
         "inbox_check_interval_seconds",
         "inbox_overdue_by_seconds",
         "general_receive_due",
+        "selective_receives_since_general",
         "last_inbox_result_at",
         "last_mail_settled_at",
         "last_settled_message_ref",
@@ -538,6 +539,7 @@ def _pull_worker_input(
             "This coding-agent session must run worker listen before receiving mail.",
             status=409,
         )
+    selective_used = int(listener.get("selective_receives_since_general") or 0)
     if selective and listener.get("general_receive_due"):
         raise DomainError(
             "field_mail_general_receive_due",
@@ -1048,8 +1050,13 @@ def _pull_worker_input(
                 "held": selected["held"],
                 "held_count": selected["held_count"],
                 "previous_state": selected["previous_state"],
-                "general_receive_due": True,
-                "instruction": "Run ordinary pb worker receive before another selection.",
+                "general_receive_due": selective_used + 1 >= SELECTIVE_RECEIVE_BUDGET,
+                "selective_receives_remaining": max(0, SELECTIVE_RECEIVE_BUDGET - selective_used - 1),
+                "instruction": (
+                    "Run ordinary pb worker receive before another selection."
+                    if selective_used + 1 >= SELECTIVE_RECEIVE_BUDGET
+                    else f"{SELECTIVE_RECEIVE_BUDGET - selective_used - 1} more selective receive(s) before an ordinary receive is due."
+                ),
             })
             if selected["operator_pending"]:
                 selection_view["state"] = "operator_pending"
@@ -1078,6 +1085,36 @@ def _pull_worker_input(
             )
 
     try:
+        if not selective:
+            # W563 (Q1): admitted operator mail first across every mailbox,
+            # through the same lease path; the ordinary pass follows.
+            for scope_index, (scope_ref, scope_id) in enumerate([("", ""), *project_scopes]):
+                if remaining <= 0:
+                    break
+                project_index = scope_index - 1 if scope_id else None
+                urgent = field.pull_mail(
+                    scope_id,
+                    worker_name=stable_name,
+                    lease_owner=lease_owner,
+                    limit=remaining,
+                    lease_seconds=lease_seconds,
+                    byte_budget=budget,
+                    measure_response=mailbox_response_size(
+                        project_ref=scope_ref, project_id=scope_id, project_index=project_index,
+                    ),
+                    measure_message=mailbox_message_size(project_ref=scope_ref, project_id=scope_id),
+                    priority_only=True,
+                )
+                for message in urgent:
+                    claim = remember_claim(scope_id, message)
+                    _notify_stub_sender(field, receiver=stable_name, project_id=scope_id, message=message)
+                    try:
+                        items.append(received_item(project_ref=scope_ref, project_id=scope_id, message=message))
+                    except DomainError as exc:
+                        isolate_message_failure(scope_id, message, claim, exc)
+                if project_index is not None:
+                    projects[project_index]["leased_messages"] += len(urgent)
+                remaining -= len(urgent)
         direct_messages = claim_selected_scope("", "", None) if selective else field.pull_mail(
             "",
             worker_name=stable_name,
@@ -1140,7 +1177,7 @@ def _pull_worker_input(
                     )
                 except DomainError as exc:
                     isolate_message_failure(project_id, message, claim, exc)
-            projects[project_index]["leased_messages"] = len(items) - before_items
+            projects[project_index]["leased_messages"] += len(items) - before_items
             remaining -= len(messages)
         if selective:
             selection_view["claimed_now_count"] = len(claimed)

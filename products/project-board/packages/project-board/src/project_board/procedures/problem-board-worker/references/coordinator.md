@@ -32,6 +32,7 @@ revision (W449).
 | wait on a silent worker | [Confirm that work started](#confirm-that-work-started), [Check a silent worker](#check-a-silent-worker-do-not-wait-for-it) |
 | tell the operator and the team where things stand | [Keep the project announcement current](#keep-the-project-announcement-current) |
 | hand the role over | [Hand the coordinator role over](#hand-the-coordinator-role-over-and-take-it-back) |
+| resume after a compaction, or hand a session's state on | [Write the recovery handoff](#write-the-recovery-handoff) |
 
 Read [What the coordinator is for](#what-the-coordinator-is-for) once when
 you take the role; the rest only for the act at hand.
@@ -159,7 +160,36 @@ accountability (operator, 2026-10-03).
     abandons a window in progress or a held lease.
   - Reload the worker instructions only when their installed revision
     changed (the skill's Receive Addressed Input section). A wake, a mail or a
-    compaction is not a reason to reread them.
+    compaction is not a reason to reread them. When it changed, `pb procedure
+    verify` names the files in `changed_files`: read those whole, keep the rest.
+  - Before a read, name the decision it can change, read the smallest
+    current authoritative projection, and stop when that decision is
+    answered. Answer the operator before any backlog or history
+    reconciliation. Where the project's facts say the coordinator does not
+    review (Quickstart: operator, 2026-10-05), technical verification goes to
+    a named independent reviewer: consume its verdict, exception and evidence
+    ref, and route a reviewer when none is available. The narrow reads (W563): `pb worker inbox` finds a
+    message behind a backlog and `pb worker receive --message-ref` takes it;
+    `pb worker context --project-ref <project-ref> --routing` is the team for a dispatch;
+    `pb worker item-read` and `pb worker note-read` print a clipped item field
+    or note whole without links. A whole-history read, a recursive file
+    search or the environment page is not a status read.
+  - Old mail is handled, not discarded, and never re-executed. Its age alone
+    is no reason to drop it: read the full leased message, compare it with
+    the current state only when it could change a decision, record in the
+    settlement why it is superseded, and settle it once. An old restart,
+    source, procedure or assignment instruction never causes a rollback, a
+    repeated activation, an older procedure load or a second reassignment.
+    A real contradiction between the message and the current state goes to
+    the operator or the item's owner; a Done status is not proof of every
+    acceptance line.
+  - A notification you send carries the action asked and the authoritative
+    item or result ref, not a narrative of it. Do not reply only to
+    acknowledge: a settlement records receipt.
+  - Say which milestone a change has reached, each by its evidence: merged
+    (the merge commit), installed (the host's revision readback), measured
+    (the figures and their scenario), complete (every acceptance line). Ship
+    a qualified slice without waiting for the rest.
   - Use GitHub only through the pb helper (`pb worker git-credential` for git,
     `pb worker gh -- …` for gh), never the host's own gh login
     ([GitHub access](repo:app-ecosystem/products/project-board/docs/github.md)).
@@ -489,10 +519,12 @@ The evidence is the usage and limit line on its worker card, reported through
 `pb worker limit-state`, together with what the worker reports and what the
 operator says. From the command line, read it for every teammate on every host
 in `pb worker context`: `team[].limit_state.windows[]` carries each window's
-`name`, `used_percent` and `resets_at`. The brief output prints a scheduling
-row for every member (runtime, account, info line, and any held or recovered
-wake the board reports) and one `team usage:` line per member, which names a
-window whose reset has passed. Every `team usage:` line read under a host
+`name`, `used_percent` and `resets_at`. The brief output prints one row per
+member (host, presence, model, each usage window with its reset, a window
+whose reset has passed, `account shared by N` when several teammates share
+the provider account so the figure is not one agent's use, the info line,
+and any held or recovered wake). `--member <name>` adds the account and its
+provenance, and one `team usage:` line per member. Every `team usage:` line read under a host
 login says so (W310): "not confirmed capacity" is the host login's figure,
 inferred as the session's, and "not this session's capacity" was read under
 another login or one the board cannot place. None of these is proof of that
@@ -1064,6 +1096,34 @@ turns is not helped by an endless third. That state waits for you.
 Why: on 2026-09-29 a Spark session sat for four hours with thirteen messages
 behind one exhausted wake while its relay and Card read healthy; one native
 prompt for that wake, sent by hand, recovered it (W405).
+
+## Write the recovery handoff
+
+A recovery summary (the one a runtime writes at a compaction, or one you
+write for a successor session) carries the state still open, in at most
+1,500 words, and refs to everything else (operator, 2026-10-05, W563 Q6).
+Completed work is on the board and in the journal; the handoff names it by
+ref, never retells it. Write it under these headings, `none` when empty:
+
+1. **Operator constraints in force**: each quoted verbatim with its ref.
+2. **Open leases and unknown outcomes**: `message_ref`, `lease_id`,
+   correlation, outbox ids and mutations whose outcome is not known yet.
+3. **Windows**: an active runtime window, its approved scope, step, rollback
+   point, readies and holds.
+4. **Responsibilities**: per item key, the current phase, the next actor and
+   the checkpoint time; for each change, merged or deployed, by its evidence.
+5. **Waits**: who waits on whom, and who clears it.
+6. **Loaded procedure**: the installed revision you loaded, and the
+   sections of this file you have read under it.
+7. **Locators**: the exact commands and refs you will reuse (a payload
+   shape, a project ref), so no help or contract discovery is repeated.
+
+No transcript and no history: what is stable stays behind its ref.
+
+A longer handoff names the open item that needs the room and why, and stays
+bounded. On resume, reuse the loaded revision when `pb procedure verify`
+names the same one, receive, and act on the handoff; reread no history the
+handoff names by ref unless a decision needs it.
 
 ## Hand the coordinator role over, and take it back
 

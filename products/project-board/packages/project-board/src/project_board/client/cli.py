@@ -922,6 +922,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     command = worker_commands.add_parser(
+        "note-read",
+        help="Read one work-item note whole by its ref: no item body, attachments or links.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--item-key", required=True)
+    command.add_argument("--note-ref", required=True)
+
+    command = worker_commands.add_parser(
         "item-attachment-list",
         help="List one page of a work item's files: name and file ref, never a link.",
     )
@@ -1266,6 +1276,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Show one teammate in full, by stable worker name or alias. "
             "Without it every teammate has one compact scheduling row."
+        ),
+    )
+    command.add_argument(
+        "--routing",
+        action="store_true",
+        help=(
+            "The routing view: coordinator, roles and one row per teammate, without "
+            "the workspace, journal and project-file coordinates a start or resume reads."
         ),
     )
 
@@ -3675,6 +3693,51 @@ def _worker_inbox(field: Any, identity: Any, args: Any) -> dict[str, Any]:
     }
 
 
+# Pages of 100 notes searched for one note ref before the read gives up.
+_NOTE_READ_PAGES = 20
+
+
+def _worker_note_read(args: Any) -> dict[str, Any]:
+    """One note's text whole, found by its ref, with nothing else (W563).
+
+    The notes brief previews each note, and the JSON notes page carries the
+    item, whose attachments can hold download links; a coordinator could not
+    read a clipped questions note safely and asked for it to be quoted. This
+    pages the item's notes until it finds the ref and returns only that note.
+    """
+
+    cursor = ""
+    for _page in range(_NOTE_READ_PAGES):
+        payload: dict[str, Any] = {"item_key": args.item_key, "limit": 100}
+        if cursor:
+            payload["cursor"] = cursor
+        response = _reference_mapping_request(
+            args, action="plan.notes.list", object_ref=args.project_ref, payload=payload,
+        )
+        page = response.get("object") if isinstance(response.get("object"), Mapping) else {}
+        for note in page.get("items") or []:
+            if not isinstance(note, Mapping):
+                continue
+            if args.note_ref in {str(note.get("note_ref") or ""), str(note.get("note_id") or "")}:
+                return {
+                    "schema": "problem-board.note-read.v1",
+                    "project_ref": args.project_ref,
+                    "item_key": args.item_key,
+                    **{key: note.get(key) for key in ("note_ref", "note_id", "ordinal", "author", "author_label",
+                                                       "created_at", "available") if key in note},
+                    "text": str(note.get("text") or ""),
+                }
+        cursor = str(page.get("next_cursor") or "")
+        if not cursor:
+            break
+    raise DomainError(
+        "work_note_not_found",
+        "No note with this ref was found on the item.",
+        status=404,
+        details={"item_key": args.item_key, "note_ref": args.note_ref},
+    )
+
+
 _ATTACHMENT_LIST_DEFAULT = 20
 _ATTACHMENT_LIST_MAXIMUM = 100
 
@@ -5482,6 +5545,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
         member = str(getattr(args, "member", "") or "").strip()
         if member:
             context = context_for_member(context, member)
+        if getattr(args, "routing", False):
+            # W563: a status or dispatch cycle routes by the team; the brief
+            # view leaves the start-up coordinates out. The JSON is unchanged.
+            context["context_view"] = "routing"
         if not context["attending"]:
             context["attendance_note"] = (
                 f"This agent does not attend {args.project_ref} (it was unlinked, or never "
@@ -5556,6 +5623,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
         return _worker_item_attach(args)
     if args.worker_command == "item-read":
         return _worker_item_read(args)
+    if args.worker_command == "note-read":
+        return _worker_note_read(args)
     if args.worker_command == "item-attachment-list":
         return _worker_item_attachment_list(args)
     if args.worker_command == "item-attachment-read":

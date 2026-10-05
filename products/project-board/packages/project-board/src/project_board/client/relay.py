@@ -5348,6 +5348,8 @@ class ProblemBoardRelaySupervisor:
         # The cycle's own session wake for a channel without a finished turn
         # runs as a task too, so a hung wake never holds the cycle.
         self._beside_notifies: dict[str, asyncio.Task] = {}
+        # W563: per worker, whether each pending message is a quiet notice.
+        self._quiet_classified: dict[str, dict[str, bool]] = {}
         # The session wake's mailbox and listener store calls run in the
         # channel's own thread (W456): a hung mailbox holds that channel only,
         # never another channel's wake or the default pool's scans.
@@ -5794,6 +5796,21 @@ class ProblemBoardRelaySupervisor:
             return queue_reconciliation
         if not pending_refs or not listener or listener.get("state") == "detached":
             # Nothing to wake for, or nobody to wake: no hold (W334).
+            await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+            return queue_reconciliation
+        # W563 (Q2): only notices that need no action are pending: they wake
+        # no turn and are received with the next wake or receive. Each message
+        # is classified once (review of PR 535), and the hold is cleared as on
+        # every other branch with nothing to wake for (W334).
+        known = self._quiet_classified.setdefault(channel.worker_name, {})
+        new = [ref for ref in pending_refs if ref not in known]
+        if new:
+            found = await self._channel_off_loop(channel, field.quiet_mail_refs, channel.worker_name, new)
+            known.update({ref: ref in found for ref in new})
+        current = set(pending_refs)
+        for ref in [ref for ref in known if ref not in current]:
+            del known[ref]
+        if all(known.get(ref) for ref in pending_refs):
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
 
