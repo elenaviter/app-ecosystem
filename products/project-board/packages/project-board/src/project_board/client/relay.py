@@ -7671,6 +7671,22 @@ class ProblemBoardRelaySupervisor:
             "read_roots_state": self.config_path.parent / READ_ROOTS_STATE,
         }
 
+    def _serving_channels(self) -> list[str] | None:
+        """The worker channels this host config still serves, read each pass (W553).
+
+        None when the config cannot be read, so housekeeping then drops no
+        channel's diagnostics and only ages them.
+        """
+
+        try:
+            host = HostRelayConfig.load(self.config_path)
+        except Exception:  # noqa: BLE001 - housekeeping never stops the relay
+            logger.debug("Diagnostics housekeeping: host config unreadable", exc_info=True)
+            return None
+        return [
+            channel.worker_name for channel in host.workers if channel.state != "disabled"
+        ]
+
     async def _maintain_local_state(self, field_root: Path) -> None:
         """Run housekeeping in a thread, first shortly after start, then on an interval.
 
@@ -7684,6 +7700,7 @@ class ProblemBoardRelaySupervisor:
                 await asyncio.to_thread(
                     run_local_state_maintenance,
                     SharedFieldStore(field_root),
+                    serving_channels=self._serving_channels(),
                     **self._read_root_maintenance(),
                 )
             except asyncio.CancelledError:

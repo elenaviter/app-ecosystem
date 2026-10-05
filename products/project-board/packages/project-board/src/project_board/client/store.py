@@ -409,6 +409,62 @@ ASSIGNMENT_RECONCILIATION_ISSUE_SCHEMA = (
     "problem-board.assignment-reconciliation.v2"
 )
 RELAY_DIAGNOSTIC_SCHEMA = "problem-board.relay-channel-diagnostic.v1"
+# LS2 for a channel's relay_diagnostic (W553): each list keeps its newest
+# entries, and none older than the age bound. Operator, 2026-10-05: "is there
+# any limit in this huge attempts lists?"; before W553 there was only the count.
+RELAY_DIAGNOSTIC_RETENTION_DAYS = 7
+RELAY_DIAGNOSTIC_MAX_RECORDS = 20
+
+
+def _relay_entry_current(item: Mapping[str, Any], cutoff: datetime, *keys: str) -> bool:
+    for key in keys:
+        text = str(item.get(key) or "")
+        if text:
+            try:
+                return parse_utc(text) > cutoff
+            except (DomainError, TypeError, ValueError):
+                return True  # an unreadable time is kept; the count bound still applies
+    return True
+
+
+def bounded_relay_diagnostic(
+    diagnostic: Mapping[str, Any], *, now: datetime | None = None
+) -> dict[str, Any]:
+    """One channel's relay_diagnostic within its age and count bounds (W553).
+
+    A finished interval ages out by its end, an attempt by its time. The open
+    interval's own state stays: it describes the channel now.
+    """
+
+    cutoff = (now or datetime.now(timezone.utc)) - timedelta(
+        days=RELAY_DIAGNOSTIC_RETENTION_DAYS
+    )
+
+    def attempts(value: Any) -> list[dict[str, Any]]:
+        return [
+            dict(item)
+            for item in value or []
+            if isinstance(item, Mapping) and _relay_entry_current(item, cutoff, "at")
+        ][-RELAY_DIAGNOSTIC_MAX_RECORDS:]
+
+    bounded = dict(diagnostic)
+    if "attempts" in bounded:
+        bounded["attempts"] = attempts(bounded.get("attempts"))
+    if "recent" in bounded:
+        recent: list[dict[str, Any]] = []
+        for raw in bounded.get("recent") or []:
+            if not isinstance(raw, Mapping) or not _relay_entry_current(
+                raw, cutoff, "ended_at", "started_at"
+            ):
+                continue
+            item = dict(raw)
+            if "attempts" in item:
+                item["attempts"] = attempts(item.get("attempts"))
+            recent.append(item)
+        bounded["recent"] = recent[-RELAY_DIAGNOSTIC_MAX_RECORDS:]
+    return bounded
+
+
 HOST_KINDS = {"local", "hosted", "remote"}
 SESSION_STATES = {"waiting", "working", "blocked", "detached"}
 # A worker's workload is its live assignment rows, and no
@@ -3126,7 +3182,8 @@ class SharedFieldStore:
                         if isinstance(item, Mapping)
                     ),
                     attempt,
-                ][-20:]
+                ][-RELAY_DIAGNOSTIC_MAX_RECORDS:]
+                current = bounded_relay_diagnostic(current)
                 row["relay_diagnostic"] = current
                 row.update(updated_at=now, revision=int(row.get("revision") or 0) + 1)
                 atomic_write_json(path, row)
@@ -3152,7 +3209,7 @@ class SharedFieldStore:
                             dict(item)
                             for item in current.get("attempts") or []
                             if isinstance(item, Mapping)
-                        ][-20:],
+                        ][-RELAY_DIAGNOSTIC_MAX_RECORDS:],
                         **(
                             {"message": str(current.get("message") or "")}
                             if current.get("message")
@@ -3177,12 +3234,13 @@ class SharedFieldStore:
                 "last_attempt_outcome": "failed",
                 "retryable": True,
                 "attempts": [attempt],
-                "recent": recent[-20:],
+                "recent": recent[-RELAY_DIAGNOSTIC_MAX_RECORDS:],
             }
             if selected_message:
                 diagnostic["message"] = selected_message
             if selected_request:
                 diagnostic["request"] = selected_request
+            diagnostic = bounded_relay_diagnostic(diagnostic)
             row["relay_diagnostic"] = diagnostic
             row.update(updated_at=now, revision=int(row.get("revision") or 0) + 1)
             atomic_write_json(path, row)
@@ -3222,7 +3280,7 @@ class SharedFieldStore:
                         dict(item)
                         for item in current.get("attempts") or []
                         if isinstance(item, Mapping)
-                    ][-20:],
+                    ][-RELAY_DIAGNOSTIC_MAX_RECORDS:],
                     **(
                         {"message": str(current.get("message") or "")}
                         if current.get("message")
@@ -3241,8 +3299,9 @@ class SharedFieldStore:
                 "state": "ready",
                 "code": "",
                 "started_at": "",
-                "recent": recent[-20:],
+                "recent": recent[-RELAY_DIAGNOSTIC_MAX_RECORDS:],
             }
+            diagnostic = bounded_relay_diagnostic(diagnostic)
             row["relay_diagnostic"] = diagnostic
             row.update(updated_at=now, revision=int(row.get("revision") or 0) + 1)
             atomic_write_json(path, row)
@@ -3314,11 +3373,60 @@ class SharedFieldStore:
                 recent.append(item)
             if not changed:
                 return current
-            current["recent"] = recent[-20:]
+            current["recent"] = recent[-RELAY_DIAGNOSTIC_MAX_RECORDS:]
+            current = bounded_relay_diagnostic(current)
             row["relay_diagnostic"] = current
             row.update(updated_at=now, revision=int(row.get("revision") or 0) + 1)
             atomic_write_json(path, row)
             return current
+
+    def expire_relay_diagnostics(
+        self,
+        *,
+        serving: Iterable[str] | None = None,
+        now: datetime | None = None,
+    ) -> dict[str, int]:
+        """Age out every channel's relay_diagnostic; drop it for channels gone from the host (W553).
+
+        A channel that stopped writing never reaches the bounds in the writers,
+        so retention applies them here as well (LS2). ``serving`` names the
+        channels the host config still serves (not disabled); a worker row
+        outside it loses its diagnostic. Without it, only the age bound runs.
+        """
+
+        names = None if serving is None else {str(name).lower() for name in serving}
+        totals = {"pruned": 0, "dropped": 0}
+        directory = self.control / "workers"
+        for path in sorted(directory.glob("*.json")) if directory.is_dir() else ():
+            try:
+                worker_name = str((read_json(path, required=False) or {}).get("worker_name") or "")
+            except DomainError:
+                continue  # an unreadable row is not this housekeeping's to repair
+            if not worker_name:
+                continue
+            # The same lock the diagnostic writers take for this worker.
+            with exclusive_lock(self.control / "locks" / f"worker-{worker_name}.lock"):
+                try:
+                    row = read_json(path, required=False)
+                except DomainError:
+                    continue
+                diagnostic = (row or {}).get("relay_diagnostic")
+                if not isinstance(diagnostic, Mapping):
+                    continue
+                if names is not None and worker_name.lower() not in names:
+                    row.pop("relay_diagnostic", None)
+                    totals["dropped"] += 1
+                else:
+                    bounded = bounded_relay_diagnostic(diagnostic, now=now)
+                    if bounded == diagnostic:
+                        continue
+                    row["relay_diagnostic"] = bounded
+                    totals["pruned"] += 1
+                row.update(
+                    updated_at=utc_now(), revision=int(row.get("revision") or 0) + 1
+                )
+                atomic_write_json(path, row)
+        return totals
 
     def set_worker_status(self, worker_name: str, status: str, *, actor: str, reason: str = "") -> dict[str, Any]:
         clean_name = str(self.read_worker(worker_name).get("worker_name") or "")

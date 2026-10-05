@@ -762,11 +762,21 @@ def _diagnostic_summary(diagnostic: Mapping[str, Any]) -> str:
         fields.append(f"message {_preview(diagnostic['message'])}")
     if _present(diagnostic.get("last_error")):
         fields.append(f"last error {_preview(diagnostic['last_error'])}")
+    if _present(diagnostic.get("last_attempt_at")):
+        fields.append(f"last attempt {diagnostic['last_attempt_at']}")
     recent = diagnostic.get("recent")
-    if isinstance(recent, list):
-        fields.append(f"recent {len(recent)}")
-        latest = (
+    # W553: the default host view carries a count and the latest interval
+    # instead of the stored list.
+    if isinstance(recent, list) or isinstance(diagnostic.get("recent_count"), int):
+        recent_count = len(recent) if isinstance(recent, list) else diagnostic["recent_count"]
+        fields.append(f"recent {recent_count}")
+        stored_latest = diagnostic.get("latest") if isinstance(diagnostic.get("latest"), Mapping) else (
             next((entry for entry in reversed(recent) if isinstance(entry, Mapping)), None)
+            if isinstance(recent, list)
+            else None
+        )
+        latest = (
+            stored_latest
             if str(diagnostic.get("state") or "").lower() not in {"ready", "healthy"}
             else None
         )
@@ -853,6 +863,10 @@ def _render_relay_service_status(result: Mapping[str, Any]) -> list[str]:
                     )
                 )
             _note_omitted(lines, "channels", shown=len(shown), total=len(channels))
+        if diagnostics.get("disabled_channels_not_shown"):
+            lines.append(f"disabled channels not shown: {diagnostics['disabled_channels_not_shown']}")
+        if isinstance(diagnostics.get("full_diagnostics"), list):
+            lines.append("full diagnostics: " + " ".join(map(str, diagnostics["full_diagnostics"])))
     lines.append(_FULL_DETAIL_LINE)
     return lines
 

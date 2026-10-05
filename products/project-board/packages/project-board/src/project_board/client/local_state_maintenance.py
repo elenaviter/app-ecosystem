@@ -14,6 +14,8 @@ Three jobs:
   into the per-agent layout of :mod:`reconciliation_receipts`;
 - receipt retention by hour folder (:func:`reconciliation_receipts.apply_receipt_retention`);
 - outbox retention for settled rows (``sent/`` and ``refused/``);
+- relay channel diagnostics: entries past their age bound, and the diagnostics
+  of channels the host no longer serves (W553);
 - advancing each clean setup read root to its integration ref (W262,
   :mod:`read_roots`).
 """
@@ -27,7 +29,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from ..contract.errors import DomainError
 from ..contract.mailbox_reconciliation_contract import normalize_receipt
@@ -73,12 +75,15 @@ def run_local_state_maintenance(
     now: datetime | None = None,
     repositories: Any = None,
     read_roots_state: Path | None = None,
+    serving_channels: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """One maintenance pass over every project in this field.
 
     With the host's ``repositories`` map and a state file, it also advances
     each clean setup read root to its integration ref (W262), at most every
-    five minutes per alias.
+    five minutes per alias. ``serving_channels`` names the worker channels the
+    host config still serves; relay diagnostics of any other worker are dropped
+    (W553). Without it, those diagnostics only age out.
     """
 
     current = now or datetime.now(timezone.utc)
@@ -135,6 +140,9 @@ def run_local_state_maintenance(
             "outbox": apply_outbox_retention(field, now=current),
             "sessions": apply_session_retention(field, now=current),
             "keyed": expire_keyed_stores(field, now=current),
+            "relay_diagnostics": field.expire_relay_diagnostics(
+                serving=serving_channels, now=current
+            ),
         }
         state.update(
             schema=MAINTENANCE_STATE_SCHEMA,

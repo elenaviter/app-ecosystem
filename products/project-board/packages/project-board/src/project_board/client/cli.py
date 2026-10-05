@@ -320,6 +320,14 @@ def build_parser() -> argparse.ArgumentParser:
     host_commands = host.add_subparsers(dest="host_command", required=True)
     command = host_commands.add_parser("inspect", help="Show the selected host configuration.")
     _host_config(command)
+    command.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help=(
+            "Print every served channel's stored relay diagnostics: intervals and their "
+            "attempts, within their age bound. Without it, one summary per channel."
+        ),
+    )
     command = host_commands.add_parser(
         "probe-worker",
         help="Prove one worker's inbox, wake, receive, and settlement path.",
@@ -2038,8 +2046,8 @@ def _setup(args: Any) -> dict[str, Any]:
     }
 
 
-def _host_view(config: HostRelayConfig) -> dict[str, Any]:
-    diagnostics = host_relay_diagnostics(config)
+def _host_view(config: HostRelayConfig, *, full_diagnostics: bool = False) -> dict[str, Any]:
+    diagnostics = host_relay_diagnostics(config, full=full_diagnostics)
     return {
         "schema": HOST_CONFIG_SCHEMA,
         "config": str(config.path or ""),
@@ -2094,7 +2102,10 @@ def _host_view(config: HostRelayConfig) -> dict[str, Any]:
 def _host_command(args: Any) -> dict[str, Any]:
     path = resolve_host_config_path(args.config)
     if args.host_command == "inspect":
-        return _host_view(HostRelayConfig.load(path))
+        return _host_view(
+            HostRelayConfig.load(path),
+            full_diagnostics=bool(getattr(args, "diagnostics", False)),
+        )
     if args.host_command == "probe-worker":
         config = HostRelayConfig.load(path)
         field = SharedFieldStore(config.field_root)
