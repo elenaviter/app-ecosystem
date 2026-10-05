@@ -1,0 +1,1043 @@
+{
+ "ok": true,
+ "result": {
+  "attending": true,
+  "commit_identity": {
+   "commands": [
+    "synthetic-4e4cfbc9abf1b85445124cd6f69407559f812f17c1c107ce013af7f099e2e13asynthetic-4e4cfbc9abf1b85445124cd6f6",
+    "synthetic-dfae0f40ff0411dbedfab7e89778bdc497671eaeae4afee48cf0718148e61767synthetic-dfae0f40ff0411dbedfab7e89778bdc497671eaeae4afee48cf",
+    "synthetic-53a510490951082ff0677cf39e252506e421ce95fc3029ab4febce0c7cd5ddb8synthetic-53a510490951082ff0677cf39e2",
+    "synthetic-8e3d600fe18923213d2c31dbfae03851fff0821fc69b2c99e5bb3d5192787004synthetic-8e3d600fe18923213d2c31dbfae03851fff0821fc69b2c99e5bb",
+    "synthetic-80080c06a44c11276c4bbc59e99be026fdd1acfc8b3f118cbaa4a6cffa45c783synthetic-80080c06a44c11276c4b",
+    "synthetic-46ab86de0cf2238106c4cb677a9758f3304256f50b167e63855ef8bb2148255esynthetic-46ab86de0cf2238106c4cb677a9758f3304256f50b167"
+   ],
+   "email": "synthetic-c896eb6ba3599bde9ecbd778ec487723b",
+   "name": "synthetic-72e1b1f91",
+   "rule": "synthetic-64ff529abea5b5383665c658c7282d4089f188a846eaf9f1de4654b9d4b7b5besynthetic-64ff529abea5b5383665c658c7282d4089f188a846eaf9f1de4654b9d4b7b5besynthetic-64ff529abea5b538",
+   "source": "synthetic-25a2cb",
+   "source_note": "synthetic-e085e146962711cd32b0584558790a9a52545d43990be468fb8685094cd3d4"
+  },
+  "coordinator": {
+   "acting": false,
+   "expected_until": "",
+   "holder": {
+    "attending": true,
+    "worker_alias": "synthetic-",
+    "worker_name": "synthetic-c6e55fa7665379e51a34a4c4823572fc"
+   },
+   "home": {
+    "attending": true,
+    "worker_alias": "synthetic-",
+    "worker_name": "synthetic-c6e55fa7665379e51a34a4c4823572fc"
+   },
+   "home_available": true,
+   "home_unavailable_reason": "",
+   "revision": 8,
+   "since": "2026-09-29T10:12:55.661727Z",
+   "state": "held"
+  },
+  "coordinators": [
+   "synthetic-c6e55fa7665379e51a34a4c4823572fc"
+  ],
+  "journal_authoring": {
+   "author": "synth",
+   "body": "synthetic-dc7e7a5ea54ade06da79cb03eb9c8659bea2d7f7a3adf1e2aa1",
+   "directory_ref": "repo:synthetic-b70e97dd5772c5cb13e5c300e0ca2274f7a13ec32fac15adce2456a68958f338synthetic-b7",
+   "required_frontmatter": {
+    "entry_ref": "synthetic-53af1791a0df74d82547441690f57cd062f31532db78731e4901c1ce1c255e",
+    "project_ref": "work:project:synthetic-72308f9572ad0e7"
+   },
+   "retrieval_frontmatter": [
+    "synth",
+    "synthet",
+    "synthe",
+    "synt",
+    "syntheti",
+    "syntheti",
+    "syntheti",
+    "synthetic-5",
+    "synthetic-5"
+   ],
+   "rule": "synthetic-cebc6f85d77105b931d788b9081d0702a910b36cc11ba2d4aa20b55c70933295synthetic-cebc6f85d77105b931d788b9081d0702a910b36cc11ba2"
+  },
+  "journal_clone": {
+   "action": "",
+   "alias": "synthetic-fd",
+   "behind": 0,
+   "commit": "synthetic-9aacfdf23f7f162d8fa4db4812fbb5",
+   "compared_commit": "synthetic-9aacfdf23f7f162d8fa4db4812fbb5",
+   "compared_with": "synthetic-3",
+   "path": "synthetic-b26625a084ebc074c091ead72f5a40ca0fe22dc8f7abe7dc28212ef7",
+   "state": "current"
+  },
+  "journal_home_commit": "synthetic-9aacfdf23f7f162d8fa4db4812fbb5",
+  "journal_home_read_root": "",
+  "journal_home_ref": "repo:synthetic-06755ecb1517d7823927df811b045865dada44723eac6b8cb143a4b9ea13ddd1synt",
+  "journal_index": {
+   "complete": true,
+   "excluded_count": 0,
+   "exclusions": [],
+   "freshness": "synthetic-65e5d9df19",
+   "indexed_entries": 663,
+   "issue_count": 17,
+   "issues": [
+    {
+     "code": "synthetic-a2f4d01c1b742a8d028e",
+     "details": {
+      "missing": [
+       "synthetic"
+      ],
+      "repository_journal_ref": "repo:synthetic-9513d6616abb9eb641fc69655a462541ef2ea4901ba06cb823f7826f7b4af0cdsynthetic-9513d6616abb9eb641fc69655a462541ef2ea4901ba06cb823f7826f7b4af0cdsynthetic-9513d6616abb9e"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-a2f4d01c1b742a8d028e",
+     "details": {
+      "missing": [
+       "synthetic"
+      ],
+      "repository_journal_ref": "repo:synthetic-3129d7e782672b1ec3506a0829a8f6040457e2866dcea5355efe375eca60ca86synthetic-3129d7e782672b1ec3506a0829a8f6040457e2866dcea5355efe375eca60ca86synthetic-3129d"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-a2f4d01c1b742a8d028e",
+     "details": {
+      "missing": [
+       "synthetic"
+      ],
+      "repository_journal_ref": "repo:synthetic-854b2e1fd1973ad87b3a7376e99ba71776e7a279f5c97dcd72e3330826fb2e55synthetic-854b2e1fd1973ad87b3a7376e99ba71776e7a279f5c97dcd72e3330826fb2e55syntheti"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-a2f4d01c1b742a8d028e",
+     "details": {
+      "missing": [
+       "synthetic"
+      ],
+      "repository_journal_ref": "repo:synthetic-2df8e7962b7548b54029ec99bd4e4e32a900f557ec5e88395f3ae35c434164fbsynthetic-2df8e7962b7548b54029ec99bd4e4e32a900f557ec5e88395f3ae35c434164fbsynthetic-2df8e79"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-a2f4d01c1b742a8d028e",
+     "details": {
+      "missing": [
+       "synthetic"
+      ],
+      "repository_journal_ref": "repo:synthetic-eaf7ad08e29d4fd21c0b7716103af728eabbdcf09be1bd6d895b662e84424103synthetic-eaf7ad08e29d4fd21c0b7716103af728eabbdcf09be1bd6d895b662e84424103syntheti"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-a2f4d01c1b742a8d028e",
+     "details": {
+      "missing": [
+       "synthetic"
+      ],
+      "repository_journal_ref": "repo:synthetic-6e315d197d155336ad9c2ebecef7d52f079a62e25ce59de1c651a58c715bcf9csynthetic-6e315d197d155336ad9c2ebecef7d52f079a62e25ce59de1c651a58c715bcf9csynthetic-6e315d1"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-a2f4d01c1b742a8d028e",
+     "details": {
+      "missing": [
+       "synthetic"
+      ],
+      "repository_journal_ref": "repo:synthetic-52cd2266fd2eede9493f624585ebac03f873ebaf2b703c155e77de784b25dcdfsynthetic-52cd2266fd2eede9493f624585ebac03f873ebaf2b703c155e77de784b25dcdfsynthetic-52cd2266fd2"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-a2f4d01c1b742a8d028e",
+     "details": {
+      "missing": [
+       "synthetic"
+      ],
+      "repository_journal_ref": "repo:synthetic-6bdb9f718f0af8c9f075d1c40d6eb7a10ba950f18034f58fa42f7c601cefee6esynthetic-6bdb9f718f0af8c9f075d1c40d6eb7a10ba950f18034f58fa42f7c601cefee6esynthetic-6b"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-ecd97d7f0ae6d66",
+     "details": {
+      "entry_ref": "work:journal:synthetic-f26af75d4b1fe2295a00a1f1466f2a126c4d76556308e6af21172b4889448e58synthetic-f26af75d4b1fe2295a00a1f1466f2a126c4d76556308",
+      "repository_journal_ref": "repo:synthetic-918149c89e7f3107f74650cedd463d8c942dfc37dd0c1f00b9e94552589f706bsynthetic-918149c89e7f3107f74650cedd463d8c942dfc37dd0c1f00b9e94552589f706bsynthetic-918149c89e7f3107f74650cedd463"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-ecd97d7f0ae6d66",
+     "details": {
+      "entry_ref": "work:journal:synthetic-7d7192682baf14d555192fd8f2a41e96fed4a1ebb47c755334a6bb6039a42e55synthetic-7d7192682baf14d555192fd8f2a41e96fed4a1ebb47c7",
+      "repository_journal_ref": "repo:synthetic-01218a391e299884e45a197516f7beeedb14e7cf749d9f5ba8110d4e88441112synthetic-01218a391e299884e45a197516f7beeedb14e7cf749d9f5ba8110d4e88441112synthetic-01218a391e299884e45a197516f7be"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-ecd97d7f0ae6d66",
+     "details": {
+      "entry_ref": "work:journal:synthetic-e44b758ca8297316214e4094c3b275d90bbf816b18fcb3e329c4c5b51e51a5e4synthetic-e44b758ca8297316214e4094c3b275d90bbf816",
+      "repository_journal_ref": "repo:synthetic-8fc40eb5310315337a0e2174a00dfb16bd16fa50c5a7ee6bac7257c5ad54da53synthetic-8fc40eb5310315337a0e2174a00dfb16bd16fa50c5a7ee6bac7257c5ad54da53synthetic-8fc40eb5310315337a0e2174"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-ecd97d7f0ae6d66",
+     "details": {
+      "entry_ref": "work:journal:synthetic-a34a99d9af9c9c7698185d6d517e0152622cf781b2acad35c4b84f295da97605synthetic-a34a99d9af9c9c7698185d6d517e0152622cf781b2",
+      "repository_journal_ref": "repo:synthetic-9647613f08c7d8ffb57a71647d328ae8fe51c5624ad46f6a7c6474f502aec2c3synthetic-9647613f08c7d8ffb57a71647d328ae8fe51c5624ad46f6a7c6474f502aec2c3synthetic-9647613f08c7d8ffb57a71647d3"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-ecd97d7f0ae6d66",
+     "details": {
+      "entry_ref": "work:journal:synthetic-873bf24e0d3d8add07571ce376da1f9be72e4170109cbfc340f654d83d0236bfsynthetic-873bf24e0d3d8add07571ce376da1f9be72e417",
+      "repository_journal_ref": "repo:synthetic-ae606fcd5a7ad7442a82fa3df7c9f2c83eaa0d6f8f4b0ab5f10f58834918902dsynthetic-ae606fcd5a7ad7442a82fa3df7c9f2c83eaa0d6f8f4b0ab5f10f58834918902dsynthetic-ae606fcd5a7ad7442a82fa3d"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-ecd97d7f0ae6d66",
+     "details": {
+      "entry_ref": "work:journal:synthetic-88ba3c532318f22603a4ce8bf5941e69eaeb5ea354df00e887a96e4133fa0527synthetic-88ba3c532318f22603a4ce8bf5941e69eaeb5ea354d",
+      "repository_journal_ref": "repo:synthetic-bcc3a12e4c67601ace4de6fa0cc863034c6a536d537cebd6e3161a840fc1f797synthetic-bcc3a12e4c67601ace4de6fa0cc863034c6a536d537cebd6e3161a840fc1f797synthetic-bcc3a12e4c67601ace4de6fa0cc8"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-ecd97d7f0ae6d66",
+     "details": {
+      "entry_ref": "work:journal:synthetic-1d96f7d9e14a3329e762e96b04c20b1eb160e0bbffd7cecb65906759e041cb19synthetic-1d96f7d9e14a3329e762e96b04c20b1eb160e0bb",
+      "repository_journal_ref": "repo:synthetic-a7fff355b56f67d76184ccfa6d73f19b08ba9a63535c06c8bab227a096f7066fsynthetic-a7fff355b56f67d76184ccfa6d73f19b08ba9a63535c06c8bab227a096f7066fsynthetic-a7fff355b56f67d76184ccfa6"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-ecd97d7f0ae6d66",
+     "details": {
+      "entry_ref": "work:journal:synthetic-4e53e0d26bb6f93785313d2e3b35f486f17e4bae7697afac4820e8622c16265esynthetic-4e53e0d26bb6f93785313d2e3b35f486f17e4bae76",
+      "repository_journal_ref": "repo:synthetic-a330812e8636a52dc944666b8f52208f8a3d456ac941d16b27437869fa0b0a9asynthetic-a330812e8636a52dc944666b8f52208f8a3d456ac941d16b27437869fa0b0a9asynthetic-a330812e8636a52dc944666b8f5"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    },
+    {
+     "code": "synthetic-ecd97d7f0ae6d66",
+     "details": {
+      "entry_ref": "work:journal:synthetic-92691f5c04fccda30bf857e44993c9469676b6e64d66ecefd57d15d91b4329besynthetic-92691f5c04fccda30bf857e44993c9469676b6e6",
+      "repository_journal_ref": "repo:synthetic-41cf88d328a0266ef4e180f3af3d8d7c5f9f66766e4003460bf6bf9361eda86dsynthetic-41cf88d328a0266ef4e180f3af3d8d7c5f9f66766e4003460bf6bf9361eda86dsynthetic-41"
+     },
+     "message": "synthetic-79d9db205764e483efb6df505a04ef695c9cca97d4303ced9c6b641725dc991asy"
+    }
+   ],
+   "recorded_at": "2026-10-05T15:12:00.677955Z",
+   "schema": "problem-board.journal-index-status.v1",
+   "sources": {
+    "synthetic-source-0": {
+     "binding_revision": 2,
+     "clone": {
+      "action": "",
+      "alias": "synthetic-fd",
+      "behind": 0,
+      "commit": "synthetic-9aacfdf23f7f162d8fa4db4812fbb5",
+      "compared_commit": "synthetic-9aacfdf23f7f162d8fa4db4812fbb5",
+      "compared_with": "synthetic-3",
+      "path": "synthetic-b26625a084ebc074c091ead72f5a40ca0fe22dc8f7abe7dc28212ef7",
+      "state": "current"
+     },
+     "commit": "synthetic-9aacfdf23f7f162d8fa4db4812fbb5",
+     "content_signature": "synthetic-d202416e81822327c1ef9a7a71e4b678c9f8d14fb2c80351b0fa6d",
+     "journal_home_ref": "repo:synthetic-06755ecb1517d7823927df811b045865dada44723eac6b8cb143a4b9ea13ddd1synt",
+     "source_identity": "synthetic-5f1530e3d4e12d8e13380f082fc75f5fe9568e374b12c31feb5e80",
+     "version_basis": "synthetic-39ab6a29fb6749e2"
+    }
+   },
+   "state": "ready_with_issues"
+  },
+  "journal_state": "synthetic",
+  "local_journal_directory": "synthetic-f1fdf5624c0e3d54bc7f721f634b2a767d1c5d07469a553bd8d763f8570cc01asynthetic-f1fdf5624c0e3d54bc7f721f634b2a767d1c5d07469a553bd8d763f8",
+  "local_journal_home": "synthetic-40c20e7c1b034e9f8ae29bdc75a1bfcc9715b64b2a00deead8ae33284aca00e2synthetic-40c20e7c1b034e9f8ae29bdc75a1bfcc9715b64b2a00deea",
+  "local_journal_link": "synthetic-ec6a2eaa41e0d91f13d52e01dbf93ea2d3ccd7e026c63261e6526897b1ad9c1esynthetic-ec6a2eaa41e0d91f13d52e01dbf93ea2d3ccd7e026c63261e6526897b1ad9c1esynthetic-ec6a2eaa41e0d91f13d52e01dbf93ea2d3ccd7e026c63261e6526897b1ad9c1e",
+  "local_project_artifact": "",
+  "local_project_environment": "synthetic-da8759a58d27524c57859c153f9aad9848db23e8e64962262eb56c104f0d83d4synthetic-da8759a58d27524c57859c153f9aad9848db23e8e64962262eb56c104f0d83d4synthet",
+  "local_project_facts": "synthetic-a58e415c4866adaefdb5f0b823e6bb68fb8eb4ba2605ace20a69a35fe6d273f6synthetic-a58e415c4866adaefdb5f0b823e6bb68fb8eb4ba2605ace20a69a35fe6d273f6s",
+  "local_project_instructions": "synthetic-37f04ff03238b320e46b2548f4deffa3c8cc14eef5a8999d020d46ff4de95337synthetic-37f04ff03238b320e46b2548f4deffa3c8cc14eef5a8999d020d46ff4de95337syntheti",
+  "local_workspace_link": "",
+  "project_artifact_ref": "",
+  "project_card": "synth",
+  "project_environment_ref": "repo:synthetic-fda9f9d9fd4604d6f3183c293064ff13a02955a81f58c848d68239272e463ffdsynthetic-fda9f9d9fd4604d6f",
+  "project_environment_state": "synthet",
+  "project_facts_ref": "repo:synthetic-b4046fdcb93f6eed7f69a734c18215e70c75fbd0293965831d10a3fe0cda7bdasynthetic-b4046fdcb93",
+  "project_facts_state": "synthet",
+  "project_files": [],
+  "project_files_editable": false,
+  "project_files_revision": 1,
+  "project_goal": "",
+  "project_instructions_ref": "repo:synthetic-5b9b286930db4e53941a13273b704842c1bfcab3fd87d9b181dd13c57ba06f1fsynthetic-5b9b286930db4e5394",
+  "project_instructions_state": "synthet",
+  "project_on_this_host": true,
+  "project_ref": "work:project:synthetic-72308f9572ad0e7",
+  "project_setup_issues": [],
+  "project_setup_ref": "repo:synthetic-e77abb79f1e0b0b40072db58a77b3233139eb2a1c5fadcda12f2d9b1c41893f9synthetic-e77abb79f1e0b",
+  "repositories": [
+   {
+    "alias": "synthetic-fd",
+    "branch": "",
+    "path": "synthetic-60b3a1fcb52f1be6f6d9eba073bd63c1df54fdc17e66e529c9b463a",
+    "role": "journal",
+    "url": "synthetic-6c2f954a426222918a84121b56da"
+   },
+   {
+    "alias": "synthetic-a1c",
+    "branch": "",
+    "path": "",
+    "role": "work",
+    "url": "synthetic-7fc5b6089b1720b67313b3e3cbaa38ddb"
+   },
+   {
+    "alias": "synthe",
+    "branch": "",
+    "path": "",
+    "role": "work",
+    "url": "synthetic-13658e042924cc317746e0"
+   }
+  ],
+  "repositories_revision": 2,
+  "revision": 2,
+  "roles": {
+   "knowledge-keeper": {
+    "address": "synthetic-c9dad7",
+    "available": true,
+    "holder": {
+     "worker_alias": "synthetic-11ce41c6e",
+     "worker_name": "synthetic-cff5ce61a4e613f8e1a9630f25e1e214"
+    },
+    "pending_handovers": {
+     "count": 4,
+     "oldest_at": "2026-10-05T08:25:29.282793Z",
+     "overdue": false
+    },
+    "revision": 2,
+    "state": "held",
+    "unavailable_reason": ""
+   }
+  },
+  "runtimes": [
+   {
+    "actions": [
+     {
+      "name": "synthet",
+      "releases": [
+       {
+        "ref": "synthetic-e",
+        "repository": "synthe"
+       },
+       {
+        "ref": "synthetic-e",
+        "repository": "synthetic-a1c"
+       }
+      ],
+      "who": [
+       "synthetic-b"
+      ]
+     },
+     {
+      "name": "synthetic-a23",
+      "releases": [
+       {
+        "ref": "synthetic-e",
+        "repository": "synthetic-fd"
+       }
+      ],
+      "who": [
+       "synthetic-b"
+      ]
+     },
+     {
+      "name": "synthetic-812",
+      "releases": [
+       {
+        "ref": "synthetic-e",
+        "repository": "synthetic-a1c"
+       }
+      ],
+      "who": [
+       "synthetic-b"
+      ]
+     }
+    ],
+    "host": "syntheti",
+    "kind": "kdcube",
+    "local_profile": "synthetic-ff62cb1616af4888b3068f13bc17af3a3c926aebd926b725625bfd7be76ee587synthetic-ff62cb1616af4888b3068f13bc17af3a3c926aeb",
+    "name": "syntheti",
+    "profile_ref": "repo:synthetic-0cb435e14caab028490fcad0b24c00620ba3005685278c1ce33ff71ce942"
+   }
+  ],
+  "self": {
+   "observed_at": "2026-10-05T12:58:28.291782Z",
+   "owner": {
+    "display_name": "synthetic-a7e04ae1",
+    "source": "synthetic-3c2d",
+    "user_id": "synthetic-8c38b7b7c47dbde0d4055a7910"
+   },
+   "runtime_account": {
+    "account_id": "synthetic-f6471e100ea74e91375b5aa437",
+    "email": "synthetic-7c3afa61e",
+    "organization": "synthetic-7d0e513230216c1807048b41cf"
+   }
+  },
+  "team": [
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "syntheti",
+    "host_kind": "local",
+    "host_label": "synthetic-70e95e499a6f2",
+    "info_set_at": "2026-10-05T14:15:24.554444Z",
+    "info_text": "synthetic-a110653a5e05a14c8724e294e3add399e6f2909cfa01410403afcac5c206503dsynthetic-a110653a5e05a14c8724e294e3add399e6f2909cfa01410403afcac5c206503dsyntheti",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T15:45:35Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-9fccd33b4c6f",
+     "windows": [
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-05T16:10:00Z",
+       "used_percent": 19.0,
+       "window_minutes": 300
+      },
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-09T18:00:00Z",
+       "used_percent": 3.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-485e74ee789b473e8cc5633e76",
+     "email": "synthetic-a7e04ae1",
+     "observed_at": "2026-10-05T15:07:16.828552Z",
+     "organization": "synthetic-760fd681c8ae784ddf4d47e1bc",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "claude-code",
+    "runtime_model": {
+     "effort": "synt",
+     "model": "synthetic-6b8846e90",
+     "model_display": "synthetic-6da19fcd63a",
+     "observed_at": "2026-10-01T09:47:59Z",
+     "source": "synthetic-9fccd33b4c6f",
+     "state": "stale",
+     "thinking": true
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-4e5706a",
+    "worker_name": "synthetic-9b1e9bba788c17af7480cb62343e5826de8a33"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "synthe",
+    "host_kind": "local",
+    "host_label": "synthetic-aa198b2806a17a",
+    "info_set_at": "2026-10-01T12:07:00.425934Z",
+    "info_text": "synthetic-85a4570bf5ed3e49f6fdd99a10025bb54b8062078f00d71e5f541b1118274a05synthetic-85a4570bf5ed3e49f6fdd99a10025bb54b8062078f00d71e5f541b1118274a05synthetic-85a4570bf5ed3e49f",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T16:12:15Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-9fccd33b4c6f",
+     "windows": [
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-05T18:10:00Z",
+       "used_percent": 4.0,
+       "window_minutes": 300
+      },
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-08T07:00:00Z",
+       "used_percent": 56.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-e0d8e9f1a37421c2377402665c",
+     "email": "synthetic-86eeecffd",
+     "observed_at": "2026-10-05T16:20:57.328875Z",
+     "organization": "synthetic-cb4a95afe33ced1ea7f54108db",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "claude-code",
+    "runtime_model": {
+     "effort": "synthe",
+     "model": "synthetic-00591",
+     "model_display": "syntheti",
+     "observed_at": "2026-09-25T21:57:39Z",
+     "source": "synthetic-9fccd33b4c6f",
+     "state": "reported",
+     "thinking": true
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-350f42e",
+    "worker_name": "synthetic-d6120a1e94fa6fe0f2d6e44431fa6a5fb32db7"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "syntheti",
+    "host_kind": "local",
+    "host_label": "synthetic-70e95e499a6f2",
+    "info_set_at": "2026-10-05T15:28:47.669890Z",
+    "info_text": "synthetic-2c346309d0a428204c341b7d61aa115d7e217f46622a7d56ee061c0102feca0csynthetic-2c346309d0a428204c341b7d61aa115d7e217f46622a7d56ee061c0102feca0csynthetic",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T16:20:27Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-9fccd33b4c6f",
+     "windows": [
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-05T21:10:00Z",
+       "used_percent": 3.0,
+       "window_minutes": 300
+      },
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-09T18:00:00Z",
+       "used_percent": 4.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-f6471e100ea74e91375b5aa437",
+     "email": "synthetic-7c3afa61e",
+     "observed_at": "2026-10-05T16:21:08.325422Z",
+     "organization": "synthetic-7d0e513230216c1807048b41cf",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "claude-code",
+    "runtime_model": {
+     "effort": "synt",
+     "model": "synthetic-6b8846e90",
+     "model_display": "synthetic-6da19fcd63a",
+     "observed_at": "2026-10-05T15:10:03Z",
+     "source": "synthetic-9fccd33b4c6f",
+     "state": "reported",
+     "thinking": true
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-de609c091",
+    "worker_name": "synthetic-4075931b5aad5d02f6e7aad0885b40f1e6ef9b"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "syntheti",
+    "host_kind": "local",
+    "host_label": "synthetic-70e95e499a6f2",
+    "info_set_at": "2026-10-05T15:52:15.730304Z",
+    "info_text": "synthetic-736ea70d23ee3debf6509bc270c676c8eab77515d5307de8d5a7cccae9cacdafsynthetic-736ea70d23ee3de",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T16:21:06Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-9fccd33b4c6f",
+     "windows": [
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-05T21:10:00Z",
+       "used_percent": 4.0,
+       "window_minutes": 300
+      },
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-09T18:00:00Z",
+       "used_percent": 4.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-f6471e100ea74e91375b5aa437",
+     "email": "synthetic-7c3afa61e",
+     "observed_at": "2026-10-05T16:21:16.325107Z",
+     "organization": "synthetic-7d0e513230216c1807048b41cf",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "claude-code",
+    "runtime_model": {
+     "effort": "synt",
+     "model": "synthetic-6b8846e90",
+     "model_display": "synthetic-6da19fcd63a",
+     "observed_at": "2026-10-05T15:33:22Z",
+     "source": "synthetic-9fccd33b4c6f",
+     "state": "reported",
+     "thinking": true
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-55d2c64791",
+    "worker_name": "synthetic-2e7d409f332caeee7d7052f806cd370398d6c0"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "syntheti",
+    "host_kind": "local",
+    "host_label": "synthetic-70e95e499a6f2",
+    "info_set_at": "2026-10-05T15:29:04.941867Z",
+    "info_text": "synthetic-7763ea025237be20bd8e8ec38e5ec0e6aece8df248e0eb938967c1f81043e20fsynthetic-7763ea025237be20bd8e8ec38e5ec0e6aece8df248e0eb938967c1f81043e20f",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T15:29:09Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-9fccd33b4c6f",
+     "windows": [
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-05T16:10:00Z",
+       "used_percent": 15.0,
+       "window_minutes": 300
+      },
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-09T18:00:00Z",
+       "used_percent": 2.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-485e74ee789b473e8cc5633e76",
+     "email": "synthetic-a7e04ae1",
+     "observed_at": "2026-10-05T15:07:16.821548Z",
+     "organization": "synthetic-760fd681c8ae784ddf4d47e1bc",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "claude-code",
+    "runtime_model": {
+     "effort": "synt",
+     "model": "synthetic-6b8846e90",
+     "model_display": "synthetic-6da19fcd63a",
+     "observed_at": "2026-09-25T17:11:01Z",
+     "source": "synthetic-9fccd33b4c6f",
+     "state": "stale",
+     "thinking": true
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-2",
+    "worker_name": "synthetic-23352a5af02088bf05bcfd0f66a99947005e10"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "synthe",
+    "host_kind": "local",
+    "host_label": "synthetic-aa198b2806a17a",
+    "info_set_at": "2026-09-30T13:46:44.121792Z",
+    "info_text": "synthetic-b7c1750a8836b637b0525fe5cea82eb248023847c2ed0f1cb9d38d46d17bbaddsynthetic-b7c1750a8836b637b0525fe5cea82eb248023847c2ed0f1cb9d38d46d17bbaddsynthetic-b7c1750a8836b637b0",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T16:12:59Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-9fccd33b4c6f",
+     "windows": [
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-05T18:10:00Z",
+       "used_percent": 4.0,
+       "window_minutes": 300
+      },
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-08T07:00:00Z",
+       "used_percent": 56.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-e0d8e9f1a37421c2377402665c",
+     "email": "synthetic-86eeecffd",
+     "observed_at": "2026-10-05T16:20:55.370454Z",
+     "organization": "synthetic-cb4a95afe33ced1ea7f54108db",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "claude-code",
+    "runtime_model": {
+     "effort": "synt",
+     "model": "synthetic-6b8846e90",
+     "model_display": "synthetic-6da19fcd63a",
+     "observed_at": "2026-09-26T14:45:10Z",
+     "source": "synthetic-9fccd33b4c6f",
+     "state": "reported",
+     "thinking": true
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-7223ae3",
+    "worker_name": "synthetic-4db769cb064dc232aff3fd4ad662fb61d12fbb"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "synt",
+    "host_kind": "local",
+    "host_label": "synthetic-a5",
+    "info_set_at": "2026-10-05T16:05:57.885542Z",
+    "info_text": "synthetic-ea7878bd11cebdf882a754e54f625dff11b830c7c1321a0fef07e8286e71944fsynthetic-ea7878bd11cebdf882a754e54f625dff",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T16:21:06Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-9fccd33b4c6f",
+     "windows": [
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-05T21:10:00Z",
+       "used_percent": 4.0,
+       "window_minutes": 300
+      },
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-09T18:00:00Z",
+       "used_percent": 4.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-f6471e100ea74e91375b5aa437",
+     "email": "synthetic-7c3afa61e",
+     "observed_at": "2026-10-05T16:21:16.418515Z",
+     "organization": "synthetic-7d0e513230216c1807048b41cf",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "claude-code",
+    "runtime_model": {
+     "effort": "synthe",
+     "model": "synthetic-00591",
+     "model_display": "syntheti",
+     "observed_at": "2026-10-05T11:27:48Z",
+     "source": "synthetic-9fccd33b4c6f",
+     "state": "reported",
+     "thinking": true
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-72e1b1f91",
+    "worker_name": "synthetic-447395c392e024661b01f9eb4a765c9cd28eea"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "syntheti",
+    "host_kind": "local",
+    "host_label": "synthetic-70e95e499a6f2",
+    "info_set_at": "2026-10-05T15:27:12.651518Z",
+    "info_text": "synthetic-6d060e0febb4280ff7d3b75b9fbc60e528faacddce3572ba703d4efc84a69888synthetic-6d060e0febb4280ff7d3b75b9fbc60e528faacddce3572ba703d4efc84a69888synthetic-6d060e0febb4280ff7d3b75b9fbc60e528faacddc",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T16:21:05Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-ab2",
+     "windows": [
+      {
+       "name": "synthet",
+       "resets_at": "2026-10-09T21:14:26Z",
+       "used_percent": 57.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-3dde47f6030e326896c6dcccf2",
+     "email": "synthetic-a7e04ae1",
+     "observed_at": "2026-10-05T16:21:11.936286Z",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "codex",
+    "runtime_model": {
+     "effort": "synth",
+     "model": "synthetic-d",
+     "observed_at": "2026-10-05T16:20:23Z",
+     "source": "synthetic-ab2",
+     "state": "reported"
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-fcf391",
+    "worker_name": "synthetic-d855d3795cc4f072a4d725e7c6987b82"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "synthe",
+    "host_kind": "local",
+    "host_label": "synthetic-aa198b2806a17a",
+    "info_set_at": "2026-10-05T16:13:54.078847Z",
+    "info_text": "synthetic-abac31a2232439adecc2088b535927034f19399cb87863af2f7ec6298fbea64esynthetic-abac31a2232439adecc2088b535927034f19399cb8",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T16:20:47Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-ab2",
+     "windows": [
+      {
+       "name": "synthet",
+       "resets_at": "2026-10-05T20:49:11Z",
+       "used_percent": 20.0,
+       "window_minutes": 300
+      },
+      {
+       "name": "synthetic",
+       "resets_at": "2026-10-12T15:49:11Z",
+       "used_percent": 3.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-62f1d46e70a8bad88b3d3e9b5b",
+     "email": "synthetic-515db60f",
+     "observed_at": "2026-10-05T16:20:57.726557Z",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "codex",
+    "runtime_model": {
+     "effort": "synth",
+     "model": "synthetic",
+     "observed_at": "2026-10-05T16:12:03Z",
+     "source": "synthetic-ab2",
+     "state": "reported"
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-bf1fcc",
+    "worker_name": "synthetic-543bccc351d723b90e12b2f892f090b8"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "syntheti",
+    "host_kind": "local",
+    "host_label": "synthetic-70e95e499a6f2",
+    "info_set_at": "2026-10-05T15:11:02.804555Z",
+    "info_text": "synthetic-3fc288a97f4aa98373d9f873db589a579bb9e2dfcd27754a976e0a3229cf137bsynthetic-3fc288a97f4aa98373d9f873db589a579bb9e2dfcd27754a976e0a3229cf137bsynthetic-3fc288a97f4aa98373d9f873db589a579bb9e",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T16:20:34Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-ab2",
+     "windows": [
+      {
+       "name": "synthet",
+       "resets_at": "2026-10-09T21:14:26Z",
+       "used_percent": 57.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-3dde47f6030e326896c6dcccf2",
+     "email": "synthetic-a7e04ae1",
+     "observed_at": "2026-10-05T16:21:11.215536Z",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "codex",
+    "runtime_model": {
+     "effort": "synth",
+     "model": "synthetic-d",
+     "observed_at": "2026-10-05T16:20:25Z",
+     "source": "synthetic-ab2",
+     "state": "reported"
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-9a9857ff",
+    "worker_name": "synthetic-134316ea1334e1fd51f75aa59cfeaed3"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "syntheti",
+    "host_kind": "local",
+    "host_label": "synthetic-70e95e499a6f2",
+    "info_set_at": "2026-10-05T15:54:10.031969Z",
+    "info_text": "synthetic-7ce5038e0f0fc664cb8d9d10c688f5f57b14470b94dca0b9c196c10a89419c1bsynthetic-7ce5038e0f0fc664cb8d9d10c688f5f57b14470b94dca0b9c196c10a89419c1bsynthetic-7ce5038e0f0fc664cb8d9d10c688f5f57b1447",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T16:20:30Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-ab2",
+     "windows": [
+      {
+       "name": "synthet",
+       "resets_at": "2026-10-09T21:14:26Z",
+       "used_percent": 57.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "coordinator",
+    "runtime_account": {
+     "account_id": "synthetic-3dde47f6030e326896c6dcccf2",
+     "email": "synthetic-a7e04ae1",
+     "observed_at": "2026-10-05T16:21:09.738202Z",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "codex",
+    "runtime_model": {
+     "effort": "synth",
+     "model": "synthetic-d",
+     "observed_at": "2026-10-05T16:08:23Z",
+     "source": "synthetic-ab2",
+     "state": "reported"
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-",
+    "worker_name": "synthetic-c6e55fa7665379e51a34a4c4823572fc"
+   },
+   {
+    "capabilities": [
+     "synthetic",
+     "synthetic-46"
+    ],
+    "host_id": "syntheti",
+    "host_kind": "local",
+    "host_label": "synthetic-70e95e499a6f2",
+    "info_set_at": "2026-10-05T10:11:41.643845Z",
+    "info_text": "synthetic-da727d300041ea1be600e525da267b8525bc552ad5e9ac239c78db57764ef72esynthetic-da727d300041ea1be600e525da267b8525bc552ad5e9ac239c78db57764ef72esynthetic-da727d300041ea1be600e525da267b",
+    "limit_state": {
+     "kind": "ok",
+     "observed_at": "2026-10-05T15:17:39Z",
+     "reached": "",
+     "resets_at": "",
+     "source": "synthetic-ab2",
+     "windows": [
+      {
+       "name": "synthet",
+       "resets_at": "2026-10-09T21:14:26Z",
+       "used_percent": 56.0,
+       "window_minutes": 10080
+      }
+     ]
+    },
+    "pool_status": "active",
+    "presence": "online",
+    "role": "worker",
+    "runtime_account": {
+     "account_id": "synthetic-3dde47f6030e326896c6dcccf2",
+     "email": "synthetic-a7e04ae1",
+     "observed_at": "2026-10-05T16:20:57.225486Z",
+     "source": "synthetic-d",
+     "state": "reported"
+    },
+    "runtime_kind": "codex",
+    "runtime_model": {
+     "effort": "synth",
+     "model": "synthetic-d",
+     "observed_at": "2026-10-05T15:12:49Z",
+     "source": "synthetic-ab2",
+     "state": "reported"
+    },
+    "wake_hold": {},
+    "wake_recovery": {},
+    "worker_alias": "synthetic-11ce41c6e",
+    "worker_name": "synthetic-cff5ce61a4e613f8e1a9630f25e1e214"
+   }
+  ],
+  "workspace": "synthetic-59cc3dc650fc68fbf02d2f2d9c297424803de1d9b47",
+  "workspace_source": "syntheti"
+ }
+}

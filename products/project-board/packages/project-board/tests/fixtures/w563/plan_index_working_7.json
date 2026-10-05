@@ -1,0 +1,456 @@
+{
+ "ok": true,
+ "result": {
+  "object": {
+   "count": 7,
+   "generation_present": true,
+   "generation_token": "synthetic-f06b897cb46e634c70b6f778c4cb78c7ffaafcdafe3e8d9920568a",
+   "item_count": 555,
+   "items": [
+    {
+     "acting_assignee": "synthetic-4db769cb064dc232aff3fd4ad662fb61d12fbb",
+     "assignee": "synthetic-4db769cb064dc232aff3fd4ad662fb61d12fbb",
+     "attachment_count": 10,
+     "available_transitions": [
+      {
+       "label": "synthe",
+       "operation": "work.cancel",
+       "requires_reason": true
+      },
+      {
+       "label": "synthetic-624a6948",
+       "operation": "assignment.return",
+       "requires_reason": true
+      }
+     ],
+     "cancelled_at": "",
+     "cancelled_by": "",
+     "created_at": "2026-10-01T10:18:19.488768Z",
+     "dependency_facts": [],
+     "depends_on": [],
+     "derived_state": "working",
+     "embedding_model_id": "",
+     "embedding_present": false,
+     "identity_ref": "work:plan:synthetic-d0b297fa36631a1a4e657e1e3da0e95f5cf706bc760f13684023ba05dc35b953synthetic-d0b297f",
+     "item_id": "synthetic-4036d17fccd753a0519650ff823",
+     "item_key": "W448",
+     "item_ref": "work:plan:synthetic-017f24900023bd97a56af7e919850b38327554b664dd3a045b419d985e412e43synthetic-017f24900023bd97a56af7e919850b38327554b664dd3a045b419d985e412e43synthetic-017f24900023bd9",
+     "keywords": [
+      "synthetic-0d266ec",
+      "syntheti",
+      "synthetic-2228a220944f41",
+      "synthetic-ff19437",
+      "synt"
+     ],
+     "note_count": 86,
+     "ordinal": 441,
+     "page_rank": 0,
+     "preferred_reworker": "",
+     "reviewer": "",
+     "revision": 128,
+     "search_content_hash": "synthetic-080c6fd12fc9dce3c6d1a8a25f4c1e38a5c50f1df93fd19217232c",
+     "source_content_hash": "synthetic-794f6d214e48d48786cb21a03c401c8f14f350eeaeb0986d8d6b94",
+     "started_at": "2026-10-01T10:58:54.933493Z",
+     "status": "working",
+     "tags": [
+      "synthetic-d4e",
+      "synthetic-",
+      "synth",
+      "synthetic-8"
+     ],
+     "title": "synthetic-3bd3074386958ba04d10afb7a9357f68becb119ea24e57e5a23f728d5796519esynthetic-3",
+     "transition_refusals": [],
+     "unshown_dependency_count": 0,
+     "updated_at": "2026-10-05T08:34:48.437975Z",
+     "version": "synthetic-6a51db563734db2ca01fc7ce98929ce68c8e51e5c3227d06aaffb642d663fe68synthet",
+     "version_slug": "synthetic-eec08f4e52ea93ac03d05d24af25e8d026cc7b9288cef0c261c984",
+     "version_timestamp": "synthetic-fa045f"
+    },
+    {
+     "acting_assignee": "syntheti",
+     "assignee": "syntheti",
+     "attachment_count": 0,
+     "available_transitions": [
+      {
+       "label": "synthe",
+       "operation": "work.cancel",
+       "requires_reason": true
+      },
+      {
+       "label": "synthetic-624a6948",
+       "operation": "assignment.return",
+       "requires_reason": true
+      }
+     ],
+     "cancelled_at": "",
+     "cancelled_by": "",
+     "created_at": "2026-10-01T17:57:53.149773Z",
+     "dependency_facts": [],
+     "depends_on": [],
+     "derived_state": "working",
+     "embedding_model_id": "",
+     "embedding_present": false,
+     "identity_ref": "work:plan:synthetic-1f7fd8e74f5da2cf09687c6594e417216b5694c5b91324f787f4630f25ecab10synthetic-1f",
+     "item_id": "synthetic-97957451a9ee6c0fb8d137e2ca9",
+     "item_key": "W457",
+     "item_ref": "work:plan:synthetic-c85802fc9b28d2d06da70a91c275c36dcbe1614daa7c078dce07eb0f043d3fd7synthetic-c85802fc9b28d2d06da70a91c275c36dcbe1614daa7c078dce07eb0f043d3fd7synthetic-c85802fc9b",
+     "keywords": [],
+     "note_count": 11,
+     "ordinal": 450,
+     "page_rank": 1,
+     "preferred_reworker": "synthetic-9b1e9bba788c17af7480cb62343e5826de8a33",
+     "reviewer": "",
+     "revision": 34,
+     "search_content_hash": "synthetic-3123b518a604be46889d80a547f36be3c616080e771eb9edabaf5c",
+     "source_content_hash": "synthetic-9b3ab3097a4d4633ca56908128d5a14a10cb7e1abacd232e01ad5b",
+     "started_at": "2026-10-01T18:32:39.362422Z",
+     "status": "working",
+     "tags": [],
+     "title": "synthetic-a80b5acc0d1511378aa88f73767cf3cfa60f0fcd4a680836b9ba901cc3a4d6c4synthetic-a80b5acc0d1511378aa88f73",
+     "transition_refusals": [],
+     "unshown_dependency_count": 0,
+     "updated_at": "2026-10-05T12:21:53.604549Z",
+     "version": "synthetic-bc0a1b620e9c8fee8cde414045ea75b76105698d4889d16c69b753f2765e9f22synthet",
+     "version_slug": "synthetic-41ab6183fb9a8eeb5e3957545d87e94009747a0f6dcf741f06640e",
+     "version_timestamp": "synthetic-65fdce"
+    },
+    {
+     "acting_assignee": "synthetic-c6e55fa7665379e51a34a4c4823572fc",
+     "assignee": "synthetic-c6e55fa7665379e51a34a4c4823572fc",
+     "attachment_count": 0,
+     "available_transitions": [
+      {
+       "label": "synthe",
+       "operation": "work.cancel",
+       "requires_reason": true
+      },
+      {
+       "label": "synthetic-624a6948",
+       "operation": "assignment.return",
+       "requires_reason": true
+      }
+     ],
+     "cancelled_at": "",
+     "cancelled_by": "",
+     "created_at": "2026-10-03T17:52:53.684028Z",
+     "dependency_facts": [],
+     "depends_on": [],
+     "derived_state": "working",
+     "embedding_model_id": "",
+     "embedding_present": false,
+     "identity_ref": "work:plan:synthetic-dbc51dd0b9a19a169b7b911171b1f36e0e1521103c91e5c60df360c729cfa891synthetic-d",
+     "item_id": "synthetic-64c55166e0715f1ba59ede4b5a1",
+     "item_key": "W486",
+     "item_ref": "work:plan:synthetic-9d3b3c68b08ce09c393a711066ed751276284e5bf1849c402aa927667b552a44synthetic-9d3b3c68b08ce09c393a711066ed751276284e5bf1849c402aa927667b552a44synthetic-9d3b3c68b",
+     "keywords": [
+      "synthetic-2f",
+      "synthetic-f9a5011",
+      "synthetic-342506a8fa3871689",
+      "synthetic-059004cf281f6c7f",
+      "synt"
+     ],
+     "note_count": 13,
+     "ordinal": 479,
+     "page_rank": 2,
+     "preferred_reworker": "",
+     "reviewer": "",
+     "revision": 30,
+     "search_content_hash": "synthetic-bf96090da57750561c1b53e88ea52425719bfc0111fde7b56cc619",
+     "source_content_hash": "synthetic-8755c54b7df4af36630dcd9db780e343789a1aadac58b7454bde7e",
+     "started_at": "2026-10-04T14:54:34.117001Z",
+     "status": "working",
+     "tags": [
+      "synthetic-0d5",
+      "synthetic-",
+      "synthetic-",
+      "synthetic"
+     ],
+     "title": "synthetic-0f5d32ed24cb214dab914a15e683a7bc3481f109cf670942c7a6af8ab78",
+     "transition_refusals": [],
+     "unshown_dependency_count": 0,
+     "updated_at": "2026-10-05T14:27:14.710941Z",
+     "version": "synthetic-8e6cce359aa15dcc74d991bb0a76cae92ce2d06792f4fb67c032de7157075af0synthet",
+     "version_slug": "synthetic-246efe9bac24ceda997c650fe56d6b140c57fd6d139b9b4f3091ae",
+     "version_timestamp": "synthetic-17c730"
+    },
+    {
+     "acting_assignee": "synthetic-d855d3795cc4f072a4d725e7c6987b82",
+     "assignee": "synthetic-d855d3795cc4f072a4d725e7c6987b82",
+     "attachment_count": 17,
+     "available_transitions": [
+      {
+       "label": "synthe",
+       "operation": "work.cancel",
+       "requires_reason": true
+      },
+      {
+       "label": "synthetic-624a6948",
+       "operation": "assignment.return",
+       "requires_reason": true
+      }
+     ],
+     "cancelled_at": "",
+     "cancelled_by": "",
+     "created_at": "2026-10-04T01:48:34.677813Z",
+     "dependency_facts": [],
+     "depends_on": [],
+     "derived_state": "working",
+     "embedding_model_id": "",
+     "embedding_present": false,
+     "identity_ref": "work:plan:synthetic-11fe55eb83eef46bc7e26e5e56a60c172ea0cee6832fdc602ff6df8bd9ba152esynthetic-11fe55e",
+     "item_id": "synthetic-a2dbf4734e20bf75741de7a277b",
+     "item_key": "W502",
+     "item_ref": "work:plan:synthetic-4cb9941f9eacec2a81598ac8e318cb4fb711cc9490bcdf3359dcd146392a3816synthetic-4cb9941f9eacec2a81598ac8e318cb4fb711cc9490bcdf3359dcd146392a3816synthetic-4cb9941f9eacec2",
+     "keywords": [],
+     "note_count": 31,
+     "ordinal": 493,
+     "page_rank": 3,
+     "preferred_reworker": "",
+     "reviewer": "",
+     "revision": 116,
+     "search_content_hash": "synthetic-d104b8c1458d5bfef825ab19cea3d0f7ca5b96e0f2febdeec5a97b",
+     "source_content_hash": "synthetic-d296dcbd6b160fdc7d1338e0e6069c43d0ea71c85ece254a8718f1",
+     "started_at": "2026-10-04T08:34:22.512394Z",
+     "status": "working",
+     "tags": [
+      "synthetic-c4c94364e8a18e",
+      "synthetic-",
+      "synthetic-a22e",
+      "synthetic-4",
+      "synthetic-",
+      "syntheti"
+     ],
+     "title": "synthetic-713ff1cc41a83206183bca1035465e63f0684cb2a2bab4aec9c3cbfbd772910fsynthetic-713ff1cc41a83206183bca1035465e63f0684cb2a2bab4aec9c3cbfb",
+     "transition_refusals": [],
+     "unshown_dependency_count": 0,
+     "updated_at": "2026-10-05T16:18:31.364380Z",
+     "version": "synthetic-44256eae34870e04f4e3bda42fe3363e023e7d30305c9ac30d9d8382805ae903synthet",
+     "version_slug": "synthetic-a3b9d48e469744c584605fdb03653e9ea0997686f8f940f5bef709",
+     "version_timestamp": "synthetic-a2486f"
+    },
+    {
+     "acting_assignee": "syntheti",
+     "assignee": "syntheti",
+     "attachment_count": 26,
+     "available_transitions": [
+      {
+       "label": "synthe",
+       "operation": "work.cancel",
+       "requires_reason": true
+      },
+      {
+       "label": "synthetic-624a6948",
+       "operation": "assignment.return",
+       "requires_reason": true
+      }
+     ],
+     "cancelled_at": "",
+     "cancelled_by": "",
+     "created_at": "2026-10-04T11:58:04.831031Z",
+     "dependency_facts": [],
+     "depends_on": [],
+     "derived_state": "working",
+     "embedding_model_id": "",
+     "embedding_present": false,
+     "identity_ref": "work:plan:synthetic-f2c0f13b1c71c0e7ffb34810497832c97598d2651fc4fcc6dd3027e82ee82faasynthetic-f2c0",
+     "item_id": "synthetic-98526960f33dc89032a48b01090",
+     "item_key": "W536",
+     "item_ref": "work:plan:synthetic-5cb35c6773cc401675d68ee8c9b3a65a04be237752e1068770b51cccb3ae189asynthetic-5cb35c6773cc401675d68ee8c9b3a65a04be237752e1068770b51cccb3ae189asynthetic-5cb35c6773cc",
+     "keywords": [],
+     "note_count": 96,
+     "ordinal": 527,
+     "page_rank": 4,
+     "preferred_reworker": "synthetic-9b1e9bba788c17af7480cb62343e5826de8a33",
+     "reviewer": "",
+     "revision": 143,
+     "search_content_hash": "synthetic-ad0c890a6f065c3c1850aac608e19c95928b22990d9a2241ca2c76",
+     "source_content_hash": "synthetic-c5fe24427594496f25a6d201512ddff519ee084936de7f8213304f",
+     "started_at": "2026-10-04T16:15:45.162546Z",
+     "status": "working",
+     "tags": [
+      "synthetic-582b98e3",
+      "synthetic-",
+      "synthetic-338",
+      "synthetic",
+      "synthet"
+     ],
+     "title": "synthetic-0eb35769c5a160764b56b6c3e7ab2043a2b9bd5409e8f9ea83e764a698f5fe4csynthetic-0eb35769c5a160764b56b6c3e7ab2043a2b",
+     "transition_refusals": [],
+     "unshown_dependency_count": 0,
+     "updated_at": "2026-10-05T11:10:16.128634Z",
+     "version": "synthetic-90b2f46ca2358fd3f69b9d23cb2917c9b620f64d6856b33e8e5c58a5f46070cbsynthet",
+     "version_slug": "synthetic-359c231e7278a8637ae764282c1f099bb2d170be186f952068079f",
+     "version_timestamp": "synthetic-a55245"
+    },
+    {
+     "acting_assignee": "synthetic-d855d3795cc4f072a4d725e7c6987b82",
+     "assignee": "synthetic-d855d3795cc4f072a4d725e7c6987b82",
+     "attachment_count": 0,
+     "available_transitions": [
+      {
+       "label": "synthe",
+       "operation": "work.cancel",
+       "requires_reason": true
+      },
+      {
+       "label": "synthetic-624a6948",
+       "operation": "assignment.return",
+       "requires_reason": true
+      }
+     ],
+     "cancelled_at": "",
+     "cancelled_by": "",
+     "created_at": "2026-10-04T13:40:04.464887Z",
+     "dependency_facts": [],
+     "depends_on": [],
+     "derived_state": "working",
+     "embedding_model_id": "",
+     "embedding_present": false,
+     "identity_ref": "work:plan:synthetic-2d2799499e78e36e5401893769f4f9e5299b80538653247c195031dc0885ef74synthetic-2d2799",
+     "item_id": "synthetic-a0c91443558d922942bcb940252",
+     "item_key": "W540",
+     "item_ref": "work:plan:synthetic-e3bba2ba3c0e9436d0740a92a9bb5cecaa189e83dde0f2ed0a41a5c1985c5073synthetic-e3bba2ba3c0e9436d0740a92a9bb5cecaa189e83dde0f2ed0a41a5c1985c5073synthetic-e3bba2ba3c0e94",
+     "keywords": [],
+     "note_count": 6,
+     "ordinal": 531,
+     "page_rank": 5,
+     "preferred_reworker": "",
+     "reviewer": "",
+     "revision": 13,
+     "search_content_hash": "synthetic-7c590fedd5f55153cd77ec97b76c968db528923d33b026a4ea06b7",
+     "source_content_hash": "synthetic-d7d3fa0a4691da9aa9aa7eacfb2524ccdf0a815b11db812980d99b",
+     "started_at": "2026-10-04T14:20:50.587679Z",
+     "status": "working",
+     "tags": [
+      "synthetic-",
+      "synthe",
+      "synthetic-",
+      "syntheti",
+      "synthetic-728c99f52c0"
+     ],
+     "title": "synthetic-2bcb2bba6ebeabc3cdfe1996f908229bc577c32a4b7f7fa221227ac78f6fd220synthetic-2bcb2bba6ebea",
+     "transition_refusals": [],
+     "unshown_dependency_count": 0,
+     "updated_at": "2026-10-05T09:05:43.525931Z",
+     "version": "synthetic-bb594fcaefdc00e59dc4fd9fbbe3bb3f1b092fcc45c17d546975784a5a77332dsynthet",
+     "version_slug": "synthetic-826adbf13cc320ff9b7c346c745aea6f5a5f4afec24d2b82f81159",
+     "version_timestamp": "synthetic-7c4e5f"
+    },
+    {
+     "acting_assignee": "syntheti",
+     "assignee": "syntheti",
+     "attachment_count": 0,
+     "available_transitions": [
+      {
+       "label": "synthe",
+       "operation": "work.cancel",
+       "requires_reason": true
+      },
+      {
+       "label": "synthetic-624a6948",
+       "operation": "assignment.return",
+       "requires_reason": true
+      }
+     ],
+     "cancelled_at": "",
+     "cancelled_by": "",
+     "created_at": "2026-10-05T10:48:05.078924Z",
+     "dependency_facts": [],
+     "depends_on": [],
+     "derived_state": "working",
+     "embedding_model_id": "",
+     "embedding_present": false,
+     "identity_ref": "work:plan:synthetic-1c207c71f8ba2fc240177b681a21ac3eb8495034510aee587735a38782fde9desynthetic-1c207",
+     "item_id": "synthetic-c6632fd57876cb9e0948ada6c5d",
+     "item_key": "W554",
+     "item_ref": "work:plan:synthetic-0a723de5fdfa4ac8d90d7a40d7ccb5cdd284cdce129a49b6b7ad0d812b6ed9c4synthetic-0a723de5fdfa4ac8d90d7a40d7ccb5cdd284cdce129a49b6b7ad0d812b6ed9c4synthetic-0a723de5fdfa4",
+     "keywords": [],
+     "note_count": 8,
+     "ordinal": 548,
+     "page_rank": 6,
+     "preferred_reworker": "synthetic-9b1e9bba788c17af7480cb62343e5826de8a33",
+     "reviewer": "",
+     "revision": 18,
+     "search_content_hash": "synthetic-002280dfeaf4f872c672e8ee0b41c060e73b09189494dfbbfc0892",
+     "source_content_hash": "synthetic-546b143762d0e32deee1942789f281ddc1dba9b007e2c701506a17",
+     "started_at": "2026-10-05T10:48:58.263035Z",
+     "status": "working",
+     "tags": [
+      "synthe",
+      "synthet",
+      "synt"
+     ],
+     "title": "synthetic-74efd1d7113704014117d793443fc69a6434c0f6819bcadbc25e6877b170d864synthetic-74efd1d711370",
+     "transition_refusals": [],
+     "unshown_dependency_count": 0,
+     "updated_at": "2026-10-05T13:30:21.250340Z",
+     "version": "synthetic-b06d7b82363ba580f51b65ed04d423087167faa22b9acaa0c8a085656909bc78synthet",
+     "version_slug": "synthetic-76913706d5a3bb4e7f355116a64845e6386658cdae48c277ad362c",
+     "version_timestamp": "synthetic-80251d"
+    }
+   ],
+   "matched_count": 10,
+   "next_cursor": "synthetic-ff4d34b8a52befdf37b0c67b49bc9f562ef3e9d4e202d1ba73e8842c786d7402synthetic-ff4d34b8a52befdf37b0c67b49bc9f562ef3e9d4e202d1ba73e8842c786d7402synthetic-ff4d34b8a52befdf37b0c67b49bc9f562ef3e9d4e202d1",
+   "next_page": 2,
+   "offset": 0,
+   "page": 1,
+   "page_count": 2,
+   "page_size": 7,
+   "plan_revision": 7874,
+   "previous_page": null,
+   "project_ref": "work:project:synthetic-72308f9572ad0e7",
+   "schema": "problem-board.plan-index.v2",
+   "state_counts": [
+    {
+     "count": 154,
+     "state": "todo"
+    },
+    {
+     "count": 10,
+     "state": "working"
+    },
+    {
+     "count": 17,
+     "state": "review"
+    },
+    {
+     "count": 7,
+     "state": "blocked"
+    },
+    {
+     "count": 358,
+     "state": "complete"
+    },
+    {
+     "count": 9,
+     "state": "cancelled"
+    }
+   ],
+   "status_counts": [
+    {
+     "count": 161,
+     "status": "todo"
+    },
+    {
+     "count": 10,
+     "status": "working"
+    },
+    {
+     "count": 17,
+     "status": "review"
+    },
+    {
+     "count": 358,
+     "status": "done"
+    },
+    {
+     "count": 9,
+     "status": "cancelled"
+    }
+   ],
+   "updated_at": "2026-10-05T16:21:22.248450Z"
+  },
+  "ok": true,
+  "operation": "project.plan.index"
+ }
+}
