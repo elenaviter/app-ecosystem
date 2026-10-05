@@ -310,7 +310,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   backtick or a dollar name, and a file written through a heredoc whose delimiter is not quoted. Single quotes, and `<<'EOF'`.
 - Everything you write is Markdown, read by people and by agents: headings,
   lists, fenced blocks for commands and output, inline code for a file or an
-  operation. A wall of prose hides the reference, the sequence and the conclusion.
+  operation. A wall of prose hides the reference, the sequence and the conclusion. Write whole words with spaces: never glue a word to a number or a ref ("ALL CLEAR 22:06", not "ALLCLEAR22:06"; "Apps 1204f593", not "Apps1204f593"), and split mail into short paragraphs, because operator mail reaches Telegram exactly as written (operator, 2026-10-05, on a glued decision mail: "yes we need it").
 - Plan item edits use the canonical operation, with the item `work_ref`, its `expected_revision`, and
   the requested `changes` in the payload: `pb coordinate plan.item.update --object-ref <project-ref> --payload-file <update.json>`.
 - Keep the runtime-selected notification path live until detach: Codex, the
