@@ -2095,7 +2095,18 @@ def _host_view(config: HostRelayConfig, *, full_diagnostics: bool = False) -> di
             "protected_paths": list(config.workspace_sweep_protected),
         },
         "backups": {"root": config.backup_root},
-        "workers": [worker.to_mapping() for worker in config.workers],
+        # W553: a disabled channel belongs to a session that is gone. It is
+        # counted, and printed only with --diagnostics.
+        "workers": [
+            worker.to_mapping()
+            for worker in config.workers
+            if full_diagnostics or worker.state != "disabled"
+        ],
+        "disabled_channels": {
+            "count": sum(1 for worker in config.workers if worker.state == "disabled"),
+            "shown": bool(full_diagnostics),
+            "remove": ["pb", "host", "configure", "--remove-disabled-channels"],
+        },
     }
 
 

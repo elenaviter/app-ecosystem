@@ -230,3 +230,34 @@ def test_relay_service_status_carries_the_same_summary(tmp_path):
     status_view = host_relay_diagnostics(host)  # what `pb relay-service status` prints
     assert json.dumps(status_view).count('"attempts"') == 0
     assert status_view == cli._host_view(host)["relay"]["diagnostics"]  # noqa: SLF001
+
+
+def test_gone_sessions_are_counted_not_printed_in_the_channel_rows_too(tmp_path):
+    """Review RETURN on 3193fd87 (claude-app): the `workers` rows still listed all 18."""
+
+    host, _field, names = _host(tmp_path)
+
+    view = cli._host_view(host)  # noqa: SLF001
+    assert [worker["worker_name"] for worker in view["workers"]] == names[:SERVED]
+    assert view["disabled_channels"] == {
+        "count": GONE, "shown": False, "remove": ["pb", "host", "configure", "--remove-disabled-channels"],
+    }
+    full = cli._host_view(host, full_diagnostics=True)  # noqa: SLF001
+    assert [worker["worker_name"] for worker in full["workers"]] == names
+    assert full["disabled_channels"]["shown"] is True
+
+
+def test_the_readable_view_leads_with_the_board_this_host_serves(tmp_path):
+    """Operator, 2026-10-05: "what exactly i am looking for in that huge output which
+    must answer me that install is fine to proceed with ?" (W553 note_cf9fdede)."""
+
+    host, _field, names = _host(tmp_path)
+
+    brief = render_envelope({"ok": True, "result": cli._host_view(host)})  # noqa: SLF001
+    lines = brief.splitlines()
+    assert lines[1] == "target: https://runtime.example/mcp · tenant tenant · project project · bundle problem-board@1-0"
+    assert f"channels: {SERVED}" in lines
+    assert f"disabled channels not shown: {GONE} · remove: pb host configure --remove-disabled-channels" in lines
+    assert not any(name in brief for name in names[SERVED:])
+    assert "full diagnostics: pb host inspect --diagnostics" in lines
+    assert len(lines) < 60 and len(brief) < 10_000, (len(lines), len(brief))
