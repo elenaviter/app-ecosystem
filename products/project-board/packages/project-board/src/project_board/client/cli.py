@@ -59,6 +59,7 @@ from .prose_arguments import (
     OPERATOR_RECIPIENTS,
     guard_inline_payload_prose,
     guard_inline_prose,
+    refuse_unreadable_board_text,
     refuse_unreadable_operator_prose,
     refuse_unresolved_payload_slots,
     refuse_unresolved_slots,
@@ -2709,6 +2710,10 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
     if bool(getattr(args, "contract", False)):
         return coordinate_contract(action)
     payload = _coordinate_payload(args)
+    # A banner or work-item field is read by people on the board (W563).
+    refuse_unreadable_board_text(
+        action, payload, argument="--payload-file" if getattr(args, "payload_file", "") else "--payload-json",
+    )
     object_ref = str(args.object_ref or "")
     # The catalog shows a misplaced or missing field before any relay is used.
     require_coordinate_shape(action, object_ref, payload)

@@ -201,6 +201,43 @@ def _glued(match: re.Match[str]) -> bool:
             and match.group(1).lower() + digits not in GLUED_TERMS)
 
 
+_LIST_OR_ROW = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s|^\s*\|")
+
+
+def _blocks(prose: str) -> list[str]:
+    """The text's blocks: each list item or table row alone, prose by paragraph.
+
+    Review of ff3c9e38: a Markdown list or table has no blank lines between
+    its items, so splitting only at blank lines made a readable 12-item list
+    or a 25-row results table one "wall". An indented line continues its list
+    item; only a run of plain prose lines is a paragraph.
+    """
+
+    blocks: list[str] = []
+    current: list[str] = []
+    in_item = False
+    for line in prose.split("\n"):
+        text = line.strip()
+        if not text:
+            if current:
+                blocks.append(" ".join(current))
+            current, in_item = [], False
+        elif _LIST_OR_ROW.match(line) or text.startswith("#"):
+            if current:
+                blocks.append(" ".join(current))
+            current, in_item = [text], not text.startswith("#")
+        elif in_item and line[:1] in (" ", "\t"):
+            current.append(text)
+        else:
+            if in_item:
+                blocks.append(" ".join(current))
+                current, in_item = [], False
+            current.append(text)
+    if current:
+        blocks.append(" ".join(current))
+    return blocks
+
+
 # A paragraph longer than this reads as a wall in a phone notification.
 OPERATOR_PARAGRAPH_MAXIMUM = 900
 OPERATOR_RECIPIENTS = frozenset({"operator", "owner"})
@@ -228,7 +265,7 @@ def refuse_unreadable_operator_prose(value: Any, *, argument: str) -> Any:
             "(\"ALL CLEAR 22:06\", \"Apps 1204f593\"), or put a literal in backticks.",
             details={"argument": argument, "glued": glued[:20], "count": len(glued)},
         )
-    longest = max((len(part.strip()) for part in re.split(r"\n\s*\n", prose)), default=0)
+    longest = max((len(block) for block in _blocks(prose)), default=0)
     if longest > OPERATOR_PARAGRAPH_MAXIMUM:
         raise DomainError(
             "problem_board_operator_prose_wall",
@@ -238,3 +275,39 @@ def refuse_unreadable_operator_prose(value: Any, *, argument: str) -> Any:
                      "maximum": OPERATOR_PARAGRAPH_MAXIMUM},
         )
     return value
+
+
+# Text people read on the board: the project banner and a work item's fields.
+# Operator instruction relayed by the coordinator, 2026-10-05 22:41 UTC: the
+# readability standard "applies especially to project banners, operator
+# messages, and work-item descriptions, results, review notes, and test
+# instructions".
+_READ_ON_THE_BOARD = {
+    "project.announcement.publish": ("text",),
+    "plan.item.create": ("title", "summary", "description", "result", "blocked_reason"),
+    "plan.item.update": ("title", "summary", "description", "result", "blocked_reason"),
+}
+_REVIEW_FIELDS = ("look_at", "could_not_verify")
+
+
+def refuse_unreadable_board_text(action: str, payload: Mapping[str, Any], *, argument: str) -> None:
+    """Refuse a banner or work-item field a person cannot read (W563).
+
+    The same rule as operator mail: no word run into a number, no wall
+    paragraph. Only the named prose fields of these operations are checked.
+    """
+
+    fields = _READ_ON_THE_BOARD.get(action)
+    if not fields:
+        return
+    values = payload.get("changes") if action == "plan.item.update" else payload
+    if not isinstance(values, Mapping):
+        return
+    for key in fields:
+        if isinstance(values.get(key), str):
+            refuse_unreadable_operator_prose(values[key], argument=f"{argument} {key}")
+    review = values.get("review")
+    if isinstance(review, Mapping):
+        for key in _REVIEW_FIELDS:
+            if isinstance(review.get(key), str):
+                refuse_unreadable_operator_prose(review[key], argument=f"{argument} review.{key}")
