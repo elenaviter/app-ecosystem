@@ -1422,3 +1422,44 @@ def test_the_correction_keeps_nested_siblings_in_either_key_order(dotted_first):
     assert json.loads(problem["corrected"]) == {
         "review": {"future_service_field": {"keep": "original", "add": "new"}}
     }
+
+
+# W551, operator 2026-10-05: "all work items must have W"; "when W created it
+# gets the next free number". The board numbers each new item; the client
+# contract says so, and a caller-chosen key is refused before anything is sent.
+def test_the_create_contract_says_the_board_numbers_the_item():
+    contract = cli._coordinate_command(_args("plan.item.create", contract=True))["contract"]
+    assert "next free W number" in contract["description"]
+    assert "work_item_key_allocated_by_board" in contract["description"]
+    assert "without item_key" in contract["payload"]["item"]
+
+
+def test_a_supplied_item_key_is_refused_locally_and_nothing_is_sent(submits, tmp_path):
+    with pytest.raises(DomainError) as refused:
+        cli._coordinate_command(_args(
+            "plan.item.create", object_ref=PROJECT,
+            payload={"item": {"item_key": "maintenance-readiness-20261005", "title": "T"}, "idempotency_key": "k"},
+            config=str(tmp_path / "no-relay.json"),
+        ))
+    assert refused.value.code == "work_coordinate_shape_invalid"
+    assert [(p["field"], p["problem"]) for p in refused.value.details["problems"]] == [
+        ("item.item_key", "allocated_by_board")
+    ]
+    assert submits == []
+
+
+def test_a_numberless_create_is_sent_unchanged(submits, monkeypatch, tmp_path):
+    host, identity, _channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    payload = {"item": {"title": "Filed without a key", "description": "d"}, "idempotency_key": "w551-create"}
+
+    def outcome_unknown(queue_, path, *, worker_name, request_id, timeout_seconds):
+        raise DomainError("work_coordinate_outcome_unknown", "No result before the deadline.", status=504)
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", outcome_unknown)
+    with pytest.raises(DomainError) as unknown:
+        cli._coordinate_command(
+            _args("plan.item.create", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+        )
+    assert unknown.value.code == "work_coordinate_outcome_unknown"
+    assert [submitted["payload"] for submitted in submits] == [payload]

@@ -257,9 +257,14 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                                                           'reviewed preview',
                                                      'idempotency_key': 'stable retry key'}},
     'plan.item.create': {   'description': 'Create one plan item; assignment is a separate atomic '
-                                           'ownership operation.',
+                                           'ownership operation. The board numbers it: item_key is '
+                                           "the project's next free W number, never reused, and the "
+                                           'receipt returns item_key and identity_ref. Send no '
+                                           'item.item_key (work_item_key_allocated_by_board); a retry '
+                                           'with the same idempotency key gets the same number.',
                             'object_ref': 'work:project:<project_id>',
-                            'payload': {   'item': 'complete plan-item source',
+                            'payload': {   'item': 'plan-item source without item_key: title, description, '
+                                                   'acceptance, tags, keywords, status, depends_on',
                                            'idempotency_key': 'stable retry key'}},
     'plan.item.update': {   'description': 'Update one plan item under its current revision; new '
                                            'attachment_refs must be staged uploads. A review hold '
@@ -1243,6 +1248,16 @@ def operation_call_problems(
                 payload, described, path="", strict=_STRICT_OBJECTS.get(operation, frozenset())
             )
         )
+    if operation == "plan.item.create":
+        item = payload.get("item")
+        if isinstance(item, Mapping) and str(item.get("item_key") or "").strip():
+            # W551, operator: every item is a W, and the board assigns the
+            # next free number. A caller-chosen key would be refused there.
+            problems.append({
+                "field": "item.item_key",
+                "problem": "allocated_by_board",
+                "message": "The board numbers new items: remove item.item_key; the next free W number is assigned.",
+            })
     if operation in {"work.item.save", "work.assignee.set"}:
         if payload.get("work_ref"):
             try:
