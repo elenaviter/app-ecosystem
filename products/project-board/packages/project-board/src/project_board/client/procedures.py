@@ -848,7 +848,48 @@ def _verify_destination(
         "release_path": str(release_root),
         "files_verified": files_verified,
         "errors": errors,
+        **_changed_since_previous(release_root),
     }
+
+
+def _changed_since_previous(release_root: Path) -> dict[str, Any]:
+    """Which package files differ from the generation this one replaced (W563).
+
+    A session that loaded the replaced revision rereads only these files in
+    full; one that loaded an older revision, or none, loads the package. The
+    replaced generation is the one install keeps beside the current one (see
+    `_prune_releases`): the newest other generation. With none, nothing is
+    named and `changed_since_revision` is empty.
+    """
+
+    def files_of(root: Path) -> tuple[str, dict[str, str]]:
+        try:
+            manifest = json.loads((root / INSTALLED_MANIFEST).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return "", {}
+        files = manifest.get("source_files") if isinstance(manifest, Mapping) else None
+        if not isinstance(files, Mapping):
+            return "", {}
+        return str(manifest.get("source_revision") or ""), {str(k): str(v) for k, v in files.items()}
+
+    releases = release_root.parent
+    try:
+        others = sorted(
+            (path for path in releases.iterdir()
+             if path.is_dir() and not path.is_symlink() and path.name != release_root.name
+             and not path.name.startswith(".")),
+            key=lambda path: path.stat().st_mtime,
+        )
+    except OSError:
+        others = []
+    if not others:
+        return {"changed_since_revision": "", "changed_files": []}
+    previous_revision, previous = files_of(others[-1])
+    _current_revision, current = files_of(release_root)
+    if not previous or not current:
+        return {"changed_since_revision": "", "changed_files": []}
+    changed = sorted(name for name in {*previous, *current} if previous.get(name) != current.get(name))
+    return {"changed_since_revision": previous_revision, "changed_files": changed}
 
 
 def verify_agent_procedure(
