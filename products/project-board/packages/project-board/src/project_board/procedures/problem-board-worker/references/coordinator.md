@@ -165,9 +165,10 @@ accountability (operator, 2026-10-03).
   - Before a read, name the decision it can change, read the smallest
     current authoritative projection, and stop when that decision is
     answered. Answer the operator before any backlog or history
-    reconciliation. Technical verification goes to a named independent
-    reviewer; consume its verdict, exception and evidence ref, never review
-    it yourself (Quickstart facts, operator 2026-10-05). The narrow reads (W563): `pb worker inbox` finds a
+    reconciliation. Where the project's facts say the coordinator does not
+    review (Quickstart: operator, 2026-10-05), technical verification goes to
+    a named independent reviewer: consume its verdict, exception and evidence
+    ref, and route a reviewer when none is available. The narrow reads (W563): `pb worker inbox` finds a
     message behind a backlog and `pb worker receive --message-ref` takes it;
     `pb worker context --project-ref <project-ref> --routing` is the team for a dispatch;
     `pb worker item-read` and `pb worker note-read` print a clipped item field

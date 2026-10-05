@@ -5736,20 +5736,53 @@ class SharedFieldStore:
                 })
         return headers
 
-    def quiet_mail_refs(self, worker_name: str) -> set[str]:
+    def quiet_mail_refs(self, worker_name: str, refs: Sequence[str] | None = None) -> set[str]:
         """Pending notices that need no action and wake no session (W563, Q2).
 
         Only mail its producer marked `expected_reaction: acknowledge_only`
         (a Done or Cancelled assignment notice, terminal assignee information)
         and that is not operator mail. It stays pending, counted and received
         with the next receive; nothing is deleted or settled here.
+
+        With ``refs``, only those messages' files are read (an inbox file is
+        named by its message id): a caller that remembers what it classified
+        reads only new mail, never the whole backlog on every poll (review of
+        PR 535).
         """
 
-        return {
-            header["message_ref"]
-            for header in self.pending_mail_headers(worker_name)
-            if header.get("expected_reaction") == "acknowledge_only" and not header.get("operator")
-        }
+        if refs is None:
+            return {
+                header["message_ref"]
+                for header in self.pending_mail_headers(worker_name)
+                if header.get("expected_reaction") == "acknowledge_only" and not header.get("operator")
+            }
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        wanted: dict[str, str] = {}
+        for ref in refs:
+            try:
+                wanted[parse_ref(str(ref)).object_id] = str(ref)
+            except DomainError:
+                continue
+        roots = [self._mail_root("", clean_name)]
+        for project_ref in worker.get("attended_project_refs") or []:
+            try:
+                parsed = parse_ref(str(project_ref))
+            except DomainError:
+                continue
+            if parsed.kind == "project":
+                roots.append(self._mail_root(parsed.object_id, clean_name))
+        quiet: set[str] = set()
+        for message_id, ref in wanted.items():
+            for root in roots:
+                row = read_json(root / "inbox" / f"{message_id}.json", required=False)
+                if not row:
+                    continue
+                payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+                if payload.get("expected_reaction") == "acknowledge_only" and not self._is_admitted_operator_mail(row):
+                    quiet.add(ref)
+                break
+        return quiet
 
     def _pending_mail_refs_lock_free(self, project_id: str, worker_name: str) -> list[str]:
         """One mailbox's readable and expired mail, read without its lock.

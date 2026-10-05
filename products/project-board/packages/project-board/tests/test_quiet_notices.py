@@ -65,3 +65,37 @@ def test_the_relay_does_not_wake_for_quiet_notices_alone(tmp_path):
                     subject="Review W9", body="Please review.", idempotency_key="review")
     asyncio.run(supervisor._notify_available_input(host, channel))
     assert pushed == [channel.worker_name]
+
+
+def test_the_relay_clears_a_hold_and_classifies_each_message_once(tmp_path, monkeypatch):
+    # Review of PR 535: the quiet branch clears a wake hold like every other
+    # branch with nothing to wake for, and a message is read for its class
+    # once, not with the whole backlog on every cycle.
+    from project_board.client.store import SharedFieldStore
+
+    host, field, (channel,) = _codex_channels(tmp_path, 1, first_mail=0)
+    pushed: list[str] = []
+    supervisor = _with_session_stubs(make_supervisor(host), pushed)
+    _attend(field, channel.worker_name)
+    first = _notice(field, channel.worker_name, 3)
+    cleared: list[str] = []
+    asked: list[list[str]] = []
+    real_clear, real_quiet = SharedFieldStore.clear_wake_hold, SharedFieldStore.quiet_mail_refs
+
+    def clear(store, worker_name, *args, **kwargs):
+        cleared.append(worker_name)
+        return real_clear(store, worker_name, *args, **kwargs)
+
+    def quiet(store, worker_name, refs=None):
+        asked.append(list(refs or []))
+        return real_quiet(store, worker_name, refs)
+
+    monkeypatch.setattr(SharedFieldStore, "clear_wake_hold", clear)
+    monkeypatch.setattr(SharedFieldStore, "quiet_mail_refs", quiet)
+
+    asyncio.run(supervisor._notify_available_input(host, channel))
+    second = _notice(field, channel.worker_name, 4)
+    asyncio.run(supervisor._notify_available_input(host, channel))
+
+    assert pushed == [] and cleared.count(channel.worker_name) >= 2
+    assert asked == [[first["message_ref"]], [second["message_ref"]]]

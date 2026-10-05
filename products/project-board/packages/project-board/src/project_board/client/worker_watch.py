@@ -52,6 +52,21 @@ def worker_watch_events(
     interval = max(5, min(int(check_interval_seconds), 300))
     coalesce = max(0.0, min(float(coalesce_seconds), 5.0))
     last_signature: tuple[str, ...] = ()
+    # W563: whether a pending message is quiet never changes, so each one is
+    # classified once, reading only its own file (review of PR 535).
+    classified: dict[str, bool] = {}
+
+    def quiet_now(result: dict[str, Any]) -> frozenset[str]:
+        pending = [str(item) for item in result.get("pending_refs") or []]
+        new = [ref for ref in pending if ref not in classified]
+        if new:
+            found = field.quiet_mail_refs(worker_name, refs=new)
+            classified.update({ref: ref in found for ref in new})
+        current = set(pending)
+        for ref in [ref for ref in classified if ref not in current]:
+            del classified[ref]
+        return frozenset(ref for ref in pending if classified.get(ref))
+
     failure_signature = ""
     failure_delay = 5
 
@@ -62,7 +77,7 @@ def worker_watch_events(
         while True:
             try:
                 result = probe_worker_input(field, worker_name=worker_name)
-                quiet = frozenset(field.quiet_mail_refs(worker_name))
+                quiet = quiet_now(result)
                 signature, event = _availability(result, quiet)
                 if signature and signature != last_signature:
                     if result.get("pending_refs") and coalesce:
@@ -75,7 +90,7 @@ def worker_watch_events(
                             # shorten its fixed coalescing window.
                             wake.wait(remaining)
                         result = probe_worker_input(field, worker_name=worker_name)
-                        quiet = frozenset(field.quiet_mail_refs(worker_name))
+                        quiet = quiet_now(result)
                         signature, event = _availability(result, quiet)
                     last_signature = signature
                     yield {**event, "worker": worker_name}
