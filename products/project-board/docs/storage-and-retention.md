@@ -465,6 +465,24 @@ Reading archived mail back:
   Unread mail stays live past the window, so the two interleave in time.
 - Both mark an archived row `storage: cold`; the board shows it as
   **Cold archive**.
+- An Inbox conversation's search with dates and no text lists that
+  conversation's messages in the range, newest first, live and archived alike.
+  It reads the board's own thread (`inbox.thread.page` with `date_from` and
+  `date_to`), not the platform's turn catalog, which holds only live turns.
+  A search with text still uses the platform's ranked search, which reaches
+  archived turns through its own cold arm.
+
+**The way back.** Code without the mail archive cannot read archived
+messages, so a rollback past it hides them, though they stay in their parts
+and index rows. The bundle's `tools/restore_mail_archive.py` returns them. For
+every batch it reads and verifies the part, then in one transaction:
+- re-inserts the rows into the live tables, leaving a row that is already
+  live as it is;
+- deletes their index rows and the batch's ledger row.
+
+The parts stay in storage, and running it twice changes nothing. Without
+`--apply` it only lists what it would restore. It reads the database
+connection from the environment and never prints it.
 
 The bundle property `enabled.cron.event-archive: false` turns the job off.
 Deleting rows makes their space reusable for new rows; it does not shrink the
