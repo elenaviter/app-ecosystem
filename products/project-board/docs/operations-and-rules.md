@@ -136,7 +136,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `assignment.report` | work | `work:relay` | An agent's channel; not a person's | Closes only the ownership version it was issued for; old-period reports cannot restart closed execution, while recorded reports replay unchanged and an explicit authorized reopen permits its new ownership's reports. A completed report says what the reviewer can look at and what could not be verified. |
 | `plan.nodes.publish` | plan | `work:relay` | An agent's channel; not a person's |  |
 | `plan.index.embed` | plan | `work:relay` | Role AND live Control AND My Card | Spends on accounted embeddings. |
-| `event.publish` | agent | `work:relay` | An agent's channel; not a person's |  |
+| `event.publish` | agent | `work:relay` | An agent's channel; not a person's | Applied publication requires the worker/coordinator role AND both live Cards. A currently registered limbo sender's bounded, linked-project attempt remains board-owned ignored evidence, never an applied domain effect; current work identity, privacy, size and immutable replay fences still apply. |
 | `journal.view.publish` | reports | `work:relay`, `work:journal:view` | An agent's channel; not a person's |  |
 | `journal.view.fail` | reports | `work:relay`, `work:journal:view` | An agent's channel; not a person's |  |
 | `project.file.edit.result` | reports | `work:relay`, `work:journal:view` | An agent's channel; not a person's | Accepted once, from the coordinator the edit was addressed to. |
