@@ -514,6 +514,18 @@ completes holds its channel and the process exit, as any worker thread does
 (W456, 2026-10-02: one pending-mail read held the loop 15.8 seconds, and the
 server closed every socket of the host).
 
+**Which channel, which stage, and when it last worked (W456).**
+- **Slow turns:** a slow channel turn logs `relay slow channel turn` with the
+  channel (`worker=`), the turn's outcome and duration, and its longest stage
+  (`stage=` and `stage_seconds=`: `channel.open`, `channel.reconnect`,
+  `coordinate.drain` or `attendance.poll`; `none` when no stage was traced).
+- **Per-channel status:** the relay keeps each channel's last attendance poll,
+  last success, last outcome and code. It writes them beside the host config in
+  `relay-channels.json`, from a thread and at most every 15 seconds.
+- **Where to read it:** `pb worker inspect` shows them as `relay turns`,
+  together with the channel's backoff (attempt, next attempt and reason) while
+  it fails. `recorded_at` says when the relay last wrote the record.
+
 
 ### Turn accounting and the relay log owner (W461)
 

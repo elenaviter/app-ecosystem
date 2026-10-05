@@ -96,6 +96,7 @@ from .relay_failures import (
     staged_failure,
 )
 from .local_state_maintenance import run_local_state_maintenance
+from .relay_channel_status import ChannelStatusBook, write_channel_status
 from .project_connect import github_repository
 from .project_file_edit import FILE_EDIT_KIND, apply_file_edit
 from .project_files import file_state
@@ -5342,6 +5343,11 @@ class ProblemBoardRelaySupervisor:
         # which wakes the next cycle at once.
         self._channel_turns: dict[str, asyncio.Task] = {}
         self._late_turn_finished: asyncio.Event | None = None
+        # W456 criterion 6: each channel's last attendance poll and last
+        # success, written for `pb worker inspect` from a thread, at most
+        # every relay_channel_status.WRITE_INTERVAL_SECONDS.
+        self._channel_status = ChannelStatusBook()
+        self._channel_status_write: asyncio.Future | None = None
         # A running turn's own wake and the cycle's wake for that channel take
         # turns; the cycle skips a wake the turn is giving right now.
         self._notify_locks: dict[str, asyncio.Lock] = {}
@@ -7159,6 +7165,7 @@ class ProblemBoardRelaySupervisor:
             raise failure from exc
         started = time.monotonic()
         try:
+            self._channel_status.note_attendance_poll(channel.worker_name)
             with self._trace.stage(
                 "attendance.poll",
                 channel=channel.worker_name,
@@ -8082,6 +8089,30 @@ class ProblemBoardRelaySupervisor:
             raise
         finally:
             self._trace.end_turn(turn, outcome, code=code)
+            self._channel_status.note_turn(channel.worker_name, outcome, code)
+            self._write_channel_status_soon()
+
+    def _write_channel_status_soon(self) -> None:
+        """Write the channels' status in a thread when due; never awaited by a turn."""
+
+        if not self._channel_status.due():
+            return
+        running = self._channel_status_write
+        if running is not None and not running.done():
+            return
+        snapshot = self._channel_status.take_snapshot()
+        write = asyncio.ensure_future(
+            asyncio.to_thread(write_channel_status, self.config_path, snapshot)
+        )
+        write.add_done_callback(
+            lambda done: done.cancelled()
+            or done.exception() is None
+            or logger.warning(
+                "Problem Board relay channel status not written error_type=%s",
+                type(done.exception()).__name__,
+            )
+        )
+        self._channel_status_write = write
 
     async def _channel_turn_under_deadline(
         self,
@@ -8244,9 +8275,13 @@ class ProblemBoardRelaySupervisor:
     ) -> None:
         if elapsed < self._trace.slow_seconds:
             return
+        # W456 criterion 6: the warning names the stage that took longest
+        # in this turn (open, reconnect, coordinate drain, attendance poll),
+        # not only the channel.
+        stage, stage_seconds = self._trace.slowest_turn_stage()
         logger.warning(
             "Problem Board relay slow channel turn worker=%s outcome=%s "
-            "seconds=%.3f threshold_seconds=%.3f",
+            "seconds=%.3f threshold_seconds=%.3f stage=%s stage_seconds=%.3f",
             channel.worker_name,
             (
                 f"failed:{self._failure_code(result)}"
@@ -8255,6 +8290,8 @@ class ProblemBoardRelaySupervisor:
             ),
             elapsed,
             self._trace.slow_seconds,
+            stage or "none",
+            stage_seconds,
         )
 
     async def _channel_turn_body(

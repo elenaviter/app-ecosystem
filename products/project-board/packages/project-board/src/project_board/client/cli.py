@@ -63,6 +63,7 @@ from .prose_arguments import (
 )
 from .commands import load_json
 from .relay_pacing import channel_pending_refusal, channel_reconnect_state
+from .relay_channel_status import channel_status
 from .coordinate_contract import coordinate_contract, require_coordinate_shape
 from .coordinate_recovery import (
     CoordinateRecovery,
@@ -5266,6 +5267,26 @@ def _worker_command(args: Any) -> dict[str, Any]:
             if reconnect.get("state") != "degraded":
                 channel_row["state"] = "reconnecting"
             channel_row["connection"] = reconnect
+        # W456 criterion 6: this channel's last attendance poll, last success
+        # and backoff, as the relay last wrote them (recorded_at says when).
+        status = channel_status(path, identity.worker_name) or {}
+        channel_row["relay_turns"] = {
+            "last_attendance_poll_at": str(status.get("last_attendance_poll_at") or ""),
+            "last_success_at": str(status.get("last_success_at") or ""),
+            "last_outcome": str(status.get("last_outcome") or ""),
+            "last_code": str(status.get("last_code") or ""),
+            "recorded_at": str(status.get("recorded_at") or ""),
+            "backoff": (
+                {
+                    "attempts": reconnect.get("attempts"),
+                    "reason": reconnect.get("reason"),
+                    "next_attempt_at": reconnect.get("next_attempt_at"),
+                    "attempt_in_progress": reconnect.get("attempt_in_progress"),
+                }
+                if reconnect is not None
+                else None
+            ),
+        }
         return {
             "config": str(path),
             "channel": channel_row,
