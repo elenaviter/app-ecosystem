@@ -730,6 +730,19 @@ slip say what a reader needs. The board shows the age and marks an overdue
 estimate apart from a blocked state, because stale and blocked call for
 different actions (P8, four yes votes).
 
+Size it bottom-up before you say it. Name the concrete pieces the change
+reuses (an existing lock, lease, settle or read path, a fixture) and the
+genuinely new ones, and estimate only the new ones. Give the source, the
+independent review and the activation as three separate estimates, each with
+what it waits on, because they have different owners and different blockers.
+Why: on 2026-10-05 a worker quoted 5-6 hours for W563's backlog retirement,
+then built it in about 15 minutes, mostly from mailbox, lease and settle paths
+that already existed. The coordinator relayed the request to justify it
+(2026-10-05 21:46Z: "The operator asks: can this 5-6 hours of implementation
+be justified by author of 563?") and then set the rule (21:51Z: "size from
+concrete reused primitives and separate source, review, activation
+estimates").
+
 ### The info line
 
 The info line says what the team needs to plan around you, and nothing else:
