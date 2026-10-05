@@ -135,3 +135,41 @@ def test_a_store_that_never_answers_ends_in_time_instead_of_hanging(monkeypatch)
 
     assert usable is False and "does not answer in time" in detail
     never.set()
+
+
+def test_the_reset_compares_both_entries_before_it_moves_or_stops_anything():
+    """Review of #526 (claude-main): the reset set the store aside, then compared, and on a
+    mismatch said "nothing changed" with no store left."""
+
+    for page in (PROCEDURE, PUBLIC):
+        text = page.read_text(encoding="utf-8")
+        line = next(line for line in text.splitlines() if "printf 'New password: '" in line)
+        compare = line.index('if [ "$P" = "$Q" ]; then')
+        assert compare < line.index("mv ~/.local/share/keyrings/login.keyring")
+        assert compare < line.index("systemctl --user stop gnome-keyring-daemon.socket")
+        assert compare < line.index("gnome-keyring-daemon --replace --unlock")
+        assert "mv ~/.local/share/keyrings/login.keyring" not in text.split(line)[0].split("**Reset**")[-1]
+
+
+def test_a_mismatched_reset_leaves_the_store_in_place(tmp_path):
+    if not shutil.which("bash"):
+        pytest.skip("bash is not installed")
+    line = next(
+        line for line in PROCEDURE.read_text(encoding="utf-8").splitlines() if "printf 'New password: '" in line
+    )
+    keyrings = tmp_path / ".local" / "share" / "keyrings"
+    keyrings.mkdir(parents=True)
+    (keyrings / "login.keyring").write_text("store", encoding="utf-8")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for tool in ("systemctl", "pkill", "gnome-keyring-daemon"):
+        stub = bin_dir / tool
+        stub.write_text("#!/bin/sh\necho called >> \"$HOME/called\"\n", encoding="utf-8")
+        stub.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", line], input="first\nsecond\n", capture_output=True, text=True,
+        env={"HOME": str(tmp_path), "PATH": f"{bin_dir}:/usr/bin:/bin", "USER": "test"}, check=False,
+    )
+    assert "the two entries differ; nothing changed" in result.stdout
+    assert (keyrings / "login.keyring").read_text(encoding="utf-8") == "store"
+    assert not (tmp_path / "called").exists()

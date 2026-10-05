@@ -458,12 +458,10 @@ Two different PIDs, or no `True` within 15 s (`exit 124`), means the password di
 
 **Only these lines.** The host agent gives the operator exactly the unlock, check and reset above, never another keyring command of its own: on mint (2026-10-05) an improvised `gnome-keyring-daemon --unlock` left a stray daemon that broke the store further, and a restart of the keyring unit without asking added another (W558). If the check fails twice, stop, change nothing more, and report what each line printed to the coordinator.
 
-**Reset** (the password is lost, or the first one was mistyped). It sets the old store aside and creates a new, empty one; the new password is asked twice:
+**Reset** (the password is lost, or the first one was mistyped). It asks the new password twice and changes nothing unless both entries match; then it sets the old store aside and creates a new, empty one:
 
 ```bash
-systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d
-mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M)
-printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ "$P" = "$Q" ]; then printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries differ; nothing changed"; fi; unset P Q
+printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries differ; nothing changed"; fi; unset P Q
 ```
 
 Then run the check. A reset loses only what the old store held: each agent on this host authorizes again (step 11).

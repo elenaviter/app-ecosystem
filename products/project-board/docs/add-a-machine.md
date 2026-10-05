@@ -199,14 +199,12 @@ never on the machine and never in an agent's history.
   on the machine can remind you of it.
 - **You will be asked again after the machine reboots**, and only then. Network
   drops and agent restarts do not need it.
-- **If it is lost, or you mistyped it the first time**, reset: this sets the old
-  store aside and creates a new one, asking the new password twice. Then repeat
+- **If it is lost, or you mistyped it the first time**, reset: it asks the new password twice and, only when both match, sets
+  the old store aside and creates a new one. Then repeat
   steps 5 and 6 for each agent. Nothing else is lost.
 
   ```bash
-  systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d
-  mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M)
-  printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ "$P" = "$Q" ]; then printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries differ; nothing changed"; fi; unset P Q
+  printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries differ; nothing changed"; fi; unset P Q
   ```
 
 - **Until you do this step, an agent cannot finish signing in**, because it has
