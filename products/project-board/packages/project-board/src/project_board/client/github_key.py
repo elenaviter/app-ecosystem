@@ -86,7 +86,7 @@ class GitHubKeyRefused(Exception):
 
     ``availability`` marks a failure to reach an answer (Connection Hub down,
     a 5xx, a timeout) apart from a refusal (not_attending, card_denies,
-    github_not_linked...): only the first may fall back to the deploy key.
+    github_not_linked...). Neither falls back to another credential (W416).
     """
 
     def __init__(self, code: str, message: str, *, availability: bool = False) -> None:
@@ -97,7 +97,7 @@ class GitHubKeyRefused(Exception):
 
 
 # The remote connect-project keeps for this machine's deploy key once origin
-# goes over HTTPS: `pb worker push` falls back to it when the key is unavailable.
+# goes over HTTPS. `pb worker push` never pushes through it (W416).
 DEPLOY_KEY_REMOTE = "deploykey"
 _AVAILABILITY_STATUSES = frozenset({408, 429})
 
@@ -293,23 +293,6 @@ def clone_config(helper: str, *, name: str = "", email: str = "") -> list[list[s
     return steps
 
 
-def push_through_deploy_key(args: list[str], remotes: set[str]) -> list[str]:
-    """The same `git push` arguments aimed at the deploy-key remote.
-
-    The first positional argument that names a remote is replaced; without
-    one (a bare `git push`, or only a refspec), the deploy-key remote is put
-    first.
-    """
-
-    out = list(args)
-    for index, arg in enumerate(out):
-        if not arg.startswith("-") and arg in remotes:
-            out[index] = DEPLOY_KEY_REMOTE
-            return out
-    positional = next((index for index, arg in enumerate(out) if not arg.startswith("-")), len(out))
-    return [*out[:positional], DEPLOY_KEY_REMOTE, *out[positional:]]
-
-
 def gh_repository(args: list[str], origin_url: str) -> str:
     """The repository a gh command acts on: its -R/--repo, else the clone's origin."""
 
@@ -350,7 +333,6 @@ __all__ = [
     "CARD_BEARER_HEADER",
     "DEPLOY_KEY_REMOTE",
     "classify_failure",
-    "push_through_deploy_key",
     "GH_LOCATIONS",
     "find_gh",
     "CONNECTION_HUB_BUNDLE_ID",

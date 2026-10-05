@@ -89,10 +89,8 @@ from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
 from .github_key import (
     CARD_BEARER_HEADER,
-    DEPLOY_KEY_REMOTE,
     GitHubKeyRefused,
     classify_failure,
-    push_through_deploy_key,
     repository_name,
     GitHubToken,
     card_repositories,
@@ -1064,9 +1062,9 @@ def build_parser() -> argparse.ArgumentParser:
     command = worker_commands.add_parser(
         "push",
         help=(
-            "git push with your owner's GitHub key; when the key is unavailable (Connection Hub "
-            "unreachable), the same push through this machine's deploy key, said on one line. "
-            "A refusal never falls back. Example: `pb worker push -- origin HEAD:refs/heads/my-branch`."
+            "git push with your owner's GitHub key or not at all: when the key is unavailable or "
+            "refused, the push fails and names the key's answer; it is never retried through this "
+            "machine's deploy key. Example: `pb worker push -- origin HEAD:refs/heads/my-branch`."
         ),
     )
     _host_config(command)
@@ -1076,8 +1074,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--owner-key-only",
         action="store_true",
         help=(
-            "Push with the owner's GitHub key or not at all: the named remote must push over HTTPS, "
-            "and a failed push is never retried through the deploy key. A release uses it."
+            "Also check before pushing that the named remote pushes over HTTPS, which only the "
+            "owner's key answers; a remote on SSH or a local path is refused. A release uses it."
         ),
     )
     command.add_argument("git_args", nargs=argparse.REMAINDER, help="git push's own arguments, after --.")
@@ -4464,7 +4462,7 @@ def _git_credential_command(args: Any, *, stdin: Any = None, stdout: Any = None)
             detail = str(getattr(exc, "message", "") or "")
             print(
                 f"pb GitHub key: owner key unavailable ({code}{': ' + detail if detail else ''}): "
-                "push with `pb worker push ...`, which uses this machine's deploy key when it has one",
+                "retry when Connection Hub answers, or report it; no other credential is used",
                 file=sys.stderr,
             )
         elif isinstance(exc, GitHubKeyRefused):
@@ -4520,26 +4518,26 @@ def _gh_command(args: Any) -> int:
         return 127
 
 
-PUSH_FALLBACK_SECONDS = 600
+# How recent the owner key's last answer must be for a failed push to name it.
+PUSH_KEY_ANSWER_SECONDS = 600
 
 
 def _push_command(args: Any) -> int:
-    """`git push` with the owner's key, and the deploy key when the key is unavailable (W371).
+    """`git push` with the owner's key or not at all (W371, W416).
 
-    The credential helper answers only over HTTPS, so it cannot move a push to
-    SSH. This runs the push as given; when it fails and the key's last answer
-    for the repository was an availability failure (Connection Hub
-    unreachable, a 5xx, a timeout), within the last ten minutes, it runs the
-    same push through the `deploykey` remote connect-project kept, and says
-    so. A refusal (not_attending, card_denies, github_not_linked...) never
-    falls back.
+    The project's route rule (operator, recorded in the project's route
+    rules): "Do not use a deploy key, provider account or another owner's
+    credentials when the platform-owner GitHub route is unavailable." So a
+    failed push is returned as it is and never retried through the
+    `deploykey` remote connect-project keeps. When the key's last answer for
+    the repository, within the last ten minutes, was a failure, the push
+    names it: unavailable (Connection Hub unreachable, a 5xx, a timeout) or
+    refused (not_attending, card_denies, github_not_linked...).
 
-    `--owner-key-only` (W454) pushes with the owner's key or not at all, and
-    decides before anything is written: the first positional argument must
-    name a remote whose every push URL is HTTPS, which only the owner key's
-    credential helper answers (an SSH URL would push with whatever key the
-    machine has), and a failed push is returned as it is, never retried
-    through the deploy key.
+    `--owner-key-only` (W454) also decides before anything is written: the
+    first positional argument must name a remote whose every push URL is
+    HTTPS, which only the owner key's credential helper answers (an SSH URL
+    would push with whatever key the machine has).
     """
 
     push_args = list(args.git_args or [])
@@ -4575,8 +4573,6 @@ def _push_command(args: Any) -> int:
         return 0
 
     remotes = set(git_out("remote").split())
-    if DEPLOY_KEY_REMOTE not in remotes:
-        return first
     target = next((arg for arg in push_args if not arg.startswith("-") and arg in remotes), "origin")
     repository = repository_name(git_out("remote", "get-url", target))
     if not repository:
@@ -4586,24 +4582,23 @@ def _push_command(args: Any) -> int:
         outcome = session.field.read_github_key_outcome(
             session.identity.worker_name, parse_ref(session.project_ref).object_id, repository
         )
-    except Exception:  # noqa: BLE001 - without the record, no fallback
+    except Exception:  # noqa: BLE001 - without the record, git's own error stands
         return first
     recent = False
     try:
         at = datetime.fromisoformat(str(outcome.get("at") or "").replace("Z", "+00:00"))
-        recent = (datetime.now(timezone.utc) - at).total_seconds() <= PUSH_FALLBACK_SECONDS
+        recent = (datetime.now(timezone.utc) - at).total_seconds() <= PUSH_KEY_ANSWER_SECONDS
     except ValueError:
         recent = False
-    if not (outcome.get("availability") and recent):
+    if not recent or not outcome.get("code"):
         return first
-    code = str(outcome.get("code") or "unavailable")
-    fallback = push_through_deploy_key(push_args, remotes)
-    result = subprocess.call(["git", "push", *fallback])
-    if result == 0:
-        print(f"pb GitHub key: owner key unavailable ({code}): pushed with the deploy key", file=sys.stderr)
-    else:
-        print(f"pb GitHub key: owner key unavailable ({code}), and the deploy key push failed too", file=sys.stderr)
-    return result
+    state = "unavailable" if outcome.get("availability") else "refused"
+    print(
+        f"pb GitHub key: owner key {state} ({outcome['code']}): nothing was pushed through the deploy key "
+        "or another credential; retry when the key answers, or report it",
+        file=sys.stderr,
+    )
+    return first
 
 
 def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) -> dict[str, Any]:

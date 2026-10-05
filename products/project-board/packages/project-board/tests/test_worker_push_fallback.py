@@ -1,11 +1,11 @@
-"""`pb worker push`: the deploy key when the owner's key is unavailable, never after a refusal (W371).
+"""`pb worker push` pushes with the owner's key or not at all (W371, W416).
 
-Seen live during the 17:21Z platform rebuild: with clones on HTTPS over the
-owner's key, `git push` failed ("pb GitHub key: http_502", then "could not
-read Username") because Connection Hub was down, and every agent on the
-machine was blocked. A credential helper cannot move a push to SSH, so the
-fallback is this command: the push as given, and when it fails after an
-availability failure of the key, the same push through `deploykey`.
+W371 retried a push through this machine's deploy key when the owner's key
+was unavailable. The project's route rule forbids that (operator, recorded in
+the project's route rules): "Do not use a deploy key, provider account or
+another owner's credentials when the platform-owner GitHub route is
+unavailable." So a failed push is returned as it is, with the key's last
+answer named, and nothing reaches the `deploykey` remote.
 """
 
 from __future__ import annotations
@@ -67,26 +67,32 @@ def _push():
     return cli._push_command(SimpleNamespace(git_args=["--", "origin", "work/fallback"]))  # noqa: SLF001
 
 
-def test_an_unavailable_key_pushes_through_the_deploy_key_and_says_so(tmp_path, monkeypatch, capsys):
-    deploy, clone = _setup(tmp_path, monkeypatch, code="http_502", availability=True)
+@pytest.mark.parametrize("code, availability, word", [
+    ("http_502", True, "unavailable"),
+    ("connection_hub_unreachable", True, "unavailable"),
+    ("card_denies", False, "refused"),
+])
+def test_a_failed_owner_key_stops_the_push_with_its_code(tmp_path, monkeypatch, capsys, code, availability, word):
+    deploy, _clone = _setup(tmp_path, monkeypatch, code=code, availability=availability)
 
-    assert _push() == 0
-    assert _branch(deploy) == subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(clone), capture_output=True,
-                                             text=True, check=True).stdout.strip()
-    assert "owner key unavailable (http_502): pushed with the deploy key" in capsys.readouterr().err
+    assert _push() != 0
+    assert _branch(deploy) == "", "the deploy-key remote received nothing"
+    err = capsys.readouterr().err
+    assert f"owner key {word} ({code})" in err
+    assert "nothing was pushed through the deploy key" in err
+    assert "pushed with the deploy key" not in err
 
 
-@pytest.mark.parametrize("code, availability, age", [("card_denies", False, 5), ("http_502", True, 3600)])
-def test_a_refusal_or_a_stale_failure_never_falls_back(tmp_path, monkeypatch, capsys, code, availability, age):
-    deploy, _clone = _setup(tmp_path, monkeypatch, code=code, availability=availability, age_seconds=age)
+def test_a_stale_key_answer_is_not_named_and_nothing_falls_back(tmp_path, monkeypatch, capsys):
+    deploy, _clone = _setup(tmp_path, monkeypatch, code="http_502", availability=True, age_seconds=3600)
 
     assert _push() != 0
     assert _branch(deploy) == ""
-    assert "deploy key" not in capsys.readouterr().err
+    assert "http_502" not in capsys.readouterr().err
 
 
-# W454: a release must push with the owner's key or not at all. The default
-# above stays as it is; `--owner-key-only` decides before anything is written.
+# W454: `--owner-key-only` also decides before anything is written: the named
+# remote must push over HTTPS, which only the owner key's helper answers.
 
 
 def _owner_only_push(*git_args: str):
@@ -132,7 +138,7 @@ def test_owner_key_only_checks_every_push_url_and_needs_the_remote_named(tmp_pat
     assert "needs the remote named first" in capsys.readouterr().err
 
 
-def test_the_default_push_keeps_its_fallback_and_the_parser_offers_the_mode():
+def test_the_parser_offers_owner_key_only():
     parser = cli.build_parser()
     args = parser.parse_args(["worker", "push", "--owner-key-only", "--", "origin", "main"])
     assert args.owner_key_only is True
