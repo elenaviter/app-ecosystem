@@ -409,6 +409,34 @@ def _limit_ended_after_refusal(state: Any) -> bool:
     )
 
 
+def _queued_wake_refs(listener: Any) -> list[str] | None:
+    """The refs of a wake still waiting in the native queue, or None.
+
+    W448 fix 3: the relay decides on a wake every cycle, and each decision
+    read the worker's whole mailbox twice. While a wake sits in the native
+    queue before its deadline, that read cannot change the decision: a queued
+    wake is never pushed again, and the cycle ends as a deduplicated wake. On
+    dev-main this re-read a 382-message inbox about 160 times in 15 minutes and
+    held the channel's store thread up to 10.7 s. During that wait the wake's
+    own refs stand in for the mailbox; nothing is kept between cycles. Past the
+    deadline, or in any other wake state, the mailbox is read as before.
+    """
+
+    if not isinstance(listener, Mapping):
+        return None
+    subscription = listener.get("subscription")
+    if not isinstance(subscription, Mapping):
+        return None
+    if not str(subscription.get("outstanding_wake_id") or ""):
+        return None
+    if str(subscription.get("wake_delivery_state") or "") != "queued":
+        return None
+    if _deadline_passed(subscription.get("wake_ack_deadline_at")):
+        return None
+    refs = [str(ref) for ref in subscription.get("last_wake_message_refs") or [] if ref]
+    return refs or None
+
+
 def _deadline_passed(value: Any) -> bool:
     """A missing or unreadable wake deadline counts as passed."""
 
@@ -5700,6 +5728,30 @@ class ProblemBoardRelaySupervisor:
             return merged, "work_codex_quota_unmeasured"
         return merged, ""
 
+    async def _pending_for_wake(
+        self, field: SharedFieldStore, channel: WorkerChannelConfig
+    ) -> tuple[list[str], dict[str, Any] | None, bool]:
+        """Pending refs for a wake decision, the listener, and whether the mailbox was read.
+
+        A wake still waiting in the native queue before its deadline answers
+        with its own refs instead of a mailbox read (W448 fix 3,
+        :func:`_queued_wake_refs`).
+        """
+
+        listener = await self._channel_off_loop(
+            channel, field.worker_listener_session, channel.worker_name
+        )
+        queued = _queued_wake_refs(listener)
+        if queued is not None:
+            return queued, listener, False
+        pending_refs = await self._channel_off_loop(
+            channel, field.pending_worker_mail_refs, channel.worker_name, wait=False
+        )
+        listener = await self._channel_off_loop(
+            channel, field.worker_listener_session, channel.worker_name
+        )
+        return pending_refs, listener, True
+
     async def _notify_available_input(
         self, host: HostRelayConfig, channel: WorkerChannelConfig
     ) -> dict[str, Any] | None:
@@ -5721,12 +5773,7 @@ class ProblemBoardRelaySupervisor:
             host, channel, listener
         )
         try:
-            pending_refs = await self._channel_off_loop(
-                channel, field.pending_worker_mail_refs, channel.worker_name, wait=False
-            )
-            listener = await self._channel_off_loop(
-                channel, field.worker_listener_session, channel.worker_name
-            )
+            pending_refs, listener, mailbox_read = await self._pending_for_wake(field, channel)
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
@@ -5759,12 +5806,7 @@ class ProblemBoardRelaySupervisor:
         # store thread like the first: on the loop it held every channel for
         # about 3.4 s on a slow mailbox (W476, 2026-10-03).
         try:
-            pending_refs = await self._channel_off_loop(
-                channel, field.pending_worker_mail_refs, channel.worker_name, wait=False
-            )
-            listener = await self._channel_off_loop(
-                channel, field.worker_listener_session, channel.worker_name
-            )
+            pending_refs, listener, mailbox_read = await self._pending_for_wake(field, channel)
         except DomainError as exc:
             if exc.code != "field_record_not_found":
                 raise
@@ -5947,12 +5989,13 @@ class ProblemBoardRelaySupervisor:
             wake_state = str(subscription.get("wake_delivery_state") or "")
             logger.info(
                 "Problem Board wake deduplicated worker=%s wake_id=%s state=%s "
-                "retry_at=%s pending=%d",
+                "retry_at=%s pending=%d mailbox=%s",
                 channel.worker_name,
                 outstanding_wake_id,
                 wake_state,
                 deadline,
                 len(pending_refs),
+                "read" if mailbox_read else "unread_queued_wake",
             )
             return {
                 "adapter": str(subscription.get("adapter") or "unknown"),
