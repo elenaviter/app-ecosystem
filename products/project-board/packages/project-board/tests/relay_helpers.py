@@ -188,7 +188,8 @@ def supervisor_with_fake_channels(host, attendance: Attendance, *, real_notify: 
             worker_name=channel.worker_name,
             channel_identity=channel.worker_identity,
             replacement_epoch=len(opened),
-            card_fingerprint=supervisor._card_fingerprint(host_, channel),
+            # Read off the loop, as the production open does (W456).
+            card_fingerprint=await asyncio.to_thread(supervisor._card_fingerprint, host_, channel),
             aclose=aclose,
         )
 

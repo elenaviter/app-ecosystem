@@ -3589,9 +3589,10 @@ class ProblemBoardHostRelayAdapter:
         """An outbox store call that takes the outbox lock without blocking the loop.
 
         The call runs with ``wait=False``; while another holder has the lock it
-        is retried after an awaited, capped backoff. Nothing runs in a thread
-        (W321): the store refuses a busy lock before it reads or moves a row,
-        so a claim cancelled while waiting leaves nothing claimed. A settle or
+        is retried after an awaited, capped backoff. Nothing here runs in a
+        thread (W321): the store refuses a busy lock before it reads or moves a
+        row, so a call cancelled while waiting leaves nothing changed. The
+        claim itself runs in a thread through ``_claim_outbox`` (W456). A settle or
         retry of a row already sent (``finish=True``) runs as its own task on
         the loop, awaited through a shield, so a cancelled turn still records
         the delivery instead of leaving the row leased for a resend.
@@ -3622,6 +3623,48 @@ class ProblemBoardHostRelayAdapter:
 
         return finished
 
+    async def _claim_outbox(self, **kwargs: Any) -> list[dict[str, Any]]:
+        """Claim pending rows in a thread; a cancelled claim leaves nothing claimed.
+
+        W456 criterion 4 (Infra's review of cf48: with a pending row the claim
+        listed and moved rows on the loop, 1.6 s). The claim keeps the outbox
+        lock's ``wait=False`` and the awaited backoff of ``_outbox_store``.
+        W321: a claim cancelled while it waits for the lock has claimed
+        nothing; one cancelled while its thread runs cannot be stopped there,
+        so the rows it claimed return to pending as soon as it ends
+        (``release_outbox_claims``), never left leased for a resend.
+        """
+
+        delay = self.OUTBOX_LOCK_RETRY_FIRST_SECONDS
+        while True:
+            claim = asyncio.ensure_future(
+                asyncio.to_thread(self.field.pull_outbox, wait=False, **kwargs)
+            )
+            try:
+                return await asyncio.shield(claim)
+            except FileLockBusy:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self.OUTBOX_LOCK_RETRY_MAX_SECONDS)
+            except asyncio.CancelledError:
+                claim.add_done_callback(self._release_claim_after_cancel)
+                raise
+
+    def _release_claim_after_cancel(self, claim: asyncio.Future) -> None:
+        if claim.cancelled() or claim.exception() is not None:
+            return
+        outbox_ids = [str(row.get("outbox_id") or "") for row in claim.result() or ()]
+        outbox_ids = [outbox_id for outbox_id in outbox_ids if outbox_id]
+        if not outbox_ids:
+            return
+        release = asyncio.ensure_future(
+            asyncio.to_thread(
+                self.field.release_outbox_claims, outbox_ids, relay_id=self.config.relay_id,
+            )
+        )
+        self._outbox_finishes.add(release)
+        release.add_done_callback(self._outbox_finishes.discard)
+        release.add_done_callback(self._outbox_finish_after_cancel)
+
     @staticmethod
     def _outbox_finish_after_cancel(task: asyncio.Future) -> None:
         if not task.cancelled() and task.exception() is not None:
@@ -3645,14 +3688,14 @@ class ProblemBoardHostRelayAdapter:
         }
         # W456 criterion 4 (dev-main, 2026-10-05: the claim's directory
         # listing held the event loop 3.5 s): ask from a thread whether a
-        # claim would find anything. The claim itself stays on the loop
-        # (W321: a cancelled claim leaves nothing claimed).
+        # claim would find anything, then claim in a thread too
+        # (``_claim_outbox``: a cancelled claim leaves nothing claimed, W321).
         outbox = getattr(self.field, "_outbox", None)
         if outbox is not None and not await asyncio.to_thread(
             outbox.has_in_flight, worker_name=self.config.worker_name
         ):
             return counts
-        for row in await self._outbox_store(self.field.pull_outbox)(
+        for row in await self._claim_outbox(
             relay_id=self.config.relay_id,
             worker_name=self.config.worker_name,
             project_ref=(
@@ -6406,7 +6449,10 @@ class ProblemBoardRelaySupervisor:
         # Read before connecting: a Card replaced while the connection opens
         # leaves this session with the old identity, so it is refused beside
         # the cycle rather than trusted.
-        card_fingerprint = self._card_fingerprint(host, channel)
+        # In a thread (W456 criterion 4, Infra's review of cf48: a slow profile
+        # read here held the shared loop 0.8 s). Still read fresh, before the
+        # connection opens, so the identity fence is unchanged.
+        card_fingerprint = await asyncio.to_thread(self._card_fingerprint, host, channel)
         # Readers of a failed channel see this attempt running rather than a
         # retry time already past (W461). Success clears the whole record
         # below; failure and cancellation clear the mark in the handler.

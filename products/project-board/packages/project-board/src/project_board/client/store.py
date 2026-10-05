@@ -12505,6 +12505,38 @@ class SharedFieldStore:
                 claimed.append(row)
         return claimed
 
+    def release_outbox_claims(
+        self,
+        outbox_ids: Sequence[str],
+        *,
+        relay_id: str,
+        wait: bool = True,
+    ) -> list[str]:
+        """Undo a claim nobody will send: its rows return to pending as they were.
+
+        A relay claims in a thread (W456 criterion 4). When the turn that asked
+        is cancelled while the claim runs, the claimed rows go back at once
+        (W321: a cancelled claim leaves nothing claimed), without a retry count
+        or backoff. A row no longer leased to this relay is left alone.
+        """
+
+        released: list[str] = []
+        with exclusive_lock(self._outbox.lock, wait=wait):
+            for outbox_id in outbox_ids:
+                found = self._outbox.find(component(outbox_id, field="outbox_id"))
+                if found is None or found[1] != "leased":
+                    continue
+                source = found[0]
+                row = read_json(source)
+                lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
+                if str(lease.get("relay_id") or "") != str(relay_id):
+                    continue
+                row.update(state="pending", updated_at=utc_now())
+                row.pop("lease", None)
+                self._outbox.move_in_flight(source, row, "pending")
+                released.append(str(outbox_id))
+        return released
+
     def retry_outbox(
         self,
         outbox_id: str,
