@@ -272,7 +272,12 @@ the window's message), `pb worker lease-read`, `pb worker settle` and a reply
 on the window's correlation. These calls end nothing: receiving a message is
 never the end of the hold. Only the matching ALL CLEAR or cancellation from
 the window's installer, on the window's correlation, ends it. Other mail
-received while held is not acted on until then. A queued START wake cannot stop a busy
+received while held is not acted on until then. A Codex session woken
+while held acknowledges the wake with `pb worker wake-ack --wake-id <id>`
+instead of an ordinary receive: it leases nothing, so the backlog stays
+pending, and the window's mail is still found with `pb worker inbox`
+(coordinator, 2026-10-05 22:19 UTC: a held session's wake otherwise forced
+ordinary receives of old mail). A queued START wake cannot stop a busy
 model response and is never the mechanism that establishes the hold.
 The final acknowledgement is the session's last control call, after its
 leases and earlier calls are settled. If a reply is due before settlement,

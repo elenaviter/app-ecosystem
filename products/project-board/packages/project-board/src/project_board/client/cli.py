@@ -874,6 +874,14 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--approval-ref", default="", help="The ref of the approval to retire it (with --apply).")
 
     command = worker_commands.add_parser(
+        "wake-ack",
+        help="Acknowledge a native wake without receiving mail (for a session held by a window).",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--wake-id", required=True)
+
+    command = worker_commands.add_parser(
         "leases",
         help="Page the active mail leases held by this exact worker session.",
     )
@@ -5446,6 +5454,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
         return _with_project_files_signals(received, config, field, identity)
     if args.worker_command == "inbox":
         return _worker_inbox(field, identity, args)
+    if args.worker_command == "wake-ack":
+        return field.acknowledge_worker_wake(identity.worker_name, wake_id=args.wake_id)
     if args.worker_command == "inbox-retire":
         return _worker_inbox_retire(field, identity, args)
     if args.worker_command == "leases":
