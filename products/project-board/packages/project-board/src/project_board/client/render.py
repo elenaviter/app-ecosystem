@@ -224,6 +224,16 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_coordinate(result)
     if schema == "problem-board.worker-inbox.v1":
         return _render_worker_inbox(result, flags)
+    if schema == "problem-board.note-read.v1":
+        lines = [
+            "note: {} · item {} · ordinal {} · by {} · at {}".format(
+                result.get("note_ref") or result.get("note_id") or "-", result.get("item_key") or "-",
+                result.get("ordinal", "?"), result.get("author_label") or result.get("author") or "-",
+                result.get("created_at") or "-",
+            ),
+            "text:",
+        ]
+        return lines + [_BODY_INDENT + line for line in str(result.get("text") or "").splitlines() or [""]]
     if schema == "problem-board.item-read.v1":
         return _render_item_read(result)
     if _is_workspace_sweep(result):
@@ -2570,6 +2580,7 @@ def _render_plan_notes(operation: str, page: Mapping[str, Any]) -> list[str]:
         for key in ("identity_ref", "item_ref"):
             if _present(item.get(key)):
                 lines.append(f"item.{key}: {item[key]}")
+    clipped = 0
     for index, note in enumerate(notes, start=1):
         if not isinstance(note, Mapping):
             continue
@@ -2587,9 +2598,18 @@ def _render_plan_notes(operation: str, page: Mapping[str, Any]) -> list[str]:
         )
         if index <= _BRIEF_SECTION_ITEMS and _present(note.get("text")):
             lines.append(f"  preview: {_preview(note['text'])}")
+            if len(" ".join(str(note["text"]).split()).encode("utf-8")) > _PREVIEW_BYTES:
+                clipped += 1
     _note_omitted(
         lines, "note previews", shown=min(len(notes), _BRIEF_SECTION_ITEMS), total=len(notes)
     )
+    if clipped:
+        # W563: the safe whole read of a note, once for the page.
+        key = (item.get("item_key") if isinstance(item, Mapping) else "") or "<Wn>"
+        lines.append(
+            f"clipped previews: {clipped} · read one whole: pb worker note-read --project-ref "
+            f"{page.get('project_ref') or '<project-ref>'} --item-key {key} --note-ref <note ref above>"
+        )
     lines.append(_FULL_DETAIL_LINE)
     return lines
 

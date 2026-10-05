@@ -1230,3 +1230,39 @@ def test_worker_context_names_one_identity_command_instead_of_one_per_clone() ->
         f"  set in every clone (6 git config commands): pb worker workspace-report --project-ref {PROJECT_REF} --set-identity"
     ) in text
     assert "git -C /ws/repo-0" not in text
+
+
+def test_a_clipped_note_is_readable_whole_by_its_ref(monkeypatch) -> None:
+    # W563, coordinator 17:58Z: the notes brief clipped a questions note, and
+    # the JSON notes page carries the item, whose attachments can hold links.
+    note_ref = "work:note:20261005T162800Z:note_q:w563-questions"
+    question_text = "# Questions\n" + "\n".join(f"Q{index}: recommendation {index} " + "r" * 80 for index in range(1, 11))
+    pages = [
+        {"items": [{"note_ref": "work:note:a:note_a:other", "ordinal": 0, "text": "other"}], "next_cursor": "c1",
+         "item": {"attachments": [{"download_url": "https://signed.example/x?token=secret"}]}},
+        {"items": [{"note_ref": note_ref, "ordinal": 1, "author": "claude-e-main", "created_at": "2026-10-05T16:28:00Z",
+                    "text": question_text}], "next_cursor": ""},
+    ]
+    calls = []
+
+    def fake_request(args, *, action, object_ref, payload):
+        calls.append(payload)
+        return {"object": pages[len(calls) - 1]}
+
+    monkeypatch.setattr(cli, "_reference_mapping_request", fake_request)
+    args = type("Args", (), {"project_ref": PROJECT_REF, "item_key": "W563", "note_ref": note_ref})()
+
+    result = cli._worker_note_read(args)
+    text = render_envelope({"ok": True, "result": result})
+
+    assert "Q10: recommendation 10" in text and f"note: {note_ref} · item W563 · ordinal 1" in text
+    assert "signed.example" not in json.dumps(result) and "download" not in text
+    assert calls[1]["cursor"] == "c1"
+
+    brief = _brief({"operation": "plan.notes.list", "object": {
+        "project_ref": PROJECT_REF, "items": pages[1]["items"], "item": {"item_key": "W563"}}})
+    assert (
+        f"clipped previews: 1 · read one whole: pb worker note-read --project-ref {PROJECT_REF} "
+        "--item-key W563 --note-ref <note ref above>"
+    ) in brief
+    assert f"note 1: {note_ref}" in brief
