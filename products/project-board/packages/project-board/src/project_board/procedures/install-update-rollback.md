@@ -159,6 +159,9 @@ roll-back target.
   release.
 - `pb source versions` cannot reach the index: it names the index it asked.
   `PIP_INDEX_URL`, or `--index-url`, points it at another one.
+- A build failed: `use-release` and `use-code` keep the environment build and
+  pip output in the install log their result names (`install_log`, under the
+  releases root's `logs/`), not on the terminal; a failure quotes its tail.
 
 **After a reboot of a headless Linux host, or an agent approved whose watch
 never hears it (W558).** The relay keeps agents' credentials in the user's

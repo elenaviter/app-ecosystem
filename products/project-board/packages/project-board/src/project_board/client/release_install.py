@@ -275,8 +275,13 @@ def install_release_environment(
     marker = release / INSTALLATION_MARKER
     shutil.rmtree(environment, ignore_errors=True)
     marker.unlink(missing_ok=True)
+    # Outside the release folder, so a failed build's cleanup is unchanged.
+    install_log = (
+        Path(root).expanduser() / "logs"
+        / f"install-{identity[:12]}-{_utc_now().replace(':', '').replace('-', '')[:15]}.log"
+    )
     try:
-        _run((str(base_python), "-m", "venv", str(environment)))
+        _run((str(base_python), "-m", "venv", str(environment)), log=install_log)
         python = environment / "bin" / "python"
         _run(
             (
@@ -286,7 +291,8 @@ def install_release_environment(
                 "install",
                 "--upgrade",
                 *requirement_values,
-            )
+            ),
+            log=install_log,
         )
         smoke = _smoke_environment(
             release,
@@ -309,7 +315,7 @@ def install_release_environment(
             "launcher_version": LAUNCHER_VERSION,
         }
         _atomic_write_json(marker, record)
-        return {**record, "reused": False}
+        return {**record, "reused": False, "install_log": str(install_log)}
     except BaseException:
         shutil.rmtree(environment, ignore_errors=True)
         marker.unlink(missing_ok=True)
@@ -696,6 +702,7 @@ def _run(
     capture: bool = False,
     cwd: Path | None = None,
     safe_path: bool = False,
+    log: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     # A release smoke proves the candidate environment itself. Developer
@@ -705,11 +712,22 @@ def _run(
     environment.pop("PYTHONHOME", None)
     if safe_path:
         environment["PYTHONSAFEPATH"] = "1"
+    handle = None
+    if log is not None and not capture:
+        # W563: build and pip output go to the install log, not to the agent's
+        # terminal (a source switch printed about 7k tokens of it). The result
+        # names the log; a failure carries its tail.
+        log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        handle = log.open("a", encoding="utf-8")
+        handle.write(f"$ {' '.join(str(part) for part in command)}\n")
+        handle.flush()
     try:
         return subprocess.run(
             tuple(command),
             check=True,
             capture_output=capture,
+            stdout=handle if handle is not None else None,
+            stderr=subprocess.STDOUT if handle is not None else None,
             text=True,
             env=environment,
             cwd=str(cwd) if cwd is not None else None,
@@ -724,11 +742,18 @@ def _run(
                     "stderr": str(exc.stderr or "")[-2000:],
                 }
             )
+            if handle is not None:
+                handle.flush()
+                details["log"] = str(log)
+                details["log_tail"] = log.read_text(encoding="utf-8", errors="replace")[-2000:]
         raise ReleaseInstallError(
             "work_client_release_install_failed",
             "The candidate Project Board release could not be installed and verified.",
             details=details,
         ) from exc
+    finally:
+        if handle is not None:
+            handle.close()
 
 
 def _release_id(value: str) -> str:
