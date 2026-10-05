@@ -29,6 +29,12 @@ def _brief(result: dict) -> str:
     return render_envelope({"ok": True, "result": result})
 
 
+def _member_brief(result: dict, member: str) -> str:
+    """The same context narrowed to one teammate, as `--member` renders it (W563)."""
+
+    return _brief(cli.context_for_member(result, member))
+
+
 def _assert_budget(text: str, *, lines: int, bytes_: int) -> None:
     assert len(text.splitlines()) <= lines
     assert len(text.encode("utf-8")) <= bytes_
@@ -142,18 +148,28 @@ def test_worker_context_keeps_coordinates_and_bounds_repeated_sections() -> None
     assert "repositories[0].alias = repo-0" in text
     assert f"repositories[0].repository_ref = {REPOSITORY_REF}0" in text
     # W393: every teammate is accounted for, never a silent first eight.
+    # W563 (Q8 compact team row): one default row per teammate carries its
+    # usage; the `team usage:` block is in the `--member` view.
     assert "team: 14 · shown 14" in text
+    lines = text.splitlines()
     for index in range(14):
-        assert f"--- team member {index + 1} of 14: agent-{index} (codex-{index:02d}-" in text
+        [row] = [line for line in lines if line.startswith(f"--- agent-{index} (codex-{index:02d}-")]
+        assert "usage week 42% resets 01-01 00:00Z" in row
+        assert row.endswith(f"(cut from {len(LONG_PROSE.encode())} B: --member codex-{index:02d}-{'w' * 48})")
     assert "repositories: 8 of 14 shown in brief" in text
     assert "further project files: 8 of 14 shown in brief" in text
-    assert "team usage:" in text
+    assert "team usage:" not in text
+    member = _member_brief(result, "agent-3")
+    assert "--- team member 1 of 1: agent-3 (codex-03-" in member
+    assert "team usage:" in member
+    assert "  agent-3 (codex-03-" in member.split("team usage:", 1)[1]
     assert "private_history" not in text
     assert "OMITTED_TAIL" not in text
     assert "--format json for every field" in text
     # Every teammate is shown, so the budget grows per member and stays fixed
-    # for everything else: 14 members with long info lines measure 192 lines
-    # and 26,998 bytes.
+    # for everything else. W563 (Q8 compact team row): 14 members with long
+    # info lines now measure 136 lines and 16,846 bytes (was 192 / 26,998);
+    # the budget is unchanged.
     _assert_budget(text, lines=60 + 10 * 14, bytes_=8_000 + 1_500 * 14)
 
 
@@ -338,11 +354,17 @@ def test_worker_context_marks_old_usage_as_a_provenanced_report() -> None:
 
     text = _brief(result)
 
+    # W563 (Q8 compact team row): the default row keeps the figure and when it
+    # was observed; the source and full timestamp are in the `--member` view.
+    [row] = [line for line in text.splitlines() if line.startswith("--- claude-old@host-one (claude-code-old-sample) · ")]
+    assert "usage week 45% resets 09-26 10:00Z · obs 09-25 01:00Z" in row
+    assert "team usage:" not in text
+    member = _member_brief(result, "claude-code-old-sample")
     assert (
         "  claude-old@host-one (claude-code-old-sample) on host-one: "
         "last reported usage ok · week 45% resets 09-26 10:00Z "
         f"· source claude-code-statusline · observed {observed_at}"
-        in text
+        in member
     )
 
 
@@ -430,17 +452,25 @@ def test_compact_worker_and_team_rows_show_relay_reported_runtime_identity(
     assert stored_member["runtime_model"] == runtime_model
     assert stored_member["runtime_account"] == runtime_account
 
-    context_text = _brief(
-        {
-            "project_ref": PROJECT_REF,
-            "workspace": "/workspaces/codex-main",
-            "repositories": [],
-            "team": [stored_member],
-        }
+    context = {
+        "project_ref": PROJECT_REF,
+        "workspace": "/workspaces/codex-main",
+        "repositories": [],
+        "team": [stored_member],
+    }
+    context_text = _brief(context)
+    # W563 (Q8 compact team row): the default row names model and effort; the
+    # provenance and provider account are in the `--member` view.
+    assert any(
+        line.startswith("--- codex-main (codex-01) · ") and " · model gpt-5.6-sol/xhigh · " in line
+        for line in context_text.splitlines()
     )
-    assert f"source codex-rollout · observed {model_observed}" in context_text
-    assert f"source host-auth · observed {account_observed}" in context_text
+    assert "account-1" not in context_text and "host-auth" not in context_text
+    member_text = _member_brief(context, "codex-01")
+    assert f"source codex-rollout · observed {model_observed}" in member_text
+    assert f"source host-auth · observed {account_observed}" in member_text
     _assert_budget(context_text, lines=25, bytes_=5_000)
+    _assert_budget(member_text, lines=25, bytes_=5_000)
 
 
 def test_team_runtime_identity_reaches_context_from_real_heartbeat_evidence(
@@ -570,7 +600,7 @@ def test_team_runtime_identity_reaches_context_from_real_heartbeat_evidence(
     )
     monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(host.path))
 
-    def poll_and_render() -> str:
+    def poll_and_render() -> tuple[str, str]:
         asyncio.run(
             adapter._poll_project_once(  # noqa: SLF001 - heartbeat boundary
                 agent_sessions=adapter._listener_sessions(),  # noqa: SLF001
@@ -591,9 +621,16 @@ def test_team_runtime_identity_reaches_context_from_real_heartbeat_evidence(
                 ]
             )
         )
-        return _brief(context)
+        # W563 (Q8 compact team row): provenance and the provider account are
+        # in the `--member` view; the default row keeps model/effort.
+        return _brief(context), _brief(cli.context_for_member(context, identity.worker_name))
 
-    reported_text = poll_and_render()
+    def default_row(text: str) -> str:
+        [row] = [line for line in text.splitlines() if line.startswith(f"--- codex-main ({identity.worker_name}) · ")]
+        return row
+
+    reported_default, reported_text = poll_and_render()
+    assert " · model gpt-5.6-sol/xhigh · " in default_row(reported_default)
     first = board.heartbeats[0]
     first_evidence = first["runtime_account_evidence"]
     assert first["project_ref"] == PROJECT_REF
@@ -613,7 +650,8 @@ def test_team_runtime_identity_reaches_context_from_real_heartbeat_evidence(
         f"· observed {first_evidence['observed_at']}"
     ) in reported_text
 
-    stale_text = poll_and_render()
+    stale_default, stale_text = poll_and_render()
+    assert " · model gpt-5.6-sol/xhigh · " in default_row(stale_default)
     second = board.heartbeats[1]
     assert "agent_sessions" not in second  # unchanged, not missing
     assert "runtime_account" not in second
@@ -625,7 +663,8 @@ def test_team_runtime_identity_reaches_context_from_real_heartbeat_evidence(
         f"· observed {first_evidence['observed_at']}"
     ) in stale_text
 
-    missing_text = poll_and_render()
+    missing_default, missing_text = poll_and_render()
+    assert " · model gpt-5.6-sol/xhigh · " in default_row(missing_default)
     third = board.heartbeats[2]
     assert "agent_sessions" not in third
     assert "runtime_account" not in third
@@ -687,34 +726,42 @@ def test_compact_worker_and_team_rows_name_missing_and_stale_runtime_identity() 
         in unprovenanced
     )
 
-    stale = _brief(
-        {
-            "project_ref": PROJECT_REF,
-            "workspace": "/workspaces/codex-main",
-            "repositories": [],
-            "team": [
-                {
-                    "worker_alias": "stale-worker",
-                    "worker_name": "codex-stale",
-                    "runtime_kind": "codex",
-                    "presence": "stale",
-                    "runtime_model": {
-                        "model": "gpt-5.6-sol",
-                        "effort": "high",
-                        "source": "codex-rollout",
-                        "observed_at": "2026-09-25T01:00:00Z",
-                    },
-                    "runtime_account": {
-                        "account_id": "account-old",
-                        "source": "host-auth",
-                        "observed_at": "2026-09-25T01:01:00Z",
-                    },
-                }
-            ],
-        }
+    stale_context = {
+        "project_ref": PROJECT_REF,
+        "workspace": "/workspaces/codex-main",
+        "repositories": [],
+        "team": [
+            {
+                "worker_alias": "stale-worker",
+                "worker_name": "codex-stale",
+                "runtime_kind": "codex",
+                "presence": "stale",
+                "runtime_model": {
+                    "model": "gpt-5.6-sol",
+                    "effort": "high",
+                    "source": "codex-rollout",
+                    "observed_at": "2026-09-25T01:00:00Z",
+                },
+                "runtime_account": {
+                    "account_id": "account-old",
+                    "source": "host-auth",
+                    "observed_at": "2026-09-25T01:01:00Z",
+                },
+            }
+        ],
+    }
+    # W563 (Q8 compact team row): the default row marks the model stale; the
+    # evidence state and provenance are in the `--member` view.
+    stale_default = _brief(stale_context)
+    assert any(
+        line.startswith("--- stale-worker (codex-stale) · ")
+        and " · stale · model gpt-5.6-sol/high (stale) · " in line
+        for line in stale_default.splitlines()
     )
+    stale = _member_brief(stale_context, "codex-stale")
     assert "reasoning effort high · state stale · source codex-rollout" in stale
     assert "account_id account-old · state stale · source host-auth" in stale
+    _assert_budget(stale_default, lines=15, bytes_=2_000)
     _assert_budget(missing + unprovenanced + stale, lines=55, bytes_=9_000)
 
 
@@ -820,11 +867,19 @@ def test_plan_item_keeps_actionable_refs_and_bounds_the_complete_body() -> None:
     assert "acceptance lines: 5 of 8 shown in brief" in text
     assert "dependencies: 12 of 15 shown in brief" in text
     assert "dependency facts: 12 of 15 shown in brief" in text
-    # W563: a count, three files and the commands that list and read the rest,
-    # not one line per file.
-    assert "attachments: 15 · first 3 shown · list: pb worker item-attachment-list" in text
-    assert text.count(REPOSITORY_REF) == 3
-    assert "read one: pb worker item-attachment-read" in text
+    # W563 (compact item attachments): one line with the count and the commands
+    # that list and read them; no per-file lines and no separate read-one line.
+    assert (
+        "attachments: 15 · list: pb worker item-attachment-list --project-ref <project-ref> --item-key W393"
+        " · read one: pb worker item-attachment-read --project-ref <project-ref> --item-key W393"
+        " --file-ref <file_ref> --output <new path>"
+    ) in text.splitlines()
+    assert text.count(REPOSITORY_REF) == 0
+    assert "attachment:" not in text
+    assert sum("read one: pb worker item-attachment-read" in line for line in text.splitlines()) == 1
+    # W563: the assignment block names only its own refs.
+    for field in ("identity_ref", "work_ref", "versioned_work_ref"):
+        assert f"assignment.{field}" not in text
     assert "notes" not in text and "OMITTED_TAIL" not in text
     _assert_budget(text, lines=75, bytes_=20_000)
 
@@ -864,7 +919,14 @@ def test_plan_item_prints_each_ref_once_and_drops_the_title_from_the_summary() -
     assert EXACT_REF + "-older" not in text
     assert "summary: Operator request: bounded reads." in text
     assert "notes: 100 · read: pb coordinate plan.notes.list" in text
-    assert "attachments: 30 · first 3 shown" in text
+    # W563 (compact item attachments): the count and the list/read commands on
+    # one line; no file is listed in the brief.
+    assert (
+        "attachments: 30 · list: pb worker item-attachment-list --project-ref <project-ref> --item-key W563"
+        " · read one: pb worker item-attachment-read --project-ref <project-ref> --item-key W563"
+        " --file-ref <file_ref> --output <new path>"
+    ) in text.splitlines()
+    assert "pbfile:owner/items/file-" not in text
     assert "pbfile:owner/items/file-3" not in text
     assert "downloadable" not in text
 
@@ -1091,12 +1153,23 @@ def test_plan_index_is_two_lines_per_item_and_keeps_paging() -> None:
     for index in range(7):
         line = next(line for line in text.splitlines() if line.startswith(f"--- W{500 + index} "))
         assert "working" in line and "assignee codex-main" in line and "notes 86" in line
-        assert f"identity_ref: {IDENTITY_REF}{index}" in text
+        # W563 (compact plan index): the row is read by its key, not a per-row
+        # identity_ref line; one read-one command follows the rows.
+        assert f"{IDENTITY_REF}{index}" not in text
+    lines = text.splitlines()
+    read_one = (
+        "read one: pb coordinate project.plan.item --object-ref <project-ref> "
+        """--payload-json '{"item_key":"<key>"}'"""
+    )
+    assert lines.count(read_one) == 1
+    assert lines.index(read_one) == max(i for i, line in enumerate(lines) if line.startswith("--- W")) + 1
     for bulk in ("search_content_hash", "source_content_hash", "available_transitions", "embedding", "keywords", "version_slug"):
         assert bulk not in text
-    # Two lines per item plus a fixed header; the flat form was 17 KB for a
-    # real seven-item page (W563 baseline B1).
-    _assert_budget(text, lines=7 * 2 + 8, bytes_=3_200)
+    # One line per item plus a fixed header and the read-one line; the flat
+    # form was 17 KB for a real seven-item page (W563 baseline B1).
+    # W563 (compact plan index): lowered from 7 * 2 + 8 lines / 3,200 B; this
+    # page now measures 16 lines / 2,118 B.
+    _assert_budget(text, lines=7 + 9, bytes_=2_400)
 
 
 def test_workspace_sweep_brief_counts_paths_and_prints_removals_whole() -> None:
@@ -1230,3 +1303,75 @@ def test_worker_context_names_one_identity_command_instead_of_one_per_clone() ->
         f"  set in every clone (6 git config commands): pb worker workspace-report --project-ref {PROJECT_REF} --set-identity"
     ) in text
     assert "git -C /ws/repo-0" not in text
+
+
+def test_a_clipped_note_is_readable_whole_by_its_ref(monkeypatch) -> None:
+    # W563, coordinator 17:58Z: the notes brief clipped a questions note, and
+    # the JSON notes page carries the item, whose attachments can hold links.
+    note_ref = "work:note:20261005T162800Z:note_q:w563-questions"
+    question_text = "# Questions\n" + "\n".join(f"Q{index}: recommendation {index} " + "r" * 80 for index in range(1, 11))
+    pages = [
+        {"items": [{"note_ref": "work:note:a:note_a:other", "ordinal": 0, "text": "other"}], "next_cursor": "c1",
+         "item": {"attachments": [{"download_url": "https://signed.example/x?token=secret"}]}},
+        {"items": [{"note_ref": note_ref, "ordinal": 1, "author": "claude-e-main", "created_at": "2026-10-05T16:28:00Z",
+                    "text": question_text}], "next_cursor": ""},
+    ]
+    calls = []
+
+    def fake_request(args, *, action, object_ref, payload):
+        calls.append(payload)
+        return {"object": pages[len(calls) - 1]}
+
+    monkeypatch.setattr(cli, "_reference_mapping_request", fake_request)
+    args = type("Args", (), {"project_ref": PROJECT_REF, "item_key": "W563", "note_ref": note_ref})()
+
+    result = cli._worker_note_read(args)
+    text = render_envelope({"ok": True, "result": result})
+
+    assert "Q10: recommendation 10" in text and f"note: {note_ref} · item W563 · ordinal 1" in text
+    assert "signed.example" not in json.dumps(result) and "download" not in text
+    assert calls[1]["cursor"] == "c1"
+
+    brief = _brief({"operation": "plan.notes.list", "object": {
+        "project_ref": PROJECT_REF, "items": pages[1]["items"], "item": {"item_key": "W563"}}})
+    assert (
+        f"clipped previews: 1 · read one whole: pb worker note-read --project-ref {PROJECT_REF} "
+        "--item-key W563 --note-ref <note ref above>"
+    ) in brief
+    assert f"note 1: {note_ref}" in brief
+
+
+def test_the_routing_context_keeps_the_team_and_coordinator_and_leaves_start_up_coordinates() -> None:
+    # W563: a dispatch cycle routes by the team; the workspace, journal and
+    # project-file coordinates are read at start or resume, not every cycle.
+    holder = {"worker_name": "codex-main", "worker_alias": "root", "attending": True}
+    result = {
+        "project_ref": PROJECT_REF,
+        "context_view": "routing",
+        "workspace": "/ws/agent",
+        "journal_home_ref": "repo:apps/journal",
+        "local_project_facts": "/ws/agent/apps/facts.md",
+        "project_facts_ref": "repo:apps/facts.md",
+        "repositories": [{"alias": "apps", "url": "git@example.test:apps.git", "role": "journal"}],
+        "commit_identity": {"name": "agent", "email": "agent@example.test", "commands": ["git config user.name agent"]},
+        "coordinator": {"state": "held", "acting": False, "revision": 8, "holder": holder, "home": dict(holder)},
+        "team": [
+            {"worker_name": f"codex-{index}", "worker_alias": f"agent-{index}", "role": "worker", "runtime_kind": "codex",
+             "presence": "online", "info_text": "Working on W1",
+             "runtime_account": {"account_id": "shared-account"},
+             "limit_state": {"kind": "ok", "windows": [{"name": "primary", "window_minutes": 10080, "used_percent": 40,
+                                                         "resets_at": "2099-10-09T21:14:00Z"}],
+                             "observed_at": "2026-10-05T18:00:00Z"}}
+            for index in range(3)
+        ],
+    }
+
+    text = _brief(result)
+
+    assert "view: routing" in text
+    assert "coordinator.holder.worker_name = codex-main" in text and "coordinator.home = the holder" in text
+    for index in range(3):
+        row = next(line for line in text.splitlines() if line.startswith(f"--- agent-{index} (codex-{index})"))
+        assert "usage week 40% resets 10-09 21:14Z" in row and "account shared by 3" in row and "info: Working on W1" in row
+    for absent in ("/ws/agent", "repo:apps", "git@example.test", "commit identity", "agent@example.test"):
+        assert absent not in text, absent

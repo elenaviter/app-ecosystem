@@ -44,7 +44,7 @@ item field you need is clipped there, the brief view names the safe full read,
 `pb worker item-read --project-ref <project-ref> --item-key <Wn> --field <name>`:
 it prints the field whole at the item's revision, with attachment names and refs
 and never a link, so you go on without waiting for anyone to quote it (W563,
-from W459). Never print an attachment block from JSON. Do not broaden or page a query to compensate, and do
+from W459). A clipped note is read the same way, whole and alone: `pb worker note-read --project-ref <project-ref> --item-key <Wn> --note-ref <ref>`, which the notes brief names. Never print an attachment block from JSON. Do not broaden or page a query to compensate, and do
 not write a JSON parser. A result retained from an earlier decision boundary
 is not current evidence: rerun the targeted read.
 

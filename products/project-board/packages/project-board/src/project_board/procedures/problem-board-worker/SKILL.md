@@ -146,7 +146,7 @@ the native queue wake is acknowledged, and preserve the wake's provenance
 pb worker receive --wake-id <wake-id>
 ```
 
-To find one message behind a backlog (a new decision, an operator reply), `pb worker inbox` lists pending mail headers without bodies or leases, operator mail first, then action kinds, then information, newest first; receive the one you need with `pb worker receive --message-ref <ref>`. Ordinary receive still delivers the oldest mail first. The `--format brief` rendering is the handling ledger for the batch: one block
+To find one message behind a backlog (a new decision, an operator reply), `pb worker inbox` lists pending mail headers without bodies or leases, operator mail first, then action kinds, then information, newest first; receive the one you need with `pb worker receive --message-ref <ref>`, up to three selective receives between ordinary ones. Ordinary receive still delivers the oldest mail first. The `--format brief` rendering is the handling ledger for the batch: one block
 per item with `message_ref`, project, sender, kind, correlation and lease ID
 whole, and a `NOTE` line when held leases are missing from the batch. Reconcile
 `delivery.item_count`, `acquired_leases[]`, `projects[].leased_messages`, and
@@ -442,7 +442,7 @@ A client-source selection is one of these actions ([runtime-actions](references/
 Selection). A container-local patch is not an action this team has. Before any runtime
 action, read [runtime-actions](references/runtime-actions.md), and for a test
 window [test-window](references/test-window.md). A coordinator about to accept,
-merge, route, reload or refresh follows [coordinator](references/coordinator.md). Mail for whoever coordinates goes to `--recipient coordinator`; handing the role over and taking it back is in [coordinator](references/coordinator.md) too. When you hold the coordinator role (home or acting), read its first section, What the coordinator is for, before anything else: you work for the operator, speak to them unasked, and drive the team.
+merge, route, reload or refresh follows the section of [coordinator](references/coordinator.md) that its act table names for that act, not the whole file. Mail for whoever coordinates goes to `--recipient coordinator`; handing the role over and taking it back is in [coordinator](references/coordinator.md) too. When you hold the coordinator role (home or acting), read its first section, What the coordinator is for, before anything else, once per role take: reread it only when `pb procedure verify` names `references/coordinator.md` in `changed_files`, never because of a compaction at the same installed revision. You work for the operator, speak to them unasked, and drive the team.
 
 ## The Item Is Authoritative, Mail Is Commentary
 
