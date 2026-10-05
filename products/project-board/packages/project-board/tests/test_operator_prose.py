@@ -37,6 +37,9 @@ def test_the_glued_mail_of_2026_10_05_is_refused_naming_each_glued_word():
     "Digest sha256 109d8760, an ext4 disk, utf8 text, arm64 host, k8s and i18n.",
     "The literal `Apps1204f593` and a block:\n\n```\nALLCLEAR22:06 fresh215625\n```\n",
     "claude-code-0050e243 and codex-01a0d896 sent v2.1 to gpt-6.1-sol; W563 r54; 5h 98%.",
+    # Review of 36eeb9b8: real heads from 2026-10-05 and our host name.
+    "Merged as cabeb2f6 on main. AE bef2c40c returned. Runs on spark1 now, with Redis7.",
+    "Python3.11, PG16, W563/PR544, IPv6, mp4, release 2026.10.05.9, dc2de69c and f09efbba.",
 ])
 def test_readable_text_refs_terms_and_code_pass(text):
     assert refuse_unreadable_operator_prose(text, argument="--body") == text
@@ -57,3 +60,10 @@ def test_the_send_command_checks_only_operator_mail():
     text = open(source, encoding="utf-8").read()
     assert "if direct_address in OPERATOR_RECIPIENTS:" in text
     assert 'refuse_unreadable_operator_prose(args.subject, argument="--subject")' in text
+
+
+@pytest.mark.parametrize("glued", ["ALLCLEAR22:06", "fresh215625", "Apps1204f593", "Require64GB"])
+def test_each_real_glue_of_2026_10_05_is_still_refused(glued):
+    with pytest.raises(DomainError) as refused:
+        refuse_unreadable_operator_prose(f"Status: {glued} is done.", argument="--body")
+    assert refused.value.details["glued"] == [glued]

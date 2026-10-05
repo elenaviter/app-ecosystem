@@ -179,6 +179,28 @@ GLUED_TERMS = frozenset({
     "win32", "win64", "i386", "oauth2", "h264", "h265", "k8s", "i18n", "l10n", "a11y", "python3",
     "pip3", "gzip2", "bzip2", "md5sum", "sha256sum", "x509", "pkcs7", "pkcs8", "pkcs12", "aes128", "aes256",
 })
+COMMIT_HASH = re.compile(r"[0-9a-f]{7,40}")
+
+
+def _glued(match: re.Match[str]) -> bool:
+    """A word run into a number, and not a commit hash, a host name or a known term.
+
+    Review of 36eeb9b8: a short commit hash that starts with three hex letters
+    (cabeb2f6, bef2c40c) and a host name with one trailing digit (spark1,
+    Redis7) are not glue. A glued run of two digits or more, or a time
+    (ALLCLEAR22:06), still is.
+    """
+
+    token = match.group(0)
+    if COMMIT_HASH.fullmatch(token):
+        return False
+    digits = re.match(r"\d+", match.group(2)).group(0)
+    if len(digits) < 2 and ":" not in match.group(2):
+        return False
+    return (token.lower().rstrip(".:%") not in GLUED_TERMS
+            and match.group(1).lower() + digits not in GLUED_TERMS)
+
+
 # A paragraph longer than this reads as a wall in a phone notification.
 OPERATOR_PARAGRAPH_MAXIMUM = 900
 OPERATOR_RECIPIENTS = frozenset({"operator", "owner"})
@@ -198,11 +220,7 @@ def refuse_unreadable_operator_prose(value: Any, *, argument: str) -> Any:
     if not isinstance(value, str):
         return value
     prose = _without_code(value)
-    glued = sorted({
-        match.group(0) for match in GLUED_WORD.finditer(prose)
-        if match.group(0).lower().rstrip(".:%") not in GLUED_TERMS
-        and match.group(1).lower() + re.match(r"\d+", match.group(2)).group(0) not in GLUED_TERMS
-    })
+    glued = sorted({match.group(0) for match in GLUED_WORD.finditer(prose) if _glued(match)})
     if glued:
         raise DomainError(
             "problem_board_operator_prose_glued",
