@@ -898,6 +898,19 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--file", required=True)
 
     command = worker_commands.add_parser(
+        "item-read",
+        help="Read one work item's text fields whole: no notes, history or download links.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--item-key", required=True)
+    command.add_argument(
+        "--field", action="append", choices=_ITEM_READ_FIELDS, default=[],
+        help="Read only this field (repeatable); every text field by default.",
+    )
+
+    command = worker_commands.add_parser(
         "item-attachment-list",
         help="List one page of a work item's files: name and file ref, never a link.",
     )
@@ -3541,6 +3554,55 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
     }
 
 
+# The text an item carries for whoever works on or reviews it.
+_ITEM_READ_FIELDS = ("title", "summary", "description", "acceptance", "result", "blocked_reason",
+                     "cancel_reason", "review")
+# Identity and ownership printed with every item read, so the text is tied to
+# the exact revision it was read at.
+_ITEM_READ_IDENTITY = ("item_key", "status", "identity_ref", "item_ref", "revision", "updated_at",
+                       "assignee", "acting_assignee", "reviewer")
+# The attachment fields an item read returns: names and identity only. Any
+# other field (a download URL or path, or one added later) is never returned.
+_ATTACHMENT_SAFE_FIELDS = ("filename", "file_ref", "mime", "size", "sha256")
+
+
+def _worker_item_read(args: Any) -> dict[str, Any]:
+    """One item's text fields whole, at one revision, safe to print (W563).
+
+    The brief item view clips long prose, and the JSON item read can carry a
+    working download link per attachment, so a reviewer whose scope was
+    clipped had no safe way to read it and waited for someone to quote it
+    (W459). This read returns the requested text fields complete, the item's
+    identity and revision, the assignment's ownership coordinates and the
+    attachment names and refs without any link. Notes and history are not
+    fetched.
+    """
+
+    item = _worker_item(args)
+    item = item.get("item") if isinstance(item.get("item"), Mapping) else item
+    wanted = list(dict.fromkeys(args.field or _ITEM_READ_FIELDS))
+    result: dict[str, Any] = {
+        "schema": "problem-board.item-read.v1",
+        "project_ref": args.project_ref,
+        **{key: item.get(key) for key in _ITEM_READ_IDENTITY if key in item},
+        "fields": {key: item.get(key) for key in wanted if key in item},
+    }
+    assignment = item.get("assignment")
+    if isinstance(assignment, Mapping):
+        result["assignment"] = {
+            key: assignment.get(key)
+            for key in ("assignment_ref", "ownership_version", "state", "worker_name")
+            if key in assignment
+        }
+    result["attachments"] = [
+        {key: entry[key] for key in _ATTACHMENT_SAFE_FIELDS if key in entry}
+        for entry in item.get("attachments") or []
+        if isinstance(entry, Mapping)
+    ]
+    result["note_count"] = item.get("note_count", 0)
+    return result
+
+
 _ATTACHMENT_LIST_DEFAULT = 20
 _ATTACHMENT_LIST_MAXIMUM = 100
 
@@ -5418,6 +5480,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
         )
     if args.worker_command == "item-attach":
         return _worker_item_attach(args)
+    if args.worker_command == "item-read":
+        return _worker_item_read(args)
     if args.worker_command == "item-attachment-list":
         return _worker_item_attachment_list(args)
     if args.worker_command == "item-attachment-read":

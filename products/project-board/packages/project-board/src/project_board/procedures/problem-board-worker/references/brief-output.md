@@ -39,10 +39,12 @@ full envelope directly, but only when it carries no attachments. A full
 envelope of an item or message with attachments can hold each file's signed
 download link, which works as a credential, and printing it puts that
 credential in your context. For such an item or message, read the brief view,
-which withholds the link and names the file listing and read commands; when the field
-you need is still clipped there, say the field cannot be read safely and ask
-the item's author or the coordinator to quote it. Never print an attachment
-block from JSON. Do not broaden or page a query to compensate, and do
+which withholds the link and names the file listing and read commands. When an
+item field you need is clipped there, the brief view names the safe full read,
+`pb worker item-read --project-ref <project-ref> --item-key <Wn> --field <name>`:
+it prints the field whole at the item's revision, with attachment names and refs
+and never a link, so you go on without waiting for anyone to quote it (W563,
+from W459). Never print an attachment block from JSON. Do not broaden or page a query to compensate, and do
 not write a JSON parser. A result retained from an earlier decision boundary
 is not current evidence: rerun the targeted read.
 

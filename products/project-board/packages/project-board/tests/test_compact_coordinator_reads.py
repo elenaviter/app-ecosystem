@@ -1133,3 +1133,61 @@ def test_workspace_sweep_brief_counts_paths_and_prints_removals_whole() -> None:
     assert "(+1 more)" in text and "build/cache-299/" not in text
     # 56 trees: 60 rows are shown whole, so nothing is omitted here.
     _assert_budget(text, lines=130, bytes_=16_000)
+
+
+def test_a_clipped_scope_is_readable_whole_without_download_links(monkeypatch) -> None:
+    # W563, Root 16:50Z (W459 checkpoint): a reviewer stopped because the brief
+    # item clipped the current scope, and the JSON read was off limits because
+    # the item's attachments could carry download links. The brief view names
+    # the safe full read, and that read prints the scope whole with no link.
+    scope = "CURRENT ROOT SCOPE: " + " ".join(f"step-{index} do the exact thing" for index in range(400)) + " SCOPE_TAIL"
+    item = {
+        "item_key": "W459",
+        "status": "review",
+        "title": "Review scope",
+        "identity_ref": IDENTITY_REF,
+        "item_ref": EXACT_REF,
+        "revision": 41,
+        "updated_at": "2026-10-05T16:40:00Z",
+        "assignee": "codex-app",
+        "reviewer": "claude-e-app",
+        "description": scope,
+        "acceptance": [f"line {index}" for index in range(7)],
+        "review": {"look_at": "REVIEW_STEPS " + "x" * 900 + " REVIEW_TAIL", "could_not_verify": "None"},
+        "assignment": {"assignment_ref": ASSIGNMENT_REF, "ownership_version": 3, "state": "working",
+                       "worker_name": "codex-app"},
+        "note_count": 96,
+        "attachments": [
+            {"filename": f"report-{index}.md", "file_ref": f"pbfile:o/i/{index}", "mime": "text/markdown",
+             "download_url": f"https://signed.example/{index}?token=secret", "download_path": "/api/x/download",
+             "downloadable": True}
+            for index in range(26)
+        ],
+        "review_history": [{"decision": "return", "reason": "HISTORY_BODY"}],
+    }
+
+    brief = _brief({"operation": "project.plan.item", "object": item})
+    assert "SCOPE_TAIL" not in brief
+    assert (
+        "clipped above: description, acceptance, review · read whole: pb worker item-read "
+        "--project-ref <project-ref> --item-key W459 --field description --field acceptance --field review"
+    ) in brief
+
+    monkeypatch.setattr(cli, "_worker_item", lambda args: item)
+    args = type("Args", (), {"project_ref": PROJECT_REF, "item_key": "W459", "field": []})()
+    result = cli._worker_item_read(args)
+    full = render_envelope({"ok": True, "result": result})
+
+    assert "SCOPE_TAIL" in full and "REVIEW_TAIL" in full and "[7] line 6" in full
+    assert "item: W459 · review · revision 41" in full
+    assert f"item_ref: {EXACT_REF}" in full
+    assert f"assignment.assignment_ref: {ASSIGNMENT_REF}" in full and "ownership 3" in full
+    assert "attachments: 26" in full and "attachment: report-25.md · pbfile:o/i/25" in full
+    serialized = json.dumps(result)
+    for leaked in ("signed.example", "token=secret", "download", "HISTORY_BODY"):
+        assert leaked not in serialized and leaked not in full, leaked
+    assert "notes: 96 (not read here" in full
+
+    args.field = ["description"]
+    narrow = cli._worker_item_read(args)
+    assert list(narrow["fields"]) == ["description"]

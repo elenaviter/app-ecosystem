@@ -2640,7 +2640,10 @@ def test_the_full_json_fallback_never_prints_an_attachment_capability() -> None:
     brief = _words(_read("references/brief-output.md"))
     assert "read the full envelope directly, but only when it carries no attachments" in brief
     assert "can hold each file's signed download link, which works as a credential" in brief
-    assert "say the field cannot be read safely and ask the item's author or the coordinator to quote it" in brief
+    # W563 (from W459): a clipped item field is read whole through the safe
+    # item read, not by waiting for someone to quote it.
+    assert "the brief view names the safe full read, `pb worker item-read --project-ref <project-ref> --item-key <Wn> --field <name>`" in brief
+    assert "so you go on without waiting for anyone to quote it" in brief
     assert "Never print an attachment block from JSON." in brief
     assert "do not write a JSON parser" in brief
     # Every other place that names the fallback points at that rule.

@@ -222,6 +222,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_lease_read(result, flags)
     if "operation" in result and "object" in result:
         return _render_coordinate(result)
+    if schema == "problem-board.item-read.v1":
+        return _render_item_read(result)
     if _is_workspace_sweep(result):
         return _render_workspace_sweep(result)
     if _is_worker_context(result):
@@ -249,6 +251,62 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
     lines = _flatten(result, prefix="")
     if isinstance(result.get("team"), list) and result.get("team"):
         lines.extend(_team_usage_lines(result["team"]))
+    return lines
+
+
+def _render_item_read(result: Mapping[str, Any]) -> list[str]:
+    """An item's text fields printed whole, tied to the revision read (W563).
+
+    This is the safe full read the brief item view points to when it clips
+    prose: nothing here is previewed, and attachments are names and refs only.
+    """
+
+    lines = [
+        "item: {} · {} · revision {} · updated {}".format(
+            result.get("item_key") or "-", result.get("status") or "-",
+            result.get("revision", "?"), result.get("updated_at") or "-",
+        )
+    ]
+    for key in ("project_ref", "identity_ref", "item_ref"):
+        if _present(result.get(key)):
+            lines.append(f"{key}: {result[key]}")
+    lines.append(
+        "assignee {} · acting {} · reviewer {}".format(
+            result.get("assignee") or "-", result.get("acting_assignee") or "-", result.get("reviewer") or "-"
+        )
+    )
+    assignment = result.get("assignment")
+    if isinstance(assignment, Mapping):
+        lines.append(
+            "assignment: state {} · ownership {} · worker {}".format(
+                assignment.get("state") or "-", assignment.get("ownership_version", "?"),
+                assignment.get("worker_name") or "-",
+            )
+        )
+        if _present(assignment.get("assignment_ref")):
+            lines.append(f"assignment.assignment_ref: {assignment['assignment_ref']}")
+    fields = result.get("fields") if isinstance(result.get("fields"), Mapping) else {}
+    for name, value in fields.items():
+        if not _present(value):
+            lines.append(f"{name}: (empty)")
+        elif isinstance(value, list):
+            lines.append(f"{name}: {len(value)}")
+            for position, entry in enumerate(value, start=1):
+                lines.append(f"  [{position}] {' '.join(str(entry).split())}")
+        elif isinstance(value, Mapping):
+            lines.append(f"{name}:")
+            for key, entry in value.items():
+                if _present(entry):
+                    lines.append(f"  {key}:")
+                    lines.extend(_BODY_INDENT + line for line in _joined(entry).splitlines() or [""])
+        else:
+            lines.append(f"{name}:")
+            lines.extend(_BODY_INDENT + line for line in str(value).splitlines() or [""])
+    attachments = [entry for entry in result.get("attachments") or [] if isinstance(entry, Mapping)]
+    lines.append(f"attachments: {len(attachments)}")
+    for entry in attachments:
+        lines.append(f"  attachment: {entry.get('filename') or '-'} · {entry.get('file_ref') or '-'}")
+    lines.append(f"notes: {result.get('note_count', 0)} (not read here; plan.notes.list)")
     return lines
 
 
@@ -2181,8 +2239,38 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
     lines.extend(_item_attachment_lines(item))
     if isinstance(item.get("reference_error"), Mapping):
         lines.extend(_flatten(item["reference_error"], prefix="reference_error."))
+    clipped = _clipped_item_fields(item)
+    if clipped:
+        lines.append(
+            "clipped above: {} · read whole: pb worker item-read --project-ref <project-ref> --item-key {}{}".format(
+                ", ".join(clipped), item.get("item_key") or "<Wn>",
+                "".join(f" --field {name}" for name in clipped),
+            )
+        )
     lines.append(_FULL_DETAIL_LINE)
     return lines
+
+
+def _clipped_item_fields(item: Mapping[str, Any]) -> list[str]:
+    """The item text fields the brief view previewed rather than printed whole."""
+
+    clipped = []
+    for name in ("summary", "description", "result", "blocked_reason", "cancel_reason"):
+        text = " ".join(str(item.get(name) or "").split())
+        if len(text.encode("utf-8")) > _LONG_PREVIEW_BYTES:
+            clipped.append(name)
+    acceptance = item.get("acceptance") or []
+    if isinstance(acceptance, list) and (
+        len(acceptance) > 5
+        or any(len(" ".join(str(entry).split()).encode("utf-8")) > _PREVIEW_BYTES for entry in acceptance)
+    ):
+        clipped.append("acceptance")
+    review = item.get("review")
+    if isinstance(review, Mapping) and any(
+        len(_joined(value).encode("utf-8")) > _LONG_PREVIEW_BYTES for value in review.values()
+    ):
+        clipped.append("review")
+    return clipped
 
 
 _ITEM_ATTACHMENTS_SHOWN = 3
