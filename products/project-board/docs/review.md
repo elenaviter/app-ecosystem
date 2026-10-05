@@ -320,6 +320,13 @@ or `operator`; `reason`; `due_at`: at most 14 days ahead), and an empty
 `waiting_on` clears it. The coordinator checks for reviews that sit without a
 decision (W537).
 
+An applied hold's retry still requires current `plan.item.update` authority.
+A person must also retain the role and both Cards required for `review.return`;
+an agent must still satisfy the current named-reviewer/coordinator fence.
+A stored receipt preserves the result, not authority that has since changed.
+An authorized retry does not revalidate the original hold's due time, so an
+expired due time alone does not prevent replay of the applied receipt.
+
 Return and cancel take a reason. Each decision is fenced by the item
 revision the reviewer read and carries an idempotency key: a retry with the
 same key and content returns the same receipt, and a retry with different
