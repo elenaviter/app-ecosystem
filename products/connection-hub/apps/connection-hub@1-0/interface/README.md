@@ -176,6 +176,27 @@ authority. The pending lifecycle, privacy boundary, full initial My Card, and
 retry rules are owned by
 [Delegated Access Cards](../../../../../docs/connection-hub/package/delegated-cards.md#pending-invitations).
 
+### Externally managed credentialless Card writes
+
+`connections.delegated_credentials.issuer_authorities.<opaque-kind>` selects a
+trusted remote issuer adapter with `bundle_id`, `operation`, `service_id`,
+`peer_proof_secret_ref` and `adapter_id`. Optional `prepare_operation` and
+`finalize_operation` provide server-only actual-candidate context and outcome
+reporting. The host uses its existing bundle-secret provider and authenticated
+public POST bridge, not a browser-supplied proof or forwarded person credential.
+No new secret is provisioned by this configuration parser.
+
+Update/revoke of an externally managed credentialless Card requires the exact
+issuer decision in addition to ordinary Card checks. Missing/invalid authority
+configuration fails closed; an owner or administrator alone cannot bypass it.
+Legacy managed snapshots return `issuer_snapshot_requires_explicit_migration`
+before repair or mutation. Public payloads cannot supply `_issuer_decision`,
+`_issuer_context_ref`, workload identity or a service proof to authorize a write.
+Unconfirmed remote terminal recording is explicit as
+`issuer_outcome_confirmed: false`, including after a successful local commit.
+See the [portable issuer contract](../../../../../docs/connection-hub/issuer-managed-writes.md)
+for request binding, expiry, lock-local revalidation and qualification boundaries.
+
 ### Public OAuth routes
 
 A browser redirect target, not a JSON op — reached by the external provider after

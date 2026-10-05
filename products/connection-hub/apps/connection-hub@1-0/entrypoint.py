@@ -210,6 +210,7 @@ from .surfaces.delegated_gateway import (
 )
 from .surfaces.delegated_gateway_host import build_hosted_gateway_binding
 from .services.durable_authority import ConnectionHubDurableAuthority
+from .services.issuer_authorities import issuer_registry_from_connections
 from .services.project_invitation_binding import (
     descriptor_project_invitation_binding_resolver,
 )
@@ -1444,6 +1445,16 @@ async def _automation_access_service_for(
     """
     tenant, project = _runtime_tenant_project(entrypoint)
     redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_operation
+
+    async def issuer_secret(reference: str) -> str:
+        return await _bundle_secret_value(entrypoint, secret_path=reference,
+                                          trace_scope="issuer-authority", warn_missing=False)
+
+    issuers = issuer_registry_from_connections(
+        connections=_connections_config(entrypoint), resolve_secret=issuer_secret,
+        caller=call_bundle_operation,
+    )
     service = AutomationAccessService(
         redis=redis,
         tenant=tenant,
@@ -1458,6 +1469,7 @@ async def _automation_access_service_for(
         ),
         invocation_policy_service=_invocation_policy_service(entrypoint),
     )
+    service.bind_issuer_registry(issuers, actor_subject=_platform_user_id(entrypoint))
     service.bind_project_authorization_port(
         await _project_authorization_port(entrypoint)
     )

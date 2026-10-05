@@ -103,6 +103,7 @@ async def test_automation_access_composes_the_real_kdcube_postgresql_adapters(
     )
     entrypoint = SimpleNamespace(
         redis=object(),
+        comm=SimpleNamespace(user_id="authenticated-actor"),
         bundle_storage_root=lambda: tmp_path,
         project_authorization_port=object(),
     )
@@ -123,3 +124,6 @@ async def test_automation_access_composes_the_real_kdcube_postgresql_adapters(
     )
     assert service._persistence._handles is durable.card_handles
     assert durable.ready is True
+    from connection_hub.delegated_credentials.issuer_gate import IssuerRegistry
+    assert isinstance(service._issuers, IssuerRegistry)
+    assert service._issuer_actor_subject == "authenticated-actor"

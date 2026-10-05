@@ -5,6 +5,11 @@ info:
   description: |
     Interface contract for connection-hub@1-0.
 
+    Externally managed credentialless Card update/revoke also requires a
+    descriptor-selected authenticated issuer decision. Client decision/context
+    fields confer no authority. Missing providers fail closed and legacy managed
+    snapshots require an explicitly authorized migration before mutation.
+
     The app exposes:
     - connection-edge operations for resolving verified external identities to
       platform principal envelopes;
