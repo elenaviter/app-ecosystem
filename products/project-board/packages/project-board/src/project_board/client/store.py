@@ -5683,6 +5683,49 @@ class SharedFieldStore:
                     added.append(message_ref)
         return added
 
+    def pending_mail_headers(self, worker_name: str) -> list[dict[str, Any]]:
+        """Every pending message's header, never its body or payload (W563).
+
+        A worker with hundreds of pending messages could reach a new decision
+        thread only by receiving the oldest mail first, body and all, or by
+        knowing its ref already. This lists what is waiting so the worker can
+        pick one by its ref (`receive --message-ref`). Read without the mailbox
+        lock, like the reachability count: it leases, moves and changes
+        nothing, and a concurrent move can only make it a moment old.
+        """
+
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        scopes = [("", "")]
+        for project_ref in worker.get("attended_project_refs") or []:
+            try:
+                parsed = parse_ref(str(project_ref))
+            except DomainError:
+                continue
+            if parsed.kind == "project":
+                scopes.append((parsed.object_id, str(project_ref)))
+        headers: list[dict[str, Any]] = []
+        for project_id, project_ref in scopes:
+            for path in sorted((self._mail_root(project_id, clean_name) / "inbox").glob("*.json")):
+                row = read_json(path, required=False)
+                message_ref = str(row.get("message_ref") or "")
+                if not message_ref:
+                    continue
+                payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+                headers.append({
+                    "message_ref": message_ref,
+                    "project_ref": project_ref,
+                    "kind": str(row.get("kind") or ""),
+                    "sender": str(row.get("sender") or ""),
+                    "subject": str(row.get("subject") or ""),
+                    "created_at": str(row.get("created_at") or ""),
+                    "correlation_id": str(row.get("correlation_id") or ""),
+                    "work_ref": str(row.get("work_ref") or ""),
+                    "operator": self._is_admitted_operator_mail(row),
+                    "expected_reaction": str(payload.get("expected_reaction") or ""),
+                })
+        return headers
+
     def _pending_mail_refs_lock_free(self, project_id: str, worker_name: str) -> list[str]:
         """One mailbox's readable and expired mail, read without its lock.
 

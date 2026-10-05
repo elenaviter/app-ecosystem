@@ -22,8 +22,12 @@ or `ERROR <code>`. Delivery and mutation output is the complete handling
 ledger: bodies and each follow-up command (`lease-read`, `settle`, and for a
 question or request the correlated `send`) print with the refs and this
 session's runtime flags. Read-heavy `worker context`, `worker journal-search`,
-`source status`, `project.plan.search`, `project.plan.item`, and
-`assignment.list` print bounded decision summaries instead. Every displayed
+`source status`, `project.plan.search`, `project.plan.index`,
+`project.plan.item`, and `assignment.list` print bounded decision summaries
+instead: an index page is two lines per item, and an item shows its note and
+attachment counts with the first three files, and the commands that read them
+(`plan.notes.list`, `pb worker item-attachment-list`, which pages file names and
+refs without links, and `pb worker item-attachment-read`). Every displayed
 ref, id, key, cursor, commit and path is whole. An `assignment.list` row names
 the item's current owner apart from the worker the implementation was assigned
 to, and says when the board does not report the owner. `pb render --file <path>`
@@ -35,10 +39,12 @@ full envelope directly, but only when it carries no attachments. A full
 envelope of an item or message with attachments can hold each file's signed
 download link, which works as a credential, and printing it puts that
 credential in your context. For such an item or message, read the brief view,
-which withholds the link and prints each file's read command; when the field
-you need is still clipped there, say the field cannot be read safely and ask
-the item's author or the coordinator to quote it. Never print an attachment
-block from JSON. Do not broaden or page a query to compensate, and do
+which withholds the link and names the file listing and read commands. When an
+item field you need is clipped there, the brief view names the safe full read,
+`pb worker item-read --project-ref <project-ref> --item-key <Wn> --field <name>`:
+it prints the field whole at the item's revision, with attachment names and refs
+and never a link, so you go on without waiting for anyone to quote it (W563,
+from W459). Never print an attachment block from JSON. Do not broaden or page a query to compensate, and do
 not write a JSON parser. A result retained from an earlier decision boundary
 is not current evidence: rerun the targeted read.
 

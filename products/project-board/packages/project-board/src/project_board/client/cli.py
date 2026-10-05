@@ -851,6 +851,17 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--reason", required=True)
 
     command = worker_commands.add_parser(
+        "inbox",
+        help="List pending mail headers, action first and newest first; no bodies, no leases.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--limit", type=int, default=_INBOX_DEFAULT)
+    command.add_argument("--kind", action="append", default=[])
+    command.add_argument("--sender", default="")
+    command.add_argument("--since", default="", help="Only mail created at or after this UTC time.")
+
+    command = worker_commands.add_parser(
         "leases",
         help="Page the active mail leases held by this exact worker session.",
     )
@@ -896,6 +907,30 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--project-ref", required=True)
     command.add_argument("--item-key", required=True)
     command.add_argument("--file", required=True)
+
+    command = worker_commands.add_parser(
+        "item-read",
+        help="Read one work item's text fields whole: no notes, history or download links.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--item-key", required=True)
+    command.add_argument(
+        "--field", action="append", choices=_ITEM_READ_FIELDS, default=[],
+        help="Read only this field (repeatable); every text field by default.",
+    )
+
+    command = worker_commands.add_parser(
+        "item-attachment-list",
+        help="List one page of a work item's files: name and file ref, never a link.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--item-key", required=True)
+    command.add_argument("--offset", type=int, default=0)
+    command.add_argument("--limit", type=int, default=_ATTACHMENT_LIST_DEFAULT)
 
     command = worker_commands.add_parser(
         "item-attachment-read", help="Download one file listed on a work item."
@@ -3530,6 +3565,155 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
     }
 
 
+# The text an item carries for whoever works on or reviews it.
+_ITEM_READ_FIELDS = ("title", "summary", "description", "acceptance", "result", "blocked_reason",
+                     "cancel_reason", "review")
+# Identity and ownership printed with every item read, so the text is tied to
+# the exact revision it was read at.
+_ITEM_READ_IDENTITY = ("item_key", "status", "identity_ref", "item_ref", "revision", "updated_at",
+                       "assignee", "acting_assignee", "reviewer")
+# The attachment fields an item read returns: names and identity only. Any
+# other field (a download URL or path, or one added later) is never returned.
+_ATTACHMENT_SAFE_FIELDS = ("filename", "file_ref", "mime", "size", "sha256")
+
+
+def _worker_item_read(args: Any) -> dict[str, Any]:
+    """One item's text fields whole, at one revision, safe to print (W563).
+
+    The brief item view clips long prose, and the JSON item read can carry a
+    working download link per attachment, so a reviewer whose scope was
+    clipped had no safe way to read it and waited for someone to quote it
+    (W459). This read returns the requested text fields complete, the item's
+    identity and revision, the assignment's ownership coordinates and the
+    attachment names and refs without any link. Notes and history are not
+    fetched.
+    """
+
+    item = _worker_item(args)
+    item = item.get("item") if isinstance(item.get("item"), Mapping) else item
+    wanted = list(dict.fromkeys(args.field or _ITEM_READ_FIELDS))
+    result: dict[str, Any] = {
+        "schema": "problem-board.item-read.v1",
+        "project_ref": args.project_ref,
+        **{key: item.get(key) for key in _ITEM_READ_IDENTITY if key in item},
+        "fields": {key: item.get(key) for key in wanted if key in item},
+    }
+    assignment = item.get("assignment")
+    if isinstance(assignment, Mapping):
+        result["assignment"] = {
+            key: assignment.get(key)
+            for key in ("assignment_ref", "ownership_version", "state", "worker_name")
+            if key in assignment
+        }
+    entries = [entry for entry in item.get("attachments") or [] if isinstance(entry, Mapping)]
+    result["attachment_count"] = len(entries)
+    # A narrow read (--field) names the count; the files are paged by
+    # item-attachment-list (review of e35c5800). The whole read lists them.
+    result["attachments"] = [] if args.field else [
+        {key: entry[key] for key in _ATTACHMENT_SAFE_FIELDS if key in entry} for entry in entries
+    ]
+    result["note_count"] = item.get("note_count", 0)
+    return result
+
+
+_INBOX_DEFAULT = 20
+_INBOX_MAXIMUM = 100
+# Mail that asks the receiver to act, ahead of mail that only informs.
+_ACTION_MAIL_KINDS = frozenset({
+    "question", "decision", "request", "blocked", "delivery_failed", "assign", "reply",
+})
+
+
+def _inbox_class(header: Mapping[str, Any]) -> int:
+    if header.get("operator"):
+        return 0
+    if header.get("expected_reaction") == "acknowledge_only":
+        return 2
+    return 1 if header.get("kind") in _ACTION_MAIL_KINDS else 2
+
+
+def _worker_inbox(field: Any, identity: Any, args: Any) -> dict[str, Any]:
+    """What is waiting, as headers: operator mail, then action, then information (W563).
+
+    Within a class the newest comes first, so a new decision thread is found
+    behind any backlog. Nothing is leased or settled here; the listed ref is
+    received with `pb worker receive --message-ref`, and ordinary receive still
+    delivers the oldest mail first.
+    """
+
+    if not 1 <= args.limit <= _INBOX_MAXIMUM:
+        raise DomainError("field_inbox_limit_invalid", f"--limit must be between 1 and {_INBOX_MAXIMUM}.")
+    from .io import parse_utc
+
+    since = parse_utc(args.since).isoformat() if args.since else ""
+    headers = field.pending_mail_headers(identity.worker_name)
+    by_kind: dict[str, int] = {}
+    for header in headers:
+        by_kind[header["kind"] or "-"] = by_kind.get(header["kind"] or "-", 0) + 1
+    selected = [
+        header for header in headers
+        if (not args.kind or header["kind"] in args.kind)
+        and (not args.sender or header["sender"] == args.sender)
+        and (not since or (header["created_at"] and parse_utc(header["created_at"]).isoformat() >= since))
+    ]
+    selected.sort(key=lambda header: header["created_at"], reverse=True)
+    selected.sort(key=_inbox_class)
+    page = selected[: args.limit]
+    return {
+        "schema": "problem-board.worker-inbox.v1",
+        "worker": identity.worker_name,
+        "pending": len(headers),
+        "pending_by_kind": dict(sorted(by_kind.items())),
+        "matched": len(selected),
+        "returned": len(page),
+        "classes": {
+            "operator": sum(1 for header in selected if _inbox_class(header) == 0),
+            "action": sum(1 for header in selected if _inbox_class(header) == 1),
+            "information": sum(1 for header in selected if _inbox_class(header) == 2),
+        },
+        "headers": page,
+    }
+
+
+_ATTACHMENT_LIST_DEFAULT = 20
+_ATTACHMENT_LIST_MAXIMUM = 100
+
+
+def _worker_item_attachment_list(args: Any) -> dict[str, Any]:
+    """One page of an item's files by name and file ref.
+
+    The item brief shows a few files and points here, so a reader can find the
+    one it needs without the JSON item read, whose attachment entries may carry
+    a working download link (W563). Each entry is exactly what
+    `item-attachment-read --file-ref` takes.
+    """
+
+    if args.offset < 0 or not 1 <= args.limit <= _ATTACHMENT_LIST_MAXIMUM:
+        raise DomainError(
+            "work_item_attachment_page_invalid",
+            f"--offset must be 0 or more and --limit between 1 and {_ATTACHMENT_LIST_MAXIMUM}.",
+        )
+    item = _worker_item(args)
+    entries = [
+        entry for entry in item.get("attachments") or []
+        if isinstance(entry, Mapping) and entry.get("file_ref")
+    ]
+    page = entries[args.offset : args.offset + args.limit]
+    following = args.offset + len(page)
+    return {
+        "project_ref": args.project_ref,
+        "item_key": args.item_key,
+        "attachment_count": len(entries),
+        "offset": args.offset,
+        "returned": len(page),
+        "next_offset": following if following < len(entries) else None,
+        "attachments": [
+            {"filename": str(entry.get("filename") or ""), "file_ref": str(entry["file_ref"])}
+            for entry in page
+        ],
+    }
+
+
 def _worker_item_attachment_read(args: Any) -> dict[str, Any]:
     from .relay import _http_download
 
@@ -5088,6 +5272,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             work_ref=args.work_ref,
         )
         return _with_project_files_signals(received, config, field, identity)
+    if args.worker_command == "inbox":
+        return _worker_inbox(field, identity, args)
     if args.worker_command == "leases":
         worker = field.read_worker(identity.worker_name)
         lease_owner = str(
@@ -5368,6 +5554,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
         )
     if args.worker_command == "item-attach":
         return _worker_item_attach(args)
+    if args.worker_command == "item-read":
+        return _worker_item_read(args)
+    if args.worker_command == "item-attachment-list":
+        return _worker_item_attachment_list(args)
     if args.worker_command == "item-attachment-read":
         return _worker_item_attachment_read(args)
     if args.worker_command == "renew":
@@ -6999,7 +7189,7 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
     consumers = _sweep_item_consumers(field, identity, args)
     trees = workspace_sweep.inspect_workspace(
         workspace, registrations, protected=protected, measure=not only_ended, pins=pins,
-        generated=generated, consumers=consumers,
+        generated=generated, consumers=consumers, only_ended=only_ended,
     )
     if only_ended:
         trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]

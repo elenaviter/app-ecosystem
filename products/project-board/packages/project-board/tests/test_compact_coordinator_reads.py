@@ -820,9 +820,78 @@ def test_plan_item_keeps_actionable_refs_and_bounds_the_complete_body() -> None:
     assert "acceptance lines: 5 of 8 shown in brief" in text
     assert "dependencies: 12 of 15 shown in brief" in text
     assert "dependency facts: 12 of 15 shown in brief" in text
-    assert "attachments: 12 of 15 shown in brief" in text
+    # W563: a count, three files and the commands that list and read the rest,
+    # not one line per file.
+    assert "attachments: 15 · first 3 shown · list: pb worker item-attachment-list" in text
+    assert text.count(REPOSITORY_REF) == 3
+    assert "read one: pb worker item-attachment-read" in text
     assert "notes" not in text and "OMITTED_TAIL" not in text
     _assert_budget(text, lines=75, bytes_=20_000)
+
+
+def test_plan_item_prints_each_ref_once_and_drops_the_title_from_the_summary() -> None:
+    item = {
+        "item_key": "W563",
+        "status": "working",
+        "title": "Stop context churn",
+        "identity_ref": IDENTITY_REF,
+        "item_ref": EXACT_REF,
+        "revision": 8,
+        "summary": "Stop context churn Operator request: bounded reads.",
+        "note_count": 100,
+        "attachment_count": 30,
+        "attachments": [
+            {"filename": f"report-{index}.md", "file_ref": f"pbfile:owner/items/file-{index}", "downloadable": True}
+            for index in range(30)
+        ],
+        "assignment": {
+            "state": "assigned",
+            "ownership_version": 1,
+            "worker_name": "claude-e-main",
+            "assignment_ref": ASSIGNMENT_REF,
+            "identity_ref": IDENTITY_REF,
+            "work_ref": EXACT_REF + "-older",
+            "versioned_work_ref": EXACT_REF + "-older",
+        },
+    }
+
+    text = _brief({"operation": "project.plan.item", "object": item})
+
+    assert text.splitlines().count(f"identity_ref: {IDENTITY_REF}") == 1
+    assert "assignment.identity_ref" not in text
+    assert f"assignment.assignment_ref: {ASSIGNMENT_REF}" in text
+    # The version the ownership was issued at stays in the JSON only.
+    assert EXACT_REF + "-older" not in text
+    assert "summary: Operator request: bounded reads." in text
+    assert "notes: 100 · read: pb coordinate plan.notes.list" in text
+    assert "attachments: 30 · first 3 shown" in text
+    assert "pbfile:owner/items/file-3" not in text
+    assert "downloadable" not in text
+
+
+def test_item_attachment_list_pages_names_and_refs_without_links(monkeypatch) -> None:
+    item = {
+        "attachments": [
+            {"filename": f"f{index}.txt", "file_ref": f"pbfile:o/i/{index}", "download_url": "https://signed.example/x"}
+            for index in range(25)
+        ]
+    }
+    monkeypatch.setattr(cli, "_worker_item", lambda args: item)
+    args = type("Args", (), {"project_ref": PROJECT_REF, "item_key": "W1", "offset": 20, "limit": 20})()
+
+    page = cli._worker_item_attachment_list(args)
+
+    assert page["attachment_count"] == 25 and page["returned"] == 5
+    assert page["next_offset"] is None
+    assert page["attachments"][0] == {"filename": "f20.txt", "file_ref": "pbfile:o/i/20"}
+    assert "signed.example" not in json.dumps(page)
+    args.offset, args.limit = 0, 101
+    try:
+        cli._worker_item_attachment_list(args)
+    except DomainError as error:
+        assert error.code == "work_item_attachment_page_invalid"
+    else:
+        raise AssertionError("an oversized page was accepted")
 
 
 def test_plan_item_shows_the_latest_actionable_review_return_reason() -> None:
@@ -962,3 +1031,202 @@ def test_json_format_is_the_explicit_full_detail_path(monkeypatch, capsys) -> No
     assert exit_code == 0 and captured.err == ""
     assert json.loads(captured.out) == {"ok": True, "result": full}
     assert "OMITTED_TAIL" in captured.out
+
+
+def _plan_index_item(index: int) -> dict[str, Any]:
+    return {
+        "item_key": f"W{500 + index}",
+        "status": "working",
+        "derived_state": "working",
+        "title": f"Index item {index} " + "t" * 40,
+        "identity_ref": f"{IDENTITY_REF}{index}",
+        "item_ref": f"{EXACT_REF}{index}",
+        "assignee": "codex-main",
+        "acting_assignee": "codex-main",
+        "reviewer": "",
+        "revision": 40 + index,
+        "updated_at": "2026-10-05T12:00:00Z",
+        "note_count": 86,
+        "attachment_count": 10,
+        "depends_on": [],
+        "keywords": ["channel reconnect", "Data Bus", "governed dispatch"],
+        "tags": ["priority-0", "relay"],
+        "search_content_hash": "h" * 64,
+        "source_content_hash": "s" * 64,
+        "embedding_model_id": "",
+        "embedding_present": False,
+        "version_slug": "v" * 64,
+        "available_transitions": [
+            {"label": "Cancel", "operation": "work.cancel", "requires_reason": True},
+            {"label": "Release assignment", "operation": "assignment.return", "requires_reason": True},
+        ],
+    }
+
+
+def test_plan_index_is_two_lines_per_item_and_keeps_paging() -> None:
+    items = [_plan_index_item(index) for index in range(7)]
+    result = {
+        "operation": "project.plan.index",
+        "object": {
+            "schema": "problem-board.plan-index.v2",
+            "project_ref": PROJECT_REF,
+            "plan_revision": 7872,
+            "item_count": 555,
+            "matched_count": 10,
+            "count": 7,
+            "page": 1,
+            "page_count": 2,
+            "generation_token": "generation-" + "g" * 96,
+            "next_cursor": CURSOR,
+            "state_counts": [{"state": "todo", "count": 154}, {"state": "working", "count": 10}],
+            "items": items,
+        },
+    }
+
+    text = _brief(result)
+
+    assert "plan index: matched 10 · returned 7 · page 1 of 2 · plan revision 7872" in text
+    assert f"next_cursor: {CURSOR}" in text
+    assert "state counts: todo 154 · working 10" in text
+    for index in range(7):
+        line = next(line for line in text.splitlines() if line.startswith(f"--- W{500 + index} "))
+        assert "working" in line and "assignee codex-main" in line and "notes 86" in line
+        assert f"identity_ref: {IDENTITY_REF}{index}" in text
+    for bulk in ("search_content_hash", "source_content_hash", "available_transitions", "embedding", "keywords", "version_slug"):
+        assert bulk not in text
+    # Two lines per item plus a fixed header; the flat form was 17 KB for a
+    # real seven-item page (W563 baseline B1).
+    _assert_budget(text, lines=7 * 2 + 8, bytes_=3_200)
+
+
+def test_workspace_sweep_brief_counts_paths_and_prints_removals_whole() -> None:
+    trees = [
+        {
+            "path": f"/ws/wt/w{index}-app",
+            "kind": "implementation",
+            "item": f"W{index}",
+            "branch": f"work/w{index}",
+            "head": "",
+            "action": "keep",
+            "size_bytes": 1000,
+            "dirty": [],
+            "untracked": [],
+            "ignored": [f"build/cache-{n}/" for n in range(300)],
+            "unpushed_commits": 0,
+            "keep": ["ignored files outside regenerable folders (evidence?): build/cache-0/", "job not ended"],
+        }
+        for index in range(55)
+    ]
+    trees.append({"path": "/ws/rv/w9-app-abc", "kind": "review", "item": "W9", "head": "abc123", "action": "remove",
+                  "size_bytes": 10, "dirty": [], "untracked": [], "ignored": [], "keep": []})
+    result = {
+        "worker": "claude-code-x", "workspace": "/ws", "trees": trees,
+        "would_remove": ["/ws/rv/w9-app-abc"], "total_bytes": 55010,
+        "scratch_runs": [], "loose": [],
+    }
+
+    text = _brief(result)
+
+    assert "workspace sweep: /ws · trees 56 · would remove 1" in text
+    assert "would_remove: /ws/rv/w9-app-abc" in text
+    assert "--- keep · implementation · item W0 · work/w0 · size 1000 · ignored 300 · /ws/wt/w0-app" in text
+    assert "(+1 more)" in text and "build/cache-299/" not in text
+    # 56 trees: 60 rows are shown whole, so nothing is omitted here.
+    _assert_budget(text, lines=130, bytes_=16_000)
+
+
+def test_a_clipped_scope_is_readable_whole_without_download_links(monkeypatch) -> None:
+    # W563, Root 16:50Z (W459 checkpoint): a reviewer stopped because the brief
+    # item clipped the current scope, and the JSON read was off limits because
+    # the item's attachments could carry download links. The brief view names
+    # the safe full read, and that read prints the scope whole with no link.
+    scope = "CURRENT ROOT SCOPE: " + " ".join(f"step-{index} do the exact thing" for index in range(400)) + " SCOPE_TAIL"
+    item = {
+        "item_key": "W459",
+        "status": "review",
+        "title": "Review scope",
+        "identity_ref": IDENTITY_REF,
+        "item_ref": EXACT_REF,
+        "revision": 41,
+        "updated_at": "2026-10-05T16:40:00Z",
+        "assignee": "codex-app",
+        "reviewer": "claude-e-app",
+        "description": scope,
+        "acceptance": [f"line {index}" for index in range(7)],
+        "review": {"look_at": "REVIEW_STEPS " + "x" * 900 + " REVIEW_TAIL", "could_not_verify": "None"},
+        "assignment": {"assignment_ref": ASSIGNMENT_REF, "ownership_version": 3, "state": "working",
+                       "worker_name": "codex-app"},
+        "note_count": 96,
+        "attachments": [
+            {"filename": f"report-{index}.md", "file_ref": f"pbfile:o/i/{index}", "mime": "text/markdown",
+             "download_url": f"https://signed.example/{index}?token=secret", "download_path": "/api/x/download",
+             "downloadable": True}
+            for index in range(26)
+        ],
+        "review_history": [{"decision": "return", "reason": "HISTORY_BODY"}],
+    }
+
+    brief = _brief({"operation": "project.plan.item", "object": item})
+    assert "SCOPE_TAIL" not in brief
+    assert (
+        "clipped above: description, acceptance, review · read whole: pb worker item-read "
+        "--project-ref <project-ref> --item-key W459 --field description --field acceptance --field review"
+    ) in brief
+
+    monkeypatch.setattr(cli, "_worker_item", lambda args: item)
+    args = type("Args", (), {"project_ref": PROJECT_REF, "item_key": "W459", "field": []})()
+    result = cli._worker_item_read(args)
+    full = render_envelope({"ok": True, "result": result})
+
+    assert "SCOPE_TAIL" in full and "REVIEW_TAIL" in full and "[7] line 6" in full
+    assert "item: W459 · review · revision 41" in full
+    assert f"item_ref: {EXACT_REF}" in full
+    assert f"assignment.assignment_ref: {ASSIGNMENT_REF}" in full and "ownership 3" in full
+    assert "attachments: 26" in full and "attachment: report-25.md · pbfile:o/i/25" in full
+    serialized = json.dumps(result)
+    for leaked in ("signed.example", "token=secret", "download", "HISTORY_BODY"):
+        assert leaked not in serialized and leaked not in full, leaked
+    assert "notes: 96 (not read here" in full
+
+    args.field = ["description"]
+    narrow = cli._worker_item_read(args)
+    assert list(narrow["fields"]) == ["description"]
+    # A narrow read names the count and the paged listing, not every file.
+    assert narrow["attachments"] == [] and narrow["attachment_count"] == 26
+    narrow_text = render_envelope({"ok": True, "result": narrow})
+    assert "attachments: 26" in narrow_text and "list: pb worker item-attachment-list" in narrow_text
+    assert "pbfile:o/i/" not in narrow_text
+
+
+def test_a_summary_that_adds_to_the_description_start_is_never_dropped() -> None:
+    # Review of e35c5800: the dedup compared only the summary's first 120
+    # characters, so a short summary that shares them and then adds a hold
+    # was dropped, with no clipped pointer because it is short.
+    start = "Move the backup root to the managed folder and record every backup there for the project " + "x" * 40
+    description = start + " with the operator's window."
+    base = {"item_key": "W1", "status": "working", "title": "T", "identity_ref": IDENTITY_REF, "description": description}
+
+    divergent = _brief({"operation": "project.plan.item", "object": {**base, "summary": start + " HOLD: wait for Ops."}})
+    assert "HOLD: wait for Ops." in divergent
+
+    redundant = _brief({"operation": "project.plan.item", "object": {**base, "summary": start}})
+    assert "summary:" not in redundant
+
+
+def test_worker_context_names_one_identity_command_instead_of_one_per_clone() -> None:
+    commands = [f"git -C /ws/repo-{index} config user.{key} value" for index in range(3) for key in ("name", "email")]
+    result = {
+        "project_ref": PROJECT_REF,
+        "workspace": "/ws",
+        "team": [],
+        "repositories": [],
+        "commit_identity": {"name": "agent@host", "email": "agent@example.test", "source": "project", "commands": commands},
+    }
+
+    text = _brief(result)
+
+    assert "  name = agent@host" in text and "  email = agent@example.test" in text
+    assert (
+        f"  set in every clone (6 git config commands): pb worker workspace-report --project-ref {PROJECT_REF} --set-identity"
+    ) in text
+    assert "git -C /ws/repo-0" not in text

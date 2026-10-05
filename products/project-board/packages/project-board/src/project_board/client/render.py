@@ -222,6 +222,12 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_lease_read(result, flags)
     if "operation" in result and "object" in result:
         return _render_coordinate(result)
+    if schema == "problem-board.worker-inbox.v1":
+        return _render_worker_inbox(result, flags)
+    if schema == "problem-board.item-read.v1":
+        return _render_item_read(result)
+    if _is_workspace_sweep(result):
+        return _render_workspace_sweep(result)
     if _is_worker_context(result):
         return _render_worker_context(result)
     if _is_journal_search(result):
@@ -247,6 +253,200 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
     lines = _flatten(result, prefix="")
     if isinstance(result.get("team"), list) and result.get("team"):
         lines.extend(_team_usage_lines(result["team"]))
+    return lines
+
+
+_INBOX_CLASS_LABELS = {0: "operator", 1: "action", 2: "information"}
+_ITEM_KEY_RE = re.compile(r":(w\d+):", re.IGNORECASE)
+
+
+def _render_worker_inbox(result: Mapping[str, Any], flags: list[str]) -> list[str]:
+    """Pending mail as headers, two lines each, never a body (W563)."""
+
+    classes = result.get("classes") if isinstance(result.get("classes"), Mapping) else {}
+    by_kind = result.get("pending_by_kind") if isinstance(result.get("pending_by_kind"), Mapping) else {}
+    lines = [
+        "inbox: pending {} · matched {} · shown {} · operator {} · action {} · information {}".format(
+            result.get("pending", "?"), result.get("matched", "?"), result.get("returned", "?"),
+            classes.get("operator", 0), classes.get("action", 0), classes.get("information", 0),
+        ),
+        "pending by kind: " + (" · ".join(f"{kind} {count}" for kind, count in by_kind.items()) or "none"),
+    ]
+    headers = [header for header in result.get("headers") or [] if isinstance(header, Mapping)]
+    if not headers:
+        lines.append("headers: none")
+    for header in headers:
+        if header.get("operator"):
+            label = "operator"
+        elif header.get("expected_reaction") == "acknowledge_only":
+            label = "information"
+        else:
+            label = "action" if header.get("kind") in {
+                "question", "decision", "request", "blocked", "delivery_failed", "assign", "reply",
+            } else "information"
+        match = _ITEM_KEY_RE.search(str(header.get("work_ref") or ""))
+        lines.append(
+            "--- {} · {} · {} · from {}{} · {}".format(
+                label, header.get("created_at") or "-", header.get("kind") or "-", header.get("sender") or "-",
+                f" · {match.group(1).upper()}" if match else "",
+                _preview(header.get("subject"), maximum_bytes=120) or "(no subject)",
+            )
+        )
+        lines.append(f"message_ref: {header.get('message_ref')}")
+    if headers:
+        lines.append(
+            "receive one: " + _cmd(["pb", "worker", "receive", "--message-ref", "<message_ref>"], flags)
+        )
+    return lines
+
+
+def _render_item_read(result: Mapping[str, Any]) -> list[str]:
+    """An item's text fields printed whole, tied to the revision read (W563).
+
+    This is the safe full read the brief item view points to when it clips
+    prose: nothing here is previewed, and attachments are names and refs only.
+    """
+
+    lines = [
+        "item: {} · {} · revision {} · updated {}".format(
+            result.get("item_key") or "-", result.get("status") or "-",
+            result.get("revision", "?"), result.get("updated_at") or "-",
+        )
+    ]
+    for key in ("project_ref", "identity_ref", "item_ref"):
+        if _present(result.get(key)):
+            lines.append(f"{key}: {result[key]}")
+    lines.append(
+        "assignee {} · acting {} · reviewer {}".format(
+            result.get("assignee") or "-", result.get("acting_assignee") or "-", result.get("reviewer") or "-"
+        )
+    )
+    assignment = result.get("assignment")
+    if isinstance(assignment, Mapping):
+        lines.append(
+            "assignment: state {} · ownership {} · worker {}".format(
+                assignment.get("state") or "-", assignment.get("ownership_version", "?"),
+                assignment.get("worker_name") or "-",
+            )
+        )
+        if _present(assignment.get("assignment_ref")):
+            lines.append(f"assignment.assignment_ref: {assignment['assignment_ref']}")
+    fields = result.get("fields") if isinstance(result.get("fields"), Mapping) else {}
+    for name, value in fields.items():
+        if not _present(value):
+            lines.append(f"{name}: (empty)")
+        elif isinstance(value, list):
+            lines.append(f"{name}: {len(value)}")
+            for position, entry in enumerate(value, start=1):
+                lines.append(f"  [{position}] {' '.join(str(entry).split())}")
+        elif isinstance(value, Mapping):
+            lines.append(f"{name}:")
+            for key, entry in value.items():
+                if _present(entry):
+                    lines.append(f"  {key}:")
+                    lines.extend(_BODY_INDENT + line for line in _joined(entry).splitlines() or [""])
+        else:
+            lines.append(f"{name}:")
+            lines.extend(_BODY_INDENT + line for line in str(value).splitlines() or [""])
+    attachments = [entry for entry in result.get("attachments") or [] if isinstance(entry, Mapping)]
+    lines.append(f"attachments: {result.get('attachment_count', len(attachments))}")
+    if not attachments and result.get("attachment_count"):
+        lines.append(
+            f"  list: pb worker item-attachment-list --project-ref {result.get('project_ref') or '<project-ref>'} "
+            f"--item-key {result.get('item_key') or '<Wn>'}"
+        )
+    for entry in attachments:
+        lines.append(f"  attachment: {entry.get('filename') or '-'} · {entry.get('file_ref') or '-'}")
+    lines.append(f"notes: {result.get('note_count', 0)} (not read here; plan.notes.list)")
+    return lines
+
+
+def _is_workspace_sweep(result: Mapping[str, Any]) -> bool:
+    return isinstance(result.get("trees"), list) and "would_remove" in result and "workspace" in result
+
+
+# Trees, runs and loose entries shown in the sweep brief; the rest are counted.
+_SWEEP_ROWS = 60
+
+
+def _count(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _render_workspace_sweep(result: Mapping[str, Any]) -> list[str]:
+    """One line per tree and run, counts instead of path lists (W563).
+
+    The flat form printed every dirty, untracked and ignored path of every
+    tree: a workspace with many trees produced thousands of lines (W423,
+    3,703 lines). What --apply would remove is printed whole; each kept tree
+    shows its first reason and how many more there are. The JSON keeps every
+    path.
+    """
+
+    trees = [tree for tree in result.get("trees") or [] if isinstance(tree, Mapping)]
+    removable = [str(path) for path in result.get("would_remove") or []]
+    lines = [
+        "workspace sweep: {} · trees {} · would remove {} · size {}".format(
+            result.get("workspace") or "-", len(trees), len(removable), result.get("total_bytes", "not measured")
+        )
+    ]
+    for key in ("state", "reason", "apply_refused"):
+        if _present(result.get(key)):
+            lines.append(f"{key}: {_preview(result[key])}")
+    for path in removable:
+        lines.append(f"would_remove: {path}")
+    shown, total = _bounded(trees, maximum=_SWEEP_ROWS)
+    for tree in shown:
+        where = tree.get("branch") or (f"detached {tree['head']}" if tree.get("head") else "-")
+        facts = [
+            str(tree.get("action") or "-"),
+            str(tree.get("kind") or "-"),
+            f"item {tree.get('item') or '-'}",
+            where,
+            f"size {tree.get('size_bytes', '-')}",
+        ]
+        for key, label in (("dirty", "dirty"), ("untracked", "untracked"), ("ignored", "ignored")):
+            if _count(tree.get(key)):
+                facts.append(f"{label} {_count(tree.get(key))}")
+        if tree.get("unpushed_commits"):
+            facts.append(f"unpushed {tree['unpushed_commits']}")
+        if tree.get("ended"):
+            facts.append(f"ended: {_preview(tree['ended'], maximum_bytes=80)}")
+        lines.append(f"--- {' · '.join(facts)} · {tree.get('path') or '-'}")
+        keep = [str(reason) for reason in tree.get("keep") or []]
+        if keep:
+            more = f" (+{len(keep) - 1} more)" if len(keep) > 1 else ""
+            lines.append(f"  keep: {_preview(keep[0], maximum_bytes=200)}{more}")
+    _note_omitted(lines, "trees", shown=len(shown), total=total)
+    runs = [run for run in result.get("scratch_runs") or [] if isinstance(run, Mapping)]
+    if runs:
+        lines.append(f"scratch runs: {len(runs)}")
+        shown_runs, run_total = _bounded(runs, maximum=_SWEEP_ROWS)
+        for run in shown_runs:
+            keep = [str(reason) for reason in run.get("keep") or []]
+            lines.append(
+                "--- run {} · item {} · {} · {}{}".format(
+                    run.get("action") or "-",
+                    run.get("item") or "-",
+                    _preview(run.get("purpose"), maximum_bytes=80) or "-",
+                    run.get("path") or "-",
+                    f" · keep: {_preview(keep[0], maximum_bytes=120)}" if keep else "",
+                )
+            )
+        _note_omitted(lines, "scratch runs", shown=len(shown_runs), total=run_total)
+    loose = [entry for entry in result.get("loose") or [] if isinstance(entry, Mapping)]
+    if loose:
+        shown_loose, loose_total = _bounded(loose, maximum=_SWEEP_ROWS)
+        for entry in shown_loose:
+            lines.append(f"loose: {entry.get('kind') or '-'} · {entry.get('path') or '-'}")
+        lines.append("loose entries: move each into a run with pb worker scratch --new")
+        _note_omitted(lines, "loose entries", shown=len(shown_loose), total=loose_total)
+    handled = {"worker", "workspace", "trees", "would_remove", "total_bytes", "scratch_runs", "loose",
+               "state", "reason", "apply_refused"}
+    rest = {key: value for key, value in result.items() if key not in handled}
+    if rest:
+        lines.extend(_flatten(rest, prefix=""))
+    lines.append(_FULL_DETAIL_LINE)
     return lines
 
 
@@ -469,15 +669,15 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
                 lines.append(f"  {key} = {identity[key]}")
         if _present(identity.get("source_note")):
             lines.append(f"  source_note = {_preview(identity['source_note'])}")
-        commands, command_count = _bounded(identity.get("commands") or [])
-        for command in commands:
-            lines.append(f"  command: {command}")
-        _note_omitted(
-            lines,
-            "commit identity commands",
-            shown=len(commands),
-            total=command_count,
-        )
+        # One `git config` pair per clone repeated the same name and email for
+        # every repository (W563); one command sets them all, and the JSON
+        # keeps each.
+        command_count = len(identity.get("commands") or [])
+        if command_count:
+            lines.append(
+                f"  set in every clone ({command_count} git config commands): "
+                f"pb worker workspace-report --project-ref {result.get('project_ref') or '<project-ref>'} --set-identity"
+            )
 
     clone = result.get("journal_clone")
     if isinstance(clone, Mapping) and clone:
@@ -1168,7 +1368,9 @@ def _with_matching_retirement_command_folded(payload: Any, message: Mapping[str,
     command = payload.get("retirement_command")
     if not isinstance(command, Mapping) or "mail" not in command:
         return payload
-    if not set(command) <= {"mail", "attachments", "attachment_request_hash"}:
+    # `attachment_custody` names who holds the files (W563: the server added it,
+    # and an unknown key printed the whole copy, download paths included).
+    if not set(command) <= {"mail", "attachments", "attachment_request_hash", "attachment_custody"}:
         return payload
     mail = command.get("mail")
     if not isinstance(mail, Mapping):
@@ -1180,8 +1382,9 @@ def _with_matching_retirement_command_folded(payload: Any, message: Mapping[str,
             extra["attachments"] = command.get("attachments")
         else:
             extra["attachments"] = folded_attachments
-    if "attachment_request_hash" in command:
-        extra["attachment_request_hash"] = command.get("attachment_request_hash")
+    for key in ("attachment_request_hash", "attachment_custody"):
+        if key in command:
+            extra[key] = command.get(key)
     matched: list[str] = []
     differing: dict[str, Any] = {}
     for name, value in mail.items():
@@ -1951,19 +2154,28 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             item.get("updated_at") or item.get("item_updated_at") or "-",
         )
     )
-    if _present(item.get("summary")):
+    summary = _without_title_prefix(item.get("summary"), item.get("title"))
+    description = " ".join(str(item.get("description") or "").split())
+    # A summary that only restates the start of the description is not
+    # printed twice (W563: both previews carried the same text). Only the
+    # whole summary counts: one that adds anything, a hold or a constraint,
+    # is printed (review of e35c5800).
+    if _present(summary) and not description.startswith(summary):
+        lines.append(f"summary: {_preview(summary, maximum_bytes=_ITEM_PROSE_BYTES)}")
+    if _present(description):
+        lines.append(f"description preview: {_preview(description, maximum_bytes=_ITEM_PROSE_BYTES)}")
+    if item.get("note_count"):
         lines.append(
-            f"summary: {_preview(item['summary'], maximum_bytes=_LONG_PREVIEW_BYTES)}"
-        )
-    if _present(item.get("description")):
-        lines.append(
-            f"description preview: {_preview(item['description'], maximum_bytes=_LONG_PREVIEW_BYTES)}"
+            "notes: {} · read: pb coordinate plan.notes.list --object-ref <project-ref> "
+            "--payload-json '{{\"item_key\":\"{}\",\"limit\":20}}'".format(
+                item["note_count"], item.get("item_key") or "<Wn>"
+            )
         )
     acceptance, acceptance_count = _bounded(
         item.get("acceptance") or [], maximum=5
     )
     for value in acceptance:
-        lines.append(f"acceptance preview: {_preview(value)}")
+        lines.append(f"acceptance preview: {_preview(value, maximum_bytes=_ITEM_ACCEPTANCE_BYTES)}")
     _note_omitted(
         lines,
         "acceptance lines",
@@ -2004,7 +2216,7 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             lines.append(f"{key}: {item[key]}")
     for key in ("result", "blocked_reason", "cancel_reason"):
         if _present(item.get(key)):
-            lines.append(f"{key}: {_preview(item[key], maximum_bytes=_LONG_PREVIEW_BYTES)}")
+            lines.append(f"{key}: {_preview(item[key], maximum_bytes=_ITEM_PROSE_BYTES)}")
     review = item.get("review")
     if isinstance(review, Mapping):
         for key in (
@@ -2018,7 +2230,7 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             if _present(review.get(key)):
                 value = review[key]
                 lines.append(
-                    f"review.{key}: {_preview(_joined(value), maximum_bytes=_LONG_PREVIEW_BYTES)}"
+                    f"review.{key}: {_preview(_joined(value), maximum_bytes=_ITEM_PROSE_BYTES)}"
                 )
     latest_return = _latest_actionable_review_return(item)
     if latest_return is not None:
@@ -2063,38 +2275,96 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
                 assignment.get("updated_at") or "-",
             )
         )
-        for key in (
-            "assignment_ref",
-            "identity_ref",
-            "work_ref",
-            "versioned_work_ref",
-            "control_ref",
-        ):
+        # A report names the assignment ref and ownership version; the item's
+        # own refs are printed above, and the version the ownership was issued
+        # at stays in the JSON (W563).
+        for key in ("assignment_ref", "control_ref"):
             if _present(assignment.get(key)):
                 lines.append(f"assignment.{key}: {assignment[key]}")
-    attachments, attachment_count = _bounded(
-        item.get("attachments") or item.get("attachment_refs") or [],
-        maximum=_BRIEF_REFS,
-    )
-    for attachment in attachments:
-        if isinstance(attachment, str):
-            lines.append(f"attachment_ref: {attachment}")
-            continue
-        if not isinstance(attachment, Mapping):
-            continue
-        if _present(attachment.get("file_ref")):
-            lines.append(f"attachment.file_ref: {attachment['file_ref']}")
-        if _present(attachment.get("filename")):
-            lines.append(f"attachment.filename: {attachment['filename']}")
-    _note_omitted(
-        lines,
-        "attachments",
-        shown=len(attachments),
-        total=attachment_count,
-    )
+    lines.extend(_item_attachment_lines(item))
     if isinstance(item.get("reference_error"), Mapping):
         lines.extend(_flatten(item["reference_error"], prefix="reference_error."))
+    clipped = _clipped_item_fields(item)
+    if clipped:
+        lines.append(
+            "clipped above: {} · read whole: pb worker item-read --project-ref <project-ref> --item-key {}{}".format(
+                ", ".join(clipped), item.get("item_key") or "<Wn>",
+                "".join(f" --field {name}" for name in clipped),
+            )
+        )
     lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
+# The item brief previews prose this far; `pb worker item-read` prints it whole.
+_ITEM_PROSE_BYTES = 320
+_ITEM_ACCEPTANCE_BYTES = 200
+
+
+def _clipped_item_fields(item: Mapping[str, Any]) -> list[str]:
+    """The item text fields the brief view previewed rather than printed whole."""
+
+    clipped = []
+    for name in ("summary", "description", "result", "blocked_reason", "cancel_reason"):
+        text = " ".join(str(item.get(name) or "").split())
+        if len(text.encode("utf-8")) > _ITEM_PROSE_BYTES:
+            clipped.append(name)
+    acceptance = item.get("acceptance") or []
+    if isinstance(acceptance, list) and (
+        len(acceptance) > 5
+        or any(len(" ".join(str(entry).split()).encode("utf-8")) > _ITEM_ACCEPTANCE_BYTES for entry in acceptance)
+    ):
+        clipped.append("acceptance")
+    review = item.get("review")
+    if isinstance(review, Mapping) and any(
+        len(_joined(value).encode("utf-8")) > _ITEM_PROSE_BYTES for value in review.values()
+    ):
+        clipped.append("review")
+    return clipped
+
+
+_ITEM_ATTACHMENTS_SHOWN = 3
+
+
+def _without_title_prefix(summary: Any, title: Any) -> str:
+    """The summary less a leading copy of the title, which the item line shows."""
+
+    text = " ".join(str(summary or "").split())
+    heading = " ".join(str(title or "").split())
+    if heading and text.startswith(heading):
+        text = text[len(heading):].lstrip(" .:-·")
+    return text
+
+
+def _item_attachment_lines(item: Mapping[str, Any]) -> list[str]:
+    """A count, a few files and the commands that list and read the rest.
+
+    Listing every file ref cost two lines each on items that carry dozens of
+    test files and reports (W563). The listing command pages them by name and
+    ref without download links; the JSON item read is not the way to them.
+    """
+
+    entries = item.get("attachments") or item.get("attachment_refs") or []
+    entries = entries if isinstance(entries, list) else []
+    total = item.get("attachment_count") or len(entries)
+    if not total:
+        return []
+    key = item.get("item_key") or "<Wn>"
+    lines = [
+        "attachments: {} · first {} shown · list: pb worker item-attachment-list "
+        "--project-ref <project-ref> --item-key {}".format(
+            total, min(total, _ITEM_ATTACHMENTS_SHOWN), key
+        )
+    ]
+    for entry in entries[:_ITEM_ATTACHMENTS_SHOWN]:
+        if isinstance(entry, str):
+            lines.append(f"attachment: {entry}")
+        elif isinstance(entry, Mapping) and _present(entry.get("file_ref")):
+            lines.append(f"attachment: {entry.get('filename') or '-'} · {entry['file_ref']}")
+    lines.append(
+        "read one: pb worker item-attachment-read --project-ref <project-ref> "
+        f"--item-key {key} --file-ref <file_ref> --output <new path>"
+    )
     return lines
 
 
@@ -2191,6 +2461,89 @@ def _render_plan_search(operation: str, page: Mapping[str, Any]) -> list[str]:
     _note_omitted(
         lines, "plan results", shown=len(items), total=returned_count
     )
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
+# An index page is the caller's own bounded slice (its `limit`), and each item
+# costs two lines here, so the page is shown whole up to this many items.
+_INDEX_ITEMS = 100
+
+
+def _render_plan_index(operation: str, page: Mapping[str, Any]) -> list[str]:
+    """One plan-index page as a status table: two lines per item.
+
+    The flat form printed every item's content hashes, embedding fields,
+    transitions and keywords, so a seven-item page cost more bytes in brief
+    than in JSON (W563). What a status or dispatch decision reads is kept:
+    key, status, owner, reviewer, revision, freshness, the counts that say
+    whether a full read is needed, and the identity ref to act on.
+    """
+
+    all_items = page.get("items") or []
+    items, returned_count = _bounded(all_items, maximum=_INDEX_ITEMS)
+    lines = [
+        f"operation: {operation}",
+        "plan index: matched {} · returned {} · page {} of {} · plan revision {} · items in plan {}".format(
+            page.get("matched_count", page.get("count", "?")),
+            returned_count,
+            page.get("page", 1),
+            page.get("page_count", 1),
+            page.get("plan_revision", "?"),
+            page.get("item_count", "?"),
+        ),
+    ]
+    for key in ("project_ref", "generation_token", "next_cursor"):
+        if _present(page.get(key)):
+            lines.append(f"{key}: {page[key]}")
+    counts = page.get("state_counts")
+    if isinstance(counts, list) and counts:
+        lines.append(
+            "state counts: "
+            + " · ".join(
+                f"{entry.get('state')} {entry.get('count')}"
+                for entry in counts
+                if isinstance(entry, Mapping)
+            )
+        )
+    if not items:
+        lines.append("items: none")
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        status = str(item.get("status") or "-")
+        derived = str(item.get("derived_state") or "")
+        assignee = item.get("assignee") or "-"
+        acting = item.get("acting_assignee") or ""
+        owner = assignee if not acting or acting == assignee else f"{assignee} (acting {acting})"
+        facts = [
+            str(item.get("item_key") or "-"),
+            status if not derived or derived == status else f"{status} (derived {derived})",
+            f"assignee {owner}",
+            f"reviewer {item.get('reviewer') or '-'}",
+            f"rev {item.get('revision', item.get('item_revision', '?'))}",
+            f"updated {item.get('updated_at') or item.get('item_updated_at') or '-'}",
+        ]
+        for key, label in (
+            ("note_count", "notes"),
+            ("attachment_count", "attachments"),
+        ):
+            if item.get(key):
+                facts.append(f"{label} {item[key]}")
+        dependencies = item.get("depends_on") or []
+        if dependencies:
+            facts.append(f"depends on {len(dependencies)}")
+        lines.append(
+            "--- "
+            + " · ".join(facts)
+            + " · "
+            + (_preview(item.get("title"), maximum_bytes=160) or "(untitled)")
+        )
+        if _present(item.get("identity_ref")):
+            lines.append(f"identity_ref: {item['identity_ref']}")
+        if isinstance(item.get("reference_error"), Mapping):
+            lines.extend(_flatten(item["reference_error"], prefix="reference_error."))
+    _note_omitted(lines, "plan index items", shown=len(items), total=returned_count)
     lines.append(_FULL_DETAIL_LINE)
     return lines
 
@@ -2478,6 +2831,8 @@ def _render_coordinate(result: Mapping[str, Any]) -> list[str]:
         return _render_plan_item(operation, item)
     if isinstance(obj, Mapping) and operation == "project.plan.search":
         return _render_plan_search(operation, obj)
+    if isinstance(obj, Mapping) and operation == "project.plan.index":
+        return _render_plan_index(operation, obj)
     if isinstance(obj, Mapping) and operation == "plan.notes.list":
         return _render_plan_notes(operation, obj)
     if isinstance(obj, Mapping) and operation == "assignment.list":
