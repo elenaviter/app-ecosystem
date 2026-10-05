@@ -473,16 +473,24 @@ Reading archived mail back:
   archived turns through its own cold arm.
 
 **The way back.** Code without the mail archive cannot read archived
-messages, so a rollback past it hides them, though they stay in their parts
-and index rows. The bundle's `tools/restore_mail_archive.py` returns them. For
-every batch it reads and verifies the part, then in one transaction:
-- re-inserts the rows into the live tables, leaving a row that is already
-  live as it is;
-- deletes their index rows and the batch's ledger row.
+messages. A rollback past it would hide them, although they stay in their
+parts and index rows. So before such a rollback, the board's
+`mail-archive-restore` job returns them:
 
-The parts stay in storage, and running it twice changes nothing. Without
-`--apply` it only lists what it would restore. It reads the database
-connection from the environment and never prints it.
+- **Where it runs.** Inside the board, with the board's own database and
+  storage, so no credential leaves the runtime.
+- **When it runs.** Its schedule (`mail_archive_restore_cron`) is `disable`
+  until the runtime maintainer sets one near-term minute, the same way an
+  archive tick is run.
+- **In `check` mode, the default.** It reads and verifies every part, and
+  names any required column a part lacks. It changes nothing.
+- **In `apply` mode.** It restores, but only when that check passes and no
+  archive run is unfinished. In one transaction per batch, it re-inserts the
+  rows into the live tables (a row already live stays as it is, and a column
+  the part lacks takes its default), then deletes their index rows and the
+  batch's ledger row.
+
+The parts stay in storage, and running it twice changes nothing.
 
 The bundle property `enabled.cron.event-archive: false` turns the job off.
 Deleting rows makes their space reusable for new rows; it does not shrink the
