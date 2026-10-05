@@ -5736,6 +5736,145 @@ class SharedFieldStore:
                 })
         return headers
 
+    def _own_mail_scopes(self, worker_name: str) -> tuple[str, list[tuple[str, str]]]:
+        """This worker's stable name and mailboxes: direct, then each attended project."""
+
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        scopes = [("", "")]
+        for project_ref in worker.get("attended_project_refs") or []:
+            try:
+                parsed = parse_ref(str(project_ref))
+            except DomainError:
+                continue
+            if parsed.kind == "project":
+                scopes.append((parsed.object_id, str(project_ref)))
+        return clean_name, scopes
+
+    def retirement_rows(self, worker_name: str) -> list[dict[str, Any]]:
+        """This worker's own mail for a retirement plan, bodies hashed, never returned (W563).
+
+        Pending and leased rows of every mailbox the worker owns. A leased row
+        is listed so the plan can name it as excluded; it is never retired.
+        """
+
+        from .inbox_retire import content_hash
+
+        clean_name, scopes = self._own_mail_scopes(worker_name)
+        rows: list[dict[str, Any]] = []
+        for project_id, project_ref in scopes:
+            root = self._mail_root(project_id, clean_name)
+            for state in ("inbox", "leased"):
+                for path in sorted((root / state).glob("*.json")):
+                    row = read_json(path, required=False)
+                    if not row.get("message_ref"):
+                        continue
+                    if str(row.get("recipient") or "").lower() != clean_name:
+                        continue
+                    rows.append({
+                        "message_ref": str(row.get("message_ref") or ""),
+                        "project_ref": project_ref,
+                        "kind": str(row.get("kind") or ""),
+                        "sender": str(row.get("sender") or ""),
+                        "created_at": str(row.get("created_at") or ""),
+                        "operator": self._is_admitted_operator_mail(row),
+                        "leased": state == "leased",
+                        "payload": row.get("payload") if isinstance(row.get("payload"), Mapping) else None,
+                        "content_hash": content_hash(row),
+                    })
+        return rows
+
+    def retire_mail(
+        self,
+        worker_name: str,
+        *,
+        lease_owner: str,
+        approved: Mapping[str, str],
+        summaries: Mapping[str, str],
+    ) -> list[dict[str, Any]]:
+        """Lease exactly the approved messages or none of them, then settle each (W563).
+
+        ``approved`` maps each message ref to the content hash the reviewed
+        dry run recorded. Under every mailbox lock, each must still be pending
+        with that hash; one that is missing, leased or changed refuses the
+        whole call before anything is leased. All-or-nothing holds for the
+        lease step. Settlement, the ordinary acknowledged settle with the given
+        summary once per message, runs after the locks are released: a crash
+        in between leaves leases that expire and are recovered, writes no
+        receipt, and a re-run's dry run then differs from the reviewed digest.
+        """
+
+        from .inbox_retire import content_hash
+
+        clean_name, scopes = self._own_mail_scopes(worker_name)
+        lock_paths = sorted(
+            {
+                path
+                for project_id, _ in scopes
+                for path in (
+                    self._mail_lock(project_id, clean_name),
+                    self._mail_root(project_id, clean_name) / ".mail.lock",
+                )
+            },
+            key=str,
+        )
+        found: dict[str, list[Path]] = {project_id: [] for project_id, _ in scopes}
+        claimed: list[tuple[str, dict[str, Any]]] = []
+        with ExitStack() as locks:
+            for path in lock_paths:
+                locks.enter_context(exclusive_lock(path))
+            seen: set[str] = set()
+            for project_id, _ in scopes:
+                self._recover_expired_mail(project_id, clean_name)
+                for path in sorted((self._mail_root(project_id, clean_name) / "inbox").glob("*.json")):
+                    row = read_json(path, required=False)
+                    ref = str(row.get("message_ref") or "")
+                    if ref in approved and str(row.get("recipient") or "").lower() == clean_name:
+                        if content_hash(row) != approved[ref]:
+                            raise DomainError(
+                                "field_inbox_retire_selection_changed",
+                                "A selected message changed after the dry run; nothing was retired.",
+                                status=409,
+                                details={"message_ref": ref},
+                            )
+                        found[project_id].append(path)
+                        seen.add(ref)
+            missing = sorted(set(approved) - seen)
+            if missing:
+                raise DomainError(
+                    "field_inbox_retire_selection_changed",
+                    "A selected message is no longer pending; nothing was retired.",
+                    status=409,
+                    details={"missing": missing[:20], "missing_count": len(missing)},
+                )
+            for project_id, paths in found.items():
+                # pull_mail leases at most 100 per call.
+                for start in range(0, len(paths), 100):
+                    for row in self.pull_mail(
+                        project_id,
+                        worker_name=clean_name,
+                        lease_owner=lease_owner,
+                        limit=100,
+                        selected_paths=paths[start:start + 100],
+                        lock_held=True,
+                    ):
+                        claimed.append((project_id, row))
+        results: list[dict[str, Any]] = []
+        for project_id, row in claimed:
+            ref = str(row.get("message_ref") or "")
+            settled = self.settle_mail(
+                project_id,
+                worker_name=clean_name,
+                message_ref=ref,
+                lease_id=str(row["lease"]["lease_id"]),
+                lease_owner=lease_owner,
+                outcome="acknowledged",
+                summary=summaries.get(ref, ""),
+            )
+            self.record_worker_mail_settlement(clean_name, message_ref=ref)
+            results.append({"message_ref": ref, "state": str(settled.get("state") or "settled")})
+        return results
+
     def quiet_mail_refs(self, worker_name: str, refs: Sequence[str] | None = None) -> set[str]:
         """Pending notices that need no action and wake no session (W563, Q2).
 
