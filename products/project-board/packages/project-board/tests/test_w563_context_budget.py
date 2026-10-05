@@ -136,11 +136,34 @@ def test_worker_context_team_is_one_line_per_member():
 
 
 # 4. The combined status/dispatch scenario: >=70% fewer returned bytes.
+# W563 (owner, 18:32Z, stated on the item): the coordinator's dispatch cycle reads
+# `pb worker context --routing`; the default context is the start/resume read.
+# So the dispatch scenario renders the same context fixture as the routing view.
+
+def _routing_context() -> dict:
+    envelope = _load("worker_context")
+    envelope["result"]["context_view"] = "routing"
+    return envelope
+
 
 def test_status_and_dispatch_scenario_meets_the_combined_byte_target():
     before = sum(BASELINE_BYTES.values())
-    after = sum(_bytes(_brief(name)[1]) for name in BASELINE_BYTES)
+    after = (
+        _bytes(_brief("plan_index_working_7")[1])
+        + _bytes(_brief("plan_item_heavy_100n_30a")[1])
+        + _bytes(render_envelope(_routing_context()))
+    )
     assert after <= (1 - REDUCTION) * before, f"before {before} B, after {after} B, ratio {after / before:.2f}"
+
+
+def test_routing_context_keeps_what_dispatch_needs():
+    envelope = _routing_context()
+    text = render_envelope(envelope)
+    result = envelope["result"]
+    holder = (result.get("coordinator") or {}).get("holder") or {}
+    assert holder.get("worker_name", "") in text
+    for member in result["team"]:
+        assert member["worker_name"] in text, "a teammate is missing from the routing view"
 
 
 # 3b. Context byte target (owner, 16:28Z): context <= 40% of the baseline.
