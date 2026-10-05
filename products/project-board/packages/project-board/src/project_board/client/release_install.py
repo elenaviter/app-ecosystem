@@ -397,7 +397,33 @@ def prune_installed_releases(
             continue
         shutil.rmtree(entry, ignore_errors=True)
         removed.append(entry.name)
+    _prune_install_logs(Path(root).expanduser() / "logs", retained)
     return removed
+
+
+# Install logs kept per retained release (W563 review: logs/ grew with every
+# install while retention kept three environments).
+INSTALL_LOGS_PER_RELEASE = 3
+
+
+def _prune_install_logs(logs: Path, retained: set[str]) -> None:
+    """Drop the logs of releases retention removed, and all but each kept release's newest few."""
+
+    if not logs.is_dir():
+        return
+    kept_prefixes = {identity[:12] for identity in retained}
+    by_release: dict[str, list[Path]] = {}
+    for entry in logs.iterdir():
+        if entry.is_symlink() or not entry.is_file() or not entry.name.startswith("install-"):
+            continue
+        prefix = entry.name[len("install-"):len("install-") + 12]
+        if prefix not in kept_prefixes:
+            entry.unlink(missing_ok=True)
+            continue
+        by_release.setdefault(prefix, []).append(entry)
+    for entries in by_release.values():
+        for entry in sorted(entries, key=lambda path: path.name, reverse=True)[INSTALL_LOGS_PER_RELEASE:]:
+            entry.unlink(missing_ok=True)
 
 
 def launcher_status(path: str | Path, *, expected_pb: str | Path) -> dict[str, Any]:
