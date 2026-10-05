@@ -5734,8 +5734,9 @@ class ProblemBoardRelaySupervisor:
         """Pending refs for a wake decision, the listener, and whether the mailbox was read.
 
         A wake still waiting in the native queue before its deadline answers
-        with its own refs instead of a mailbox read (W448 fix 3,
-        :func:`_queued_wake_refs`).
+        with its own refs plus any inbox mail it does not name yet, read from
+        those new files only, instead of a full mailbox read (W448 fix 3 and
+        3b, :func:`_queued_wake_refs`).
         """
 
         listener = await self._channel_off_loop(
@@ -5743,7 +5744,12 @@ class ProblemBoardRelaySupervisor:
         )
         queued = _queued_wake_refs(listener)
         if queued is not None:
-            return queued, listener, False
+            # Fix 3b: mail delivered during the wait still joins the wake;
+            # only the inbox files the wake does not name yet are read.
+            added = await self._channel_off_loop(
+                channel, field.inbox_refs_not_in, channel.worker_name, queued
+            )
+            return [*queued, *added], listener, False
         pending_refs = await self._channel_off_loop(
             channel, field.pending_worker_mail_refs, channel.worker_name, wait=False
         )

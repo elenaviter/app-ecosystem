@@ -5644,6 +5644,45 @@ class SharedFieldStore:
             collect(parsed.object_id, self._mail_root(parsed.object_id, clean_name) / "inbox")
         return refs
 
+    def inbox_refs_not_in(self, worker_name: str, known_refs: Sequence[str]) -> list[str]:
+        """Inbox mail a queued wake does not name yet, read from new files only (W448 fix 3b).
+
+        While a wake waits in the native queue the relay no longer re-reads the
+        whole mailbox (fix 3), yet mail delivered during the wait still joins
+        that wake. An inbox file is named by its message id, which the message
+        ref also carries, so only files whose id the wake does not already name
+        are opened. Nothing is kept between calls.
+        """
+
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        known_ids: set[str] = set()
+        for ref in known_refs:
+            try:
+                known_ids.add(parse_ref(str(ref)).object_id)
+            except DomainError:
+                continue
+        roots = [self._mail_root("", clean_name)]
+        for project_ref in worker.get("attended_project_refs") or []:
+            parsed = parse_ref(str(project_ref))
+            if parsed.kind == "project":
+                roots.append(self._mail_root(parsed.object_id, clean_name))
+        added: list[str] = []
+        for root in roots:
+            try:
+                names = sorted(
+                    entry.name for entry in os.scandir(root / "inbox") if entry.name.endswith(".json")
+                )
+            except FileNotFoundError:
+                continue
+            for name in names:
+                if name[: -len(".json")] in known_ids:
+                    continue
+                message_ref = str(read_json(root / "inbox" / name, required=False).get("message_ref") or "")
+                if message_ref and message_ref not in known_refs:
+                    added.append(message_ref)
+        return added
+
     def _pending_mail_refs_lock_free(self, project_id: str, worker_name: str) -> list[str]:
         """One mailbox's readable and expired mail, read without its lock.
 

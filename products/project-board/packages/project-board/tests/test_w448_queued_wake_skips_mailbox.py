@@ -154,6 +154,42 @@ def test_a_rate_limited_agent_with_a_queued_wake_is_still_deferred(tmp_path, mon
     assert field.wake_hold(identity.worker_name), "the card still shows the hold (W334)"
 
 
+def test_mail_delivered_during_the_wait_joins_the_queued_wake_without_a_mailbox_read(tmp_path, monkeypatch, driven):
+    """Fix 3b: the applications relay tests assert this coalescing (W448 regression, 05:14Z)."""
+
+    reads, drive = driven
+    host, identity, channel, field, refs = _queued(tmp_path, monkeypatch)
+    later = field.send_mail("", sender="control-plane", recipient=identity.worker_name, kind="request",
+                            subject="Arrived during the wait", body="New.", idempotency_key="later")["message_ref"]
+
+    result, pushes = drive(host, channel)
+
+    assert result["deduplicated"] is True and pushes == []
+    assert reads == [], "no full mailbox read"
+    subscription = field.worker_listener_session(identity.worker_name)["subscription"]
+    assert set(subscription["last_wake_message_refs"]) == {*refs, later}
+
+
+def test_only_the_inbox_files_the_wake_does_not_name_are_opened(tmp_path, monkeypatch, driven):
+    _reads, drive = driven
+    host, identity, channel, field, refs = _queued(tmp_path, monkeypatch)
+    later = field.send_mail("", sender="control-plane", recipient=identity.worker_name, kind="request",
+                            subject="Arrived during the wait", body="New.", idempotency_key="later")["message_ref"]
+    opened: list[str] = []
+    real_read_json = store_module.read_json
+
+    def counting(path, *args, **kwargs):
+        if path.parent.name == "inbox":
+            opened.append(path.name)
+        return real_read_json(path, *args, **kwargs)
+
+    monkeypatch.setattr(store_module, "read_json", counting)
+
+    assert field.inbox_refs_not_in(identity.worker_name, refs) == [later]
+    assert len(opened) == 1, f"{len(refs)} known inbox files were not opened: {opened}"
+    assert field.inbox_refs_not_in(identity.worker_name, [*refs, later]) == []
+
+
 def _drain_without_wake_id(field, worker_name):
     """The worker took its mail at a work boundary, not in the wake's turn (review of #518)."""
 
