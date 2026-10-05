@@ -5143,6 +5143,13 @@ TRANSIENT_ERROR_CODES = frozenset(
         "work_relay_stream_expired",
         "work_mcp_tool_failed",
         "work_relay_transport_unavailable",
+        # W558 (host mint, 2026-10-05): the credential store is locked or has
+        # no store yet, or a keychain call did not answer in time. Each ends
+        # when the operator unlocks; the channel retries at its normal pace and
+        # opens on the first attempt after the unlock, with no relay restart.
+        "credential_store_locked",
+        "credential_store_missing",
+        "oauth_credential_custody_timeout",
     }
 )
 

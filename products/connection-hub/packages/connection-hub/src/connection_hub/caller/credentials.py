@@ -189,6 +189,8 @@ class NativeCredentialStore:
             "native_secret_rollback_failed": "credential_rollback_failed",
             "native_secret_too_large": "invalid_credential",
             "native_secret_key_invalid": "invalid_credential_ref",
+            "native_secret_store_locked": "credential_store_locked",
+            "native_secret_store_missing": "credential_store_missing",
         }.get(exc.code, "credential_store_failed")
         raise CredentialError(code, exc.message) from None
 

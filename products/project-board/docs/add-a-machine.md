@@ -169,16 +169,25 @@ stays until someone runs `/logout` in Claude Code or `codex logout` for Codex.
 ## 4. Unlock the machine's password store, and keep that password
 
 The agents' access credentials are kept in the machine's password store, the
-same place a desktop keeps saved passwords. On a machine with a screen you
-would be asked for the password in a window. This machine has no screen, so you
-type it over SSH instead.
+same place a desktop keeps saved passwords: an encrypted file protected by a
+password. On a machine with a screen you would be asked for the password in a
+window. This machine has no screen, so you type it over SSH instead.
 
-**Have your password manager ready.** The command below prints nothing and
-waits. Type a password you choose (it is not shown), then press Enter. The first
-time, this creates the store with that password.
+**Have your password manager ready.** The command asks for the password and
+shows nothing while you type; press Enter. The first time, it creates the store
+with that password. It also restarts the machine's password-store service, so
+that the unlocked store is the one the agents use.
 
 ```bash
-read -rs P && printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; unset P
+printf 'Password store password (not shown): '; read -rs P; echo; if [ -n "$P" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "done; now run the check"; else echo "the password is empty; nothing changed"; fi; unset P
+```
+
+**Check that it worked:**
+
+```bash
+busctl --user status org.freedesktop.secrets | grep '^PID='   # the same number as the next line
+pgrep -u "$USER" gnome-keyring-d
+timeout 15 "$HOME/.kdcube/client-runtime/tools/problem-board/releases/current/venv/bin/python" -c 'import keyring as k; k.set_password("pb-probe","p","x"); print(k.get_password("pb-probe","p")=="x"); k.delete_password("pb-probe","p")'; echo "exit $?"   # True, exit 0
 ```
 
 **Why you:** it is your password. Typed by you it exists only in your terminal,
@@ -190,11 +199,18 @@ never on the machine and never in an agent's history.
   on the machine can remind you of it.
 - **You will be asked again after the machine reboots**, and only then. Network
   drops and agent restarts do not need it.
-- **If it is lost:** delete the store on the machine
-  (`~/.local/share/keyrings/login.keyring`), unlock again with a new password,
-  and repeat steps 5 and 6 for each agent. Nothing else is lost.
+- **If it is lost, or you mistyped it the first time**, reset: it asks the new password twice and, only when both match, sets
+  the old store aside and creates a new one. Then repeat
+  steps 5 and 6 for each agent. Nothing else is lost.
+
+  ```bash
+  printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ -n "$P" ] && [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries are empty or differ; nothing changed"; fi; unset P Q
+  ```
+
 - **Until you do this step, an agent cannot finish signing in**, because it has
   nowhere to keep its credential.
+- **After a reboot, agents already on the machine are cut off until you
+  unlock.** Once you do, they come back within about a minute by themselves.
 
 This is the step we most want to remove: a machine that unlocks itself after a
 reboot, with no password for you to keep. It is being worked on.

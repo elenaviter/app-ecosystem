@@ -91,6 +91,25 @@ to be one. Say what works without it (`without_it`): without `tmux` agents
 run only while their terminal is open; without linger the relay stops when the
 person's last session closes. Then run `pb status` again.
 
+**The keyring item on headless Linux (W558).** Its fix line is the unlock of
+add-a-worker-host step 6; give the person exactly that step's three blocks
+(unlock, check, reset) and nothing else:
+
+- Tell them before they type: it asks for the password store's password and
+  shows nothing while they type; it is the password the store was created
+  with (the first unlock on this machine); they keep it, and they unlock again
+  after every reboot of the machine, never otherwise.
+- Never give another keyring command of your own, and never restart or kill a
+  keyring service yourself: on host mint (2026-10-05) an improvised
+  `gnome-keyring-daemon --unlock` and an unasked unit restart made the store
+  unusable before the procedure's line was even tried.
+- After the unlock, the check must print `True`. When it fails twice, stop,
+  change nothing, and report what each line printed to the coordinator.
+- A relay that was already running picks the unlock up on its next attempt,
+  within about a minute, with no restart. A client older than this change
+  needs the relay restarted once after the unlock (the host's operator
+  approves: `systemctl --user restart kdcube-problem-board-relay-*.service`).
+
 ## Tell The Person Plainly
 
 Instructions the person must act on stand alone at the end of your reply,

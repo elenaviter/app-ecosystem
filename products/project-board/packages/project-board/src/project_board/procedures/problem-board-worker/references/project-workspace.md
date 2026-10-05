@@ -213,6 +213,27 @@ undeclared dependency, tell the coordinator exactly what is missing. The team
 adds the setup or correction to the project page, so the next worker starts
 from the prepared answer.
 
+**Host prerequisites: check them here, tell the person what is missing (W554).**
+The environment page's **Host prerequisites** section lists what this project
+needs on a worker machine beyond pb's own prerequisites (`pb status`): for
+example Docker access for its disposable test databases, `gh`, Node. Each entry
+has a check line and an install line. When you set up on a machine, and when
+that page changes, run each check on this machine. For every missing one, tell
+the person plainly, as a numbered list at the end of your reply:
+
+- what it is and what this project cannot do here without it (and who covers
+  that instead, for example a reviewer running the database suite);
+- the exact install line from the page, and whether it needs an administrator.
+
+Installing is the person's decision: never run an install, `sudo` or group
+change yourself. A page without that section, or a missing tool the page does
+not list, goes to the coordinator, who adds it. Operator, 2026-10-05: "in
+overall teh requirements must be known to all agents who work on the project so
+that they can rasie the missing requirements to a user during setup and thats
+up to user t odecide if they want to install missing stuff on the machine.
+important is that agents are aware on how to do that to sugegst to a user
+concrete commands".
+
 ## Project files: read them first, reread them when they change
 
 Project files are the project's shared, current knowledge. Every agent of the

@@ -5,6 +5,7 @@ from app_foundation.secrets.native import (
     NativeSecretError,
     NativeSecretValueStore,
     accepted_native_backend,
+    secret_service_lock_state,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "NativeSecretError",
     "NativeSecretValueStore",
     "accepted_native_backend",
+    "secret_service_lock_state",
 ]
