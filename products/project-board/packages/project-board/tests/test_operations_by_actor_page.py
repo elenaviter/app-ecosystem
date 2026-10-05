@@ -27,7 +27,7 @@ NOT_CARD_OPERATIONS = {
     "project.people.transfer_ownership",
 }
 ROW = re.compile(r"^\| `(?P<op>[a-z_]+(?:\.[a-z_]+)+)` \| (?P<permission>[^|]*) \| (?P<worker>[^|]*) \| (?P<coordinator>[^|]*) \| (?P<operator>[^|]*) \|", re.M)
-DECISIONS = {"yes", "no", "optional", "admin", "yes (list only)"}
+DECISIONS = {"yes", "no", "optional", "admin", "admin (role)", "yes (list only)"}
 
 
 def _rows() -> dict[str, dict[str, str]]:
