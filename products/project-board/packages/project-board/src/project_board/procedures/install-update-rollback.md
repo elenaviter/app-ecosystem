@@ -71,6 +71,34 @@ version. `~/.local/bin` must be on your `PATH`: if `pb --version` answers
 (bash) and open a new terminal. The bootstrap environment is only the first
 loader; after this step every command is plain `pb`.
 
+## The install lines on a machine that is already set up
+
+*Whoever runs the Connect-a-machine lines on that machine.*
+
+The same lines work on a new machine and on one that already runs `pb`; the
+person does not need to know which (operator, 2026-10-05: "the user should
+have no any idea if this is new install or no. it simply must work smoothly
+and easy. with couple of lines." and "i asked many times to maek the client
+install fully functional according to the "connect the machine" tutorial. for
+both from soucres and from release mode."). On a machine that is set up and
+runs another client, `pb procedure install` run by the package just installed
+switches the whole machine to that package before it installs the skill:
+
+- installed from the package index: `pb source use-release` at that version;
+- installed from an App Ecosystem checkout (`pip install <checkout>/...`):
+  `pb source use-code` at that checkout's `HEAD`.
+
+The release environment, `~/.local/bin/pb`, the relay and the selection move
+together, as with `pb source`, so the relay restarts. The skill and the Claude
+Code hooks then name `~/.local/bin/pb`. Its result names the switch
+(`switched`: `source`, the version or commit, and the `previous` selection).
+Nothing changes on a machine that is not set up yet, on one that already runs
+this package, or when `pb procedure install` runs inside a selected release
+(`~/.local/bin/pb procedure install` after `pb source use-code` keeps that
+snapshot). A checkout whose client packages have uncommitted changes is
+refused with `work_client_install_not_a_commit` and the changed files: the
+machine can only run a commit.
+
 ## First switch from a code snapshot
 
 *The coordinator, in an announced window, with the machine's agents agreed.*
