@@ -44,7 +44,18 @@ def _top_level_command(argv: list[str]) -> str:
 def _procedure_install(argv: list[str]) -> bool:
     """Whether this is `pb procedure install` (W554)."""
 
-    words = [token for token in argv if not token.startswith("-")]
+    words: list[str] = []
+    skip_value = False
+    for token in argv:
+        if skip_value:
+            skip_value = False
+            continue
+        if token == "--format":
+            skip_value = True  # `--format brief` may stand anywhere on the line
+            continue
+        if token.startswith("-"):
+            continue
+        words.append(token)
     return words[:2] == ["procedure", "install"]
 
 

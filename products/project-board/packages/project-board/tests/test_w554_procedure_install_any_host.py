@@ -45,13 +45,19 @@ def test_procedure_install_runs_on_a_host_that_recorded_another_release(tmp_path
     relay_source.write_selection(relay_source.client_source_root(config), relay_source.released_selection(OLD))
     installed = {"mode": "released", "version": NEW}
 
-    assert entrypoint._selected_command(
-        ["procedure", "install", "--target", "claude-code"], current_source=installed, config_path=config
-    ) is None
+    for argv in (
+        ["procedure", "install", "--target", "claude-code"],
+        ["--format", "brief", "procedure", "install", "--target", "claude-code"],
+        ["--format=brief", "procedure", "install", "--target", "claude-code"],
+        ["procedure", "--format", "brief", "install", "--target", "claude-code"],
+        ["procedure", "install", "--target", "claude-code", "--format", "brief"],
+    ):
+        assert entrypoint._selected_command(argv, current_source=installed, config_path=config) is None, argv
     # Any other command still refuses until the host's pb is settled.
-    with pytest.raises(DomainError) as refusal:
-        entrypoint._selected_command(["status"], current_source=installed, config_path=config)
-    assert refusal.value.code == "work_client_release_selection_mismatch"
+    for argv in (["status"], ["--format", "brief", "procedure", "show"], ["--format", "procedure", "install"]):
+        with pytest.raises(DomainError) as refusal:
+            entrypoint._selected_command(argv, current_source=installed, config_path=config)
+        assert refusal.value.code == "work_client_release_selection_mismatch", argv
 
 
 def test_the_installing_release_becomes_the_selection_and_the_launcher_follows(tmp_path, monkeypatch):
@@ -109,3 +115,16 @@ def test_a_host_that_selected_a_source_snapshot_keeps_it(tmp_path, monkeypatch):
 
     assert cli._adopt_installing_release() is None  # noqa: SLF001
     assert (root / relay_source.SELECTION_FILE).read_bytes() == before
+
+
+
+def test_an_older_installed_release_is_adopted_too(tmp_path, monkeypatch):
+    """Review P3: the person chose the installed package; only an older procedure is refused."""
+
+    config = _host(tmp_path, monkeypatch, relay_source.released_selection("2026.11.1.100"))
+
+    adopted = cli._adopt_installing_release()  # noqa: SLF001
+
+    assert adopted and adopted["version"] == relay_source.canonical_release_version(NEW)
+    selected = relay_source.read_selection(relay_source.client_source_root(config))
+    assert source_control.source_matches({"mode": "released", "version": NEW}, selected)

@@ -6213,7 +6213,9 @@ def _adopt_installing_release() -> dict[str, Any] | None:
     lines." A host that recorded another released version (an earlier install)
     adopts the package that ran `pb procedure install`, the same end state as a
     new host. A host that selected a source snapshot keeps it (W495), and so
-    does a host with no configuration (it has no selection yet).
+    does a host with no configuration (it has no selection yet). The installed
+    package is adopted whether it is newer or older than the recorded one: the
+    person chose it by installing it (only an older procedure is refused).
     """
 
     from .relay_source import client_source_root, read_selection, released_selection, write_selection
