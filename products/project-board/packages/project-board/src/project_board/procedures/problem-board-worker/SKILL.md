@@ -146,7 +146,7 @@ the native queue wake is acknowledged, and preserve the wake's provenance
 pb worker receive --wake-id <wake-id>
 ```
 
-The `--format brief` rendering is the handling ledger for the batch: one block
+To find one message behind a backlog (a new decision, an operator reply), `pb worker inbox` lists pending mail headers without bodies or leases, operator mail first, then action kinds, then information, newest first; receive the one you need with `pb worker receive --message-ref <ref>`. Ordinary receive still delivers the oldest mail first. The `--format brief` rendering is the handling ledger for the batch: one block
 per item with `message_ref`, project, sender, kind, correlation and lease ID
 whole, and a `NOTE` line when held leases are missing from the batch. Reconcile
 `delivery.item_count`, `acquired_leases[]`, `projects[].leased_messages`, and

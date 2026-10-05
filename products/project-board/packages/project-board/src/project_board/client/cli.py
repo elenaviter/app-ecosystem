@@ -851,6 +851,17 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--reason", required=True)
 
     command = worker_commands.add_parser(
+        "inbox",
+        help="List pending mail headers, action first and newest first; no bodies, no leases.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--limit", type=int, default=_INBOX_DEFAULT)
+    command.add_argument("--kind", action="append", default=[])
+    command.add_argument("--sender", default="")
+    command.add_argument("--since", default="", help="Only mail created at or after this UTC time.")
+
+    command = worker_commands.add_parser(
         "leases",
         help="Page the active mail leases held by this exact worker session.",
     )
@@ -3603,6 +3614,65 @@ def _worker_item_read(args: Any) -> dict[str, Any]:
     return result
 
 
+_INBOX_DEFAULT = 20
+_INBOX_MAXIMUM = 100
+# Mail that asks the receiver to act, ahead of mail that only informs.
+_ACTION_MAIL_KINDS = frozenset({
+    "question", "decision", "request", "blocked", "delivery_failed", "assign", "reply",
+})
+
+
+def _inbox_class(header: Mapping[str, Any]) -> int:
+    if header.get("operator"):
+        return 0
+    if header.get("expected_reaction") == "acknowledge_only":
+        return 2
+    return 1 if header.get("kind") in _ACTION_MAIL_KINDS else 2
+
+
+def _worker_inbox(field: Any, identity: Any, args: Any) -> dict[str, Any]:
+    """What is waiting, as headers: operator mail, then action, then information (W563).
+
+    Within a class the newest comes first, so a new decision thread is found
+    behind any backlog. Nothing is leased or settled here; the listed ref is
+    received with `pb worker receive --message-ref`, and ordinary receive still
+    delivers the oldest mail first.
+    """
+
+    if not 1 <= args.limit <= _INBOX_MAXIMUM:
+        raise DomainError("field_inbox_limit_invalid", f"--limit must be between 1 and {_INBOX_MAXIMUM}.")
+    from .io import parse_utc
+
+    since = parse_utc(args.since).isoformat() if args.since else ""
+    headers = field.pending_mail_headers(identity.worker_name)
+    by_kind: dict[str, int] = {}
+    for header in headers:
+        by_kind[header["kind"] or "-"] = by_kind.get(header["kind"] or "-", 0) + 1
+    selected = [
+        header for header in headers
+        if (not args.kind or header["kind"] in args.kind)
+        and (not args.sender or header["sender"] == args.sender)
+        and (not since or (header["created_at"] and parse_utc(header["created_at"]).isoformat() >= since))
+    ]
+    selected.sort(key=lambda header: header["created_at"], reverse=True)
+    selected.sort(key=_inbox_class)
+    page = selected[: args.limit]
+    return {
+        "schema": "problem-board.worker-inbox.v1",
+        "worker": identity.worker_name,
+        "pending": len(headers),
+        "pending_by_kind": dict(sorted(by_kind.items())),
+        "matched": len(selected),
+        "returned": len(page),
+        "classes": {
+            "operator": sum(1 for header in selected if _inbox_class(header) == 0),
+            "action": sum(1 for header in selected if _inbox_class(header) == 1),
+            "information": sum(1 for header in selected if _inbox_class(header) == 2),
+        },
+        "headers": page,
+    }
+
+
 _ATTACHMENT_LIST_DEFAULT = 20
 _ATTACHMENT_LIST_MAXIMUM = 100
 
@@ -5200,6 +5270,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             work_ref=args.work_ref,
         )
         return _with_project_files_signals(received, config, field, identity)
+    if args.worker_command == "inbox":
+        return _worker_inbox(field, identity, args)
     if args.worker_command == "leases":
         worker = field.read_worker(identity.worker_name)
         lease_owner = str(
