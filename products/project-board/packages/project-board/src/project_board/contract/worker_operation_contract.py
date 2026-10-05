@@ -125,7 +125,7 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "grants": ("work:coordinate",),
     },
     "plan.item.create": {
-        "description": "Create one authoritative plan item.",
+        "description": "Create one authoritative plan item; the board assigns its next free W number.",
         "grants": ("work:coordinate",),
     },
     "work.accept": {

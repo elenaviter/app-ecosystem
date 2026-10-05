@@ -1052,8 +1052,9 @@ exclusive ownership of a repository (operator, 2026-10-03).
 
 ## Rule 14. Search before you file an item
 
-A worker's Card may create plan items (`plan.item.create`). Before filing
-one, search the plan (`project.plan.search` with the subject's words) and
+A worker's Card may create plan items (`plan.item.create`). The board
+numbers each new item as the project's next free W; send no `item_key`
+(W551). Before filing one, search the plan (`project.plan.search` with the subject's words) and
 read what comes back. When a related item exists, update it or add a note or
 an acceptance line to it instead of filing a duplicate. A small change or
 lesson is never its own item: it goes onto an open item. A new item is for a
