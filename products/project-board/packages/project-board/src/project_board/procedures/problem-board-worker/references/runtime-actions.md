@@ -257,11 +257,22 @@ Then restart, report the result, and clear the entry.
 This is the additional gate for a host's client-source switch or relay
 restart, not for a runtime-only release from an isolated exact-commit tree.
 READY means calls drained and held **before** the switch: finish or safely
-stop conflicting work and make no new PB/relay calls or project mutations
-until the window's ALL CLEAR or explicit cancellation. Before execution,
-only the window's readiness/control exchange is allowed; after acknowledging
-STARTING NOW, end the turn in a waiting state and issue no commands. Passive
-notification transport continues. A queued START wake cannot stop a busy
+stop conflicting work and make no new PB/relay calls or project mutations for
+normal work until the window's ALL CLEAR or explicit cancellation. Before
+execution, only the window's readiness/control exchange is allowed; after
+acknowledging STARTING NOW, end the turn in a waiting state. Passive
+notification transport continues (a Claude Code watch is replaced as usual).
+
+**Window control stays allowed while held** (operator order relayed by the
+coordinator, 2026-10-05 19:32Z, after a worker stopped receiving and never
+learned the ALL CLEAR): to learn and answer the window's own control mail
+(ALL CLEAR, cancellation, a question about the window), a held session may
+run `pb worker inbox`, `pb worker receive` (preferably `--message-ref` for
+the window's message), `pb worker lease-read`, `pb worker settle` and a reply
+on the window's correlation. These calls end nothing: receiving a message is
+never the end of the hold. Only the matching ALL CLEAR or cancellation from
+the window's installer, on the window's correlation, ends it. Other mail
+received while held is not acted on until then. A queued START wake cannot stop a busy
 model response and is never the mechanism that establishes the hold.
 The final acknowledgement is the session's last control call, after its
 leases and earlier calls are settled. If a reply is due before settlement,

@@ -88,3 +88,37 @@ def test_filters_and_the_newest_first_order_within_a_class(field):
     assert _inbox(field, sender="someone-else")["matched"] == 0
     with pytest.raises(Exception):
         _inbox(field, limit=101)
+
+
+def test_a_held_session_learns_the_all_clear_without_touching_its_backlog(field):
+    # W563, operator order 2026-10-05 19:32Z: a worker held for a host client
+    # window stopped all PB calls, so it never received the window's ALL CLEAR
+    # and stayed held. The hold allows window control: the session finds the
+    # window's message by header and receives exactly it; its backlog stays
+    # pending and untouched until the hold ends.
+    for number in range(40):
+        _send(field, number, kind="update", subject=f"Old status {number}", body="history")
+    all_clear = field.send_mail(
+        PROJECT, sender="codex-main", recipient=WORKER, kind="update",
+        subject="ALL CLEAR: window w-1", body="Resume now.", correlation_id="window-w-1",
+        idempotency_key="all-clear-w-1",
+    )
+
+    window = [header for header in _inbox(field, limit=100)["headers"] if header["correlation_id"] == "window-w-1"]
+    assert [header["message_ref"] for header in window] == [all_clear["message_ref"]]
+
+    taken = pull_worker_input(field, worker_name=WORKER, message_ref=all_clear["message_ref"])
+    assert [item["message"]["subject"] for item in taken["items"]] == ["ALL CLEAR: window w-1"]
+    assert _inbox(field, limit=100)["pending"] == 40, "the held session's backlog stays pending"
+
+
+def test_the_procedure_lets_a_held_session_receive_its_window_control():
+    from project_board.client import procedures
+
+    text = " ".join(
+        (procedures.source_package_path() / "references" / "runtime-actions.md").read_text(encoding="utf-8").split()
+    )
+    assert "**Window control stays allowed while held**" in text
+    assert "`pb worker inbox`, `pb worker receive`" in text and "`pb worker settle`" in text
+    assert "receiving a message is never the end of the hold" in text
+    assert "issue no commands" not in text
