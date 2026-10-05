@@ -5,6 +5,7 @@ import json
 import math
 import os
 import re
+import stat
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -949,8 +950,12 @@ class JournalWorkspace:
             files = []
             for path in self._journal_paths(home):
                 self._check_cancelled()
-                self._check_document_path(home, path)
-                metadata = path.stat()
+                # W448: the walk resolved every directory inside the home, so a
+                # plain file there cannot escape; only a symlink is resolved.
+                metadata = path.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    self._check_document_path(home, path)
+                    metadata = path.stat()
                 files.append((path.relative_to(home).as_posix(), metadata.st_size,
                               metadata.st_mtime_ns, metadata.st_ctime_ns))
             clone = self.repositories.clone(home_ref.repository)

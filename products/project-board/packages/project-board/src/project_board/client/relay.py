@@ -8,6 +8,7 @@ import math
 import os
 import re
 import shutil
+import threading
 import time
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
@@ -830,6 +831,36 @@ class RelayConfig:
         )
 
 
+# W448: how often a heartbeat may start a background journal freshness check
+# for one journal workspace (one index.lock), across every channel of this
+# relay that serves it. On dev-main every due heartbeat started one: the seven
+# worker journal workspaces' index.lock holds summed to 633 in an hour (up to
+# 51 s each, about 3200 s in total) of Python file work inside the relay
+# process. A search or view still refreshes the index itself before it answers.
+JOURNAL_FRESHNESS_INTERVAL_SECONDS = 60.0
+_journal_checks_started: dict[str, tuple[float, str]] = {}
+_journal_checks_lock = threading.Lock()
+# The last completed check per journal workspace and binding key, so a channel
+# whose own heartbeat did not start one reports the shared result, not pending.
+_journal_check_results: dict[str, tuple[str, Any]] = {}
+
+
+def _journal_check_due(root: str, key: str, *, interval: float, now: float) -> bool:
+    """Claim the next background freshness check for ``root`` when one is due.
+
+    Due when no check started for this journal workspace yet, when the last
+    one was for another binding key, or when the interval has passed. Shared
+    by every channel of the relay process, so N channels start one check.
+    """
+
+    with _journal_checks_lock:
+        last = _journal_checks_started.get(root)
+        if last is not None and last[1] == key and now - last[0] < interval:
+            return False
+        _journal_checks_started[root] = (now, key)
+        return True
+
+
 class _JournalRefreshWorker:
     """One reusable, single-flight LOCAL job owned by a persistent channel.
 
@@ -841,8 +872,12 @@ class _JournalRefreshWorker:
     its thread. An in-progress OS/index operation is drained, not pretend-killed.
     """
 
-    def __init__(self, *, timeout_seconds: float = 30.0) -> None:
+    def __init__(
+        self, *, timeout_seconds: float = 30.0,
+        freshness_interval_seconds: float = JOURNAL_FRESHNESS_INTERVAL_SECONDS,
+    ) -> None:
         self.timeout_seconds = timeout_seconds
+        self.freshness_interval_seconds = freshness_interval_seconds
         self._stop = Event()
         self._cancel_job = Event()
         self._pool: ThreadPoolExecutor | None = None
@@ -885,7 +920,27 @@ class _JournalRefreshWorker:
             self._future = None
             if key == self._key and result is not None:
                 completed, ready = result, True
+                with _journal_checks_lock:
+                    if isinstance(result, DomainError):
+                        # A failed check is retried at the next heartbeat, as
+                        # before; only a completed one waits for the interval.
+                        _journal_checks_started.pop(str(workspace.root), None)
+                        _journal_check_results.pop(str(workspace.root), None)
+                    else:
+                        _journal_check_results[str(workspace.root)] = (key, result)
             # Never apply an obsolete binding's result to a newer heartbeat.
+        # W448: a changed binding starts a check at once; an unchanged one
+        # starts at most one per interval for this journal workspace, whichever
+        # channel's heartbeat asks.
+        if not _journal_check_due(
+            str(workspace.root), key, interval=self.freshness_interval_seconds, now=time.monotonic(),
+        ):
+            if not ready:
+                with _journal_checks_lock:
+                    shared = _journal_check_results.get(str(workspace.root))
+                if shared is not None and shared[0] == key:
+                    return True, shared[1]
+            return ready, completed
         if self._pool is None:
             self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pb-journal")
         self._key = key
@@ -893,8 +948,8 @@ class _JournalRefreshWorker:
         self._future = self._pool.submit(
             self._run, workspace, binding, create_home, self._cancel_job
         )
-        # Every due heartbeat starts a check, even when it consumes a previous
-        # result. Otherwise a clone advance could wait two heartbeat intervals.
+        # A due check starts even when it consumes a previous result, so a
+        # clone advance waits at most one interval (W448).
         return ready, completed
 
     def _run(
