@@ -419,6 +419,7 @@ class ResolverBackedProjectAuthorizationPort:
                         "authorization_source": "project_membership_resolver",
                         "actor_membership": actor.to_public_dict(),
                         "target_membership": actor.to_public_dict(),
+                        "target_administers": False,
                         "own_card": True,
                     },
                 )
@@ -461,6 +462,9 @@ class ResolverBackedProjectAuthorizationPort:
         }
         if target is not None:
             evidence["target_membership"] = target.to_public_dict()
+            # What the service decides for this person by role alone (W560):
+            # the Card editor shows those operations held or not, never editable.
+            evidence["target_administers"] = target.role.lower() in self._administrative_roles
         return ProjectAuthorizationDecision.allow(
             request,
             delegable_grants=actor.delegable_grants,

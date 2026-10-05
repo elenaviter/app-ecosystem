@@ -439,3 +439,29 @@ async def test_a_person_who_is_not_a_member_reads_nothing() -> None:
     port = _port(_MembershipResolver({}))
     refused = await port.authorize_project_person_control(_own(TARGET, PROJECT_PERSON_CONTROL_READ))
     assert refused.allowed is False and refused.reason == "project_actor_membership_missing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target_role", "administers"),
+    [("member", False), ("admin", True), ("owner", True)],
+)
+async def test_the_decision_says_whether_the_card_holder_administers_the_project(target_role, administers) -> None:
+    """W560: the Card editor shows the operations a service decides by role
+    alone held or not held, from this answer, never editable."""
+
+    resolver = _MembershipResolver({
+        (PROJECT_REF, ADMIN): _membership(ADMIN, role="admin"),
+        (PROJECT_REF, TARGET): _membership(TARGET, role=target_role),
+    })
+    decision = await _port(resolver).authorize_project_person_control(_request(operation=PROJECT_PERSON_CONTROL_READ))
+    assert decision.allowed is True
+    assert decision.evidence["target_membership"]["role"] == target_role
+    assert decision.evidence["target_administers"] is administers
+
+
+@pytest.mark.asyncio
+async def test_a_member_reading_their_own_card_is_told_they_do_not_administer() -> None:
+    port = _port(_MembershipResolver({(PROJECT_REF, TARGET): _membership(TARGET, role="member")}))
+    own = await port.authorize_project_person_control(_own(TARGET, PROJECT_PERSON_CONTROL_READ))
+    assert own.evidence["target_administers"] is False

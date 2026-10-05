@@ -336,6 +336,13 @@ account at call time.
     front: no Edit, Save disabled, the reason shown. The same up-front
     read-only view applies to another person's agent Card and to a project's
     Control Card reached through a project.
+  - For a live person's Card, the same read returns the holder's project role
+    evidence and a project-scoped display catalog for descriptor operations
+    marked `person_card: false` (W560). These entries are read-only and absent
+    from a Card Save request. The display catalog is independent of the
+    viewer's delegable grants, so a member can see the same operation names as
+    an admin. If the role or catalog cannot be read, the widget says that the
+    state is unavailable instead of treating a Card selection as role evidence.
   - `project_control_card_attach`, `project_control_card_detach` (operations,
     W260) attach or detach a project's Control Card on an agent's Card that
     another person owns. Two host answers are needed: the project host's

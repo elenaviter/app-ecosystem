@@ -138,3 +138,47 @@ async def test_the_card_editor_option_carries_the_mark() -> None:
     }
     (namespace,) = option["named_services"]
     assert namespace["tools"]["action"]["operations"]["object.action.project.coordinator.make"]["person_card"] is False
+
+
+@pytest.mark.asyncio
+async def test_project_person_display_catalog_is_complete_when_viewer_cannot_delegate_admin() -> None:
+    marked_admin = dict(RESOURCE["tools"]["project.coordinator.hand_over"], grants=["work:admin"])
+    resource = dict(RESOURCE, tools={
+        **RESOURCE["tools"],
+        "project.coordinator.hand_over": marked_admin,
+    })
+    connections = {"delegated_credentials": {"oauth": {
+        "enabled": True,
+        "capabilities": [
+            {"grant": "work:review", "delegable_roles": ["kdcube:role:registered"]},
+            {"grant": "work:admin", "delegable_roles": ["kdcube:role:admin"]},
+        ],
+        "resources": [resource],
+    }}}
+
+    class _Resolver:
+        async def resolve_active(self):
+            return SimpleNamespace(version="catalog-1", connections=connections)
+
+    service = AutomationAccessService(
+        redis=object(), tenant="tenant-a", project="project-a",
+        config=oauth_delegated_config_from_connections(connections),
+        catalog_resolver=_Resolver(),
+    )
+    filtered = await service.resource_options(
+        {"user_id": "viewer", "roles": ["kdcube:role:registered"], "permissions": []},
+        _delegable_grants=["work:review"],
+    )
+    assert "project.coordinator.hand_over" not in {
+        tool["name"] for tool in filtered[0]["operations"]
+    }
+
+    display = await service.person_role_display_catalog(
+        owner_subject="project:synthetic", card_resources=["problem_board", "other"],
+    )
+    assert display is not None
+    assert len(display) == 1
+    assert {tool["name"] for tool in display[0]["operations"]} == {
+        "project.coordinator.hand_over", "project.people.invite",
+    }
+    assert all("grants" not in tool for tool in display[0]["operations"])

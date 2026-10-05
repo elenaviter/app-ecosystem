@@ -4428,3 +4428,26 @@ code {
 .operation-group:first-child > .operation-group__label {
   margin-top: 0;
 }
+
+/* W560: operations a person's Control Card holds by project role, shown ticked
+   or not and never editable. */
+.role-decided-operations {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--line-soft);
+  border-radius: 8px;
+}
+.role-decided-operations__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.role-decided-operations__state {
+  display: block;
+  margin: 4px 0 6px;
+  color: var(--muted);
+}
+.role-decided-operations .grant-chip {
+  cursor: default;
+  opacity: 0.85;
+}

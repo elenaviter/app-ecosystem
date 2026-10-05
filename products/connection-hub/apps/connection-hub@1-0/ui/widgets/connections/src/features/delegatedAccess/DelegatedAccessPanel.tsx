@@ -168,6 +168,7 @@ import {
   projectPersonControlCoordinates,
 } from './projectPersonControl';
 import { catalogDriftForPersonCard, notOfferedOnPersonCard, resourcesForPersonCard } from './personCardOperations';
+import { RoleDecidedOperations } from './RoleDecidedOperations';
 import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
 import {
@@ -1065,6 +1066,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     items,
     focusedCard,
     focusedViewer,
+    focusedTargetRole,
+    focusedRoleDecidedCatalog,
+    focusedRoleDecidedCatalogAvailable,
     grantOptions,
     resources: catalogResources,
     issuedToken,
@@ -2904,6 +2908,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
   };
 
+  // W560: what a person's Control Card holds by project role, shown ticked or
+  // not and never editable. The role comes with the focused Card's read.
+  const renderRoleDecidedOperations = (record: DelegatedAccessRecord) => (
+    <RoleDecidedOperations
+      catalog={focusedCard?.access_id === record.access_id ? focusedRoleDecidedCatalog || [] : []}
+      catalogAvailable={focusedCard?.access_id === record.access_id && focusedRoleDecidedCatalogAvailable === true}
+      targetRole={focusedCard?.access_id === record.access_id ? focusedTargetRole : undefined}
+    />
+  );
+
   const renderAgentResetDialog = () => (
     <ConfirmDialog
       open={confirmAgentReset !== null}
@@ -3088,6 +3102,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
+    const projectPersonControl = projectPersonControlCoordinates(item);
+    if (projectPersonControl && (
+      focusedCard?.access_id !== item.access_id || focusedRoleDecidedCatalogAvailable !== true
+    )) {
+      setEditActionError('The project operation catalog could not be read. Reopen this Card before saving.');
+      return;
+    }
     const readOnlyReason = cardReadOnlyReason(item, focusedViewer);
     if (readOnlyReason) {
       setEditActionError(readOnlyReason);
@@ -3233,7 +3254,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }
     }
     let updated;
-    const projectPersonControl = projectPersonControlCoordinates(item);
     const projectAgentCard = projectAgentCardUpdateTarget(item);
     const projectControlCard = projectControlCardUpdateTarget(item);
     try {
@@ -3242,6 +3262,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         label: editLabel.trim() || item.label || 'Automation access',
         resourceGrants: routedKept,
         resourceOperations: savedResourceOperations,
+        roleDecidedCatalog: projectPersonControl ? focusedRoleDecidedCatalog : undefined,
+        catalogRowByResource: item.catalog_row_by_resource,
         namedServiceOperations: Object.keys(offered).length
           ? (item.source === 'control'
               ? keptNamedServiceOperations
@@ -5218,6 +5240,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ) : null}
           <CatalogDriftNotice drift={cardCatalogDrift(record)} />
+          {projectPersonControl ? renderRoleDecidedOperations(record) : null}
           {record.source === 'control' ? (
             <div className="card-fields control-card-fields">
               <Field label={projectPersonControl?.kind === 'person' ? 'For' : 'Issued by'}>
@@ -5609,6 +5632,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         </div>
                       ) : null}
                       <CatalogDriftNotice drift={cardCatalogDrift(item)} />
+                      {projectPersonControlCoordinates(item) ? renderRoleDecidedOperations(item) : null}
                       {!editing && isMyCard(item)
                         ? <MyCardGithubSection projectRef={myCardProjectRef(item)} openParams={openParams} />
                         : null}

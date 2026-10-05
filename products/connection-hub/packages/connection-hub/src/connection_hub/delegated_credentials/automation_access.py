@@ -2735,6 +2735,56 @@ class AutomationAccessService:
             out.append(option)
         return out
 
+    async def person_role_display_catalog(
+        self,
+        *,
+        owner_subject: str,
+        card_resources: Iterable[str],
+    ) -> list[dict[str, Any]] | None:
+        """Read-only marked operations for one project person's Card.
+
+        This travels on the project-authorized Card read, not in the viewer's
+        delegable options. It contains only descriptors for resources already
+        on that Card and cannot be used as a grant or a save selection.
+        ``None`` means the registered catalog could not be read.
+        """
+
+        offer = await self._offer_config(owner_subject=owner_subject)
+        if offer is None:
+            return None
+        rows: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for card_resource in card_resources:
+            resource = self._configured_resource(card_resource, config=offer)
+            if resource is None:
+                continue
+            key = _clean(getattr(resource, "resource", ""))
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            operations = [
+                {
+                    "name": tool.name,
+                    "label": tool.label,
+                    "description": tool.description,
+                    "group": tool.group,
+                    "person_card": False,
+                }
+                for tool in resource.tools
+                if not getattr(tool, "person_card", True)
+            ]
+            if operations:
+                rows.append({
+                    "resource": key,
+                    "label": resource.label or key,
+                    "operations": operations,
+                    "operation_groups": [
+                        dict(group)
+                        for group in getattr(resource, "operation_groups", ()) or ()
+                    ],
+                })
+        return rows
+
     def _entry_resource_for(self, record: Any, *, config: Any = None) -> str:
         """The door an OAuth card's client connected to. The stored value when
         the consent wrote it; for an OAuth card written before the field

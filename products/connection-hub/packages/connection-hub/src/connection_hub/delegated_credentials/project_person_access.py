@@ -167,6 +167,24 @@ def _named_not_delegable(result: Mapping[str, Any], decision: Any) -> dict[str, 
     return refused
 
 
+def _target_role(decision: Any) -> dict[str, Any]:
+    """The Card holder's project role, as the project host answered it (W560).
+
+    A service marks the operations it decides for a person by role alone
+    (``person_card: false``). The Card editor shows them held when the holder
+    administers the project and not held otherwise, never editable. ``known``
+    is False when the host's answer carried no role; nothing is guessed then.
+    """
+
+    evidence = getattr(decision, "evidence", None) or {}
+    target = evidence.get("target_membership") if isinstance(evidence, Mapping) else None
+    administers = evidence.get("target_administers") if isinstance(evidence, Mapping) else None
+    role = str(target.get("role") or "").strip() if isinstance(target, Mapping) else ""
+    if not role or not isinstance(administers, bool):
+        return {"known": False, "role": "", "administers": False}
+    return {"known": True, "role": role, "administers": administers}
+
+
 def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
     return {
         "ok": False,
@@ -386,11 +404,17 @@ class ProjectPersonControlLifecycle:
         access["state"] = state
         access["catalog_drift"] = dict(card.get("catalog_drift") or {})
         access["resource_offers"] = list(card.get("resource_offers") or [])
+        role_catalog = await self._host.person_role_display_catalog(
+            owner_subject=identity.project_subject,
+            card_resources=record.resource_grants,
+        )
         return {
             "ok": True,
             "control_card": card,
             "card": card,
             "access": access,
+            "role_decided_catalog": role_catalog or [],
+            "role_decided_catalog_available": role_catalog is not None,
             "authority": authority.to_dict(),
             "project_person_control": identity.to_property(),
             "audit": copy.deepcopy(
@@ -427,6 +451,7 @@ class ProjectPersonControlLifecycle:
         )
         view = await self._view(identity=identity, decision=decision)
         if view.get("ok") is True:
+            view["target_role"] = _target_role(decision)
             view["viewer"] = await self._viewer(
                 actor_subject=actor_subject,
                 project_ref=project_ref,
