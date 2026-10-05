@@ -862,6 +862,16 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--since", default="", help="Only mail created at or after this UTC time.")
 
     command = worker_commands.add_parser(
+        "inbox-retire",
+        help="Plan, and with --apply settle, superseded board notices in this worker's own mail.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--apply", action="store_true", help="Settle the reviewed selection.")
+    command.add_argument("--digest", default="", help="The reviewed dry run's selection digest (with --apply).")
+    command.add_argument("--approval-ref", default="", help="The ref of the approval to retire it (with --apply).")
+
+    command = worker_commands.add_parser(
         "leases",
         help="Page the active mail leases held by this exact worker session.",
     )
@@ -3693,6 +3703,99 @@ def _worker_inbox(field: Any, identity: Any, args: Any) -> dict[str, Any]:
     }
 
 
+
+def _worker_inbox_retire(field: Any, identity: Any, args: Any) -> dict[str, Any]:
+    """Retire superseded board notices from this worker's own mail (W563).
+
+    Without --apply this is the dry run: it changes nothing, writes the full
+    selection with per-message evidence and every exclusion to a file for
+    review, and prints counts and the selection digest. With --apply, the
+    reviewed digest and the approval ref are required; the plan is recomputed
+    and, when its digest differs, nothing is settled. Coordinator decision
+    2026-10-05 21:19Z: only typed board notices with supersession evidence,
+    never by age or kind alone.
+    """
+
+    from .inbox_retire import plan_retirement, settlement_summary
+
+    items: dict[tuple[str, str], Any] = {}
+
+    def read_item(project_ref: str, identity_ref: str) -> Mapping[str, Any] | None:
+        if not project_ref:
+            return None
+        result = _reference_mapping_request(
+            args, action="project.plan.item", object_ref=project_ref, payload={"work_ref": identity_ref},
+        )
+        item = result.get("object")
+        item = item.get("item") if isinstance(item, Mapping) and isinstance(item.get("item"), Mapping) else item
+        if not isinstance(item, Mapping):
+            return None
+        return {key: item.get(key) for key in ("status", "assignee", "reviewer", "revision")}
+
+    plan = plan_retirement(field.retirement_rows(identity.worker_name), read_item=read_item)
+    worker = field.read_worker(identity.worker_name)
+    stable_name = str(worker.get("worker_name") or identity.worker_name)
+    folder = field.control / "inbox-retire" / stable_name
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    retirement_id = f"retire_{plan['digest'][:16]}"
+    selection_path = folder / f"{retirement_id}.json"
+    selection_path.write_text(json.dumps(plan, indent=1, sort_keys=True), encoding="utf-8")
+    by_type: dict[str, int] = {}
+    for entry in plan["selected"]:
+        by_type[entry["type"]] = by_type.get(entry["type"], 0) + 1
+    by_reason: dict[str, int] = {}
+    for entry in plan["excluded"]:
+        by_reason[entry["reason"]] = by_reason.get(entry["reason"], 0) + 1
+    result: dict[str, Any] = {
+        "schema": "problem-board.worker-inbox-retire.v1",
+        "worker": stable_name,
+        "mode": "apply" if args.apply else "dry_run",
+        "digest": plan["digest"],
+        "retirement_id": retirement_id,
+        "selection_file": str(selection_path),
+        "selected": len(plan["selected"]),
+        "selected_by_type": dict(sorted(by_type.items())),
+        "excluded": len(plan["excluded"]),
+        "excluded_by_reason": dict(sorted(by_reason.items())),
+    }
+    if not args.apply:
+        result["next"] = (
+            "Have the selection file reviewed, then run with --apply --digest <digest> "
+            "--approval-ref <the approval's ref>."
+        )
+        return result
+    if not args.digest or not args.approval_ref:
+        raise DomainError(
+            "field_inbox_retire_approval_required",
+            "Apply needs the reviewed dry run's --digest and the --approval-ref that approved it.",
+        )
+    receipt_path = folder / f"receipt_{args.digest[:16]}.json"
+    if receipt_path.exists():
+        return {**result, "state": "already_applied", "receipt": json.loads(receipt_path.read_text(encoding="utf-8"))}
+    if args.digest != plan["digest"]:
+        raise DomainError(
+            "field_inbox_retire_selection_changed",
+            "The selection changed after the reviewed dry run; nothing was retired. Run the dry run again.",
+            status=409,
+            details={"reviewed_digest": args.digest, "current_digest": plan["digest"]},
+        )
+    settled = field.retire_mail(
+        stable_name,
+        lease_owner=str(worker.get("runtime_session_id") or identity.runtime_session_id),
+        approved={entry["message_ref"]: entry["content_hash"] for entry in plan["selected"]},
+        summaries={entry["message_ref"]: settlement_summary(entry, retirement_id) for entry in plan["selected"]},
+    )
+    receipt = {
+        "retirement_id": retirement_id,
+        "digest": plan["digest"],
+        "approval_ref": args.approval_ref,
+        "settled": len(settled),
+        "selection_file": str(selection_path),
+        "applied_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    receipt_path.write_text(json.dumps(receipt, indent=1, sort_keys=True), encoding="utf-8")
+    return {**result, "state": "applied", "receipt": receipt}
+
 # Pages of 100 notes searched for one note ref before the read gives up.
 _NOTE_READ_PAGES = 20
 
@@ -5337,6 +5440,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
         return _with_project_files_signals(received, config, field, identity)
     if args.worker_command == "inbox":
         return _worker_inbox(field, identity, args)
+    if args.worker_command == "inbox-retire":
+        return _worker_inbox_retire(field, identity, args)
     if args.worker_command == "leases":
         worker = field.read_worker(identity.worker_name)
         lease_owner = str(

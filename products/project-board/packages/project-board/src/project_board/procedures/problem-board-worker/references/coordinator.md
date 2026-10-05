@@ -182,7 +182,13 @@ accountability (operator, 2026-10-03).
     repeated activation, an older procedure load or a second reassignment.
     A real contradiction between the message and the current state goes to
     the operator or the item's owner; a Done status is not proof of every
-    acceptance line.
+    acceptance line. For a backlog of board notices, `pb worker inbox-retire`
+    plans the retirement without bodies: only typed board notices that a newer
+    notice or the item's current state supersedes, each with its evidence, and
+    every other message stays pending with its reason (W563, coordinator
+    2026-10-05: never by age or kind alone). Have the selection file reviewed,
+    then `--apply --digest <digest> --approval-ref <ref>`; a selection that
+    changed after review settles nothing.
   - A notification you send carries the action asked and the authoritative
     item or result ref, not a narrative of it. Do not reply only to
     acknowledge: a settlement records receipt.
