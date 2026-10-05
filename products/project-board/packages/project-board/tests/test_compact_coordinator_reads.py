@@ -1191,3 +1191,22 @@ def test_a_clipped_scope_is_readable_whole_without_download_links(monkeypatch) -
     args.field = ["description"]
     narrow = cli._worker_item_read(args)
     assert list(narrow["fields"]) == ["description"]
+
+
+def test_worker_context_names_one_identity_command_instead_of_one_per_clone() -> None:
+    commands = [f"git -C /ws/repo-{index} config user.{key} value" for index in range(3) for key in ("name", "email")]
+    result = {
+        "project_ref": PROJECT_REF,
+        "workspace": "/ws",
+        "team": [],
+        "repositories": [],
+        "commit_identity": {"name": "agent@host", "email": "agent@example.test", "source": "project", "commands": commands},
+    }
+
+    text = _brief(result)
+
+    assert "  name = agent@host" in text and "  email = agent@example.test" in text
+    assert (
+        f"  set in every clone (6 git config commands): pb worker workspace-report --project-ref {PROJECT_REF} --set-identity"
+    ) in text
+    assert "git -C /ws/repo-0" not in text

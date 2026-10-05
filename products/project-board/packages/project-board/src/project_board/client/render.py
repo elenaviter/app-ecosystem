@@ -664,15 +664,15 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
                 lines.append(f"  {key} = {identity[key]}")
         if _present(identity.get("source_note")):
             lines.append(f"  source_note = {_preview(identity['source_note'])}")
-        commands, command_count = _bounded(identity.get("commands") or [])
-        for command in commands:
-            lines.append(f"  command: {command}")
-        _note_omitted(
-            lines,
-            "commit identity commands",
-            shown=len(commands),
-            total=command_count,
-        )
+        # One `git config` pair per clone repeated the same name and email for
+        # every repository (W563); one command sets them all, and the JSON
+        # keeps each.
+        command_count = len(identity.get("commands") or [])
+        if command_count:
+            lines.append(
+                f"  set in every clone ({command_count} git config commands): "
+                f"pb worker workspace-report --project-ref {result.get('project_ref') or '<project-ref>'} --set-identity"
+            )
 
     clone = result.get("journal_clone")
     if isinstance(clone, Mapping) and clone:
