@@ -1168,7 +1168,9 @@ def _with_matching_retirement_command_folded(payload: Any, message: Mapping[str,
     command = payload.get("retirement_command")
     if not isinstance(command, Mapping) or "mail" not in command:
         return payload
-    if not set(command) <= {"mail", "attachments", "attachment_request_hash"}:
+    # `attachment_custody` names who holds the files (W563: the server added it,
+    # and an unknown key printed the whole copy, download paths included).
+    if not set(command) <= {"mail", "attachments", "attachment_request_hash", "attachment_custody"}:
         return payload
     mail = command.get("mail")
     if not isinstance(mail, Mapping):
@@ -1180,8 +1182,9 @@ def _with_matching_retirement_command_folded(payload: Any, message: Mapping[str,
             extra["attachments"] = command.get("attachments")
         else:
             extra["attachments"] = folded_attachments
-    if "attachment_request_hash" in command:
-        extra["attachment_request_hash"] = command.get("attachment_request_hash")
+    for key in ("attachment_request_hash", "attachment_custody"):
+        if key in command:
+            extra[key] = command.get(key)
     matched: list[str] = []
     differing: dict[str, Any] = {}
     for name, value in mail.items():

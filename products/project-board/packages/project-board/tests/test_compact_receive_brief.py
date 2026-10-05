@@ -612,3 +612,28 @@ def test_a_locator_with_nested_content_is_printed_not_folded(locator):
     assert "admitted attachment entry match" not in text
     assert f"retirement_command.attachments[0].{locator}.action = VISIBLE_NEXT_ACTION" in text
     _assert_no_secret(text)
+
+
+def test_an_admitted_copy_with_attachment_custody_still_folds_without_locators():
+    # W563: the server added `attachment_custody` beside the admitted copy's
+    # attachments; the unknown key stopped the fold, so every routed message
+    # with a file printed the whole copy, download paths included.
+    attachment = _attachment("w563-red-main.xml")
+    message = _routed()
+    message["attachment_count"] = 1
+    message["attachments"] = [attachment]
+    admitted = {
+        key: attachment[key] for key in ("filename", "mime", "size", "sha256", "file_ref")
+    }
+    admitted.update(download_path="/api/cb/resources/owner/session/attachment/w563-red-main.xml/download",
+                    stored_name="w563-red-main.xml", owner_id="owner", conversation_id="session", turn_id="turn")
+    message["payload"]["retirement_command"].update(
+        attachments=[admitted], attachment_request_hash="b" * 64, attachment_custody="delivery",
+    )
+
+    text = render_envelope(_receive(message), worker_flags=FLAGS)
+
+    assert "retirement_command.mail." not in text
+    assert "download_path" not in text and "/download" not in text
+    assert "1 admitted attachment entry match this message's attachments" in text
+    assert "retirement_command.attachment_custody = delivery" in text
