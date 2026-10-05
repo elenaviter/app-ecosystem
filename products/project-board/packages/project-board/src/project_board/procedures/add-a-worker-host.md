@@ -428,24 +428,43 @@ identification metadata and reports `Provider account not reported`.
 
 Runs on: the host.
 
-**Known gap (W258):** a headless machine's credential store (Secret Service)
-exists but cannot create its store over SSH: the first write fails with
-`Prompt dismissed`. Until W258 lands, the **operator** unlocks it once per boot,
-in an SSH session of their own as that user, because the password is theirs. It
-is typed, not echoed, and not stored:
+**What it is.** The relay keeps each agent's credential in the user's password
+store (Secret Service; on Linux, gnome-keyring: the encrypted file
+`~/.local/share/keyrings/login.keyring`, protected by a password). A machine
+reached only over SSH has nobody to unlock it at login, so the **operator**
+unlocks it, in an SSH session of their own as that user, because the password
+is theirs: once when the host is set up, and **again after every reboot**.
+Until it is unlocked, no agent on the host can authorize or reach the board.
+
+**Unlock** (also the first time: then it creates the store with the password typed):
 
 ```bash
-read -rs P && printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; unset P
+systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; printf 'Password store password (not shown): '; read -rs P; echo; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; unset P
 ```
 
-The first run creates a store named `login` with that password.
+- **Nothing is shown while typing.** Type the password and press Enter.
+- **Which password:** the one the store was created with, the first time this line ran on this host. Keep it in a password manager; nothing on the machine can remind you of it.
+- **Why it stops the service first** (W558): on a host where a systemd user unit (`gnome-keyring-daemon.service`, socket-activated) owns the Secret Service, the unit's daemon keeps the name `org.freedesktop.secrets` locked, and `--replace` alone starts a second daemon the board never talks to. Stopping the unit, its socket and any leftover daemon first lets the new, unlocked daemon take the name. Proven on host `mint` (Linux Mint 22.3, gnome-keyring 46.1) on 2026-10-05. On a host without the unit the stop finds nothing to stop.
 
-**Tell the operator before they type it**: the password is theirs to keep, the
-machine cannot remind them of it, they are asked again after every reboot of the
-machine and only then, and if it is lost the store is deleted
-(`~/.local/share/keyrings/login.keyring`), unlocked again with a new password,
-and each agent is authorized again (step 11). Until this step is done, an agent
-cannot finish authorizing, because it has nowhere to keep its credential.
+**Check** (each line's expected result after `#`):
+
+```bash
+busctl --user status org.freedesktop.secrets | grep '^PID='   # the same number as the next line
+pgrep -u "$USER" gnome-keyring-d
+timeout 15 "$HOME/.kdcube/client-runtime/tools/problem-board/releases/current/venv/bin/python" -c 'import keyring as k; k.set_password("pb-probe","p","x"); print(k.get_password("pb-probe","p")=="x"); k.delete_password("pb-probe","p")'; echo "exit $?"   # True, exit 0
+```
+
+Two different PIDs, or no `True` within 15 s (`exit 124`), means the password did not open the existing store: run the unlock again with the right password, or reset.
+
+**Only these lines.** The host agent gives the operator exactly the unlock, check and reset above, never another keyring command of its own: on mint (2026-10-05) an improvised `gnome-keyring-daemon --unlock` left a stray daemon that broke the store further, and a restart of the keyring unit without asking added another (W558). If the check fails twice, stop, change nothing more, and report what each line printed to the coordinator.
+
+**Reset** (the password is lost, or the first one was mistyped). It asks the new password twice and changes nothing unless both entries match; then it sets the old store aside and creates a new, empty one:
+
+```bash
+printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries differ; nothing changed"; fi; unset P Q
+```
+
+Then run the check. A reset loses only what the old store held: each agent on this host authorizes again (step 11).
 
 **The alternative W258 has to choose between** is in that item's note: the person
 types it (nothing stored, a person needed after every reboot), or the machine
