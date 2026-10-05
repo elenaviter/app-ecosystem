@@ -110,3 +110,29 @@ def test_the_coordinate_command_checks_board_text_before_any_relay():
     text = open(cli.__file__, encoding="utf-8").read()
     body = text[text.index("def _coordinate_command"):]
     assert body.index("refuse_unreadable_board_text(") < body.index("require_coordinate_shape(")
+
+
+def test_lists_and_tables_are_measured_per_item_not_as_one_wall():
+    # Review of ff3c9e38: a 12-item list and a 25-row table were refused as walls
+    # (this list is 14 items so it is longer than the limit).
+    bullets = "\n".join(f"- Item {n}: the relay restarted and the check passed on dev-main tonight." for n in range(14))
+    assert len(bullets) > OPERATOR_PARAGRAPH_MAXIMUM
+    assert refuse_unreadable_operator_prose(bullets, argument="--body") == bullets
+    table = "| Check | Before | After |\n|---|---|---|\n" + "\n".join(
+        f"| Relay check number {n} | 463 slow turns | 453 slow turns |" for n in range(25)
+    )
+    assert len(table) > OPERATOR_PARAGRAPH_MAXIMUM
+    assert refuse_unreadable_operator_prose(table, argument="--body") == table
+    continued = "1. First step\n   continues on an indented line\n2. Second step"
+    assert refuse_unreadable_operator_prose(continued, argument="--body") == continued
+
+
+def test_a_long_prose_paragraph_or_one_long_list_item_is_still_a_wall():
+    prose = ("The window opened and the relay restarted and everything was checked again. " * 16).strip()
+    assert len(prose) > OPERATOR_PARAGRAPH_MAXIMUM
+    with pytest.raises(DomainError) as wall:
+        refuse_unreadable_operator_prose(prose, argument="--body")
+    assert wall.value.code == "problem_board_operator_prose_wall"
+    long_item = "- " + "one very long list item that never ends " * 25
+    with pytest.raises(DomainError):
+        refuse_unreadable_operator_prose("Short intro.\n\n" + long_item, argument="--body")
