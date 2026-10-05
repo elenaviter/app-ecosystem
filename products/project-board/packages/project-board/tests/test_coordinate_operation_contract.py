@@ -1167,7 +1167,7 @@ def test_the_update_contract_names_every_item_field_and_the_nested_review():
     contract = cli._coordinate_command(_args("plan.item.update", contract=True))["contract"]
     changes = contract["payload"]["changes"]
     assert changes == PLAN_ITEM_CHANGE_FIELDS
-    assert set(changes["review"]) == {"look_at", "could_not_verify"}
+    assert set(changes["review"]) == {"look_at", "could_not_verify", "hold"}
     assert "status" not in changes, "lifecycle status has its own operations"
 
     example = json.loads(contract["example"].split("--payload-json ", 1)[1].strip("'"))
@@ -1209,6 +1209,65 @@ def test_a_changes_value_of_the_wrong_type_is_refused_locally(submits, tmp_path,
             _args("plan.item.update", object_ref=PROJECT, payload=_update(changes), config=str(tmp_path / "no-relay.json"))
         )
     assert [(p["field"], p["problem"]) for p in refused.value.details["problems"]] == [(field, "type")]
+    assert submits == []
+
+
+# W537: the board accepts a review hold as plan.item.update with
+# changes.review.hold alone, and its own notice tells reviewers to send it,
+# but the contract listed only look_at and could_not_verify, so discovery
+# could not show the carrier (Infra's W537 acceptance, 2026-10-05).
+def test_the_update_contract_describes_the_review_hold_and_its_alone_rule():
+    contract = cli._coordinate_command(_args("plan.item.update", contract=True))["contract"]
+    hold = contract["payload"]["changes"]["review"]["hold"]
+    assert set(hold) == {"waiting_on", "reason", "due_at"}
+    assert "operator" in hold["waiting_on"] and "clears" in hold["waiting_on"]
+    assert "14 days" in hold["due_at"]
+    assert "changes.review.hold sent alone" in contract["description"]
+    assert "review.return" in contract["description"]
+
+
+def test_a_hold_only_update_passes_the_local_shape_check_and_is_sent_unchanged(submits, monkeypatch, tmp_path):
+    host, identity, _channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    payload = _update(
+        {"review": {"hold": {"waiting_on": "codex-api", "reason": "Merging the reviewed head.",
+                             "due_at": "2026-10-06T12:00:00Z"}}},
+        key="w537-hold",
+    )
+
+    def outcome_unknown(queue_, path, *, worker_name, request_id, timeout_seconds):
+        raise DomainError("work_coordinate_outcome_unknown", "No result before the deadline.", status=504)
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", outcome_unknown)
+    with pytest.raises(DomainError) as unknown:
+        cli._coordinate_command(
+            _args("plan.item.update", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+        )
+    assert unknown.value.code == "work_coordinate_outcome_unknown"
+    assert [submitted["payload"] for submitted in submits] == [payload]
+
+
+def test_a_dotted_or_non_object_hold_is_refused_locally_and_nothing_is_sent(submits, tmp_path):
+    with pytest.raises(DomainError) as dotted:
+        cli._coordinate_command(_args(
+            "plan.item.update", object_ref=PROJECT,
+            payload=_update({"review": {"hold.waiting_on": "codex-api", "hold.due_at": "2026-10-06T12:00:00Z"}}),
+            config=str(tmp_path / "no-relay.json"),
+        ))
+    [problem] = dotted.value.details["problems"]
+    assert problem["problem"] == "dotted"
+    assert json.loads(problem["corrected"]) == {
+        "hold": {"waiting_on": "codex-api", "due_at": "2026-10-06T12:00:00Z"},
+    }
+    with pytest.raises(DomainError) as wrong_type:
+        cli._coordinate_command(_args(
+            "plan.item.update", object_ref=PROJECT,
+            payload=_update({"review": {"hold": "codex-api until tomorrow"}}),
+            config=str(tmp_path / "no-relay.json"),
+        ))
+    assert [(p["field"], p["problem"]) for p in wrong_type.value.details["problems"]] == [
+        ("changes.review.hold", "type")
+    ]
     assert submits == []
 
 
