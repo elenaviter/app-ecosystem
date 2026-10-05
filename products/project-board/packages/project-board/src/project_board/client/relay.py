@@ -5796,6 +5796,11 @@ class ProblemBoardRelaySupervisor:
             # Nothing to wake for, or nobody to wake: no hold (W334).
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
+        quiet = await self._channel_off_loop(channel, field.quiet_mail_refs, channel.worker_name)
+        if quiet and all(ref in quiet for ref in pending_refs):
+            # W563 (Q2): only notices that need no action are pending. They
+            # wake no turn and are received with the next wake or receive.
+            return queue_reconciliation
 
         async def mailbox_empty() -> bool:
             # W448 fix 3: a queued wake's refs stand in for the mailbox only on

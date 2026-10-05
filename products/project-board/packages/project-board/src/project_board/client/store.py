@@ -5736,6 +5736,21 @@ class SharedFieldStore:
                 })
         return headers
 
+    def quiet_mail_refs(self, worker_name: str) -> set[str]:
+        """Pending notices that need no action and wake no session (W563, Q2).
+
+        Only mail its producer marked `expected_reaction: acknowledge_only`
+        (a Done or Cancelled assignment notice, terminal assignee information)
+        and that is not operator mail. It stays pending, counted and received
+        with the next receive; nothing is deleted or settled here.
+        """
+
+        return {
+            header["message_ref"]
+            for header in self.pending_mail_headers(worker_name)
+            if header.get("expected_reaction") == "acknowledge_only" and not header.get("operator")
+        }
+
     def _pending_mail_refs_lock_free(self, project_id: str, worker_name: str) -> list[str]:
         """One mailbox's readable and expired mail, read without its lock.
 

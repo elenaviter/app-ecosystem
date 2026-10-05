@@ -14,8 +14,14 @@ from .session import probe_worker_input
 from .store import SharedFieldStore
 
 
-def _availability(result: dict[str, Any]) -> tuple[tuple[str, ...], dict[str, Any]]:
-    pending_refs = tuple(str(item) for item in result.get("pending_refs") or [])
+def _availability(
+    result: dict[str, Any], quiet: frozenset[str] = frozenset()
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    # W563 (Q2): a notice that needs no action does not change the wake
+    # signature, so it alone starts no turn; it is still counted as pending.
+    pending_refs = tuple(
+        str(item) for item in result.get("pending_refs") or [] if str(item) not in quiet
+    )
     held_refs = tuple(str(item) for item in result.get("held_lease_refs") or [])
     held_count = int(result.get("held_lease_count") or 0)
     signals = tuple(
@@ -26,6 +32,7 @@ def _availability(result: dict[str, Any]) -> tuple[tuple[str, ...], dict[str, An
     event = {
         "event": "problem_board.inbox_available",
         "pending_count": int(result.get("pending_count") or 0),
+        "quiet_pending_count": len(quiet & set(str(item) for item in result.get("pending_refs") or [])),
         "held_lease_count": held_count,
         "signals": list(result.get("signals") or []),
         "instruction": str(result.get("instruction") or ""),
@@ -55,7 +62,8 @@ def worker_watch_events(
         while True:
             try:
                 result = probe_worker_input(field, worker_name=worker_name)
-                signature, event = _availability(result)
+                quiet = frozenset(field.quiet_mail_refs(worker_name))
+                signature, event = _availability(result, quiet)
                 if signature and signature != last_signature:
                     if result.get("pending_refs") and coalesce:
                         deadline = time.monotonic() + coalesce
@@ -67,7 +75,8 @@ def worker_watch_events(
                             # shorten its fixed coalescing window.
                             wake.wait(remaining)
                         result = probe_worker_input(field, worker_name=worker_name)
-                        signature, event = _availability(result)
+                        quiet = frozenset(field.quiet_mail_refs(worker_name))
+                        signature, event = _availability(result, quiet)
                     last_signature = signature
                     yield {**event, "worker": worker_name}
                 elif not signature:
