@@ -3,7 +3,7 @@ id: project-board-storage-and-retention
 title: Problem Board Storage And Retention
 summary: Where Problem Board state lives, remote and on each machine, how mailbox reconciliation receipts are published, the rules that keep each relay's local state bounded, how the owner-worker conversation and the project timeline are kept, and how a worker, its mail and its projects continue across long-running work.
 tags: [project-board, storage, timeline, retention, conversation]
-keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal, relay local state, retention, pending folder, hour partition]
+keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal, relay local state, retention, pending folder, hour partition, cold tier, event archive, hot_days]
 see_also:
   - ./README.md
   - ./domain-model-and-activity.md
@@ -290,7 +290,15 @@ message ref, kind, and optional project tag. The bundle property
 
 The platform keeps the most recent window of that index hot and moves older
 rows, embeddings included, to a verified cold tier in bundle storage; a
-date-filtered read reaches them by time (KDCube conversation retention).
+date-filtered read reaches them by time (KDCube conversation retention). The
+window is the assembly property `routines.conversation_store.hot_days`
+(default 90 days), and the platform's `conversation-archive` job moves rows
+once a day at 02:20 UTC; `routines.conversation_store.archive_enabled: false`
+turns it off. Archived rows are written per UTC day under
+`conversation-cold/<yyyy>/<mm>/<dd>/` with a manifest holding each part's
+SHA-256, and are deleted from Postgres only after the part is read back and
+checked. KDCube's conversation list and an opened conversation still include
+archived messages within their own rolling window.
 
 Unlinking and relinking keep the conversation. The agent's owner may choose,
 on unlink, to delete their own messages with the agent in that project, or, on
@@ -361,6 +369,39 @@ retain their artifact URI and stay in the project timeline.
 Incoming worker mail is projected from its inbox row. The corresponding
 `mail.inbox` service event remains useful for operational accounting and is
 excluded from timeline results, so one message appears once.
+
+## Service-Event Archive
+
+Service events older than the same hot window as the conversation index
+(`routines.conversation_store.hot_days`, default 90 days) can move from
+Postgres to the board's bundle storage. The board's `event-archive` job runs
+once a day at 02:40 UTC, one instance per tenant and project:
+
+```text
+<board bundle storage>/events/<project-id>/<yyyy>/<mm>/<dd>/
+  <batch-id>.jsonl.gz        the day's events, one JSON record per line
+  <batch-id>.manifest.json   row count, event ids, time range, SHA-256
+```
+
+Each batch is recorded in `problem_board_event_archive_batches` before
+anything is deleted. The job reads the part back, checks its SHA-256 and its
+exact event set against the manifest, and only then deletes those events and
+marks the batch `pruned`. A failed check deletes nothing and records the error
+on the batch; an interrupted run resumes from the ledger.
+
+Some events stay in Postgres whatever their age:
+- `worker.retired`, because the Archive reads a retired agent's history from it;
+- each agent's latest tooling notice of each kind, which its Card shows;
+- each agent's latest runtime-account change, which every heartbeat replays.
+
+A timeline search whose date range starts before the newest archived event
+also reads the archived days in that range. A search without a start date
+reads Postgres only.
+
+The bundle property `enabled.cron.event-archive: false` turns the job off.
+Deleting rows makes their space reusable for new rows; it does not shrink the
+table file, which only `VACUUM FULL` or an equivalent rewrite returns to the
+disk.
 
 ## Plan Rows, Mutation Receipts, And Notes
 
@@ -487,7 +528,11 @@ modification time before parsing them, and a new receipt is visible on the next
 read. Journal writes also emit the service event used for worker-activity
 calculation, so activity projection does not reread the receipt history.
 
-Current Problem Board operational rows remain available for the life of the
-deployment. Conversation-index retention is descriptor-owned as described
-above. A future archival policy can remove old operational rows only after its
-mailbox and audit projections preserve the referenced conversation artifacts.
+Controls, inbox rows and plan rows remain in Postgres for the life of the
+deployment. Conversation-index retention and the service-event archive are
+described above. Both use the platform's one hot window and the tenant and
+project's bundle storage. Archiving message bodies is not built yet. Whether
+it uses that same window or a board property of its own, and which key layout
+it uses, is still to be decided. A future archival policy can remove old
+operational rows only after its mailbox and audit projections preserve the
+referenced conversation artifacts.
