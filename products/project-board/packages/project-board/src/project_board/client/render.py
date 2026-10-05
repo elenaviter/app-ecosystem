@@ -470,6 +470,13 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
     """
 
     lines = [f"context: {result.get('project_ref') or '-'}"]
+    routing = result.get("context_view") == "routing"
+    if routing:
+        # W563: the routing view; the start-up coordinates are in the full read.
+        lines.append(
+            "view: routing (workspace, journal and project files: pb worker context "
+            f"--project-ref {result.get('project_ref') or '<project-ref>'})"
+        )
     for key in (
         "project_ref",
         "project_on_this_host",
@@ -557,6 +564,8 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
                 coordinator.get("revision", 0),
             )
         )
+        holder = coordinator.get("holder") if isinstance(coordinator.get("holder"), Mapping) else None
+        home = coordinator.get("home") if isinstance(coordinator.get("home"), Mapping) else None
         for key in (
             "holder",
             "home",
@@ -568,6 +577,13 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
             if key in coordinator:
                 value = coordinator[key]
                 if isinstance(value, Mapping):
+                    # W563: the home coordinator is usually the holder; it is
+                    # named once, and in full only when it differs.
+                    if key == "home" and holder is not None and home is not None and (
+                        str(home.get("worker_name") or "") == str(holder.get("worker_name") or "")
+                    ):
+                        lines.append("coordinator.home = the holder")
+                        continue
                     for field in (
                         "worker_ref",
                         "worker_name",
@@ -614,13 +630,25 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
     else:
         lines.append(f"team: {len(team)} · shown {len(team)}")
     full = isinstance(team_filter, Mapping)
-    for index, member in enumerate(team):
-        lines.extend(
-            _team_member_lines(
-                index, len(team), member, full=full,
-                project_ref=str(result.get("project_ref") or "<project-ref>"),
+    if full:
+        for index, member in enumerate(team):
+            lines.extend(
+                _team_member_lines(
+                    index, len(team), member, full=full,
+                    project_ref=str(result.get("project_ref") or "<project-ref>"),
+                )
             )
-        )
+    else:
+        # W563 (Q8, coordinator 2026-10-05): one bounded row per teammate;
+        # provider account and provenance are in `--member <name>` and JSON.
+        shared = _account_share_counts(team)
+        for member in team:
+            lines.extend(_team_row(member, shared, str(result.get("project_ref") or "<project-ref>")))
+        if team:
+            lines.append(
+                "team detail (provider account, provenance): pb worker context --project-ref "
+                f"{result.get('project_ref') or '<project-ref>'} --member <name>"
+            )
 
     own = result.get("self")
     if isinstance(own, Mapping):
@@ -778,9 +806,36 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
     lines.append(_FULL_DETAIL_LINE)
     # Kept last for compatibility with the established brief-output contract
     # and so quota evidence is one scan-friendly block.
-    if team:
+    if team and full:
         lines.extend(_team_usage_lines(team))
+    if routing:
+        lines = _routing_lines(lines)
     return lines
+
+
+# Lines of the context brief a routing read keeps, by their start (W563).
+_ROUTING_PREFIXES = ("context:", "view:", "project_ref =", "attendance_note", "role ", "coordinator",
+                     "self:", "  ", "team", "--- ", "detail:")
+
+
+def _routing_lines(lines: list[str]) -> list[str]:
+    """The routing view: who coordinates, the roles, self and the team rows.
+
+    Indented lines are kept only inside the sections kept (self, team rows'
+    wake lines), never the repository or runtime blocks.
+    """
+
+    kept: list[str] = []
+    keep_indented = False
+    for line in lines:
+        if line.startswith("  "):
+            if keep_indented:
+                kept.append(line)
+            continue
+        keep_indented = line.startswith(("self:", "--- ", "coordinator"))
+        if line.startswith(_ROUTING_PREFIXES):
+            kept.append(line)
+    return kept
 
 
 def _render_journal_search(result: Mapping[str, Any]) -> list[str]:
@@ -2020,6 +2075,87 @@ def _team_member_lines(
     return lines
 
 
+def _member_account_key(member: Mapping[str, Any]) -> str:
+    for carrier in (member, member.get("board_record") if isinstance(member.get("board_record"), Mapping) else {}):
+        for key in ("runtime_account", "provider_account"):
+            account = carrier.get(key)
+            if isinstance(account, Mapping):
+                ident = str(account.get("account_id") or account.get("email") or "").strip()
+                if ident:
+                    return ident
+    return ""
+
+
+def _account_share_counts(team: Sequence[Mapping[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for member in team:
+        key = _member_account_key(member)
+        if key:
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+# The info line on a compact team row; longer ones say so and name --member.
+_TEAM_ROW_INFO_BYTES = 160
+
+
+def _team_row(member: Mapping[str, Any], shared: Mapping[str, int], project_ref: str, *,
+              now: datetime | None = None) -> list[str]:
+    """One teammate on one line: who, where, runtime, quota and restrictions (W563, Q8).
+
+    Usage is the provider account's, so a figure shared by several teammates
+    says how many: it is not one agent's consumption. A window whose reset has
+    passed is named so its figure is not read as capacity now.
+    """
+
+    moment = now or datetime.now(timezone.utc)
+    alias = str(member.get("worker_alias") or "-")
+    name = str(member.get("worker_name") or "-")
+    record = member.get("runtime_model") if isinstance(member.get("runtime_model"), Mapping) else {}
+    model = str(record.get("model_display") or record.get("model") or "").strip()
+    effort = str(record.get("reasoning_effort") or record.get("effort") or "").strip()
+    stale = _worker_metadata_is_stale(member)
+    if model or effort:
+        runtime = f"model {model or '?'}{'/' + effort if effort else ''}{' (stale)' if stale else ''}"
+    else:
+        runtime = "model not reported"
+    facts = [
+        f"{alias} ({name})",
+        str(member.get("role") or "worker"),
+        str(member.get("runtime_kind") or "-"),
+        str(member.get("host_label") or member.get("host_id") or "-"),
+        str(member.get("presence") or "-"),
+        runtime,
+    ]
+    state = member.get("limit_state")
+    if isinstance(state, Mapping) and state:
+        windows = usage_windows_line(state)
+        head = "usage" if state.get("kind") == "ok" else limit_state_line(state)
+        usage = f"{head} {windows}".strip() if windows else limit_state_line(state)
+        observed = str(state.get("observed_at") or "").strip()
+        if len(observed) >= 16:
+            usage += f" · obs {observed[5:10]} {observed[11:16]}Z"
+        passed = _passed_reset_windows(state, moment)
+        if passed:
+            usage += f" · {', '.join(passed)} reset passed, current use unknown"
+        count = shared.get(_member_account_key(member), 0)
+        if count > 1:
+            usage += f" · account shared by {count}"
+        facts.append(usage)
+    else:
+        facts.append("usage not reported")
+    info = " ".join(str(member.get("info_text") or "").split())
+    if info:
+        size = len(info.encode("utf-8"))
+        facts.append(
+            "info: " + (info if size <= _TEAM_ROW_INFO_BYTES else _preview(info, maximum_bytes=_TEAM_ROW_INFO_BYTES)
+                        + f" (cut from {size} B: --member {name})")
+        )
+    lines = ["--- " + " · ".join(facts)]
+    lines.extend(_team_wake_lines(member))
+    return lines
+
+
 def _team_wake_lines(member: Mapping[str, Any]) -> list[str]:
     """A teammate's held or recovered native wake, when the board reports one."""
 
@@ -2333,9 +2469,6 @@ def _clipped_item_fields(item: Mapping[str, Any]) -> list[str]:
     return clipped
 
 
-_ITEM_ATTACHMENTS_SHOWN = 3
-
-
 def _without_title_prefix(summary: Any, title: Any) -> str:
     """The summary less a leading copy of the title, which the item line shows."""
 
@@ -2360,22 +2493,12 @@ def _item_attachment_lines(item: Mapping[str, Any]) -> list[str]:
     if not total:
         return []
     key = item.get("item_key") or "<Wn>"
-    lines = [
-        "attachments: {} · first {} shown · list: pb worker item-attachment-list "
-        "--project-ref <project-ref> --item-key {}".format(
-            total, min(total, _ITEM_ATTACHMENTS_SHOWN), key
-        )
+    # W563: the count and the two commands; the listing pages names and refs.
+    return [
+        f"attachments: {total} · list: pb worker item-attachment-list --project-ref <project-ref> --item-key {key}"
+        f" · read one: pb worker item-attachment-read --project-ref <project-ref> --item-key {key}"
+        " --file-ref <file_ref> --output <new path>"
     ]
-    for entry in entries[:_ITEM_ATTACHMENTS_SHOWN]:
-        if isinstance(entry, str):
-            lines.append(f"attachment: {entry}")
-        elif isinstance(entry, Mapping) and _present(entry.get("file_ref")):
-            lines.append(f"attachment: {entry.get('filename') or '-'} · {entry['file_ref']}")
-    lines.append(
-        "read one: pb worker item-attachment-read --project-ref <project-ref> "
-        f"--item-key {key} --file-ref <file_ref> --output <new path>"
-    )
-    return lines
 
 
 def _render_plan_search(operation: str, page: Mapping[str, Any]) -> list[str]:
@@ -2549,10 +2672,15 @@ def _render_plan_index(operation: str, page: Mapping[str, Any]) -> list[str]:
             + " · "
             + (_preview(item.get("title"), maximum_bytes=160) or "(untitled)")
         )
-        if _present(item.get("identity_ref")):
-            lines.append(f"identity_ref: {item['identity_ref']}")
+        # W563: the key reads the item (`project.plan.item`), which prints the
+        # refs a mutation copies; the index does not repeat them per row.
         if isinstance(item.get("reference_error"), Mapping):
             lines.extend(_flatten(item["reference_error"], prefix="reference_error."))
+    if items:
+        lines.append(
+            "read one: pb coordinate project.plan.item --object-ref <project-ref> "
+            "--payload-json '{\"item_key\":\"<key>\"}'"
+        )
     _note_omitted(lines, "plan index items", shown=len(items), total=returned_count)
     lines.append(_FULL_DETAIL_LINE)
     return lines

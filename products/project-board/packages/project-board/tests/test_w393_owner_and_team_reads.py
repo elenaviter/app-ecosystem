@@ -69,38 +69,61 @@ def _lines(envelope: dict) -> list[str]:
     return render_envelope(envelope).splitlines()
 
 
+def _member_view(team: list[dict], member: str) -> list[str]:
+    return _lines({"ok": True, "result": cli.context_for_member(_context(team)["result"], member)})
+
+
 def test_every_teammate_has_a_scheduling_row_and_a_usage_line():
+    # W563 (Q8 compact team row): one default row per teammate carries its usage
+    # figures; runtime provenance, the provider account and the `team usage:`
+    # block moved to the `--member` view.
     team = _team()
     text = render_envelope(_context(team))
     lines = text.splitlines()
     assert "team: 13 · shown 13" in lines
     assert "team members:" not in text, "no silent first-eight cut"
-    usage = lines[lines.index("team usage:") + 1:]
+    assert "team usage:" not in lines, "the default view no longer repeats usage in a second block"
+    rows = [line for line in lines if line.startswith("--- agent-")]
+    assert len(rows) == 13
     for index, member in enumerate(team):
-        header = f"--- team member {index + 1} of 13: agent-{index} ({member['worker_name']})"
-        assert any(line.startswith(header) for line in lines), index
-        assert sum(member["worker_name"] in line for line in usage) == 1, index
-    assert any("runtime: model gpt-5.6 · reasoning effort high" in line for line in lines)
-    assert any("email owner-1@example.test" in line and "state reported" in line for line in lines)
+        [row] = [line for line in rows if line.startswith(f"--- agent-{index} ({member['worker_name']}) · ")]
+        assert " · model gpt-5.6/high" in row, index
+        if index != 4:
+            assert f"usage week {40 + index}% resets 01-07 00:00Z · 5 h {10 + index}% resets 01-01 05:00Z" in row, index
+        # Q8: a shared-account figure is never presented as one agent's usage.
+        assert f"account shared by {7 if index % 2 == 0 else 6}" in row, index
+    assert not any(line.startswith("  runtime:") or line.startswith("  provider account:") for line in lines)
+    assert (
+        f"team detail (provider account, provenance): pb worker context --project-ref {PROJECT} --member <name>"
+        in lines
+    )
+    member = _member_view(team, "agent-1")
+    assert any("runtime: model gpt-5.6 · reasoning effort high" in line for line in member)
+    assert any("email owner-1@example.test" in line and "state reported" in line for line in member)
+    usage = member[member.index("team usage:") + 1:]
+    assert sum(team[1]["worker_name"] in line for line in usage) == 1
+    # Budget unchanged; the one-row format measures 23 lines / ~3.9 KB here.
     assert len(lines) <= 40 + 8 * 13 and len(text.encode()) <= 4_000 + 1_300 * 13, (len(lines), len(text.encode()))
 
 
 def test_a_long_info_line_is_cut_visibly_and_member_shows_it_whole():
+    # W563 (Q8 compact team row): the default row cuts info at 160 B and names
+    # `--member <name>`; the complete command is on the team detail line.
     team = _team()
     name = team[1]["worker_name"]
     lines = _lines(_context(team))
-    [info] = [line for line in lines if line.startswith("  info: Stopped for the weekly limit")]
+    [row] = [line for line in lines if line.startswith("--- agent-1 (")]
+    info = row.split(" · info: ", 1)[1]
+    assert info.startswith("Stopped for the weekly limit")
     size = len(LONG_INFO.encode())
     assert "INFO_TAIL" not in info
-    assert info.endswith(
-        f"· set 2026-09-28T14:52:00Z · cut from {size} bytes: "
-        f"pb worker context --project-ref {PROJECT} --member {name}"
-    )
+    assert info.endswith(f" (cut from {size} B: --member {name})")
     # PR372 review: the printed command is complete. The real parser accepts
     # it with this project and this member, never a usage error.
     import shlex
 
-    command = shlex.split(info.split(" bytes: ", 1)[1])
+    [detail] = [line for line in lines if line.startswith("team detail (provider account, provenance): ")]
+    command = shlex.split(detail.split(": ", 1)[1].replace("<name>", info.rsplit("--member ", 1)[1].rstrip(")")))
     assert command[:3] == ["pb", "worker", "context"]
     parsed = cli.build_parser().parse_args(command[1:])
     assert parsed.project_ref == PROJECT and parsed.member == name
@@ -109,6 +132,7 @@ def test_a_long_info_line_is_cut_visibly_and_member_shows_it_whole():
     member_lines = _lines({"ok": True, "result": narrowed})
     assert "team: 1 of 13 match --member agent-1" in member_lines
     assert any("INFO_TAIL" in line for line in member_lines), "the member read shows the info line whole"
+    assert any(line.startswith("  info: Stopped") and line.endswith("· set 2026-09-28T14:52:00Z") for line in member_lines)
     assert not any("agent-2 (" in line for line in member_lines)
 
 
@@ -119,19 +143,30 @@ def test_a_member_filter_that_matches_nobody_says_so():
 
 
 def test_stale_presence_a_held_wake_and_a_recovery_are_on_the_default_row():
+    # W563 (Q8 compact team row): presence is a bare field on the one-line row.
     lines = _lines(_context(_team()))
     text = "\n".join(lines)
-    assert any("agent-2 (" in line and "presence stale" in line for line in lines)
+    assert any(line.startswith("--- agent-2 (") and " · codex · host-2 · stale · " in line for line in lines)
     assert "  wake held since 2026-09-30T03:00:00Z until 2026-10-01T07:00:00Z · pending 4" in lines
     assert f"  wake recovery submitted for wake_{'3' * 32} · since 2026-09-30T02:20:54Z" in lines
     assert text.count("  wake ") == 2, "only members whose board reports a wake"
+    # Each wake line sits directly under its member's row.
+    assert lines[lines.index("  wake held since 2026-09-30T03:00:00Z until 2026-10-01T07:00:00Z · pending 4") - 1].startswith("--- agent-2 (")
+    assert lines[lines.index(f"  wake recovery submitted for wake_{'3' * 32} · since 2026-09-30T02:20:54Z") - 1].startswith("--- agent-3 (")
 
 
 def test_a_passed_reset_is_not_read_as_capacity_now():
-    usage = [line for line in _lines(_context(_team())) if line.startswith("  agent-")]
-    [passed] = [line for line in usage if line.startswith("  agent-4 ")]
-    assert passed.endswith("reset passed for 5 h: its figure is from before the reset, current use not reported")
-    assert sum("reset passed" in line for line in usage) == 1, "future resets carry no note"
+    # W563 (Q8 compact team row): the passed-reset marker is on the default row;
+    # the long-form note stays in the member view's `team usage:` block.
+    rows = [line for line in _lines(_context(_team())) if line.startswith("--- agent-")]
+    [passed] = [line for line in rows if line.startswith("--- agent-4 ")]
+    assert "usage 5 h 97% resets 09-29 12:40Z" in passed
+    assert "5 h reset passed, current use unknown" in passed
+    assert sum("reset passed" in line for line in rows) == 1, "future resets carry no note"
+    member = _member_view(_team(), "agent-4")
+    usage = [line for line in member[member.index("team usage:") + 1:] if line.startswith("  agent-")]
+    [detail] = [line for line in usage if line.startswith("  agent-4 ")]
+    assert detail.endswith("reset passed for 5 h: its figure is from before the reset, current use not reported")
 
 
 def _assignment_page(**row) -> dict:

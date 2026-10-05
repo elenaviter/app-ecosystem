@@ -1278,6 +1278,14 @@ def build_parser() -> argparse.ArgumentParser:
             "Without it every teammate has one compact scheduling row."
         ),
     )
+    command.add_argument(
+        "--routing",
+        action="store_true",
+        help=(
+            "The routing view: coordinator, roles and one row per teammate, without "
+            "the workspace, journal and project-file coordinates a start or resume reads."
+        ),
+    )
 
     command = worker_commands.add_parser(
         "send", help="Send mail as this session-bound worker."
@@ -5537,6 +5545,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
         member = str(getattr(args, "member", "") or "").strip()
         if member:
             context = context_for_member(context, member)
+        if getattr(args, "routing", False):
+            # W563: a status or dispatch cycle routes by the team; the brief
+            # view leaves the start-up coordinates out. The JSON is unchanged.
+            context["context_view"] = "routing"
         if not context["attending"]:
             context["attendance_note"] = (
                 f"This agent does not attend {args.project_ref} (it was unlinked, or never "
