@@ -3730,7 +3730,8 @@ def _worker_inbox_retire(field: Any, identity: Any, args: Any) -> dict[str, Any]
         item = item.get("item") if isinstance(item, Mapping) and isinstance(item.get("item"), Mapping) else item
         if not isinstance(item, Mapping):
             return None
-        return {key: item.get(key) for key in ("status", "assignee", "reviewer", "revision")}
+        # Only the keys the read returned: a missing key is not an empty value.
+        return {key: item[key] for key in ("status", "assignee", "reviewer", "revision") if key in item}
 
     plan = plan_retirement(field.retirement_rows(identity.worker_name), read_item=read_item)
     worker = field.read_worker(identity.worker_name)
@@ -3783,7 +3784,10 @@ def _worker_inbox_retire(field: Any, identity: Any, args: Any) -> dict[str, Any]
         stable_name,
         lease_owner=str(worker.get("runtime_session_id") or identity.runtime_session_id),
         approved={entry["message_ref"]: entry["content_hash"] for entry in plan["selected"]},
-        summaries={entry["message_ref"]: settlement_summary(entry, retirement_id) for entry in plan["selected"]},
+        summaries={
+            entry["message_ref"]: settlement_summary(entry, retirement_id, args.approval_ref)
+            for entry in plan["selected"]
+        },
     )
     receipt = {
         "retirement_id": retirement_id,

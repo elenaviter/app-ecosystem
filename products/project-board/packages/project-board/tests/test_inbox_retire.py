@@ -233,3 +233,42 @@ def test_an_unreadable_item_keeps_its_notices_pending(field, monkeypatch):
     plan = json.loads(Path(_retire(field)["selection_file"]).read_text(encoding="utf-8"))
     assert plan["selected"] == []
     assert [entry["reason"] for entry in plan["excluded"]] == ["evidence_unavailable"]
+
+
+@pytest.mark.parametrize("item", [
+    {},
+    {"status": None, "assignee": "x", "reviewer": "", "revision": 3},
+    {"status": "in_review", "assignee": "x", "reviewer": "", "revision": 3},
+    {"status": "done", "assignee": "x", "reviewer": "", "revision": 0},
+    {"status": "done", "assignee": "x", "reviewer": "", "revision": "9"},
+])
+def test_an_incomplete_item_is_no_evidence_for_a_review_notice(field, monkeypatch, item):
+    # Review of bef2c40c: a missing or unknown status must not read as "the
+    # item left Review", or a response-shape drift retires every such notice.
+    _review_sits(field, 1, ITEM_A)
+    monkeypatch.setattr(cli, "_reference_mapping_request", lambda args, **_: {"object": dict(item)})
+
+    plan = json.loads(Path(_retire(field)["selection_file"]).read_text(encoding="utf-8"))
+    assert plan["selected"] == []
+    assert [entry["reason"] for entry in plan["excluded"]] == ["evidence_unavailable"]
+
+
+def test_a_missing_assignee_is_no_evidence_for_a_responsibility_notice(field, monkeypatch):
+    _responsibility(field, 1, ITEM_C, "codex-app")
+    monkeypatch.setattr(
+        cli, "_reference_mapping_request",
+        lambda args, **_: {"object": {"status": "working", "reviewer": "", "revision": 7}},
+    )
+
+    plan = json.loads(Path(_retire(field)["selection_file"]).read_text(encoding="utf-8"))
+    assert plan["selected"] == []
+    assert [entry["reason"] for entry in plan["excluded"]] == ["evidence_unavailable"]
+
+
+def test_each_settlement_names_its_retirement_and_approval(field, backlog):
+    reviewed = _retire(field)
+    _retire(field, apply=True, digest=reviewed["digest"], approval_ref="work:mail:approval-1")
+
+    for ref in (backlog["done_review"], backlog["older_responsibility"], backlog["older_announcement"]):
+        record = json.dumps(field._mail_record_unlocked(PROJECT, WORKER, ref))
+        assert "approved by work:mail:approval-1" in record and reviewed["retirement_id"] in record

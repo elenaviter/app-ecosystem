@@ -5792,13 +5792,16 @@ class SharedFieldStore:
         approved: Mapping[str, str],
         summaries: Mapping[str, str],
     ) -> list[dict[str, Any]]:
-        """Lease and settle exactly the approved messages, or none of them (W563).
+        """Lease exactly the approved messages or none of them, then settle each (W563).
 
         ``approved`` maps each message ref to the content hash the reviewed
         dry run recorded. Under every mailbox lock, each must still be pending
         with that hash; one that is missing, leased or changed refuses the
-        whole call before anything is leased. Settlement is the ordinary
-        acknowledged settle with the given summary, once per message.
+        whole call before anything is leased. All-or-nothing holds for the
+        lease step. Settlement, the ordinary acknowledged settle with the given
+        summary once per message, runs after the locks are released: a crash
+        in between leaves leases that expire and are recovered, writes no
+        receipt, and a re-run's dry run then differs from the reviewed digest.
         """
 
         from .inbox_retire import content_hash

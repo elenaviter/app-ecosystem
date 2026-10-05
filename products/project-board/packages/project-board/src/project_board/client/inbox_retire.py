@@ -21,6 +21,9 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from ..contract.errors import DomainError
+from ..contract.work_lifecycle import canonical_work_status
+
 SCHEMA = "problem-board.inbox-retire.v1"
 
 # Board notices come from the control plane as ``update`` mail. Operator mail
@@ -97,11 +100,43 @@ def _order(row: Mapping[str, Any], kind: str) -> tuple[int, str]:
     return 0, str(row.get("created_at") or "")
 
 
+# The item field each type compares, beside status and revision.
+_ITEM_FIELD = {
+    "review-sits": "",
+    "review-moved": "reviewer",
+    "responsibility-changed": "assignee",
+    "terminal-assignee-information": "assignee",
+}
+
+
+def _complete_item(kind: str, item: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The item's state when it is complete enough to be evidence, else None.
+
+    Evidence fails closed (review of bef2c40c): a missing or unknown status, a
+    revision that is not a positive integer, or a missing field the type
+    compares is no proof that anything changed, so the notice stays pending.
+    """
+
+    try:
+        status = canonical_work_status(item.get("status"), strict=True)
+    except DomainError:
+        return None
+    revision = item.get("revision")
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+        return None
+    field = _ITEM_FIELD[kind]
+    if field and field not in item:
+        return None
+    return {"status": status, "revision": revision, field: str(item.get(field) or "")} if field else {
+        "status": status, "revision": revision,
+    }
+
+
 def _state_evidence(kind: str, payload: Mapping[str, Any], item: Mapping[str, Any]) -> dict[str, Any] | None:
     """The item's current state when it shows the notice is superseded, else None."""
 
-    status = str(item.get("status") or "").lower()
-    evidence = {"item_revision": item.get("revision"), "status": status}
+    status = item["status"]
+    evidence = {"item_revision": item["revision"], "status": status}
     if kind in {"review-sits", "review-moved"}:
         if status != "review":
             return evidence
@@ -131,7 +166,8 @@ def plan_retirement(
     ``project_ref``, ``kind``, ``sender``, ``created_at``, ``operator``,
     ``leased``, ``payload`` and ``content_hash``. ``read_item(project_ref,
     identity_ref)`` returns the item's current ``status``, ``assignee``,
-    ``reviewer`` and ``revision``, or None when it cannot be read.
+    ``reviewer`` and ``revision`` (only the keys it actually has), or None when
+    it cannot be read. An incomplete item keeps its notices pending.
     """
 
     typed: list[tuple[Mapping[str, Any], str, str]] = []
@@ -183,10 +219,11 @@ def plan_retirement(
                 except Exception:  # noqa: BLE001 - any read failure keeps the mail pending
                     items[slot] = None
             item = items[slot]
-            if item is None:
+            complete = _complete_item(kind, item) if item is not None else None
+            if complete is None:
                 excluded.append({"message_ref": ref, "reason": "evidence_unavailable"})
                 continue
-            evidence = _state_evidence(kind, row["payload"], item)
+            evidence = _state_evidence(kind, row["payload"], complete)
         if evidence is None:
             excluded.append({"message_ref": ref, "reason": "still_current"})
             continue
@@ -235,10 +272,15 @@ def content_hash(row: Mapping[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def settlement_summary(entry: Mapping[str, Any], retirement_id: str) -> str:
+def settlement_summary(entry: Mapping[str, Any], retirement_id: str, approval_ref: str) -> str:
+    """The board-side settle record: what superseded it, the retirement and its approval."""
+
     evidence = entry["evidence"]
     if "superseded_by" in evidence:
         reason = f"superseded by {evidence['superseded_by']}"
     else:
         reason = "item now " + ", ".join(f"{key} {value}" for key, value in sorted(evidence.items()))
-    return f"Retired unread: {entry['type']} notice {reason}; retirement {retirement_id}."[:1000]
+    return (
+        f"Retired unread: {entry['type']} notice {reason}; retirement {retirement_id}, "
+        f"approved by {approval_ref}."
+    )[:1000]
