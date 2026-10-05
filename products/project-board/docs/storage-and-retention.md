@@ -484,13 +484,16 @@ parts and index rows. So before such a rollback, the board's
   archive tick is run.
 - **In `check` mode, the default.** It reads and verifies every part, and
   names any required column a part lacks. It changes nothing.
-- **In `apply` mode.** It restores, but only when that check passes and no
-  archive run is unfinished. In one transaction per batch, it re-inserts the
+- **In `apply` mode.** It restores, but only when that check passes, no
+  archive run is unfinished, and `mail_archive_restore_apply_date` names
+  today's UTC date. The date makes `apply` one-shot: a schedule left behind
+  cannot restore again the next day, after the nightly archive moved the
+  mail back. In one transaction per batch, it re-inserts the
   rows into the live tables (a row already live stays as it is, and a column
   the part lacks takes its default), then deletes their index rows and the
   batch's ledger row.
 
-The parts stay in storage, and running it twice changes nothing.
+The parts stay in storage. Running it twice on the same day changes nothing.
 
 The bundle property `enabled.cron.event-archive: false` turns the job off.
 Deleting rows makes their space reusable for new rows; it does not shrink the
