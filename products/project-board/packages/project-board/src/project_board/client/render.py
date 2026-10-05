@@ -236,6 +236,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return ["journal receipt:"] + _flatten(result.get("receipt", result), prefix="  ")
     if "items" in result and isinstance(result.get("items"), list) and "states" in result:
         return _render_deliveries(result, flags)
+    if schema == "problem-board.host-relay-config.v2":
+        return _render_host_view(result)
     if isinstance(result.get("workers"), list):
         return _render_worker_list(result)
     if isinstance(result.get("recovery"), Mapping) and isinstance(result.get("queue_result"), Mapping):
@@ -762,11 +764,21 @@ def _diagnostic_summary(diagnostic: Mapping[str, Any]) -> str:
         fields.append(f"message {_preview(diagnostic['message'])}")
     if _present(diagnostic.get("last_error")):
         fields.append(f"last error {_preview(diagnostic['last_error'])}")
+    if _present(diagnostic.get("last_attempt_at")):
+        fields.append(f"last attempt {diagnostic['last_attempt_at']}")
     recent = diagnostic.get("recent")
-    if isinstance(recent, list):
-        fields.append(f"recent {len(recent)}")
-        latest = (
+    # W553: the default host view carries a count and the latest interval
+    # instead of the stored list.
+    if isinstance(recent, list) or isinstance(diagnostic.get("recent_count"), int):
+        recent_count = len(recent) if isinstance(recent, list) else diagnostic["recent_count"]
+        fields.append(f"recent {recent_count}")
+        stored_latest = diagnostic.get("latest") if isinstance(diagnostic.get("latest"), Mapping) else (
             next((entry for entry in reversed(recent) if isinstance(entry, Mapping)), None)
+            if isinstance(recent, list)
+            else None
+        )
+        latest = (
+            stored_latest
             if str(diagnostic.get("state") or "").lower() not in {"ready", "healthy"}
             else None
         )
@@ -780,35 +792,10 @@ def _diagnostic_summary(diagnostic: Mapping[str, Any]) -> str:
     return " · ".join(fields)
 
 
-def _render_relay_service_status(result: Mapping[str, Any]) -> list[str]:
-    lines = ["relay service status:"]
-    for key in ("service_id", "system", "installed", "running", "definition", "config"):
-        if key in result:
-            lines.append(f"{key}: {result[key]}")
-    for key in ("source", "bootstrap_source"):
-        if isinstance(result.get(key), Mapping):
-            lines.append(f"{key}: {_source_identity(result[key])}")
-    startup = result.get("startup_record")
-    if isinstance(startup, Mapping) and startup:
-        lines.append(f"startup: pid {startup.get('pid') or '-'} · at {startup.get('started_at') or '-'}")
-        if isinstance(startup.get("source"), Mapping):
-            lines.append(f"startup source: {_source_identity(startup['source'])}")
-    for key in ("source_selection_error", "manager_error"):
-        if _present(result.get(key)):
-            lines.append(f"{key}: {_preview(result[key], maximum_bytes=_LONG_PREVIEW_BYTES)}")
-    log = result.get("log")
-    if isinstance(log, Mapping):
-        lines.append(
-            "log: {} · size {} bytes · total {} bytes".format(
-                log.get("state") or log.get("status") or "available",
-                log.get("size_bytes", "?"), log.get("total_size_bytes", "?"),
-            )
-        )
-        for key in ("path", "error"):
-            if _present(log.get(key)):
-                value = log[key] if key == "path" else _preview(log[key])
-                lines.append(f"log.{key}: {value}")
-    diagnostics = result.get("relay_diagnostics")
+def _relay_diagnostics_lines(diagnostics: Any) -> list[str]:
+    """The transport, then served channels needing attention first (W553 summary or full record)."""
+
+    lines: list[str] = []
     if isinstance(diagnostics, Mapping):
         transport = diagnostics.get("transport")
         if isinstance(transport, Mapping):
@@ -853,6 +840,83 @@ def _render_relay_service_status(result: Mapping[str, Any]) -> list[str]:
                     )
                 )
             _note_omitted(lines, "channels", shown=len(shown), total=len(channels))
+        if diagnostics.get("disabled_channels_not_shown"):
+            lines.append(f"disabled channels not shown: {diagnostics['disabled_channels_not_shown']}")
+        if isinstance(diagnostics.get("full_diagnostics"), list):
+            lines.append("full diagnostics: " + " ".join(map(str, diagnostics["full_diagnostics"])))
+    return lines
+
+
+def _render_host_view(result: Mapping[str, Any]) -> list[str]:
+    """`pb host inspect`: which board this host serves first, then its channels (W553).
+
+    Operator, 2026-10-05: "what exactly i am looking for in that huge output
+    which must answer me that install is fine to proceed with ?"
+    """
+
+    target = result.get("target") if isinstance(result.get("target"), Mapping) else {}
+    host = result.get("host") if isinstance(result.get("host"), Mapping) else {}
+    lines = [
+        "target: {} · tenant {} · project {} · bundle {}".format(
+            target.get("endpoint") or "-", target.get("tenant") or "-",
+            target.get("project") or "-", target.get("bundle_id") or "-",
+        ),
+        f"host: {host.get('label') or host.get('id') or '-'} · kind {host.get('kind') or '-'}",
+        f"config: {result.get('config') or '-'}",
+        f"field_root: {result.get('field_root') or '-'}",
+    ]
+    workers = [worker for worker in result.get("workers") or [] if isinstance(worker, Mapping)]
+    lines.append(f"channels: {len(workers)}")
+    for worker in workers[:_BRIEF_SECTION_ITEMS]:
+        lines.append(
+            "channel: {} · {} · {} · {}".format(
+                worker.get("alias") or "-", worker.get("worker_name") or "-",
+                worker.get("runtime_kind") or "-", worker.get("state") or "-",
+            )
+        )
+    _note_omitted(lines, "channels", shown=min(len(workers), _BRIEF_SECTION_ITEMS), total=len(workers))
+    disabled = result.get("disabled_channels") if isinstance(result.get("disabled_channels"), Mapping) else {}
+    if disabled.get("count") and not disabled.get("shown"):
+        lines.append(
+            "disabled channels not shown: {} · remove: {}".format(
+                disabled["count"], " ".join(map(str, disabled.get("remove") or [])),
+            )
+        )
+    relay = result.get("relay") if isinstance(result.get("relay"), Mapping) else {}
+    lines.extend(_relay_diagnostics_lines(relay.get("diagnostics")))
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
+def _render_relay_service_status(result: Mapping[str, Any]) -> list[str]:
+    lines = ["relay service status:"]
+    for key in ("service_id", "system", "installed", "running", "definition", "config"):
+        if key in result:
+            lines.append(f"{key}: {result[key]}")
+    for key in ("source", "bootstrap_source"):
+        if isinstance(result.get(key), Mapping):
+            lines.append(f"{key}: {_source_identity(result[key])}")
+    startup = result.get("startup_record")
+    if isinstance(startup, Mapping) and startup:
+        lines.append(f"startup: pid {startup.get('pid') or '-'} · at {startup.get('started_at') or '-'}")
+        if isinstance(startup.get("source"), Mapping):
+            lines.append(f"startup source: {_source_identity(startup['source'])}")
+    for key in ("source_selection_error", "manager_error"):
+        if _present(result.get(key)):
+            lines.append(f"{key}: {_preview(result[key], maximum_bytes=_LONG_PREVIEW_BYTES)}")
+    log = result.get("log")
+    if isinstance(log, Mapping):
+        lines.append(
+            "log: {} · size {} bytes · total {} bytes".format(
+                log.get("state") or log.get("status") or "available",
+                log.get("size_bytes", "?"), log.get("total_size_bytes", "?"),
+            )
+        )
+        for key in ("path", "error"):
+            if _present(log.get(key)):
+                value = log[key] if key == "path" else _preview(log[key])
+                lines.append(f"log.{key}: {value}")
+    lines.extend(_relay_diagnostics_lines(result.get("relay_diagnostics")))
     lines.append(_FULL_DETAIL_LINE)
     return lines
 

@@ -437,8 +437,10 @@ in the
 ### Reading an outcome-unknown failure
 
 A `data_bus_outcome_unknown` failure keeps its evidence in the channel's
-degraded-connection record (`relay_diagnostic.request` and its attempts). Read
-the fields as follows:
+degraded-connection record (`relay_diagnostic.request` and its attempts).
+`pb host inspect` prints only each channel's state and last error; the
+request and the attempts are in `pb host inspect --diagnostics`, kept for
+7 days (W553). Read the fields as follows:
 
 - `ingress_ack_received: false` means only that the ingress acknowledgement
   did not arrive. The server may still have accepted and applied the
