@@ -3643,6 +3643,15 @@ class ProblemBoardHostRelayAdapter:
             "outbox_retried": 0,
             "reconciliation_publications_refused": 0,
         }
+        # W456 criterion 4 (dev-main, 2026-10-05: the claim's directory
+        # listing held the event loop 3.5 s): ask from a thread whether a
+        # claim would find anything. The claim itself stays on the loop
+        # (W321: a cancelled claim leaves nothing claimed).
+        outbox = getattr(self.field, "_outbox", None)
+        if outbox is not None and not await asyncio.to_thread(
+            outbox.has_in_flight, worker_name=self.config.worker_name
+        ):
+            return counts
         for row in await self._outbox_store(self.field.pull_outbox)(
             relay_id=self.config.relay_id,
             worker_name=self.config.worker_name,
@@ -5323,6 +5332,9 @@ class ProblemBoardRelaySupervisor:
         # time; a wait joins a scan already running instead of starting
         # another beside it (W459).
         self._local_work_scanner = LocalWorkScanner()
+        # Per field root: the local-work wait's queue, outbox and resolved key,
+        # built once off the loop (W456 criterion 4).
+        self._local_work_handle_cache: dict[str, tuple[Any, Any, str]] = {}
         self._expected_open_failure_signatures: dict[
             str, tuple[str, str, str]
         ] = {}
@@ -5372,12 +5384,14 @@ class ProblemBoardRelaySupervisor:
             config_path=self.config_path,
             pacing=self._pacing,
             session_for=lambda worker_name: self._sessions.get(worker_name),
-            session_matches=lambda host, channel, session: self._session_matches(
+            session_matches=lambda host, channel, session, card=None: self._session_matches(
                 host,
                 channel,
                 session,
                 require_card=True,
+                card=card,
             ),
+            card_fingerprint=lambda host, channel: self._card_fingerprint(host, channel),
             drain_lock=self._outbox_drain_lock,
             log=logger,
         )
@@ -6174,6 +6188,7 @@ class ProblemBoardRelaySupervisor:
         session: _ChannelSession,
         *,
         require_card: bool,
+        card: str | None = None,
     ) -> bool:
         """Whether ``session`` is the one opened for this channel and Card.
 
@@ -6197,7 +6212,8 @@ class ProblemBoardRelaySupervisor:
             or session.channel_identity != channel.worker_identity
         ):
             return False
-        current = self._card_fingerprint(host, channel)
+        # ``card`` is the fingerprint a caller already read off the loop.
+        current = self._card_fingerprint(host, channel) if card is None else card
         if require_card:
             return bool(session.card_fingerprint) and session.card_fingerprint == current
         return session.card_fingerprint == current
@@ -7067,7 +7083,10 @@ class ProblemBoardRelaySupervisor:
     async def _poll_channel(
         self, host: HostRelayConfig, channel: WorkerChannelConfig
     ) -> dict[str, Any]:
-        injected = consume_relay_fault(
+        # A file lock and a file read: off the event loop (W456 criterion 4,
+        # dev-main 2026-10-05: the lock's holder write held the loop 4.4 s).
+        injected = await asyncio.to_thread(
+            consume_relay_fault,
             self.config_path,
             worker_name=channel.worker_name,
         )
@@ -7084,8 +7103,11 @@ class ProblemBoardRelaySupervisor:
                 },
             )
         session = self._sessions.get(channel.worker_name)
+        # The Card fingerprint reads the profile file: off the event loop
+        # (W456 criterion 4, dev-main 2026-10-05: that read held it 3.2 s).
         if session is not None and not self._session_matches(
-            host, channel, session, require_card=False
+            host, channel, session, require_card=False,
+            card=await asyncio.to_thread(self._card_fingerprint, host, channel),
         ):
             await self._drop_session(channel.worker_name)
             session = None
@@ -7113,7 +7135,10 @@ class ProblemBoardRelaySupervisor:
                         raise
                     raise failure from exc
                 self._sessions[channel.worker_name] = session
-                if self._session_matches(host, channel, session, require_card=False):
+                if self._session_matches(
+                    host, channel, session, require_card=False,
+                    card=await asyncio.to_thread(self._card_fingerprint, host, channel),
+                ):
                     break
                 logger.info(
                     "Problem Board relay channel lifecycle event=card_replaced_during_open "
@@ -7339,6 +7364,32 @@ class ProblemBoardRelaySupervisor:
             signature.append(("relay-faults", len(fault_entries), newest))
         return tuple(signature)
 
+    async def _local_work_handles(
+        self, field_root: Path
+    ) -> tuple[CoordinateQueue, OutboxStore, str]:
+        """The local-work wait's queue, outbox and resolved key, built off the loop (W456).
+
+        Building them resolves the field path, a filesystem call: on dev-main
+        (2026-10-05) that resolve held the event loop 3.7 s. They are built
+        once per field root in a thread and kept on this relay; a relay serves
+        one field for its lifetime.
+        """
+
+        key = str(field_root)
+        cache = self.__dict__.setdefault("_local_work_handle_cache", {})
+        handles = cache.get(key)
+        if handles is None:
+            def build() -> tuple[CoordinateQueue, OutboxStore, str]:
+                return (
+                    CoordinateQueue(field_root),
+                    OutboxStore(field_root / ".problem-board"),
+                    str(field_root.expanduser().resolve()),
+                )
+
+            handles = await asyncio.to_thread(build)
+            cache[key] = handles
+        return handles
+
     async def _wait_for_local_work(
         self,
         field_root: Path,
@@ -7356,8 +7407,7 @@ class ProblemBoardRelaySupervisor:
         the next wait, and never adds a scan beside it (W459, W321).
         """
 
-        coordinate_queue = CoordinateQueue(field_root)
-        outbox = OutboxStore(field_root / ".problem-board")
+        coordinate_queue, outbox, outbox_key = await self._local_work_handles(field_root)
         scanned = (str(field_root), tuple(sorted(worker_names)))
         scan = self._local_work_scanner.scan
         if await scan(
@@ -7366,7 +7416,6 @@ class ProblemBoardRelaySupervisor:
             worker_names=worker_names,
         ):
             return True
-        outbox_key = str(field_root.expanduser().resolve())
         ready_signature = await scan(
             ("outbox-ready", *scanned), outbox.ready_signature, worker_names=worker_names
         )
