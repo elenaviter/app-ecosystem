@@ -102,7 +102,7 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-04 | Host readiness must hold future calls before a client switch | — |
 
-| 2026-10-05 | Opaque issuer authorization gates externally managed Card writes | In-progress phase-one source contract: exact server-built candidate and signed peer context, locally sealed decisions, lock-local fresh revalidation, named legacy snapshot refusal, explicit unconfirmed outcomes and descriptor-selected app composition; live provisioning and mounted qualification remain open. Public contract: [issuer-managed writes](../docs/connection-hub/issuer-managed-writes.md). |
+| 2026-10-05 | Opaque issuer authorization gates externally managed Card writes | In-progress phase-one source contract: exact server-built candidate and signed peer context using bounded invocation/digest admission fields, frozen Unicode digest vector, locally sealed decisions, lock-local fresh revalidation, named legacy snapshot refusal, explicit unconfirmed outcomes and descriptor-selected app composition; live provisioning and mounted qualification remain open. Public contract: [issuer-managed writes](../docs/connection-hub/issuer-managed-writes.md). |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

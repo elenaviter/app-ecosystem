@@ -24,6 +24,12 @@ server-built candidate `CardAuthority.to_dict()`, serialized with sorted keys,
 compact separators, UTF-8, `ensure_ascii=False` and `allow_nan=False`. Revoke
 hashes exactly `{action: "revoke", access_id, card_revision}`.
 
+Frozen cross-implementation candidate vector:
+`{"label":"编辑 — ü","properties":{"scope":"权限"}}` has digest
+`d5564400ec5350c6b10e7bc5b051af29b8115ccf918e6e9ecc6f299ad40d1e1d`.
+The authority owner imports `change_digest` or implements these exact bytes;
+ASCII-escaped JSON is not this candidate policy digest.
+
 The optional prepare port receives the actual current and candidate authority,
 not a client digest standing in for policy evidence. The authority owner
 recomputes the digest, resolves its own target identity and fresh policy,
@@ -42,13 +48,18 @@ storage; these helpers do not implement replay storage.
 | decide/revalidate | `issuer-decision.v1` | request with server context_ref |
 | finalize | `issuer-outcome.v1` | request, outcome with state and card_revision |
 
-Decide constructs `AdmissionRequest(resource=bundle_id, operation=operation,
-approval_context={protocol, request: canonical JSON of request})`; the other
-ports use `{protocol, payload: canonical JSON of the complete payload}`.
-Wire-signing JSON uses sorted keys, compact separators and `ensure_ascii=True`.
-`request_digest` keeps its empty default. `delegated_token` is
-`<protocol>:<request_id>`. This wire serialization is intentionally distinct
-from the UTF-8 candidate digest serialization.
+Every port constructs `AdmissionRequest(resource=bundle_id, operation=operation,
+invocation_id=request_id, request_digest=SHA256(canonical payload),
+approval_context={protocol})`. The canonical payload is the full request for
+decide, or the complete prepare/finalize payload excluding service_proof.
+Wire digest JSON uses sorted keys, compact separators, UTF-8,
+`ensure_ascii=True` and `allow_nan=False`; `issuer_payload_digest` owns that
+serialization. Full evidence remains in the body and verification recomputes
+its digest: a caller digest alone is never evidence. Bounded admission context
+contains only the small protocol tag, never serialized Card JSON. Existing
+invocation/context validation is not widened or skipped. `delegated_token` is
+`<protocol>:<request_id>`. This wire digest is intentionally distinct from the
+UTF-8 candidate policy digest serialization.
 
 Decide replies echo the exact request and contain only `allowed`, `reason`,
 `policy_version`, and aware `valid_until` in their decision. The registry seals

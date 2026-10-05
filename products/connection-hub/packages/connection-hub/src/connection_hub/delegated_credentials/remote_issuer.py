@@ -7,6 +7,7 @@ No product-domain operation, endpoint, policy, or role is hard-coded here.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import secrets
 import time
@@ -34,15 +35,24 @@ def issuer_request_from_mapping(raw: object, *, allow_empty_context: bool = Fals
     return request
 
 
+def issuer_payload_digest(payload: Mapping[str, Any]) -> str:
+    """Bind complete wire evidence without storing JSON in bounded context.
+
+    This wire digest uses ASCII-escaped canonical JSON. It is distinct from
+    issuer_gate.change_digest, which hashes the actual UTF-8 Card candidate.
+    """
+    wire = json.dumps(payload, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=True, allow_nan=False).encode("utf-8")
+    return hashlib.sha256(wire).hexdigest()
+
+
 def _peer_request(bundle_id: str, operation: str, request: IssuerRequest) -> AdmissionRequest:
     return AdmissionRequest(
         resource=bundle_id,
         operation=operation,
-        approval_context={
-            "protocol": ISSUER_PROTOCOL,
-            "request": json.dumps(asdict(request), sort_keys=True,
-                                  separators=(",", ":"), ensure_ascii=True),
-        },
+        invocation_id=request.request_id,
+        request_digest=issuer_payload_digest(asdict(request)),
+        approval_context={"protocol": ISSUER_PROTOCOL},
     )
 
 
@@ -53,10 +63,13 @@ def sign_issuer_request(*, secret: str | bytes, bundle_id: str, operation: str,
         raise ValueError("issuer_request_invalid")
     timestamp = str(int(time.time()) if now is None else int(now))
     nonce = nonce or secrets.token_urlsafe(24)
+    admission = _peer_request(bundle_id, operation, request)
+    if admission.validation_error():
+        raise ValueError(admission.validation_error())
     signature = sign_admission_request(
         secret=secret, service_id=service_id, timestamp=timestamp, nonce=nonce,
         delegated_token=f"{ISSUER_PROTOCOL}:{request.request_id}",
-        request=_peer_request(bundle_id, operation, request),
+        request=admission,
     )
     return {"request": asdict(request), "service_proof": {
         "service_id": service_id, "timestamp": timestamp,
@@ -155,11 +168,10 @@ class RemoteIssuerAdapter:
 
 def _envelope_request(bundle_id: str, operation: str, protocol: str,
                       payload: Mapping[str, Any]) -> AdmissionRequest:
-    return AdmissionRequest(resource=bundle_id, operation=operation, approval_context={
-        "protocol": protocol,
-        "payload": json.dumps(payload, sort_keys=True, separators=(",", ":"),
-                              ensure_ascii=True, allow_nan=False),
-    })
+    return AdmissionRequest(resource=bundle_id, operation=operation,
+                            invocation_id=payload["request"]["request_id"],
+                            request_digest=issuer_payload_digest(payload),
+                            approval_context={"protocol": protocol})
 
 
 def _envelope_payload_request(protocol: str, payload: Mapping[str, Any]) -> IssuerRequest:
@@ -189,10 +201,13 @@ def sign_issuer_envelope(*, secret: str | bytes, bundle_id: str, operation: str,
     request = _envelope_payload_request(protocol, payload)
     timestamp = str(int(time.time()) if now is None else int(now))
     nonce = nonce or secrets.token_urlsafe(24)
+    admission = _envelope_request(bundle_id, operation, protocol, payload)
+    if admission.validation_error():
+        raise ValueError(admission.validation_error())
     signature = sign_admission_request(
         secret=secret, service_id=service_id, timestamp=timestamp, nonce=nonce,
         delegated_token=f"{protocol}:{request.request_id}",
-        request=_envelope_request(bundle_id, operation, protocol, payload),
+        request=admission,
     )
     return {**dict(payload), "service_proof": {
         "service_id": service_id, "timestamp": timestamp,

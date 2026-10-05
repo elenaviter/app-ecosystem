@@ -182,6 +182,15 @@ def test_digest_canonicalization_and_non_json_values():
         change_digest({"value": float("nan")})
 
 
+def test_candidate_digest_frozen_unicode_cross_implementation_vector():
+    import hashlib
+    value = {"properties": {"scope": "权限"}, "label": "编辑 — ü"}
+    canonical = '{"label":"编辑 — ü","properties":{"scope":"权限"}}'
+    expected = "d5564400ec5350c6b10e7bc5b051af29b8115ccf918e6e9ecc6f299ad40d1e1d"
+    assert hashlib.sha256(canonical.encode("utf-8")).hexdigest() == expected
+    assert change_digest(value) == expected
+
+
 def test_new_gate_has_no_domain_imports_or_domain_literals():
     import connection_hub.delegated_credentials.issuer_gate as gate
     tree = ast.parse(Path(gate.__file__).read_text())
