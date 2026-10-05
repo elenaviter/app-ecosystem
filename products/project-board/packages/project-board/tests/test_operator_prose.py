@@ -67,3 +67,46 @@ def test_each_real_glue_of_2026_10_05_is_still_refused(glued):
     with pytest.raises(DomainError) as refused:
         refuse_unreadable_operator_prose(f"Status: {glued} is done.", argument="--body")
     assert refused.value.details["glued"] == [glued]
+
+
+def test_a_glued_banner_and_work_item_result_are_refused_and_readable_ones_pass():
+    # Operator instruction relayed 2026-10-05 22:41 UTC: banners and work-item
+    # fields follow the same readability rule as operator mail.
+    from project_board.client.prose_arguments import refuse_unreadable_board_text
+
+    with pytest.raises(DomainError) as banner:
+        refuse_unreadable_board_text(
+            "project.announcement.publish",
+            {"kind": "status", "text": "Live since00:06: Apps5c8fed71 MATCH."},
+            argument="--payload-json",
+        )
+    assert banner.value.details["argument"] == "--payload-json text"
+    with pytest.raises(DomainError) as result:
+        refuse_unreadable_board_text(
+            "plan.item.update",
+            {"work_ref": "w", "changes": {"result": "Done; tests1922P strict."}},
+            argument="--payload-file",
+        )
+    assert result.value.details["argument"] == "--payload-file result"
+    with pytest.raises(DomainError):
+        refuse_unreadable_board_text(
+            "plan.item.update",
+            {"changes": {"review": {"look_at": "Run ownership12 check", "could_not_verify": "None"}}},
+            argument="--payload-file",
+        )
+    refuse_unreadable_board_text(
+        "project.announcement.publish",
+        {"kind": "status", "text": "Live since 00:06 Berlin time: fewer automatic notices (Apps `5c8fed71`)."},
+        argument="--payload-json",
+    )
+    # Other operations and other fields are not this rule's.
+    refuse_unreadable_board_text("plan.note.append", {"text": "fresh215625"}, argument="--payload-json")
+    refuse_unreadable_board_text("plan.item.update", {"changes": {"tags": ["w563x22"]}}, argument="--payload-json")
+
+
+def test_the_coordinate_command_checks_board_text_before_any_relay():
+    from project_board.client import cli
+
+    text = open(cli.__file__, encoding="utf-8").read()
+    body = text[text.index("def _coordinate_command"):]
+    assert body.index("refuse_unreadable_board_text(") < body.index("require_coordinate_shape(")

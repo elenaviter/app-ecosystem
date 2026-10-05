@@ -238,3 +238,39 @@ def refuse_unreadable_operator_prose(value: Any, *, argument: str) -> Any:
                      "maximum": OPERATOR_PARAGRAPH_MAXIMUM},
         )
     return value
+
+
+# Text people read on the board: the project banner and a work item's fields.
+# Operator instruction relayed by the coordinator, 2026-10-05 22:41 UTC: the
+# readability standard "applies especially to project banners, operator
+# messages, and work-item descriptions, results, review notes, and test
+# instructions".
+_READ_ON_THE_BOARD = {
+    "project.announcement.publish": ("text",),
+    "plan.item.create": ("title", "summary", "description", "result", "blocked_reason"),
+    "plan.item.update": ("title", "summary", "description", "result", "blocked_reason"),
+}
+_REVIEW_FIELDS = ("look_at", "could_not_verify")
+
+
+def refuse_unreadable_board_text(action: str, payload: Mapping[str, Any], *, argument: str) -> None:
+    """Refuse a banner or work-item field a person cannot read (W563).
+
+    The same rule as operator mail: no word run into a number, no wall
+    paragraph. Only the named prose fields of these operations are checked.
+    """
+
+    fields = _READ_ON_THE_BOARD.get(action)
+    if not fields:
+        return
+    values = payload.get("changes") if action == "plan.item.update" else payload
+    if not isinstance(values, Mapping):
+        return
+    for key in fields:
+        if isinstance(values.get(key), str):
+            refuse_unreadable_operator_prose(values[key], argument=f"{argument} {key}")
+    review = values.get("review")
+    if isinstance(review, Mapping):
+        for key in _REVIEW_FIELDS:
+            if isinstance(review.get(key), str):
+                refuse_unreadable_operator_prose(review[key], argument=f"{argument} review.{key}")
