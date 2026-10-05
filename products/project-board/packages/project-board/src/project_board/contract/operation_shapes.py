@@ -42,6 +42,14 @@ PLAN_ITEM_CHANGE_FIELDS: dict[str, Any] = {
     "review": {
         "look_at": "string: the concrete steps the reviewer performs",
         "could_not_verify": "string: what stays unverified; write None when nothing does",
+        # W537: a review waits only on unfinished verification, for a named
+        # actor until a due time. Sent alone (changes = {"review": {"hold":
+        # ...}}); the service refuses it combined with other edits.
+        "hold": {
+            "waiting_on": "stable worker name of an attending agent, or operator; empty clears the hold",
+            "reason": "string: the remaining step that actor is doing",
+            "due_at": "UTC timestamp, in the future and at most 14 days ahead",
+        },
     },
     "review_requirement": {"kind": "qualified | operator"},
     "cancelled_at": "timestamp",
@@ -254,7 +262,10 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                             'payload': {   'item': 'complete plan-item source',
                                            'idempotency_key': 'stable retry key'}},
     'plan.item.update': {   'description': 'Update one plan item under its current revision; new '
-                                           'attachment_refs must be staged uploads.',
+                                           'attachment_refs must be staged uploads. A review hold '
+                                           '(W537) is changes.review.hold sent alone, by the named '
+                                           'reviewer, the acting coordinator or a person whose Card '
+                                           'holds review.return, on an item in review.',
                             'object_ref': 'work:project:<project_id>',
                             'payload': {   'work_ref': 'canonical plan-node URI',
                                            'expected_revision': 'positive integer',

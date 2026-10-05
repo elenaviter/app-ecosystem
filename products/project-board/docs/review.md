@@ -314,7 +314,11 @@ clears the next gate. Only unfinished verification may be held: the
 reviewer's own check waits on one step someone else is doing, and the hold
 lasts while that step has a named actor working on it and a due time,
 recorded on the item; past that time the reviewer decides again. The
-coordinator checks for reviews that sit without a decision (W537).
+reviewer writes it with `plan.item.update` carrying only
+`changes.review.hold` (`waiting_on`: an attending agent's stable worker name
+or `operator`; `reason`; `due_at`: at most 14 days ahead), and an empty
+`waiting_on` clears it. The coordinator checks for reviews that sit without a
+decision (W537).
 
 Return and cancel take a reason. Each decision is fenced by the item
 revision the reviewer read and carries an idempotency key: a retry with the
