@@ -31,10 +31,15 @@ ADMIN_NOTE = (
     "Needs an administrator. Any administrator account on this machine can run it, for example "
     "after `su - <admin-user>`; your own account does not need to be one."
 )
-# The W258 unlock line for a headless Linux session (add-a-worker-host).
+# The W258 unlock line for a headless Linux session (add-a-worker-host step 6).
+# W558: it first stops a systemd user unit (and any leftover daemon) that would
+# keep the Secret Service name on a locked store, and it prompts, because a
+# silent read looked like nothing happened (mint, 2026-10-05).
 KEYRING_UNLOCK_LINE = (
-    "read -rs P && printf %s \"$P\" | gnome-keyring-daemon --replace --unlock "
-    "--components=secrets >/dev/null; unset P"
+    "systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; "
+    "pkill -u \"$USER\" -x gnome-keyring-d; "
+    "printf 'Password store password (not shown): '; read -rs P; echo; "
+    "printf %s \"$P\" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; unset P"
 )
 
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str] | None"]
