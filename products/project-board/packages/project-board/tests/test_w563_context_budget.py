@@ -137,19 +137,113 @@ def test_status_and_dispatch_scenario_meets_the_combined_byte_target():
     assert after <= (1 - REDUCTION) * before, f"before {before} B, after {after} B, ratio {after / before:.2f}"
 
 
-# 5-7. Surfaces the owner names next (receive selection, procedure revision,
-# merged-not-live). Explicit skips, not silent passes.
+# 3b. Context byte target (owner, 16:28Z): context <= 40% of the baseline.
 
-@pytest.mark.skip(reason="W563: receive selection surface (mail_delivery.py) to be named by the owner")
-def test_an_urgent_current_message_is_delivered_ahead_of_a_350_message_backlog():
-    pass
-
-
-@pytest.mark.skip(reason="W563: bind to `pb procedure verify` installed_revision/source_revision once the owner's change lands")
-def test_an_unchanged_procedure_revision_is_not_reread_and_a_newer_one_is_read_once():
-    pass
+def test_worker_context_brief_meets_its_byte_target():
+    _, text = _brief("worker_context")
+    assert _bytes(text) <= 0.40 * BASELINE_BYTES["worker_context"], _bytes(text)
 
 
-@pytest.mark.skip(reason="W563: merged-not-live status field to be confirmed by the owner")
+# 5. Receive (owner's S5): admitted operator mail in a project mailbox behind a
+# direct-mailbox backlog arrives in the first receive batch. Strict xfail until
+# the coordinator answers W563 Q1 (the owner's instruction, 16:28Z).
+
+PROJECT_ID = "w563-project"
+WORKER = "claude-main"
+SENDER = "codex-app"
+
+
+@pytest.fixture
+def mail_field(tmp_path):
+    from project_board.client.store import SharedFieldStore
+
+    store = SharedFieldStore(tmp_path / "field")
+    store.initialize(field_id="w563-receive")
+    for name in (WORKER, SENDER):
+        store.register_worker(worker_name=name, runtime_kind="codex", capabilities=[],
+                              authority_label=f"authority:{name}")
+    store.create_project(project_id=PROJECT_ID, title="W563", goal="Bounded receive.", owner="operator")
+    store.sync_worker_attendances(WORKER, [f"work:project:{PROJECT_ID}"])
+    store.listen_worker(WORKER)
+    return store
+
+
+def _control(ref: str, *, kind: str, body: str, project: bool, operator: bool) -> dict:
+    from project_board.client.io import content_hash
+
+    payload = {"body": body}
+    control = {"ref": ref, "recipient": WORKER, "kind": kind, "subject": body[:40],
+               "payload": payload, "payload_hash": content_hash(payload)}
+    if project:
+        control["project_ref"] = f"work:project:{PROJECT_ID}"
+    if operator:
+        control["sender_identity"] = {"kind": "user", "label": "Operator"}
+    return control
+
+
+@pytest.mark.xfail(strict=True, reason="W563 S5: priority_only receive pending coordinator Q1")
+def test_operator_mail_in_a_project_is_received_ahead_of_a_direct_backlog(mail_field):
+    from project_board.client.session import pull_worker_input
+
+    for number in range(6):
+        mail_field.materialize_control(_control(
+            f"work:control:20261005T160000Z:command_backlog{number}:direct-ping-{number}",
+            kind="ping", body=f"Backlog ping {number}", project=False, operator=False,
+        ))
+    urgent = mail_field.materialize_control(_control(
+        "work:control:20261005T162800Z:command_urgent:operator-request",
+        kind="request", body="Urgent operator decision needed now.", project=True, operator=True,
+    ))
+    first = pull_worker_input(mail_field, worker_name=WORKER, limit=5)
+    refs = [item["message"]["message_ref"] for item in first["items"]]
+    assert urgent["message_ref"] in refs, "the urgent operator request waits behind the direct backlog"
+
+
+# 6. Procedure revision (owner's S8): verify reports which package files changed
+# since the previous install; an unchanged revision reports none.
+
+def _stand_in_package(tmp_path, revision: str, *, edit: str = ""):
+    import shutil
+
+    from project_board.client import procedures
+
+    root = tmp_path / f"package-{revision}"
+    shutil.copytree(procedures.source_package_path(), root)
+    manifest = root / "package.json"
+    definition = json.loads(manifest.read_text(encoding="utf-8"))
+    definition["revision"] = revision
+    manifest.write_text(json.dumps(definition, indent=2) + "\n", encoding="utf-8")
+    if edit:
+        target = root / edit
+        target.write_text(target.read_text(encoding="utf-8") + "\nW563 fixture edit.\n", encoding="utf-8")
+    return root
+
+
+def test_procedure_verify_names_no_changed_files_for_an_unchanged_revision(tmp_path):
+    from project_board.client import procedures
+
+    home = tmp_path / "home"
+    procedures.install_agent_procedure(["claude-code"], home=home)
+    verified = procedures.verify_agent_procedure(["claude-code"], home=home)[0]
+    assert verified["state"] == "current"
+    assert verified.get("changed_files") == [], "verify does not report changed_files"
+
+
+def test_procedure_verify_names_exactly_the_edited_reference_for_a_newer_revision(tmp_path, monkeypatch):
+    from project_board.client import procedures
+
+    home = tmp_path / "home"
+    procedures.install_agent_procedure(["claude-code"], home=home)
+    newer = _stand_in_package(tmp_path, "2099.01.01.1", edit="references/brief-output.md")
+    monkeypatch.setattr(procedures, "source_package_path", lambda: newer)
+    procedures.install_agent_procedure(["claude-code"], home=home)
+    verified = procedures.verify_agent_procedure(["claude-code"], home=home)[0]
+    assert verified["installed_revision"] == "2099.01.01.1"
+    assert verified.get("changed_files") == ["references/brief-output.md"]
+
+
+# 7. Merged-not-live: no status surface exists yet (owner, 16:28Z; asked of Root under S10).
+
+@pytest.mark.skip(reason="W563: merged-not-live has no status surface yet; owner asks Root under S10")
 def test_merged_not_live_is_distinguished_from_live_in_the_status_view():
     pass
