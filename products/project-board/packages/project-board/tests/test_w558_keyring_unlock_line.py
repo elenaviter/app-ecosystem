@@ -48,3 +48,9 @@ def test_the_line_parses_in_the_usual_shells(shell):
     if not shutil.which(shell):
         pytest.skip(f"{shell} is not installed")
     assert subprocess.run([shell, "-n", "-c", KEYRING_UNLOCK_LINE], check=False).returncode == 0
+
+
+def test_the_procedure_forbids_an_improvised_keyring_command():
+    text = PROCEDURE.read_text(encoding="utf-8")
+    assert "**Only these lines.**" in text and "never another keyring command of its own" in text
+    assert "If the check fails twice, stop, change nothing more" in text

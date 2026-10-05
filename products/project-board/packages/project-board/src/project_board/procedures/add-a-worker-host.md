@@ -456,6 +456,8 @@ timeout 15 "$HOME/.kdcube/client-runtime/tools/problem-board/releases/current/ve
 
 Two different PIDs, or no `True` within 15 s (`exit 124`), means the password did not open the existing store: run the unlock again with the right password, or reset.
 
+**Only these lines.** The host agent gives the operator exactly the unlock, check and reset above, never another keyring command of its own: on mint (2026-10-05) an improvised `gnome-keyring-daemon --unlock` left a stray daemon that broke the store further, and a restart of the keyring unit without asking added another (W558). If the check fails twice, stop, change nothing more, and report what each line printed to the coordinator.
+
 **Reset** (the password is lost, or the first one was mistyped). It sets the old store aside and creates a new, empty one; the new password is asked twice:
 
 ```bash
