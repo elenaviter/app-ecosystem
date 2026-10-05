@@ -60,11 +60,47 @@ def test_procedure_install_runs_on_a_host_that_recorded_another_release(tmp_path
         assert refusal.value.code == "work_client_release_selection_mismatch", argv
 
 
-def test_the_installing_release_becomes_the_selection_and_the_launcher_follows(tmp_path, monkeypatch):
+class _FakeController:
+    """Records the host switch; the real one builds a release and restarts relays."""
+
+    calls: list = []
+
+    def __init__(self, config, launcher_path):
+        self.config = config
+        self.launcher = launcher_path
+
+    def use_release(self, *, expect_version, wait_seconds):
+        _FakeController.calls.append(("use-release", expect_version))
+        return {"state": "activated", "version": expect_version}
+
+    def use_code(self, *, repository, ref, expect, wait_seconds):
+        _FakeController.calls.append(("use-code", str(repository), ref, expect))
+        return {"state": "activated", "commit": ref}
+
+
+def _snapshot_host(tmp_path, monkeypatch, commit, name="target"):
+    """A configured host whose selection is a source snapshot at `commit`, as use-code records it."""
+
+    config = tmp_path / name / "relay.json"
+    monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(config))
+    monkeypatch.setattr(relay_source, "read_selection",
+                        lambda root: {"schema": relay_source.SELECTION_SCHEMA, "mode": "snapshot", "commit": commit})
+    monkeypatch.setattr(source_control, "installed_release_source", lambda: {"mode": "released", "version": NEW})
+    return config
+
+
+def _switching(tmp_path, monkeypatch, *, checkout=None):
+    launcher = tmp_path / "home" / ".local" / "bin" / "pb"
+    _FakeController.calls = []
+    monkeypatch.setattr(source_control, "ClientSourceController", lambda config: _FakeController(config, launcher))
+    monkeypatch.setattr(cli, "_installed_source_checkout", lambda: checkout)
+    return launcher
+
+
+def test_an_index_install_switches_a_stale_released_host_with_use_release(tmp_path, monkeypatch):
     config = _host(tmp_path, monkeypatch, relay_source.released_selection(OLD))
+    launcher = _switching(tmp_path, monkeypatch)
     home = tmp_path / "home"
-    old_release = _executable(tmp_path / "releases" / "old" / "venv" / "bin" / "pb")
-    install_launcher(home / ".local" / "bin" / "pb", expected_pb=old_release)
     running = _executable(tmp_path / "bootstrap" / "bin" / "pb")
     monkeypatch.setattr(sys, "argv", [str(running), "procedure", "install"])
     monkeypatch.setenv("PATH", str(home / ".local" / "bin"))
@@ -74,57 +110,142 @@ def test_the_installing_release_becomes_the_selection_and_the_launcher_follows(t
                         allow_downgrade=False, config=None)
     )
 
-    assert result["selection"]["adopted"] is True
-    assert result["selection"]["previous_version"] == relay_source.canonical_release_version(OLD)
-    selected = relay_source.read_selection(relay_source.client_source_root(config))
-    assert source_control.source_matches({"mode": "released", "version": NEW}, selected)
-    launcher = (home / ".local" / "bin" / "pb").read_text(encoding="utf-8")
-    assert str(running) in launcher and str(old_release) not in launcher
-    assert result["launcher"]["state"] == "current"
-    # The next command through the bootstrap now runs without a refusal.
-    assert entrypoint._selected_command(
-        ["status"], current_source={"mode": "released", "version": NEW}, config_path=config
-    ) is None
+    assert _FakeController.calls == [("use-release", NEW)]
+    assert result["switched"]["source"] == "release" and result["switched"]["version"] == NEW
+    assert result["switched"]["previous"]["mode"] == "released"
+    # The skill and the launcher name the host's launcher, not the bootstrap.
+    assert result["launcher"] == {"path": str(launcher), "state": "selected"}
+    recorded = list((home / ".codex").rglob("installed-by.json"))
+    assert recorded and str(launcher) in recorded[0].read_text(encoding="utf-8")
 
 
-def test_a_matching_selection_and_a_new_host_change_nothing(tmp_path, monkeypatch):
-    config = _host(tmp_path, monkeypatch, relay_source.released_selection(NEW))
-    before = relay_source.read_selection(relay_source.client_source_root(config))
+def test_a_checkout_install_switches_a_snapshot_host_with_use_code_at_head(tmp_path, monkeypatch):
+    """The reported case: a host pinned to an older snapshot, a from-source install of a newer commit."""
 
-    assert cli._adopt_installing_release() is None  # noqa: SLF001
-    assert relay_source.read_selection(relay_source.client_source_root(config)) == before
+    config = _snapshot_host(tmp_path, monkeypatch, "a" * 40)
+    head = "b" * 40
+    _switching(tmp_path, monkeypatch, checkout={
+        "folder": "/src/app-ecosystem/products/project-board/packages/project-board",
+        "repository": "/src/app-ecosystem", "commit": head, "changed": [], "reason": "",
+    })
 
+    switched = cli._switch_host_to_installing_package()  # noqa: SLF001
+
+    assert _FakeController.calls == [("use-code", "/src/app-ecosystem", head, head)]
+    assert switched["source"] == "code" and switched["commit"] == head
+    assert switched["previous"] == {"mode": "snapshot", "commit": "a" * 40}
+    # The entrypoint no longer hands this command to the old snapshot.
+    for argv in (["procedure", "install", "--target", "claude-code"],
+                 ["--format", "brief", "procedure", "install", "--target", "claude-code"]):
+        assert entrypoint._selected_command(  # noqa: SLF001
+            argv, current_source={"mode": "released", "version": NEW}, config_path=config) is None
+
+
+def test_a_host_already_on_this_package_changes_nothing(tmp_path, monkeypatch):
+    _host(tmp_path, monkeypatch, relay_source.released_selection(NEW))
+    _switching(tmp_path, monkeypatch)
+    assert cli._switch_host_to_installing_package() is None  # noqa: SLF001
+    assert _FakeController.calls == []
+
+    _snapshot_host(tmp_path, monkeypatch, "c" * 40, name="snap")
+    _switching(tmp_path, monkeypatch, checkout={
+        "folder": "/src/ae", "repository": "/src/ae", "commit": "c" * 40, "changed": [], "reason": ""})
+    assert cli._switch_host_to_installing_package() is None  # noqa: SLF001
+    assert _FakeController.calls == []
+
+
+def test_a_new_host_and_a_pb_inside_a_selected_release_change_nothing(tmp_path, monkeypatch):
+    _switching(tmp_path, monkeypatch)
     monkeypatch.setenv("PROBLEM_BOARD_CONFIG", "")
     monkeypatch.setenv("HOME", str(tmp_path / "fresh"))
-    assert cli._adopt_installing_release() is None  # noqa: SLF001 - no configuration yet
+    assert cli._switch_host_to_installing_package() is None  # noqa: SLF001 - no configuration yet
+
+    # The maintainer path: `pb source use-code`, then ~/.local/bin/pb procedure install
+    # runs inside the selected release and keeps that snapshot.
+    _host(tmp_path, monkeypatch, relay_source.released_selection(OLD))
+    monkeypatch.setattr(source_control, "installed_release_source",
+                        lambda: {"mode": "snapshot", "release_id": "r1", "commit": "d" * 40})
+    assert cli._switch_host_to_installing_package() is None  # noqa: SLF001
+    assert _FakeController.calls == []
 
 
-def test_a_host_that_selected_a_source_snapshot_keeps_it(tmp_path, monkeypatch):
-    config = tmp_path / "target" / "relay.json"
-    monkeypatch.setenv("PROBLEM_BOARD_CONFIG", str(config))
-    root = relay_source.client_source_root(config)
-    root.mkdir(parents=True)
-    # Only the selection's mode decides here; a snapshot record as use-code writes it.
-    (root / relay_source.SELECTION_FILE).write_text(
-        '{"schema": "%s", "mode": "snapshot", "commit": "%s"}' % (relay_source.LEGACY_SELECTION_SCHEMA, "a" * 40),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(source_control, "installed_release_source", lambda: {"mode": "released", "version": NEW})
-
-    before = (root / relay_source.SELECTION_FILE).read_bytes()
-
-    assert cli._adopt_installing_release() is None  # noqa: SLF001
-    assert (root / relay_source.SELECTION_FILE).read_bytes() == before
+def test_an_install_that_is_not_a_commit_is_refused_by_name(tmp_path, monkeypatch):
+    _host(tmp_path, monkeypatch, relay_source.released_selection(OLD))
+    _switching(tmp_path, monkeypatch, checkout={
+        "folder": "/src/ae/products/project-board/packages/project-board", "repository": "/src/ae",
+        "commit": "e" * 40, "changed": ["products/project-board/packages/project-board/src/x.py"],
+        "reason": "uncommitted_changes"})
+    with pytest.raises(DomainError) as refused:
+        cli._switch_host_to_installing_package()  # noqa: SLF001
+    assert refused.value.code == "work_client_install_not_a_commit"
+    assert refused.value.details["changed"] == ["products/project-board/packages/project-board/src/x.py"]
+    assert _FakeController.calls == []
 
 
-
-def test_an_older_installed_release_is_adopted_too(tmp_path, monkeypatch):
+def test_an_older_installed_release_is_switched_to_too(tmp_path, monkeypatch):
     """Review P3: the person chose the installed package; only an older procedure is refused."""
 
-    config = _host(tmp_path, monkeypatch, relay_source.released_selection("2026.11.1.100"))
+    _host(tmp_path, monkeypatch, relay_source.released_selection("2026.11.1.100"))
+    _switching(tmp_path, monkeypatch)
 
-    adopted = cli._adopt_installing_release()  # noqa: SLF001
+    switched = cli._switch_host_to_installing_package()  # noqa: SLF001
 
-    assert adopted and adopted["version"] == relay_source.canonical_release_version(NEW)
-    selected = relay_source.read_selection(relay_source.client_source_root(config))
-    assert source_control.source_matches({"mode": "released", "version": NEW}, selected)
+    assert switched and switched["version"] == NEW
+    assert _FakeController.calls == [("use-release", NEW)]
+
+
+def test_the_installed_checkout_is_read_from_pips_direct_url(tmp_path, monkeypatch):
+    import json
+    import subprocess
+
+    repo = tmp_path / "ae"
+    package = repo / "products" / "project-board" / "packages" / "project-board"
+    package.mkdir(parents=True)
+    (package / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    run = lambda *argv: subprocess.run(["git", "-C", str(repo), *argv], check=True, capture_output=True)
+    run("init", "-q")
+    run("-c", "user.email=t@t", "-c", "user.name=t", "add", ".")
+    run("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "c")
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+    class _Dist:
+        def __init__(self, url):
+            self.url = url
+
+        def read_text(self, name):
+            return json.dumps({"url": self.url, "dir_info": {}}) if name == "direct_url.json" else None
+
+    from importlib import metadata
+    monkeypatch.setattr(metadata, "distribution", lambda name: _Dist(package.as_uri()))
+    found = cli._installed_source_checkout()  # noqa: SLF001
+    assert found["repository"] == str(repo.resolve()) or found["repository"] == str(repo)
+    assert found["commit"] == head and found["reason"] == ""
+
+    # An untracked build folder is not a change; an edit to a tracked file is.
+    (package / "build").mkdir()
+    (package / "build" / "x").write_text("x", encoding="utf-8")
+    assert cli._installed_source_checkout()["reason"] == ""  # noqa: SLF001
+    (package / "pyproject.toml").write_text("[project]\nname='y'\n", encoding="utf-8")
+    assert cli._installed_source_checkout()["reason"] == "uncommitted_changes"  # noqa: SLF001
+
+    # An index install records no file URL: not a checkout.
+    monkeypatch.setattr(metadata, "distribution", lambda name: _Dist("https://pypi.org/x.whl"))
+    assert cli._installed_source_checkout() is None  # noqa: SLF001
+
+
+def test_a_snapshot_host_never_hands_procedure_install_to_its_old_snapshot(tmp_path, monkeypatch):
+    """The reported mechanism: the bootstrap's procedure install ran the pinned snapshot's code."""
+
+    config = tmp_path / "target" / "relay.json"
+    old = SimpleNamespace(path=tmp_path / "releases" / "old", script=tmp_path / "releases" / "old" / "pb.py")
+    monkeypatch.setattr(entrypoint, "effective_selection",
+                        lambda root, release_source=None: {"mode": "snapshot", "commit": "a" * 40})
+    monkeypatch.setattr(entrypoint, "selected_release", lambda root, selected, release_roots=(): old)
+    installed = {"mode": "released", "version": NEW}
+
+    assert entrypoint._selected_command(  # noqa: SLF001
+        ["procedure", "install", "--target", "claude-code"], current_source=installed, config_path=config,
+    ) is None
+    # Every other command still runs in the host's selected snapshot until the switch.
+    handed = entrypoint._selected_command(["status"], current_source=installed, config_path=config)  # noqa: SLF001
+    assert handed is not None and str(old.script) in handed

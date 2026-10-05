@@ -106,15 +106,18 @@ def _selected_command(
     )
     if observed.get("mode") != "released" or observed.get("release_id"):
         return None
+    if _procedure_install(argv):
+        # W554: `pb procedure install` run by the package just installed makes
+        # it this host's pb, whatever the host selected before (a release or a
+        # source snapshot), so it always runs here and switches the host.
+        return None
     config = config_path or _config_argument(argv)
     if config is None:
         return None
     root = client_source_root(config)
     selected = effective_selection(root, release_source=observed)
     if selected.get("mode") == "released":
-        if not source_matches(observed, selected) and not _procedure_install(argv):
-            # W554: `pb procedure install` run by the package just installed
-            # makes it this host's pb, so it runs here instead of refusing.
+        if not source_matches(observed, selected):
             raise DomainError(
                 "work_client_release_selection_mismatch",
                 "The installed project-board package differs from the selected released version. Run pb source use-release with the approved installed version.",
