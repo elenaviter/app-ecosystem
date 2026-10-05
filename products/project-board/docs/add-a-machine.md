@@ -179,7 +179,7 @@ with that password. It also restarts the machine's password-store service, so
 that the unlocked store is the one the agents use.
 
 ```bash
-systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; printf 'Password store password (not shown): '; read -rs P; echo; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; unset P
+printf 'Password store password (not shown): '; read -rs P; echo; if [ -n "$P" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "done; now run the check"; else echo "the password is empty; nothing changed"; fi; unset P
 ```
 
 **Check that it worked:**
@@ -204,7 +204,7 @@ never on the machine and never in an agent's history.
   steps 5 and 6 for each agent. Nothing else is lost.
 
   ```bash
-  printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries differ; nothing changed"; fi; unset P Q
+  printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ -n "$P" ] && [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries are empty or differ; nothing changed"; fi; unset P Q
   ```
 
 - **Until you do this step, an agent cannot finish signing in**, because it has

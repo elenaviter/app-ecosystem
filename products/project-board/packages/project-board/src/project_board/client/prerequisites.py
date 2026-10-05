@@ -39,10 +39,11 @@ ADMIN_NOTE = (
 # keep the Secret Service name on a locked store, and it prompts, because a
 # silent read looked like nothing happened (mint, 2026-10-05).
 KEYRING_UNLOCK_LINE = (
-    "systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; "
-    "pkill -u \"$USER\" -x gnome-keyring-d; "
     "printf 'Password store password (not shown): '; read -rs P; echo; "
-    "printf %s \"$P\" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; unset P"
+    "if [ -n \"$P\" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; "
+    "pkill -u \"$USER\" -x gnome-keyring-d; "
+    "printf %s \"$P\" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo \"done; now run the check\"; "
+    "else echo \"the password is empty; nothing changed\"; fi; unset P"
 )
 
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str] | None"]
