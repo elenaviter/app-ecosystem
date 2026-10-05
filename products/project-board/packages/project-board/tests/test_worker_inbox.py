@@ -122,3 +122,43 @@ def test_the_procedure_lets_a_held_session_receive_its_window_control():
     assert "`pb worker inbox`, `pb worker receive`" in text and "`pb worker settle`" in text
     assert "receiving a message is never the end of the hold" in text
     assert "issue no commands" not in text
+
+
+def test_a_held_session_acknowledges_a_native_wake_without_receiving_its_backlog(field):
+    # W563, Root 2026-10-05 22:19 UTC: while held for a host window, two native
+    # wakes forced ordinary receives that delivered old W502/W538 notices, and
+    # `receive --wake-id` with a window selection was refused
+    # (field_mail_selection_wake_invalid). wake-ack records the wake as handled
+    # and leases nothing; the window mail is found by header and taken by ref.
+    for number in range(40):
+        _send(field, number, kind="update", subject=f"Old status {number}", body="history")
+    all_clear = field.send_mail(
+        PROJECT, sender="codex-main", recipient=WORKER, kind="update",
+        subject="ALL CLEAR: window w-2", body="Resume now.", correlation_id="window-w-2",
+        idempotency_key="all-clear-w-2",
+    )
+    field.prepare_worker_session_wake(WORKER, message_refs=[all_clear["message_ref"]], wake_id="wake_hold_1")
+
+    acknowledged = field.acknowledge_worker_wake(WORKER, wake_id="wake_hold_1")
+
+    assert acknowledged["wake"] == {"id": "wake_hold_1", "state": "acknowledged", "expected_id": ""}
+    subscription = field.worker_listener_session(WORKER)["subscription"]
+    assert "outstanding_wake_id" not in subscription
+    assert _inbox(field, limit=100)["pending"] == 41, "nothing was leased or delivered"
+    listener = field.worker_listener_session(WORKER)
+    assert not listener.get("general_receive_due") and not listener.get("selective_receives_since_general")
+    taken = pull_worker_input(field, worker_name=WORKER, message_ref=all_clear["message_ref"])
+    assert [item["message"]["subject"] for item in taken["items"]] == ["ALL CLEAR: window w-2"]
+    assert _inbox(field, limit=100)["pending"] == 40
+
+    again = field.acknowledge_worker_wake(WORKER, wake_id="wake_hold_1")
+    assert again["wake"]["state"] == "already_acknowledged"
+
+
+def test_the_procedure_lets_a_held_session_acknowledge_a_wake():
+    from project_board.client import procedures
+
+    text = " ".join(
+        (procedures.source_package_path() / "references" / "runtime-actions.md").read_text(encoding="utf-8").split()
+    )
+    assert "pb worker wake-ack --wake-id" in text

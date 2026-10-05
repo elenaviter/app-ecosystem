@@ -3613,6 +3613,7 @@ class SharedFieldStore:
         observed_control_plane_state: str | None = None,
         wake_id: str = "",
         observed_project_refs: Sequence[str] | None = None,
+        acknowledge_wake: bool = False,
     ) -> dict[str, Any]:
         worker = self.read_worker(worker_name)
         clean_name = str(worker.get("worker_name") or "")
@@ -3657,6 +3658,11 @@ class SharedFieldStore:
                         for value in list(control_refs)[-20:]
                     ],
                 )
+            # W563: a session held for a window acknowledges a native wake
+            # without an ordinary receive (pb worker wake-ack), so its backlog
+            # is not delivered while it may only do window control.
+            if inbox_checked or (acknowledge_wake and wake_id):
+                observed_message_refs = _bounded_message_refs(message_refs)
                 subscription = dict(listener.get("subscription") or {})
                 outstanding_wake_id = str(
                     subscription.get("outstanding_wake_id") or ""
@@ -4109,6 +4115,43 @@ class SharedFieldStore:
             row.update(listener=listener, updated_at=now)
             atomic_write_json(path, row)
             return dict(recovery)
+
+    def acknowledge_worker_wake(self, worker_name: str, *, wake_id: str) -> dict[str, Any]:
+        """Acknowledge a native wake without receiving any mail (W563).
+
+        A Codex session held for a host window may only do window control, but
+        a native wake could be acknowledged only by an ordinary receive, which
+        delivers the oldest backlog first (Root, 2026-10-05 22:19 UTC:
+        field_mail_selection_wake_invalid). This records the wake as handled,
+        leases nothing and leaves every pending message where it is; the
+        session finds window mail with pb worker inbox and takes it with
+        receive --message-ref.
+        """
+
+        listener = self.worker_listener_session(worker_name) or {}
+        state = str(listener.get("state") or "waiting")
+        if state == "detached":
+            raise DomainError(
+                "field_worker_not_listening",
+                "This coding-agent session must run worker listen before acknowledging a wake.",
+                status=409,
+            )
+        updated = self.check_in_worker_listener(
+            worker_name, state=state, wake_id=wake_id, acknowledge_wake=True,
+        )
+        subscription = updated.get("subscription") if isinstance(updated.get("subscription"), Mapping) else {}
+        receipt = subscription.get("last_wake_receipt") if isinstance(subscription.get("last_wake_receipt"), Mapping) else {}
+        state_name = str(receipt.get("state") or "unrecorded") if str(receipt.get("wake_id") or "") == wake_id else "unrecorded"
+        return {
+            "schema": "problem-board.worker-wake-ack.v1",
+            "wake": {
+                "id": wake_id,
+                "state": state_name,
+                "expected_id": str(receipt.get("expected_wake_id") or "") if state_name == "stale" else "",
+            },
+            "pending_unchanged": True,
+            "next": "Find window mail with pb worker inbox; receive it with pb worker receive --message-ref.",
+        }
 
     def record_wake_recovery(
         self,
