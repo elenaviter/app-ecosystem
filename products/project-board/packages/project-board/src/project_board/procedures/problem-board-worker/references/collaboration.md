@@ -743,6 +743,32 @@ be justified by author of 563?") and then set the rule (21:51Z: "size from
 concrete reused primitives and separate source, review, activation
 estimates").
 
+### Readable updates
+
+A banner, a message to the operator and a work item's description, result,
+review note and test steps are read by people, often on a phone. Write them
+so the operator understands them without decoding agent mail:
+
+- Normal spaces, complete short sentences, paragraphs and line breaks. Never
+  join names, times, hashes and counts into one token to fit a limit.
+- Separate **Live**, **Being verified**, **Planned** and **Blocked**. Merged is
+  not live.
+- A delivery says what the user can do now and when it was verified, with the
+  date and time zone. A plan names the owner, the next action, the target
+  time and any actual blocker.
+- Commits, test counts and evidence refs belong in the linked item or its
+  evidence section, not in the summary sentence.
+- A banner carries the few facts that fit. Shorten the scope rather than
+  remove spaces or punctuation.
+- Read the text as the operator would before you publish it.
+
+`pb worker send` refuses operator mail, and `pb coordinate` refuses a banner
+or a work-item field, when a word runs into a number or a paragraph is a wall.
+Why: on 2026-10-05 a decision mail and the project banner arrived glued and
+unreadable (operator instruction relayed by the coordinator, 22:41 UTC: "Read
+your text before publishing it. An operator should understand it without
+decoding agent mail.").
+
 ### The info line
 
 The info line says what the team needs to plan around you, and nothing else:
