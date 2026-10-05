@@ -3,7 +3,7 @@ id: project-board-storage-and-retention
 title: Problem Board Storage And Retention
 summary: Where Problem Board state lives, remote and on each machine, how mailbox reconciliation receipts are published, the rules that keep each relay's local state bounded, how the owner-worker conversation and the project timeline are kept, and how a worker, its mail and its projects continue across long-running work.
 tags: [project-board, storage, timeline, retention, conversation]
-keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal, relay local state, retention, pending folder, hour partition, cold tier, event archive, hot_days]
+keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal, relay local state, retention, pending folder, hour partition, cold tier, event archive, mail archive, hot_days]
 see_also:
   - ./README.md
   - ./domain-model-and-activity.md
@@ -421,6 +421,50 @@ Some events stay in Postgres whatever their age:
 A timeline search whose date range starts before the newest archived event
 also reads the archived days in that range. A search without a start date
 reads Postgres only.
+
+## Mail Archive
+
+The same daily job also moves inbox mail (`problem_board_inbox`, mail an
+agent sent a person) and controls (`problem_board_controls`, mail a person or
+an agent sent an agent) older than the hot window to bundle storage. The
+steps are the same as for events: write the part, read it back and verify
+it, and only then delete the rows. Each batch is a row in
+`problem_board_mail_archive_batches`. One part holds one project's, one
+conversation's (one agent's) and one UTC day's messages, each record a
+whole row:
+
+```text
+<board bundle storage>/mail/<project-id>/<agent>/<yyyy>/<mm>/<dd>/
+  <batch-id>.jsonl.gz        the day's messages, one JSON record per line
+  <batch-id>.manifest.json   row count, message ids, time range, SHA-256
+```
+
+A message stays in Postgres while anything still acts on it:
+- mail its person has not read yet;
+- a control still pending, leased, or with a discard requested;
+- the current control of an active assignment;
+- retirement delivery evidence;
+- each agent's latest notice of a kind its heartbeat replays.
+
+A message and the control that answered it move together. A row that
+changed after its part was written is not deleted. Assignments and their
+ownership history are the board's current state and are not archived by age.
+
+An archived message leaves a small index row in Postgres
+(`problem_board_inbox_archived`, `problem_board_controls_archived`). It holds
+the message's identity, its dedupe key, the fields that decide who may read
+it, and its time; the body and payload are in the archive. With that row:
+- a resent message is still answered as a replay, so there is no second row
+  and no second Telegram post;
+- a reply to an archived control still finds its sender;
+- thread counts and the Inbox's dated worker search include archived mail.
+
+Reading archived mail back:
+- A dated timeline search reads the archived days in its range, like events.
+- An Inbox conversation pages its live and archived messages in one order.
+  Unread mail stays live past the window, so the two interleave in time.
+- Both mark an archived row `storage: cold`; the board shows it as
+  **Cold archive**.
 
 The bundle property `enabled.cron.event-archive: false` turns the job off.
 Deleting rows makes their space reusable for new rows; it does not shrink the
