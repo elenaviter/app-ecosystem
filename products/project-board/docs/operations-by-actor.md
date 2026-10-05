@@ -98,6 +98,8 @@ rest of `work:coordinate` is an open question.
 
 - **yes**: the actor needs it for its normal role.
 - **optional**: give it only when that actor is meant to take on this part.
+- **admin** (operator column): a project admin needs it; the admin preset ticks
+  it and the member preset does not.
 - **no**: the actor should not hold it. A worker does not hold operations that
   remove, suspend or re-route other workers. Deleting an unassigned leaf item
   is a default worker operation (W490). Directing
@@ -106,6 +108,27 @@ rest of `work:coordinate` is an open question.
   in the app descriptor. On the Card screen these are the **Service
   permissions** chips. An operation works only when the Card holds both its
   service permission and the operation itself (the **Tools**).
+
+## A person's Card: the two presets
+
+A person's project Card is checked operation by operation. Applying a role to a
+person ticks one of two presets on their Card; an admin can then tick or untick
+single operations in Connection Hub. Reading the project (plan, items, notes,
+people, agents, board) needs no Card operation: membership is enough (identity
+rule `project_membership`).
+
+| Preset | Operations it ticks | Service permissions |
+| --- | --- | --- |
+| **member** (any operator) | `review.accept`, `review.return`, `review.cancel`; `assignment.assign`, `assignment.return`, `work.status.set`, `work.assignee.set`; `plan.item.create`, `plan.item.update`, `plan.item.delete`, `plan.note.append`, `project.plan.import`, `project.references.preview`, `project.references.migrate`; `project.link_worker`, `project.unlink_worker`, `worker.evict`, `worker.restore`, `control.enqueue` | `work:review`, `work:coordinate` |
+| **admin** | everything in member, plus `review.assign`, `project.people.invite`, `project.people.set_role` | `work:review`, `work:coordinate`, `work:admin` |
+
+- **Opt-in:** `project.role.manage` (`work:admin`) is in neither preset; an
+  admin ticks it on purpose (operator decision, W517).
+- **Not on any Card:** a project admin decides the Cards, the project Control
+  Card, the coordinator levers, removing people and the project's
+  configuration by role (identity rule `project_admin_by_role`), and the owner
+  may do every Card operation whatever their Card holds
+  (`owner_exempt_from_card`).
 
 ## Rules no Card changes
 
@@ -179,11 +202,13 @@ at consent", which sent the team to the catalog.
 | `project.set_commit_identity` | `work:coordinate` | no | optional | admin | Set the email every agent of the project commits with, as `<agent alias> <email>`; part of the repository preset and advances its revision. | One email address, or empty to clear; `person_card: false`. |
 | `project.set_files` | `work:coordinate` | no | yes | admin | Set where the project's files live: repository and path, a purpose (instructions, facts, environment) or a one-line description. | The board keeps the list, never the content; `person_card: false`. |
 | `project.files.edit` | `work:coordinate` | no | yes | no | Check, before an edit, that the agent may edit the project's files in its repositories. | The edit is a commit the board cannot see; without it the agent proposes the change to the coordinator. |
+| `project.file.edit.result` | `work:relay`, `work:journal:view` | yes | yes | no | Report how a project-file edit made on the board landed: committed, pull request opened, branch pushed, unchanged, or refused. | The relay that made the edit reports it. |
 | `project.github.use` | `work:relay` | yes | yes | no | Check that the agent may use GitHub on the project's repositories, and list the card's GitHub repositories. | The token comes from Connection Hub under the owner's GitHub link; Connection Hub asks the board again for the exact repository, which must be on the project card, and the agent must attend the project. |
 | `project.plan.index` | `work:observe` | yes | yes | yes | Read each plan item's source text, summary, status, dependencies, attachment references, and derived-state hashes. |  |
 | `project.plan.item` | `work:observe` | yes | yes | yes | Read one complete authoritative plan item by its canonical URI. |  |
 | `project.plan.resolve` | `work:observe` | yes | yes | yes | Resolve a bounded explicit set of plan-item references and project-scoped keys in one query, naming every absent selector. |  |
 | `project.plan.search` | `work:observe` | yes | yes | yes | Search plan source and summaries lexically, or with one explicitly requested and accounted query embedding. |  |
+| `project.plan.history` | `work:observe` | yes | yes | yes | Read one item's recorded actions, newest first, as a bounded page pinned to one generation. Each `item.*` row names who made the change, or says the writer is unknown (W538). | Reading the plan; a person needs only project membership. |
 | `project.plan.import` | `work:coordinate` | no | optional | yes | Validate a complete plan package and atomically replace this project's work-item rows. | Replaces the whole plan. Rare and destructive. A person needs it on their own project Card (both presets tick it; the owner always may). |
 | `project.references.preview` | `work:coordinate` | no | optional | yes | Show the exact project-wide URI rewrite without changing stored state. | A person needs it on their own project Card (both presets tick it; the owner always may). |
 | `project.references.migrate` | `work:coordinate` | no | optional | yes | Apply one reviewed project-wide URI rewrite under generation and retry fences. | Review the preview first. A person needs it on their own project Card (both presets tick it; the owner always may). |
@@ -192,19 +217,22 @@ at consent", which sent the team to the catalog.
 | `review.accept` | `work:review` | no | yes | yes | Accept submitted result evidence and move the item from review to done. | A worker never accepts its own work (identity rule). |
 | `review.return` | `work:review` | no | yes | yes | Return work to working for rework with a durable reason. The assignee keeps the assignment under a new ownership version and is told so. |  |
 | `review.cancel` | `work:review` | no | yes | yes | Cancel work in review with a durable reason and evidence record. |  |
-| `project.people.invite` | `work:admin` | no | no | yes | Invite an existing KDCube user by email, as a member or a project admin. The role's preselection fills their Control Card once, when it is created; an invitation that sends a list of operations is refused `work_invitation_operations_in_connection_hub`. | For a person, being a project admin decides (an admin of this Problem Board project, not a KDCube user role; operator, 2026-09-26): a project admin invites whatever their Card holds; a member is refused `work_control_card_admin_only`. An agent may hold it only when its own Card was granted it. |
+| `review.assign` | `work:coordinate` | yes | yes | admin | Name who reviews an item in review: a linked agent other than the one who did the work, or `operator` (a project admin) once the work is merged and deployed (W326). The reviewer becomes the item's assignee. | An author arranges its own reviewer (collaboration Rule 16); the coordinator routes reviews. A person needs it on their own project Card (the admin preset ticks it). See [Review](review.md). |
+| `project.people.invite` | `work:admin` | no | no | admin | Invite an existing KDCube user by email, as a member or a project admin. The role's preselection fills their Control Card once, when it is created; an invitation that sends a list of operations is refused `work_invitation_operations_in_connection_hub`. | For a person, being a project admin decides (an admin of this Problem Board project, not a KDCube user role; operator, 2026-09-26): a project admin invites whatever their Card holds; a member is refused `work_control_card_admin_only`. An agent may hold it only when its own Card was granted it. |
 | `project.people.invitation.withdraw` | `work:admin` | no | no | yes | Close a pending invitation and revoke its pending Control Card. | For a person, the project admin role authorizes it (operator, 2026-09-26); an agent needs `project.people.invite` on its Card. Redemption closes before external revocation, which is retried when unavailable. |
 | `project.people.remove` | `work:admin` | no | no | yes | Take a person off the project. Their access ends at their next request, named `work_project_person_removed`; their authored history keeps its author. | The browser action is authorized by the caller's `project.people.set_role` capability. The owner and the last admin are not removed; nobody removes themselves. After the move to Cards their Control Card is revoked (My Card fails closed with it), retried on an admin's next People view when Connection Hub is unavailable. |
 | `project.people.history` | reader | no | no | yes | One page of the project's people changes, newest first: invites, withdrawals, joins, roles, Card decisions (operations added and removed), removals, ownership and the move to Cards, each with who acted, whom it concerned and when. | Read with the same authority as `project.people.list`. Keyset paging (`cursor`, `limit` up to 100). Thread privacy events are not shown. |
 | `project.people.transfer_ownership` | identity rule | no | no | yes | The owner hands ownership to another admin; the former owner stays an admin. | An identity rule, not a Card operation: only the current owner. The operator mailbox and the owner-only project re-registration follow the new owner. |
-| `project.people.set_role` | `work:admin` | no | no | yes | Make a person a project admin, or a member again. | The role decides only whether they are a project admin; it writes no Card. For a person, only a project admin sets it (operator, 2026-09-26), and a project admin makes themselves a member only while another admin remains (`work_project_people_sole_admin`). |
-| `project.people.card.update` | retired | no | no | no | Retired by H1: a person's Card is edited in Connection Hub. It answers everyone `work_control_card_edit_in_connection_hub` (410) and writes nothing; it stays in the catalog so an older client gets that answer instead of an unknown operation. | A project admin opens the person's Control Card from Team > People and edits it in Connection Hub, which asks the board only whether they are a project admin ([Cards](cards.md#the-rules)). |
+| `project.people.set_role` | `work:admin` | no | no | admin | Make a person a project admin, or a member again. | The role decides only whether they are a project admin; it writes no Card. For a person, only a project admin sets it (operator, 2026-09-26), and a project admin makes themselves a member only while another admin remains (`work_project_people_sole_admin`). |
+| `project.people.card.update` | `work:admin` (retired) | no | no | no | Retired by H1: a person's Card is edited in Connection Hub. It answers everyone `work_control_card_edit_in_connection_hub` (410) and writes nothing; it stays in the catalog so an older client gets that answer instead of an unknown operation. | A project admin opens the person's Control Card from Team > People and edits it in Connection Hub, which asks the board only whether they are a project admin ([Cards](cards.md#the-rules)). |
 | `plan.item.update` | `work:coordinate` | yes | yes | yes | Update one plan item under its current revision. | Operator ruling 2026-09-22: every agent gets it, with `plan.notes.list`. A worker that cannot correct the wording of the item it works on has to ask the coordinator to type for it. A person needs it on their own project Card (both presets tick it; the owner always may). |
 | `work.status.set` | `work:coordinate` | yes | yes | yes | Set one work item's canonical status without changing its assignee. | Operator rulings, 2026-09-22 and 2026-09-29: status is set by whoever holds this, including the agent moving its own work to working; `item.assignee` remains the assignee for every status. |
+| `work.assignee.set` | `work:coordinate` | yes | yes | yes | Set or clear who does the next work on an item, in any status. The status stays; the new owner uses its existing Card and repository scope, and the previous owner is fenced. | A worker hands its item on itself (collaboration Rule 16). A person needs it on their own project Card (both presets tick it; the owner always may). |
 | `work.item.save` | `work:coordinate` | yes | yes | yes | Save an item's status, assignee or both in one transaction under its current revision; each supplied field needs its own operation. | Operator ruling 2026-10-03 (W490): a default worker operation, so a hand-off moves status and assignee together. |
 | `plan.item.delete` | `work:coordinate` | yes | yes | yes | Delete one unassigned leaf item under its current revision. | Operator ruling 2026-10-03 (W490): a default worker operation. The board still refuses an assigned or non-leaf item. |
 | `plan.note.append` | `work:coordinate` | yes | yes | yes | Append one note and advance the item revision atomically. | Notes carry findings and rulings on the item. A person needs it on their own project Card (both presets tick it; the owner always may). |
 | `plan.notes.list` | `work:observe` | yes | yes | yes | Page the authoritative notes attached to one plan item. | Operator ruling 2026-09-22: every agent gets it. The notes carry the decisions on an item, and a route that points at them is useless to a worker that cannot read them. |
+| `work.attachment.link` | `work:observe` | yes | yes | yes | Issue one signed download link for one file attached to one item, bound to the caller (W485). | An item read names its files without links; this is how one file is fetched. |
 | `project.plan.embedding_status` | `work:observe` | no | optional | optional | Read which plan items have missing or stale embeddings without model use or writes. |  |
 | `project.control.get` | `work:observe` | yes | yes | yes | Read the project's linked Connection Hub Control Card, catalog state, project properties, and participant links. |  |
 | `project.control.initialize` | `work:coordinate` | no | optional | yes | Create the project's credentialless Connection Hub Card and attach it to current participants. | One-time project setup. A person creates it as a project admin, by role; see [Cards](cards.md). |
@@ -220,6 +248,12 @@ at consent", which sent the team to the catalog.
 | `project.coordinator.make` | `work:admin` | no | no | yes | Raise an attending agent's Card to the coordinator profile, then hand it the role; both receipts. | A project admin only (owner included); the Card half needs the Card's grantor. `only` repeats one half. |
 | `project.coordinator.make_worker` | `work:admin` | no | no | yes | Return the role to the home coordinator, then set the agent's Card to the default worker profile; both receipts. | A project admin only (owner included); refused for the home coordinator's own Card. |
 | `project.coordinator.note.write` | `work:coordinate` | no | yes | no | The agent holding the coordinator role writes its part of the next handover note. | The holder only (`work_coordinator_note_not_holder`); every section required. |
+| `project.announcement.publish` | `work:coordinate` | yes | yes | no | Publish the project's current status, progress, blocker or notice, or a deployment window's opening, delay or all-clear. The newest replaces the one before on the board. | The board accepts it only from the agent holding the coordinator role (W412): the worker profile carries it so that the role, not the Card, decides. |
+| `project.role.get` | `work:observe` | optional | yes | no | Read an optional role the board carries, such as the knowledge keeper: its state, its holder and whether the holder is available. | Not in the default worker profile; give it to an agent that hands work over to a role. A person sees roles on the board through project membership. |
+| `project.role.manage` | `work:admin` | no | no | optional | Declare or undeclare an optional project role, or name or clear the agent holding it, under the role's revision. | A person only, and opt-in: no preset ticks it, and no Card gains it at creation, Refresh or migration; an admin ticks it on purpose (operator decision, W517). |
+| `project.role.declare` | `work:admin` | no | no | optional | Alias of `project.role.manage` that declares or undeclares the role. | As `project.role.manage`. |
+| `project.role.assign` | `work:admin` | no | no | optional | Alias of `project.role.manage` that names or clears the agent holding the role. | As `project.role.manage`. |
+| `project.role.handover.decide` | `work:coordinate` | optional | optional | no | The agent holding an optional role records a hand-over to that role as incorporated (with its result), declined, or needing evidence (with a reason). Settling the mail is not this. | Only for the agent that holds the role; holding it is a condition, never authority by itself (identity rule `role_holder_decides_handovers`). |
 | `worker.rename` | `work:coordinate` | no | optional | yes | Change a worker's display alias while retaining its stable identity. |  |
 | `worker.estimate` | `work:relay` | yes | optional | yes | Record or clear until when (UTC) a worker expects to finish what it is on, with a one-line note. | A worker states its own; the owner may state a worker's. The board marks it overdue once the time has passed. |
 | `worker.evict` | `work:coordinate` | no | yes | yes | Suspend one worker registration without revoking its credential. | Acts on another worker, so never a worker's own right. |
@@ -258,10 +292,10 @@ at consent", which sent the team to the catalog.
 | `session.resume.fail` | `work:relay` | yes | yes | no | Report a bounded failure to prepare a session-resume command. |  |
 | `attachment.request_upload` | `work:relay` | yes | yes | no | Reserve a governed upload slot for a worker-produced file. | The operator uploads through the browser, not this operation. |
 
-The catalog also carries `review.assign` (`work:coordinate`): it names who
-reviews an item in review, a linked agent or a person once the work is merged
-and deployed. The coordinator routes reviews with it, and a person needs it on
-their own project Card (the admin preset ticks it). See [Review](review.md).
+Four rows above are not Card operations: `project.people.invitation.withdraw`,
+`project.people.remove`, `project.people.history` and
+`project.people.transfer_ownership` are decided by the project admin role or an
+identity rule, so the catalog does not carry them.
 
 ## Keeping this page true
 
@@ -269,4 +303,5 @@ The operation list and grants come from the app descriptor, which mirrors
 `PROBLEM_BOARD_OPERATION_POLICIES` in
 `project_board.contract.worker_operation_contract` (in this package). When an
 operation is added there, its row is added here with a decision for each
-actor.
+actor. `tests/test_operations_by_actor_page.py` fails when a catalog operation
+has no row here, or a row names a permission the catalog does not grant.
