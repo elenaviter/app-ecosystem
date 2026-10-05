@@ -38,18 +38,26 @@ see_also:
   the operations in the service catalog, so Connection Hub groups them for
   every client.
 - **Who edits which Card in a project.** A project admin (the Problem Board
-  project's admin role, not a KDCube role) edits every Card the project holds:
+  project's admin role, not a KDCube role) may edit a project-held Card only
+  with the applicable management operation on both current Cards:
   the project Control Card, each person's Control Card (their own and the
   owner's included), and each agent's project Card. A member reads their own Control Card and
   edits only their own My Card, within their Control Card.
+  A role is an additional minimum, never an owner/admin bypass. Delegation
+  stays within the editor's effective grant ceiling. `project.cards.manage`
+  is the explicit permission for project Card management in Connection Hub;
+  no person's role preset ticks it. It is not a Problem Board Card editor,
+  and retired `project.people.card.update` still refuses without writing.
 - **A new permission reaches people already in the project only when a
   project admin ticks it** on their Cards; a person's role preset applies only
   when their Card is created.
-- **The project Control Card caps every agent Card on the project** while its
-  access rule is AND (the default), and a Card Refresh is capped by it too:
+- **Project mutations require role AND Control AND My/agent Card**, resolved
+  live for the exact project, actor, resource and operation before an effect.
+  A project mutation does not accept an OR union, copied transport claims,
+  legacy owner intent or an unavailable Card as substitute authority.
+  A Card Refresh is capped by the project Control Card too:
   after new operations reach the catalog, a project admin ticks them on the
-  project Control Card first. With OR, an operation runs if either Card
-  allows it (next section).
+  project Control Card first. A catalog offer never widens an existing Card.
 
 ## Project files
 
@@ -57,8 +65,8 @@ Two operations govern the [project files](concepts.md#project-files):
 
 - `project.set_files` sets the list on the project card: where each file is
   (repository and path), its purpose (instructions, facts, environment) or its
-  one-line description. A project admin sets it by role; an agent needs it on
-  its Card.
+  one-line description. The existing role minimum and both current Cards
+  must permit `project.set_files`.
 - `project.files.edit` lets an agent edit the files themselves, in its clone,
   as commits. The board cannot see a commit, so the agent checks this operation
   before an edit, and `pb worker context` reports it. Without it, the agent
@@ -83,12 +91,12 @@ agent's Card, and every call the agent makes is decided by both, resolved live
 at the moment of the call: Problem Board stores no copy of what either Card
 allows.
 
-- **Access rule.** `AND`, the default: an operation runs only if both the
-  agent's Card and the Control Card allow it. `OR`: it runs if either allows
-  it. A project admin sets the rule in the board's Project dialog; the board
-  asks for confirmation before widening to OR. OR takes effect only for agents
-  owned by the person who holds the Control Card; for anyone else's agent, and
-  for a person's own Control Card, the rule is always AND.
+- **Access rule.** Connection Hub's generic composition can be AND or OR.
+  Problem Board's project-mutation boundary independently requires both
+  constituent Cards, even if a generic transport evaluation produced an OR
+  allow. The generic setting is not changed by this enforcement. Changing
+  the project's rule itself requires `project.control.update` and the existing
+  admin role, before the revision-fenced write.
 - **Fails closed.** If the Control Card an agent is linked to is missing,
   revoked, not active, unreadable or being updated, the agent's guarded calls
   are refused; nothing falls back to the agent's Card alone. Revoking the

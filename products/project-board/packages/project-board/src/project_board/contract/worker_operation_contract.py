@@ -11,6 +11,14 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "description": "Register a project and its owner.",
         "grants": ("work:coordinate",),
     },
+    "project.set_goal": {
+        "description": "Set the project's goal; the existing admin role and both live Cards are required.",
+        "grants": ("work:coordinate",),
+    },
+    "project.cards.manage": {
+        "description": "Check the person's project Card-management authority in Connection Hub; this operation writes no Card in Problem Board.",
+        "grants": ("work:admin",),
+    },
     "project.set_journal_home": {
         "description": "Set the owner's portable Git-backed journal home.",
         "grants": ("work:coordinate",),
@@ -164,8 +172,8 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:coordinate",),
     },
-    # People on a project (W260 phase 2): holding these on the caller's
-    # project Card is what makes a person, or an agent, an admin of it.
+    # Role is an independent minimum, not a permission conferred by a grant.
+    # Mutations need role AND the exact operation on both current Cards.
     "project.people.invite": {
         "description": (
             "Invite an existing KDCube user to the project by email and decide "
@@ -175,15 +183,15 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     },
     "project.people.set_role": {
         "description": (
-            "Apply a role preset (admin or member) to a person on the project, "
-            "which sets the operations their project Card holds."
+            "Set a person's project role (admin or member), without rewriting "
+            "their existing Card selection."
         ),
         "grants": ("work:admin",),
     },
     "project.people.card.update": {
         "description": (
-            "Decide the operations one person's project Card holds; the Card "
-            "follows at that person's next request."
+            "Retired: returns work_control_card_edit_in_connection_hub; "
+            "Cards are edited only in Connection Hub."
         ),
         "grants": ("work:admin",),
     },
@@ -530,6 +538,8 @@ PROBLEM_BOARD_OPERATIONS = frozenset(PROBLEM_BOARD_OPERATION_POLICIES)
 PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
     "work.project": (
         "project.register",
+        "project.set_goal",
+        "project.cards.manage",
         "project.set_journal_home",
         "project.set_repositories",
         "project.set_commit_identity",

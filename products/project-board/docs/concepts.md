@@ -61,8 +61,10 @@ registered the project is its **owner**.
   inside the project, not a KDCube platform role and not a sign-in provider
   role: the board reads only the person's role in that project, so one account
   can be an admin on one project and a member on another. A project admin
-  changes any project-held Card (their own and the owner's included), invites
-  people, applies roles, and removes people.
+  meets the role minimum for changing project-held Cards, inviting people,
+  applying roles and removing people. Each mutation also needs its applicable
+  operation on both current Cards; the admin role is not authority to bypass
+  either one. [Cards](cards.md#the-rules) owns the authorization contract.
 - **A member** works in the project within what their Card allows, and edits
   only their own My Card, within their Control Card.
 
@@ -80,8 +82,10 @@ How a person becomes a project admin:
 
 A project admin stays admin until the admin role itself is removed: taking
 operations off their Card does not make them a member. An admin can make
-themselves a member only while another project admin remains, so a project
-always has someone who can edit Cards. The owner's role is fixed; ownership
+themselves a member only while another project admin remains. That business
+fence does not manufacture a permission or guarantee an editing Card holder.
+Bootstrap and recovery are separate explicit boundaries, never an ordinary
+owner exception. The owner's role is fixed; ownership
 moves only when the owner transfers it to another admin.
 
 In these pages, **the operator** means the people who own or administer a
@@ -163,8 +167,8 @@ notices remain informational. A later closure or ownership change wins.
 Releasing an assignment (`assignment.return`) clears the owner
 and leaves the status as it is. Status moves by the owner's reports (`working`
 moves the item to Working, `completed` to Review), by a review decision, or by
-a status edit: by an agent whose Card holds `work.status.set`, or by any
-person on the project, admin or member.
+a status edit: by a caller whose applicable project role and both live Cards
+permit `work.status.set`, whether an agent, admin or member.
 
 `item.assignee` is that owner in every status, including Review and Done.
 Assignment history and reviewer routing never replace its displayed value.
