@@ -820,9 +820,78 @@ def test_plan_item_keeps_actionable_refs_and_bounds_the_complete_body() -> None:
     assert "acceptance lines: 5 of 8 shown in brief" in text
     assert "dependencies: 12 of 15 shown in brief" in text
     assert "dependency facts: 12 of 15 shown in brief" in text
-    assert "attachments: 12 of 15 shown in brief" in text
+    # W563: a count, three files and the commands that list and read the rest,
+    # not one line per file.
+    assert "attachments: 15 · first 3 shown · list: pb worker item-attachment-list" in text
+    assert text.count(REPOSITORY_REF) == 3
+    assert "read one: pb worker item-attachment-read" in text
     assert "notes" not in text and "OMITTED_TAIL" not in text
     _assert_budget(text, lines=75, bytes_=20_000)
+
+
+def test_plan_item_prints_each_ref_once_and_drops_the_title_from_the_summary() -> None:
+    item = {
+        "item_key": "W563",
+        "status": "working",
+        "title": "Stop context churn",
+        "identity_ref": IDENTITY_REF,
+        "item_ref": EXACT_REF,
+        "revision": 8,
+        "summary": "Stop context churn Operator request: bounded reads.",
+        "note_count": 100,
+        "attachment_count": 30,
+        "attachments": [
+            {"filename": f"report-{index}.md", "file_ref": f"pbfile:owner/items/file-{index}", "downloadable": True}
+            for index in range(30)
+        ],
+        "assignment": {
+            "state": "assigned",
+            "ownership_version": 1,
+            "worker_name": "claude-e-main",
+            "assignment_ref": ASSIGNMENT_REF,
+            "identity_ref": IDENTITY_REF,
+            "work_ref": EXACT_REF + "-older",
+            "versioned_work_ref": EXACT_REF + "-older",
+        },
+    }
+
+    text = _brief({"operation": "project.plan.item", "object": item})
+
+    assert text.splitlines().count(f"identity_ref: {IDENTITY_REF}") == 1
+    assert "assignment.identity_ref" not in text
+    assert f"assignment.assignment_ref: {ASSIGNMENT_REF}" in text
+    # The version the ownership was issued at differs from the item's: kept once.
+    assert text.count(EXACT_REF + "-older") == 1
+    assert "summary: Operator request: bounded reads." in text
+    assert "notes: 100 · read: pb coordinate plan.notes.list" in text
+    assert "attachments: 30 · first 3 shown" in text
+    assert "pbfile:owner/items/file-3" not in text
+    assert "downloadable" not in text
+
+
+def test_item_attachment_list_pages_names_and_refs_without_links(monkeypatch) -> None:
+    item = {
+        "attachments": [
+            {"filename": f"f{index}.txt", "file_ref": f"pbfile:o/i/{index}", "download_url": "https://signed.example/x"}
+            for index in range(25)
+        ]
+    }
+    monkeypatch.setattr(cli, "_worker_item", lambda args: item)
+    args = type("Args", (), {"project_ref": PROJECT_REF, "item_key": "W1", "offset": 20, "limit": 20})()
+
+    page = cli._worker_item_attachment_list(args)
+
+    assert page["attachment_count"] == 25 and page["returned"] == 5
+    assert page["next_offset"] is None
+    assert page["attachments"][0] == {"filename": "f20.txt", "file_ref": "pbfile:o/i/20"}
+    assert "signed.example" not in json.dumps(page)
+    args.offset, args.limit = 0, 101
+    try:
+        cli._worker_item_attachment_list(args)
+    except DomainError as error:
+        assert error.code == "work_item_attachment_page_invalid"
+    else:
+        raise AssertionError("an oversized page was accepted")
 
 
 def test_plan_item_shows_the_latest_actionable_review_return_reason() -> None:

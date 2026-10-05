@@ -1951,13 +1951,19 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             item.get("updated_at") or item.get("item_updated_at") or "-",
         )
     )
-    if _present(item.get("summary")):
-        lines.append(
-            f"summary: {_preview(item['summary'], maximum_bytes=_LONG_PREVIEW_BYTES)}"
-        )
+    summary = _without_title_prefix(item.get("summary"), item.get("title"))
+    if _present(summary):
+        lines.append(f"summary: {_preview(summary, maximum_bytes=_LONG_PREVIEW_BYTES)}")
     if _present(item.get("description")):
         lines.append(
             f"description preview: {_preview(item['description'], maximum_bytes=_LONG_PREVIEW_BYTES)}"
+        )
+    if item.get("note_count"):
+        lines.append(
+            "notes: {} · read: pb coordinate plan.notes.list --object-ref <project-ref> "
+            "--payload-json '{{\"item_key\":\"{}\",\"limit\":20}}'".format(
+                item["note_count"], item.get("item_key") or "<Wn>"
+            )
         )
     acceptance, acceptance_count = _bounded(
         item.get("acceptance") or [], maximum=5
@@ -2063,6 +2069,10 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
                 assignment.get("updated_at") or "-",
             )
         )
+        # The item's own refs are printed above; an assignment ref that equals
+        # one of them is not printed again (W563), one that differs (the
+        # version the ownership was issued at) is.
+        shown_refs = {item.get(key) for key in ("identity_ref", "item_ref", "work_ref")}
         for key in (
             "assignment_ref",
             "identity_ref",
@@ -2070,31 +2080,59 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             "versioned_work_ref",
             "control_ref",
         ):
-            if _present(assignment.get(key)):
-                lines.append(f"assignment.{key}: {assignment[key]}")
-    attachments, attachment_count = _bounded(
-        item.get("attachments") or item.get("attachment_refs") or [],
-        maximum=_BRIEF_REFS,
-    )
-    for attachment in attachments:
-        if isinstance(attachment, str):
-            lines.append(f"attachment_ref: {attachment}")
-            continue
-        if not isinstance(attachment, Mapping):
-            continue
-        if _present(attachment.get("file_ref")):
-            lines.append(f"attachment.file_ref: {attachment['file_ref']}")
-        if _present(attachment.get("filename")):
-            lines.append(f"attachment.filename: {attachment['filename']}")
-    _note_omitted(
-        lines,
-        "attachments",
-        shown=len(attachments),
-        total=attachment_count,
-    )
+            value = assignment.get(key)
+            if _present(value) and (key in ("assignment_ref", "control_ref") or value not in shown_refs):
+                lines.append(f"assignment.{key}: {value}")
+                shown_refs.add(value)
+    lines.extend(_item_attachment_lines(item))
     if isinstance(item.get("reference_error"), Mapping):
         lines.extend(_flatten(item["reference_error"], prefix="reference_error."))
     lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
+_ITEM_ATTACHMENTS_SHOWN = 3
+
+
+def _without_title_prefix(summary: Any, title: Any) -> str:
+    """The summary less a leading copy of the title, which the item line shows."""
+
+    text = " ".join(str(summary or "").split())
+    heading = " ".join(str(title or "").split())
+    if heading and text.startswith(heading):
+        text = text[len(heading):].lstrip(" .:-·")
+    return text
+
+
+def _item_attachment_lines(item: Mapping[str, Any]) -> list[str]:
+    """A count, a few files and the commands that list and read the rest.
+
+    Listing every file ref cost two lines each on items that carry dozens of
+    test files and reports (W563). The listing command pages them by name and
+    ref without download links; the JSON item read is not the way to them.
+    """
+
+    entries = item.get("attachments") or item.get("attachment_refs") or []
+    entries = entries if isinstance(entries, list) else []
+    total = item.get("attachment_count") or len(entries)
+    if not total:
+        return []
+    key = item.get("item_key") or "<Wn>"
+    lines = [
+        "attachments: {} · first {} shown · list: pb worker item-attachment-list "
+        "--project-ref <project-ref> --item-key {}".format(
+            total, min(total, _ITEM_ATTACHMENTS_SHOWN), key
+        )
+    ]
+    for entry in entries[:_ITEM_ATTACHMENTS_SHOWN]:
+        if isinstance(entry, str):
+            lines.append(f"attachment: {entry}")
+        elif isinstance(entry, Mapping) and _present(entry.get("file_ref")):
+            lines.append(f"attachment: {entry.get('filename') or '-'} · {entry['file_ref']}")
+    lines.append(
+        "read one: pb worker item-attachment-read --project-ref <project-ref> "
+        f"--item-key {key} --file-ref <file_ref> --output <new path>"
+    )
     return lines
 
 

@@ -898,6 +898,17 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--file", required=True)
 
     command = worker_commands.add_parser(
+        "item-attachment-list",
+        help="List one page of a work item's files: name and file ref, never a link.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--item-key", required=True)
+    command.add_argument("--offset", type=int, default=0)
+    command.add_argument("--limit", type=int, default=_ATTACHMENT_LIST_DEFAULT)
+
+    command = worker_commands.add_parser(
         "item-attachment-read", help="Download one file listed on a work item."
     )
     _host_config(command)
@@ -3530,6 +3541,45 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
     }
 
 
+_ATTACHMENT_LIST_DEFAULT = 20
+_ATTACHMENT_LIST_MAXIMUM = 100
+
+
+def _worker_item_attachment_list(args: Any) -> dict[str, Any]:
+    """One page of an item's files by name and file ref.
+
+    The item brief shows a few files and points here, so a reader can find the
+    one it needs without the JSON item read, whose attachment entries may carry
+    a working download link (W563). Each entry is exactly what
+    `item-attachment-read --file-ref` takes.
+    """
+
+    if args.offset < 0 or not 1 <= args.limit <= _ATTACHMENT_LIST_MAXIMUM:
+        raise DomainError(
+            "work_item_attachment_page_invalid",
+            f"--offset must be 0 or more and --limit between 1 and {_ATTACHMENT_LIST_MAXIMUM}.",
+        )
+    item = _worker_item(args)
+    entries = [
+        entry for entry in item.get("attachments") or []
+        if isinstance(entry, Mapping) and entry.get("file_ref")
+    ]
+    page = entries[args.offset : args.offset + args.limit]
+    following = args.offset + len(page)
+    return {
+        "project_ref": args.project_ref,
+        "item_key": args.item_key,
+        "attachment_count": len(entries),
+        "offset": args.offset,
+        "returned": len(page),
+        "next_offset": following if following < len(entries) else None,
+        "attachments": [
+            {"filename": str(entry.get("filename") or ""), "file_ref": str(entry["file_ref"])}
+            for entry in page
+        ],
+    }
+
+
 def _worker_item_attachment_read(args: Any) -> dict[str, Any]:
     from .relay import _http_download
 
@@ -5368,6 +5418,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
         )
     if args.worker_command == "item-attach":
         return _worker_item_attach(args)
+    if args.worker_command == "item-attachment-list":
+        return _worker_item_attachment_list(args)
     if args.worker_command == "item-attachment-read":
         return _worker_item_attachment_read(args)
     if args.worker_command == "renew":
