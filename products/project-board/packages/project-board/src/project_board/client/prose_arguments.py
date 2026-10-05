@@ -163,3 +163,60 @@ def guard_inline_payload_prose(payload: Mapping[str, Any], *, argument: str, fil
         value = payload.get(key)
         if isinstance(value, str) and ("\n" in value or "\r" in value):
             require_single_line(value, argument=f"{argument} field {key!r}", file_argument=file_argument)
+
+
+# A word of three or more letters run straight into a number, outside code:
+# "ALLCLEAR22:06", "Apps1204f593", "fresh215625". A ref is not prose: one that
+# starts after ":", "/", "@", ".", "#" or "-" (work:mail:..., a path, an
+# address, a version) is never matched, and a short ref like W563 has one letter.
+GLUED_WORD = re.compile(r"(?<![\w:/@.#-])([A-Za-z]{3,})(\d[\w:.%]*)")
+# Real terms that end in digits. Anything else is written with a space, or put
+# in backticks when it is a literal.
+GLUED_TERMS = frozenset({
+    "sha1", "sha224", "sha256", "sha384", "sha512", "base32", "base64", "utf8", "utf16", "utf32",
+    "arm64", "amd64", "ipv4", "ipv6", "ext2", "ext3", "ext4", "http2", "http3", "int8", "int16",
+    "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float16", "float32", "float64",
+    "win32", "win64", "i386", "oauth2", "h264", "h265", "k8s", "i18n", "l10n", "a11y", "python3",
+    "pip3", "gzip2", "bzip2", "md5sum", "sha256sum", "x509", "pkcs7", "pkcs8", "pkcs12", "aes128", "aes256",
+})
+# A paragraph longer than this reads as a wall in a phone notification.
+OPERATOR_PARAGRAPH_MAXIMUM = 900
+OPERATOR_RECIPIENTS = frozenset({"operator", "owner"})
+
+
+def refuse_unreadable_operator_prose(value: Any, *, argument: str) -> Any:
+    """Return ``value`` unchanged, or refuse operator mail a person cannot read.
+
+    Operator mail reaches Telegram exactly as written. On 2026-10-05 a decision
+    mail arrived as one 1,400-character paragraph with "ALLCLEAR22:06",
+    "fresh215625" and "Require64GB" in it; the stored body was already glued,
+    so no renderer could have fixed it. Operator, asked whether the procedure
+    needs a rule: "yes we need it", then "do not file - fix". Code spans and
+    fenced blocks are literals and are not checked.
+    """
+
+    if not isinstance(value, str):
+        return value
+    prose = _without_code(value)
+    glued = sorted({
+        match.group(0) for match in GLUED_WORD.finditer(prose)
+        if match.group(0).lower().rstrip(".:%") not in GLUED_TERMS
+        and match.group(1).lower() + re.match(r"\d+", match.group(2)).group(0) not in GLUED_TERMS
+    })
+    if glued:
+        raise DomainError(
+            "problem_board_operator_prose_glued",
+            f"{argument} runs words into numbers ({', '.join(glued[:5])}): write them with a space "
+            "(\"ALL CLEAR 22:06\", \"Apps 1204f593\"), or put a literal in backticks.",
+            details={"argument": argument, "glued": glued[:20], "count": len(glued)},
+        )
+    longest = max((len(part.strip()) for part in re.split(r"\n\s*\n", prose)), default=0)
+    if longest > OPERATOR_PARAGRAPH_MAXIMUM:
+        raise DomainError(
+            "problem_board_operator_prose_wall",
+            f"{argument} has a {longest}-character paragraph: split operator mail into short "
+            f"paragraphs or a list (at most {OPERATOR_PARAGRAPH_MAXIMUM} characters each).",
+            details={"argument": argument, "longest_paragraph": longest,
+                     "maximum": OPERATOR_PARAGRAPH_MAXIMUM},
+        )
+    return value

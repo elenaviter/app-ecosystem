@@ -56,8 +56,10 @@ from .journals import (
 from .journal_operations import JournalIndexWorkflow
 from .plan_authority import require_plan_item
 from .prose_arguments import (
+    OPERATOR_RECIPIENTS,
     guard_inline_payload_prose,
     guard_inline_prose,
+    refuse_unreadable_operator_prose,
     refuse_unresolved_payload_slots,
     refuse_unresolved_slots,
 )
@@ -5793,6 +5795,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
                 details={"argument": "--project-ref", "work_ref": str(args.work_ref)},
             )
         direct_address = str(args.recipient or "").strip().lower()
+        if direct_address in OPERATOR_RECIPIENTS:
+            # Operator mail reaches Telegram as written (W563, operator 2026-10-05).
+            refuse_unreadable_operator_prose(args.subject, argument="--subject")
+            refuse_unreadable_operator_prose(body, argument="--body-file" if args.body_file else "--body")
         if not project_id and direct_address not in {"operator", "owner", *ROLE_RECIPIENTS}:
             # W304 decision 3: worker mail without a project always goes to the
             # board, which delivers it only to an agent that attends no
