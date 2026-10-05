@@ -222,6 +222,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_lease_read(result, flags)
     if "operation" in result and "object" in result:
         return _render_coordinate(result)
+    if _is_workspace_sweep(result):
+        return _render_workspace_sweep(result)
     if _is_worker_context(result):
         return _render_worker_context(result)
     if _is_journal_search(result):
@@ -247,6 +249,95 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
     lines = _flatten(result, prefix="")
     if isinstance(result.get("team"), list) and result.get("team"):
         lines.extend(_team_usage_lines(result["team"]))
+    return lines
+
+
+def _is_workspace_sweep(result: Mapping[str, Any]) -> bool:
+    return isinstance(result.get("trees"), list) and "would_remove" in result and "workspace" in result
+
+
+# Trees, runs and loose entries shown in the sweep brief; the rest are counted.
+_SWEEP_ROWS = 60
+
+
+def _count(value: Any) -> int:
+    return len(value) if isinstance(value, list) else 0
+
+
+def _render_workspace_sweep(result: Mapping[str, Any]) -> list[str]:
+    """One line per tree and run, counts instead of path lists (W563).
+
+    The flat form printed every dirty, untracked and ignored path of every
+    tree: a workspace with many trees produced thousands of lines (W423,
+    3,703 lines). What --apply would remove is printed whole; each kept tree
+    shows its first reason and how many more there are. The JSON keeps every
+    path.
+    """
+
+    trees = [tree for tree in result.get("trees") or [] if isinstance(tree, Mapping)]
+    removable = [str(path) for path in result.get("would_remove") or []]
+    lines = [
+        "workspace sweep: {} · trees {} · would remove {} · size {}".format(
+            result.get("workspace") or "-", len(trees), len(removable), result.get("total_bytes", "not measured")
+        )
+    ]
+    for key in ("state", "reason", "apply_refused"):
+        if _present(result.get(key)):
+            lines.append(f"{key}: {_preview(result[key])}")
+    for path in removable:
+        lines.append(f"would_remove: {path}")
+    shown, total = _bounded(trees, maximum=_SWEEP_ROWS)
+    for tree in shown:
+        where = tree.get("branch") or (f"detached {tree['head']}" if tree.get("head") else "-")
+        facts = [
+            str(tree.get("action") or "-"),
+            str(tree.get("kind") or "-"),
+            f"item {tree.get('item') or '-'}",
+            where,
+            f"size {tree.get('size_bytes', '-')}",
+        ]
+        for key, label in (("dirty", "dirty"), ("untracked", "untracked"), ("ignored", "ignored")):
+            if _count(tree.get(key)):
+                facts.append(f"{label} {_count(tree.get(key))}")
+        if tree.get("unpushed_commits"):
+            facts.append(f"unpushed {tree['unpushed_commits']}")
+        if tree.get("ended"):
+            facts.append(f"ended: {_preview(tree['ended'], maximum_bytes=80)}")
+        lines.append(f"--- {' · '.join(facts)} · {tree.get('path') or '-'}")
+        keep = [str(reason) for reason in tree.get("keep") or []]
+        if keep:
+            more = f" (+{len(keep) - 1} more)" if len(keep) > 1 else ""
+            lines.append(f"  keep: {_preview(keep[0], maximum_bytes=200)}{more}")
+    _note_omitted(lines, "trees", shown=len(shown), total=total)
+    runs = [run for run in result.get("scratch_runs") or [] if isinstance(run, Mapping)]
+    if runs:
+        lines.append(f"scratch runs: {len(runs)}")
+        shown_runs, run_total = _bounded(runs, maximum=_SWEEP_ROWS)
+        for run in shown_runs:
+            keep = [str(reason) for reason in run.get("keep") or []]
+            lines.append(
+                "--- run {} · item {} · {} · {}{}".format(
+                    run.get("action") or "-",
+                    run.get("item") or "-",
+                    _preview(run.get("purpose"), maximum_bytes=80) or "-",
+                    run.get("path") or "-",
+                    f" · keep: {_preview(keep[0], maximum_bytes=120)}" if keep else "",
+                )
+            )
+        _note_omitted(lines, "scratch runs", shown=len(shown_runs), total=run_total)
+    loose = [entry for entry in result.get("loose") or [] if isinstance(entry, Mapping)]
+    if loose:
+        shown_loose, loose_total = _bounded(loose, maximum=_SWEEP_ROWS)
+        for entry in shown_loose:
+            lines.append(f"loose: {entry.get('kind') or '-'} · {entry.get('path') or '-'}")
+        lines.append("loose entries: move each into a run with pb worker scratch --new")
+        _note_omitted(lines, "loose entries", shown=len(shown_loose), total=loose_total)
+    handled = {"worker", "workspace", "trees", "would_remove", "total_bytes", "scratch_runs", "loose",
+               "state", "reason", "apply_refused"}
+    rest = {key: value for key, value in result.items() if key not in handled}
+    if rest:
+        lines.extend(_flatten(rest, prefix=""))
+    lines.append(_FULL_DETAIL_LINE)
     return lines
 
 

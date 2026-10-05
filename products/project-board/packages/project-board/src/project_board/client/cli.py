@@ -7051,7 +7051,7 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
     consumers = _sweep_item_consumers(field, identity, args)
     trees = workspace_sweep.inspect_workspace(
         workspace, registrations, protected=protected, measure=not only_ended, pins=pins,
-        generated=generated, consumers=consumers,
+        generated=generated, consumers=consumers, only_ended=only_ended,
     )
     if only_ended:
         trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]

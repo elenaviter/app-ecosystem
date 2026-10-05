@@ -575,3 +575,29 @@ def test_the_own_folder_honours_the_enrolled_folder_and_refuses_a_shared_one(tmp
     for index, folder in enumerate((root, deeper, link)):
         args = enroll(f"0000002{index}-0000-4000-8000-000000000000", f"docs{index}@host", folder)
         assert own(args) == str(expected[index]), folder
+
+
+def test_an_automatic_sweep_scans_only_ended_trees_and_decides_the_same(workspace):
+    # W563: the automatic sweeps (session start, idle, review decision) act
+    # only on ended trees, but scanned every tree first; the review-decision
+    # sweep runs before its receipt is printed. A tree with no recorded end is
+    # now listed without its scans, and every decision stays the same.
+    registrations = [
+        {"path": str(workspace["merged"]), "kind": "implementation", "item": "W2",
+         "ended_at": "2026-09-30T19:00:00Z", "end_reason": "change request merged"},
+        {"path": str(workspace["shared"]), "kind": "implementation", "item": "W7",
+         "ended_at": "2026-09-30T19:00:00Z", "end_reason": "change request merged"},
+        {"path": str(workspace["dirty"]), "kind": "implementation", "item": "W3"},
+    ]
+    full = by_path(inspect_workspace(workspace["ws"], registrations))
+    automatic = by_path(inspect_workspace(workspace["ws"], registrations, only_ended=True))
+
+    for name in ("merged", "shared"):
+        assert automatic[str(workspace[name])].removable == full[str(workspace[name])].removable, name
+    assert automatic[str(workspace["merged"])].removable
+    # The shared tree is still kept because the unended tree w6-src links into it.
+    assert any(reason.startswith("linked from") for reason in automatic[str(workspace["shared"])].keep)
+    dirty = automatic[str(workspace["dirty"])]
+    assert not dirty.removable and dirty.dirty == [] and dirty.ignored == []
+    assert "job not ended (not inspected by an automatic sweep)" in dirty.keep
+    assert full[str(workspace["dirty"])].dirty  # the full sweep still scans it

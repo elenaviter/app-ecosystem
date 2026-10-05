@@ -207,6 +207,7 @@ def inspect_workspace(
     pins: Mapping[str, Sequence[str]] | None = None,
     generated: Mapping[str, Mapping[str, str]] | None = None,
     consumers: Callable[[str], Sequence[str] | None] | None = None,
+    only_ended: bool = False,
 ) -> list[Tree]:
     """Every tree in one agent's workspace, with its state and the decision.
 
@@ -216,6 +217,12 @@ def inspect_workspace(
     regenerable. ``consumers`` answers, for an item key, what still needs that
     item's trees: an empty list when the item is Done or Cancelled, None when
     its state cannot be read (the tree is then kept).
+
+    ``only_ended`` is for the automatic sweeps, which act only on trees whose
+    job ended: a tree with no recorded end is listed without its git status
+    and ignored-file scan. Those scans grow with every file in every tree, and
+    the review-decision sweep runs before its receipt is printed (W563: one
+    tree holding 100,000 ignored files cost 2.3 s).
     """
 
     root = Path(workspace).expanduser()
@@ -249,6 +256,10 @@ def inspect_workspace(
                         registration=registration)
             if not path.is_dir():
                 tree.keep.append("missing on disk; git worktree prune clears it")
+                trees.append(tree)
+                continue
+            if only_ended and not (registration and registration.get("ended_at")):
+                tree.keep.append("job not ended (not inspected by an automatic sweep)")
                 trees.append(tree)
                 continue
             code, out = _git(path, "status", "--porcelain", "--untracked-files=no")

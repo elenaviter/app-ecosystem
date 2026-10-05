@@ -1097,3 +1097,39 @@ def test_plan_index_is_two_lines_per_item_and_keeps_paging() -> None:
     # Two lines per item plus a fixed header; the flat form was 17 KB for a
     # real seven-item page (W563 baseline B1).
     _assert_budget(text, lines=7 * 2 + 8, bytes_=3_200)
+
+
+def test_workspace_sweep_brief_counts_paths_and_prints_removals_whole() -> None:
+    trees = [
+        {
+            "path": f"/ws/wt/w{index}-app",
+            "kind": "implementation",
+            "item": f"W{index}",
+            "branch": f"work/w{index}",
+            "head": "",
+            "action": "keep",
+            "size_bytes": 1000,
+            "dirty": [],
+            "untracked": [],
+            "ignored": [f"build/cache-{n}/" for n in range(300)],
+            "unpushed_commits": 0,
+            "keep": ["ignored files outside regenerable folders (evidence?): build/cache-0/", "job not ended"],
+        }
+        for index in range(55)
+    ]
+    trees.append({"path": "/ws/rv/w9-app-abc", "kind": "review", "item": "W9", "head": "abc123", "action": "remove",
+                  "size_bytes": 10, "dirty": [], "untracked": [], "ignored": [], "keep": []})
+    result = {
+        "worker": "claude-code-x", "workspace": "/ws", "trees": trees,
+        "would_remove": ["/ws/rv/w9-app-abc"], "total_bytes": 55010,
+        "scratch_runs": [], "loose": [],
+    }
+
+    text = _brief(result)
+
+    assert "workspace sweep: /ws · trees 56 · would remove 1" in text
+    assert "would_remove: /ws/rv/w9-app-abc" in text
+    assert "--- keep · implementation · item W0 · work/w0 · size 1000 · ignored 300 · /ws/wt/w0-app" in text
+    assert "(+1 more)" in text and "build/cache-299/" not in text
+    # 56 trees: 60 rows are shown whole, so nothing is omitted here.
+    _assert_budget(text, lines=130, bytes_=16_000)
