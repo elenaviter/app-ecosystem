@@ -439,7 +439,7 @@ Until it is unlocked, no agent on the host can authorize or reach the board.
 **Unlock** (also the first time: then it creates the store with the password typed):
 
 ```bash
-systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; printf 'Password store password (not shown): '; read -rs P; echo; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; unset P
+printf 'Password store password (not shown): '; read -rs P; echo; if [ -n "$P" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "done; now run the check"; else echo "the password is empty; nothing changed"; fi; unset P
 ```
 
 - **Nothing is shown while typing.** Type the password and press Enter.
@@ -461,10 +461,12 @@ Two different PIDs, or no `True` within 15 s (`exit 124`), means the password di
 **Reset** (the password is lost, or the first one was mistyped). It asks the new password twice and changes nothing unless both entries match; then it sets the old store aside and creates a new, empty one:
 
 ```bash
-printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries differ; nothing changed"; fi; unset P Q
+printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; if [ -n "$P" ] && [ "$P" = "$Q" ]; then systemctl --user stop gnome-keyring-daemon.socket gnome-keyring-daemon.service 2>/dev/null; pkill -u "$USER" -x gnome-keyring-d; mv ~/.local/share/keyrings/login.keyring ~/.local/share/keyrings/login.keyring.old-$(date +%Y%m%d-%H%M) 2>/dev/null; printf %s "$P" | gnome-keyring-daemon --replace --unlock --components=secrets >/dev/null; echo "store created"; else echo "the two entries are empty or differ; nothing changed"; fi; unset P Q
 ```
 
 Then run the check. A reset loses only what the old store held: each agent on this host authorizes again (step 11).
+
+**A relay that was already running** (a reboot, or a store unlocked after the relay started) picks the unlock up on its next attempt, within about a minute, with no restart: while the store is locked it refuses by name (`credential_store_locked`) instead of waiting for a prompt, and retries (W558). A client older than this change needs the relay restarted once after the unlock (`systemctl --user restart kdcube-problem-board-relay-*.service`, the operator approves).
 
 **The alternative W258 has to choose between** is in that item's note: the person
 types it (nothing stored, a person needed after every reboot), or the machine

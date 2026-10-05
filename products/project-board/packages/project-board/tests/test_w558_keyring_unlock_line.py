@@ -144,7 +144,7 @@ def test_the_reset_compares_both_entries_before_it_moves_or_stops_anything():
     for page in (PROCEDURE, PUBLIC):
         text = page.read_text(encoding="utf-8")
         line = next(line for line in text.splitlines() if "printf 'New password: '" in line)
-        compare = line.index('if [ "$P" = "$Q" ]; then')
+        compare = line.index('[ "$P" = "$Q" ]; then')
         assert compare < line.index("mv ~/.local/share/keyrings/login.keyring")
         assert compare < line.index("systemctl --user stop gnome-keyring-daemon.socket")
         assert compare < line.index("gnome-keyring-daemon --replace --unlock")
@@ -170,6 +170,55 @@ def test_a_mismatched_reset_leaves_the_store_in_place(tmp_path):
         ["bash", "-c", line], input="first\nsecond\n", capture_output=True, text=True,
         env={"HOME": str(tmp_path), "PATH": f"{bin_dir}:/usr/bin:/bin", "USER": "test"}, check=False,
     )
-    assert "the two entries differ; nothing changed" in result.stdout
+    assert "the two entries are empty or differ; nothing changed" in result.stdout
     assert (keyrings / "login.keyring").read_text(encoding="utf-8") == "store"
     assert not (tmp_path / "called").exists()
+
+def test_the_new_machine_and_upgrade_procedures_carry_the_keyring_story():
+    """Operator, 2026-10-05: the procedures must carry it "so the agents will guide the user
+    properly instead of making up the non-existing things"."""
+
+    procedures = ROOT / "src" / "project_board" / "procedures"
+    first_run = (procedures / "problem-board-worker" / "references" / "first-run.md").read_text(encoding="utf-8")
+    upgrade = (procedures / "install-update-rollback.md").read_text(encoding="utf-8")
+    assert "**The keyring item on headless Linux (W558).**" in first_run
+    assert "Never give another keyring command of your own" in first_run
+    assert "with no restart" in first_run
+    assert "credential_store_locked" in upgrade and "add-a-worker-host step 6" in upgrade
+    assert "picks the unlock up on its next attempt" in PROCEDURE.read_text(encoding="utf-8")
+
+
+def test_a_locked_store_is_a_transient_relay_failure():
+    from connection_hub.caller.errors import AuthorizationError, CredentialError
+    from project_board.client.relay import transient_failure
+
+    assert transient_failure(CredentialError("credential_store_locked", "x"))
+    assert transient_failure(CredentialError("credential_store_missing", "x"))
+    assert transient_failure(AuthorizationError("oauth_credential_custody_timeout", "x"))
+
+
+
+def test_an_empty_password_changes_nothing(tmp_path):
+    """Review of #526 (claude-main, P3): two empty entries matched and created an empty-password store."""
+
+    if not shutil.which("bash"):
+        pytest.skip("bash is not installed")
+    reset = next(line for line in PROCEDURE.read_text(encoding="utf-8").splitlines() if "printf 'New password: '" in line)
+    for line, typed in ((reset, "\n\n"), (KEYRING_UNLOCK_LINE, "\n")):
+        home = tmp_path / str(abs(hash(line)))
+        keyrings = home / ".local" / "share" / "keyrings"
+        keyrings.mkdir(parents=True)
+        (keyrings / "login.keyring").write_text("store", encoding="utf-8")
+        bin_dir = home / "bin"
+        bin_dir.mkdir()
+        for tool in ("systemctl", "pkill", "gnome-keyring-daemon"):
+            stub = bin_dir / tool
+            stub.write_text("#!/bin/sh\necho called >> \"$HOME/called\"\n", encoding="utf-8")
+            stub.chmod(0o755)
+        result = subprocess.run(
+            ["bash", "-c", line], input=typed, capture_output=True, text=True,
+            env={"HOME": str(home), "PATH": f"{bin_dir}:/usr/bin:/bin", "USER": "test"}, check=False,
+        )
+        assert "nothing changed" in result.stdout
+        assert (keyrings / "login.keyring").read_text(encoding="utf-8") == "store"
+        assert not (home / "called").exists()

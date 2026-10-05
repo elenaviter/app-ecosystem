@@ -33,6 +33,47 @@ MAX_NATIVE_SECRET_VALUE_BYTES = 288 * 1024
 _MAX_CHUNKS = 512
 
 
+def secret_service_lock_state(backend: KeyringBackend) -> str:
+    """"unlocked", "locked", "missing" or "unknown" for a Secret Service backend, never prompting.
+
+    W558 (host mint, 2026-10-05): keyring's Secret Service backend unlocks a
+    locked collection before every call, and secretstorage creates a missing
+    default one; over SSH both wait for a prompt nobody sees. A relay that
+    started while the store was locked blocked its one custody thread forever.
+    This reads the collection's lock state only. Any other backend, or a
+    Secret Service this cannot ask, is "unknown" and keeps the former path.
+    """
+
+    if not callable(getattr(backend, "get_preferred_collection", None)):
+        return "unknown"
+    try:
+        import secretstorage  # noqa: PLC0415 - installed with keyring on Linux
+        from secretstorage.collection import Collection  # noqa: PLC0415
+        from secretstorage.exceptions import ItemNotFoundException  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    try:
+        connection = secretstorage.dbus_init()
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    try:
+        preferred = getattr(backend, "preferred_collection", None)
+        try:
+            collection = Collection(connection, preferred) if preferred else Collection(connection)
+        except ItemNotFoundException:
+            return "missing"
+        return "locked" if collection.is_locked() else "unlocked"
+    except Exception:  # noqa: BLE001
+        return "unknown"
+    finally:
+        close = getattr(connection, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 class NativeSecretError(RuntimeError):
     """A stable, secret-safe failure from native credential custody."""
 
@@ -390,7 +431,29 @@ class NativeSecretValueStore:
                 complete = False
         return complete
 
+    def _require_unlocked(self) -> None:
+        """Refuse at once when the Secret Service store is locked or missing (W558).
+
+        The backend would otherwise ask for an unlock or a new store with a
+        prompt, which waits forever without a screen.
+        """
+
+        if self._platform != "Linux":
+            return
+        state = secret_service_lock_state(self._backend)
+        if state == "locked":
+            raise NativeSecretError(
+                "native_secret_store_locked",
+                f"{self.store_name} is locked; unlock it (pb status prints the line) and retry.",
+            )
+        if state == "missing":
+            raise NativeSecretError(
+                "native_secret_store_missing",
+                f"{self.store_name} has no default store yet; create it by unlocking (pb status prints the line).",
+            )
+
     def _set(self, account: str, value: str) -> None:
+        self._require_unlocked()
         try:
             self._backend.set_password(self._service, account, value)
         except Exception:  # noqa: BLE001
@@ -400,6 +463,7 @@ class NativeSecretValueStore:
             ) from None
 
     def _get(self, account: str) -> str | None:
+        self._require_unlocked()
         try:
             value = self._backend.get_password(self._service, account)
         except Exception:  # noqa: BLE001
@@ -415,6 +479,7 @@ class NativeSecretValueStore:
         return value
 
     def _delete(self, account: str) -> bool:
+        self._require_unlocked()
         try:
             self._backend.delete_password(self._service, account)
         except PasswordDeleteError:
@@ -480,4 +545,5 @@ __all__ = [
     "NativeSecretError",
     "NativeSecretValueStore",
     "accepted_native_backend",
+    "secret_service_lock_state",
 ]
