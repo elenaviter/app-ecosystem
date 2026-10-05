@@ -19,6 +19,7 @@ import getpass
 import platform
 import shutil
 import subprocess
+import threading
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,8 @@ from typing import Any, Callable, Sequence
 SCHEMA = "problem-board.prerequisites.v1"
 MIN_PYTHON = (3, 10)
 PROBE_TIMEOUT_SECONDS = 3.0
+# W558: the keyring probe gives up instead of waiting for a prompt nobody sees.
+KEYRING_TIMEOUT_SECONDS = 5.0
 ADMIN_NOTE = (
     "Needs an administrator. Any administrator account on this machine can run it, for example "
     "after `su - <admin-user>`; your own account does not need to be one."
@@ -78,9 +81,24 @@ def _read(path: Path) -> str:
         return ""
 
 
-def _keyring_state() -> tuple[bool, str]:
-    """Whether pb's own Python can use a password store now, without writing to it."""
+def _keyring_state(timeout: float = KEYRING_TIMEOUT_SECONDS) -> tuple[bool, str]:
+    """Whether pb's own Python can use a password store now, without writing to it.
 
+    W558 (mint, 2026-10-05): over SSH a locked or missing Secret Service store
+    made `pb status` wait forever for an unlock prompt nobody could see. The
+    probe never unlocks or creates a store, and it gives up after ``timeout``.
+    """
+
+    answer: list[tuple[bool, str]] = []
+    probe = threading.Thread(target=lambda: answer.append(_keyring_state_now()), daemon=True)
+    probe.start()
+    probe.join(timeout)
+    if not answer:
+        return False, "the Secret Service does not answer in time (a locked store waiting for a prompt)"
+    return answer[0]
+
+
+def _keyring_state_now() -> tuple[bool, str]:
     try:
         import keyring  # noqa: PLC0415 - optional until the client extra is installed
     except Exception:  # noqa: BLE001
@@ -92,19 +110,25 @@ def _keyring_state() -> tuple[bool, str]:
     name = f"{type(backend).__module__}.{type(backend).__name__}"
     if "fail" in name.lower() or "null" in name.lower():
         return False, f"no usable password store ({name})"
-    preferred = getattr(backend, "get_preferred_collection", None)
-    if callable(preferred):
-        # Secret Service (Linux): it answers only on a session bus, and only
-        # when the collection is unlocked.
+    if callable(getattr(backend, "get_preferred_collection", None)):
+        # Secret Service (Linux). keyring's get_preferred_collection() unlocks a
+        # locked collection, and secretstorage's get_default_collection()
+        # creates a missing one: both prompt. Read the default collection and
+        # its lock state only.
         try:
-            collection = preferred()
-        except Exception as exc:  # noqa: BLE001
-            return False, f"the Secret Service does not answer ({type(exc).__name__})"
-        try:
+            import secretstorage  # noqa: PLC0415 - installed with keyring on Linux
+            from secretstorage.collection import Collection  # noqa: PLC0415
+            from secretstorage.exceptions import ItemNotFoundException  # noqa: PLC0415
+
+            connection = secretstorage.dbus_init()
+            try:
+                collection = Collection(connection)
+            except ItemNotFoundException:
+                return False, "the Secret Service has no default store"
             if collection.is_locked():
                 return False, "the login keyring is locked"
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            return False, f"the Secret Service does not answer ({type(exc).__name__})"
     return True, name
 
 
@@ -251,7 +275,7 @@ def _keyring(probes: Probes, family: str, *, mac: bool) -> dict[str, Any]:
     if mac:
         fix = "unlock the login keychain (open Keychain Access, or sign in to this account on the Mac once)"
         admin = False
-    elif "locked" in detail or "does not answer" in detail:
+    elif "locked" in detail or "does not answer" in detail or "no default store" in detail:
         fix = KEYRING_UNLOCK_LINE
         admin = False
     else:

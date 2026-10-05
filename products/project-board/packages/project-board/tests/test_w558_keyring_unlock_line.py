@@ -54,3 +54,84 @@ def test_the_procedure_forbids_an_improvised_keyring_command():
     text = PROCEDURE.read_text(encoding="utf-8")
     assert "**Only these lines.**" in text and "never another keyring command of its own" in text
     assert "If the check fails twice, stop, change nothing more" in text
+
+
+# W557, folded into W558 (operator, 2026-10-05: "why you multiply these issues ?"):
+# `pb status` never unlocks or creates a store, and gives up instead of hanging.
+
+import sys
+import threading
+import types
+
+from project_board.client import prerequisites
+
+
+def _fake_secret_service(monkeypatch, *, locked=False, missing=False, block=None):
+    calls = {"unlock": 0, "create": 0}
+
+    class ItemNotFoundException(Exception):
+        pass
+
+    class Collection:
+        def __init__(self, connection):
+            if block is not None:
+                block.wait()
+            if missing:
+                raise ItemNotFoundException()
+
+        def is_locked(self):
+            return locked
+
+        def unlock(self):
+            calls["unlock"] += 1
+
+    secretstorage = types.ModuleType("secretstorage")
+    secretstorage.dbus_init = lambda: object()
+
+    def get_default_collection(connection):
+        calls["create"] += 1
+
+    secretstorage.get_default_collection = get_default_collection
+    collection_mod = types.ModuleType("secretstorage.collection")
+    collection_mod.Collection = Collection
+    exceptions_mod = types.ModuleType("secretstorage.exceptions")
+    exceptions_mod.ItemNotFoundException = ItemNotFoundException
+    monkeypatch.setitem(sys.modules, "secretstorage", secretstorage)
+    monkeypatch.setitem(sys.modules, "secretstorage.collection", collection_mod)
+    monkeypatch.setitem(sys.modules, "secretstorage.exceptions", exceptions_mod)
+
+    class SecretServiceKeyring:
+        def get_preferred_collection(self):
+            calls["unlock"] += 1  # keyring's own path would unlock here
+
+    keyring = types.ModuleType("keyring")
+    keyring.get_keyring = lambda: SecretServiceKeyring()
+    monkeypatch.setitem(sys.modules, "keyring", keyring)
+    return calls
+
+
+def test_a_locked_store_is_reported_without_unlocking(monkeypatch):
+    calls = _fake_secret_service(monkeypatch, locked=True)
+
+    assert prerequisites._keyring_state(timeout=2) == (False, "the login keyring is locked")
+    assert calls == {"unlock": 0, "create": 0}
+
+
+def test_a_missing_store_is_reported_without_creating_one(monkeypatch):
+    calls = _fake_secret_service(monkeypatch, missing=True)
+
+    usable, detail = prerequisites._keyring_state(timeout=2)
+    assert (usable, detail) == (False, "the Secret Service has no default store")
+    assert calls["create"] == 0
+    item = prerequisites._keyring(prerequisites.Probes(keyring_state=lambda: (usable, detail)), "debian", mac=False)
+    assert item["fix"] == KEYRING_UNLOCK_LINE
+
+
+def test_a_store_that_never_answers_ends_in_time_instead_of_hanging(monkeypatch):
+    never = threading.Event()
+    _fake_secret_service(monkeypatch, block=never)
+
+    usable, detail = prerequisites._keyring_state(timeout=0.3)
+
+    assert usable is False and "does not answer in time" in detail
+    never.set()
