@@ -860,8 +860,8 @@ def test_plan_item_prints_each_ref_once_and_drops_the_title_from_the_summary() -
     assert text.splitlines().count(f"identity_ref: {IDENTITY_REF}") == 1
     assert "assignment.identity_ref" not in text
     assert f"assignment.assignment_ref: {ASSIGNMENT_REF}" in text
-    # The version the ownership was issued at differs from the item's: kept once.
-    assert text.count(EXACT_REF + "-older") == 1
+    # The version the ownership was issued at stays in the JSON only.
+    assert EXACT_REF + "-older" not in text
     assert "summary: Operator request: bounded reads." in text
     assert "notes: 100 · read: pb coordinate plan.notes.list" in text
     assert "attachments: 30 · first 3 shown" in text

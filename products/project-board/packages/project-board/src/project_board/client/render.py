@@ -222,6 +222,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_lease_read(result, flags)
     if "operation" in result and "object" in result:
         return _render_coordinate(result)
+    if schema == "problem-board.worker-inbox.v1":
+        return _render_worker_inbox(result, flags)
     if schema == "problem-board.item-read.v1":
         return _render_item_read(result)
     if _is_workspace_sweep(result):
@@ -251,6 +253,50 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
     lines = _flatten(result, prefix="")
     if isinstance(result.get("team"), list) and result.get("team"):
         lines.extend(_team_usage_lines(result["team"]))
+    return lines
+
+
+_INBOX_CLASS_LABELS = {0: "operator", 1: "action", 2: "information"}
+_ITEM_KEY_RE = re.compile(r":(w\d+):", re.IGNORECASE)
+
+
+def _render_worker_inbox(result: Mapping[str, Any], flags: list[str]) -> list[str]:
+    """Pending mail as headers, two lines each, never a body (W563)."""
+
+    classes = result.get("classes") if isinstance(result.get("classes"), Mapping) else {}
+    by_kind = result.get("pending_by_kind") if isinstance(result.get("pending_by_kind"), Mapping) else {}
+    lines = [
+        "inbox: pending {} · matched {} · shown {} · operator {} · action {} · information {}".format(
+            result.get("pending", "?"), result.get("matched", "?"), result.get("returned", "?"),
+            classes.get("operator", 0), classes.get("action", 0), classes.get("information", 0),
+        ),
+        "pending by kind: " + (" · ".join(f"{kind} {count}" for kind, count in by_kind.items()) or "none"),
+    ]
+    headers = [header for header in result.get("headers") or [] if isinstance(header, Mapping)]
+    if not headers:
+        lines.append("headers: none")
+    for header in headers:
+        if header.get("operator"):
+            label = "operator"
+        elif header.get("expected_reaction") == "acknowledge_only":
+            label = "information"
+        else:
+            label = "action" if header.get("kind") in {
+                "question", "decision", "request", "blocked", "delivery_failed", "assign", "reply",
+            } else "information"
+        match = _ITEM_KEY_RE.search(str(header.get("work_ref") or ""))
+        lines.append(
+            "--- {} · {} · {} · from {}{} · {}".format(
+                label, header.get("created_at") or "-", header.get("kind") or "-", header.get("sender") or "-",
+                f" · {match.group(1).upper()}" if match else "",
+                _preview(header.get("subject"), maximum_bytes=120) or "(no subject)",
+            )
+        )
+        lines.append(f"message_ref: {header.get('message_ref')}")
+    if headers:
+        lines.append(
+            "receive one: " + _cmd(["pb", "worker", "receive", "--message-ref", "<message_ref>"], flags)
+        )
     return lines
 
 
@@ -2104,12 +2150,13 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
         )
     )
     summary = _without_title_prefix(item.get("summary"), item.get("title"))
-    if _present(summary):
-        lines.append(f"summary: {_preview(summary, maximum_bytes=_LONG_PREVIEW_BYTES)}")
-    if _present(item.get("description")):
-        lines.append(
-            f"description preview: {_preview(item['description'], maximum_bytes=_LONG_PREVIEW_BYTES)}"
-        )
+    description = " ".join(str(item.get("description") or "").split())
+    # A summary that only restates the start of the description is not
+    # printed twice (W563: both previews carried the same text).
+    if _present(summary) and not description.startswith(summary[:120]):
+        lines.append(f"summary: {_preview(summary, maximum_bytes=_ITEM_PROSE_BYTES)}")
+    if _present(description):
+        lines.append(f"description preview: {_preview(description, maximum_bytes=_ITEM_PROSE_BYTES)}")
     if item.get("note_count"):
         lines.append(
             "notes: {} · read: pb coordinate plan.notes.list --object-ref <project-ref> "
@@ -2121,7 +2168,7 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
         item.get("acceptance") or [], maximum=5
     )
     for value in acceptance:
-        lines.append(f"acceptance preview: {_preview(value)}")
+        lines.append(f"acceptance preview: {_preview(value, maximum_bytes=_ITEM_ACCEPTANCE_BYTES)}")
     _note_omitted(
         lines,
         "acceptance lines",
@@ -2162,7 +2209,7 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             lines.append(f"{key}: {item[key]}")
     for key in ("result", "blocked_reason", "cancel_reason"):
         if _present(item.get(key)):
-            lines.append(f"{key}: {_preview(item[key], maximum_bytes=_LONG_PREVIEW_BYTES)}")
+            lines.append(f"{key}: {_preview(item[key], maximum_bytes=_ITEM_PROSE_BYTES)}")
     review = item.get("review")
     if isinstance(review, Mapping):
         for key in (
@@ -2176,7 +2223,7 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             if _present(review.get(key)):
                 value = review[key]
                 lines.append(
-                    f"review.{key}: {_preview(_joined(value), maximum_bytes=_LONG_PREVIEW_BYTES)}"
+                    f"review.{key}: {_preview(_joined(value), maximum_bytes=_ITEM_PROSE_BYTES)}"
                 )
     latest_return = _latest_actionable_review_return(item)
     if latest_return is not None:
@@ -2221,21 +2268,12 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
                 assignment.get("updated_at") or "-",
             )
         )
-        # The item's own refs are printed above; an assignment ref that equals
-        # one of them is not printed again (W563), one that differs (the
-        # version the ownership was issued at) is.
-        shown_refs = {item.get(key) for key in ("identity_ref", "item_ref", "work_ref")}
-        for key in (
-            "assignment_ref",
-            "identity_ref",
-            "work_ref",
-            "versioned_work_ref",
-            "control_ref",
-        ):
-            value = assignment.get(key)
-            if _present(value) and (key in ("assignment_ref", "control_ref") or value not in shown_refs):
-                lines.append(f"assignment.{key}: {value}")
-                shown_refs.add(value)
+        # A report names the assignment ref and ownership version; the item's
+        # own refs are printed above, and the version the ownership was issued
+        # at stays in the JSON (W563).
+        for key in ("assignment_ref", "control_ref"):
+            if _present(assignment.get(key)):
+                lines.append(f"assignment.{key}: {assignment[key]}")
     lines.extend(_item_attachment_lines(item))
     if isinstance(item.get("reference_error"), Mapping):
         lines.extend(_flatten(item["reference_error"], prefix="reference_error."))
@@ -2251,23 +2289,28 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+# The item brief previews prose this far; `pb worker item-read` prints it whole.
+_ITEM_PROSE_BYTES = 320
+_ITEM_ACCEPTANCE_BYTES = 200
+
+
 def _clipped_item_fields(item: Mapping[str, Any]) -> list[str]:
     """The item text fields the brief view previewed rather than printed whole."""
 
     clipped = []
     for name in ("summary", "description", "result", "blocked_reason", "cancel_reason"):
         text = " ".join(str(item.get(name) or "").split())
-        if len(text.encode("utf-8")) > _LONG_PREVIEW_BYTES:
+        if len(text.encode("utf-8")) > _ITEM_PROSE_BYTES:
             clipped.append(name)
     acceptance = item.get("acceptance") or []
     if isinstance(acceptance, list) and (
         len(acceptance) > 5
-        or any(len(" ".join(str(entry).split()).encode("utf-8")) > _PREVIEW_BYTES for entry in acceptance)
+        or any(len(" ".join(str(entry).split()).encode("utf-8")) > _ITEM_ACCEPTANCE_BYTES for entry in acceptance)
     ):
         clipped.append("acceptance")
     review = item.get("review")
     if isinstance(review, Mapping) and any(
-        len(_joined(value).encode("utf-8")) > _LONG_PREVIEW_BYTES for value in review.values()
+        len(_joined(value).encode("utf-8")) > _ITEM_PROSE_BYTES for value in review.values()
     ):
         clipped.append("review")
     return clipped
