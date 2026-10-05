@@ -6359,32 +6359,39 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             from .claude_settings import pb_command
 
             hook_pb = pb_command()
+        # A host that already runs another client switches to the package
+        # running this install first, the whole host at once, so the skill
+        # installed below matches the pb, launcher and relay that run it.
+        switched = _switch_host_to_installing_package()
+        installing = _installing_pb()
+        if switched:
+            launcher_pb = str(switched.get("launcher") or "")
+            if launcher_pb:
+                installing = {**(installing or {}), "pb": launcher_pb}
+                if claude_code:
+                    hook_pb = launcher_pb
         installed = install_agent_procedure(
             args.target,
             home=args.home,
             force=args.force,
             allow_downgrade=bool(getattr(args, "allow_downgrade", False)),
-            installed_by=_installing_pb(),
+            installed_by=installing,
         )
         result = {
             "procedure": str(source_path()),
             "package": package,
             "installed": installed,
         }
-        installing = _installing_pb()
-        adopted = _adopt_installing_release()
-        if adopted:
-            result["selection"] = adopted
-        if installing and installing.get("pb"):
+        if switched:
+            # The switch already pointed ~/.local/bin/pb at the new release.
+            result["switched"] = switched
+            result["launcher"] = {"path": str(switched.get("launcher") or ""), "state": "selected"}
+        elif installing and installing.get("pb"):
             # W495: one pb command at ~/.local/bin/pb from the first install on.
             from .procedures import _home_path
-            from .release_install import ensure_install_launcher, install_launcher
+            from .release_install import ensure_install_launcher
 
-            home = _home_path(args.home)
-            if adopted:
-                # W554: the launcher follows the adopted selection.
-                install_launcher(Path(home) / ".local" / "bin" / "pb", expected_pb=installing["pb"])
-            result["launcher"] = ensure_install_launcher(home, pb=installing["pb"])
+            result["launcher"] = ensure_install_launcher(_home_path(args.home), pb=installing["pb"])
         if claude_code:
             # The status line and hooks a Claude Code worker needs (W304 finding 45).
             from .claude_settings import merge_claude_code_settings
@@ -6395,32 +6402,87 @@ def _procedure_command(args: Any) -> dict[str, Any]:
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")
 
 
-def _adopt_installing_release() -> dict[str, Any] | None:
-    """Make the released package running this install the host's selection (W554).
+def _installed_source_checkout() -> dict[str, Any] | None:
+    """The git checkout and commit the running project-board was pip-installed from, if any.
+
+    pip records a local install's folder in ``direct_url.json``. When that
+    folder is the package inside an App Ecosystem checkout whose client
+    package trees match its HEAD, the install is that commit; otherwise the
+    install is not a commit and is named so.
+    """
+
+    import json
+    import subprocess
+    from importlib import metadata
+    from urllib.parse import unquote, urlparse
+
+    from .source_manifest import APP_ECOSYSTEM_SOURCE_PATHS
+
+    try:
+        raw = metadata.distribution("project-board").read_text("direct_url.json")
+    except metadata.PackageNotFoundError:
+        return None
+    if not raw:
+        return None
+    url = str(json.loads(raw).get("url") or "")
+    if not url.startswith("file://"):
+        return None
+    folder = Path(unquote(urlparse(url).path))
+
+    def git(where: Path | str, *argv: str) -> str:
+        try:
+            done = subprocess.run(["git", "-C", str(where), *argv], capture_output=True, text=True, check=False)
+        except OSError:
+            return ""
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    root = git(folder, "rev-parse", "--show-toplevel") if folder.is_dir() else ""
+    if not root:
+        return {"folder": str(folder), "repository": "", "commit": "", "changed": [], "reason": "not_a_git_checkout"}
+    commit = git(root, "rev-parse", "HEAD")
+    # The host runs a commit, so the client package trees must match it.
+    changed = [
+        line[3:]
+        for line in git(root, "status", "--porcelain", "--untracked-files=no", "--", *APP_ECOSYSTEM_SOURCE_PATHS).splitlines()
+        if line.strip()
+    ] if commit else []
+    return {
+        "folder": str(folder),
+        "repository": root,
+        "commit": commit,
+        "changed": changed,
+        "reason": "uncommitted_changes" if changed else ("" if commit else "no_commit"),
+    }
+
+
+def _switch_host_to_installing_package() -> dict[str, Any] | None:
+    """Make the package running `pb procedure install` the whole host's client.
 
     Operator, 2026-10-05: "the user should have no any idea if this is new
     install or no. it simply must work smoothly and easy. with couple of
-    lines." A host that recorded another released version (an earlier install)
-    adopts the package that ran `pb procedure install`, the same end state as a
-    new host. A host that selected a source snapshot keeps it (W495), and so
-    does a host with no configuration (it has no selection yet). The installed
-    package is adopted whether it is newer or older than the recorded one: the
-    person chose it by installing it (only an older procedure is refused).
+    lines." and "i asked many times to maek the client install fully
+    functional according to the "connect the machine" tutorial. for both from
+    soucres and from release mode."
+
+    A configured host whose selection is not this package switches the same
+    way `pb source` does, release environment, launcher, relay and selection
+    together: an install from an App Ecosystem checkout becomes `use-code` at
+    that checkout's HEAD, an install from the package index `use-release` at
+    its version. It changes nothing on a host with no configuration (setup
+    selects later), on a host that already runs this package, or when it runs
+    inside a selected release (`~/.local/bin/pb procedure install` after
+    `pb source use-code` keeps that snapshot). An install from a checkout with
+    uncommitted client changes, or from a folder that is not a checkout, is
+    refused with the reason: the host can only run a commit.
     """
 
-    from .relay_source import client_source_root, read_selection, released_selection, write_selection
-    from .source_control import installed_release_source, source_matches
+    from .relay_service import STARTUP_WAIT_SECONDS
+    from .relay_source import client_source_root, read_selection
+    from .source_control import ClientSourceController, installed_release_source, source_matches
 
     try:
         config = resolve_host_config_path(None)
     except DomainError:
-        return None
-    root = client_source_root(config)
-    try:
-        selected = read_selection(root)
-    except DomainError:
-        return None  # a selection this pb cannot read is left to pb source
-    if str(selected.get("mode") or "") != "released":
         return None
     try:
         observed = installed_release_source()
@@ -6428,13 +6490,41 @@ def _adopt_installing_release() -> dict[str, Any] | None:
         return None
     if str(observed.get("mode") or "") != "released" or observed.get("release_id"):
         return None
-    if source_matches(observed, selected):
-        return None
-    recorded = write_selection(root, released_selection(str(observed.get("version") or "")))
+    try:
+        selected = read_selection(client_source_root(config))
+    except DomainError:
+        selected = {}
+    checkout = _installed_source_checkout()
+    controller = ClientSourceController(config)
+    previous = {key: selected.get(key) for key in ("mode", "version", "commit") if selected.get(key)}
+    if checkout is None:
+        version = str(observed.get("version") or "")
+        if str(selected.get("mode") or "") == "released" and source_matches(observed, selected):
+            return None
+        outcome = controller.use_release(expect_version=version, wait_seconds=STARTUP_WAIT_SECONDS)
+        how = {"source": "release", "version": version}
+    else:
+        if checkout["reason"]:
+            raise DomainError(
+                "work_client_install_not_a_commit",
+                "This pb was installed from a folder the host cannot run as a commit "
+                f"({checkout['reason']}). Commit or discard the changes in the client packages, "
+                "reinstall them, and run pb procedure install again.",
+                status=409,
+                details=checkout,
+            )
+        commit = checkout["commit"]
+        if str(selected.get("mode") or "") == "snapshot" and str(selected.get("commit") or "") == commit:
+            return None
+        outcome = controller.use_code(
+            repository=checkout["repository"], ref=commit, expect=commit, wait_seconds=STARTUP_WAIT_SECONDS
+        )
+        how = {"source": "code", "repository": checkout["repository"], "commit": commit}
     return {
-        "adopted": True,
-        "previous_version": str(selected.get("version") or ""),
-        "version": str(recorded.get("version") or ""),
+        **how,
+        "previous": previous,
+        "launcher": str(controller.launcher),
+        "activation": outcome,
     }
 
 
