@@ -1085,6 +1085,36 @@ def _pull_worker_input(
             )
 
     try:
+        if not selective:
+            # W563 (Q1): admitted operator mail first across every mailbox,
+            # through the same lease path; the ordinary pass follows.
+            for scope_index, (scope_ref, scope_id) in enumerate([("", ""), *project_scopes]):
+                if remaining <= 0:
+                    break
+                project_index = scope_index - 1 if scope_id else None
+                urgent = field.pull_mail(
+                    scope_id,
+                    worker_name=stable_name,
+                    lease_owner=lease_owner,
+                    limit=remaining,
+                    lease_seconds=lease_seconds,
+                    byte_budget=budget,
+                    measure_response=mailbox_response_size(
+                        project_ref=scope_ref, project_id=scope_id, project_index=project_index,
+                    ),
+                    measure_message=mailbox_message_size(project_ref=scope_ref, project_id=scope_id),
+                    priority_only=True,
+                )
+                for message in urgent:
+                    claim = remember_claim(scope_id, message)
+                    _notify_stub_sender(field, receiver=stable_name, project_id=scope_id, message=message)
+                    try:
+                        items.append(received_item(project_ref=scope_ref, project_id=scope_id, message=message))
+                    except DomainError as exc:
+                        isolate_message_failure(scope_id, message, claim, exc)
+                if project_index is not None:
+                    projects[project_index]["leased_messages"] += len(urgent)
+                remaining -= len(urgent)
         direct_messages = claim_selected_scope("", "", None) if selective else field.pull_mail(
             "",
             worker_name=stable_name,
@@ -1147,7 +1177,7 @@ def _pull_worker_input(
                     )
                 except DomainError as exc:
                     isolate_message_failure(project_id, message, claim, exc)
-            projects[project_index]["leased_messages"] = len(items) - before_items
+            projects[project_index]["leased_messages"] += len(items) - before_items
             remaining -= len(messages)
         if selective:
             selection_view["claimed_now_count"] = len(claimed)

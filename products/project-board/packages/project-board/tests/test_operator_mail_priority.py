@@ -338,3 +338,35 @@ def test_priority_does_not_bypass_the_response_byte_budget_or_lease_deferred_mai
     deferred = received["delivery"]["deferred_message_ref"]
     assert deferred not in received_refs
     assert field._mail_record_unlocked(PROJECT, WORKER, deferred)["state"] == "pending"
+
+
+def _direct_ping(field: SharedFieldStore, number: int) -> dict:
+    payload = {"body": f"Backlog ping {number}"}
+    return field.materialize_control({
+        "ref": f"work:control:20261005T160000Z:command_backlog{number}:direct-ping-{number}",
+        "recipient": WORKER, "kind": "ping", "subject": f"Backlog ping {number}",
+        "payload": payload, "payload_hash": content_hash(payload),
+    })
+
+
+def test_operator_mail_in_a_project_is_received_ahead_of_a_direct_backlog(field):
+    # W563 (Q1, coordinator 2026-10-05): admitted operator mail is leased
+    # first across every mailbox. Before, a direct-mailbox backlog filled the
+    # receive and the operator's request in a project mailbox waited behind it.
+    field.sync_worker_attendances(WORKER, [f"work:project:{PROJECT}"])
+    field.listen_worker(WORKER)
+    backlog = [_direct_ping(field, number) for number in range(6)]
+    urgent = _operator_reply(field)
+
+    first = pull_worker_input(field, worker_name=WORKER, limit=5)
+
+    refs = [item["message"]["message_ref"] for item in first["items"]]
+    assert refs[0] == urgent["message_ref"]
+    # The rest of the batch is the oldest direct mail, in order, and the
+    # remaining count names what is still waiting: nothing is skipped.
+    assert refs[1:] == [row["message_ref"] for row in backlog[:4]]
+    assert first["delivery"]["remaining_count"] == 2
+    project_line = next(project for project in first["projects"] if project["project_id"] == PROJECT)
+    assert project_line["leased_messages"] == 1
+    second = pull_worker_input(field, worker_name=WORKER, limit=5)
+    assert [item["message"]["message_ref"] for item in second["items"]] == [row["message_ref"] for row in backlog[4:]]

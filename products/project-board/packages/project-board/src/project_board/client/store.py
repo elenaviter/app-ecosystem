@@ -7731,8 +7731,14 @@ class SharedFieldStore:
         measure_message: Callable[[Mapping[str, Any]], int] | None = None,
         selected_paths: Sequence[Path] | None = None,
         lock_held: bool = False,
+        priority_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Lease one bounded mailbox batch.
+
+        ``priority_only`` leases admitted operator mail only: the receive runs
+        that pass over every mailbox before its ordinary pass, so operator mail
+        in a project mailbox is not left behind a direct-mailbox backlog
+        (W563, Q1). Everything else stays pending for the ordinary pass.
 
         A response-wide byte budget is decided here, before a source file moves
         from ``inbox`` to ``leased``. The caller supplies the exact serialized
@@ -7776,9 +7782,15 @@ class SharedFieldStore:
             # rows, not the backlog's full bodies. Reuse them for the claim
             # while this shard's lock stays held. A zero-capacity shard reads
             # no bodies; selective receive uses this same ordering.
+            candidates = (self._mail_receive_candidate(path) for path in paths)
+            if priority_only:
+                candidates = (
+                    candidate for candidate in candidates
+                    if candidate[1] is not None and self._is_admitted_operator_mail(candidate[1])
+                )
             sources = heapq.nsmallest(
                 take,
-                (self._mail_receive_candidate(path) for path in paths),
+                candidates,
                 key=lambda candidate: self._mail_receive_order(candidate[1], candidate[0]),
             )
             claimed_paths: list[Path] = []
@@ -7938,7 +7950,12 @@ class SharedFieldStore:
                     atomic_write_json(path, row)
                     os.replace(path, root / "inbox" / path.name)
                 raise
-            if byte_budget is not None:
+            if byte_budget is not None and priority_only:
+                # The ordinary pass over the same mailbox counts what remains;
+                # this pass reports only a byte limit it reached.
+                if limited_by == "response_byte_limit":
+                    byte_budget.record_mailbox(remaining=0, limited_by=limited_by)
+            elif byte_budget is not None:
                 remaining_count = max(
                     0,
                     len(paths) - len(claimed_paths),
