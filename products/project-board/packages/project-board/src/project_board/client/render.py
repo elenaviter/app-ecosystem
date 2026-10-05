@@ -473,10 +473,7 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
     routing = result.get("context_view") == "routing"
     if routing:
         # W563: the routing view; the start-up coordinates are in the full read.
-        lines.append(
-            "view: routing (workspace, journal and project files: pb worker context "
-            f"--project-ref {result.get('project_ref') or '<project-ref>'})"
-        )
+        lines.append("view: routing (start-up coordinates: the same command without --routing)")
     for key in (
         "project_ref",
         "project_on_this_host",
@@ -813,9 +810,9 @@ def _render_worker_context(result: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-# Lines of the context brief a routing read keeps, by their start (W563).
-_ROUTING_PREFIXES = ("context:", "view:", "project_ref =", "attendance_note", "role ", "coordinator",
-                     "self:", "  ", "team", "--- ", "detail:")
+# Lines of the context brief a routing read keeps, by their start (W563). The
+# reader is in the team rows, so its `self:` block is not repeated.
+_ROUTING_PREFIXES = ("context:", "view:", "attendance_note", "role ", "coordinator", "team", "--- ")
 
 
 def _routing_lines(lines: list[str]) -> list[str]:
@@ -832,8 +829,12 @@ def _routing_lines(lines: list[str]) -> list[str]:
             if keep_indented:
                 kept.append(line)
             continue
-        keep_indented = line.startswith(("self:", "--- ", "coordinator"))
-        if line.startswith(_ROUTING_PREFIXES):
+        keep_indented = line.startswith(("--- ", "coordinator"))
+        if line.rstrip().endswith("=") or line.endswith("= None"):
+            continue  # an empty field says nothing a route needs
+        if line.startswith("team detail"):
+            kept.append("team detail: --member <name> (account, provenance)")
+        elif line.startswith(_ROUTING_PREFIXES):
             kept.append(line)
     return kept
 
