@@ -530,6 +530,9 @@ calculation, so activity projection does not reread the receipt history.
 
 Controls, inbox rows and plan rows remain in Postgres for the life of the
 deployment. Conversation-index retention and the service-event archive are
-described above. A future archival policy can remove old operational rows only
-after its mailbox and audit projections preserve the referenced conversation
-artifacts.
+described above. Both use the platform's one hot window and the tenant and
+project's bundle storage. Archiving message bodies is not built yet. Whether
+it uses that same window or a board property of its own, and which key layout
+it uses, is still to be decided. A future archival policy can remove old
+operational rows only after its mailbox and audit projections preserve the
+referenced conversation artifacts.
