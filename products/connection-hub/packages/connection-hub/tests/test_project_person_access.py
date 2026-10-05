@@ -1115,6 +1115,47 @@ async def test_a_project_admin_edits_a_person_control_card_here_and_others_read_
     assert host.update_calls == []
 
 
+class _RolePort(_Port):
+    """A port whose answer names the Card holder's role, as the resolver port does."""
+
+    def __init__(self, *, role: str, administers: bool) -> None:
+        super().__init__()
+        self.role = role
+        self.administers = administers
+
+    async def authorize_project_person_control(self, request):
+        decision = await super().authorize_project_person_control(request)
+        return dataclasses.replace(decision, evidence={
+            "target_membership": {"project_ref": PROJECT_REF, "subject": TARGET, "role": self.role},
+            "target_administers": self.administers,
+        })
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("role", "administers"), [("admin", True), ("member", False)])
+async def test_the_card_read_names_the_holders_project_role(role, administers) -> None:
+    """W560 (operator, 2026-10-05): operations a person cannot edit, on or off by
+    role, are shown on the Card selected or not and non-editable."""
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _RolePort(role=role, administers=administers)).get(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["ok"] is True
+    assert view["target_role"] == {"known": True, "role": role, "administers": administers}
+
+
+@pytest.mark.asyncio
+async def test_a_card_read_without_the_holders_role_says_it_is_not_known() -> None:
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _Port()).get(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["target_role"] == {"known": False, "role": "", "administers": False}
+
+
 # -- composing the person's Card with the Control Card its project holds (W260) --
 
 

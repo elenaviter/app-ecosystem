@@ -485,10 +485,20 @@ export interface ProjectPersonControlViewer {
   reason?: string;
 }
 
+/** The Card holder's project role, as the project host answered it (W560). */
+export interface ProjectPersonControlTargetRole {
+  /** False when the host's answer named no role; nothing is guessed then. */
+  known: boolean;
+  role: string;
+  /** True for a role that administers the project (owner, admin). */
+  administers: boolean;
+}
+
 export interface ControlCardGetResult {
   ok?: boolean;
   access?: DelegatedAccessRecord;
   viewer?: ProjectPersonControlViewer;
+  target_role?: ProjectPersonControlTargetRole;
   control_card?: DelegatedAccessRecord;
   authority?: Record<string, unknown>;
   error?: string;

@@ -9,6 +9,8 @@ import {
   notOfferedOnPersonCard,
   offeredOnPersonCard,
   resourceForPersonCard,
+  roleDecidedHeld,
+  roleDecidedResources,
 } from '../src/features/delegatedAccess/personCardOperations.ts'
 
 // Operator, 2026-09-26 (W360): a person's Control Card offered the coordinator
@@ -133,4 +135,36 @@ test('the Card-level notice of a person\'s Card leaves out marked outer and name
   assert.deepEqual(shown.added.named_service_operations.map((row) => row.operation), ['object.action.review.assign'])
   assert.deepEqual(shown.added.claims, drift.added.claims)
   assert.equal(catalogDriftForPersonCard(undefined, () => ROW), undefined)
+})
+
+// W560, operator 2026-10-05: "if there are operations that the people cannot
+// edit (they either on or off absed on role, alltogether) then they still must
+// be shown on the card but made non-editable. simply seletced and non-editable".
+test('the role-decided operations are listed for the Card, not dropped', () => {
+  const rows = roleDecidedResources([ROW, { resource: 'other', operations: [{ name: 'read' }] }])
+  assert.deepEqual(rows.map((row) => row.resource), ['problem-board'])
+  assert.deepEqual(
+    rows[0].operations.map((operation) => operation.name),
+    ['project.coordinator.hand_over', 'project.people.invite'],
+  )
+  // The editor still offers them nowhere, so a save never adds or removes one.
+  assert.deepEqual(
+    resourceForPersonCard(ROW).operations.map((operation) => operation.name),
+    ['review.assign', 'plan.item.create', 'project.plan.index'],
+  )
+})
+
+test('they are held by an admin, not by a member, and unknown without a role', () => {
+  assert.equal(roleDecidedHeld({ known: true, role: 'admin', administers: true }), true)
+  assert.equal(roleDecidedHeld({ known: true, role: 'owner', administers: true }), true)
+  assert.equal(roleDecidedHeld({ known: true, role: 'member', administers: false }), false)
+  assert.equal(roleDecidedHeld({ known: false, role: '', administers: false }), null)
+  assert.equal(roleDecidedHeld(undefined), null)
+})
+
+test('the Card renders them ticked by role and disabled', () => {
+  const source = readFileSync(new URL('../src/features/delegatedAccess/RoleDecidedOperations.tsx', import.meta.url), 'utf8')
+  assert.match(source, /<input type="checkbox" checked=\{held === true\} disabled readOnly \/>/)
+  const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
+  assert.equal((panel.match(/renderRoleDecidedOperations\((record|item)\)/g) || []).length, 2, 'editor and read-only view')
 })

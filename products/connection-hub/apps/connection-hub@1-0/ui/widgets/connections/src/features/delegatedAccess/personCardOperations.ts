@@ -15,7 +15,9 @@ import type {
   DelegatedCatalogDrift,
   DelegatedAccessNamedServiceNamespaceOption,
   DelegatedAccessNamedServiceToolOption,
+  DelegatedAccessOperationOption,
   DelegatedAccessResourceOption,
+  ProjectPersonControlTargetRole,
 } from '../../api/types';
 import type { ResourceDriftState } from './resourceEditing';
 
@@ -120,4 +122,36 @@ export function catalogDriftForPersonCard(
       ...(named ? { named_service_operations: named } : {}),
     },
   };
+}
+
+/** One resource's operations its service decides for a person by role alone (W560). */
+export interface RoleDecidedResource {
+  resource: string;
+  label: string;
+  operations: DelegatedAccessOperationOption[];
+}
+
+/**
+ * What a person's Control Card shows as decided by project role (W560).
+ *
+ * Operator, 2026-10-05: "if there are operations that the people cannot edit
+ * (they either on or off absed on role, alltogether) then they still must be
+ * shown on the card but made non-editable. simply seletced and non-editable."
+ * The editor still offers them nowhere (`resourcesForPersonCard`), so a save
+ * never adds or removes one; they are listed here, held or not by role.
+ */
+export function roleDecidedResources(options: DelegatedAccessResourceOption[]): RoleDecidedResource[] {
+  return options
+    .map((option) => ({
+      resource: option.resource,
+      label: option.label || option.resource,
+      operations: (option.operations || []).filter((operation) => !offeredOnPersonCard(operation)),
+    }))
+    .filter((row) => row.operations.length > 0);
+}
+
+/** Whether a role-decided operation is held: by the holder's project role, or unknown. */
+export function roleDecidedHeld(role: ProjectPersonControlTargetRole | undefined): boolean | null {
+  if (!role?.known) return null;
+  return role.administers;
 }

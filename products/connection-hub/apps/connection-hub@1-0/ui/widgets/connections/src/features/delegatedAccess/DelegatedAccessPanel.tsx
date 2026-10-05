@@ -168,6 +168,7 @@ import {
   projectPersonControlCoordinates,
 } from './projectPersonControl';
 import { catalogDriftForPersonCard, notOfferedOnPersonCard, resourcesForPersonCard } from './personCardOperations';
+import { RoleDecidedOperations } from './RoleDecidedOperations';
 import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
 import {
@@ -1065,6 +1066,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     items,
     focusedCard,
     focusedViewer,
+    focusedTargetRole,
     grantOptions,
     resources: catalogResources,
     issuedToken,
@@ -2903,6 +2905,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setEditActionError(`Control defaults were not applied: ${String(error || 'request refused')}`);
     }
   };
+
+  // W560: what a person's Control Card holds by project role, shown ticked or
+  // not and never editable. The role comes with the focused Card's read.
+  const renderRoleDecidedOperations = (record: DelegatedAccessRecord) => (
+    <RoleDecidedOperations
+      catalog={catalogResources}
+      targetRole={focusedCard?.access_id === record.access_id ? focusedTargetRole : undefined}
+    />
+  );
 
   const renderAgentResetDialog = () => (
     <ConfirmDialog
@@ -5218,6 +5229,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ) : null}
           <CatalogDriftNotice drift={cardCatalogDrift(record)} />
+          {projectPersonControl ? renderRoleDecidedOperations(record) : null}
           {record.source === 'control' ? (
             <div className="card-fields control-card-fields">
               <Field label={projectPersonControl?.kind === 'person' ? 'For' : 'Issued by'}>
@@ -5609,6 +5621,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         </div>
                       ) : null}
                       <CatalogDriftNotice drift={cardCatalogDrift(item)} />
+                      {projectPersonControlCoordinates(item) ? renderRoleDecidedOperations(item) : null}
                       {!editing && isMyCard(item)
                         ? <MyCardGithubSection projectRef={myCardProjectRef(item)} openParams={openParams} />
                         : null}
