@@ -375,6 +375,10 @@ snapshot, so later pages follow the same order and `matched_count` is exact:
   `enabled.cron.timeline-snapshot-sweep: false` turns the job off.
 - **One person keeps at most three** live snapshots per project: a new search
   deletes their older ones, and a cursor into a deleted snapshot answers 409.
+- **An open search is not re-ranked by board activity.** The Timeline keeps its
+  snapshot and page while the board polls; activity after the search was
+  ranked shows "New activity since this search" with a Refresh, which re-runs
+  the same search from page 1. Search, Reset or a project change re-rank.
 
 The snapshot tables are a cache. Emptying them loses no data; open cursors
 answer 409 until the next search.
