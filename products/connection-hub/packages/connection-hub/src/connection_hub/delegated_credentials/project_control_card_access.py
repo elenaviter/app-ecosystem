@@ -12,7 +12,8 @@ the person's own session, and names the Card's creator; this service then reads
 or writes under the creator's storage key, with the acting person recorded and
 the edit bounded by what the acting person could delegate. The shape is W319's
 agent Card path (``project_agent_card_access``); nothing is migrated and the
-creator's own path is unchanged.
+creator's own read remains available. Project-issued Control Card writes
+require the exact project host decision even when the caller created the Card.
 """
 
 from __future__ import annotations
@@ -25,6 +26,19 @@ from dataclasses import replace as replace_fields
 from typing import Any, Protocol
 
 from connection_hub.delegated_credentials.named_service_policy import clean_text
+from connection_hub.delegated_credentials.controls.project_person import (
+    PROJECT_PERSON_CONTROL_PROPERTY,
+    ProjectPersonControlIdentity,
+)
+from connection_hub.delegated_credentials.controls.project_invitation import (
+    ProjectInvitationControlIdentity,
+)
+from connection_hub.delegated_credentials.project_authorization import (
+    PROJECT_INVITATION_CONTROL_UPDATE,
+    PROJECT_PERSON_CONTROL_UPDATE,
+    ProjectAuthorizationDecision,
+    ProjectAuthorizationRequest,
+)
 
 CONTROL_CARD_READ = "read"
 CONTROL_CARD_WRITE = "write"
@@ -102,6 +116,65 @@ class ProjectControlCardAuthorizationPort(Protocol):
     async def authorize_project_control_card(
         self, *, control_id: str, project_ref: str, action: str, access_id: str = ""
     ) -> ProjectControlCardDecision: ...
+
+
+def project_control_write_refusal(
+    record: Any,
+    decision: ProjectControlCardDecision | ProjectAuthorizationDecision | None = None,
+) -> dict[str, Any] | None:
+    """Require an exact typed project decision for a stored project Control Card.
+
+    The server-side project lifecycle passes its already-validated host answer.
+    An owner identity, platform role, audit callback or client mapping is not
+    that answer. Ordinary non-project Control Cards keep their creator path.
+    """
+
+    kind = clean_text(record.issuer_kind)
+    if kind not in {"project", "project-invitation"}:
+        return None
+    matched = False
+    try:
+        if kind == "project-invitation":
+            identity = ProjectInvitationControlIdentity.from_authority(record)
+            operation = PROJECT_INVITATION_CONTROL_UPDATE
+            target = identity.invitation_ref
+        elif PROJECT_PERSON_CONTROL_PROPERTY in dict(record.properties or {}):
+            identity = ProjectPersonControlIdentity.from_authority(record)
+            operation = PROJECT_PERSON_CONTROL_UPDATE
+            target = identity.target_subject
+        else:
+            identity = None
+            operation = target = ""
+        if identity is not None and isinstance(decision, ProjectAuthorizationDecision):
+            request = ProjectAuthorizationRequest.build(
+                actor_subject=decision.actor_subject,
+                project_ref=identity.project_ref,
+                target_subject=target,
+                operation=operation,
+                request_id=decision.request_id,
+            )
+            decision.validate_for(request)
+            matched = decision.allowed is True
+        elif identity is None and isinstance(decision, ProjectControlCardDecision):
+            matched = (
+                decision.allowed is True
+                and decision.action == CONTROL_CARD_WRITE
+                and decision.via in EDITING_VIAS
+                and bool(clean_text(record.issuer_ref))
+                and decision.project_ref == record.issuer_ref
+                and decision.control_id == record.access_id
+                and decision.grantor_subject == record.grantor_subject
+            )
+    except (ValueError, TypeError, AttributeError):
+        matched = False
+    if matched:
+        return None
+    return {
+        "ok": False,
+        "error": "project_control_card_managed",
+        "message": "This project's Control Card is changed through its authorized project path.",
+        "status": 403,
+    }
 
 
 class RefusingProjectControlCardAuthorizationPort:
@@ -308,6 +381,7 @@ class ProjectControlCardAccess:
             _delegable_grants=await self._actor_delegable_grants(user, decision.grantor_subject),
             _platform_admin=_platform_admin(user),
             _record_transform=self._audit(user, decision, request_id=request_id),
+            _project_authorization=decision,
             **changes,
         )
         if result.get("ok") is not True:

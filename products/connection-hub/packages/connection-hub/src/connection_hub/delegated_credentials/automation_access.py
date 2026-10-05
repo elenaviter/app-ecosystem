@@ -164,6 +164,13 @@ from connection_hub.delegated_credentials.project_invitation_binding import (
 from connection_hub.delegated_credentials.project_person_access import (
     ProjectPersonControlLifecycle,
 )
+from connection_hub.delegated_credentials.project_control_card_access import (
+    ProjectControlCardDecision,
+    project_control_write_refusal,
+)
+from connection_hub.delegated_credentials.project_authorization import (
+    ProjectAuthorizationDecision,
+)
 from connection_hub.delegated_credentials.cards.identity import (
     CARD_KINDS,
     CARD_KIND_AGENT,
@@ -4680,6 +4687,7 @@ class AutomationAccessService:
         ]
         | None = None,
         _notification_subject: str = "",
+        _project_authorization: ProjectControlCardDecision | ProjectAuthorizationDecision | None = None,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -4717,6 +4725,10 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_not_found"}
         if existing.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_owned"}
+        if _record_is_credentialless(existing):
+            refusal = project_control_write_refusal(existing, _project_authorization)
+            if refusal is not None:
+                return refusal
         try:
             descriptor_marker = descriptor_control(existing.properties)
         except AgentCapabilityPolicyError as exc:
@@ -6336,6 +6348,7 @@ class AutomationAccessService:
         ]
         | None = None,
         _platform_admin: bool | None = None,
+        _project_authorization: ProjectControlCardDecision | None = None,
     ) -> dict[str, Any]:
         """Edit a Control Card through the ordinary catalog-aware Card path.
 
@@ -6399,6 +6412,7 @@ class AutomationAccessService:
             _delegable_grants=_delegable_grants,
             _record_transform=_record_transform,
             _platform_admin=_platform_admin,
+            _project_authorization=_project_authorization,
         )
         if updated.get("ok") is not True:
             return updated
@@ -9167,6 +9181,10 @@ class AutomationAccessService:
         record = loaded[0]
         if record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
+        if _record_is_credentialless(record):
+            refusal = project_control_write_refusal(record)
+            if refusal is not None:
+                return refusal
         if (
             record.source == ACCESS_SOURCE_AGENT
             and record.card_kind == CARD_KIND_AGENT

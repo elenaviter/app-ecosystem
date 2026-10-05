@@ -847,6 +847,7 @@ class ProjectPersonControlLifecycle:
                 _delegable_grants=decision.delegable_grants,
                 _platform_admin=decision.platform_admin,
                 _record_transform=_stamp_audit,
+                _project_authorization=decision,
                 _notification_subject=identity.target_subject,
             )
         except ProjectPersonControlError as exc:

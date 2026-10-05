@@ -1684,6 +1684,23 @@ application-specific editor. The owner-scoped operations are
 `delegated_access_update` path. The older project-control operation aliases
 remain compatibility adapters for already-staged callers.
 
+A stored project-issued Control Card (`issuer_kind: project` or
+`project-invitation`) cannot be edited or revoked through the creator's
+plain `control_card_update`, `control_card_revoke`, or generic delegated-access
+aliases. Those writes fail closed with `project_control_card_managed` before
+catalog reconciliation or a stored effect. Its creator and platform roles do
+not replace the project's authorization. Non-project Control Cards retain
+their ordinary creator editing and revocation.
+
+Project Control Card edits use the project-authorized path. Per-person and
+invitation Cards use their respective project lifecycle operations, including
+revocation. The server carries the existing typed host decision to the save
+and binds it to the stored Card's exact project, target and operation; a
+client-supplied mapping or an audit callback is not authorization. Existing
+acting-person grant bounds, audit, revision and catalog fences still apply.
+First creation retains its declared initial selection; starting an existing
+project-issued Card through a plain creator edit does not bypass this boundary.
+
 `control_card_create` starts the Card from one of two optional sources, never
 both: `initial_selection_access_id`, a caller Card of the same person whose
 selection is copied as the initially checked values, or `initial_profile`, a
