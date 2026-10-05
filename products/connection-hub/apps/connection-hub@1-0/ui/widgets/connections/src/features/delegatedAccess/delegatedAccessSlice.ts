@@ -14,6 +14,7 @@ import {
   projectControlCardRecord,
   type ProjectControlCardTarget,
 } from './projectControlCard';
+import { personCardSaveOperations } from './personCardOperations';
 import type {
   DelegatedAccessCreateResult,
   DelegatedAccessGrantOption,
@@ -42,6 +43,9 @@ export interface DelegatedAccessState {
   focusedViewer?: ProjectPersonControlViewer;
   /** W560: the focused person Control Card holder's project role. */
   focusedTargetRole?: ProjectPersonControlTargetRole;
+  /** W560: display only, supplied by the authorized project Card read. */
+  focusedRoleDecidedCatalog?: DelegatedAccessResourceOption[];
+  focusedRoleDecidedCatalogAvailable?: boolean;
   grantOptions: DelegatedAccessGrantOption[];
   resources: DelegatedAccessResourceOption[];
   issuedToken: string;
@@ -215,6 +219,9 @@ export interface UpdateDelegatedAccessArgs {
   label: string;
   resourceGrants: Record<string, string[]>;
   resourceOperations: DelegatedAccessResourceOperations;
+  /** Complete read-only marked operations from the authorized person Card read. */
+  roleDecidedCatalog?: DelegatedAccessResourceOption[];
+  catalogRowByResource?: Record<string, string>;
   operations?: string[];
   /** Namespace narrowing {resource:{namespace:[operation]}}, or `"*"` when the
    *  operator ticked every operation the current catalog offers. Undefined
@@ -259,6 +266,8 @@ export const updateDelegatedAccess = createAsyncThunk<
       label,
       resourceGrants,
       resourceOperations,
+      roleDecidedCatalog,
+      catalogRowByResource,
       operations,
       namedServiceOperations,
       accountScope,
@@ -274,6 +283,16 @@ export const updateDelegatedAccess = createAsyncThunk<
     { rejectWithValue },
   ) => {
     try {
+      if (projectPersonControl && !roleDecidedCatalog) {
+        return rejectWithValue('The project operation catalog could not be read. Reopen this Card before saving.');
+      }
+      const displayRows = new Map((roleDecidedCatalog || []).map((row) => [row.resource, row]));
+      const savedResourceOperations = projectPersonControl
+        ? personCardSaveOperations(
+          resourceOperations || {},
+          (resource) => displayRows.get(catalogRowByResource?.[resource] || resource),
+        )
+        : resourceOperations || {};
       const res = await postOp<DelegatedAccessCreateResult>(
         projectPersonControl
           ? 'project_person_control_update'
@@ -303,7 +322,7 @@ export const updateDelegatedAccess = createAsyncThunk<
             : { access_id: accessId }),
           label,
           resource_grants: resourceGrants || {},
-          resource_operations: resourceOperations || {},
+          resource_operations: savedResourceOperations,
           ...(operations !== undefined ? { operations } : {}),
           ...(namedServiceOperations !== undefined
             ? { named_service_operations: namedServiceOperations }
@@ -523,12 +542,16 @@ const delegatedAccessSlice = createSlice({
         state.focusedCard = action.payload.access;
         state.focusedViewer = action.payload.viewer;
         state.focusedTargetRole = action.payload.target_role;
+        state.focusedRoleDecidedCatalog = action.payload.role_decided_catalog;
+        state.focusedRoleDecidedCatalogAvailable = action.payload.role_decided_catalog_available;
       })
       .addCase(loadControlCard.rejected, (state, action) => {
         state.busy = false;
         state.focusedCard = undefined;
         state.focusedViewer = undefined;
         state.focusedTargetRole = undefined;
+        state.focusedRoleDecidedCatalog = undefined;
+        state.focusedRoleDecidedCatalogAvailable = undefined;
         state.error = action.payload ?? 'Failed to load the Control Card';
       });
 

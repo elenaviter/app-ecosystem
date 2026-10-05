@@ -58,6 +58,17 @@ export function resourcesForPersonCard(options: DelegatedAccessResourceOption[])
   return options.map(resourceForPersonCard);
 }
 
+/** Keep role-decided display metadata out of a person's replacement Save. */
+export function personCardSaveOperations(
+  selected: Record<string, string[]>,
+  displayRowFor: (resource: string) => DelegatedAccessResourceOption | undefined,
+): Record<string, string[]> {
+  return Object.fromEntries(Object.entries(selected).map(([resource, operations]) => {
+    const marked = new Set(notOfferedOnPersonCard(displayRowFor(resource)));
+    return [resource, operations.filter((operation) => !marked.has(operation))];
+  }));
+}
+
 /** The outer operations of a catalog row a person's Card is not offered, for the drift review. */
 export function notOfferedOnPersonCard(catalogRow: DelegatedAccessResourceOption | undefined): string[] {
   return (catalogRow?.operations || [])

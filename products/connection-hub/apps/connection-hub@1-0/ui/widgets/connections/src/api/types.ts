@@ -499,6 +499,9 @@ export interface ControlCardGetResult {
   access?: DelegatedAccessRecord;
   viewer?: ProjectPersonControlViewer;
   target_role?: ProjectPersonControlTargetRole;
+  /** Read-only descriptors from the project-authorized Card read, never save options. */
+  role_decided_catalog?: DelegatedAccessResourceOption[];
+  role_decided_catalog_available?: boolean;
   control_card?: DelegatedAccessRecord;
   authority?: Record<string, unknown>;
   error?: string;

@@ -115,6 +115,11 @@ class _Host:
         self.notifications: list[tuple[str, str]] = []
         self.update_calls: list[dict[str, Any]] = []
         self.forget_calls: list[tuple[_Record, _Record]] = []
+        self.role_display_catalog: list[dict[str, Any]] | None = []
+
+    async def person_role_display_catalog(self, *, owner_subject, card_resources):
+        self.role_display_read = (owner_subject, tuple(card_resources))
+        return self.role_display_catalog
 
     async def _load_record_any_state(self, access_id, *, grantor_subject):
         return self.records.get((grantor_subject, access_id))
@@ -1118,7 +1123,7 @@ async def test_a_project_admin_edits_a_person_control_card_here_and_others_read_
 class _RolePort(_Port):
     """A port whose answer names the Card holder's role, as the resolver port does."""
 
-    def __init__(self, *, role: str, administers: bool) -> None:
+    def __init__(self, *, role: str | None, administers: bool | None) -> None:
         super().__init__()
         self.role = role
         self.administers = administers
@@ -1138,22 +1143,55 @@ async def test_the_card_read_names_the_holders_project_role(role, administers) -
     role, are shown on the Card selected or not and non-editable."""
 
     host = _Host()
+    host.role_display_catalog = [{"resource": RESOURCE, "operations": [
+        {"name": "project.people.invite", "person_card": False},
+    ]}]
     await _create(_lifecycle(host, _Port()))
     view = await _lifecycle(host, _RolePort(role=role, administers=administers)).get(
         actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
     )
     assert view["ok"] is True
     assert view["target_role"] == {"known": True, "role": role, "administers": administers}
+    assert view["role_decided_catalog"] == host.role_display_catalog
+    assert view["role_decided_catalog_available"] is True
 
 
 @pytest.mark.asyncio
 async def test_a_card_read_without_the_holders_role_says_it_is_not_known() -> None:
     host = _Host()
+    host.role_display_catalog = [{"resource": RESOURCE, "operations": [
+        {"name": "project.people.invite", "person_card": False},
+    ]}]
     await _create(_lifecycle(host, _Port()))
     view = await _lifecycle(host, _Port()).get(
         actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
     )
     assert view["target_role"] == {"known": False, "role": "", "administers": False}
+    assert view["role_decided_catalog"] == host.role_display_catalog
+    assert view["role_decided_catalog_available"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("role", "administers"),
+    [(None, None), ("admin", None), (None, True)],
+)
+async def test_a_card_read_with_incomplete_target_role_evidence_fails_closed(
+    role, administers,
+) -> None:
+    """A permitted Card read cannot turn a failed role lookup into held operations."""
+
+    host = _Host()
+    host.role_display_catalog = [{"resource": RESOURCE, "operations": [
+        {"name": "project.people.invite", "person_card": False},
+    ]}]
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _RolePort(role=role, administers=administers)).get(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["ok"] is True
+    assert view["target_role"] == {"known": False, "role": "", "administers": False}
+    assert view["role_decided_catalog_available"] is True
 
 
 # -- composing the person's Card with the Control Card its project holds (W260) --

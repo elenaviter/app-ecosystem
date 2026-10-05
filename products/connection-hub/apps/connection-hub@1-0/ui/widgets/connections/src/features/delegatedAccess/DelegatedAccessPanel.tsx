@@ -1067,6 +1067,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     focusedCard,
     focusedViewer,
     focusedTargetRole,
+    focusedRoleDecidedCatalog,
+    focusedRoleDecidedCatalogAvailable,
     grantOptions,
     resources: catalogResources,
     issuedToken,
@@ -2910,7 +2912,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // not and never editable. The role comes with the focused Card's read.
   const renderRoleDecidedOperations = (record: DelegatedAccessRecord) => (
     <RoleDecidedOperations
-      catalog={catalogResources}
+      catalog={focusedCard?.access_id === record.access_id ? focusedRoleDecidedCatalog || [] : []}
+      catalogAvailable={focusedCard?.access_id === record.access_id && focusedRoleDecidedCatalogAvailable === true}
       targetRole={focusedCard?.access_id === record.access_id ? focusedTargetRole : undefined}
     />
   );
@@ -3099,6 +3102,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
+    const projectPersonControl = projectPersonControlCoordinates(item);
+    if (projectPersonControl && (
+      focusedCard?.access_id !== item.access_id || focusedRoleDecidedCatalogAvailable !== true
+    )) {
+      setEditActionError('The project operation catalog could not be read. Reopen this Card before saving.');
+      return;
+    }
     const readOnlyReason = cardReadOnlyReason(item, focusedViewer);
     if (readOnlyReason) {
       setEditActionError(readOnlyReason);
@@ -3244,7 +3254,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }
     }
     let updated;
-    const projectPersonControl = projectPersonControlCoordinates(item);
     const projectAgentCard = projectAgentCardUpdateTarget(item);
     const projectControlCard = projectControlCardUpdateTarget(item);
     try {
@@ -3253,6 +3262,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         label: editLabel.trim() || item.label || 'Automation access',
         resourceGrants: routedKept,
         resourceOperations: savedResourceOperations,
+        roleDecidedCatalog: projectPersonControl ? focusedRoleDecidedCatalog : undefined,
+        catalogRowByResource: item.catalog_row_by_resource,
         namedServiceOperations: Object.keys(offered).length
           ? (item.source === 'control'
               ? keptNamedServiceOperations

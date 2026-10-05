@@ -14,16 +14,26 @@ import { roleDecidedHeld, roleDecidedResources } from './personCardOperations';
  */
 export function RoleDecidedOperations({
   catalog,
+  catalogAvailable,
   targetRole,
 }: {
   catalog: DelegatedAccessResourceOption[];
+  catalogAvailable: boolean;
   targetRole: ProjectPersonControlTargetRole | undefined;
 }) {
+  if (!catalogAvailable) {
+    return (
+      <section className="role-decided-operations" aria-label="Decided by project role">
+        <strong>Decided by project role</strong>
+        <small role="status">The project operation catalog could not be read. No role-decided operation is assumed.</small>
+      </section>
+    );
+  }
   const rows = roleDecidedResources(catalog);
   if (!rows.length) return null;
   const held = roleDecidedHeld(targetRole);
   const roleText = held === null
-    ? 'The project did not say this person’s role, so these are shown unticked.'
+    ? 'This person’s role is not known, so these are shown unticked.'
     : held
       ? `Held: this person is a project ${targetRole?.role || 'admin'}.`
       : `Not held: this person is a project ${targetRole?.role || 'member'}; a project admin holds them.`;

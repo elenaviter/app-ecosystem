@@ -404,11 +404,17 @@ class ProjectPersonControlLifecycle:
         access["state"] = state
         access["catalog_drift"] = dict(card.get("catalog_drift") or {})
         access["resource_offers"] = list(card.get("resource_offers") or [])
+        role_catalog = await self._host.person_role_display_catalog(
+            owner_subject=identity.project_subject,
+            card_resources=record.resource_grants,
+        )
         return {
             "ok": True,
             "control_card": card,
             "card": card,
             "access": access,
+            "role_decided_catalog": role_catalog or [],
+            "role_decided_catalog_available": role_catalog is not None,
             "authority": authority.to_dict(),
             "project_person_control": identity.to_property(),
             "audit": copy.deepcopy(
