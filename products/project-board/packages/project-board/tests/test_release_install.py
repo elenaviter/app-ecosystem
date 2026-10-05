@@ -383,3 +383,77 @@ def test_retention_keeps_current_and_the_three_latest_environments(
         release_install.release_path(root, identity).is_dir()
         for identity in identities[1:]
     )
+
+
+def test_build_and_pip_output_go_to_the_install_log_not_the_terminal(tmp_path: Path, capfd) -> None:
+    # W563: a source switch printed about 7k tokens of pip and build output
+    # into the agent's context. The output is kept in the install log the
+    # result names; the terminal stays quiet.
+    project_board = _wheel(
+        tmp_path,
+        distribution="project-board",
+        version="2.2",
+        files={
+            "project_board/__init__.py": "def main():\n    return 0\n",
+            "project_board/client/__init__.py": "",
+            "project_board/client/release_smoke.py": "CONTRACT = 'candidate'\n",
+        },
+        scripts={"pb": "project_board:main"},
+    )
+    installed = release_install.install_release_environment(
+        root=tmp_path / "client",
+        release_id="d" * 64,
+        requirements=(project_board,),
+        source={"mode": "released", "version": "2.2"},
+        base_python=Path(sys.executable),
+        expected_project_board_version="2.2",
+    )
+
+    printed = capfd.readouterr()
+    assert "Successfully installed" not in printed.out + printed.err
+    log = Path(installed["install_log"])
+    assert log.parent == tmp_path / "client" / "logs"
+    text = log.read_text(encoding="utf-8")
+    assert "-m pip install" in text and "Successfully installed" in text
+
+
+def test_retention_prunes_the_install_logs_of_removed_releases_and_old_logs(tmp_path: Path) -> None:
+    # Review of the install log (Ops, PR 537): logs/ grew with every install
+    # while retention kept three environments. A removed release loses its
+    # logs, and a kept one keeps its newest few.
+    root = tmp_path / "client"
+    identities = [character * 64 for character in "abcd"]
+    for index, identity in enumerate(identities):
+        release = release_install.release_path(root, identity)
+        commands = release / "venv" / "bin"
+        commands.mkdir(parents=True)
+        for name in ("python", "pb"):
+            (commands / name).write_text("command\n", encoding="utf-8")
+        release_install._atomic_write_json(
+            release / release_install.INSTALLATION_MARKER,
+            {
+                "schema": release_install.INSTALLATION_SCHEMA,
+                "release_id": identity,
+                "source": {"mode": "released", "version": str(index)},
+                "installed_at": f"2026-09-25T00:00:0{index}Z",
+                "activated_at": f"2026-09-25T00:00:0{index}Z",
+                "environment": {"path": str(release / "venv"), "python": str(commands / "python"), "pb": str(commands / "pb")},
+                "launcher_version": release_install.LAUNCHER_VERSION,
+            },
+        )
+    logs = root / "logs"
+    logs.mkdir(parents=True)
+    for identity in identities:
+        for attempt in range(5):
+            (logs / f"install-{identity[:12]}-2026100{attempt}T000000.log").write_text("log\n", encoding="utf-8")
+    (logs / "notes.txt").write_text("not an install log\n", encoding="utf-8")
+    release_install.activate_installed_release(root, identities[-1])
+
+    assert release_install.prune_installed_releases(root, retain=3) == [identities[0]]
+
+    remaining = sorted(path.name for path in logs.iterdir())
+    assert not [name for name in remaining if name.startswith(f"install-{identities[0][:12]}")]
+    for identity in identities[1:]:
+        kept = [name for name in remaining if name.startswith(f"install-{identity[:12]}")]
+        assert kept == [f"install-{identity[:12]}-2026100{attempt}T000000.log" for attempt in (2, 3, 4)]
+    assert "notes.txt" in remaining

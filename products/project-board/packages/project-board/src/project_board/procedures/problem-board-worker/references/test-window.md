@@ -42,7 +42,8 @@ Reload, refresh, restart, step 2), and your answer applies the same ones.
 
 Follow [Host Client Window Quiescence](runtime-actions.md#host-client-window-quiescence):
 READY means calls drained and held before execution, not keep working until
-a START wake arrives. The installer records acknowledged STARTING NOW or
+a START wake arrives; window-control receive, read, settle and reply stay
+allowed while held, so the ALL CLEAR is always learned. The installer records acknowledged STARTING NOW or
 evidenced idle/waiting state under that hold by the announced bounded deadline;
 a non-quiesced participant stops the window. A successful START send proves
 transport acceptance, not session handling. Every required send must succeed

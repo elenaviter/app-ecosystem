@@ -61,10 +61,18 @@ def test_exact_select_skips_older_mail_and_requires_general_receive(field):
     assert [item["message"]["message_ref"] for item in result["items"]] == [target["message_ref"]]
     assert result["selection"]["state"] == "selected"
     assert result["selection"]["unselected_count"] == 1
-    assert result["session"]["general_receive_due"] is True
+    # W563 (Q11): three selective receives between ordinary ones, then the
+    # ordinary receive is due and serves the older mail.
+    assert result["session"]["general_receive_due"] is False
+    assert result["selection"]["selective_receives_remaining"] == 2
     assert "selection: selected" in render_envelope({"ok": True, "command": "worker.receive", "result": result})
 
     field.listen_worker(WORKER)  # reconnecting cannot erase the fairness obligation
+    second = pull_worker_input(field, worker_name=WORKER, message_ref=target["message_ref"])
+    assert second["session"]["general_receive_due"] is False
+    third = pull_worker_input(field, worker_name=WORKER, message_ref=target["message_ref"])
+    assert third["session"]["general_receive_due"] is True
+    assert third["selection"]["selective_receives_remaining"] == 0
     with pytest.raises(DomainError, match="ordinary pb worker receive"):
         pull_worker_input(field, worker_name=WORKER, message_ref=target["message_ref"])
     ordinary = pull_worker_input(field, worker_name=WORKER)

@@ -43,6 +43,9 @@ from ..contract.refs import make_ref, parse_ref
 from ..contract.scoped_collection import CollectionError, ScopedKeysetCursor
 
 
+# Selective receives allowed between two ordinary receives (W563, Q11).
+SELECTIVE_RECEIVE_BUDGET = 3
+
 # A local plan is a shard until a complete server generation is mirrored
 # here. These name the two states so no reader has to guess which it has.
 PLAN_AUTHORITY_LOCAL_SHARD = "local_shard"
@@ -3552,6 +3555,7 @@ class SharedFieldStore:
                 ),
                 "last_inbox_check_at": str(previous.get("last_inbox_check_at") or ""),
                 "general_receive_due": bool(previous.get("general_receive_due")),
+                "selective_receives_since_general": int(previous.get("selective_receives_since_general") or 0),
                 "last_message_refs": list(previous.get("last_message_refs") or []),
                 "last_control_refs": list(previous.get("last_control_refs") or []),
                 "observed_control_plane_state": str(
@@ -3635,9 +3639,15 @@ class SharedFieldStore:
                 revision=int(listener.get("revision") or 0) + 1,
             )
             if selective_receive:
-                listener["general_receive_due"] = True
+                # W563 (Q11, coordinator 2026-10-05): up to SELECTIVE_RECEIVE_BUDGET
+                # selective receives between ordinary ones; the ordinary receive
+                # still serves the oldest mail, so old mail keeps moving.
+                used = int(listener.get("selective_receives_since_general") or 0) + 1
+                listener["selective_receives_since_general"] = used
+                listener["general_receive_due"] = used >= SELECTIVE_RECEIVE_BUDGET
             if inbox_checked:
                 listener["general_receive_due"] = False
+                listener["selective_receives_since_general"] = 0
                 observed_message_refs = _bounded_message_refs(message_refs)
                 listener.update(
                     last_inbox_check_at=now,
@@ -5683,6 +5693,97 @@ class SharedFieldStore:
                     added.append(message_ref)
         return added
 
+    def pending_mail_headers(self, worker_name: str) -> list[dict[str, Any]]:
+        """Every pending message's header, never its body or payload (W563).
+
+        A worker with hundreds of pending messages could reach a new decision
+        thread only by receiving the oldest mail first, body and all, or by
+        knowing its ref already. This lists what is waiting so the worker can
+        pick one by its ref (`receive --message-ref`). Read without the mailbox
+        lock, like the reachability count: it leases, moves and changes
+        nothing, and a concurrent move can only make it a moment old.
+        """
+
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        scopes = [("", "")]
+        for project_ref in worker.get("attended_project_refs") or []:
+            try:
+                parsed = parse_ref(str(project_ref))
+            except DomainError:
+                continue
+            if parsed.kind == "project":
+                scopes.append((parsed.object_id, str(project_ref)))
+        headers: list[dict[str, Any]] = []
+        for project_id, project_ref in scopes:
+            for path in sorted((self._mail_root(project_id, clean_name) / "inbox").glob("*.json")):
+                row = read_json(path, required=False)
+                message_ref = str(row.get("message_ref") or "")
+                if not message_ref:
+                    continue
+                payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+                headers.append({
+                    "message_ref": message_ref,
+                    "project_ref": project_ref,
+                    "kind": str(row.get("kind") or ""),
+                    "sender": str(row.get("sender") or ""),
+                    "subject": str(row.get("subject") or ""),
+                    "created_at": str(row.get("created_at") or ""),
+                    "correlation_id": str(row.get("correlation_id") or ""),
+                    "work_ref": str(row.get("work_ref") or ""),
+                    "operator": self._is_admitted_operator_mail(row),
+                    "expected_reaction": str(payload.get("expected_reaction") or ""),
+                })
+        return headers
+
+    def quiet_mail_refs(self, worker_name: str, refs: Sequence[str] | None = None) -> set[str]:
+        """Pending notices that need no action and wake no session (W563, Q2).
+
+        Only mail its producer marked `expected_reaction: acknowledge_only`
+        (a Done or Cancelled assignment notice, terminal assignee information)
+        and that is not operator mail. It stays pending, counted and received
+        with the next receive; nothing is deleted or settled here.
+
+        With ``refs``, only those messages' files are read (an inbox file is
+        named by its message id): a caller that remembers what it classified
+        reads only new mail, never the whole backlog on every poll (review of
+        PR 535).
+        """
+
+        if refs is None:
+            return {
+                header["message_ref"]
+                for header in self.pending_mail_headers(worker_name)
+                if header.get("expected_reaction") == "acknowledge_only" and not header.get("operator")
+            }
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        wanted: dict[str, str] = {}
+        for ref in refs:
+            try:
+                wanted[parse_ref(str(ref)).object_id] = str(ref)
+            except DomainError:
+                continue
+        roots = [self._mail_root("", clean_name)]
+        for project_ref in worker.get("attended_project_refs") or []:
+            try:
+                parsed = parse_ref(str(project_ref))
+            except DomainError:
+                continue
+            if parsed.kind == "project":
+                roots.append(self._mail_root(parsed.object_id, clean_name))
+        quiet: set[str] = set()
+        for message_id, ref in wanted.items():
+            for root in roots:
+                row = read_json(root / "inbox" / f"{message_id}.json", required=False)
+                if not row:
+                    continue
+                payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+                if payload.get("expected_reaction") == "acknowledge_only" and not self._is_admitted_operator_mail(row):
+                    quiet.add(ref)
+                break
+        return quiet
+
     def _pending_mail_refs_lock_free(self, project_id: str, worker_name: str) -> list[str]:
         """One mailbox's readable and expired mail, read without its lock.
 
@@ -7678,8 +7779,14 @@ class SharedFieldStore:
         measure_message: Callable[[Mapping[str, Any]], int] | None = None,
         selected_paths: Sequence[Path] | None = None,
         lock_held: bool = False,
+        priority_only: bool = False,
     ) -> list[dict[str, Any]]:
         """Lease one bounded mailbox batch.
+
+        ``priority_only`` leases admitted operator mail only: the receive runs
+        that pass over every mailbox before its ordinary pass, so operator mail
+        in a project mailbox is not left behind a direct-mailbox backlog
+        (W563, Q1). Everything else stays pending for the ordinary pass.
 
         A response-wide byte budget is decided here, before a source file moves
         from ``inbox`` to ``leased``. The caller supplies the exact serialized
@@ -7723,9 +7830,15 @@ class SharedFieldStore:
             # rows, not the backlog's full bodies. Reuse them for the claim
             # while this shard's lock stays held. A zero-capacity shard reads
             # no bodies; selective receive uses this same ordering.
+            candidates = (self._mail_receive_candidate(path) for path in paths)
+            if priority_only:
+                candidates = (
+                    candidate for candidate in candidates
+                    if candidate[1] is not None and self._is_admitted_operator_mail(candidate[1])
+                )
             sources = heapq.nsmallest(
                 take,
-                (self._mail_receive_candidate(path) for path in paths),
+                candidates,
                 key=lambda candidate: self._mail_receive_order(candidate[1], candidate[0]),
             )
             claimed_paths: list[Path] = []
@@ -7885,7 +7998,12 @@ class SharedFieldStore:
                     atomic_write_json(path, row)
                     os.replace(path, root / "inbox" / path.name)
                 raise
-            if byte_budget is not None:
+            if byte_budget is not None and priority_only:
+                # The ordinary pass over the same mailbox counts what remains;
+                # this pass reports only a byte limit it reached.
+                if limited_by == "response_byte_limit":
+                    byte_budget.record_mailbox(remaining=0, limited_by=limited_by)
+            elif byte_budget is not None:
                 remaining_count = max(
                     0,
                     len(paths) - len(claimed_paths),

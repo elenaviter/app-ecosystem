@@ -91,7 +91,15 @@ def test_context_shows_each_teammates_usage_windows_end_to_end(tmp_path, monkeyp
     )
     context = _cli(identity, "context", "--project-ref", PROJECT_REF)
     brief = render_envelope({"ok": True, "result": context})
-    line = next(line for line in brief.splitlines() if line.startswith("  claude-app@host"))
+    # W563 (Q8 compact team row): the figures are on the teammate's default row;
+    # the `team usage:` block is in the `--member` view.
+    line = next(line for line in brief.splitlines() if line.startswith("--- claude-app@host (claude-code-teammate) · "))
+    assert "65%" in line and "resets 09-29 10:00Z" in line
+    assert "23%" in line and "resets 09-28 03:00Z" in line
+    assert "no windows" not in line
+    member = render_envelope({"ok": True, "result": cli.context_for_member(context, "claude-code-teammate")}).splitlines()
+    usage = member[member.index("team usage:") + 1:]
+    line = next(line for line in usage if line.startswith("  claude-app@host"))
     assert "65%" in line and "resets 09-29 10:00Z" in line
     assert "23%" in line and "resets 09-28 03:00Z" in line
     assert "no windows" not in line

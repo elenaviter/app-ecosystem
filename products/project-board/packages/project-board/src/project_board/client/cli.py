@@ -851,6 +851,17 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--reason", required=True)
 
     command = worker_commands.add_parser(
+        "inbox",
+        help="List pending mail headers, action first and newest first; no bodies, no leases.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--limit", type=int, default=_INBOX_DEFAULT)
+    command.add_argument("--kind", action="append", default=[])
+    command.add_argument("--sender", default="")
+    command.add_argument("--since", default="", help="Only mail created at or after this UTC time.")
+
+    command = worker_commands.add_parser(
         "leases",
         help="Page the active mail leases held by this exact worker session.",
     )
@@ -896,6 +907,40 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--project-ref", required=True)
     command.add_argument("--item-key", required=True)
     command.add_argument("--file", required=True)
+
+    command = worker_commands.add_parser(
+        "item-read",
+        help="Read one work item's text fields whole: no notes, history or download links.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--item-key", required=True)
+    command.add_argument(
+        "--field", action="append", choices=_ITEM_READ_FIELDS, default=[],
+        help="Read only this field (repeatable); every text field by default.",
+    )
+
+    command = worker_commands.add_parser(
+        "note-read",
+        help="Read one work-item note whole by its ref: no item body, attachments or links.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--item-key", required=True)
+    command.add_argument("--note-ref", required=True)
+
+    command = worker_commands.add_parser(
+        "item-attachment-list",
+        help="List one page of a work item's files: name and file ref, never a link.",
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--project-ref", required=True)
+    command.add_argument("--item-key", required=True)
+    command.add_argument("--offset", type=int, default=0)
+    command.add_argument("--limit", type=int, default=_ATTACHMENT_LIST_DEFAULT)
 
     command = worker_commands.add_parser(
         "item-attachment-read", help="Download one file listed on a work item."
@@ -1231,6 +1276,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Show one teammate in full, by stable worker name or alias. "
             "Without it every teammate has one compact scheduling row."
+        ),
+    )
+    command.add_argument(
+        "--routing",
+        action="store_true",
+        help=(
+            "The routing view: coordinator, roles and one row per teammate, without "
+            "the workspace, journal and project-file coordinates a start or resume reads."
         ),
     )
 
@@ -3530,6 +3583,200 @@ def _worker_item_attach(args: Any) -> dict[str, Any]:
     }
 
 
+# The text an item carries for whoever works on or reviews it.
+_ITEM_READ_FIELDS = ("title", "summary", "description", "acceptance", "result", "blocked_reason",
+                     "cancel_reason", "review")
+# Identity and ownership printed with every item read, so the text is tied to
+# the exact revision it was read at.
+_ITEM_READ_IDENTITY = ("item_key", "status", "identity_ref", "item_ref", "revision", "updated_at",
+                       "assignee", "acting_assignee", "reviewer")
+# The attachment fields an item read returns: names and identity only. Any
+# other field (a download URL or path, or one added later) is never returned.
+_ATTACHMENT_SAFE_FIELDS = ("filename", "file_ref", "mime", "size", "sha256")
+
+
+def _worker_item_read(args: Any) -> dict[str, Any]:
+    """One item's text fields whole, at one revision, safe to print (W563).
+
+    The brief item view clips long prose, and the JSON item read can carry a
+    working download link per attachment, so a reviewer whose scope was
+    clipped had no safe way to read it and waited for someone to quote it
+    (W459). This read returns the requested text fields complete, the item's
+    identity and revision, the assignment's ownership coordinates and the
+    attachment names and refs without any link. Notes and history are not
+    fetched.
+    """
+
+    item = _worker_item(args)
+    item = item.get("item") if isinstance(item.get("item"), Mapping) else item
+    wanted = list(dict.fromkeys(args.field or _ITEM_READ_FIELDS))
+    result: dict[str, Any] = {
+        "schema": "problem-board.item-read.v1",
+        "project_ref": args.project_ref,
+        **{key: item.get(key) for key in _ITEM_READ_IDENTITY if key in item},
+        "fields": {key: item.get(key) for key in wanted if key in item},
+    }
+    assignment = item.get("assignment")
+    if isinstance(assignment, Mapping):
+        result["assignment"] = {
+            key: assignment.get(key)
+            for key in ("assignment_ref", "ownership_version", "state", "worker_name")
+            if key in assignment
+        }
+    entries = [entry for entry in item.get("attachments") or [] if isinstance(entry, Mapping)]
+    result["attachment_count"] = len(entries)
+    # A narrow read (--field) names the count; the files are paged by
+    # item-attachment-list (review of e35c5800). The whole read lists them.
+    result["attachments"] = [] if args.field else [
+        {key: entry[key] for key in _ATTACHMENT_SAFE_FIELDS if key in entry} for entry in entries
+    ]
+    result["note_count"] = item.get("note_count", 0)
+    return result
+
+
+_INBOX_DEFAULT = 20
+_INBOX_MAXIMUM = 100
+# Mail that asks the receiver to act, ahead of mail that only informs.
+_ACTION_MAIL_KINDS = frozenset({
+    "question", "decision", "request", "blocked", "delivery_failed", "assign", "reply",
+})
+
+
+def _inbox_class(header: Mapping[str, Any]) -> int:
+    if header.get("operator"):
+        return 0
+    if header.get("expected_reaction") == "acknowledge_only":
+        return 2
+    return 1 if header.get("kind") in _ACTION_MAIL_KINDS else 2
+
+
+def _worker_inbox(field: Any, identity: Any, args: Any) -> dict[str, Any]:
+    """What is waiting, as headers: operator mail, then action, then information (W563).
+
+    Within a class the newest comes first, so a new decision thread is found
+    behind any backlog. Nothing is leased or settled here; the listed ref is
+    received with `pb worker receive --message-ref`, and ordinary receive still
+    delivers the oldest mail first.
+    """
+
+    if not 1 <= args.limit <= _INBOX_MAXIMUM:
+        raise DomainError("field_inbox_limit_invalid", f"--limit must be between 1 and {_INBOX_MAXIMUM}.")
+    from .io import parse_utc
+
+    since = parse_utc(args.since).isoformat() if args.since else ""
+    headers = field.pending_mail_headers(identity.worker_name)
+    by_kind: dict[str, int] = {}
+    for header in headers:
+        by_kind[header["kind"] or "-"] = by_kind.get(header["kind"] or "-", 0) + 1
+    selected = [
+        header for header in headers
+        if (not args.kind or header["kind"] in args.kind)
+        and (not args.sender or header["sender"] == args.sender)
+        and (not since or (header["created_at"] and parse_utc(header["created_at"]).isoformat() >= since))
+    ]
+    selected.sort(key=lambda header: header["created_at"], reverse=True)
+    selected.sort(key=_inbox_class)
+    page = selected[: args.limit]
+    return {
+        "schema": "problem-board.worker-inbox.v1",
+        "worker": identity.worker_name,
+        "pending": len(headers),
+        "pending_by_kind": dict(sorted(by_kind.items())),
+        "matched": len(selected),
+        "returned": len(page),
+        "classes": {
+            "operator": sum(1 for header in selected if _inbox_class(header) == 0),
+            "action": sum(1 for header in selected if _inbox_class(header) == 1),
+            "information": sum(1 for header in selected if _inbox_class(header) == 2),
+        },
+        "headers": page,
+    }
+
+
+# Pages of 100 notes searched for one note ref before the read gives up.
+_NOTE_READ_PAGES = 20
+
+
+def _worker_note_read(args: Any) -> dict[str, Any]:
+    """One note's text whole, found by its ref, with nothing else (W563).
+
+    The notes brief previews each note, and the JSON notes page carries the
+    item, whose attachments can hold download links; a coordinator could not
+    read a clipped questions note safely and asked for it to be quoted. This
+    pages the item's notes until it finds the ref and returns only that note.
+    """
+
+    cursor = ""
+    for _page in range(_NOTE_READ_PAGES):
+        payload: dict[str, Any] = {"item_key": args.item_key, "limit": 100}
+        if cursor:
+            payload["cursor"] = cursor
+        response = _reference_mapping_request(
+            args, action="plan.notes.list", object_ref=args.project_ref, payload=payload,
+        )
+        page = response.get("object") if isinstance(response.get("object"), Mapping) else {}
+        for note in page.get("items") or []:
+            if not isinstance(note, Mapping):
+                continue
+            if args.note_ref in {str(note.get("note_ref") or ""), str(note.get("note_id") or "")}:
+                return {
+                    "schema": "problem-board.note-read.v1",
+                    "project_ref": args.project_ref,
+                    "item_key": args.item_key,
+                    **{key: note.get(key) for key in ("note_ref", "note_id", "ordinal", "author", "author_label",
+                                                       "created_at", "available") if key in note},
+                    "text": str(note.get("text") or ""),
+                }
+        cursor = str(page.get("next_cursor") or "")
+        if not cursor:
+            break
+    raise DomainError(
+        "work_note_not_found",
+        "No note with this ref was found on the item.",
+        status=404,
+        details={"item_key": args.item_key, "note_ref": args.note_ref},
+    )
+
+
+_ATTACHMENT_LIST_DEFAULT = 20
+_ATTACHMENT_LIST_MAXIMUM = 100
+
+
+def _worker_item_attachment_list(args: Any) -> dict[str, Any]:
+    """One page of an item's files by name and file ref.
+
+    The item brief shows a few files and points here, so a reader can find the
+    one it needs without the JSON item read, whose attachment entries may carry
+    a working download link (W563). Each entry is exactly what
+    `item-attachment-read --file-ref` takes.
+    """
+
+    if args.offset < 0 or not 1 <= args.limit <= _ATTACHMENT_LIST_MAXIMUM:
+        raise DomainError(
+            "work_item_attachment_page_invalid",
+            f"--offset must be 0 or more and --limit between 1 and {_ATTACHMENT_LIST_MAXIMUM}.",
+        )
+    item = _worker_item(args)
+    entries = [
+        entry for entry in item.get("attachments") or []
+        if isinstance(entry, Mapping) and entry.get("file_ref")
+    ]
+    page = entries[args.offset : args.offset + args.limit]
+    following = args.offset + len(page)
+    return {
+        "project_ref": args.project_ref,
+        "item_key": args.item_key,
+        "attachment_count": len(entries),
+        "offset": args.offset,
+        "returned": len(page),
+        "next_offset": following if following < len(entries) else None,
+        "attachments": [
+            {"filename": str(entry.get("filename") or ""), "file_ref": str(entry["file_ref"])}
+            for entry in page
+        ],
+    }
+
+
 def _worker_item_attachment_read(args: Any) -> dict[str, Any]:
     from .relay import _http_download
 
@@ -5088,6 +5335,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
             work_ref=args.work_ref,
         )
         return _with_project_files_signals(received, config, field, identity)
+    if args.worker_command == "inbox":
+        return _worker_inbox(field, identity, args)
     if args.worker_command == "leases":
         worker = field.read_worker(identity.worker_name)
         lease_owner = str(
@@ -5296,6 +5545,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
         member = str(getattr(args, "member", "") or "").strip()
         if member:
             context = context_for_member(context, member)
+        if getattr(args, "routing", False):
+            # W563: a status or dispatch cycle routes by the team; the brief
+            # view leaves the start-up coordinates out. The JSON is unchanged.
+            context["context_view"] = "routing"
         if not context["attending"]:
             context["attendance_note"] = (
                 f"This agent does not attend {args.project_ref} (it was unlinked, or never "
@@ -5368,6 +5621,12 @@ def _worker_command(args: Any) -> dict[str, Any]:
         )
     if args.worker_command == "item-attach":
         return _worker_item_attach(args)
+    if args.worker_command == "item-read":
+        return _worker_item_read(args)
+    if args.worker_command == "note-read":
+        return _worker_note_read(args)
+    if args.worker_command == "item-attachment-list":
+        return _worker_item_attachment_list(args)
     if args.worker_command == "item-attachment-read":
         return _worker_item_attachment_read(args)
     if args.worker_command == "renew":
@@ -6169,32 +6428,39 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             from .claude_settings import pb_command
 
             hook_pb = pb_command()
+        # A host that already runs another client switches to the package
+        # running this install first, the whole host at once, so the skill
+        # installed below matches the pb, launcher and relay that run it.
+        switched = _switch_host_to_installing_package()
+        installing = _installing_pb()
+        if switched:
+            launcher_pb = str(switched.get("launcher") or "")
+            if launcher_pb:
+                installing = {**(installing or {}), "pb": launcher_pb}
+                if claude_code:
+                    hook_pb = launcher_pb
         installed = install_agent_procedure(
             args.target,
             home=args.home,
             force=args.force,
             allow_downgrade=bool(getattr(args, "allow_downgrade", False)),
-            installed_by=_installing_pb(),
+            installed_by=installing,
         )
         result = {
             "procedure": str(source_path()),
             "package": package,
             "installed": installed,
         }
-        installing = _installing_pb()
-        adopted = _adopt_installing_release()
-        if adopted:
-            result["selection"] = adopted
-        if installing and installing.get("pb"):
+        if switched:
+            # The switch already pointed ~/.local/bin/pb at the new release.
+            result["switched"] = switched
+            result["launcher"] = {"path": str(switched.get("launcher") or ""), "state": "selected"}
+        elif installing and installing.get("pb"):
             # W495: one pb command at ~/.local/bin/pb from the first install on.
             from .procedures import _home_path
-            from .release_install import ensure_install_launcher, install_launcher
+            from .release_install import ensure_install_launcher
 
-            home = _home_path(args.home)
-            if adopted:
-                # W554: the launcher follows the adopted selection.
-                install_launcher(Path(home) / ".local" / "bin" / "pb", expected_pb=installing["pb"])
-            result["launcher"] = ensure_install_launcher(home, pb=installing["pb"])
+            result["launcher"] = ensure_install_launcher(_home_path(args.home), pb=installing["pb"])
         if claude_code:
             # The status line and hooks a Claude Code worker needs (W304 finding 45).
             from .claude_settings import merge_claude_code_settings
@@ -6205,32 +6471,87 @@ def _procedure_command(args: Any) -> dict[str, Any]:
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")
 
 
-def _adopt_installing_release() -> dict[str, Any] | None:
-    """Make the released package running this install the host's selection (W554).
+def _installed_source_checkout() -> dict[str, Any] | None:
+    """The git checkout and commit the running project-board was pip-installed from, if any.
+
+    pip records a local install's folder in ``direct_url.json``. When that
+    folder is the package inside an App Ecosystem checkout whose client
+    package trees match its HEAD, the install is that commit; otherwise the
+    install is not a commit and is named so.
+    """
+
+    import json
+    import subprocess
+    from importlib import metadata
+    from urllib.parse import unquote, urlparse
+
+    from .source_manifest import APP_ECOSYSTEM_SOURCE_PATHS
+
+    try:
+        raw = metadata.distribution("project-board").read_text("direct_url.json")
+    except metadata.PackageNotFoundError:
+        return None
+    if not raw:
+        return None
+    url = str(json.loads(raw).get("url") or "")
+    if not url.startswith("file://"):
+        return None
+    folder = Path(unquote(urlparse(url).path))
+
+    def git(where: Path | str, *argv: str) -> str:
+        try:
+            done = subprocess.run(["git", "-C", str(where), *argv], capture_output=True, text=True, check=False)
+        except OSError:
+            return ""
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    root = git(folder, "rev-parse", "--show-toplevel") if folder.is_dir() else ""
+    if not root:
+        return {"folder": str(folder), "repository": "", "commit": "", "changed": [], "reason": "not_a_git_checkout"}
+    commit = git(root, "rev-parse", "HEAD")
+    # The host runs a commit, so the client package trees must match it.
+    changed = [
+        line[3:]
+        for line in git(root, "status", "--porcelain", "--untracked-files=no", "--", *APP_ECOSYSTEM_SOURCE_PATHS).splitlines()
+        if line.strip()
+    ] if commit else []
+    return {
+        "folder": str(folder),
+        "repository": root,
+        "commit": commit,
+        "changed": changed,
+        "reason": "uncommitted_changes" if changed else ("" if commit else "no_commit"),
+    }
+
+
+def _switch_host_to_installing_package() -> dict[str, Any] | None:
+    """Make the package running `pb procedure install` the whole host's client.
 
     Operator, 2026-10-05: "the user should have no any idea if this is new
     install or no. it simply must work smoothly and easy. with couple of
-    lines." A host that recorded another released version (an earlier install)
-    adopts the package that ran `pb procedure install`, the same end state as a
-    new host. A host that selected a source snapshot keeps it (W495), and so
-    does a host with no configuration (it has no selection yet). The installed
-    package is adopted whether it is newer or older than the recorded one: the
-    person chose it by installing it (only an older procedure is refused).
+    lines." and "i asked many times to maek the client install fully
+    functional according to the "connect the machine" tutorial. for both from
+    soucres and from release mode."
+
+    A configured host whose selection is not this package switches the same
+    way `pb source` does, release environment, launcher, relay and selection
+    together: an install from an App Ecosystem checkout becomes `use-code` at
+    that checkout's HEAD, an install from the package index `use-release` at
+    its version. It changes nothing on a host with no configuration (setup
+    selects later), on a host that already runs this package, or when it runs
+    inside a selected release (`~/.local/bin/pb procedure install` after
+    `pb source use-code` keeps that snapshot). An install from a checkout with
+    uncommitted client changes, or from a folder that is not a checkout, is
+    refused with the reason: the host can only run a commit.
     """
 
-    from .relay_source import client_source_root, read_selection, released_selection, write_selection
-    from .source_control import installed_release_source, source_matches
+    from .relay_service import STARTUP_WAIT_SECONDS
+    from .relay_source import client_source_root, read_selection
+    from .source_control import ClientSourceController, installed_release_source, source_matches
 
     try:
         config = resolve_host_config_path(None)
     except DomainError:
-        return None
-    root = client_source_root(config)
-    try:
-        selected = read_selection(root)
-    except DomainError:
-        return None  # a selection this pb cannot read is left to pb source
-    if str(selected.get("mode") or "") != "released":
         return None
     try:
         observed = installed_release_source()
@@ -6238,13 +6559,41 @@ def _adopt_installing_release() -> dict[str, Any] | None:
         return None
     if str(observed.get("mode") or "") != "released" or observed.get("release_id"):
         return None
-    if source_matches(observed, selected):
-        return None
-    recorded = write_selection(root, released_selection(str(observed.get("version") or "")))
+    try:
+        selected = read_selection(client_source_root(config))
+    except DomainError:
+        selected = {}
+    checkout = _installed_source_checkout()
+    controller = ClientSourceController(config)
+    previous = {key: selected.get(key) for key in ("mode", "version", "commit") if selected.get(key)}
+    if checkout is None:
+        version = str(observed.get("version") or "")
+        if str(selected.get("mode") or "") == "released" and source_matches(observed, selected):
+            return None
+        outcome = controller.use_release(expect_version=version, wait_seconds=STARTUP_WAIT_SECONDS)
+        how = {"source": "release", "version": version}
+    else:
+        if checkout["reason"]:
+            raise DomainError(
+                "work_client_install_not_a_commit",
+                "This pb was installed from a folder the host cannot run as a commit "
+                f"({checkout['reason']}). Commit or discard the changes in the client packages, "
+                "reinstall them, and run pb procedure install again.",
+                status=409,
+                details=checkout,
+            )
+        commit = checkout["commit"]
+        if str(selected.get("mode") or "") == "snapshot" and str(selected.get("commit") or "") == commit:
+            return None
+        outcome = controller.use_code(
+            repository=checkout["repository"], ref=commit, expect=commit, wait_seconds=STARTUP_WAIT_SECONDS
+        )
+        how = {"source": "code", "repository": checkout["repository"], "commit": commit}
     return {
-        "adopted": True,
-        "previous_version": str(selected.get("version") or ""),
-        "version": str(recorded.get("version") or ""),
+        **how,
+        "previous": previous,
+        "launcher": str(controller.launcher),
+        "activation": outcome,
     }
 
 
@@ -6999,7 +7348,7 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
     consumers = _sweep_item_consumers(field, identity, args)
     trees = workspace_sweep.inspect_workspace(
         workspace, registrations, protected=protected, measure=not only_ended, pins=pins,
-        generated=generated, consumers=consumers,
+        generated=generated, consumers=consumers, only_ended=only_ended,
     )
     if only_ended:
         trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]
