@@ -191,3 +191,76 @@ def test_new_gate_has_no_domain_imports_or_domain_literals():
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
             assert "work:project:" not in node.value
             assert "project.cards.manage" not in node.value
+
+
+def test_existing_core_domain_coupling_may_only_shrink_from_frozen_base():
+    """Source-derived semantic sets from AE 0a70e21c, not a fungible count.
+
+    Generic authority projection and project_legacy_operations are projections,
+    not external issuer policy. The remaining seven domain modules and six
+    distinct literals (including three existing docstrings) are legacy debt.
+    This phase may remove them, but cannot substitute a new dependency.
+    """
+    import hashlib
+    import connection_hub.delegated_credentials.automation_access as core
+
+    permitted = {
+        "connection_hub.delegated_credentials.controls.project_person_composition": {
+            "compose_with_project_held_control", "project_held_control"},
+        "connection_hub.delegated_credentials.project_authorization": {
+            "ProjectAuthorizationPort", "ViewerAuthority"},
+        "connection_hub.delegated_credentials.project_identity_authorization": {"ProjectOperationRequest"},
+        "connection_hub.delegated_credentials.project_identity_lifecycle": {"ProjectIdentityLifecycleError"},
+        "connection_hub.delegated_credentials.project_invitation_access": {"ProjectInvitationControlLifecycle"},
+        "connection_hub.delegated_credentials.project_invitation_binding": {"ProjectInvitationBindingResolver"},
+        "connection_hub.delegated_credentials.project_person_access": {"ProjectPersonControlLifecycle"},
+    }
+    literal_hashes = {
+        "d56746cb3172cf2e7ae14594a613f3f8bb488ba471b0c3e5c9abbbc9bb1e5dad",
+        "a540b93b209946bd580ec329d27ba83247c9f6cb726e6e55cac3c52f4edc7846",
+        "14898462758d22d38aacc8ba3297704724549f4e1d649e14171f6a0900c627f0",
+        "06ed40204c58d75ab21d9ccb9696d36729917dbe5ba09a56aa3365a89d2efa60",
+        "923dd485b40ca3018d1abe3e4bac0a6339fe06c939d81ccc6115cf2a6726f011",
+        "7602f9acfd279c8b1c2a30eec0f9d42998fe92b98aebf8bcd244b26f13ed2caa",
+    }
+    tree = ast.parse(Path(core.__file__).read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if "project_" in module or "board" in module:
+                assert module in permitted
+                assert {alias.name for alias in node.names} <= permitted[module]
+        if isinstance(node, ast.Import):
+            assert not any("project_" in alias.name or "board" in alias.name for alias in node.names)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if any(part in node.value for part in ("project_", "work:project:", "project.")):
+                assert hashlib.sha256(node.value.encode()).hexdigest() in literal_hashes
+            assert "problem-board" not in node.value and "problem_board" not in node.value
+
+
+def test_new_issuer_modules_have_no_domain_policy_or_module_level_mutable_state():
+    import connection_hub.delegated_credentials.issuer_gate as gate
+    import connection_hub.delegated_credentials.remote_issuer as remote
+    root = Path(gate.__file__).resolve().parents[5]
+    app_adapter = root / "apps/connection-hub@1-0/services/issuer_authorities.py"
+    # App source is present in the source tree; installed package tests still
+    # inspect both portable modules without requiring a bundled application.
+    paths = [Path(gate.__file__), Path(remote.__file__)]
+    if app_adapter.exists():
+        paths.append(app_adapter)
+    for path in paths:
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert not any(part in (node.module or "") for part in ("project_", "board"))
+            if isinstance(node, ast.Import):
+                assert not any("project_" in alias.name or "board" in alias.name for alias in node.names)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert not any(part in node.value for part in (
+                    "problem-board", "problem_board", "work:project:", "project.cards.", "project_card_issuer"))
+        for statement in tree.body:
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                value = statement.value
+                # Constants and typing aliases are fine; caches, mutex maps,
+                # reservations and registry instances are not module state.
+                assert not isinstance(value, (ast.Dict, ast.List, ast.Set, ast.Call))

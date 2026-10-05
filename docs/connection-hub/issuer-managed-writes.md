@@ -87,9 +87,14 @@ reports that its remote reservation remains pending until bounded expiry.
 ## Scope and remaining integration
 
 This phase adds an opaque authorization seam only. It is not completion of
-the larger domain migration. Application composition, configured remote
-ports, authority-owned context/replay tests and exact-source mounted
-PostgreSQL/Redis qualification must be completed before activation.
+the larger domain migration. The app composes request-local adapters from
+trusted `connections.delegated_credentials.issuer_authorities` rows, using
+opaque bundle/operation strings and existing workload secret references.
+The authenticated session actor is bound independently of any legacy owner
+proxy. Malformed declared configuration and unavailable proof secrets refuse.
+Live configuration/provisioning, authority-owned context/replay tests and
+exact-source mounted PostgreSQL/Redis qualification remain activation gates.
 No new browser parameters accept decisions, context references or workload
-secrets. No credential, grant, restart or runtime configuration change is
-authorized by this source contract.
+secrets. This worker has made no credential, grant, restart or runtime
+configuration change. The source contract does not alter the operator's
+standing scoped deployment authority or the designated executor's duties.

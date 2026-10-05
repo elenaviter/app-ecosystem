@@ -35,7 +35,10 @@ def test_service_proof_binds_full_request_recipient_operation_and_identity():
                        ("expected_service_id", "other"), ("secret", "y" * 32)]:
         assert not verify(body, **{key: value}).allowed
     for key, value in [("actor_subject", "other"), ("context_ref", "forged"),
-                       ("change_digest", "0" * 64), ("card_revision", 4)]:
+                       ("change_digest", "0" * 64), ("card_revision", 4),
+                       ("request_id", "other"), ("action", "revoke"),
+                       ("access_id", "other"), ("issuer_kind", "other"),
+                       ("issuer_ref", "other")]:
         forged = {**body, "request": {**body["request"], key: value}}
         assert not verify(forged).allowed
 
@@ -149,3 +152,29 @@ async def test_remote_prepare_then_two_reads_then_exact_terminal_outcome():
     assert (await registry.revalidate(prepared, issued)).allowed
     assert await registry.finalize(prepared, state="committed", card_revision=4)
     assert [kind for kind, _ in calls] == ["prepare", "decide", "decide", "finalize"]
+
+
+@pytest.mark.parametrize("outcome", [
+    {"state": "committed", "card_revision": True},
+    {"state": "committed", "card_revision": "1"},
+    {"state": "committed", "card_revision": 0},
+    {"state": "granted", "card_revision": 1},
+    {"state": "committed", "card_revision": 1, "allowed": True},
+])
+def test_outcome_envelope_refuses_untyped_or_granting_outcome(outcome):
+    with pytest.raises(ValueError, match="issuer_envelope_invalid"):
+        sign_issuer_envelope(secret=SECRET, bundle_id=BUNDLE, operation=OPERATION,
+                             service_id=SERVICE, protocol="issuer-outcome.v1",
+                             payload={"request": asdict(REQUEST), "outcome": outcome})
+
+
+@pytest.mark.asyncio
+async def test_finalize_bool_revision_cannot_masquerade_as_exact_integer_echo():
+    async def finalize(payload):
+        return {"ok": True, "request": payload["request"], "finalized": True,
+                "outcome": {"state": "committed", "card_revision": True}}
+
+    registry = IssuerRegistry()
+    registry.register(RemoteIssuerAdapter(issuer_kind=REQUEST.issuer_kind, adapter_id="peer",
+                                         transport=finalize, finalize_transport=finalize))
+    assert not await registry.finalize(REQUEST, state="committed", card_revision=1)

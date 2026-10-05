@@ -113,7 +113,7 @@ class RemoteIssuerAdapter:
             "request": asdict(request), "current": dict(current), "candidate": dict(candidate),
         }), self._timeout)
         if (not isinstance(response, Mapping) or response.get("ok") is not True
-                or response.get("request") != asdict(request)
+                or issuer_request_from_mapping(response.get("request"), allow_empty_context=True) != request
                 or response.get("change_digest") != request.change_digest
                 or type(response.get("context_ref")) is not str
                 or not response["context_ref"].strip()):
@@ -126,11 +126,13 @@ class RemoteIssuerAdapter:
         response = await asyncio.wait_for(self._finalize_transport({
             "request": asdict(request), "outcome": dict(outcome),
         }), self._timeout)
-        return (isinstance(response, Mapping) and response.get("ok") is True
-                and response.get("request") == asdict(request)
-                and response.get("outcome") == dict(outcome)
-                and response.get("finalized") is True)
-
+        if (not isinstance(response, Mapping) or response.get("ok") is not True
+                or response.get("finalized") is not True):
+            return False
+        echoed = _envelope_payload_request("issuer-outcome.v1", {
+            "request": response.get("request"), "outcome": response.get("outcome"),
+        })
+        return echoed == request and response["outcome"] == dict(outcome)
 
     async def decide(self, request: IssuerRequest) -> tuple[bool, str, str, datetime]:
         # Only request data crosses the wire, never the in-process seal.
@@ -160,13 +162,31 @@ def _envelope_request(bundle_id: str, operation: str, protocol: str,
     })
 
 
+def _envelope_payload_request(protocol: str, payload: Mapping[str, Any]) -> IssuerRequest:
+    """Enforce the generic envelope shape, not the authority owner's policy."""
+    prepare = protocol == "issuer-context.v1"
+    expected = {"request", "current", "candidate"} if prepare else {"request", "outcome"}
+    if set(payload) != expected:
+        raise ValueError("issuer_envelope_invalid")
+    request = issuer_request_from_mapping(payload.get("request"), allow_empty_context=prepare)
+    if prepare:
+        if request.context_ref or not all(isinstance(payload[k], Mapping) for k in ("current", "candidate")):
+            raise ValueError("issuer_envelope_invalid")
+    else:
+        outcome = payload["outcome"]
+        if (not isinstance(outcome, Mapping) or set(outcome) != {"state", "card_revision"}
+                or outcome["state"] not in ("committed", "refused")
+                or type(outcome["card_revision"]) is not int or outcome["card_revision"] <= 0):
+            raise ValueError("issuer_envelope_invalid")
+    return request
+
+
 def sign_issuer_envelope(*, secret: str | bytes, bundle_id: str, operation: str,
                          service_id: str, protocol: str, payload: Mapping[str, Any],
                          now: int | None = None, nonce: str | None = None) -> dict[str, Any]:
     if protocol not in ("issuer-context.v1", "issuer-outcome.v1"):
         raise ValueError("issuer_protocol_invalid")
-    request = issuer_request_from_mapping(payload.get("request"),
-                                         allow_empty_context=protocol == "issuer-context.v1")
+    request = _envelope_payload_request(protocol, payload)
     timestamp = str(int(time.time()) if now is None else int(now))
     nonce = nonce or secrets.token_urlsafe(24)
     signature = sign_admission_request(
@@ -187,8 +207,7 @@ def verify_issuer_envelope(*, secret: str | bytes, bundle_id: str, operation: st
         return ServiceProofDecision(False, "issuer_protocol_invalid")
     payload = {k: v for k, v in body.items() if k != "service_proof"}
     try:
-        request = issuer_request_from_mapping(payload.get("request"),
-                                             allow_empty_context=protocol == "issuer-context.v1")
+        request = _envelope_payload_request(protocol, payload)
         raw = body.get("service_proof")
         if (not isinstance(raw, Mapping)
                 or set(raw) != {"service_id", "timestamp", "nonce", "signature"}

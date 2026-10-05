@@ -201,6 +201,10 @@ class IssuerRegistry:
             if not _request_valid(prepared):
                 raise ValueError("issuer_context_invalid")
             return prepared
+        except IssuerWriteRefused:
+            # A trusted host port may name a configuration gap. Other transport
+            # exceptions remain opaque and never expose credential internals.
+            raise
         except Exception as exc:
             raise IssuerWriteRefused("issuer_context_provider_unavailable") from exc
 

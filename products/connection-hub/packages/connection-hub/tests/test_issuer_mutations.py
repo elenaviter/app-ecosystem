@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 import pytest
 
@@ -142,3 +143,38 @@ async def test_finalize_failure_is_explicit_unconfirmed_not_an_allow():
                                          finalize_transport=AsyncMock(side_effect=TimeoutError())))
     request = IssuerRequest("actor", "request", "revoke", "card", 3, "opaque", "record", "0" * 64, "context")
     assert await registry.finalize(request, state="committed", card_revision=4) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("roles", [[], ["kdcube:role:super-admin"]])
+async def test_ownership_and_admin_roles_do_not_bypass_unknown_managed_issuer(roles):
+    control = replace(_regular_control(), issuer_kind="opaque")
+    persistence = SimpleNamespace(persist_guarded=AsyncMock(), forget_guarded=AsyncMock())
+    service = AutomationAccessService(redis=_Redis(), tenant="tenant", project="project", config=None,
+                                      grant_store=object(), card_persistence=persistence)
+    with pytest.raises(IssuerWriteRefused, match="issuer_context_provider_unavailable"):
+        await service._issuer_before_commit(record_from_card(control), {"user_id": control.grantor_subject, "roles": roles},
+            action="update", candidate=replace(control, card_revision=control.card_revision + 1).to_dict(),
+            request_id="server-request", context_ref="", decision=None)
+    persistence.persist_guarded.assert_not_called()
+    persistence.forget_guarded.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actor", ["authenticated-admin", ""])
+async def test_explicit_actor_binding_never_uses_legacy_owner_proxy(actor):
+    control = replace(_regular_control(), issuer_kind="opaque")
+    persistence = SimpleNamespace(persist_guarded=AsyncMock())
+    service = AutomationAccessService(redis=_Redis(), tenant="tenant", project="project", config=None,
+                                      grant_store=object(), card_persistence=persistence)
+    registry = IssuerRegistry()
+    service.bind_issuer_registry(registry, actor_subject=actor)
+    # Spy only on trusted registry composition, not authorization: refuse so
+    # neither case can reach a mutation or its effects.
+    registry.prepare = AsyncMock(side_effect=IssuerWriteRefused("test_refusal"))
+    with pytest.raises(IssuerWriteRefused, match="test_refusal"):
+        await service._issuer_before_commit(record_from_card(control), {"user_id": "legacy-owner-proxy"},
+            action="update", candidate=replace(control, card_revision=control.card_revision + 1).to_dict(),
+            request_id="server-request", context_ref="", decision=None)
+    assert registry.prepare.call_args.args[0].actor_subject == actor
+    persistence.persist_guarded.assert_not_called()

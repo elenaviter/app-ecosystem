@@ -1756,6 +1756,7 @@ class AutomationAccessService:
             owner_managed_kinds=("application", AGENT_DESCRIPTOR_ISSUER_KIND)
         )
         self._issuer_actor_subject = _clean(issuer_actor_subject)
+        self._issuer_actor_subject_bound = bool(self._issuer_actor_subject)
         # Optional: lets the resident-profile migration carry once/always
         # policies to the stable card and the read model report them. Without
         # it, migration refuses to fold a record whose policies it cannot see.
@@ -1778,6 +1779,21 @@ class AutomationAccessService:
             authority_from_record=card_authority_from_record,
             record_from_authority=record_from_card,
         )
+
+    def bind_issuer_registry(self, registry: IssuerRegistry, *, actor_subject: str) -> None:
+        """Bind trusted request composition without requiring host wrapper kwargs.
+
+        Hosting adapters may inherit this method while retaining their existing
+        constructor. The app calls it before exposing the request-local service.
+        Nothing in the browser update/revoke payload can select these ports.
+        """
+        if not isinstance(registry, IssuerRegistry):
+            raise ValueError("issuer_registry_invalid")
+        self._issuers = registry
+        self._issuer_actor_subject = _clean(actor_subject)
+        # An explicitly bound but unavailable session actor must not fall back
+        # to a legacy owner proxy on a managed write.
+        self._issuer_actor_subject_bound = True
 
     def bind_project_authorization_port(
         self,
@@ -2362,7 +2378,8 @@ class AutomationAccessService:
         ):
             raise IssuerWriteRefused("issuer_candidate_binding_mismatch")
         request = IssuerRequest(
-            actor_subject=self._issuer_actor_subject or _subject_from_user(user),
+            actor_subject=(self._issuer_actor_subject if self._issuer_actor_subject_bound
+                           else _subject_from_user(user)),
             request_id=_clean(request_id) or secrets.token_urlsafe(18),
             action=action, access_id=record.access_id,
             card_revision=record.card_revision, issuer_kind=record.issuer_kind,
