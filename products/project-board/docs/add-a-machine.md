@@ -209,6 +209,8 @@ never on the machine and never in an agent's history.
 
 - **Until you do this step, an agent cannot finish signing in**, because it has
   nowhere to keep its credential.
+- **After a reboot, agents already on the machine are cut off until you
+  unlock.** Once you do, they come back within about a minute by themselves.
 
 This is the step we most want to remove: a machine that unlocks itself after a
 reboot, with no password for you to keep. It is being worked on.

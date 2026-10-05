@@ -131,3 +131,14 @@ roll-back target.
   release.
 - `pb source versions` cannot reach the index: it names the index it asked.
   `PIP_INDEX_URL`, or `--index-url`, points it at another one.
+
+**After a reboot of a headless Linux host, or an agent approved whose watch
+never hears it (W558).** The relay keeps agents' credentials in the user's
+password store, and a reboot locks it. Until it is unlocked, every agent on the
+host is cut off, and a newly approved agent's channel stays
+`pending_authorization` (`pb relay-service status`) while the relay log shows
+`credential_store_locked`, `oauth_credential_custody_timeout` or, on an older
+client, `oauth_profile_lock_timeout`. The fix is add-a-worker-host step 6:
+the operator unlocks (unlock, check, reset there, and nothing else). The relay
+then recovers on its next attempt, with no restart; a client older than this
+change needs one relay restart after the unlock.

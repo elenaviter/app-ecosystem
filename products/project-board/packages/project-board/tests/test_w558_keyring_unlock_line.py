@@ -173,3 +173,25 @@ def test_a_mismatched_reset_leaves_the_store_in_place(tmp_path):
     assert "the two entries differ; nothing changed" in result.stdout
     assert (keyrings / "login.keyring").read_text(encoding="utf-8") == "store"
     assert not (tmp_path / "called").exists()
+
+def test_the_new_machine_and_upgrade_procedures_carry_the_keyring_story():
+    """Operator, 2026-10-05: the procedures must carry it "so the agents will guide the user
+    properly instead of making up the non-existing things"."""
+
+    procedures = ROOT / "src" / "project_board" / "procedures"
+    first_run = (procedures / "problem-board-worker" / "references" / "first-run.md").read_text(encoding="utf-8")
+    upgrade = (procedures / "install-update-rollback.md").read_text(encoding="utf-8")
+    assert "**The keyring item on headless Linux (W558).**" in first_run
+    assert "Never give another keyring command of your own" in first_run
+    assert "with no restart" in first_run
+    assert "credential_store_locked" in upgrade and "add-a-worker-host step 6" in upgrade
+    assert "picks the unlock up on its next attempt" in PROCEDURE.read_text(encoding="utf-8")
+
+
+def test_a_locked_store_is_a_transient_relay_failure():
+    from connection_hub.caller.errors import AuthorizationError, CredentialError
+    from project_board.client.relay import transient_failure
+
+    assert transient_failure(CredentialError("credential_store_locked", "x"))
+    assert transient_failure(CredentialError("credential_store_missing", "x"))
+    assert transient_failure(AuthorizationError("oauth_credential_custody_timeout", "x"))

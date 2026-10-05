@@ -120,6 +120,23 @@ _PENDING_REPLACEMENTS: dict[
 # One thread for every credential custody call (OS keychain) of this process,
 # off the event loop and outside the default executor (W461).
 _CUSTODY_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="connection-hub-custody")
+# W558 (host mint, 2026-10-05): a keychain call that blocks for good (a locked
+# Secret Service waiting for an unlock prompt nobody sees) held the one custody
+# thread, and every later call of the process queued behind it until the relay
+# was restarted. A call still running after this bound is abandoned and the
+# next call runs on a fresh custody thread.
+CUSTODY_DEADLINE_SECONDS = 30.0
+
+
+def _replace_stuck_custody_executor(stuck: ThreadPoolExecutor) -> None:
+    """Give later custody calls a fresh thread; the stuck one is left to finish or not."""
+
+    global _CUSTODY_EXECUTOR
+    if _CUSTODY_EXECUTOR is stuck:
+        _CUSTODY_EXECUTOR = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="connection-hub-custody"
+        )
+        stuck.shutdown(wait=False)
 _T = TypeVar("_T")
 
 
@@ -1370,7 +1387,9 @@ class OAuthProfileSessionService:
         (W461). One thread serves every custody call of the process, outside
         the default executor. A started call finishes even when its caller
         is cancelled, so a write is never observed half done; the caller's
-        cancellation is raised after it.
+        cancellation is raised after it. A call still running after
+        CUSTODY_DEADLINE_SECONDS is abandoned instead (W558): the caller gets
+        oauth_credential_custody_timeout and the next call a fresh thread.
         """
 
         loop = asyncio.get_running_loop()
@@ -1389,18 +1408,32 @@ class OAuthProfileSessionService:
                 marks["end"] = time.monotonic()
 
         submitted = time.monotonic()
-        future = loop.run_in_executor(_CUSTODY_EXECUTOR, timed)
+        deadline = submitted + CUSTODY_DEADLINE_SECONDS
+        executor = _CUSTODY_EXECUTOR
+        future = loop.run_in_executor(executor, timed)
         # Only plain assignments here: every diagnostic expression runs inside
         # _record_custody_call's fence, so none can replace the call's own
         # exception or the cancellation's failure signal (W464 review).
         ended: BaseException | None = None
         try:
-            return await asyncio.shield(future)
+            done, _pending = await asyncio.wait({future}, timeout=CUSTODY_DEADLINE_SECONDS)
+            if not done:
+                _replace_stuck_custody_executor(executor)
+                raise AuthorizationError(
+                    "oauth_credential_custody_timeout",
+                    "The credential store did not answer in time (a locked store waiting for a "
+                    "prompt?); the next attempt uses a fresh custody thread.",
+                )
+            return future.result()
         except asyncio.CancelledError as cancelled:
             ended = cancelled
             while not future.done():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _replace_stuck_custody_executor(executor)
+                    raise
                 try:
-                    await asyncio.wait({future})
+                    await asyncio.wait({future}, timeout=remaining)
                 except asyncio.CancelledError:
                     continue
             failure = None if future.cancelled() else future.exception()

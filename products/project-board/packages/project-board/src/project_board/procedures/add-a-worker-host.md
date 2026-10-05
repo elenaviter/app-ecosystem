@@ -466,6 +466,8 @@ printf 'New password: '; read -rs P; echo; printf 'Again: '; read -rs Q; echo; i
 
 Then run the check. A reset loses only what the old store held: each agent on this host authorizes again (step 11).
 
+**A relay that was already running** (a reboot, or a store unlocked after the relay started) picks the unlock up on its next attempt, within about a minute, with no restart: while the store is locked it refuses by name (`credential_store_locked`) instead of waiting for a prompt, and retries (W558). A client older than this change needs the relay restarted once after the unlock (`systemctl --user restart kdcube-problem-board-relay-*.service`, the operator approves).
+
 **The alternative W258 has to choose between** is in that item's note: the person
 types it (nothing stored, a person needed after every reboot), or the machine
 holds a generated secret in a file only that user reads (unattended, protected

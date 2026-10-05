@@ -250,6 +250,7 @@ TRUSTED_OUTCOME_CODES = frozenset(
         "oauth_card_kind_missing",
         "oauth_challenge_not_advertised",
         "oauth_client_id_invalid",
+        "oauth_credential_custody_timeout",
         "oauth_device_authorization_unavailable",
         "oauth_mcp_endpoint_unreachable",
         "oauth_metadata_request_failed",
