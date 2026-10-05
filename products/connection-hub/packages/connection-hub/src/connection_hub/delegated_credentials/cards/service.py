@@ -28,7 +28,7 @@ import time
 import uuid
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
@@ -54,6 +54,7 @@ CARD_LOCK_FILENAME = ".mutation.lock"
 # Bounds how long a caller waits for another mutation on the same card. The
 # lock itself is held for the owner's lifetime, so this only caps the wait.
 CARD_LOCK_WAIT_SECONDS = 30.0
+BeforeCardCommit = Callable[[], Awaitable[None]]
 
 
 class CardMutationLockTimeout(TimeoutError):
@@ -139,6 +140,7 @@ class DelegatedCardService:
         subject_hash: str,
         expected_revision: int,
         now: int | None = None,
+        before_commit: BeforeCardCommit | None = None,
     ) -> CardCurrentPointer:
         """Commit the next revision and expose it as live authority."""
         moment = int(now if now is not None else time.time())
@@ -152,6 +154,11 @@ class DelegatedCardService:
                     access_id=authority.access_id,
                     expected_revision=expected_revision,
                 )
+                # A host-supplied authority gate runs after lock acquisition
+                # and the target CAS check, before projection or durable effects.
+                # It must be bounded and must not mutate this target itself.
+                if before_commit is not None:
+                    await before_commit()
                 await self._reconcile(
                     access_id=authority.access_id, current=current, moment=moment
                 )
@@ -193,6 +200,7 @@ class DelegatedCardService:
         access_id: str,
         expected_revision: int,
         revoked_authority: CardAuthority | None = None,
+        before_commit: BeforeCardCommit | None = None,
     ) -> CardCurrentPointer | None:
         """Commit a revoked revision before any credential cleanup.
 
@@ -209,6 +217,8 @@ class DelegatedCardService:
                     subject_hash=subject_hash, access_id=access_id
                 )
                 if current is None:
+                    if before_commit is not None:
+                        raise CardConflict("card_revision_moved", current_revision=0)
                     await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
                     await self._cache.index_remove(
                         subject_hash=subject_hash, access_id=access_id
@@ -230,6 +240,8 @@ class DelegatedCardService:
                 ):
                     raise CardConflict("revoked_authority_invalid")
 
+                if before_commit is not None:
+                    await before_commit()
                 await self._reconcile(
                     access_id=access_id, current=current, moment=int(time.time())
                 )

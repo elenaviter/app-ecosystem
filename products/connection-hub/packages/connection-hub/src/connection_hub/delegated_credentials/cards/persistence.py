@@ -48,6 +48,7 @@ from connection_hub.delegated_credentials.cards.resolver import (
     DelegatedCardResolver,
 )
 from connection_hub.delegated_credentials.cards.service import (
+    BeforeCardCommit,
     CardConflict,
     CardMutationLock,
     CardServingUnavailable,
@@ -72,6 +73,17 @@ class CardPersistence(Protocol):
         *,
         subject_hash: str,
         expected_revision: int,
+    ) -> None: ...
+
+    async def persist_guarded(
+        self, authority: CardAuthority, handles: CardCredentialHandles, *,
+        subject_hash: str, expected_revision: int,
+        before_commit: BeforeCardCommit,
+    ) -> None: ...
+
+    async def forget_guarded(
+        self, authority: CardAuthority, *, subject_hash: str,
+        before_commit: BeforeCardCommit,
     ) -> None: ...
 
     async def forget(
@@ -169,13 +181,16 @@ class DurableCardPersistence:
         *,
         subject_hash: str,
         expected_revision: int,
+        before_commit: BeforeCardCommit | None = None,
     ) -> None:
         now = int(time.time())
+        guard = {"before_commit": before_commit} if before_commit is not None else {}
         await self._cards.commit(
             authority,
             subject_hash=subject_hash,
             expected_revision=expected_revision,
             now=now,
+            **guard,
         )
         try:
             if authority_is_credential_free(authority):
@@ -188,18 +203,35 @@ class DurableCardPersistence:
                 "credential_handles_unavailable", access_id=authority.access_id
             ) from exc
 
+    async def persist_guarded(
+        self, authority: CardAuthority, handles: CardCredentialHandles, *,
+        subject_hash: str, expected_revision: int,
+        before_commit: BeforeCardCommit,
+    ) -> None:
+        await self.persist(authority, handles, subject_hash=subject_hash,
+                           expected_revision=expected_revision, before_commit=before_commit)
+
+    async def forget_guarded(
+        self, authority: CardAuthority, *, subject_hash: str,
+        before_commit: BeforeCardCommit,
+    ) -> None:
+        await self.forget(authority, subject_hash=subject_hash, before_commit=before_commit)
+
     async def forget(
         self,
         authority: CardAuthority,
         *,
         subject_hash: str,
         revoked_authority: CardAuthority | None = None,
+        before_commit: BeforeCardCommit | None = None,
     ) -> None:
+        guard = {"before_commit": before_commit} if before_commit is not None else {}
         await self._cards.revoke(
             subject_hash=subject_hash,
             access_id=authority.access_id,
             expected_revision=authority.card_revision,
             revoked_authority=revoked_authority,
+            **guard,
         )
         await self._handles.remove(authority)
 
