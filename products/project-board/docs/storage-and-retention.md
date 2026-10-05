@@ -72,6 +72,17 @@ LOCAL: each participating machine
     revisioned agent-readable plan export
 ```
 
+## Ranked Plan Search Snapshots
+
+Plan search keeps its ranked rows and generation metadata together in one
+repeatable-read transaction. Expired-snapshot housekeeping runs separately,
+as an autocommitted statement before ranking, so simultaneous searches that
+reach the same expired rows do not invalidate each other's ranking transaction.
+An unavailable project generation is refused before housekeeping; the
+generation is read again inside the ranking transaction for the saved view.
+This does not widen the housekeeping scope or change project/Card authority,
+snapshot expiry, or cursor binding.
+
 ## Mailbox Reconciliation Receipts
 
 A host-local mailbox reconciliation run that archives mail, sends a failure
