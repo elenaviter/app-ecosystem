@@ -51,6 +51,8 @@ RECORD_FIELDS = ("schema", *INTENT_FIELDS, "intent_digest", "phase", "decision",
 PROOF_FIELDS = ("service_id", "timestamp", "signature")
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
+# The Hub's fresh per-request value: at least 128 random bits, hex.
+_ECHO = re.compile(r"^[0-9a-f]{32,128}$")
 
 
 class TransactionAuthorityRefused(ValueError):
@@ -137,12 +139,17 @@ def verify_transaction_authority(
     is this Hub runtime; ``request_echo`` is the fresh value this Hub sent.
     STAGE needs an unexpired, undecided intent and the Card still at its
     expected revision. DECISION needs a recorded COMMITTED or ABORTED, even
-    after the original expiry, and, when given, the local receipt's intent.
+    after the original expiry, for exactly the local receipt's intent
+    (``expected_intent_digest`` is required there).
     """
 
     moment = int(time.time()) if now is None else int(now)
     if phase not in PHASES:
         raise TransactionAuthorityRefused("card_transaction_phase_invalid")
+    if not _ECHO.match(str(request_echo or "")):
+        raise TransactionAuthorityRefused("card_transaction_request_echo_invalid")
+    if phase == "decision" and not _HEX64.match(str(expected_intent_digest or "")):
+        raise TransactionAuthorityRefused("card_transaction_intent_required")
     if not isinstance(body, Mapping) or set(body) != {*RECORD_FIELDS, "authority_proof"}:
         raise TransactionAuthorityRefused("card_transaction_record_invalid")
     record = {name: body[name] for name in RECORD_FIELDS}
@@ -152,7 +159,7 @@ def verify_transaction_authority(
     # 2. The response answers THIS request, for THIS transaction, phase and Hub.
     if record["schema"] != RECORD_SCHEMA:
         raise TransactionAuthorityRefused("card_transaction_record_invalid")
-    if not request_echo or record["request_echo"] != request_echo:
+    if record["request_echo"] != request_echo:
         raise TransactionAuthorityRefused("card_transaction_request_mismatch")
     if not _HEX64.match(str(transaction_id)) or record["transaction_id"] != transaction_id:
         raise TransactionAuthorityRefused("card_transaction_id_mismatch")

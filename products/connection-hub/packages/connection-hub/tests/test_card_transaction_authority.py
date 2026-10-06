@@ -12,7 +12,7 @@ from test_card_service import NOW, SUBJECT_HASH, _authority
 
 SECRET = "s" * 40
 SERVICE = "problem-board"
-ECHO = "echo-" + "1" * 32
+ECHO = "0123456789abcdef" * 2
 AUDIENCE = "connection-hub:tenant:project"
 TX = "a" * 64
 BINDING = ("project", "work:project:one")
@@ -136,9 +136,9 @@ def test_a_recorded_decision_materializes_even_after_the_original_expiry(decisio
 
 def test_a_replayed_response_for_another_request_is_refused():
     # The signature covers this Hub's echo, so an old response fails it first.
-    _refused("authority_signature_invalid", _signed(_record(request_echo="echo-old")))
+    _refused("authority_signature_invalid", _signed(_record(request_echo="f" * 32)))
     # And a record naming another echo is refused even when sealed over ours.
-    record = _record(request_echo="echo-old")
+    record = _record(request_echo="f" * 32)
     seal = ta._signature(SECRET.encode(), ta._message(SERVICE, str(NOW), ECHO, record))
     body = {**record, "authority_proof": {"service_id": SERVICE, "timestamp": str(NOW), "signature": seal}}
     _refused("card_transaction_request_mismatch", body)
@@ -154,7 +154,9 @@ def test_a_record_cannot_pick_another_card():
 
 
 def test_an_undecided_record_materializes_nothing():
-    _refused("card_transaction_undecided", _signed(_record(phase="decision")), phase="decision")
+    record = _record(phase="decision")
+    _refused("card_transaction_undecided", _signed(record), phase="decision",
+             expected_intent_digest=record["intent_digest"])
 
 
 def test_a_moved_card_cannot_be_staged():
@@ -186,3 +188,83 @@ def test_an_extra_or_missing_field_is_refused_before_anything_is_read():
 def test_a_short_secret_is_refused():
     with pytest.raises(ta.TransactionAuthorityRefused, match="authority_secret_invalid"):
         _signed(_record(), secret="short")
+
+
+# ── Ops findings on b2101fa2 (11:38) ───────────────────────────────────────
+
+
+def test_the_timestamp_is_inside_the_signature():
+    body = _signed(_record())
+    body["authority_proof"]["timestamp"] = str(NOW + 5)  # re-stamped after signing, still within skew
+    _refused("authority_signature_invalid", body)
+
+
+def test_a_decision_needs_the_local_receipts_intent():
+    record = _record(phase="decision", decision="committed", decided_at=NOW)
+    _refused("card_transaction_intent_required", _signed(record), phase="decision")
+    _refused("card_transaction_intent_required", _signed(record), phase="decision", expected_intent_digest="x")
+
+
+@pytest.mark.parametrize("echo", ["", "short", "g" * 32, "0" * 31, "A" * 32])
+def test_a_malformed_request_echo_is_refused(echo):
+    _refused("card_transaction_request_echo_invalid", _signed(_record()), request_echo=echo)
+
+
+# Cross-implementation vectors (Ops finding 4): the authority's own JSON must
+# reproduce these exactly. The intent digest uses ASCII-escaped canonical JSON
+# (issuer_payload_digest); the candidate digest uses UTF-8 canonical JSON
+# (change_digest); integers stay integers.
+VECTOR_CANDIDATE_DIGEST = "7f2837f05883b29fa134eca0da7c2864b0e013153be3d78d3d4423c5853f4721"
+VECTOR_INTENT_DIGEST = "58893fb2c11e1132b34d76afec55bd26748c0f7994a52b66fdc990e96f68d745"
+VECTOR_SIGNATURE = "v1x9wKYlrRHcJ6cItFmeP87ID4CFVVGB3foXdncZOa0"
+VECTOR_SECRET = "vector-secret-0123456789abcdef-0123"
+VECTOR_TIMESTAMP = 1_790_000_000
+VECTOR_ECHO = "00112233445566778899aabbccddeeff"
+
+
+def _vector_record():
+    candidate = {"access_id": "card-é", "card_revision": 8, "label": "Zürich — 東京", "ttl": 3600}
+    record = {
+        "schema": ta.RECORD_SCHEMA, "transaction_id": "a" * 64, "epoch": 3, "participant": "project",
+        "binding_kind": "project", "binding_ref": "work:project:ñ", "actor_subject": "person-é",
+        "actor_kind": "human", "action": "update", "subject_hash": "b" * 64, "access_id": "card-é",
+        "expected_card_revision": 7, "candidate_revision": 8, "candidate_digest": change_digest(candidate),
+        "expected_dependency_revisions": {"control-ü": 2}, "membership_incarnation": "m-1",
+        "request_id": "r-1", "context_ref": "ctx-日本", "expires_at": 1_790_000_600,
+        "audience": "connection-hub:tenant:project", "phase": "decision", "decision": "committed",
+        "decided_at": 1_790_000_100, "request_echo": VECTOR_ECHO, "candidate": candidate,
+    }
+    record["intent_digest"] = ta.intent_digest(record)
+    return record
+
+
+def test_cross_implementation_vectors():
+    record = _vector_record()
+    body = ta.sign_transaction_authority(record, secret=VECTOR_SECRET, service_id="problem-board",
+                                         now=VECTOR_TIMESTAMP)
+    assert record["candidate_digest"] == VECTOR_CANDIDATE_DIGEST
+    assert record["intent_digest"] == VECTOR_INTENT_DIGEST
+    assert body["authority_proof"]["signature"] == VECTOR_SIGNATURE
+
+
+def test_the_vectors_follow_from_the_written_algorithm_alone():
+    """The algorithm an authority implements, in plain stdlib terms."""
+    import base64
+    import hashlib
+    import hmac
+    import json
+
+    def canonical(value, *, ascii_only):
+        return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=ascii_only, allow_nan=False)
+
+    record = _vector_record()
+    candidate_digest = hashlib.sha256(canonical(record["candidate"], ascii_only=False).encode("utf-8")).hexdigest()
+    intent = {name: record[name] for name in ta.INTENT_FIELDS}
+    intent_digest = hashlib.sha256(canonical(intent, ascii_only=True).encode("utf-8")).hexdigest()
+    record_digest = hashlib.sha256(canonical(record, ascii_only=True).encode("utf-8")).hexdigest()
+    message = "\n".join((ta.PROTOCOL, "problem-board", str(VECTOR_TIMESTAMP), VECTOR_ECHO, record_digest))
+    signature = base64.urlsafe_b64encode(
+        hmac.new(VECTOR_SECRET.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).digest()
+    ).rstrip(b"=").decode("ascii")
+    assert (candidate_digest, intent_digest, signature) == (
+        VECTOR_CANDIDATE_DIGEST, VECTOR_INTENT_DIGEST, VECTOR_SIGNATURE)
