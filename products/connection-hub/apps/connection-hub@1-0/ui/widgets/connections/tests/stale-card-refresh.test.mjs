@@ -85,7 +85,7 @@ test('after a 409 a second Save sends nothing and the pin is unchanged', () => {
   const request = save.indexOf('dispatch(updateDelegatedAccess(')
   assert.ok(guard > 0 && guard < request, 'the stale check runs before any request')
   assert.match(save.slice(guard, request), /setEditActionError\(STALE_EDIT_MESSAGE\);\s+return;/)
-  assert.match(save, /if \(updated\?\.status === 409\) \{\s+editBaseRevision\.current = pinAfterRefusal\(editBaseRevision\.current\);\s+setEditRefusedStale\(true\);/)
+  assert.match(save, /if \(updated\?\.status === 409\) \{[^]*?editBaseRevision\.current = pinAfterRefusal\(editBaseRevision\.current\);\s+setEditRefusedStale\(true\);/)
   assert.doesNotMatch(panel, /editBaseRevision\.current = null;\s+setEditActionError/)
   assert.doesNotMatch(panel, /if \(updated\?\.status === 409\) editBaseRevision\.current = null;/)
   assert.match(panel, /expectedCardRevision: editBaseRevision\.current \?\? item\.card_revision,/)
@@ -101,9 +101,3 @@ test('Reload this Card keeps the editor open, seeded from the server version wit
   assert.match(panel, /onClick=\{\(\) => \{ void reloadEdit\(record\); \}\}>\s+Reload this Card/)
 })
 
-test('opening any Card reads it, and a list reload re-reads an open Card the list does not hold', () => {
-  assert.match(panel, /if \(!viewAccessId\) return;\s+const record = freshestCard\(items, focusedCard, viewAccessId\);\s+if \(record\) void readCurrentCard\(record\);/)
-  const listReload = panel.slice(panel.indexOf('const openCardId = editingAccessId || viewAccessId;'))
-  assert.match(listReload, /items\.some\(\(item\) => item\.access_id === openCardId\)\) return;/)
-  assert.match(listReload, /record\.source === 'control' \|\| projectAgentCardUpdateTarget\(record\)/)
-})

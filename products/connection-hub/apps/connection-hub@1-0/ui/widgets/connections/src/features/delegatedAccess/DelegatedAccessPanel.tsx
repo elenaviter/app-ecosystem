@@ -171,7 +171,6 @@ import {
   pinAfterRefusal,
   pinAfterSave,
   pinAtStart,
-  tabReturnReads,
   withLinkedOperation,
 } from './cardFreshness';
 import {
@@ -2391,6 +2390,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // reads the server, even when a copy is cached: another admin may have
   // saved since this tab loaded it, and only the read shows that revision.
   const [controlFocusReadKey, setControlFocusReadKey] = useState<string | null>(null);
+  // The Card a Control link's own read just opened (its open read is done).
+  const openReadDone = useRef<string | null>(null);
   // Keyed by value, not object identity, so a re-render never re-reads.
   const controlFocus = accessCardFocus?.controlOnly ? accessCardFocus : null;
   const controlFocusValue = controlFocus ? controlFocusKey(controlFocus) : null;
@@ -2406,7 +2407,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         if (!current) return;
         const found = Boolean(result.access && matchesAccessCardFocus(result.access, accessCardFocus));
         setAccessCardFocusState(found ? 'resolved' : 'unavailable');
-        if (found) setControlFocusReadKey(key);
+        if (found) {
+          openReadDone.current = accessCardFocus.accessId;
+          setControlFocusReadKey(key);
+        }
       })
       .catch(() => {
         if (current) setAccessCardFocusState('unavailable');
@@ -2414,39 +2418,25 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     return () => { current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [controlFocusValue, dispatch]);
-  // W587: returning to the tab reads again what it shows, so a save made
-  // elsewhere while the tab was hidden appears without a page reload.
+  // W587, the operator's rule (14:50): "i asked not to refetch! i asked only
+  // when card is opened in connection hub (clicked on it for preview) and when
+  // edit is pressed. only then". Opening a Card reads it ONCE; nothing re-reads
+  // it while it is open (no list reload, tab return, re-render or Card update).
+  // A Control link already read the Card to open it: that read is this open's.
   useEffect(() => {
-    if (typeof document === 'undefined') return undefined;
-    const onVisible = () => {
-      const reads = tabReturnReads(document.visibilityState, controlFocus);
-      if (reads.list) void dispatch(loadDelegatedAccess());
-      if (reads.control) void dispatch(loadControlCard(reads.control));
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controlFocusValue, dispatch]);
-  // W587: opening a Card reads it from the server, whatever kind it is.
-  useEffect(() => {
-    if (!viewAccessId) return;
+    if (!viewAccessId) {
+      openReadDone.current = null;
+      return;
+    }
+    if (openReadDone.current === viewAccessId) {
+      openReadDone.current = null;
+      return;
+    }
     const record = freshestCard(items, focusedCard, viewAccessId);
     if (record) void readCurrentCard(record);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [viewAccessId, readCurrentCard]);
-  // W587: a list reload (the top Refresh, tab return, page open) refreshes the
-  // Cards that live in the list; an open Card the list does not hold (a
-  // project Control, a project agent Card) is read again here. It never
-  // reseeds an open edit: a newer revision makes that edit stale instead.
-  const openCardId = editingAccessId || viewAccessId;
-  useEffect(() => {
-    if (!openCardId || items.some((item) => item.access_id === openCardId)) return;
-    const record = freshestCard(items, focusedCard, openCardId);
-    if (record && (record.source === 'control' || projectAgentCardUpdateTarget(record))) {
-      void readCurrentCard(record);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items]);
+  }, [viewAccessId]);
+
   useEffect(() => {
     if (!accessCardFocus) {
       focusedAccessId.current = null;
@@ -3387,9 +3377,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       // W587: after a 409 the edit stays pinned and is refused until the
       // person reloads the Card; the read shows them the server version.
       if (updated?.status === 409) {
+        // No automatic re-read (operator, 14:50); "Reload this Card" reads it.
         editBaseRevision.current = pinAfterRefusal(editBaseRevision.current);
         setEditRefusedStale(true);
-        void readCurrentCard(item);
         setEditActionError(STALE_EDIT_MESSAGE);
         return;
       }

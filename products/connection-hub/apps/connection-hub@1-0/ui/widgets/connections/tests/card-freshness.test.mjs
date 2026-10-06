@@ -11,7 +11,6 @@ import {
   pinAfterSave,
   pinAtStart,
   catalogPinAtStart,
-  tabReturnReads,
   withLinkedOperation,
   withNewerCard,
 } from '../src/features/delegatedAccess/cardFreshness.ts'
@@ -60,20 +59,18 @@ test('a Control link always reads the server, whatever the tab has cached', () =
   assert.equal(controlFocusRead(null), null)
 })
 
-test('returning to the tab reads the list and the open Control; a hidden tab reads nothing', () => {
-  const link = focus({ control_card_id: 'control-1', project_ref: 'work:project:maintenance' })
-  assert.deepEqual(tabReturnReads('visible', link), { list: true, control: controlFocusRead(link) })
-  assert.deepEqual(tabReturnReads('visible', null), { list: true, control: null })
-  assert.deepEqual(tabReturnReads('hidden', link), { list: false, control: null })
-})
-
-test('a newer read replaces the list row; an older or foreign one does not', () => {
+test('a newer read replaces the list row; an older, equal or foreign one returns the SAME array', () => {
   const other = { access_id: 'agent-2', card_revision: 9 }
-  assert.deepEqual(withNewerCard([r4, other], r5), [r5, other])
-  assert.deepEqual(withNewerCard([r5, other], r4), [r5, other])
-  assert.deepEqual(withNewerCard([other], r5), [other]) // a Card the list does not hold is not added
-  assert.deepEqual(withNewerCard([r4], null), [r4])
-  // So the row, a row's Edit and the viewed record all start from r5.
+  const list = [r4, other]
+  const replaced = withNewerCard(list, r5)
+  assert.deepEqual(replaced, [r5, other])
+  assert.notEqual(replaced, list)
+  // W587 loop: identity must not change when nothing is newer, or anything keyed on the list fires again.
+  const current = [r5, other]
+  assert.equal(withNewerCard(current, r4), current)
+  assert.equal(withNewerCard(current, r5), current)
+  assert.equal(withNewerCard(current, { access_id: 'unknown', card_revision: 99 }), current)
+  assert.equal(withNewerCard(current, null), current)
   assert.equal(freshestCard(withNewerCard([r4], r5), r5, 'control-1'), r5)
 })
 
@@ -87,15 +84,11 @@ test('the panel moves the pin only through these rules', () => {
   ])
 })
 
-test('the focus and tab-return effects read through the rules, with no cached-copy shortcut', () => {
+test('the focus effect reads through the rule, with no cached-copy shortcut', () => {
   const focusEffect = panel.slice(panel.indexOf('const read = controlFocusRead(accessCardFocus);'), panel.indexOf('}, [controlFocusValue, dispatch]);'))
   assert.match(focusEffect, /if \(!read \|\| !accessCardFocus\) return;/)
   assert.match(focusEffect, /dispatch\(loadControlCard\(read\)\)/)
   assert.doesNotMatch(focusEffect, /focusedCard|findAccessCardFocus|items\./)
-  const tabReturn = panel.slice(panel.indexOf('const onVisible = () => {'), panel.indexOf("document.addEventListener('visibilitychange', onVisible);"))
-  assert.match(tabReturn, /const reads = tabReturnReads\(document\.visibilityState, controlFocus\);/)
-  assert.match(tabReturn, /if \(reads\.list\) void dispatch\(loadDelegatedAccess\(\)\);/)
-  assert.match(tabReturn, /if \(reads\.control\) void dispatch\(loadControlCard\(reads\.control\)\);/)
 })
 
 test('a Control or project agent Card read updates the list row in the store', () => {
