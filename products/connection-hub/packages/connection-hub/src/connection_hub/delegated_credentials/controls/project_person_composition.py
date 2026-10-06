@@ -10,8 +10,8 @@ project-held Control Card was resolved under the person's own subject, found
 nothing, and failed closed as ``control_card_unresolvable`` (W260, 2026-09-26,
 right after the project moved its people to Cards).
 
-This module names where such a Control Card lives and composes the two with
-the same selection intersection the My Card seed uses. It applies only when
+This module names where such a Control Card lives and validates the exact
+cross-owner edge before upstream-owned selection composition. It applies only when
 the binding is exactly the person's derived Control Card on the binding's
 project; any other binding keeps the ordinary path.
 """
@@ -25,11 +25,10 @@ from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     authority_is_credentialless,
 )
-from connection_hub.delegated_credentials.controls.model import CONTROL_COMPOSITION_AND
 from connection_hub.delegated_credentials.controls.snapshot import control_snapshot_is_exact
 from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
-    intersect_card_authority_selection,
+    compose_card_authority_selection,
 )
 from connection_hub.delegated_credentials.controls.project_person import (
     PROJECT_PERSON_CONTROL_ISSUER_KIND,
@@ -72,7 +71,7 @@ def project_held_control(card: CardAuthority) -> ProjectHeldControl | None:
 
 
 def compose_with_project_held_control(card: CardAuthority, control: CardAuthority) -> CardAuthority:
-    """The card narrowed by its project-held Control Card; ControlCardMismatch when they do not belong together."""
+    """Compose an exact person/Control edge; refuse unrelated cross-owner links."""
 
     held = project_held_control(card)
     if held is None:
@@ -85,14 +84,12 @@ def compose_with_project_held_control(card: CardAuthority, control: CardAuthorit
         raise ControlCardMismatch("control_card_binding_mismatch")
     # The guards ordinary composition applies, kept here so every caller of
     # this composition gets them (review on app-ecosystem#162): a Control Card
-    # never carries a credential, is an exact snapshot, only narrows (and),
+    # never carries a credential, is an exact snapshot,
     # is issued by the binding's project, and shares the Card's identity scope.
     if not authority_is_credentialless(control):
         raise ControlCardMismatch("control_card_has_credential")
     if not control_snapshot_is_exact(control):
         raise ControlCardMismatch("control_card_exact_snapshot_required")
-    if (control.composition_mode or CONTROL_COMPOSITION_AND) != CONTROL_COMPOSITION_AND:
-        raise ControlCardMismatch("project_person_control_requires_and")
     if str(control.issuer_ref or "") != held.project_ref:
         raise ControlCardMismatch("control_card_issuer_mismatch")
     card_scope = str(card.identity_scope or "grantor").strip() or "grantor"
@@ -101,7 +98,7 @@ def compose_with_project_held_control(card: CardAuthority, control: CardAuthorit
         raise ControlCardMismatch("control_card_identity_scope_mismatch")
     if control.state != CARD_STATE_ACTIVE:
         raise ControlCardMismatch("control_card_not_active")
-    return intersect_card_authority_selection(card, control)
+    return compose_card_authority_selection(card, control)
 
 
 __all__ = [

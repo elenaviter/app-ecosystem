@@ -110,6 +110,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-06 | Terminal issuer receipts must finish active-intent retirement | — |
 
+| 2026-10-06 | Current Control hierarchies preserve stored selections and downstream policy | A bounded, exact-coordinate resolver connects ordinary and human authorization readers; ancestor-ceiling interpretation, provider-wide dimensions and application interface gaps remain explicit qualification boundaries. |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).

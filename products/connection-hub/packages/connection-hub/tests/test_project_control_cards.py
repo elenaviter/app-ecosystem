@@ -1382,3 +1382,51 @@ async def test_a_refused_control_migration_with_an_actor_is_not_swallowed() -> N
     with pytest.raises(CallerWriteRefused, match="pb_refused"):
         await service._ensure_control_snapshot(record_from_card(legacy), actor_subject=OWNER)
     assert persistence.persist_calls == 0 and persistence.authority == legacy
+
+
+class _GuardedPersistence(_Persistence):
+    async def persist_guarded(self, authority, handles, *, subject_hash, expected_revision, before_commit):
+        await before_commit()
+        await self.persist(authority, handles, subject_hash=subject_hash, expected_revision=expected_revision)
+
+
+def _governed_person_control():
+    # A person Control bound to its project Control (W577 hierarchy) is a governed Card.
+    from connection_hub.delegated_credentials.cards.model import ControlCardBinding
+    from test_caller_writer_gate import Policy, _registry
+    legacy = dataclasses.replace(
+        _regular_control(revision=4), properties={}, resource_grants={RESOURCE: ("*",)},
+        resource_operations={RESOURCE: ("*",)}, named_service_operations=NamedServiceSelection.all(),
+        account_scope={"*": {"*": ("*",)}},
+        control_card=ControlCardBinding(control_id="control-project", issuer_ref=PROJECT_REF,
+                                        issuer_kind="project", control_revision=2))
+    persistence = _GuardedPersistence(legacy)
+    persistence.initial = dataclasses.replace(legacy, access_id="other-control")  # no trusted history
+    service = AutomationAccessService(redis=_Redis(), tenant="tenant", project="project", config=None,
+                                      grant_store=object(), card_persistence=persistence)
+    policy = Policy(ttl=10**8)
+    service.bind_caller_writers(_registry(policy))
+    return legacy, persistence, service, policy
+
+
+@pytest.mark.asyncio
+async def test_a_governed_person_control_read_without_an_actor_writes_nothing_through_the_real_gate() -> None:
+    legacy, persistence, service, policy = _governed_person_control()
+    migrated = await service._ensure_control_snapshot(record_from_card(legacy))
+    assert persistence.persist_calls == 0 and persistence.authority == legacy and policy.calls == []
+    assert migrated.card_revision == legacy.card_revision and migrated.resource_grants == {}
+
+
+@pytest.mark.asyncio
+async def test_a_governed_person_control_migration_with_an_actor_is_decided_by_its_binding() -> None:
+    legacy, persistence, service, policy = _governed_person_control()
+    migrated = await service._ensure_control_snapshot(record_from_card(legacy), actor_subject=OWNER)
+    assert persistence.persist_calls == 1 and migrated.card_revision == legacy.card_revision + 1
+    assert [(call[0], getattr(call[1], "action", None)) for call in policy.calls[:2]] == [
+        ("decide", "control_snapshot"), ("revalidate", "control_snapshot")]
+    policy.allow = False
+    persistence.authority = legacy
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+    with pytest.raises(CallerWriteRefused):
+        await service._ensure_control_snapshot(record_from_card(legacy), actor_subject=OWNER)
+    assert persistence.authority == legacy

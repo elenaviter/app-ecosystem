@@ -107,8 +107,6 @@ class ProjectPersonControlIdentity:
             raise ProjectPersonControlError("project_person_control_issuer_kind_mismatch")
         if authority.issuer_ref != identity.project_ref:
             raise ProjectPersonControlError("project_person_control_issuer_ref_mismatch")
-        if authority.composition_mode != CONTROL_COMPOSITION_AND:
-            raise ProjectPersonControlError("project_person_control_requires_and")
         return identity
 
     def to_property(self) -> dict[str, str]:

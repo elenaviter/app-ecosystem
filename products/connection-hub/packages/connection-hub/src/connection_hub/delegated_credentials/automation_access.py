@@ -138,6 +138,7 @@ from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
 )
+from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
 )
@@ -1997,31 +1998,29 @@ class AutomationAccessService:
     ) -> tuple[AutomationAccessRecord | None, CardAuthority | None]:
         """The record's Control Card and its effective authority; (None, None) when unresolvable.
 
-        A Card bound to the Control Card its project holds for the person is
-        resolved under the project's subject and composed by selection
-        intersection (W260); every other binding keeps ordinary composition.
+        The first result is the current parent-composed immediate Control.
+        Exact project-held person edges use their derived holder; all other
+        edges retain ordinary owner/holder checks. No read writes My Card.
         Raises ControlCardMismatch or CardUnavailable, never falls open.
         """
 
-        binding = record.control_card
         caller = card_authority_from_record(record)
-        held = project_held_control(caller)
-        if held is not None:
-            control = await self._resolve_control_record(
-                held.control_id, grantor_subject=held.grantor_subject
-            )
-            if control is None:
+
+        async def load_control(control_id: str, *, grantor_subject: str) -> CardAuthority | None:
+            current = await self._load_record(control_id, grantor_subject=grantor_subject)
+            return card_authority_from_record(current) if current is not None else None
+
+        try:
+            result = await compose_control_hierarchy(caller, load_control=load_control)
+        except ControlCardMismatch as exc:
+            if exc.reason == "control_card_unresolvable":
                 return None, None
-            return control, compose_with_project_held_control(
-                caller, card_authority_from_record(control)
-            )
-        control = await self._resolve_control_record(
-            binding.control_id,
-            grantor_subject=binding.holder_subject or record.grantor_subject,
+            raise
+        return (
+            record_from_card(result.effective_control_card)
+            if result.effective_control_card is not None else None,
+            result.effective_card,
         )
-        if control is None:
-            return None, None
-        return control, effective_card_authority(caller, card_authority_from_record(control))
 
     async def _effective_control_view(
         self,
@@ -7466,8 +7465,6 @@ class AutomationAccessService:
             }
         if record is None or record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_found", "status": 404}
-        if _record_is_credentialless(record):
-            return {"ok": False, "error": "control_card_target_invalid", "status": 409}
         if expected_card_revision is not None and int(expected_card_revision) != int(
             record.card_revision
         ):
@@ -7521,13 +7518,9 @@ class AutomationAccessService:
             holder_subject=control_holder if control_holder != grantor_subject else "",
         )
         try:
-            effective_card_authority(
-                dataclasses.replace(
-                    card_authority_from_record(record),
-                    control_card=binding,
-                ),
-                card_authority_from_record(control),
-            )
+            resolved_control, _ = await self._compose_with_control(dataclasses.replace(record, control_card=binding))
+            if resolved_control is None:
+                raise ControlCardMismatch("control_card_unresolvable")
         except ControlCardMismatch as exc:
             return {
                 "ok": False,
