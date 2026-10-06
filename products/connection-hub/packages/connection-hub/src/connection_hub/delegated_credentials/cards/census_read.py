@@ -52,7 +52,9 @@ from typing import Any, Callable, Mapping
 from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
 
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
-from ..controls.project_person import ProjectPersonControlIdentity, ProjectPersonControlError
+from ..controls.project_person import (
+    PROJECT_PERSON_CONTROL_PROPERTY, ProjectPersonControlError, ProjectPersonControlIdentity,
+)
 from ..controls.hierarchy import compose_control_hierarchy
 from ..controls.effective import ControlCardMismatch
 from ..project_identity_lifecycle import (
@@ -72,10 +74,17 @@ MAX_PERSONS = 500
 # headroom for the proof and transport wrapper.
 MAX_ANSWER_BYTES = 512 * 1024 - 4096
 CAPABILITY_FIELDS = (
-    "access_id", "grantor_subject", "card_revision", "card_kind", "source", "state", "catalog_version",
+    "schema", "access_id", "client_id", "grantor_subject", "delegate_subject", "issuer_kind", "issuer_ref",
+    "card_revision", "card_kind", "source", "state", "catalog_version",
     "expires_at", "composition_mode", "account_scope", "identity_scope", "operations", "resource_grants",
     "resource_operations", "resource_acceptance", "named_service_operations", "named_services", "control_card",
 )
+# The only properties a qualified evaluation reads (controls/, project_identity_*):
+# the person- and invitation-Control identity markers, the exact-snapshot
+# marker and the per-service composition modes. Personal settings (GitHub link,
+# commit email) and anything else stay out.
+IDENTITY_PROPERTIES = (PROJECT_PERSON_CONTROL_PROPERTY, "connection_hub.project_invitation_control",
+                       "connection_hub.control_snapshot", "service_composition_modes")
 _ECHO = re.compile(r"[0-9a-f]{32,128}\Z")
 _BOUNDED = 256
 
@@ -266,12 +275,14 @@ class CardCensusReadOperation:
 
 
 def _present(authority: Any, *, my_card: bool = False) -> dict[str, Any]:
+    """The fields a qualified identity and capability evaluation reads, so the caller can rebuild the Card
+    with ``CardAuthority.from_mapping`` and run it (CodeApp 20:34/20:36); unrelated properties stay out."""
     raw = authority.to_dict()
     fields = {name: raw[name] for name in CAPABILITY_FIELDS if name in raw}
-    if my_card:
-        # The raw edge provenance the qualified identity path reads (CodeApp 20:20).
-        edge = dict(authority.provenance or {}).get(PROJECT_IDENTITY_EDGE_PROVENANCE)
-        fields["provenance"] = {PROJECT_IDENTITY_EDGE_PROVENANCE: edge} if edge is not None else {}
+    properties = dict(authority.properties or {})
+    fields["properties"] = {name: properties[name] for name in IDENTITY_PROPERTIES if name in properties}
+    edge = dict(authority.provenance or {}).get(PROJECT_IDENTITY_EDGE_PROVENANCE)
+    fields["provenance"] = {PROJECT_IDENTITY_EDGE_PROVENANCE: edge} if edge is not None else {}
     return {"subject_hash": subject_hash_for(authority.grantor_subject), "access_id": authority.access_id,
             "state": "present", "revision": authority.card_revision, "authority": fields}
 
