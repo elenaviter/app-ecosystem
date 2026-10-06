@@ -282,3 +282,27 @@ async def test_prolonging_refusals(tmp_path):
 
     unknown_mode = await harness.service.renew_access(USER, access_id=access_id, mode="forever")
     assert unknown_mode["ok"] is False and unknown_mode["error"] == "invalid_renew_mode"
+
+
+@pytest.mark.asyncio
+async def test_prolonging_a_card_with_an_unresolved_transaction_extends_nothing(tmp_path):
+    # W580 finding 1: the fenced precondition read comes BEFORE the credential
+    # extension, and its refusal is a structured answer, not an exception.
+    from connection_hub.delegated_credentials.cards.service import CardConflict
+    harness = _Harness(tmp_path)
+    store = _ProlongingGrantStore()
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    before = harness.persistence.cards[access_id][0]
+
+    async def staged(*args, **kwargs):
+        raise CardConflict("card_transaction_unresolved")
+
+    harness.persistence.current_revision = staged
+    refused = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert refused["ok"] is False and refused["error"] == "delegated_card_not_committed"
+    assert refused["reason"] == "card_transaction_unresolved" and refused["retryable"] is True
+    assert store.extended_refresh == [] and store.extended_grants == []
+    assert harness.persistence.cards[access_id][0] == before

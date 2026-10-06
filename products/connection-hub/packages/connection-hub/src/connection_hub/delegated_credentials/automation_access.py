@@ -210,6 +210,7 @@ from connection_hub.delegated_credentials.cards.cache import (
     DelegatedCardRuntimeCache,
 )
 from connection_hub.delegated_credentials.cards.store import (
+    CardStorageError,
     subject_hash_for,
 )
 from connection_hub.delegated_credentials.cards.resolver import (
@@ -9539,6 +9540,23 @@ class AutomationAccessService:
                     else "An agent's credential renews itself the next time the agent is granted from the chat."
                 ),
             }
+        # The precondition read applies the shared Card fence, so a Card with
+        # an unresolved transaction is refused BEFORE the credential's life is
+        # extended (W580 finding 1). A stage that lands after this read and
+        # before the commit is still refused at the commit, but the extension
+        # is not undone: only one shared SQL transaction closes that (N1).
+        try:
+            committed_revision = await self._committed_revision(
+                record.access_id, grantor_subject=record.grantor_subject
+            )
+        except (CardUnavailable, CardConflict, CardStorageError) as exc:
+            return {
+                "ok": False,
+                "error": "delegated_card_not_committed",
+                "reason": getattr(exc, "reason", "") or str(exc),
+                "retryable": True,
+                "status": 503,
+            }
         if record.refresh_token:
             extend_refresh = getattr(store, "extend_refresh_token", None)
             if extend_refresh is None:
@@ -9554,9 +9572,6 @@ class AutomationAccessService:
             if extend_card is None or not await extend_card(record.access_id, ttl):
                 return expired("Reconnect from the client.")
 
-        committed_revision = await self._committed_revision(
-            record.access_id, grantor_subject=record.grantor_subject
-        )
         provenance = dict(record.provenance or {})
         provenance["prolongations"] = int(provenance.get("prolongations") or 0) + 1
         provenance["prolonged_at"] = now
