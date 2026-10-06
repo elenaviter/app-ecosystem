@@ -258,6 +258,13 @@ person who is an owner or admin, with `project.role.manage` on their Card,
 declares the role or names its holder, under the role's revision. No preset
 ticks that operation. The role grants no permission.
 
+`project.role.declare` and `project.role.assign` no longer exist; they were
+aliases of `project.role.manage` (W588). A client that still sends either is
+refused with `work_action_unsupported`, naming the action. A Card that holds
+both, or holds `project.role.manage` already, moves to `project.role.manage`
+alone. A Card that holds just one of them is flagged for its owner rather than
+moved, because `project.role.manage` would grant more than it held.
+
 A mail to `knowledge-keeper` about an item is a hand-over. The board keeps it
 pending until the agent holding the role decides it with
 `project.role.handover.decide`: incorporated, with the published result;

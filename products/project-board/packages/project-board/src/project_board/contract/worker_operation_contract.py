@@ -210,14 +210,6 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:coordinate",),
     },
-    "project.role.declare": {
-        "description": "Alias of project.role.manage that declares or undeclares the role.",
-        "grants": ("work:admin",),
-    },
-    "project.role.assign": {
-        "description": "Alias of project.role.manage that names or clears the holder.",
-        "grants": ("work:admin",),
-    },
     # Coordinator handover (W313): several agents may carry the coordinator
     # label; the holder record says which one acts now. Moving it is the
     # operator's decision, so the three writes are people-only on the board.
@@ -557,8 +549,6 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.role.get",
         "project.role.manage",
         "project.role.handover.decide",
-        "project.role.declare",
-        "project.role.assign",
         "project.coordinator.get",
         "project.coordinator.hand_over",
         "project.coordinator.return",
