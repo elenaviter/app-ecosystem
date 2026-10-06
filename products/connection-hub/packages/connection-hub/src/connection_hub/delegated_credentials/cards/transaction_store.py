@@ -96,6 +96,12 @@ async def pending_effects(store: Any, receipt: Mapping[str, Any]) -> list[tuple[
     return [(index, effect) for index, effect in enumerate(effects) if index not in applied]
 
 
+async def effect_outcomes(store: Any, transaction_id: str) -> dict[str, str]:
+    """Each applied effect's recorded result by index: its digest or a named no-op."""
+    raw = await read_json_or_none(effects_path(store, transaction_id))
+    return dict(raw.get("outcomes") or {}) if isinstance(raw, Mapping) else {}
+
+
 async def apply_effects(store: Any, receipt: Mapping[str, Any], apply: Any) -> None:
     """Apply a COMMITTED transaction's recorded effects, each exactly once, then retire it.
 
@@ -111,11 +117,17 @@ async def apply_effects(store: Any, receipt: Mapping[str, Any], apply: Any) -> N
     if receipt["state"] != "committed":
         raise CardTransactionRefused("card_transaction_not_committed")
     for index, effect in await pending_effects(store, receipt):
-        await apply(effect["kind"], effect["key"], dict(effect["payload"]),
-                    transaction_id=receipt["transaction_id"])
+        outcome = await apply(effect["kind"], effect["key"], dict(effect["payload"]),
+                              transaction_id=receipt["transaction_id"])
         raw = await read_json_or_none(effects_path(store, receipt["transaction_id"]))
-        applied = sorted(set(raw.get("applied") or []) | {index}) if isinstance(raw, Mapping) else [index]
-        await write_json_atomic(effects_path(store, receipt["transaction_id"]), {"applied": applied})
+        raw = dict(raw) if isinstance(raw, Mapping) else {}
+        applied = sorted(set(raw.get("applied") or []) | {index})
+        # The applier's named result (an effect digest, or a named no-op such
+        # as no_active_credentials) is kept per effect, never flattened.
+        outcomes = dict(raw.get("outcomes") or {})
+        outcomes[str(index)] = outcome if isinstance(outcome, str) and outcome else "applied"
+        await write_json_atomic(effects_path(store, receipt["transaction_id"]),
+                                {"applied": applied, "outcomes": outcomes})
     await _retire_pointer(store, receipt)
     await _clear_marker(store, receipt)
 
@@ -566,5 +578,5 @@ async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
 
 __all__ = ["CardTransactionRefused", "DECISIONS", "TRANSACTION_POINTER_SCHEMA", "TRANSACTION_RECEIPT_SCHEMA",
            "TransactionDecisionPort", "abort_unstaged", "active_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
-           "effects_path", "list_in_doubt", "marker_path", "pending_effects",
+           "effect_outcomes", "effects_path", "list_in_doubt", "marker_path", "pending_effects",
            "read_receipt", "resolve_pointer", "stage", "state"]

@@ -1013,3 +1013,16 @@ async def test_a_failed_prepare_refuses_the_stage_so_the_coordinator_aborts(tmp_
         await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                         subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
                                         effects=EFFECTS)
+
+
+@pytest.mark.asyncio
+async def test_each_applied_effect_keeps_its_named_outcome(tmp_path):
+    # W582: a named no-op (no_active_credentials) reaches the effects record, never flattened.
+    class _Named(_Applier):
+        async def __call__(self, kind, key, payload, *, transaction_id):
+            await super().__call__(kind, key, payload, transaction_id=transaction_id)
+            return "no_active_credentials" if kind == "invocation_policy" else "d" * 64
+
+    store, service, before, after = await _staged_with_effects(tmp_path, _Named())
+    await _service_decide(store, service, before, "committed")
+    assert await tx.effect_outcomes(store, TX) == {"0": "d" * 64, "1": "no_active_credentials"}
