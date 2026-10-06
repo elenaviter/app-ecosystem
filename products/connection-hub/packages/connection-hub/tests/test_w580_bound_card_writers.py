@@ -634,3 +634,104 @@ async def test_starting_a_control_without_a_transaction_still_starts(tmp_path, r
     current = await _read(h, control)
     assert current.card_revision > control.card_revision
     assert any(current.resource_grants.values())
+
+
+# A bound Card with no transaction: each governed writer is decided by its
+# binding's policy (W502 B). A refusal changes nothing that serves the Card.
+
+
+class _Policy:
+    def __init__(self, allow: bool) -> None:
+        self.allow, self.calls = allow, []
+
+    def _decision(self, request):
+        from datetime import timedelta
+        from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteDecision
+
+        return CallerWriteDecision(self.allow, "" if self.allow else "pb_refused", "policy:v1",
+                                   datetime.now(timezone.utc) + timedelta(minutes=5), request)
+
+    async def decide(self, request):
+        self.calls.append(("decide", request.action))
+        return self._decision(request)
+
+    async def revalidate(self, request, initial):
+        self.calls.append(("revalidate", request.action))
+        return self._decision(request)
+
+    async def finalize(self, request, *, state, card_revision):
+        self.calls.append(("finalize", state))
+        return True
+
+
+async def _bind_policy(h, card, allow):
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriterRegistry
+    from connection_hub.delegated_credentials.cards.model import ControlCardBinding
+    from test_resident_profile_cards import GRANTOR
+
+    bound = dataclasses.replace(card, card_revision=card.card_revision + 1, control_card=ControlCardBinding(
+        control_id="control-1", issuer_ref="work:project:one", issuer_kind="project", control_revision=1))
+    await h.cards.commit(bound, subject_hash=subject_hash_for(GRANTOR),
+                         expected_revision=card.card_revision, now=h.now)
+    policy = _Policy(allow)
+    registry = CallerWriterRegistry()
+    registry.register("project", policy)
+    h.service.bind_caller_writers(registry)
+    h.grant_store.bindings.clear()
+    return bound, policy
+
+
+async def _bound_writer(h, writer):
+    from test_resident_profile_cards import GRANTOR, USER
+
+    if writer == "consent":
+        card, _ = await _stable_card(h)
+        return card, lambda: _consent(h)
+    if writer == "extend":
+        card, _ = await _oauth_card(h)
+        return card, lambda: _extend(h, card)
+    if writer == "prune":
+        card = _scoped_card(h)
+        await _seed(h, card)
+        return card, lambda: h.service.prune_account_from_grants(
+            grantor_subject=GRANTOR, provider_id="google", account_id="acct-1")
+    card, _ = await _manual_card(h)
+    return card, lambda: h.service.renew_access(USER, access_id=card.access_id, mode="reissue")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("writer", ["consent", "extend", "prune", "reissue"])
+async def test_a_bound_writer_commits_only_what_its_binding_policy_allows(tmp_path, redis_client, writer):
+    h = await _hub(tmp_path, redis_client)
+    card, call = await _bound_writer(h, writer)
+    bound, policy = await _bind_policy(h, card, allow=True)
+    result = await call()
+    assert result["ok"] is True, result
+    assert [c for c in policy.calls if c[0] == "decide"], policy.calls
+    assert ("finalize", "committed") in policy.calls
+    assert (await _read(h, bound)).card_revision == bound.card_revision + 1
+
+
+_MINTS_BEFORE_POLICY = pytest.mark.xfail(
+    strict=True,
+    reason="W580 finding 4: the writer mints and binds a live grant before its binding "
+    "policy decides, so a policy refusal (no transaction at all) leaves the binding",
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("writer", [
+    pytest.param("consent", marks=_MINTS_BEFORE_POLICY), "extend", "prune",
+    pytest.param("reissue", marks=_MINTS_BEFORE_POLICY),
+])
+async def test_a_bound_writer_refused_by_its_policy_changes_nothing(tmp_path, redis_client, writer):
+    h = await _hub(tmp_path, redis_client)
+    card, call = await _bound_writer(h, writer)
+    bound, policy = await _bind_policy(h, card, allow=False)
+    held = await h.handles.read(bound)
+    result = await call()
+    assert result["ok"] is False, result
+    assert [c for c in policy.calls if c[0] == "decide"], policy.calls
+    assert await _read(h, bound) == bound
+    assert await h.handles.read(bound) == held
+    assert h.grant_store.bindings == {}, "a refused write left a live grant binding"
