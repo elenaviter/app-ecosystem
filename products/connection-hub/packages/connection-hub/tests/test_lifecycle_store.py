@@ -166,6 +166,7 @@ async def test_killed_preparer_blocks_single_card_writer_before_any_cache_or_rev
 
 def _service_cache():
     cache = MagicMock()
+    cache.require_lifecycle_backend = AsyncMock()
     for name in ("reconcile_projection", "claim_lifecycle", "lifecycle_fenced", "finish_lifecycle"):
         setattr(cache, name, AsyncMock(return_value=True))
     cache.release_lifecycle = AsyncMock()

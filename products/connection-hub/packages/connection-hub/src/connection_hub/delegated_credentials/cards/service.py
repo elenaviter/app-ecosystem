@@ -417,6 +417,14 @@ class DelegatedCardService:
                     return value
 
                 initial_deadline = valid_deadline(await before_commit(authorities))
+                from .cache import CardCacheUnusable
+                try:
+                    await self._cache.require_lifecycle_backend()
+                except CardCacheUnusable as exc:
+                    reason = "issuer_" + exc.reason
+                    await lifecycle.refuse_before_prepare(self._store, request=request, actor_subject=actor_subject,
+                                                         now=datetime.now(timezone.utc), reason=reason)
+                    raise LifecycleRefused(reason) from exc
                 for authority, target in zip(authorities, request.targets):
                     current = await self._store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
                     await cancellation_safe_await(self._reconcile(access_id=authority.access_id, current=current, moment=int(time.time())))

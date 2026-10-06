@@ -61,6 +61,7 @@ async def test_sdk_flock_holder_past_real_30_second_deadline_has_no_write_and_re
     try:
         assert await asyncio.wait_for(asyncio.to_thread(child.stdout.readline), 10) == "FIXTURE_FLOCK_HELD\n"
         cache = MagicMock()
+        cache.require_lifecycle_backend = AsyncMock()
         cache.claim_lifecycle = AsyncMock()
         cache.reconcile_projection = AsyncMock()
         service = DelegatedCardService(store=store, cache=cache)
@@ -144,6 +145,7 @@ async def test_real_sdk_all_fences_hold_while_started_write_drains_past_actual_3
 
     monkeypatch.setattr(durable_io, "_write_text_atomic", blocked_write)
     cache = MagicMock()
+    cache.require_lifecycle_backend = AsyncMock()
     cache.reconcile_projection = AsyncMock(return_value=True)
     cache.claim_lifecycle = AsyncMock(return_value=True)
     service = DelegatedCardService(store=store, cache=cache)

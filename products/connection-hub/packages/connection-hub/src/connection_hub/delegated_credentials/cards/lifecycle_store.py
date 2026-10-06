@@ -87,6 +87,35 @@ async def read_receipt(store: Any, transaction_id: str) -> dict[str, Any] | None
     return None if raw is None else _validate_receipt(raw, transaction_id)
 
 
+async def refuse_before_prepare(store: Any, *, request: LifecycleRequest, actor_subject: str,
+                               now: datetime, reason: str) -> dict[str, Any]:
+    """Terminal unsupported-backend outcome, with NO active intent or Card writes.
+
+    Caller holds receipt and both Card fences and has checked fresh authority.
+    Virtual after pointers preserve the existing receipt schema but are NEVER
+    written. This durable refusal lets identical retry close its reservation.
+    """
+    entries = []
+    for target in request.targets:
+        current = await store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
+        target.assert_authority(None if current is None else current[1])
+        before, authority = current
+        after_authority = dataclasses.replace(authority, state=CARD_STATE_REVOKED, card_revision=authority.card_revision + 1)
+        digest = after_authority.content_hash()
+        after = CardCurrentPointer.for_revision(after_authority, content_hash=digest,
+            revision_name=card_revision_name(card_revision=after_authority.card_revision, content_hash=digest, updated_at=now),
+            updated_at=now)
+        entries.append({"subject_hash": target.subject_hash, "access_id": target.access_id,
+                        "before": before.to_dict(), "after": after.to_dict()})
+    transaction_id = request.transaction_id(actor_subject)
+    receipt = {"schema": LIFECYCLE_RECEIPT_SCHEMA, "transaction_id": transaction_id,
+               "binding": request.binding(actor_subject), "state": "refused", "reason": reason,
+               "targets": entries, "serving_state": "complete"}
+    _validate_receipt(receipt, transaction_id)
+    await write_json_atomic(receipt_path(store, transaction_id), receipt)
+    return receipt
+
+
 async def _active_intents(store: Any):
     """Only unfinished preparations, not an unbounded historical receipt scan.
 

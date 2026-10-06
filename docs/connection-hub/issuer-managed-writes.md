@@ -225,8 +225,16 @@ invalidates both the serving epoch and the sweep token. Rebuilds cannot bless
 an unresolved lifecycle. This temporarily closes the entire serving partition
 until its normal durable sweep can prove readiness; it is not merely a
 two-key cache optimization. Redis Cluster keys in different slots refuse
-`CROSSSLOT`; there is no sequential fallback. No real-Redis qualification of
-these new scripts is claimed by the draft unit tests.
+`CROSSSLOT`; there is no sequential fallback. The service positively checks
+Redis mode before publishing any active intent or changing a cache/Card. Cluster
+or unverified mode records a terminal preflight refusal under the receipt/Card
+fences, with no staged version/pointer or marker. Identical retry returns that
+refusal without cleanup. Cluster profiles are unsupported; no key migration is
+performed. For older refused cluster intents, release may complete ONLY after
+confirmed cluster mode and individual reads prove this transaction owns no
+marker. Owned, malformed, unavailable or unproven markers remain fail-closed;
+a generic EVAL failure is never ignored. No real-Cluster qualification of this
+new guard is claimed by portable unit tests.
 
 Receipt state and serving completion are separate. `committed/pending` means
 both authority revisions were revoked but cleanup is incomplete: HTTP-style
