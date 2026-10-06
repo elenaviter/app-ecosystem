@@ -43,6 +43,12 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
 from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bundle_id, cron, mcp, ui_widget
 from kdcube_ai_app.infra.secrets import ephemeral_secret_store
 from connection_hub.delegated_credentials.cards.cache import DelegatedCardRuntimeCache
+from connection_hub.delegated_credentials.cards.composition import (
+    CardTransactionsUnavailable,
+    bind_card_transactions,
+    card_transactions_enabled,
+    postgres_decision_store,
+)
 from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
 
 SITE_BUILD_COMMAND = "cp index.html site.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/"
@@ -1510,15 +1516,17 @@ async def _automation_access_service_for(
     issuer_snapshots = issuer_snapshot_registry_from_connections(
         connections=connections, resolve_secret=issuer_secret, caller=call_bundle_operation,
     )
+    grant_store = await _oauth_grant_store(entrypoint)
+    card_persistence = await _delegated_card_persistence(entrypoint, redis)
     service = AutomationAccessService(
         redis=redis,
         tenant=tenant,
         project=project,
-        grant_store=await _oauth_grant_store(entrypoint),
+        grant_store=grant_store,
         authority_backend=_delegated_authority_config(entrypoint).backend,
         config=config,
         catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
-        card_persistence=await _delegated_card_persistence(entrypoint, redis),
+        card_persistence=card_persistence,
         resource_overlay_provider=lambda owner_subject: _remote_mcp_resource_overlay(
             entrypoint, owner_subject
         ),
@@ -1537,7 +1545,28 @@ async def _automation_access_service_for(
     actor, classification, snapshot_tenant, snapshot_project = _protected_lifecycle_read_context(entrypoint)
     service.bind_issuer_snapshot_registry(issuer_snapshots, actor_subject=actor,
         actor_classification=classification, tenant=snapshot_tenant, project=snapshot_project)
+    if card_transactions_enabled(connections):
+        await _bind_card_transactions(entrypoint, service, persistence=card_persistence, grant_store=grant_store)
     return service
+
+
+async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence: Any, grant_store: Any) -> None:
+    """W502: Hub-initiated Card writes through the ONE protocol (W581 v2), only when enabled.
+
+    Enabled without the PostgreSQL authority it refuses (fail closed); it
+    never falls back to a direct Card write.
+    """
+    config = _delegated_authority_config(entrypoint)
+    pg_pool = getattr(entrypoint, "pg_pool", None)
+    if not config.uses_postgresql or pg_pool is None:
+        raise CardTransactionsUnavailable("card_transactions_unavailable")
+    decisions = getattr(entrypoint, "_card_decision_store", None)
+    if decisions is None:
+        tenant, project = _runtime_tenant_project(entrypoint)
+        decisions = await postgres_decision_store(pg_pool, tenant=tenant, project=project)
+        entrypoint._card_decision_store = decisions
+    bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
+                           policies=_invocation_policy_service(entrypoint))
 
 
 async def _automation_access_service(

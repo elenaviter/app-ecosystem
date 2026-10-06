@@ -150,6 +150,16 @@ class DurableCardPersistence:
         )
         self._store = card_store
 
+    @property
+    def card_service(self) -> DelegatedCardService:
+        """The Card service this persistence writes through (W502 composition binds its effects)."""
+        return self._cards
+
+    @property
+    def card_store(self) -> Any:
+        """The Card store the transaction participant stages in (W502 composition)."""
+        return self._store
+
     async def load(self, access_id: str, *, subject_hash: str) -> LoadedCard | None:
         authority = await self._resolver.resolve(
             subject_hash=subject_hash, access_id=access_id
