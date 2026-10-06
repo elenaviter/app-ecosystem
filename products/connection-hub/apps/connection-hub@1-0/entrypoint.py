@@ -6267,9 +6267,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        # Preserve exact caller preconditions. The portable service rejects
+        # malformed types; coercing a float or bool here would change intent.
         return await (await _automation_access_service(self, request)).revoke_access(
             user,
             access_id=str(payload.get("access_id") or "").strip(),
+            expected_access_id=payload.get("expected_access_id"),
+            expected_card_revision=payload.get("expected_card_revision"),
         )
 
     # ── delegated to KDCube (KDCube -> external provider for user) ──

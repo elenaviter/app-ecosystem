@@ -119,7 +119,7 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 |`delegated_access_renew`|POST|operations|Renew a card's credential. `mode: prolong` extends the credential a connected app holds (refresh token, access binding, card expiry) without touching the client; `mode: reissue` (default) issues a fresh token on a manual card, expired or live, retiring the previous one and returning the new one once. Every grant, selection, account binding and policy stays. Optional `ttl_seconds` (default: the card's previous lifetime). Refusals: `delegated_access_revoked`, `delegated_access_credential_expired`, `delegated_access_prolong_unsupported`, `delegated_access_renew_unsupported`.|
 | `delegated_agent_grant_create` | POST | operations | Merge or replace exact authority on a hosted-agent or existing external-client card. A request-bound recovery submission must return the opaque signed `request_approval_ticket`; the server verifies it before atomically adding the exact operation and selecting `once` or `always`. |
 | `delegated_invocation_policy_set` | POST | operations | Set `once` or `always` for one already-granted resource operation, optionally scoped to a selected provider account. |
-| `delegated_access_revoke` | POST | operations | Revoke one automation or OAuth delegated-client grant owned by the current user. Descriptor-managed hosted Agent Cards retain their stable identity and reject this operation; their holder can restore the current Control defaults through `delegated_access_update`. |
+| `delegated_access_revoke` | POST | operations | Revoke one Card owned by the current user. Externally issuer-managed Cards require both `expected_access_id` and positive integer `expected_card_revision`; a replacement before load or durable commit refuses without effects. Issuer request and context remain server-owned. Ordinary unmanaged writes may omit both preconditions. Descriptor-managed hosted Agent Cards retain their stable identity and reject this operation; their holder can restore the current Control defaults through `delegated_access_update`. |
 | `remote_mcp_connectors_list` | GET | operations | List the current user's external MCP connectors and accepted/pending descriptor metadata without secret values. |
 | `remote_mcp_connector_create` | POST | operations | Validate an endpoint, store an optional bearer/header credential server-side, discover tools, and create the first accepted connector revision. |
 | `remote_mcp_connector_start_oauth` | POST | operations | Discover an upstream MCP authorization server, select its advertised client-registration method, create a single-use PKCE transaction, and return the browser authorization URL. |
@@ -194,6 +194,12 @@ before repair or mutation. Public payloads cannot supply `_issuer_decision`,
 `_issuer_context_ref`, workload identity or a service proof to authorize a write.
 Unconfirmed remote terminal recording is explicit as
 `issuer_outcome_confirmed: false`, including after a successful local commit.
+Caller-recorded revoke preconditions are not issuer decisions. Invalid or
+incomplete pairs return `delegated_access_revoke_precondition_invalid` (400);
+missing managed preconditions or a changed target return a 409 refusal.
+`delegated_card_revision_conflict` with `retryable: false` requires caller
+reconciliation, not a retry against the replacement revision. No cross-owner
+or legacy multi-Card lifecycle authority is added.
 See the [portable issuer contract](../../../../../docs/connection-hub/issuer-managed-writes.md)
 for request binding, expiry, lock-local revalidation and qualification boundaries.
 

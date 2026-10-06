@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -51,7 +52,7 @@ class _Access:
             "access_token": "not-returned-until-policies-exist",
         }
 
-    async def revoke_access(self, user, *, access_id):
+    async def revoke_access(self, user, *, access_id, expected_access_id=None, expected_card_revision=None):
         self.revoke_calls.append((user, access_id))
         return {"ok": True, "removed": True}
 
@@ -106,6 +107,30 @@ def entrypoint(monkeypatch):
         access=access,
         policies=policies,
     )
+
+
+@pytest.mark.asyncio
+async def test_revoke_forwards_only_exact_target_preconditions_not_browser_issuer_inputs(entrypoint):
+    entrypoint.access.revoke_access = AsyncMock(return_value={"ok": True, "removed": True})
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_revoke(
+        entrypoint.instance, data={"access_id": "access-1", "expected_access_id": "access-1",
+            "expected_card_revision": 3, "request_id": "browser-request",
+            "_issuer_request_id": "browser-private-request", "_issuer_context_ref": "browser-context",
+            "_issuer_decision": {"allowed": True}, "service_proof": "browser-proof"})
+    entrypoint.access.revoke_access.assert_awaited_once_with(
+        {"sub": "user-1"}, access_id="access-1", expected_access_id="access-1",
+        expected_card_revision=3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision", [True, 1.1, "1"])
+async def test_revoke_does_not_coerce_malformed_revision_into_valid_int(entrypoint, revision):
+    entrypoint.access.revoke_access = AsyncMock(return_value={"ok": False})
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_revoke(
+        entrypoint.instance, data={"access_id": "access-1", "expected_access_id": "access-1",
+            "expected_card_revision": revision})
+    forwarded = entrypoint.access.revoke_access.call_args.kwargs["expected_card_revision"]
+    assert type(forwarded) is type(revision) and forwarded == revision
 
 
 @pytest.mark.asyncio

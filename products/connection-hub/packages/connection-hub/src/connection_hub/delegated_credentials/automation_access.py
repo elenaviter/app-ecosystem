@@ -9278,6 +9278,8 @@ class AutomationAccessService:
         return {"ok": True, "mode": "prolong", "access": prolonged.to_public_dict()}
 
     async def revoke_access(self, user: Mapping[str, Any], *, access_id: str,
+                            expected_access_id: str | None = None,
+                            expected_card_revision: int | None = None,
                             _issuer_decision: IssuerDecision | None = None,
                             _issuer_request_id: str = "",
                             _issuer_context_ref: str = "") -> dict[str, Any]:
@@ -9290,6 +9292,17 @@ class AutomationAccessService:
         access_id_value = _clean(access_id)
         if not access_id_value:
             return {"ok": False, "error": "delegated_access_id_required"}
+        has_expectations = expected_access_id is not None or expected_card_revision is not None
+        if has_expectations:
+            if (
+                not isinstance(expected_access_id, str)
+                or not expected_access_id.strip()
+                or type(expected_card_revision) is not int
+                or expected_card_revision < 1
+            ):
+                return {"ok": False, "error": "delegated_access_revoke_precondition_invalid", "status": 400}
+            if expected_access_id.strip() != access_id_value:
+                return {"ok": False, "error": "delegated_access_revoke_target_mismatch", "status": 409}
         try:
             # An expired card is still listed for its owner, so it must stay
             # revocable; only an already revoked card has nothing left to end.
@@ -9305,10 +9318,22 @@ class AutomationAccessService:
                 "status": 503,
             }
         if loaded is None or loaded[1] != CARD_STATE_ACTIVE:
+            if has_expectations:
+                return {"ok": False, "error": "delegated_card_revision_conflict",
+                        "reason": "card_revision_moved", "status": 409, "retryable": False}
             return {"ok": True, "removed": False}
         record = loaded[0]
         if record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
+        if self._issuer_managed(record) and not has_expectations:
+            return {"ok": False, "error": "delegated_access_revoke_precondition_required", "status": 409}
+        if has_expectations and record.card_revision != expected_card_revision:
+            return {"ok": False, "error": "delegated_card_revision_conflict",
+                    "reason": "card_revision_moved", "status": 409, "retryable": False}
+        # The loaded record now carries the caller's exact target revision.
+        # forget/forget_guarded passes that same revision to CardService.revoke,
+        # which compares it under the target mutation lock before any effects.
+        # Never reload and adopt a replacement revision after this check.
         if (
             record.source == ACCESS_SOURCE_AGENT
             and record.card_kind == CARD_KIND_AGENT
@@ -9349,7 +9374,14 @@ class AutomationAccessService:
             # source-specific credential so a stale serving projection cannot
             # preserve access while Redis is being reconstructed.
             serving_error = exc
-        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+        except CardConflict as exc:
+            outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
+            if has_expectations and exc.reason == "card_revision_moved":
+                return {"ok": False, "error": "delegated_card_revision_conflict",
+                        "reason": exc.reason, "retryable": False, "status": 409, **outcome}
+            return {"ok": False, "error": "delegated_card_not_committed",
+                    "reason": exc.reason, "retryable": True, "status": 503, **outcome}
+        except (CardUnavailable, CardCommitFailed) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
             return {
                 "ok": False,
