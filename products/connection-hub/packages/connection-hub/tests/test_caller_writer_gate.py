@@ -315,3 +315,90 @@ def test_reset_also_resets_that_services_named_service_selection_only():
     selection = after["named_service_operations"]
     text = str(selection)
     assert "object.search" in text and "object.list" in text  # this service reset, the other kept
+
+
+# ── W580/B: every writer of a bound Card names its action ──────────────────
+
+
+class _Cards:
+    def __init__(self, current):
+        self.current = current
+
+    async def load(self, access_id, *, subject_hash):
+        return (self.current, None) if self.current is not None else None
+
+
+class _Host:
+    """The two attributes AutomationAccessService._enlisted_gate reads."""
+
+    def __init__(self, registry, current):
+        self._caller_writers = registry
+        self._store = _Cards(current)
+
+    def _cards(self):
+        return self._store
+
+
+async def _enlist(host, candidate, *, expected_revision, caller_write):
+    from connection_hub.delegated_credentials.automation_access import AutomationAccessService
+    return await AutomationAccessService._enlisted_gate(host, candidate, expected_revision=expected_revision,
+                                                        caller_write=caller_write)
+
+
+@pytest.mark.asyncio
+async def test_an_unnamed_write_of_a_bound_card_is_refused_before_any_effect():
+    policy = Policy(ttl=10**8)
+    card = _card()
+    with pytest.raises(gate.CallerWriteRefused, match="caller_writer_not_enlisted"):
+        await _enlist(_Host(_registry(policy), card), dataclasses.replace(card, card_revision=4),
+                      expected_revision=3, caller_write=None)
+    assert policy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_card_needs_no_enlistment():
+    card = _card(bound=False)
+    assert await _enlist(_Host(_registry(Policy(ttl=10**8)), card), dataclasses.replace(card, card_revision=4),
+                         expected_revision=3, caller_write=None) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_bound_create_is_decided_under_the_binding_it_takes():
+    policy = Policy(ttl=10**8)
+    card = _card(revision=1)
+    before_commit, request = await _enlist(_Host(_registry(policy), None), card, expected_revision=0,
+                                           caller_write=gate.CallerWrite("create", "person", "r-1"))
+    assert request.action == "create" and request.card_revision == 0 and request.binding_kind == "project"
+    await before_commit()
+    assert [c[0] for c in policy.calls] == ["decide", "revalidate"]
+
+
+@pytest.mark.asyncio
+async def test_a_prolongation_may_only_move_expiry_forward():
+    card = dataclasses.replace(_card(), expires_at=2_000_000_000)
+    host = _Host(_registry(Policy(ttl=10**8)), card)
+    ok = dataclasses.replace(card, card_revision=4, expires_at=2_000_003_600)
+    _, request = await _enlist(host, ok, expected_revision=3, caller_write=gate.CallerWrite("prolong", "person"))
+    assert request.action == "prolong"
+    for bad in (dataclasses.replace(card, card_revision=4, expires_at=1_999_000_000),
+                dataclasses.replace(card, card_revision=4, expires_at=2_000_003_600, label="also renamed")):
+        with pytest.raises(gate.CallerWriteRefused, match="caller_writer_prolong_shape_invalid"):
+            await _enlist(host, bad, expected_revision=3, caller_write=gate.CallerWrite("prolong", "person"))
+
+
+def test_a_prune_may_only_remove_account_bindings():
+    before = {"card_revision": 3, "account_scope": {"google": {"a1": ["mail"], "a2": ["mail"]}}}
+    assert gate.candidate_shape_refusal("prune", before, {"card_revision": 4,
+                                        "account_scope": {"google": {"a2": ["mail"]}}}) is None
+    assert gate.candidate_shape_refusal("prune", before, {"card_revision": 4, "account_scope": {
+        "google": {"a2": ["mail", "drive"]}}}) == "caller_writer_prune_shape_invalid"
+    assert gate.candidate_shape_refusal("prune", before, {"card_revision": 4, "label": "x",
+        "account_scope": {}}) == "caller_writer_prune_shape_invalid"
+
+
+@pytest.mark.parametrize("action", ["extend", "oauth_grant", "renew", "fold", "control_snapshot"])
+def test_no_system_writer_may_change_a_cards_identity(action):
+    before = {"card_revision": 3, "access_id": "a", "client_id": "c", "grantor_subject": "g"}
+    assert gate.candidate_shape_refusal(action, before, {**before, "card_revision": 4}) is None
+    assert gate.candidate_shape_refusal(action, before, {**before, "card_revision": 4,
+                                        "client_id": "other"}) == "caller_writer_candidate_binding_mismatch"

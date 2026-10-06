@@ -37,11 +37,57 @@ from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from .issuer_gate import change_digest
 
-CALLER_WRITE_ACTIONS = ("update", "reset", "revoke", "attach", "detach")
+# W580/B (CodeApp, 11:33): EVERY writer of a bound Card names its action and
+# is decided by the binding's policy; expiry is governed too. The per-action
+# shape rules below are generic: they bound what an action may change, and
+# the policy decides whether it may happen. No PB semantics live here.
+SYSTEM_WRITE_ACTIONS = ("create", "extend", "oauth_grant", "renew", "prolong", "prune", "fold", "control_snapshot")
+CALLER_WRITE_ACTIONS = ("update", "reset", "revoke", "attach", "detach", *SYSTEM_WRITE_ACTIONS)
 # The candidate fields a caller write may never change: they are the target's
 # identity, its credentials' subject and its expiry.
 PROTECTED_FIELDS = ("access_id", "grantor_subject", "delegate_subject", "client_id", "issuer_kind",
                     "issuer_ref", "source", "card_kind", "expires_at")
+# A Card's identity: no action but create may change it.
+IDENTITY_FIELDS = tuple(name for name in PROTECTED_FIELDS if name != "expires_at")
+# What a prolongation may change: only its expiry, forward, and its bookkeeping.
+PROLONG_FIELDS = ("expires_at", "provenance", "card_revision")
+PRUNE_FIELDS = ("account_scope", "card_revision")
+
+
+def _scope_subset(after: Any, before: Any) -> bool:
+    if not isinstance(after, Mapping) or not isinstance(before, Mapping):
+        return False
+    for provider, accounts in after.items():
+        held = before.get(provider)
+        if not isinstance(accounts, Mapping) or not isinstance(held, Mapping):
+            return False
+        for account, claims in accounts.items():
+            if account not in held or not set(claims or ()) <= set(held.get(account) or ()):
+                return False
+    return True
+
+
+def candidate_shape_refusal(action: str, before: Mapping[str, Any] | None, candidate: Mapping[str, Any]) -> str | None:
+    """What this action may change, checked before the policy is asked; None when the shape holds."""
+
+    if action == "create":
+        return None if before is None else "caller_writer_candidate_binding_mismatch"
+    if before is None or candidate.get("card_revision") != before.get("card_revision", 0) + 1:
+        return "caller_writer_candidate_binding_mismatch"
+    if action in ("update", "reset"):
+        return ("caller_writer_candidate_binding_mismatch"
+                if any(candidate.get(name) != before.get(name) for name in PROTECTED_FIELDS) else None)
+    if any(candidate.get(name) != before.get(name) for name in IDENTITY_FIELDS):
+        return "caller_writer_candidate_binding_mismatch"
+    changed = {name for name in set(before) | set(candidate) if candidate.get(name) != before.get(name)}
+    if action == "prolong":
+        if not changed <= set(PROLONG_FIELDS) or int(candidate.get("expires_at") or 0) <= int(before.get("expires_at") or 0):
+            return "caller_writer_prolong_shape_invalid"
+    elif action == "prune":
+        if not changed <= set(PRUNE_FIELDS) or not _scope_subset(candidate.get("account_scope") or {},
+                                                                before.get("account_scope") or {}):
+            return "caller_writer_prune_shape_invalid"
+    return None
 
 
 class CallerWriteRefused(ValueError):
@@ -71,6 +117,16 @@ class CallerWriteRequest:
     binding_kind: str
     binding_ref: str
     change_digest: str
+    context_ref: str = ""
+
+
+@dataclass(frozen=True)
+class CallerWrite:
+    """How one writer enlists its write of a possibly bound Card: its action and authenticated actor."""
+
+    action: str
+    actor_subject: str
+    request_id: str = ""
     context_ref: str = ""
 
 
@@ -178,19 +234,26 @@ async def caller_writer_before_commit(
     subject = str(actor_subject or "").strip()
     if not subject or subject == "anonymous" or subject.startswith(("integration:", "telegram_")):
         raise CallerWriteRefused("caller_writer_requires_authenticated_actor")
-    revision = getattr(current, "card_revision", None)
-    if type(revision) is not int or revision < 1:
-        raise CallerWriteRefused("caller_writer_target_invalid")
-    if action in ("update", "reset"):
-        before = current.to_dict() if callable(getattr(current, "to_dict", None)) else {}
-        if (any(candidate.get(name) != before.get(name) for name in PROTECTED_FIELDS)
-                or candidate.get("card_revision") != revision + 1):
-            raise CallerWriteRefused("caller_writer_candidate_binding_mismatch")
+    if action == "create":
+        # A new bound Card: there is no stored target, so the binding is the
+        # one the candidate takes (the caller passes it) and the revision is 0.
+        if current is not None or binding is None:
+            raise CallerWriteRefused("caller_writer_target_invalid")
+        revision = 0
+    else:
+        revision = getattr(current, "card_revision", None)
+        if type(revision) is not int or revision < 1:
+            raise CallerWriteRefused("caller_writer_target_invalid")
+    if action not in ("revoke", "attach", "detach"):
+        before = (current.to_dict() if callable(getattr(current, "to_dict", None)) else {}) if current is not None else None
+        shape = candidate_shape_refusal(action, before, candidate)
+        if shape is not None:
+            raise CallerWriteRefused(shape)
     request = CallerWriteRequest(
         actor_subject=subject, request_id=str(request_id or "").strip(), action=action,
-        access_id=str(getattr(current, "access_id", "")), card_revision=revision,
-        issuer_kind=str(getattr(current, "issuer_kind", "") or ""),
-        issuer_ref=str(getattr(current, "issuer_ref", "") or ""),
+        access_id=str(getattr(current, "access_id", "") or candidate.get("access_id") or ""), card_revision=revision,
+        issuer_kind=str(getattr(current, "issuer_kind", "") or "") if current is not None else str(candidate.get("issuer_kind") or ""),
+        issuer_ref=str(getattr(current, "issuer_ref", "") or "") if current is not None else str(candidate.get("issuer_ref") or ""),
         binding_kind=binding_kind, binding_ref=binding_ref,
         change_digest=change_digest(dict(candidate)), context_ref=str(context_ref or "").strip(),
     )
@@ -291,7 +354,8 @@ async def _finalize(policy: CallerWriterPolicy, request: CallerWriteRequest, *, 
 
 
 __all__ = [
-    "CALLER_WRITE_ACTIONS", "CallerWriteDecision", "CallerWriteRefused", "CallerWriteRequest",
-    "CallerWriterPolicy", "CallerWriterRegistry", "PROTECTED_FIELDS", "binding_of",
+    "CALLER_WRITE_ACTIONS", "CallerWrite", "CallerWriteDecision", "CallerWriteRefused", "CallerWriteRequest",
+    "CallerWriterPolicy", "CallerWriterRegistry", "IDENTITY_FIELDS", "PROTECTED_FIELDS", "SYSTEM_WRITE_ACTIONS",
+    "binding_of", "candidate_shape_refusal",
     "caller_write_outcome", "caller_write_refusal", "caller_writer_before_commit", "reset_candidate",
 ]

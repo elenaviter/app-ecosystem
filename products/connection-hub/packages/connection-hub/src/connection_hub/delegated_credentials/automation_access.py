@@ -39,7 +39,7 @@ from connection_hub.delegated_credentials.issuer_gate import (
     change_digest, issuer_write_refusal,
 )
 from connection_hub.delegated_credentials.caller_writer_gate import (
-    CallerWriteRefused, binding_of, caller_write_outcome, caller_writer_before_commit, reset_candidate,
+    CallerWrite, CallerWriteRefused, binding_of, caller_write_outcome, caller_writer_before_commit, reset_candidate,
 )
 from connection_hub.authority_inventory import (
     AuthorityGrantInventory,
@@ -2326,14 +2326,50 @@ class AutomationAccessService:
             access_id, subject_hash=_subject_key(grantor_subject)
         )
 
+    async def _enlisted_gate(
+        self, authority: CardAuthority, *, expected_revision: int, caller_write: CallerWrite | None,
+    ) -> tuple[Callable[[], Awaitable[None]] | None, Any]:
+        """W580/B: the bound-Card gate for a writer that did not bring its own.
+
+        The binding is the stored Card's (or, for a create, the one the
+        candidate takes). A Card bound to a registered kind is never written
+        by an unnamed writer: it is refused by name, before any effect.
+        """
+        registry = getattr(self, "_caller_writers", None)
+        if registry is None:
+            return None, None
+        current = None
+        if expected_revision > 0:
+            loaded = await self._cards().load(authority.access_id, subject_hash=_subject_key(authority.grantor_subject))
+            current = loaded[0] if loaded is not None else None
+        binding = binding_of(current) if current is not None else ("", "")
+        if not binding[0]:
+            binding = binding_of(authority)
+        if not binding[0] or not registry.is_bound(binding[0]):
+            return None, None
+        if caller_write is None:
+            raise CallerWriteRefused("caller_writer_not_enlisted")
+        return await caller_writer_before_commit(
+            registry, current, actor_subject=caller_write.actor_subject, action=caller_write.action,
+            candidate=authority.to_dict(), request_id=caller_write.request_id or secrets.token_urlsafe(18),
+            context_ref=caller_write.context_ref, binding=binding,
+        )
+
     async def _persist_record(
         self, record: AutomationAccessRecord, *, expected_revision: int,
         before_commit: Callable[[], Awaitable[None]] | None = None,
         expected_issuer_digest: str = "",
+        caller_write: CallerWrite | None = None,
     ) -> None:
         persistence = self._cards()
         persist = persistence.persist
         authority = card_authority_from_record(record)
+        caller_request = None
+        if before_commit is None:
+            before_commit, caller_request = await self._enlisted_gate(
+                authority, expected_revision=expected_revision, caller_write=caller_write)
+            if caller_request is not None:
+                expected_issuer_digest = caller_request.change_digest
         guard = {}
         if before_commit is not None:
             persist = getattr(persistence, "persist_guarded", None)
@@ -2349,13 +2385,28 @@ class AutomationAccessService:
                     raise IssuerWriteRefused("issuer_candidate_changed")
 
             guard["before_commit"] = bound_commit
-        await persist(
-            authority,
-            card_handles_from_record(record),
-            subject_hash=_subject_key(record.grantor_subject),
-            expected_revision=expected_revision,
-            **guard,
-        )
+        try:
+            await persist(
+                authority,
+                card_handles_from_record(record),
+                subject_hash=_subject_key(record.grantor_subject),
+                expected_revision=expected_revision,
+                **guard,
+            )
+        except CardServingUnavailable:
+            # The durable commit happened; only serving is behind.
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="committed", card_revision=authority.card_revision)
+            raise
+        except BaseException:
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=expected_revision)
+            raise
+        if caller_request is not None:
+            await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                       state="committed", card_revision=authority.card_revision)
 
     async def _forget_record(
         self,
