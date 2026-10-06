@@ -272,7 +272,33 @@ bundle property `disk_alert_free_percent` changes it), the operator gets a
 `decision` mail and the acting coordinator a mail naming the machine, its
 largest agent workspaces and `pb worker workspace --sweep`. One alert per host
 crossing, however many agents run there: the state is kept per host, and a
-report above the threshold from any of its agents re-arms it.
+report above the threshold from any of its agents re-arms it. A host is
+critical when its free share is below half the alert threshold (5% at the
+default), and the alert's subject says so.
+
+Each sweep (`pb worker workspace --sweep`, and the automatic sweeps at
+session start, idle and a review decision) also writes
+`.problem-board/sweep-summary.json` in the agent's own workspace. It holds
+counts only: worktrees, unregistered, orphan, ended but kept, would remove,
+and scratch runs kept, with the sweep's own `observed_at`. Never a path, a
+name or a file list (W547). The heartbeat carries it as `disk_usage.sweep`,
+which is one small file read and never a walk. The board accepts only those
+bounded counts and drops a malformed `sweep` by itself, with a
+`worker.disk_usage_dropped` event, keeping the disk bytes.
+
+Where it is seen:
+
+- **The operator:** on the agent card.
+- **The coordinator:** on each teammate's `disk` line in `pb worker context`.
+  The line shows the host's free disk, the workspace size and the sweep counts,
+  each with the time it was observed. The routing view (`--routing`) leaves the
+  line out.
+
+An agent that has not swept yet shows "sweep not reported": unknown, never
+zero. The coordinator's team status asks an agent with unregistered or orphan
+folders, or on a host below the threshold, to sweep. It never sweeps or
+deletes for that agent (the coordinator procedure, "Reconcile the work, not
+the inbox").
 
 ## Owner And Worker Conversation
 
