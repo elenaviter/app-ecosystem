@@ -46,6 +46,7 @@ from connection_hub.delegated_credentials.cards.model import (
 )
 from connection_hub.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
+    CardStorageError,
 )
 
 _LOGGER = logging.getLogger("connection_hub.delegated_cards.service")
@@ -149,6 +150,7 @@ class DelegatedCardService:
             async with self._critical_section(
                 subject_hash=subject_hash, access_id=authority.access_id
             ):
+                await self._assert_no_lifecycle_preparation(subject_hash=subject_hash, access_id=authority.access_id)
                 current = await self._assert_expected(
                     subject_hash=subject_hash,
                     access_id=authority.access_id,
@@ -213,6 +215,7 @@ class DelegatedCardService:
             async with self._critical_section(
                 subject_hash=subject_hash, access_id=access_id
             ):
+                await self._assert_no_lifecycle_preparation(subject_hash=subject_hash, access_id=access_id)
                 current = await self._store.read_current_authority(
                     subject_hash=subject_hash, access_id=access_id
                 )
@@ -297,6 +300,16 @@ class DelegatedCardService:
         if held != int(expected_revision):
             raise CardConflict("card_revision_moved", current_revision=held)
         return current
+
+    async def _assert_no_lifecycle_preparation(self, *, subject_hash: str, access_id: str) -> None:
+        from .lifecycle_store import assert_pointer_replaceable
+
+        try:
+            await assert_pointer_replaceable(self._store, subject_hash=subject_hash, access_id=access_id)
+        except CardStorageError as exc:
+            if str(exc) in ("lifecycle_preparation_unresolved", "lifecycle_recovery_queue_unavailable"):
+                raise CardConflict(str(exc)) from exc
+            raise
 
     async def _reconcile(
         self,

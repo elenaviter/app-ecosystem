@@ -8,7 +8,9 @@ import os
 import signal
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -62,6 +64,101 @@ async def _states(store, request):
 
 async def _allow():
     pass
+
+
+@asynccontextmanager
+async def _test_lock(**kwargs):
+    yield {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reader", ["store", "service", "resolver", "list_active", "list_current", "rebuild", "history", "initial", "explicit_revision"])
+async def test_each_production_reader_keeps_staged_authority_out_of_current_and_history(tmp_path, reader):
+    from connection_hub.delegated_credentials.cards.persistence import DurableCardPersistence
+    from connection_hub.delegated_credentials.cards.resolver import DelegatedCardResolver
+    from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
+    from connection_hub.delegated_credentials.cards.service import DelegatedCardService
+
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    cache = MagicMock()
+    cache.read_in_current_run = AsyncMock(return_value=(True, None))
+    cache.restore_projection = AsyncMock(return_value=True)
+    cache.index_members = AsyncMock(return_value=[])
+    cache.index_add = AsyncMock()
+    cache.reconcile_projection = AsyncMock(return_value=True)
+    service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
+    resolver = DelegatedCardResolver(cache=cache, store=store)
+    persistence = DurableCardPersistence(redis=object(), tenant="fixture", project="fixture",
+        card_store=store, mutation_lock=_test_lock, credential_handles=MagicMock())
+    persistence._resolver = resolver
+    reconciler = CardProjectionReconciler(cache=cache, store=store)
+
+    async def check():
+        receipt = await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR))
+        for target, expected in zip(request.targets, sorted(cards, key=lambda c: (c.grantor_subject, c.access_id))):
+            if reader == "store":
+                actual = (await store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id))[1]
+            elif reader == "service":
+                actual = (await service._assert_expected(subject_hash=target.subject_hash, access_id=target.access_id,
+                                                         expected_revision=1))[1]
+            elif reader == "resolver":
+                actual = await resolver.resolve(subject_hash=target.subject_hash, access_id=target.access_id,
+                                                now=int(MOMENT.timestamp()))
+            elif reader == "list_active":
+                actual, = await resolver.list_active(subject_hash=target.subject_hash, now=int(MOMENT.timestamp()))
+            elif reader == "list_current":
+                actual, = await persistence.list_current(subject_hash=target.subject_hash)
+            elif reader == "rebuild":
+                await reconciler._repair(target.access_id, 0, expected, int(MOMENT.timestamp()))
+                actual = cache.reconcile_projection.call_args.kwargs["authority"]
+            elif reader == "history":
+                names = await store.list_revision_names(subject_hash=target.subject_hash, access_id=target.access_id)
+                assert len(names) == 1
+                assert names[0] == next(e["before"]["revision_name"] for e in receipt["targets"] if e["access_id"] == target.access_id)
+                continue
+            elif reader == "explicit_revision":
+                entry = next(e for e in receipt["targets"] if e["access_id"] == target.access_id)
+                assert await store.read_revision(subject_hash=target.subject_hash, access_id=target.access_id,
+                                                 revision_name=entry["after"]["revision_name"]) is None
+                continue
+            else:
+                actual = await store.read_initial_authority(subject_hash=target.subject_hash, access_id=target.access_id)
+            assert actual == expected
+        raise LifecycleRefused("fixture_abort_after_reader_check")
+
+    with pytest.raises(LifecycleRefused, match="fixture_abort_after_reader_check"):
+        await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=check)
+    for target in request.targets:
+        assert len(await store.list_revision_names(subject_hash=target.subject_hash, access_id=target.access_id)) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["prepared", "1", "2"])
+async def test_killed_preparer_blocks_single_card_writer_before_any_cache_or_revision_effect(tmp_path, stage):
+    from connection_hub.delegated_credentials.cards.service import CardConflict, DelegatedCardService
+
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    body = _wire(cards)
+    request = LifecycleRequest.from_mapping(body)
+    killed = subprocess.run([sys.executable, "-c", _KILL_CHILD, str(tmp_path), json.dumps(body), stage],
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}, capture_output=True, text=True, timeout=10)
+    assert killed.returncode == -signal.SIGKILL, killed.stderr
+    cache = MagicMock()
+    cache.reconcile_projection = AsyncMock()
+    cache.claim_transition = AsyncMock()
+    service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
+    for card in cards:
+        with pytest.raises(CardConflict, match="lifecycle_preparation_unresolved"):
+            await service.commit(dataclasses.replace(card, card_revision=2),
+                subject_hash=subject_hash_for(card.grantor_subject), expected_revision=1)
+    cache.reconcile_projection.assert_not_called()
+    cache.claim_transition.assert_not_called()
+    assert await _states(store, request) == [("active", 1), ("active", 1)]
 
 
 @pytest.mark.asyncio

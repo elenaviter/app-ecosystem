@@ -180,11 +180,33 @@ class BundleStorageDelegatedCardStore:
     async def _read_revision_payload(
         self, *, subject_hash: str, access_id: str, revision_name: str
     ) -> dict | None:
+        if not await self._revision_is_committed(subject_hash=subject_hash, access_id=access_id,
+                                                revision_name=revision_name):
+            return None
         return await read_json_or_none(
             self.revision_path(
                 subject_hash=subject_hash, access_id=access_id, revision_name=revision_name
             )
         )
+
+    async def _revision_is_committed(self, *, subject_hash: str, access_id: str, revision_name: str) -> bool:
+        path = self.revision_path(subject_hash=subject_hash, access_id=access_id, revision_name=revision_name)
+        marker = await read_json_or_none(path.with_suffix(".lifecycle.json"))
+        if marker is None:
+            return True  # ordinary immutable revision, unchanged v1 format
+        if not isinstance(marker, dict) or set(marker) != {"transaction_id"}:
+            raise CardStorageError("lifecycle_revision_binding_invalid")
+        from .lifecycle_store import read_receipt
+
+        receipt = await read_receipt(self, marker["transaction_id"])
+        if receipt is None:
+            raise CardStorageError("lifecycle_receipt_missing")
+        entries = [entry for entry in receipt["targets"]
+                   if (entry["subject_hash"], entry["access_id"], entry["after"]["revision_name"])
+                   == (subject_hash, access_id, revision_name)]
+        if len(entries) != 1:
+            raise CardStorageError("lifecycle_revision_binding_invalid")
+        return receipt["state"] == "committed"
 
     async def read_current_authority(
         self, *, subject_hash: str, access_id: str
@@ -354,7 +376,9 @@ class BundleStorageDelegatedCardStore:
     async def list_revision_names(self, *, subject_hash: str, access_id: str) -> list[str]:
         path = self.card_path(subject_hash=subject_hash, access_id=access_id) / REVISIONS_DIRNAME
         names = await list_child_names(path)
-        return [name for name in names if _REVISION_NAME_PATTERN.match(name)]
+        return [name for name in names if _REVISION_NAME_PATTERN.match(name)
+                and await self._revision_is_committed(subject_hash=subject_hash, access_id=access_id,
+                                                      revision_name=name)]
 
     async def read_initial_authority(
         self, *, subject_hash: str, access_id: str

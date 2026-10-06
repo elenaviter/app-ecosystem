@@ -12,7 +12,9 @@ Old readers reject the new pointer schema instead of exposing staged authority.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+import itertools
 import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Mapping
@@ -24,12 +26,17 @@ from .store import CardStorageError
 
 LIFECYCLE_POINTER_SCHEMA = "connection_hub.card-current-lifecycle.v1"
 LIFECYCLE_RECEIPT_SCHEMA = "connection_hub.card-lifecycle-receipt.v1"
+MAX_ACTIVE_INTENTS = 128
 
 
 def receipt_path(store: Any, transaction_id: str):
     if type(transaction_id) is not str or not re.fullmatch(r"[0-9a-f]{64}", transaction_id):
         raise CardStorageError("lifecycle_transaction_id_invalid")
     return store.root / "lifecycle-transactions" / f"{transaction_id}.json"
+
+
+def active_intent_path(store: Any, transaction_id: str):
+    return receipt_path(store, transaction_id).parent / "active" / f"{transaction_id}.json"
 
 
 def _validate_receipt(value: object, transaction_id: str) -> dict[str, Any]:
@@ -71,7 +78,45 @@ def _validate_receipt(value: object, transaction_id: str) -> dict[str, Any]:
 
 async def read_receipt(store: Any, transaction_id: str) -> dict[str, Any] | None:
     raw = await read_json_or_none(receipt_path(store, transaction_id))
+    if raw is None:
+        raw = await read_json_or_none(active_intent_path(store, transaction_id))
     return None if raw is None else _validate_receipt(raw, transaction_id)
+
+
+async def _active_intents(store: Any):
+    """Only unfinished preparations, not an unbounded historical receipt scan.
+
+    A terminal record left by interrupted cleanup is harmless. Directory/read
+    failures and an overloaded recovery queue fail writers closed.
+    """
+    directory = store.root / "lifecycle-transactions" / "active"
+
+    def paths():
+        try:
+            return list(itertools.islice(directory.iterdir(), MAX_ACTIVE_INTENTS + 1))
+        except FileNotFoundError:
+            return []
+
+    found = await asyncio.to_thread(paths)
+    if len(found) > MAX_ACTIVE_INTENTS:
+        raise CardStorageError("lifecycle_recovery_queue_unavailable")
+    for path in found:
+        if not path.is_file() or path.suffix != ".json":
+            continue  # atomic-write temporaries are not published intents
+        receipt = await read_receipt(store, path.stem)
+        if receipt is None:
+            continue  # terminal cleanup won a race with enumeration
+        if receipt["state"] == "prepared":
+            yield receipt
+
+
+async def _retire_active_intent(store: Any, transaction_id: str) -> None:
+    # Called only AFTER an authoritative terminal receipt was published. A
+    # cleanup failure does not relabel a committed outcome or restore authority.
+    try:
+        await asyncio.to_thread(active_intent_path(store, transaction_id).unlink, missing_ok=True)
+    except OSError:
+        pass
 
 
 async def resolve_pointer(store: Any, payload: Mapping[str, Any], *,
@@ -90,6 +135,13 @@ async def resolve_pointer(store: Any, payload: Mapping[str, Any], *,
 
 
 async def assert_pointer_replaceable(store: Any, *, subject_hash: str, access_id: str) -> None:
+    # The shared intent exists BEFORE either pointer is staged. This covers
+    # the otherwise unguarded participant after an intent-only/first-pointer
+    # kill. Production callers check inside the same Card's mutation fence.
+    async for receipt in _active_intents(store):
+        if any((entry["subject_hash"], entry["access_id"]) == (subject_hash, access_id)
+               for entry in receipt["targets"]):
+            raise CardStorageError("lifecycle_preparation_unresolved")
     raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
     if raw is None or raw.get("schema") != LIFECYCLE_POINTER_SCHEMA:
         return
@@ -112,6 +164,7 @@ async def abort_prepared(store: Any, *, request: LifecycleRequest, actor_subject
     if receipt["binding"] != request.binding(actor_subject):
         raise LifecycleRefused("issuer_lifecycle_replay_changed")
     if receipt["state"] != "prepared":
+        await _retire_active_intent(store, transaction_id)
         return receipt
     refused = {**receipt, "state": "refused", "reason": reason}
     await write_json_atomic(receipt_path(store, transaction_id), refused)
@@ -123,6 +176,7 @@ async def abort_prepared(store: Any, *, request: LifecycleRequest, actor_subject
         if raw == {"schema": LIFECYCLE_POINTER_SCHEMA, "transaction_id": transaction_id,
                    "before": entry["before"], "after": entry["after"]}:
             await write_json_atomic(path, entry["before"])
+    await _retire_active_intent(store, transaction_id)
     return refused
 
 
@@ -162,19 +216,26 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
     receipt = {"schema": LIFECYCLE_RECEIPT_SCHEMA, "transaction_id": transaction_id,
                "binding": request.binding(actor_subject), "state": "prepared", "reason": "", "targets": entries}
     # Intent precedes every revision/pointer write and exists across a kill.
-    await write_json_atomic(receipt_path(store, transaction_id), receipt)
+    await write_json_atomic(active_intent_path(store, transaction_id), receipt)
     try:
         for authority, entry in zip(authorities, entries):
+            await write_json_atomic(store.revision_path(subject_hash=entry["subject_hash"],
+                access_id=entry["access_id"], revision_name=entry["after"]["revision_name"]).with_suffix(".lifecycle.json"),
+                {"transaction_id": transaction_id})
             pointer = await store.write_revision(subject_hash=entry["subject_hash"], authority=authority, updated_at=now)
             if pointer.to_dict() != entry["after"]:
                 raise CardStorageError("lifecycle_staged_revision_mismatch")
         for entry in entries:
+            current = await store.read_current(subject_hash=entry["subject_hash"], access_id=entry["access_id"])
+            if current is None or current.to_dict() != entry["before"]:
+                raise LifecycleRefused("issuer_lifecycle_revision_moved")
             await write_json_atomic(store.current_path(subject_hash=entry["subject_hash"], access_id=entry["access_id"]),
                 {"schema": LIFECYCLE_POINTER_SCHEMA, "transaction_id": transaction_id,
                  "before": entry["before"], "after": entry["after"]})
         await before_publish()
         committed = {**receipt, "state": "committed"}
         await write_json_atomic(receipt_path(store, transaction_id), committed)
+        await _retire_active_intent(store, transaction_id)
         return committed
     except Exception:
         # An IO error can occur AFTER the rename committed. Never relabel that
@@ -183,6 +244,7 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
         if outcome is None:
             raise CardStorageError("lifecycle_commit_outcome_unknown")
         if outcome["state"] == "committed":
+            await _retire_active_intent(store, transaction_id)
             return outcome
         await abort_prepared(store, request=request, actor_subject=actor_subject,
                              reason="lifecycle_preparation_failed")
