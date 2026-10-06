@@ -1012,6 +1012,19 @@ class GrantStore:
             )
         )
 
+    async def set_card_credentials_expiry(self, registry_access_id: str, expires_at: int) -> str:
+        """W582: one absolute deadline for a Card's live OAuth credentials (SQL authority only)."""
+        if self._authority_store is None:
+            raise GrantStoreUnavailable("card_credentials.set_expiry.authority_not_configured")
+        return str(
+            await self._authority_call(
+                "card_credentials.set_expiry",
+                "set_card_credentials_expiry",
+                str(registry_access_id or "").strip(),
+                int(expires_at),
+            )
+        )
+
     async def revoke_access_grant(self, access_token: str) -> bool:
         token = str(access_token or "").strip()
         if not token:

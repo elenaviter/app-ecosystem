@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import uuid
 from collections import deque
 from typing import Any
@@ -902,6 +903,56 @@ async def test_card_credential_lifecycle_executes_against_real_postgres() -> Non
             "revoked",
             "revoked",
         )
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_card_credentials_absolute_expiry_is_replay_safe_against_real_postgres() -> None:
+    # W582 (Ops gate 3): one absolute deadline; a replay bumps no revision; a
+    # past deadline really expires; a Card with nothing live is a named no-op.
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    store = PostgresOAuthAuthorityStore(
+        pg_pool=pool,
+        tenant=f"authority-test-{uuid.uuid4().hex}",
+        project="card-credential-expiry",
+    )
+
+    async def revisions():
+        async with pool.acquire() as connection:
+            return (
+                await connection.fetchval(f"SELECT revision FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = $1", "aut_card"),
+                await connection.fetchval(f"SELECT revision FROM {store.schema}.{TABLE_ACCESS_BINDINGS} WHERE registry_access_id = $1", "aut_card"),
+                await connection.fetchval(f"SELECT extract(epoch FROM expires_at)::bigint FROM {store.schema}.{TABLE_ACCESS_BINDINGS} WHERE registry_access_id = $1", "aut_card"),
+            )
+
+    try:
+        await store.ensure_schema()
+        await store.create_refresh_token(
+            {"registry_access_id": "aut_card", "card_kind": "automation", "client_id": "client-1", "sub": "user-1"},
+            ttl_seconds=600,
+        )
+        await store.bind_access_grant("access-bearer", {"registry_access_id": "aut_card", "operations": ["search"]},
+                                      ttl_seconds=600)
+        deadline = int(time.time()) + 7200
+        assert await store.set_card_credentials_expiry("aut_card", deadline) == "applied"
+        first = await revisions()
+        assert first[2] == deadline
+        assert await store.set_card_credentials_expiry("aut_card", deadline) == "applied"
+        assert await revisions() == first  # the replay wrote nothing
+        past = int(time.time()) - 60
+        assert await store.set_card_credentials_expiry("aut_card", past) == "applied"
+        assert (await revisions())[2] == past
+        assert await store.get_access_grant_record("access-bearer") is None  # really expired
+        assert await store.set_card_credentials_expiry("aut_none", deadline) == "no_active_credentials"
     finally:
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")

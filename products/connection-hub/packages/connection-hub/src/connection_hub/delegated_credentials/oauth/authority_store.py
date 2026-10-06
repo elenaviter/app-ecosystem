@@ -173,6 +173,10 @@ class OAuthAuthorityStore(Protocol):
         self, registry_access_id: str, ttl_seconds: int
     ) -> bool: ...
 
+    async def set_card_credentials_expiry(
+        self, registry_access_id: str, expires_at: int
+    ) -> str: ...
+
     async def revoke_card_credentials(self, registry_access_id: str) -> bool: ...
 
     async def card_continuity_proven(
@@ -1201,6 +1205,80 @@ class PostgresOAuthAuthorityStore:
                     seconds,
                 )
         return True
+
+    async def set_card_credentials_expiry(self, registry_access_id: str, expires_at: int) -> str:
+        """W582: set every live OAuth credential of one Card to ONE absolute deadline.
+
+        Replay-safe: rows already at that deadline are not written (no
+        revision bump), so re-applying a committed effect after a crash lands
+        on the same state. A deadline in the past expires them. With no live
+        family or binding the outcome is ``no_active_credentials``: the effect
+        applies as a no-op, because the Card's committed revision already
+        carries its expiry.
+        """
+
+        access_id = str(registry_access_id or "").strip()
+        if not access_id or type(expires_at) is not int or expires_at <= 0:
+            raise ValueError("card_credentials_expiry_invalid")
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await self._lock_card_families(connection, access_id)
+                rows = await connection.fetch(
+                    f"""
+                    SELECT family.family_id
+                    FROM {self.schema}.{TABLE_FAMILIES} AS family
+                    WHERE family.registry_access_id = $1
+                      AND family.state = 'active'
+                    ORDER BY family.family_id
+                    FOR UPDATE OF family
+                    """,
+                    access_id,
+                )
+                family_ids = [str(dict(row).get("family_id") or "") for row in rows]
+                family_ids = [value for value in family_ids if value]
+                bindings = await connection.fetchval(
+                    f"""
+                    SELECT count(*) FROM {self.schema}.{TABLE_ACCESS_BINDINGS}
+                    WHERE registry_access_id = $1 AND state = 'active'
+                    """,
+                    access_id,
+                )
+                if not family_ids and not bindings:
+                    return "no_active_credentials"
+                await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_REFRESH_GENERATIONS}
+                    SET expires_at = to_timestamp($2), revision = revision + 1
+                    WHERE family_id = ANY($1::text[])
+                      AND state = 'active'
+                      AND expires_at IS DISTINCT FROM to_timestamp($2)
+                    """,
+                    family_ids,
+                    expires_at,
+                )
+                await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_FAMILIES}
+                    SET expires_at = to_timestamp($2), revision = revision + 1, updated_at = now()
+                    WHERE family_id = ANY($1::text[])
+                      AND state = 'active'
+                      AND expires_at IS DISTINCT FROM to_timestamp($2)
+                    """,
+                    family_ids,
+                    expires_at,
+                )
+                await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_ACCESS_BINDINGS}
+                    SET expires_at = to_timestamp($2), revision = revision + 1, updated_at = now()
+                    WHERE registry_access_id = $1
+                      AND state = 'active'
+                      AND expires_at IS DISTINCT FROM to_timestamp($2)
+                    """,
+                    access_id,
+                    expires_at,
+                )
+        return "applied"
 
     async def revoke_card_credentials(self, registry_access_id: str) -> bool:
         """Revoke every OAuth credential owned by one stable Card id."""
