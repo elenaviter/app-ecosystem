@@ -85,7 +85,7 @@ test('the panel moves the pin only through these rules', () => {
 })
 
 test('the focus effect reads through the rule, with no cached-copy shortcut', () => {
-  const focusEffect = panel.slice(panel.indexOf('const read = controlFocusRead(accessCardFocus);'), panel.indexOf('}, [controlFocusValue, dispatch]);'))
+  const focusEffect = panel.slice(panel.indexOf('const read = controlFocusRead(accessCardFocus);'), panel.indexOf('}, [controlFocusValue, focusRetry, dispatch]);'))
   assert.match(focusEffect, /if \(!read \|\| !accessCardFocus\) return;/)
   assert.match(focusEffect, /dispatch\(loadControlCard\(read\)\)/)
   assert.doesNotMatch(focusEffect, /focusedCard|findAccessCardFocus|items\./)

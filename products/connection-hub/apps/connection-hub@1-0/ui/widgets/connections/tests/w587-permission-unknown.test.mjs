@@ -37,3 +37,44 @@ test('the panel blocks Save on the save rule and shows the unknown notice', () =
   assert.match(panel, /const readOnlyReason = cardSaveBlockedReason\(item, focusedViewer\);/)
   assert.doesNotMatch(panel, /Boolean\(cardReadOnlyReason\(item, focusedViewer\)\)\}/)
 })
+
+// W587 follow-up C, the operator (2026-10-06 15:58): "It's clear that uh, something was restarted."
+import {
+  BOARD_RESTARTING_MESSAGE, isBoardRestarting, unavailableAccessCardMessage,
+} from '../src/features/delegatedAccess/accessCardFocus.ts'
+import { BOARD_RESTARTING_EDIT_MESSAGE } from '../src/features/delegatedAccess/cardEditability.ts'
+
+test('a restarting board is said so: the viewer notice, still fail closed', () => {
+  const restarting = { can_edit: null, reason: 'project_board_restarting', retryable: true }
+  assert.equal(cardPermissionUnknown(personControl, restarting), BOARD_RESTARTING_EDIT_MESSAGE)
+  assert.match(BOARD_RESTARTING_EDIT_MESSAGE, /^Problem Board is restarting; try again in a few seconds\./)
+  assert.equal(cardSaveBlockedReason(personControl, restarting), BOARD_RESTARTING_EDIT_MESSAGE) // Save waits
+  assert.equal(cardReadOnlyReason(personControl, restarting), '') // Edit stays
+})
+
+test('the restart codes are recognised exactly, and nothing else is', () => {
+  assert.equal(isBoardRestarting('project_board_restarting'), true)
+  assert.equal(isBoardRestarting('project_membership_provider_not_ready'), true) // an older package's 403
+  assert.equal(isBoardRestarting('project_membership_provider_unavailable'), false)
+  assert.equal(isBoardRestarting('project_person_control_decided_by_admin'), false)
+  assert.equal(isBoardRestarting('xproject_board_restartingx'), false)
+  assert.equal(isBoardRestarting(''), false)
+})
+
+test('a Card that did not open while the board restarted says so, not "does not exist"', () => {
+  const focus = { accessId: 'person-control-1', controlOnly: true }
+  const text = unavailableAccessCardMessage(focus, 'project_board_restarting')
+  assert.equal(text, `Card person-control-1 was not loaded. ${BOARD_RESTARTING_MESSAGE}`)
+  assert.doesNotMatch(text, /does not exist/)
+  assert.match(unavailableAccessCardMessage(focus, 'other'), /does not exist or is not visible/)
+})
+
+test('the panel offers Try again on the restart and uses the restart text for Edit, Reload and Save', () => {
+  assert.match(panel, /isBoardRestarting\(delegatedAccessError\) && controlFocus \? \(/)
+  assert.match(panel, /onClick=\{\(\) => setFocusRetry\(\(n\) => n \+ 1\)\}>Try again<\/button>/)
+  assert.match(panel, /\}, \[controlFocusValue, focusRetry, dispatch\]\);/)
+  assert.match(panel, /lastReadError\.current = String\(error \|\| ''\);/)
+  assert.match(panel, /isBoardRestarting\(lastReadError\.current\)\s*\? `\$\{BOARD_RESTARTING_MESSAGE\} The editor was not opened/)
+  assert.match(panel, /isBoardRestarting\(lastReadError\.current\)\s*\? `\$\{BOARD_RESTARTING_MESSAGE\} Your draft is unchanged/)
+  assert.equal((panel.match(/`Save was not applied: \$\{BOARD_RESTARTING_MESSAGE\} Your draft is kept\.`/g) || []).length, 2)
+})

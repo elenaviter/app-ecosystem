@@ -5,7 +5,7 @@
 // Card, another person's agent Card, and a project's Control Card.
 
 import type { DelegatedAccessRecord, ProjectPersonControlViewer } from '../../api/types';
-import { projectPersonControlNotice } from './accessCardFocus.ts';
+import { BOARD_RESTARTING_MESSAGE, projectPersonControlNotice } from './accessCardFocus.ts';
 import { projectAgentCardReadOnly, projectAgentCardReadOnlyMessage } from './projectAgentCard.ts';
 import { PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE, projectControlCardReadOnly } from './projectControlCard.ts';
 import { projectPersonControlCoordinates } from './projectPersonControl.ts';
@@ -34,12 +34,17 @@ export function cardReadOnlyReason(
 export const PERMISSION_UNKNOWN_MESSAGE =
   'Your permission to edit this Card could not be checked just now. Press Edit to check again; saving waits until the check answers.';
 
+/** The same unknown permission, because the board is restarting (W587 C). */
+export const BOARD_RESTARTING_EDIT_MESSAGE =
+  `${BOARD_RESTARTING_MESSAGE} Press Edit to check again; saving waits until the check answers.`;
+
 export function cardPermissionUnknown(
   item: DelegatedAccessRecord | null | undefined,
   personControlViewer: ProjectPersonControlViewer | undefined,
 ): string {
   if (!item || !projectPersonControlCoordinates(item)) return '';
-  return personControlViewer?.can_edit === null ? PERMISSION_UNKNOWN_MESSAGE : '';
+  if (personControlViewer?.can_edit !== null) return '';
+  return personControlViewer.reason === 'project_board_restarting' ? BOARD_RESTARTING_EDIT_MESSAGE : PERMISSION_UNKNOWN_MESSAGE;
 }
 
 /** Why Save is not offered: read-only, or a permission that could not be checked. */
