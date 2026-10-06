@@ -65,9 +65,12 @@ expiry and decision timestamp, prepared and finished receipts and their
 counts, and the witness digest. It also has a unique
 `(namespace, replay_scope, epoch)` key. Receipt writes merge one immutable
 JSONB entry with a conditional SQL update, preserving concurrent receipts.
-The store accepts both text and already-decoded mapping results from asyncpg
-JSONB codecs, and casts serialized receipt text to JSONB in SQL so platform
-pool encoders cannot turn receipt objects into JSON strings.
+The store selects raw JSONB text and parses it once, independently of an
+asyncpg pool's JSONB decoder. This also refuses a legacy whole-column JSON
+string instead of parsing it twice as a receipt object. It accepts a decoded
+mapping when a row is supplied directly, and casts serialized receipt text
+to JSONB in SQL so platform pool encoders cannot turn receipt objects into
+JSON strings.
 An expired but still undecided COMMIT reports `commit_expired`; subsequent
 recovery can durably presume abort. A recovery pass continues past a failed
 participant, then raises `RecoveryIncomplete` with the failed transaction IDs

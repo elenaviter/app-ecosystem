@@ -2368,6 +2368,28 @@ class AutomationAccessService:
             context_ref=caller_write.context_ref, binding=binding,
         )
 
+    async def card_credential_limits(self, access_id: str, *, grantor_subject: str) -> tuple[int | None, int] | None:
+        """W585: the live Card's credential limits for the SDK token routes (Infra, 17:35).
+
+        ``(expires_at or None, card_revision)`` of the ACTIVE Card the trusted
+        server-side ``registry_access_id`` names, under its grantor; ``None``
+        when the Card is absent, not active, or Card storage is unavailable, so
+        the caller forwards no cap and keeps its existing refusal for an
+        ended Card. Never read from a request; no module state.
+        """
+        if not access_id or not grantor_subject:
+            return None
+        try:
+            loaded = await self._cards().load(str(access_id), subject_hash=_subject_key(str(grantor_subject)))
+        except CardUnavailable:
+            return None
+        if loaded is None:
+            return None
+        current = loaded[0]
+        if current.state != CARD_STATE_ACTIVE or current.access_id != access_id:
+            return None
+        return (int(current.expires_at) or None, int(current.card_revision))
+
     def bind_card_coordinator(self, coordinator: Any, *, intents: Any, decisions: Any,
                               intent_ttl_seconds: int = 60) -> None:
         """W502 ONE protocol: Card edits run through the generic coordinator (W581).

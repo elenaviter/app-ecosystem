@@ -50,11 +50,25 @@ def receipt_digest(receipt: Mapping[str, Any]) -> str:
 def hub_participant_input(*, original: CardAuthority, candidate: CardAuthority, subject_hash: str,
                           action: str, actor_subject: str, actor_kind: str,
                           effects: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
-    """The Hub's v2 ``participant_inputs[PARTICIPANT]`` for one Card change (W581 46a29992).
+    """The Hub's v2 ``participant_inputs[PARTICIPANT]`` for one Card change (W581 v2 kernel).
 
-    ``candidate_digest`` binds the base revision, the complete candidate and
-    every effect (Ops B1), so the one global digest decides on exactly what
-    the Hub applies. The actor is the authenticated caller's, never a payload's.
+    This is the ONLY shape the Hub stages (EMain C1, 2026-10-06): an initiator
+    such as Problem Board writes exactly these values; the shared vectors in
+    ``tests/fixtures/w502_hub_participant_vectors.json`` pin them for both sides.
+
+    - ``binding_kind`` is ``connection-hub.card``; ``binding_ref`` the access id;
+      ``target_scope`` the Card's storage scope, sha256(grantor_subject) hex.
+    - ``target_incarnation`` is max(1, base Card revision). A Card is never
+      recreated under the same access id (ids are minted, revisions only grow,
+      a revoked Card keeps its id), so the revision is the incarnation
+      (EMain N2); it adds no identity beyond ``before_revision``.
+    - ``dependency_revisions`` is ``{}``; ``provisioning`` is ``{}``.
+    - ``actor_kind`` is ``caller`` (an authenticated actor other than the
+      grantor, such as a project admin) or ``grantor``; the initiator's own
+      projection keeps its own vocabulary (human/agent), never normalized here.
+    - ``candidate_digest`` binds the base revision, the complete candidate and
+      every effect (Ops B1), so the one global digest decides on exactly what
+      the Hub applies. The actor is the authenticated caller's, never a payload's.
     """
     return {
         "participant": PARTICIPANT, "binding_kind": "connection-hub.card", "binding_ref": original.access_id,
@@ -327,6 +341,13 @@ class HubLocalReceiptVerifier:
         if local is None:
             from .transaction_store import read_receipt
             local = await read_receipt(self._store, receipt.transaction_id)
+        if local is None and "aborted" in states:
+            # The Hub's own abort tombstone (R1: no intent recorded; F1: never
+            # staged) is its durable receipt for an ABORT finish (EMain 18:35).
+            from .transaction_store import tombstone_path
+            tombstone = await read_json_or_none(tombstone_path(self._store, receipt.transaction_id))
+            if isinstance(tombstone, Mapping) and tombstone.get("transaction_id") == receipt.transaction_id:
+                local = tombstone
         if local is None or local.get("state") not in states or receipt_digest(local) != receipt.receipt_digest:
             raise DecisionRefused("receipt_unauthenticated")
 
