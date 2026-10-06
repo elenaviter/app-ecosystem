@@ -922,3 +922,31 @@ async def test_a_replay_must_carry_the_same_effects(tmp_path):
         await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                         subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
                                         effects=EFFECTS[:1])
+
+
+@pytest.mark.asyncio
+async def test_two_finishes_that_both_crash_mid_effects_keep_the_card_fenced(tmp_path):
+    # Ops T1 (12:39): a decision REPLAY must not retire the pointer while effects are pending.
+    from connection_hub.delegated_credentials.cards.service import CardServingUnavailable as Unavailable
+
+    class _TwiceFailing(_Applier):
+        def __init__(self):
+            super().__init__()
+            self.failures = 2
+
+        async def __call__(self, kind, key, payload, *, transaction_id):
+            if kind == "invocation_policy" and self.failures:
+                self.failures -= 1
+                raise RuntimeError("killed while applying")
+            self.applied.append((transaction_id, kind, key))
+
+    applier = _TwiceFailing()
+    store, service, before, after = await _staged_with_effects(tmp_path, applier)
+    for _ in range(2):
+        with pytest.raises(Unavailable):
+            await _service_decide(store, service, before, "committed")
+        with pytest.raises(CardStorageError, match="card_effects_pending"):
+            await _visible(store, before)
+        assert [e.get("needs_finish") for e in await tx.list_in_doubt(store)] == [True]
+    await _service_decide(store, service, before, "committed")
+    assert await _visible(store, before) == after and await tx.list_in_doubt(store) == []
