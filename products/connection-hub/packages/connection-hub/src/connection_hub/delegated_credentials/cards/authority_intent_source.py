@@ -107,10 +107,24 @@ class AuthorityDecisionReader(_AuthorityReads):
                                        decided_at=verified.decided_at)
 
 
+def intent_scope(intent: GlobalIntent, scope_field: str) -> str:
+    """The verified intent's value for the caller's configured scope field ("" when none is configured)."""
+    if not scope_field:
+        return ""
+    value = intent.payload.get(scope_field)
+    if type(value) is not str or not value:
+        raise DecisionRefused("card_intent_not_bound")
+    return value
+
+
 class AuthorityCardIntentSource(_AuthorityReads):
-    def __init__(self, *, store: Any, **kwargs: Any) -> None:
+    def __init__(self, *, store: Any, authority_id: str = "", scope_field: str = "", **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._store = store
+        # Recorded with the intent so readers route its decision to this
+        # authority, and the inbound operation binds later calls to its scope.
+        self._authority_id = authority_id
+        self._scope_field = scope_field
         self._local = LocalCardIntentSource(store)
 
     async def load(self, transaction_id: str) -> CardIntent:
@@ -143,10 +157,11 @@ class AuthorityCardIntentSource(_AuthorityReads):
                             subject_hash=subject_hash, original=current[1], candidate=candidate,
                             effects=tuple(dict(effect) for effect in value["effects"]),
                             action=projection["action"], actor_subject=projection["actor_subject"],
-                            actor_kind=projection["actor_kind"], reads=reads)
+                            actor_kind=projection["actor_kind"], reads=reads, authority=self._authority_id,
+                            scope=intent_scope(verified.intent, self._scope_field))
         await self._local.record(intent)
         return intent
 
 
 __all__ = ["AuthorityCardIntentSource", "AuthorityDecisionReader", "AuthorityDecisionRecord", "AuthorityFetch",
-           "CardAuthorityBinding"]
+           "CardAuthorityBinding", "intent_scope"]
