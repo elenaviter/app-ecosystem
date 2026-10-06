@@ -23,11 +23,12 @@ see_also:
 
 ## The rules
 
-The uniform owner/admin Card requirement described below is a proposed
-enforcement contract, not proof of a superseding operator ruling. The earlier
-owner and project-administrator exceptions remain a disputed policy choice;
-their removal and migration grants must not be activated before the operator
-states their exact scope. Source checks do not decide that policy.
+The operator approved the uniform owner/admin person requirement on
+2026-10-06: the applicable role and current Card permissions are both required.
+Initial management grants must be explicit, and migration must prevent
+administrator lockout. The separate coordinator-publishing role entitlement
+is not repealed by this person decision. Source checks alone do not qualify
+the profile, migration APPLY or rollout.
 
 - **Which operations a Card holds is edited in Connection Hub, and only
   there.** Problem Board links to a Card, optionally with a preselection or a
