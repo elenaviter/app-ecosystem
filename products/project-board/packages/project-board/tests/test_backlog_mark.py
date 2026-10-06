@@ -272,3 +272,20 @@ def test_a_selected_receive_never_reports_an_empty_backlog(field):
     assert "backlog: not counted by this selected receive · marked 12" in text
     assert "The backlog is empty" not in text and "backlog: pending 0" not in text
     assert len([header for header in field.pending_mail_headers(WORKER) if header["backlog"]]) == 12
+
+
+def test_a_second_window_uses_the_general_budget_while_the_first_still_has_control_budget(field):
+    # Ops' review of #573: "one correlation at a time" must hold while the
+    # first window still has budget, not only after it is spent.
+    _send(field, "w1", subject="W1", correlation_id="window-1")
+    pull_worker_input(field, worker_name=WORKER, correlation_id="window-1", sender=SENDER)
+    _send(field, "w2", subject="W2", correlation_id="window-2")
+
+    got = pull_worker_input(field, worker_name=WORKER, correlation_id="window-2", sender=SENDER)
+
+    assert _subjects(got) == ["W2"]
+    assert "control_selections_remaining" not in got["selection"]
+    listener = field.worker_listener_session(WORKER)
+    assert listener["control_selection_key"] == f"{SENDER}|window-1"
+    assert listener["control_selections_used"] == 1
+    assert listener["selective_receives_since_general"] == 1, "the second window counted on the general budget"

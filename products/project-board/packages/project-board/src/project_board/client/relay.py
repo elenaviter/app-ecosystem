@@ -5899,6 +5899,18 @@ class ProblemBoardRelaySupervisor:
             # after classification is not known yet and counts as not quiet.
             return [ref for ref in pending_refs if not known.get(ref, False)]
 
+        async def push_wake(**kwargs: Any) -> dict[str, Any] | None:
+            # A wake that would name nothing is not pushed (Ops' review of
+            # #573): the only mail that was not quiet can be consumed between
+            # the classification and the authoritative pending read.
+            refs = wake_refs()
+            if not refs:
+                await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+                return queue_reconciliation
+            return await self._notify_session(
+                host, channel, event_kind="input.available", message_refs=refs, **kwargs,
+            )
+
         async def mailbox_empty() -> bool:
             # W448 fix 3: a queued wake's refs stand in for the mailbox only on
             # the way to the deduplicated return. Every branch that records or
@@ -6101,12 +6113,7 @@ class ProblemBoardRelaySupervisor:
                     if await mailbox_empty():
                         await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                         return queue_reconciliation
-                    return await self._notify_session(
-                        host,
-                        channel,
-                        event_kind="input.available",
-                        message_refs=wake_refs(),
-                    )
+                    return await push_wake()
                 coalesced = await self._channel_off_loop(channel,
                     field.coalesce_worker_session_wake,
                     channel.worker_name,
@@ -6129,11 +6136,7 @@ class ProblemBoardRelaySupervisor:
                 if await mailbox_empty():
                     await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                     return queue_reconciliation
-                return await self._notify_session(
-                    host,
-                    channel,
-                    event_kind="input.available",
-                    message_refs=wake_refs(),
+                return await push_wake(
                     wake_id=outstanding_wake_id,
                     retried=True,
                 )
@@ -6161,12 +6164,7 @@ class ProblemBoardRelaySupervisor:
         if await mailbox_empty():
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
-        return await self._notify_session(
-            host,
-            channel,
-            event_kind="input.available",
-            message_refs=wake_refs(),
-        )
+        return await push_wake()
 
     @staticmethod
     def _record_authorization(
