@@ -30,7 +30,7 @@ from typing import Any, Awaitable, Callable, Mapping
 from service_foundation.coordination.durable_decision_log import DecisionRefused, GlobalIntent
 
 from .card_participant import (
-    PARTICIPANT, CardGroupIntent, CardGroupMemberIntent, CardIntent, LocalCardIntentSource,
+    PARTICIPANT, CardGroupIntent, CardGroupMemberIntent, CardIntent, CardReadSetIntent, LocalCardIntentSource,
     catalog_reservation_from_dependencies, reads_from_dependencies,
 )
 from .model import CardAuthority
@@ -144,6 +144,15 @@ class AuthorityCardIntentSource(_AuthorityReads):
         projection, value = verified.projection, verified.candidate
         if projection.get("binding_kind") == "connection-hub.card-group":
             return await self._load_group(transaction_id, verified)
+        if projection.get("binding_kind") == "connection-hub.card-read-set":
+            # W578: a read set holds the VERIFIED reads and catalog; staging checks each one's revision.
+            intent = CardReadSetIntent(
+                transaction_id=transaction_id, intent_digest=verified.intent.digest,
+                reads=tuple(dict(read) for read in value["reads"]), catalog=value["catalog"],
+                actor_subject=projection["actor_subject"], actor_kind=projection["actor_kind"],
+                authority=self._authority_id, scope=intent_scope(verified.intent, self._scope_field))
+            await self._local.record(intent)
+            return intent
         subject_hash = projection["target_scope"]
         if type(subject_hash) is not str or not _HEX64.fullmatch(subject_hash):
             # The Hub's storage scope, sha256(grantor_subject) hex (EMain C1); never a raw subject.

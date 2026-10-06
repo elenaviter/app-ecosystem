@@ -37,6 +37,7 @@ from service_foundation.coordination.durable_wire import (
 from .card_participant import candidate_value_digest
 
 GROUP_BINDING_KIND = "connection-hub.card-group"  # cards/card_group.py; imported lazily (no import cycle)
+READ_SET_BINDING_KIND = "connection-hub.card-read-set"  # cards/card_read_set.py; imported lazily
 
 PROTOCOL = "card-transaction-authority.v2"
 UNSIGNED_FIELDS = frozenset({
@@ -151,6 +152,15 @@ def verify_card_authority_v2(
         from .card_group import verify_group_projection
         try:
             verify_group_projection(projection, candidate)
+        except DecisionRefused:
+            _refuse("authority_candidate_invalid")
+    elif isinstance(projection, Mapping) and projection.get("binding_kind") == READ_SET_BINDING_KIND:
+        # W578: a read set; its reads and catalog are the projection's dependencies, exactly.
+        from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+        from .card_read_set import verify_read_set_projection
+        try:
+            verify_read_set_projection(projection, candidate)
         except DecisionRefused:
             _refuse("authority_candidate_invalid")
     elif (type(candidate) is not dict or set(candidate) != CANDIDATE_FIELDS
