@@ -148,3 +148,90 @@ No new browser parameters accept decisions, context references or workload
 secrets. This worker has made no credential, grant, restart or runtime
 configuration change. The source contract does not alter the operator's
 standing scoped deployment authority or the designated executor's duties.
+
+## 2026-10-06: draft two-Card lifecycle (not independently qualified)
+
+This is a separate generic transaction, not a loop over the one-Card revoke
+port above. The hosted alias is `issuer_managed_lifecycle_apply`, operations
+route, POST. Invoke it through the existing request-bound SDK
+`call_bundle_operation`; no private Hub instance is handed to another app.
+
+The DTO has exactly `context_ref`, `request_id`, `action: "revoke"`,
+`change_digest`, and exactly two `targets`. Each target has exactly
+`owner_subject`, `access_id`, `expected_card_revision` (positive exact integer),
+`expected_authority_fingerprint` (full `CardAuthority.content_hash()`),
+`issuer_kind`, and `issuer_ref`. Fingerprints include the full properties,
+provenance and opaque Card bindings. No substitute/reloaded target is adopted.
+The UTF-8 candidate digest hashes `{action: "revoke", targets: <complete target
+objects sorted by (owner_subject, access_id)>}` using `change_digest`.
+
+Coordinates authorize nothing. The hosting operation positively requires a
+registered/privileged platform-human protected context. External/delegated
+principals refuse even when their grantor user id equals a target owner.
+SDK-injected `user_id` and `fingerprint` method metadata are explicitly ignored;
+they never select the actor. Extras retained in a nested DTO, including actor,
+owner proxies and approval hashes, are rejected before service construction.
+Both configured issuers receive the actual actor, whole pair digest, original
+request/context and their own exact target. Sealed decisions are revalidated
+under both Card fences before any effects and again before publication;
+revalidation never extends the initial, at-most-60-second window.
+
+Service callable:
+`DelegatedCardService.revoke_lifecycle(request, *, actor_subject, before_commit,
+after_commit)`. `before_commit` receives the two current authorities and is the
+configured issuer closure. `after_commit` receives their before authorities
+and performs idempotent credential-handle cleanup. `DurableCardPersistence`
+supplies that cleanup. This low-level service is not an authentication API.
+
+The service acquires a durable receipt fence, then the existing production
+`.mutation.lock` fences in `(subject_hash, access_id)` order. One 30-second
+operation bound covers acquisition, checks, staging and cleanup; flock itself
+has no TTL or steal. An explicit trusted host capability is required:
+`connections.delegated_credentials.lifecycle_storage.lock_scope` is either
+`same-host-flock` or `shared-flock-verified`. Neither is inferred from a path.
+No capability, unsupported object storage, or unverified cross-host NFS/SMB
+behavior refuses. This draft has not changed any live configuration.
+
+The absolute filesystem backend publishes with a same-directory atomic
+`Path.replace`, through `write_json_atomic`. Power-loss/fsync durability is
+not claimed. A bounded active-intent directory publishes the complete pair
+before either version or pointer is staged. Both participants refuse a
+single-Card writer with retryable `lifecycle_preparation_unresolved` while
+preparation or serving completion remains unresolved. An overloaded recovery
+queue refuses rather than scanning an unbounded receipt history.
+
+Pending current pointers resolve the before revision until one shared receipt
+rename records `committed`; thereafter both resolve the after revisions.
+Current pointers are re-read and compared with the recorded before value
+before staging. A per-version lifecycle sidecar, installed before its version,
+keeps uncommitted/aborted versions out of explicit history, listing and initial
+migration reads. Missing or corrupt bindings fail closed.
+
+Redis installs both permanent updating markers in one Lua operation and
+invalidates both the serving epoch and the sweep token. Rebuilds cannot bless
+an unresolved lifecycle. This temporarily closes the entire serving partition
+until its normal durable sweep can prove readiness; it is not merely a
+two-key cache optimization. Redis Cluster keys in different slots refuse
+`CROSSSLOT`; there is no sequential fallback. No real-Redis qualification of
+these new scripts is claimed by the draft unit tests.
+
+Receipt state and serving completion are separate. `committed/pending` means
+both authority revisions were revoked but cleanup is incomplete: HTTP-style
+status 202, `ok: false`, `retryable: true`. It is NEVER a no-write refusal or a
+reason to compensate authority. Both participants remain closed. Recovery of
+the identical request holds the same three production fences, retries cleanup
+and atomically finalizes both tombstones before recording `serving_state:
+"complete"`. Changed replay bodies at the same actor/context/request key
+refuse. Completed replay returns its historical receipt without deleting
+handles or mutating a later legitimate Card revision.
+
+An interrupted preparation is deterministically aborted under both fences.
+Identical retry then returns the recorded refusal; a new mutation attempt
+requires a new `request_id`, not an automatic retry of that reservation.
+Issuer-owned orchestration consumes the consolidated two-target result; Hub
+does not manufacture a second per-target domain finalization protocol.
+
+The source is still a draft. Disposable child-kill storage tests, direct
+handler identity regressions and service unit tests are not production-fence,
+real Redis/PostgreSQL or actual mounted-authentication proof. Exact-source
+independent review and those gates must precede composition/activation.

@@ -41,11 +41,12 @@ def active_intent_path(store: Any, transaction_id: str):
 
 def _validate_receipt(value: object, transaction_id: str) -> dict[str, Any]:
     if not isinstance(value, Mapping) or set(value) != {
-        "schema", "transaction_id", "binding", "state", "reason", "targets",
+        "schema", "transaction_id", "binding", "state", "reason", "targets", "serving_state",
     }:
         raise CardStorageError("lifecycle_receipt_invalid")
     if (value["schema"] != LIFECYCLE_RECEIPT_SCHEMA or value["transaction_id"] != transaction_id
             or value["state"] not in ("prepared", "committed", "refused")
+            or value["serving_state"] not in ("not_required", "pending", "complete")
             or type(value["reason"]) is not str):
         raise CardStorageError("lifecycle_receipt_invalid")
     binding = value["binding"]
@@ -66,6 +67,9 @@ def _validate_receipt(value: object, transaction_id: str) -> dict[str, Any]:
             before = CardCurrentPointer.from_mapping(entry["before"])
             after = CardCurrentPointer.from_mapping(entry["after"])
             if ((entry["subject_hash"], entry["access_id"]) != (target.subject_hash, target.access_id)
+                    or type(entry["before"].get("card_revision")) is not int
+                    or type(entry["after"].get("card_revision")) is not int
+                    or before.state != "active"
                     or before.access_id != target.access_id or after.access_id != target.access_id
                     or before.card_revision != target.expected_card_revision
                     or after.card_revision != before.card_revision + 1
@@ -89,6 +93,8 @@ async def _active_intents(store: Any):
     A terminal record left by interrupted cleanup is harmless. Directory/read
     failures and an overloaded recovery queue fail writers closed.
     """
+    if not hasattr(store, "root"):
+        return  # other legacy backends cannot offer this lifecycle capability
     directory = store.root / "lifecycle-transactions" / "active"
 
     def paths():
@@ -106,13 +112,16 @@ async def _active_intents(store: Any):
         receipt = await read_receipt(store, path.stem)
         if receipt is None:
             continue  # terminal cleanup won a race with enumeration
-        if receipt["state"] == "prepared":
+        if receipt["state"] == "prepared" or receipt["serving_state"] == "pending":
             yield receipt
 
 
 async def _retire_active_intent(store: Any, transaction_id: str) -> None:
     # Called only AFTER an authoritative terminal receipt was published. A
     # cleanup failure does not relabel a committed outcome or restore authority.
+    receipt = await read_receipt(store, transaction_id)
+    if receipt is None or receipt["state"] == "prepared" or receipt["serving_state"] == "pending":
+        return
     try:
         await asyncio.to_thread(active_intent_path(store, transaction_id).unlink, missing_ok=True)
     except OSError:
@@ -181,7 +190,8 @@ async def abort_prepared(store: Any, *, request: LifecycleRequest, actor_subject
 
 
 async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject: str,
-                        now: datetime, before_publish: Callable[[], Awaitable[None]]) -> dict[str, Any]:
+                        now: datetime, before_publish: Callable[[], Awaitable[None]],
+                        after_prepare: Callable[[], Awaitable[None]] | None = None) -> dict[str, Any]:
     """Fences/issuer/serving gates are mandatory SERVICE responsibilities.
 
     All authority preconditions are checked before staging. before_publish is
@@ -214,10 +224,13 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
         entries.append({"subject_hash": target.subject_hash, "access_id": target.access_id,
                         "before": before.to_dict(), "after": after.to_dict()})
     receipt = {"schema": LIFECYCLE_RECEIPT_SCHEMA, "transaction_id": transaction_id,
-               "binding": request.binding(actor_subject), "state": "prepared", "reason": "", "targets": entries}
+               "binding": request.binding(actor_subject), "state": "prepared", "reason": "", "targets": entries,
+               "serving_state": "pending" if after_prepare is not None else "not_required"}
     # Intent precedes every revision/pointer write and exists across a kill.
     await write_json_atomic(active_intent_path(store, transaction_id), receipt)
     try:
+        if after_prepare is not None:
+            await after_prepare()
         for authority, entry in zip(authorities, entries):
             await write_json_atomic(store.revision_path(subject_hash=entry["subject_hash"],
                 access_id=entry["access_id"], revision_name=entry["after"]["revision_name"]).with_suffix(".lifecycle.json"),
@@ -249,3 +262,18 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
         await abort_prepared(store, request=request, actor_subject=actor_subject,
                              reason="lifecycle_preparation_failed")
         raise
+
+
+async def mark_serving_complete(store: Any, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Caller still holds receipt and BOTH production Card fences."""
+    if receipt["state"] not in ("committed", "refused"):
+        raise CardStorageError("lifecycle_serving_outcome_invalid")
+    completed = {**receipt, "serving_state": "complete"}
+    try:
+        await write_json_atomic(receipt_path(store, receipt["transaction_id"]), completed)
+    except Exception:
+        actual = await read_receipt(store, receipt["transaction_id"])
+        if actual != completed:
+            raise
+    await _retire_active_intent(store, receipt["transaction_id"])
+    return completed

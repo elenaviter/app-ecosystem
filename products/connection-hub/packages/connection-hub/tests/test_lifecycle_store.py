@@ -161,6 +161,131 @@ async def test_killed_preparer_blocks_single_card_writer_before_any_cache_or_rev
     assert await _states(store, request) == [("active", 1), ("active", 1)]
 
 
+def _service_cache():
+    cache = MagicMock()
+    for name in ("reconcile_projection", "claim_lifecycle", "lifecycle_fenced", "finish_lifecycle"):
+        setattr(cache, name, AsyncMock(return_value=True))
+    cache.release_lifecycle = AsyncMock()
+    cache.index_remove = AsyncMock()
+    return cache
+
+
+@pytest.mark.asyncio
+async def test_pair_service_holds_receipt_then_both_ordered_card_fences_through_cleanup_and_replay(tmp_path):
+    from connection_hub.delegated_credentials.cards.service import DelegatedCardService
+
+    store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    held, order, checks, cleanup_calls = [], [], [], []
+
+    @asynccontextmanager
+    async def locks(**kwargs):
+        held.append(kwargs["lock_path"])
+        order.append(kwargs)
+        try:
+            yield {}
+        finally:
+            held.pop()
+
+    async def check(authorities):
+        assert len(held) == 3
+        assert authorities == tuple(sorted(cards, key=lambda c: (c.grantor_subject, c.access_id)))
+        checks.append(1)
+
+    async def cleanup(authorities):
+        assert len(held) == 3
+        cleanup_calls.append(authorities)
+
+    cache = _service_cache()
+    service = DelegatedCardService(store=store, cache=cache, mutation_lock=locks)
+    receipt = await service.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=check, after_commit=cleanup)
+    assert receipt["state"] == "committed" and receipt["serving_state"] == "complete"
+    assert checks == [1, 1] and len(cleanup_calls) == 1
+    assert order[0]["operation"] == "delegated-card-lifecycle"
+    assert [item["lock_path"] for item in order[1:]] == [store.card_path(subject_hash=t.subject_hash,
+        access_id=t.access_id) / ".mutation.lock" for t in sorted(request.targets, key=lambda t: (t.subject_hash, t.access_id))]
+    assert all(item["wait_seconds"] == 30 for item in order)
+    assert held == []
+    assert await service.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=check, after_commit=cleanup) == receipt
+    assert checks == [1, 1] and len(cleanup_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_pair_service_committed_serving_limbo_blocks_both_writers_and_recovers_under_both_fences(tmp_path):
+    from connection_hub.delegated_credentials.cards.service import CardConflict, DelegatedCardService
+
+    store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    cache = _service_cache()
+    service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
+    check = AsyncMock()
+    failing_cleanup = AsyncMock(side_effect=OSError("synthetic handle storage unavailable"))
+    receipt = await service.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=check, after_commit=failing_cleanup)
+    assert receipt["state"] == "committed" and receipt["serving_state"] == "pending"
+    assert await _states(store, request) == [("revoked", 2), ("revoked", 2)]
+    cache.finish_lifecycle.assert_not_called()
+    for card in cards:
+        with pytest.raises(CardConflict, match="lifecycle_preparation_unresolved"):
+            await service.commit(dataclasses.replace(card, card_revision=3),
+                subject_hash=subject_hash_for(card.grantor_subject), expected_revision=2)
+    cleanup = AsyncMock()
+    completed = await service.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=check, after_commit=cleanup)
+    assert completed["state"] == "committed" and completed["serving_state"] == "complete"
+    assert check.await_count == 2  # no new decision or mutation on recovery/replay
+    assert cleanup.await_count == 1
+    await _seed(store, tuple(dataclasses.replace(card, card_revision=3) for card in cards))
+    assert await service.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=check, after_commit=cleanup) == completed
+    assert cleanup.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_pair_service_expiry_after_staging_aborts_both_and_does_not_remove_handles(tmp_path):
+    from connection_hub.delegated_credentials.cards.service import DelegatedCardService
+
+    store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    cache = _service_cache()
+    check = AsyncMock(side_effect=[None, LifecycleRefused("issuer_decision_expired")])
+    cleanup = AsyncMock()
+    service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
+    with pytest.raises(LifecycleRefused, match="issuer_decision_expired"):
+        await service.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=check, after_commit=cleanup)
+    assert await _states(store, request) == [("active", 1), ("active", 1)]
+    receipt = await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR))
+    assert receipt["state"] == "refused" and receipt["serving_state"] == "complete"
+    cleanup.assert_not_called()
+    cache.release_lifecycle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_pair_service_requires_explicit_host_flock_capability_and_first_issuer_gate(tmp_path):
+    from connection_hub.delegated_credentials.cards.service import DelegatedCardService
+
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    cache = _service_cache()
+    check, cleanup = AsyncMock(), AsyncMock()
+    service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
+    with pytest.raises(LifecycleRefused, match="issuer_lifecycle_atomic_fences_unavailable"):
+        await service.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=check, after_commit=cleanup)
+    check.assert_not_called()
+    store.lifecycle_lock_scope = "same-host-flock"
+    check.side_effect = LifecycleRefused("issuer_decision_expired")
+    with pytest.raises(LifecycleRefused, match="issuer_decision_expired"):
+        await service.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=check, after_commit=cleanup)
+    cache.claim_lifecycle.assert_not_called()
+    cache.reconcile_projection.assert_not_called()
+    assert await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR)) is None
+
+
 @pytest.mark.asyncio
 async def test_unsupported_object_backend_refuses_without_manufacturing_local_storage():
     store = BundleStorageDelegatedCardStore("s3://synthetic-bucket/synthetic-root")

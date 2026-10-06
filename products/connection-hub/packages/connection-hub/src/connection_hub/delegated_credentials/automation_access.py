@@ -2358,6 +2358,76 @@ class AutomationAccessService:
             ),
         )
 
+    async def issuer_managed_lifecycle_apply(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Host-authenticated generic lifecycle; target hints authorize nothing.
+
+        The hosting operation rejects non-human principals BEFORE exposing
+        this request-local service. Its bound actor cannot come from the DTO.
+        Every target requires its configured issuer, including a credential-
+        backed participant: this is not the old credentialless-only shortcut.
+        """
+        from .cards.lifecycle import LifecycleRefused, LifecycleRequest
+
+        try:
+            lifecycle = LifecycleRequest.from_mapping(body)
+            actor = self._issuer_actor_subject
+            if not self._issuer_actor_subject_bound or not actor:
+                raise LifecycleRefused("issuer_lifecycle_actor_unavailable")
+            persistence = self._cards()
+            apply = getattr(persistence, "revoke_lifecycle", None)
+            read_receipt = getattr(persistence, "load_lifecycle_receipt", None)
+            if not callable(apply) or not callable(read_receipt):
+                raise LifecycleRefused("issuer_lifecycle_commit_gate_unavailable")
+            recorded = await read_receipt(lifecycle, actor_subject=actor)
+            decisions = []
+            if recorded is None:
+                for target in lifecycle.targets:
+                    loaded = await persistence.load_current(target.access_id, subject_hash=target.subject_hash)
+                    authority = None if loaded is None else loaded[0]
+                    target.assert_authority(authority)
+                    request = IssuerRequest(actor_subject=actor, request_id=lifecycle.request_id,
+                        action="revoke", access_id=target.access_id, card_revision=target.expected_card_revision,
+                        issuer_kind=target.issuer_kind, issuer_ref=target.issuer_ref,
+                        change_digest=lifecycle.change_digest, context_ref=lifecycle.context_ref)
+                    decision = await self._issuers.decide(request)
+                    refusal = issuer_write_refusal(authority, request, decision, now=datetime.now(timezone.utc))
+                    if refusal is not None:
+                        raise IssuerWriteRefused(refusal["reason"])
+                    decisions.append((target, authority, request, decision))
+
+            async def before_commit(authorities):
+                if len(decisions) != 2:
+                    raise IssuerWriteRefused("issuer_lifecycle_replay_not_mutation")
+                for (target, _original, request, decision), current in zip(decisions, authorities):
+                    target.assert_authority(current)
+                    fresh = await self._issuers.revalidate(request, decision)
+                    refusal = issuer_write_refusal(current, request, fresh, now=datetime.now(timezone.utc))
+                    if refusal is not None:
+                        raise IssuerWriteRefused(refusal["reason"])
+
+            receipt = await apply(lifecycle, actor_subject=actor, before_commit=before_commit)
+            committed = receipt["state"] == "committed"
+            complete = receipt["serving_state"] in ("complete", "not_required")
+            # Issuer-owned orchestration consumes this shared outcome. Hub does
+            # not invent a second per-participant policy/finalization protocol.
+            return {"ok": committed and complete, "status": 200 if committed and complete else 202 if committed else 409,
+                "state": receipt["state"], "serving_state": receipt["serving_state"],
+                "transaction_id": receipt["transaction_id"], "request_id": lifecycle.request_id,
+                "change_digest": lifecycle.change_digest, "reason": receipt["reason"],
+                "retryable": not complete, "requires_new_request_id": not committed,
+                "targets": [{"access_id": entry["access_id"], "before_revision": entry["before"]["card_revision"],
+                    "after_revision": entry["after"]["card_revision"] if committed else entry["before"]["card_revision"]}
+                    for entry in receipt["targets"]]}
+        except IssuerWriteRefused as exc:
+            return {"ok": False, "error": "issuer_managed_card", "reason": exc.reason, "status": 403}
+        except LifecycleRefused as exc:
+            return {"ok": False, "error": exc.reason, "status": 409, "requires_new_request_id": True}
+        except CardConflict as exc:
+            return {"ok": False, "error": exc.reason, "status": 409, "retryable": True}
+        except Exception:
+            _LOGGER.exception("[connection-hub] issuer lifecycle unavailable")
+            return {"ok": False, "error": "issuer_lifecycle_unavailable", "status": 503, "retryable": True}
+
     def _issuer_managed(self, record: AutomationAccessRecord) -> bool:
         return _record_is_credentialless(record) and self._issuers.is_managed(record.issuer_kind)
 

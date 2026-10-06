@@ -117,7 +117,7 @@ class DelegatedCardStore(Protocol):
 class BundleStorageDelegatedCardStore:
     """``DelegatedCardStore`` over a shared bundle-storage root."""
 
-    def __init__(self, storage_root: str | os.PathLike[str]) -> None:
+    def __init__(self, storage_root: str | os.PathLike[str], *, lifecycle_lock_scope: str = "") -> None:
         self._root = pathlib.Path(storage_root) / CARDS_DIRNAME / CARDS_LAYOUT_VERSION
         # This implementation uses pathlib IO and same-directory OS rename.
         # An object-storage URI is NOT that backend and must not accidentally
@@ -127,6 +127,10 @@ class BundleStorageDelegatedCardStore:
             "filesystem-atomic-rename"
             if pathlib.Path(storage_root).is_absolute() and "://" not in source else ""
         )
+        # Explicit host capability, NEVER inferred from an absolute path. A
+        # shared NFS/SMB mount is not proof of coherent cross-host flock.
+        self.lifecycle_lock_scope = lifecycle_lock_scope if lifecycle_lock_scope in (
+            "same-host-flock", "shared-flock-verified") else ""
 
     @property
     def root(self) -> pathlib.Path:

@@ -21,12 +21,13 @@ same revision.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import pathlib
 import time
 import uuid
-from contextlib import AbstractAsyncContextManager
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Protocol
 
@@ -302,6 +303,8 @@ class DelegatedCardService:
         return current
 
     async def _assert_no_lifecycle_preparation(self, *, subject_hash: str, access_id: str) -> None:
+        if not hasattr(self._store, "lifecycle_publish_backend"):
+            return  # legacy backend cannot prepare this lifecycle
         from .lifecycle_store import assert_pointer_replaceable
 
         try:
@@ -310,6 +313,122 @@ class DelegatedCardService:
             if str(exc) in ("lifecycle_preparation_unresolved", "lifecycle_recovery_queue_unavailable"):
                 raise CardConflict(str(exc)) from exc
             raise
+
+    @asynccontextmanager
+    async def _lifecycle_sections(self, request: Any, actor_subject: str):
+        from .lifecycle_store import receipt_path
+
+        # One bound covers the receipt wait, BOTH Card waits, issuer checks,
+        # durable staging and serving cleanup. Flocks never expire or steal.
+        async with asyncio.timeout(CARD_LOCK_WAIT_SECONDS):
+            async with AsyncExitStack() as stack:
+                await stack.enter_async_context(self._mutation_lock(
+                    lock_path=receipt_path(self._store, request.transaction_id(actor_subject)).with_suffix(".lock"),
+                    resource_id=f"delegated-card-lifecycle:{request.transaction_id(actor_subject)}",
+                    operation="delegated-card-lifecycle", wait_seconds=CARD_LOCK_WAIT_SECONDS))
+                for target in sorted(request.targets, key=lambda item: (item.subject_hash, item.access_id)):
+                    await stack.enter_async_context(self._critical_section(
+                        subject_hash=target.subject_hash, access_id=target.access_id))
+                yield
+
+    async def revoke_lifecycle(self, request: Any, *, actor_subject: str,
+            before_commit: Callable[[tuple[CardAuthority, CardAuthority]], Awaitable[None]],
+            after_commit: Callable[[tuple[CardAuthority, CardAuthority]], Awaitable[None]]) -> dict[str, Any]:
+        """Generic pair primitive, NOT an authenticated public entrypoint.
+
+        Host supplies the protected actor and configured issuer closure.
+        Persistence supplies idempotent handle cleanup. Receipt and both real
+        per-Card fences remain held through checks, staging and cleanup. A
+        durable committed/pending outcome is NEVER a no-write refusal.
+        """
+        from .lifecycle import LifecycleRefused, LifecycleRequest
+        from . import lifecycle_store as lifecycle
+
+        if not isinstance(request, LifecycleRequest) or not callable(before_commit) or not callable(after_commit):
+            raise LifecycleRefused("issuer_lifecycle_commit_gate_unavailable")
+        if (getattr(self._store, "lifecycle_publish_backend", "") != "filesystem-atomic-rename"
+                or getattr(self._store, "lifecycle_lock_scope", "") not in ("same-host-flock", "shared-flock-verified")):
+            raise LifecycleRefused("issuer_lifecycle_atomic_fences_unavailable")
+        transaction_id = request.transaction_id(actor_subject)
+        access_ids = tuple(target.access_id for target in request.targets)
+        try:
+            async with self._lifecycle_sections(request, actor_subject):
+                recorded = await lifecycle.read_receipt(self._store, transaction_id)
+                if recorded is not None:
+                    if recorded["binding"] != request.binding(actor_subject):
+                        raise LifecycleRefused("issuer_lifecycle_replay_changed")
+                    if recorded["state"] == "prepared":
+                        recorded = await lifecycle.abort_prepared(self._store, request=request, actor_subject=actor_subject)
+                    return await self._finish_lifecycle(recorded, after_commit=after_commit)
+                authorities = []
+                for target in request.targets:
+                    await self._assert_no_lifecycle_preparation(subject_hash=target.subject_hash, access_id=target.access_id)
+                    current = await self._store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
+                    target.assert_authority(None if current is None else current[1])
+                    authorities.append(current[1])
+                authorities = tuple(authorities)
+                await before_commit(authorities)  # fresh issuer gate BEFORE first effect
+                for authority, target in zip(authorities, request.targets):
+                    current = await self._store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
+                    await self._reconcile(access_id=authority.access_id, current=current, moment=int(time.time()))
+
+                async def claim():
+                    if not await self._cache.claim_lifecycle(authorities, mutation_id=transaction_id):
+                        raise CardConflict("card_lifecycle_transition_not_claimed")
+
+                async def publish_gate():
+                    await before_commit(authorities)  # original decision, no validity-window extension
+                    if not await self._cache.lifecycle_fenced(access_ids, mutation_id=transaction_id):
+                        raise CardConflict("card_lifecycle_serving_fence_lost")
+
+                try:
+                    receipt = await lifecycle.atomic_revoke(self._store, request=request, actor_subject=actor_subject,
+                        now=datetime.now(timezone.utc), before_publish=publish_gate, after_prepare=claim)
+                except Exception:
+                    receipt = await lifecycle.read_receipt(self._store, transaction_id)
+                    if receipt is not None and receipt["state"] == "committed":
+                        return await self._finish_lifecycle(receipt, after_commit=after_commit)
+                    if receipt is not None and receipt["state"] == "refused":
+                        await self._finish_lifecycle(receipt, after_commit=after_commit)
+                    raise
+                return await self._finish_lifecycle(receipt, after_commit=after_commit)
+        except (TimeoutError, CardMutationLockTimeout) as exc:
+            recorded = await lifecycle.read_receipt(self._store, transaction_id)
+            if recorded is not None and recorded["state"] == "committed":
+                return recorded  # recovery required; never claim no-write
+            raise CardConflict("card_lifecycle_timeout") from exc
+
+    async def _finish_lifecycle(self, receipt: dict[str, Any], *, after_commit: Any) -> dict[str, Any]:
+        from . import lifecycle_store as lifecycle
+
+        if receipt["serving_state"] != "pending":
+            return receipt  # stable replay, including after a later legitimate revision
+        mutation_id = receipt["transaction_id"]
+        access_ids = tuple(entry["access_id"] for entry in receipt["targets"])
+        if receipt["state"] == "refused":
+            await self._cache.release_lifecycle(access_ids, mutation_id=mutation_id)
+            return await lifecycle.mark_serving_complete(self._store, receipt)
+        try:
+            before = []
+            for entry in receipt["targets"]:
+                current = await self._store.read_current(subject_hash=entry["subject_hash"], access_id=entry["access_id"])
+                if current is None or current.to_dict() != entry["after"]:
+                    return receipt  # do NOT remove handles belonging to another revision
+                authority = await self._store.read_revision(subject_hash=entry["subject_hash"], access_id=entry["access_id"],
+                    revision_name=entry["before"]["revision_name"])
+                if authority is None:
+                    return receipt
+                before.append(authority)
+            await after_commit(tuple(before))
+            if not await self._cache.finish_lifecycle(tuple(before), mutation_id=mutation_id):
+                return receipt  # both persistent markers remain; no success relabelling
+            for entry in receipt["targets"]:
+                await self._cache.index_remove(subject_hash=entry["subject_hash"], access_id=entry["access_id"])
+            return await lifecycle.mark_serving_complete(self._store, receipt)
+        except Exception:
+            _LOGGER.warning("[connection-hub.delegated-cards] lifecycle committed; serving pending transaction=%s",
+                            mutation_id, exc_info=True)
+            return receipt
 
     async def _reconcile(
         self,

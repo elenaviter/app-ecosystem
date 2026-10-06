@@ -285,6 +285,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "delegated_invocation_policy_set",
     "delegated_access_renew",
     "delegated_access_revoke",
+    "issuer_managed_lifecycle_apply",
     "delegated_access_update",
     "delegated_access_apply_profile",
     "delegated_access_add_operations",
@@ -794,6 +795,31 @@ def _platform_user_payload(entrypoint: Any, *, user_id: Optional[str] = None) ->
     }
 
 
+def _protected_lifecycle_actor(entrypoint: Any) -> str:
+    """Positive platform-human context, never a grantor/metadata fallback."""
+    user = getattr(getattr(entrypoint, "comm_context", None), "user", None)
+    user_type = getattr(user, "user_type", "")
+    user_type = str(getattr(user_type, "value", user_type) or "")
+    authority = getattr(user, "identity_authority", None) or {}
+    if not isinstance(authority, Mapping) or user_type not in ("registered", "privileged"):
+        return ""
+    if (str(getattr(user, "username", "") or "").startswith("integration:")
+            or authority.get("authority_id", "platform") != "platform"
+            or any(authority.get(key) for key in ("delegate_identity", "delegated_card_binding", "grantor_user_id"))):
+        return ""
+    actor = str(getattr(user, "user_id", "") or "").strip()
+    if not actor or actor == "anonymous" or actor.startswith(("telegram_", "integration:")):
+        return ""
+    return actor
+
+
+def _lifecycle_lock_scope(entrypoint: Any) -> str:
+    delegated = _connections_config(entrypoint).get("delegated_credentials")
+    storage = delegated.get("lifecycle_storage") if isinstance(delegated, Mapping) else None
+    scope = storage.get("lock_scope") if isinstance(storage, Mapping) else None
+    return scope if scope in ("same-host-flock", "shared-flock-verified") else ""
+
+
 def _edge_store(entrypoint: Any) -> ConnectionEdgeStore:
     return ConnectionEdgeStore(_storage_root_or_error(entrypoint))
 
@@ -1090,7 +1116,7 @@ async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
         redis=redis,
         tenant=tenant,
         project=project,
-        card_store=BundleStorageDelegatedCardStore(storage_root),
+        card_store=BundleStorageDelegatedCardStore(storage_root, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint)),
         settings=DelegatedCacheSettings.from_connections(_connections_config(entrypoint)),
         credential_handles=credential_handles,
         authority_backend=config.backend,
@@ -6275,6 +6301,29 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             expected_access_id=payload.get("expected_access_id"),
             expected_card_revision=payload.get("expected_card_revision"),
         )
+
+    @api(method="POST", alias="issuer_managed_lifecycle_apply", route="operations", csrf=True,
+         user_types=["registered", "privileged"])
+    async def issuer_managed_lifecycle_apply(self, data: Optional[Dict[str, Any]] = None,
+            request: Any = None, user_id: Optional[str] = None, fingerprint: Optional[str] = None,
+            **kwargs: Any) -> Dict[str, Any]:
+        # SDK setdefault metadata is separate from the strict DTO. Even a
+        # forged data.user_id/fingerprint that becomes these kwargs is ignored.
+        # A nested HTTP DTO retaining such fields is rejected by the parser.
+        del user_id, fingerprint
+        actor = _protected_lifecycle_actor(self)
+        if not actor:
+            return {"ok": False, "error": "issuer_lifecycle_requires_platform_human", "status": 403}
+        from connection_hub.delegated_credentials.cards.lifecycle import LifecycleRefused, LifecycleRequest
+        payload = _payload(data, **kwargs)
+        try:
+            payload = LifecycleRequest.from_mapping(payload).to_dict()
+        except LifecycleRefused as exc:
+            return {"ok": False, "error": exc.reason, "status": 400}
+        service = await _automation_access_service(self, request)
+        # Registry was constructed from trusted, request-frozen configuration.
+        service.bind_issuer_registry(service._issuers, actor_subject=actor)
+        return await service.issuer_managed_lifecycle_apply(payload)
 
     # ── delegated to KDCube (KDCube -> external provider for user) ──
 
