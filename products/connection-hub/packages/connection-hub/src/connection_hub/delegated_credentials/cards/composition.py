@@ -20,6 +20,7 @@ but the PostgreSQL authority or Card storage is missing, composition refuses
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Mapping
 
 from service_foundation.coordination.durable_decision_log import Coordinator, PostgresDecisionStore
@@ -30,6 +31,7 @@ from .card_participant import (
 )
 from .effect_targets import compose_card_effects
 
+LOGGER = logging.getLogger("kdcube.connection_hub.card_transactions")
 DECISION_SCHEMA = "connection_hub_card_decisions"
 
 
@@ -55,21 +57,42 @@ async def postgres_decision_store(pg_pool: Any, *, tenant: str, project: str) ->
     N1), so first creation runs under a session advisory lock: one creator at
     a time across processes.
     """
-    store = PostgresDecisionStore(pg_pool, schema=DECISION_SCHEMA,
-                                  namespace=decision_namespace(tenant=tenant, project=project))
+    namespace = decision_namespace(tenant=tenant, project=project)
     async with pg_pool.acquire() as connection:
         await connection.execute("SELECT pg_advisory_lock(hashtext($1))", DECISION_SCHEMA)
         try:
             await connection.execute(f"CREATE SCHEMA IF NOT EXISTS {DECISION_SCHEMA}")
-            await store.ensure_schema()
+            # Schema DDL on the SAME connection that holds the lock, so a pool
+            # of size 1 cannot deadlock waiting for a second one (EMain #599).
+            await PostgresDecisionStore(_HeldConnection(connection), schema=DECISION_SCHEMA,
+                                        namespace=namespace).ensure_schema()
         finally:
             await connection.execute("SELECT pg_advisory_unlock(hashtext($1))", DECISION_SCHEMA)
-    return store
+    return PostgresDecisionStore(pg_pool, schema=DECISION_SCHEMA, namespace=namespace)
 
 
-def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
-                           policies: Any) -> Coordinator:
-    """Bind one coordinator, participant, verifier and effect applier to this service's Card store."""
+class _HeldConnection:
+    """A pool-shaped view of one already-acquired connection, for schema setup only."""
+
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    def acquire(self) -> Any:
+        connection = self._connection
+
+        class _Lease:
+            async def __aenter__(self):
+                return connection
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Lease()
+
+
+def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_store: Any,
+                                 policies: Any) -> tuple[Coordinator, LocalCardIntentSource]:
+    """One coordinator, participant, verifier and effect applier over this persistence's Card store."""
     if persistence is None or decisions is None:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
     card_store = getattr(persistence, "card_store", None)
@@ -81,10 +104,63 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
                          policies=policies)
     intents = LocalCardIntentSource(card_store)
     participant = HubCardParticipant(service=card_service, store=card_store, intents=intents, decisions=decisions)
-    coordinator = Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store))
+    return Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store)), intents
+
+
+def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
+                           policies: Any) -> Coordinator:
+    """Bind one coordinator, participant, verifier and effect applier to this service's Card store."""
+    coordinator, intents = card_transaction_coordinator(persistence=persistence, decisions=decisions,
+                                                        grant_store=grant_store, policies=policies)
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions)
     return coordinator
 
 
-__all__ = ["CardTransactionsUnavailable", "DECISION_SCHEMA", "bind_card_transactions", "card_transactions_enabled",
-           "decision_namespace", "postgres_decision_store"]
+async def recover_card_transactions(coordinator: Coordinator, *, limit: int = 100, after: str = "",
+                                    max_pages: int = 5) -> dict[str, Any]:
+    """One bounded recovery pass of at most ``max_pages`` pages from cursor ``after``.
+
+    Finishes every decided transaction on every participant, presumes ABORT
+    for an undecided one past its expiry (the store's own CAS), and leaves an
+    unexpired undecided one. A participant failure does not stop the pass: it
+    is logged by transaction id and refusal code, the cursor moves past it, and
+    it is retried after the cursor wraps (EMain 18:42). The result's
+    ``next_after`` is where the next pass starts; it is "" once the last page
+    has been read, so every row is revisited.
+    """
+    from service_foundation.coordination.durable_decision_log import DecisionRefused, RecoveryIncomplete
+
+    cursor = after if type(after) is str and len(after) <= 128 else ""
+    finished = pending = 0
+    failed: dict[str, Any] = {}
+    pages = 0
+    while pages < max_pages:
+        pages += 1
+        try:
+            records, next_after, has_more = await coordinator.recover_page(limit=limit, after=cursor)
+            page_failures = {}
+        except RecoveryIncomplete as exc:
+            next_after, has_more = getattr(exc, "next_after", None), getattr(exc, "has_more", None)
+            if type(next_after) is not str or type(has_more) is not bool:
+                raise  # a kernel without the paging contract: never guess a cursor
+            records, page_failures = list(exc.completed), exc.failures
+        for record in records:
+            if record.terminal and set(record.finished) == set(record.intent.participants):
+                finished += 1
+            else:
+                pending += 1
+        failed.update(page_failures)
+        if not has_more:
+            cursor = ""
+            break
+        cursor = next_after
+    for transaction_id, error in failed.items():
+        reason = str(error) if isinstance(error, DecisionRefused) else type(error).__name__
+        LOGGER.warning("[connection-hub.card-transactions] recovery failed transaction=%s reason=%s",
+                       transaction_id, reason)
+    return {"ok": not failed, "finished": finished, "pending": pending, "failed": len(failed),
+            "pages": pages, "next_after": cursor}
+
+
+__all__ = ["CardTransactionsUnavailable", "DECISION_SCHEMA", "bind_card_transactions", "card_transaction_coordinator",
+           "card_transactions_enabled", "decision_namespace", "postgres_decision_store", "recover_card_transactions"]
