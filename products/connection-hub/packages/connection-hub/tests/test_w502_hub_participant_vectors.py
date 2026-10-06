@@ -69,9 +69,11 @@ def _response(record, phase, request_echo):
                                               timestamp=str(NOW))}}
 
 
-async def _stage(tmp_path, participant_input):
+async def _stage(tmp_path, participant_input, *, before_stage=None):
     store, service, before, after = await _setup(tmp_path)
     service.bind_effect_applier(_Applier())
+    if before_stage is not None:
+        await before_stage(service, before)
     accepted = VECTORS["accepted"]
     draft = IntentDraft(replay_scope="pb:vectors", request_id="pb-vector", expires_at=NOW + 600,
                         participants=(PARTICIPANT,),
@@ -116,3 +118,25 @@ async def test_each_refused_variant_never_stages(tmp_path, variant):
     with pytest.raises(DecisionRefused):
         await hub.prepare(TX)
     assert await tx.state(store, transaction_id=TX) is None
+
+
+@pytest.mark.asyncio
+async def test_a_pb_initiated_intent_carries_its_reads_through_the_authority_source(tmp_path):
+    # EMain #603: the reads come from the VERIFIED projection, so a PB intent naming a
+    # dependency Card (present at r1) and an absent My Card stages and holds both.
+    scope = VECTORS["accepted"]["participant_input"]["target_scope"]
+    changed = copy.deepcopy(VECTORS["accepted"]["participant_input"])
+    changed["dependency_revisions"] = {f"card:{scope}:aut_dependency": 1, f"card-absent:{scope}:aut_missing": 1}
+    held = {}
+
+    async def dependency(service, before):
+        held["card"] = replace(before, access_id="aut_dependency", card_revision=1, label="person Control")
+        await service.commit(held["card"], subject_hash=scope, expected_revision=0, now=NOW)
+        held["service"] = service
+
+    hub, store, before = await _stage(tmp_path, changed, before_stage=dependency)
+    await hub.prepare(TX)
+    assert [(read["access_id"], read["revision"]) for read in (await tx.state(store, transaction_id=TX))["reads"]]         == [("aut_dependency", 1), ("aut_missing", 0)]
+    moved = replace(held["card"], card_revision=2, label="another admin's edit")
+    with pytest.raises(Exception, match="unresolved"):
+        await held["service"].commit(moved, subject_hash=scope, expected_revision=1, now=NOW)

@@ -169,12 +169,86 @@ def active_path(store: Any, transaction_id: str):
     return store.root / "card-transactions" / "active" / f"{_checked_id(transaction_id)}.json"
 
 
+def _reads_valid(reads: Any, subject_hash: Any, access_id: Any) -> bool:
+    """W502 read reservations: unchanged Cards (revision >= 1) or absent ones (0), never the candidate."""
+    if not isinstance(reads, list) or not reads:
+        return False
+    seen = set()
+    for read in reads:
+        if (not isinstance(read, Mapping) or set(read) != {"subject_hash", "access_id", "revision"}
+                or not _HEX64.fullmatch(str(read["subject_hash"])) or type(read["access_id"]) is not str
+                or not read["access_id"] or type(read["revision"]) is not int or read["revision"] < 0):
+            return False
+        key = (read["subject_hash"], read["access_id"])
+        if key in seen or key == (subject_hash, access_id):
+            return False
+        seen.add(key)
+    return True
+
+
+def read_fence_path(store: Any, *, subject_hash: str, access_id: str):
+    """A dependency Card's read fence: no write lands on it while its transaction is prepared (W502)."""
+    return store.current_path(subject_hash=subject_hash, access_id=access_id).with_name("card-read-fence.json")
+
+
+async def _live_read_fence(store: Any, *, subject_hash: str, access_id: str) -> dict[str, Any] | None:
+    raw = await read_json_or_none(read_fence_path(store, subject_hash=subject_hash, access_id=access_id))
+    if not isinstance(raw, Mapping) or not isinstance(raw.get("transaction_id"), str):
+        return None
+    receipt = await read_receipt(store, raw["transaction_id"])
+    if receipt is None or receipt["state"] != "prepared":
+        return None  # a fence of an absent or decided transaction holds nothing
+    if not any((read["subject_hash"], read["access_id"]) == (subject_hash, access_id)
+               for read in receipt.get("reads", ())):
+        raise CardStorageError("card_transaction_read_fence_binding_invalid")
+    return receipt
+
+
+async def _reserve_reads(store: Any, transaction_id: str, reads: list[dict[str, Any]]) -> None:
+    """Verify every dependency at its expected revision and fence it for this transaction.
+
+    The caller holds each dependency Card's mutation section, so no write can
+    interleave; fences are written BEFORE the receipt, and are live only once
+    the prepared receipt exists, so a crash never leaves a live receipt with an
+    unfenced dependency.
+    """
+    from .lifecycle_store import assert_pointer_replaceable
+    for read in reads:
+        owner = await _live_read_fence(store, subject_hash=read["subject_hash"], access_id=read["access_id"])
+        if owner is not None and owner["transaction_id"] != transaction_id:
+            raise CardTransactionRefused("card_dependency_reserved")
+        if owner is None:  # a replay of this transaction already holds it
+            try:
+                await assert_pointer_replaceable(store, subject_hash=read["subject_hash"], access_id=read["access_id"])
+            except CardStorageError as exc:
+                raise CardTransactionRefused("card_dependency_reserved") from exc
+        current = await store.read_current_authority(subject_hash=read["subject_hash"], access_id=read["access_id"])
+        revision = 0 if current is None else current[1].card_revision
+        if revision != read["revision"]:
+            raise CardTransactionRefused("card_dependency_moved")
+        await write_json_atomic(read_fence_path(store, subject_hash=read["subject_hash"],
+                                                access_id=read["access_id"]), {"transaction_id": transaction_id})
+
+
+async def _release_reads(store: Any, receipt: Mapping[str, Any]) -> None:
+    for read in receipt.get("reads", ()):
+        path = read_fence_path(store, subject_hash=read["subject_hash"], access_id=read["access_id"])
+        raw = await read_json_or_none(path)
+        if isinstance(raw, Mapping) and raw.get("transaction_id") == receipt["transaction_id"]:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass  # a decided transaction's fence holds nothing
+
+
 def _validate(raw: Any, transaction_id: str) -> dict[str, Any]:
     try:
         base = {"schema", "transaction_id", "intent_digest", "participant", "subject_hash", "access_id",
                 "state", "reason", "before", "after", "change_digest"}
-        if (not isinstance(raw, Mapping) or set(raw) not in (base, base | {"effects"})
+        if (not isinstance(raw, Mapping)
+                or set(raw) not in (base, base | {"effects"}, base | {"reads"}, base | {"effects", "reads"})
                 or ("effects" in raw and not _effects_valid(raw["effects"]))
+                or ("reads" in raw and not _reads_valid(raw["reads"], raw.get("subject_hash"), raw.get("access_id")))
                 or raw["schema"] != TRANSACTION_RECEIPT_SCHEMA or raw["transaction_id"] != transaction_id
                 or raw["state"] not in ("prepared", *DECISIONS)
                 or not _HEX64.fullmatch(str(raw["intent_digest"])) or not _HEX64.fullmatch(str(raw["change_digest"]))
@@ -283,6 +357,7 @@ async def _clear_marker(store: Any, receipt: Mapping[str, Any]) -> None:
         except OSError:
             pass  # the decided receipt already releases the fence
     if receipt["state"] in DECISIONS:
+        await _release_reads(store, receipt)
         try:
             active_path(store, receipt["transaction_id"]).unlink(missing_ok=True)
         except OSError:
@@ -369,6 +444,8 @@ async def assert_replaceable(store: Any, *, subject_hash: str, access_id: str) -
 
     if await _prepared_marker(store, subject_hash=subject_hash, access_id=access_id) is not None:
         raise CardStorageError("card_transaction_unresolved")
+    if await _live_read_fence(store, subject_hash=subject_hash, access_id=access_id) is not None:
+        raise CardStorageError("card_transaction_unresolved")  # a prepared transaction depends on it
     raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
     if raw is None or raw.get("schema") != TRANSACTION_POINTER_SCHEMA:
         return
@@ -430,7 +507,7 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
 
 async def stage(store: Any, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
                 original: CardAuthority, candidate: CardAuthority, now: datetime,
-                effects: Any = ()) -> dict[str, Any]:
+                effects: Any = (), reads: Any = ()) -> dict[str, Any]:
     """Stage ``candidate`` behind a transaction pointer; nothing becomes visible. Caller holds the fence.
 
     A replay of a prepared transaction RESUMES its missing steps, but only
@@ -466,6 +543,10 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     recorded_effects = [{"kind": e["kind"], "key": e["key"], "payload": dict(e["payload"])} for e in (effects or ())]
     if recorded_effects and not _effects_valid(recorded_effects):
         raise CardTransactionRefused("card_transaction_effects_invalid")
+    recorded_reads = [{"subject_hash": r["subject_hash"], "access_id": r["access_id"], "revision": r["revision"]}
+                      for r in (reads or ())]
+    if recorded_reads and not _reads_valid(recorded_reads, subject_hash, original.access_id):
+        raise CardTransactionRefused("card_transaction_reads_invalid")
     if existing is not None and existing["state"] in DECISIONS:
         # A decided transaction is never staged again (Ops N2).
         raise CardTransactionRefused("card_transaction_aborted" if existing["state"] == "aborted"
@@ -473,6 +554,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     if existing is not None:
         if (existing["intent_digest"] != intent_digest
                 or existing.get("effects", []) != recorded_effects
+                or existing.get("reads", []) != recorded_reads
                 or existing["change_digest"] != change_digest(candidate.to_dict())
                 or existing["access_id"] != original.access_id or existing["subject_hash"] != subject_hash):
             raise CardTransactionRefused("card_transaction_replay_changed")
@@ -485,6 +567,8 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
             if raw.get("schema") == TRANSACTION_POINTER_SCHEMA else CardCurrentPointer.from_mapping(raw))
         if current is None or current.to_dict() != existing["before"]:
             raise CardTransactionRefused("card_transaction_revision_moved")
+        if recorded_reads:
+            await _reserve_reads(store, transaction_id, recorded_reads)  # a crash may have left one unwritten
         await _write_staged(store, existing, candidate, now)
         return existing
     # A fresh stage passes the FULL shared fence: an unresolved issuer UPDATE
@@ -506,6 +590,8 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
                "before": before.to_dict(), "after": after.to_dict(), "change_digest": change_digest(candidate.to_dict())}
     if recorded_effects:
         receipt["effects"] = recorded_effects
+    if recorded_reads:
+        receipt["reads"] = recorded_reads
     _validate(receipt, transaction_id)
     # 1. The prepared receipt, then 2. the per-Card marker: the Card is fenced
     #    from here on, even before 3. the after-revision and 4. the pointer.
@@ -520,6 +606,8 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     #    (Ops 11:36, non-blocking N2).
     # 0. The in-flight index entry first, so recovery can always find it.
     await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
+    if recorded_reads:
+        await _reserve_reads(store, transaction_id, recorded_reads)  # fenced before the receipt makes them live
     await write_json_atomic(receipt_path(store, transaction_id), receipt)
     await write_json_atomic(marker_path(store, subject_hash=subject_hash, access_id=original.access_id),
                             {"transaction_id": transaction_id})
@@ -584,6 +672,6 @@ async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
 
 
 __all__ = ["CardTransactionRefused", "DECISIONS", "TRANSACTION_POINTER_SCHEMA", "TRANSACTION_RECEIPT_SCHEMA",
-           "TransactionDecisionPort", "abort_unstaged", "active_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
+           "TransactionDecisionPort", "abort_unstaged", "active_path", "read_fence_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
            "effect_outcomes", "effects_path", "list_in_doubt", "marker_path", "pending_effects",
            "read_receipt", "resolve_pointer", "stage", "state"]
