@@ -165,6 +165,14 @@ def test_a_non_string_last_four_refuses_even_when_falsy(value):
         full_authority(_raw_with(last_four=value))
 
 
+@pytest.mark.parametrize("name", ["projects.controls.updating", "properties.coordination.version_control",
+                                  "connection_hub.delegated_credentials.issuer_snapshot"])
+def test_ordinary_dotted_names_are_not_mistaken_for_a_jwt(name):
+    # A JWT starts with a base64url JSON header ("eyJ"); dotted names do not.
+    card = dataclasses.replace(_pair()[0], label=name, operations=(name,))
+    assert full_authority(card)["label"] == name
+
+
 def test_identity_fields_may_look_random_without_refusing():
     # Opaque identifiers are exempt from the high-entropy rule only.
     opaque = "aB3dE5fG7hJ9kL1mN3pQ5rS7tV9wX1yZ"

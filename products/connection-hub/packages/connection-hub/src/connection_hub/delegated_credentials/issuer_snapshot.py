@@ -63,7 +63,10 @@ SECRET_SHAPES = tuple(re.compile(pattern) for pattern in (
     r"xox[abpr]-[A-Za-z0-9-]{10,}",
     r"sk-[A-Za-z0-9_-]{20,}",
     r"AKIA[0-9A-Z]{16}",
-    r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",  # JWT
+    # A JWT: its header is base64url JSON, so it starts with "eyJ" ('{"'). An
+    # unanchored three-part shape would also match dotted names such as
+    # "properties.coordination.version_control".
+    r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
 ))
 # Identity fields hold opaque identifiers that may look random; they are
 # exempt from the high-entropy rule only, not from the issued-secret shapes.
