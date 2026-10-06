@@ -1,0 +1,632 @@
+{
+ "about": "The connection-hub.card-read-set participant input (CodeApp 23:19, confirmed 23:27): a transaction that changes no Card but holds Cards (revision >= 1), absences (revision 0) and the active catalog until its one decision. participant_inputs['connection-hub.card'] = participant_input, participant_candidates['connection-hub.card'] = candidate_value; candidate_digest = sha256(kernel canonical_json_bytes(candidate_value)); binding_ref = 'reads:' + that digest; action read, before_revision 1, candidate_revision 1, incarnation 1; dependency_revisions are EXACTLY the candidate's reads and catalog. An empty catalog is allowed by the wire, never a licence to drop a catalog dependency a caller's check needs. Each refused vector is complete and names the Hub's refusal.",
+ "accepted": {
+  "candidate_digest": "56add0314d2577a83703ed5c9dec75d9c93f8ebcc4f359d4612e6f87cae75aca",
+  "candidate_value": {
+   "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "reads": [
+    {
+     "access_id": "person-my-card-target",
+     "revision": 0,
+     "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+    },
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 2,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    },
+    {
+     "access_id": "person-my-card-admin",
+     "revision": 4,
+     "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+    }
+   ],
+   "schema": "connection-hub.card-read-set.v1"
+  },
+  "name": "admin_change_holding_actor_target_and_project_control",
+  "participant_input": {
+   "action": "read",
+   "actor_kind": "caller",
+   "actor_subject": "platform-user-1",
+   "before_revision": 1,
+   "binding_kind": "connection-hub.card-read-set",
+   "binding_ref": "reads:56add0314d2577a83703ed5c9dec75d9c93f8ebcc4f359d4612e6f87cae75aca",
+   "candidate_digest": "56add0314d2577a83703ed5c9dec75d9c93f8ebcc4f359d4612e6f87cae75aca",
+   "candidate_revision": 1,
+   "dependency_revisions": {
+    "card-absent:0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e:person-my-card-target": 1,
+    "card:2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2:control-624192ef1bc6c4d30ce85bed": 2,
+    "card:cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb:person-my-card-admin": 4,
+    "catalog-active:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": 1
+   },
+   "participant": "connection-hub.card",
+   "provisioning": {},
+   "target_incarnation": 1,
+   "target_scope": "5e21d26bfce4ef9de5a28edcfa5f03696dd202154b708d04d813b0a5e64a9a2f"
+  }
+ },
+ "binding_kind": "connection-hub.card-read-set",
+ "refused": [
+  {
+   "candidate_value": {
+    "catalog": "",
+    "reads": [],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "empty_without_catalog",
+   "reason": "card_read_set_empty"
+  },
+  {
+   "candidate_value": {
+    "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reads": [
+     {
+      "access_id": "card-000",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "access_id": "card-016",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "access_id": "card-032",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "access_id": "card-048",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "access_id": "card-064",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "access_id": "card-001",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000001"
+     },
+     {
+      "access_id": "card-017",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000001"
+     },
+     {
+      "access_id": "card-033",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000001"
+     },
+     {
+      "access_id": "card-049",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000001"
+     },
+     {
+      "access_id": "card-002",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000002"
+     },
+     {
+      "access_id": "card-018",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000002"
+     },
+     {
+      "access_id": "card-034",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000002"
+     },
+     {
+      "access_id": "card-050",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000002"
+     },
+     {
+      "access_id": "card-003",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000003"
+     },
+     {
+      "access_id": "card-019",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000003"
+     },
+     {
+      "access_id": "card-035",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000003"
+     },
+     {
+      "access_id": "card-051",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000003"
+     },
+     {
+      "access_id": "card-004",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000004"
+     },
+     {
+      "access_id": "card-020",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000004"
+     },
+     {
+      "access_id": "card-036",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000004"
+     },
+     {
+      "access_id": "card-052",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000004"
+     },
+     {
+      "access_id": "card-005",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000005"
+     },
+     {
+      "access_id": "card-021",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000005"
+     },
+     {
+      "access_id": "card-037",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000005"
+     },
+     {
+      "access_id": "card-053",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000005"
+     },
+     {
+      "access_id": "card-006",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000006"
+     },
+     {
+      "access_id": "card-022",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000006"
+     },
+     {
+      "access_id": "card-038",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000006"
+     },
+     {
+      "access_id": "card-054",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000006"
+     },
+     {
+      "access_id": "card-007",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000007"
+     },
+     {
+      "access_id": "card-023",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000007"
+     },
+     {
+      "access_id": "card-039",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000007"
+     },
+     {
+      "access_id": "card-055",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000007"
+     },
+     {
+      "access_id": "card-008",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000008"
+     },
+     {
+      "access_id": "card-024",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000008"
+     },
+     {
+      "access_id": "card-040",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000008"
+     },
+     {
+      "access_id": "card-056",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000008"
+     },
+     {
+      "access_id": "card-009",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000009"
+     },
+     {
+      "access_id": "card-025",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000009"
+     },
+     {
+      "access_id": "card-041",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000009"
+     },
+     {
+      "access_id": "card-057",
+      "revision": 1,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000009"
+     },
+     {
+      "access_id": "card-010",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000a"
+     },
+     {
+      "access_id": "card-026",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000a"
+     },
+     {
+      "access_id": "card-042",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000a"
+     },
+     {
+      "access_id": "card-058",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000a"
+     },
+     {
+      "access_id": "card-011",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000b"
+     },
+     {
+      "access_id": "card-027",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000b"
+     },
+     {
+      "access_id": "card-043",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000b"
+     },
+     {
+      "access_id": "card-059",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000b"
+     },
+     {
+      "access_id": "card-012",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000c"
+     },
+     {
+      "access_id": "card-028",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000c"
+     },
+     {
+      "access_id": "card-044",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000c"
+     },
+     {
+      "access_id": "card-060",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000c"
+     },
+     {
+      "access_id": "card-013",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000d"
+     },
+     {
+      "access_id": "card-029",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000d"
+     },
+     {
+      "access_id": "card-045",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000d"
+     },
+     {
+      "access_id": "card-061",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000d"
+     },
+     {
+      "access_id": "card-014",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000e"
+     },
+     {
+      "access_id": "card-030",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000e"
+     },
+     {
+      "access_id": "card-046",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000e"
+     },
+     {
+      "access_id": "card-062",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000e"
+     },
+     {
+      "access_id": "card-015",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000f"
+     },
+     {
+      "access_id": "card-031",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000f"
+     },
+     {
+      "access_id": "card-047",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000f"
+     },
+     {
+      "access_id": "card-063",
+      "revision": 1,
+      "subject_hash": "000000000000000000000000000000000000000000000000000000000000000f"
+     }
+    ],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "too_many_reads",
+   "reason": "card_read_set_too_large"
+  },
+  {
+   "candidate_value": {
+    "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reads": [
+     {
+      "access_id": "person-my-card-admin",
+      "revision": 4,
+      "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+     },
+     {
+      "access_id": "control-624192ef1bc6c4d30ce85bed",
+      "revision": 2,
+      "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+     },
+     {
+      "access_id": "person-my-card-target",
+      "revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     }
+    ],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "reads_not_canonical",
+   "reason": "card_read_set_not_canonical"
+  },
+  {
+   "candidate_value": {
+    "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reads": [
+     {
+      "access_id": "person-my-card-target",
+      "revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "person-my-card-target",
+      "revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "control-624192ef1bc6c4d30ce85bed",
+      "revision": 2,
+      "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+     },
+     {
+      "access_id": "person-my-card-admin",
+      "revision": 4,
+      "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+     }
+    ],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "same_card_twice",
+   "reason": "card_read_set_dependency_contradiction"
+  },
+  {
+   "candidate_value": {
+    "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reads": [
+     {
+      "access_id": "person-my-card-target",
+      "revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "person-my-card-target",
+      "revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "control-624192ef1bc6c4d30ce85bed",
+      "revision": 2,
+      "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+     },
+     {
+      "access_id": "person-my-card-admin",
+      "revision": 4,
+      "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+     }
+    ],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "present_and_absent_together",
+   "reason": "card_read_set_dependency_contradiction"
+  },
+  {
+   "candidate_value": {
+    "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reads": [
+     {
+      "access_id": "person-my-card-target",
+      "revision": -1,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "control-624192ef1bc6c4d30ce85bed",
+      "revision": 2,
+      "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+     },
+     {
+      "access_id": "person-my-card-admin",
+      "revision": 4,
+      "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+     }
+    ],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "negative_revision",
+   "reason": "card_read_set_read_invalid"
+  },
+  {
+   "candidate_value": {
+    "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reads": [
+     {
+      "access_id": "person-my-card-target",
+      "revision": "4",
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "control-624192ef1bc6c4d30ce85bed",
+      "revision": 2,
+      "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+     },
+     {
+      "access_id": "person-my-card-admin",
+      "revision": 4,
+      "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+     }
+    ],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "revision_not_an_integer",
+   "reason": "card_read_set_read_invalid"
+  },
+  {
+   "candidate_value": {
+    "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reads": [
+     {
+      "access_id": "person-my-card-target",
+      "revision": 0,
+      "subject_hash": "platform-user-1"
+     },
+     {
+      "access_id": "control-624192ef1bc6c4d30ce85bed",
+      "revision": 2,
+      "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+     },
+     {
+      "access_id": "person-my-card-admin",
+      "revision": 4,
+      "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+     }
+    ],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "scope_not_hex",
+   "reason": "card_read_set_read_invalid"
+  },
+  {
+   "candidate_value": {
+    "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reads": [
+     {
+      "access_id": "person-my-card-target",
+      "note": "x",
+      "revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "control-624192ef1bc6c4d30ce85bed",
+      "revision": 2,
+      "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+     },
+     {
+      "access_id": "person-my-card-admin",
+      "revision": 4,
+      "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+     }
+    ],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "extra_read_field",
+   "reason": "card_read_set_read_invalid"
+  },
+  {
+   "candidate_value": {
+    "catalog": "v1",
+    "reads": [
+     {
+      "access_id": "person-my-card-target",
+      "revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "control-624192ef1bc6c4d30ce85bed",
+      "revision": 2,
+      "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+     },
+     {
+      "access_id": "person-my-card-admin",
+      "revision": 4,
+      "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+     }
+    ],
+    "schema": "connection-hub.card-read-set.v1"
+   },
+   "name": "catalog_not_hex",
+   "reason": "card_read_set_invalid"
+  },
+  {
+   "candidate_value": {
+    "catalog": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "reads": [
+     {
+      "access_id": "person-my-card-target",
+      "revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "control-624192ef1bc6c4d30ce85bed",
+      "revision": 2,
+      "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+     },
+     {
+      "access_id": "person-my-card-admin",
+      "revision": 4,
+      "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+     }
+    ],
+    "schema": "other"
+   },
+   "name": "wrong_schema",
+   "reason": "card_read_set_invalid"
+  }
+ ],
+ "schema": "w578.hub-card-read-set-vectors.v1"
+}

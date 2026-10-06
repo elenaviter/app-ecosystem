@@ -468,6 +468,37 @@ class DelegatedCardService:
         return await finish_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                   decision=decision, reason=reason)
 
+    async def stage_read_set_transaction(
+        self, *, transaction_id: str, intent_digest: str, participant: str, reads: Any = (), catalog: str = "",
+    ) -> dict[str, Any]:
+        """W578: hold Cards, absences and the active catalog under one decision; write and serve nothing.
+
+        Every read Card's section is taken in one sorted order (as a stage takes
+        its dependency sections), each read is verified at its revision and
+        fenced, the catalog is reserved, and only then is the receipt written.
+        """
+        from .transaction_store import prepare_read_set
+
+        try:
+            async with AsyncExitStack() as sections:
+                for subject_hash, access_id in sorted({(r["subject_hash"], r["access_id"]) for r in reads or ()}):
+                    await sections.enter_async_context(self._critical_section(
+                        subject_hash=subject_hash, access_id=access_id))
+                return await prepare_read_set(self._store, transaction_id=transaction_id,
+                                              intent_digest=intent_digest, participant=participant,
+                                              reads=reads, catalog=catalog)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def decide_read_set_transaction(
+        self, *, transaction_id: str, intent_digest: str, decision: str, reason: str = "",
+    ) -> dict[str, Any]:
+        """W578: the recorded decision releases a read set's fences; nothing was staged, nothing is served."""
+        from .transaction_store import finish_read_set
+
+        return await finish_read_set(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                     decision=decision, reason=reason)
+
     async def abort_unstaged_transaction(self, *, transaction_id: str, subject_hash: str,
                                          access_id: str, intent_digest: str = "") -> dict[str, Any]:
         """W581 F1 under the Card's section (Ops B2): tombstone a transaction never prepared here.
