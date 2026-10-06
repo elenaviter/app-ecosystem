@@ -127,6 +127,10 @@ async def test_service_factory_injects_invocation_policy_service(monkeypatch):
             captured["issuer_read_registry"] = registry
             captured["issuer_read_host"] = host
 
+        def bind_issuer_snapshot_registry(self, registry, **host):
+            captured["issuer_snapshot_registry"] = registry
+            captured["issuer_snapshot_host"] = host
+
         def bind_project_authorization_port(self, port):
             captured["project_authorization_port"] = port
 
@@ -161,6 +165,11 @@ async def test_service_factory_injects_invocation_policy_service(monkeypatch):
     assert captured["invocation_policy_service"] is policies
     assert captured["project_authorization_port"] is project_authorization
     assert captured["project_invitation_binding_resolver"] is invitation_binding
+    from connection_hub.delegated_credentials.issuer_snapshot import IssuerSnapshotRegistry
+    assert type(captured["issuer_snapshot_registry"]) is IssuerSnapshotRegistry
+    assert captured["issuer_snapshot_registry"] is not captured["issuer_read_registry"]
+    # An unavailable protected context does not borrow the legacy scope helper.
+    assert captured["issuer_snapshot_host"] == dict(actor_subject="", actor_classification="", tenant="", project="")
 
 
 @pytest.mark.asyncio

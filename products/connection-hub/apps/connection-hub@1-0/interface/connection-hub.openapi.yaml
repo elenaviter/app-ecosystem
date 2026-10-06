@@ -54,6 +54,65 @@ tags:
 security:
   - PlatformAuth: []
 paths:
+  /bundles/{tenant}/{project}/{bundle_id}/operations/issuer_managed_card_snapshots:
+    post:
+      tags: [Delegated Access]
+      summary: Separately authorized, complete original two-Card snapshots.
+      description: >
+        Internal issuer orchestration only, not a widget or Team listing.
+        Requires the actual registered/privileged platform human, actual
+        runtime tenant/project and CSRF protection. Caller coordinates are
+        selectors, never authorization. The separately configured
+        full_snapshot_operation supplies sealed issuer-snapshot.v1 decisions
+        before and after the fenced read. Identity-read and write capabilities
+        do not imply full export. Returns both original authorities with their
+        full fingerprints, or neither. Credential material refuses the entire
+        pair, never redacts it. No reservation, repair or mutation occurs.
+      operationId: issuer_managed_card_snapshots
+      x-kdcube-result-alias: issuer_managed_card_snapshots
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  additionalProperties: false
+                  required: [context_ref, request_id, targets]
+                  properties:
+                    context_ref:
+                      type: string
+                      description: Opaque canonical JSON object string, at most 4096 UTF-8 bytes; not an approval.
+                    request_id: { type: string, minLength: 1 }
+                    targets:
+                      type: array
+                      minItems: 2
+                      maxItems: 2
+                      description: Distinct Cards, canonically ordered by owner_subject and access_id.
+                      items:
+                        type: object
+                        additionalProperties: false
+                        required: [owner_subject, access_id, issuer_kind, issuer_ref]
+                        properties:
+                          owner_subject: { type: string, minLength: 1 }
+                          access_id: { type: string, minLength: 1 }
+                          issuer_kind: { type: string, minLength: 1 }
+                          issuer_ref: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: >
+            Platform-wrapped operation result. Success contains ok, status,
+            request, snapshot_digest and two snapshots with target,
+            card_revision, authority_fingerprint and complete authority.
+            Structured 400/403/409/503 refusals contain no Card payload.
+
   /bundles/{tenant}/{project}/{bundle_id}/operations/delegated_access_revoke:
     post:
       tags: [Delegated Access]

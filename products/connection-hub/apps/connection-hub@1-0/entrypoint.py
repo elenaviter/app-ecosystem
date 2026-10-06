@@ -211,7 +211,10 @@ from .surfaces.delegated_gateway import (
 )
 from .surfaces.delegated_gateway_host import build_hosted_gateway_binding
 from .services.durable_authority import ConnectionHubDurableAuthority
-from .services.issuer_authorities import issuer_registry_from_connections, issuer_read_registry_from_connections
+from .services.issuer_authorities import (
+    issuer_registry_from_connections, issuer_read_registry_from_connections,
+    issuer_snapshot_registry_from_connections,
+)
 from .services.project_invitation_binding import (
     descriptor_project_invitation_binding_resolver,
 )
@@ -288,6 +291,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "delegated_access_revoke",
     "issuer_managed_lifecycle_apply",
     "issuer_managed_lifecycle_read",
+    "issuer_managed_card_snapshots",
     "delegated_access_update",
     "delegated_access_apply_profile",
     "delegated_access_add_operations",
@@ -1502,6 +1506,9 @@ async def _automation_access_service_for(
     issuer_reads = issuer_read_registry_from_connections(
         connections=connections, resolve_secret=issuer_secret, caller=call_bundle_operation,
     )
+    issuer_snapshots = issuer_snapshot_registry_from_connections(
+        connections=connections, resolve_secret=issuer_secret, caller=call_bundle_operation,
+    )
     service = AutomationAccessService(
         redis=redis,
         tenant=tenant,
@@ -1526,6 +1533,9 @@ async def _automation_access_service_for(
     service.bind_project_invitation_binding_resolver(
         await _project_invitation_binding_resolver(entrypoint)
     )
+    actor, classification, snapshot_tenant, snapshot_project = _protected_lifecycle_read_context(entrypoint)
+    service.bind_issuer_snapshot_registry(issuer_snapshots, actor_subject=actor,
+        actor_classification=classification, tenant=snapshot_tenant, project=snapshot_project)
     return service
 
 
@@ -6367,6 +6377,32 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         service.bind_issuer_read_registry(service._issuer_reads, actor_subject=actor,
             actor_classification=classification, tenant=tenant, project=project)
         return await service.issuer_managed_lifecycle_read(payload)
+
+    @api(method="POST", alias="issuer_managed_card_snapshots", route="operations", csrf=True,
+         user_types=["registered", "privileged"])
+    async def issuer_managed_card_snapshots(self, data: Optional[Dict[str, Any]] = None,
+            request: Any = None, user_id: Optional[str] = None, fingerprint: Optional[str] = None,
+            **kwargs: Any) -> Dict[str, Any]:
+        del user_id, fingerprint  # SDK metadata cannot supply the protected actor
+        host = _protected_lifecycle_read_context(self)
+        if not host[0]:
+            return {"ok": False, "error": "issuer_snapshot_requires_platform_human_scope", "status": 403}
+        from connection_hub.delegated_credentials.issuer_read import IssuerReadQuery, IssuerReadRefused
+        try:
+            # Reuse coordinates only, never identity-read decisions or seals.
+            payload = IssuerReadQuery.from_mapping(_payload(data, **kwargs)).to_dict()
+        except IssuerReadRefused:
+            return {"ok": False, "error": "issuer_snapshot_query_invalid", "status": 400}
+        service = await _automation_access_service(self, request)
+        if _protected_lifecycle_read_context(self) != host:
+            return {"ok": False, "error": "issuer_snapshot_context_changed", "status": 409, "retryable": True}
+        registry = getattr(service, "_issuer_snapshots", None)
+        if registry is None:
+            return {"ok": False, "error": "issuer_snapshot_host_unavailable", "status": 503, "retryable": True}
+        actor, classification, tenant, project = host
+        service.bind_issuer_snapshot_registry(registry, actor_subject=actor,
+            actor_classification=classification, tenant=tenant, project=project)
+        return await service.issuer_managed_card_snapshots(payload)
 
     # ── delegated to KDCube (KDCube -> external provider for user) ──
 

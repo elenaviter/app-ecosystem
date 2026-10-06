@@ -230,10 +230,16 @@ Redis mode before publishing any active intent or changing a cache/Card. Cluster
 or unverified mode records a terminal preflight refusal under the receipt/Card
 fences, with no staged version/pointer or marker. Identical retry returns that
 refusal without cleanup. Cluster profiles are unsupported; no key migration is
-performed. For older refused cluster intents, release may complete ONLY after
+performed. A transient mode-discovery failure is also a terminal preflight
+refusal for that request: restoring Redis does not make an identical replay
+resume. Reconcile the refusal, then use a new request id for a new mutation.
+For older refused cluster intents, release may complete ONLY after
 confirmed cluster mode and individual reads prove this transaction owns no
 marker. Owned, malformed, unavailable or unproven markers remain fail-closed;
-a generic EVAL failure is never ignored. No real-Cluster qualification of this
+a generic EVAL failure is never ignored. This legacy release proves only the
+absence of this transaction's two Card markers; it does not certify the whole
+serving partition or make Cluster a supported mutation profile.
+No real-Cluster qualification of this
 new guard is claimed by portable unit tests.
 
 Receipt state and serving completion are separate. `committed/pending` means
@@ -330,3 +336,31 @@ authenticated orchestration result, not a browser/Team listing API.
 The source and focused author tests do not qualify actual mounted human
 authentication, PB fresh policy/durable cross-process nonce storage, or the
 combined candidate. Those remain exact-source independent activation gates.
+
+## Separately authorized full snapshots
+
+`issuer_managed_card_snapshots` is a separate POST operations alias with CSRF
+protection and registered/privileged platform-human context. It accepts the
+strict coordinate query above, but uses `IssuerSnapshotRegistry`,
+`issuer-snapshot.v1`, and the separately configured `full_snapshot_operation`.
+Neither an identity-read capability nor a write capability implies full export.
+See [Issuer full Card snapshot](issuer-full-snapshot.md) for its one authoritative
+payload, credential-refusal, ordering and proof contract.
+
+The app builds a fresh registry from the same request-frozen descriptor rows,
+resolves existing workload secrets only for each signed peer call, and binds
+actual session identity/classification and runtime tenant/project. If that
+context changes during service construction, the alias returns
+`issuer_snapshot_context_changed` before export. SDK method metadata is ignored;
+extra fields inside the query are rejected before service construction.
+
+The service delegates to the separate package contract and the existing fenced
+storage read; it does not implement a second snapshot policy or a mutation.
+The result is for authenticated internal issuer orchestration. Do not expose
+it as a widget or Team inventory response: it contains personal data and the
+complete original authority, or refuses both Cards without redaction.
+
+The package contract has independent source approval. New host wiring and its
+author tests are not mounted authentication, issuer cross-process replay,
+combined-candidate qualification or activation. No live configuration changes
+are part of this source composition.

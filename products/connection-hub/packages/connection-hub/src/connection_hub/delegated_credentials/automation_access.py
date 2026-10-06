@@ -1758,6 +1758,8 @@ class AutomationAccessService:
         )
         self._issuer_actor_subject = _clean(issuer_actor_subject)
         self._issuer_actor_subject_bound = bool(self._issuer_actor_subject)
+        self._issuer_snapshots = None
+        self._issuer_snapshot_host = ()
         # Optional: lets the resident-profile migration carry once/always
         # policies to the stable card and the read model report them. Without
         # it, migration refuses to fold a record whose policies it cannot see.
@@ -1803,6 +1805,15 @@ class AutomationAccessService:
             raise ValueError("issuer_read_registry_invalid")
         self._issuer_reads = registry
         self._issuer_read_host = (actor_subject, actor_classification, tenant, project)
+
+    def bind_issuer_snapshot_registry(self, registry: Any, *, actor_subject: str,
+                                      actor_classification: str, tenant: str, project: str) -> None:
+        """Bind the separate full-export capability and actual host context."""
+        from .issuer_snapshot import IssuerSnapshotRegistry
+        if type(registry) is not IssuerSnapshotRegistry:
+            raise ValueError("issuer_snapshot_registry_invalid")
+        self._issuer_snapshots = registry
+        self._issuer_snapshot_host = (actor_subject, actor_classification, tenant, project)
 
     def bind_project_authorization_port(
         self,
@@ -2411,6 +2422,17 @@ class AutomationAccessService:
             # Never log/return raw authorities or transport/credential details.
             _LOGGER.warning("[connection-hub] protected identity read unavailable")
             return {"ok": False, "status": 503, "error": "issuer_read_unavailable", "retryable": True}
+
+    async def issuer_managed_card_snapshots(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Delegate full authority export to its separate sealed package contract."""
+        from .issuer_snapshot import issuer_managed_card_snapshots
+        host = getattr(self, "_issuer_snapshot_host", ())
+        if len(host) != 4:
+            return {"ok": False, "status": 403, "error": "issuer_snapshot_host_unavailable", "retryable": False}
+        actor, classification, tenant, project = host
+        return await issuer_managed_card_snapshots(body, actor_subject=actor,
+            actor_classification=classification, tenant=tenant, project=project,
+            registry=getattr(self, "_issuer_snapshots", None), persistence=self._persistence)
 
     async def issuer_managed_lifecycle_apply(self, body: Mapping[str, Any]) -> dict[str, Any]:
         """Host-authenticated generic lifecycle; target hints authorize nothing.
