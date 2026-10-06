@@ -82,3 +82,39 @@ application policy.
 import path. The pre-v2 draft has been removed, with its protocol regressions
 migrated to v2 tests. The source is not yet an installed application
 integration contract or verified live runtime.
+
+## Bounded recovery pages
+
+The legacy `list_in_doubt(limit=...)` and `Coordinator.recover(limit=...)`
+still refuse `recovery_unbounded` before processing anything when the namespace
+backlog exceeds the limit. They have not silently become truncated reads.
+
+For a larger backlog, `PostgresDecisionStore.list_in_doubt_page(limit=...,
+after="")` returns `(records, has_more)`. Its namespace-bound query uses an
+exclusive `transaction_id > after` cursor, the same database ordering on
+`transaction_id`, and `limit + 1` rows to determine `has_more`. It decodes at
+most `limit` records. Limits are integers from 1 through 1000 (not booleans);
+`after` must be a string of at most 128 characters.
+
+`Coordinator.recover_page(limit=100, after="")` returns
+`(records, next_after, has_more)`. It uses exactly the ordinary recovery
+transition and receipt checks: finish terminal decisions, durably abort expired
+undecided transactions, and keep unexpired transactions untouched. The optional
+`PagingDecisionStore` capability extends, but does not change, `DecisionStore`.
+A legacy-only store refuses `recovery_paging_unavailable` for the new operation.
+
+`next_after` is the last **scanned** transaction ID, including a failed or
+unexpired row. An empty page returns `([], "", False)`. Failures still raise
+`RecoveryIncomplete` after continuing through the page; its additive
+`next_after` and `has_more` fields carry the continuation even when the last
+row failed. Those keyword-only fields default to `None` for legacy recovery.
+
+The application owns scheduling, a maximum pages-per-pass budget, and cursor
+storage. Advance from either a successful result or a page failure's metadata;
+wrap to `""` after `has_more` is false. Wrapping retries failed/unexpired rows
+and finds IDs inserted behind the cursor. Pages are not one global snapshot.
+Completion survives process restart through the existing durable finish
+receipts, even when a caller loses its cursor and restarts at `""`. A cursor is
+neither a completion acknowledgement nor another decision ledger. Participant
+finish must remain idempotent if the process stops after applying an effect but
+before recording its receipt.
