@@ -41,4 +41,3 @@ evidence and ask. A procedure update is a semantic revision of the affected
 contract, never an append-only note, and it carries the rule with one clause of
 reason. Incidents go to the journal, where search finds them when they are
 needed, and not into this skill, which every session carries in its context.
-

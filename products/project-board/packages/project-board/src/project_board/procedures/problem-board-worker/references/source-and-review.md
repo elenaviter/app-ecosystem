@@ -69,4 +69,3 @@ revised one rehearsal round at a time. What every worker does, from it:
 - **Landing an approved change into a shared checkout** (no coordinator, no
   elected integrator) follows the Interim steps in
   [collaboration](collaboration.md). Never `git add -A`, never `git stash`.
-
