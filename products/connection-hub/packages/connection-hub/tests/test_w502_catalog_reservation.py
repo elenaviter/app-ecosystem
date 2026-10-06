@@ -9,6 +9,7 @@ meanwhile. The same version republishing is allowed.
 
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -230,16 +231,51 @@ async def test_a_dead_publishers_marker_is_cleared_by_the_next_publication(tmp_p
     await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=await _active(store))
 
 
-@pytest.mark.asyncio
-async def test_a_stale_marker_is_cleared_by_the_cron_bound_and_a_fresh_one_is_kept(tmp_path):
+def _runner_lock(store, *, age_seconds=None):
+    import os
     import time
 
-    from connection_hub.delegated_credentials.catalog.reservations import MARKER_STALE_SECONDS
+    from connection_hub.delegated_credentials.catalog.reservations import PUBLISHER_OPERATION
+
+    lock = store.root / ".kdcube.once" / f"{PUBLISHER_OPERATION}.lock"
+    lock.mkdir(parents=True, exist_ok=True)
+    heartbeat = lock / "heartbeat"
+    heartbeat.write_text("beat\n")
+    if age_seconds is not None:
+        then = time.time() - age_seconds
+        os.utime(heartbeat, (then, then))
+
+
+def test_the_runner_lock_name_is_the_publishers_operation():
+    from connection_hub.delegated_credentials.catalog.publisher import CATALOG_OPERATION
+    from connection_hub.delegated_credentials.catalog.reservations import PUBLISHER_OPERATION
+
+    assert PUBLISHER_OPERATION == CATALOG_OPERATION
+
+
+@pytest.mark.asyncio
+async def test_an_old_marker_is_kept_while_its_publisher_heartbeats(tmp_path):
+    # EMain #611: a live publisher has no maximum hold; only its lock decides.
+    import time
 
     store, reservations, version = await _catalog(tmp_path)
     await reservations.begin_publication(await store.read_active())
-    assert await reservations.clear_stale_publication() is None  # fresh: a live publisher may hold it
-    assert (store.root / PUBLICATION_MARKER).exists()
-    later = int(time.time()) + MARKER_STALE_SECONDS + 1
-    assert await reservations.clear_stale_publication(now=later) >= MARKER_STALE_SECONDS
+    _runner_lock(store)  # heartbeating now
+    marker = store.root / PUBLICATION_MARKER
+    marker.write_text(json.dumps({"version_digest": "x", "started_at": int(time.time()) - 86_400}))  # a day old
+    assert await reservations.clear_stale_publication() is None
+    assert marker.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lock", ["absent", "stale"])
+async def test_a_marker_whose_runner_lock_is_absent_or_stale_is_cleared(tmp_path, lock):
+    from connection_hub.delegated_credentials.catalog.reservations import RUNNER_LOCK_TTL_SECONDS
+
+    store, reservations, version = await _catalog(tmp_path)
+    await reservations.begin_publication(await store.read_active())
+    if lock == "stale":
+        _runner_lock(store, age_seconds=RUNNER_LOCK_TTL_SECONDS + 5)
+    assert await reservations.clear_stale_publication() is not None
     assert not (store.root / PUBLICATION_MARKER).exists()
+    await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=await _active(store))

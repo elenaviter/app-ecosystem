@@ -39,10 +39,14 @@ from ..durable_io import read_json_or_none, write_json_atomic
 
 RESERVATIONS_DIRNAME = "reservations"
 PUBLICATION_MARKER = "publication-pending.json"
-# A publication marker older than this belongs to a publisher that died: no
-# live publisher holds ensure_delegated_catalog's critical section this long.
-# (Assumed bound on the shared-storage runner's hold; EMain #609.)
-MARKER_STALE_SECONDS = 900
+# A marker's publisher is alive while KDCube's shared-storage runner lock for
+# the catalog publication is fresh: run_once_for_shared_bundle_storage holds
+# <root>/.kdcube.once/<operation>.lock and heartbeats it every <= 10 s for as
+# long as the action runs, so a live publisher has NO maximum hold and a
+# marker's age proves nothing (EMain #611). Same rule as its _remove_stale_lock:
+# the heartbeat's mtime (else the lock's) within the lock TTL.
+PUBLISHER_OPERATION = "delegated-catalog-publish"  # publisher.CATALOG_OPERATION
+RUNNER_LOCK_TTL_SECONDS = 900.0  # run_once_for_shared_bundle_storage's lock_ttl_seconds default
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -146,19 +150,34 @@ class CatalogReservations:
         await self.end_publication()
         return True
 
-    async def clear_stale_publication(self, *, now: int | None = None,
-                                      max_age_seconds: int = MARKER_STALE_SECONDS) -> int | None:
-        """Outside the section (the recovery cron): clear a marker older than the bound; its age, or None."""
+    def publisher_alive(self, *, now: float | None = None,
+                        lock_ttl_seconds: float = RUNNER_LOCK_TTL_SECONDS) -> bool:
+        """Whether the catalog publication's runner lock is held and fresh (KDCube's own staleness rule)."""
+        lock = self._store.root / ".kdcube.once" / f"{PUBLISHER_OPERATION}.lock"
+        try:
+            fresh = (lock / "heartbeat").stat().st_mtime
+        except OSError:
+            try:
+                fresh = lock.stat().st_mtime
+            except OSError:
+                return False  # no lock: no publisher is in the section
+        return ((time.time() if now is None else now) - fresh) <= lock_ttl_seconds
+
+    async def clear_stale_publication(self, *, now: float | None = None,
+                                      lock_ttl_seconds: float = RUNNER_LOCK_TTL_SECONDS) -> int | None:
+        """Outside the section (the recovery cron): clear a dead publisher's marker; its age, or None.
+
+        Dead means the runner lock is absent or stale, never merely an old
+        marker: a live publisher heartbeats its lock however long it runs.
+        """
         path = self._store.root / PUBLICATION_MARKER
         marker = await read_json_or_none(path)
-        if marker is None:
+        if marker is None or await asyncio.to_thread(self.publisher_alive, now=now,
+                                                     lock_ttl_seconds=lock_ttl_seconds):
             return None
         started = marker.get("started_at") if isinstance(marker, dict) else None
-        age = (int(time.time()) if now is None else now) - started if type(started) is int else None
-        if age is not None and age <= max_age_seconds:
-            return None
-        await self.end_publication()  # unreadable or past the bound: no live publisher holds it
-        return age if age is not None else -1
+        await self.end_publication()
+        return int((time.time() if now is None else now) - started) if type(started) is int else -1
 
     async def end_publication(self) -> None:
         try:
@@ -175,5 +194,5 @@ class CatalogReservations:
             raise CatalogReservationRefused("catalog_reserved", holders=blocking)
 
 
-__all__ = ["CatalogReservationRefused", "CatalogReservations", "MARKER_STALE_SECONDS", "PUBLICATION_MARKER",
-           "RESERVATIONS_DIRNAME", "catalog_version_digest"]
+__all__ = ["CatalogReservationRefused", "CatalogReservations", "PUBLICATION_MARKER", "PUBLISHER_OPERATION",
+           "RESERVATIONS_DIRNAME", "RUNNER_LOCK_TTL_SECONDS", "catalog_version_digest"]
