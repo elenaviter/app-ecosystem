@@ -499,3 +499,19 @@ async def test_an_unbound_card_is_written_and_revoked_as_before(tmp_path):
         expected_revision=before.card_revision)
     await harness.service._forget_record(record_from_card(harness.persistence.cards[access_id][0]))
     assert harness.persistence.cards[access_id][0].state == CARD_STATE_REVOKED and policy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_bound_prolong_extends_no_credential(tmp_path):
+    # W580 F5: the policy decides before the credential's life is touched.
+    harness = _Harness(tmp_path)
+    store = _ProlongingGrantStore()
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    _bind(harness, access_id)
+    harness.service.bind_caller_writers(_registry(_Policy(False)))
+    refused = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert refused["ok"] is False and refused["error"] == "pb_refused"
+    assert store.extended_refresh == [] and store.extended_grants == []

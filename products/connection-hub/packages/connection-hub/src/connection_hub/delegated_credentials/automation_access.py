@@ -2440,13 +2440,16 @@ class AutomationAccessService:
         before_commit: Callable[[], Awaitable[None]] | None = None,
         expected_issuer_digest: str = "",
         caller_write: CallerWrite | None = None,
+        pre_gate: tuple[Any, Any] | None = None,
     ) -> None:
         persistence = self._cards()
         persist = persistence.persist
         authority = card_authority_from_record(record)
         caller_request = None
         if before_commit is None:
-            before_commit, caller_request = await self._enlisted_gate(
+            # pre_gate: a writer with side effects decided BEFORE them (W580 F5);
+            # the same decision is revalidated inside the commit here.
+            before_commit, caller_request = pre_gate if pre_gate is not None else await self._enlisted_gate(
                 authority, expected_revision=expected_revision, caller_write=caller_write)
             if caller_request is not None:
                 expected_issuer_digest = caller_request.change_digest
@@ -9762,6 +9765,23 @@ class AutomationAccessService:
                 "retryable": True,
                 "status": 503,
             }
+        provenance = dict(record.provenance or {})
+        provenance["prolongations"] = int(provenance.get("prolongations") or 0) + 1
+        provenance["prolonged_at"] = now
+        prolonged = dataclasses.replace(
+            record,
+            card_revision=committed_revision + 1,
+            expires_at=new_expires_at,
+            provenance=provenance,
+        )
+        # W580 F5: the binding's policy (and the prolong shape rule) decides
+        # BEFORE the credential's life is touched; a refusal extends nothing.
+        try:
+            pre_gate = await self._enlisted_gate(
+                card_authority_from_record(prolonged), expected_revision=committed_revision,
+                caller_write=CallerWrite("prolong", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         if record.refresh_token:
             extend_refresh = getattr(store, "extend_refresh_token", None)
             if extend_refresh is None:
@@ -9777,18 +9797,10 @@ class AutomationAccessService:
             if extend_card is None or not await extend_card(record.access_id, ttl):
                 return expired("Reconnect from the client.")
 
-        provenance = dict(record.provenance or {})
-        provenance["prolongations"] = int(provenance.get("prolongations") or 0) + 1
-        provenance["prolonged_at"] = now
-        prolonged = dataclasses.replace(
-            record,
-            card_revision=committed_revision + 1,
-            expires_at=new_expires_at,
-            provenance=provenance,
-        )
         try:
             await self._persist_record(prolonged, expected_revision=committed_revision,
-                                       caller_write=CallerWrite("prolong", self._caller_actor_subject(user)))
+                                       caller_write=CallerWrite("prolong", self._caller_actor_subject(user)),
+                                       pre_gate=pre_gate)
         except CallerWriteRefused as exc:
             return exc.to_dict()
         except CardServingUnavailable as exc:
