@@ -38,6 +38,7 @@ from .transaction_store import CardTransactionRefused, list_in_doubt, state as r
 
 PARTICIPANT = "connection-hub.card"
 INTENT_RECORD_SCHEMA = "connection-hub.card-intent.v1"
+GROUP_INTENT_RECORD_SCHEMA = "connection-hub.card-group-intent.v1"
 
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -236,6 +237,84 @@ class CardIntent:
             raise DecisionRefused("card_intent_invalid") from exc
 
 
+@dataclass(frozen=True)
+class CardGroupMemberIntent:
+    """One member of a card group: its storage scope, its original (None when newly minted), its candidate."""
+
+    subject_hash: str
+    original: CardAuthority | None
+    candidate: CardAuthority
+    action: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"subject_hash": self.subject_hash, "action": self.action, "candidate": self.candidate.to_dict(),
+                "original": self.original.to_dict() if self.original is not None else None}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "CardGroupMemberIntent":
+        if not isinstance(raw, Mapping) or set(raw) != {"subject_hash", "action", "candidate", "original"}:
+            raise DecisionRefused("card_intent_invalid")
+        return cls(subject_hash=str(raw["subject_hash"]), action=str(raw["action"]),
+                   candidate=CardAuthority.from_mapping(raw["candidate"]),
+                   original=CardAuthority.from_mapping(raw["original"]) if raw["original"] is not None else None)
+
+
+@dataclass(frozen=True)
+class CardGroupIntent:
+    """W578: what one transaction may do to several Cards; immutable once recorded.
+
+    The members are in the group's canonical (subject_hash, access_id) order;
+    the group's reads, catalog and effects are staged on its lead member.
+    """
+
+    transaction_id: str
+    intent_digest: str
+    members: tuple[CardGroupMemberIntent, ...]
+    effects: tuple[Mapping[str, Any], ...] = ()
+    actor_subject: str = ""
+    actor_kind: str = ""
+    reads: tuple[Mapping[str, Any], ...] = ()
+    authority: str = ""
+    scope: str = ""
+    catalog: str = ""
+
+    def candidate_value(self) -> dict[str, Any]:
+        from .card_group import group_candidate_value, group_member
+        return group_candidate_value([group_member(original=member.original, candidate=member.candidate,
+                                                   action=member.action) for member in self.members],
+                                     self.effects)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"schema": GROUP_INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
+                "intent_digest": self.intent_digest, "members": [member.to_dict() for member in self.members],
+                "effects": [dict(effect) for effect in self.effects], "actor_subject": self.actor_subject,
+                "actor_kind": self.actor_kind, "reads": [dict(read) for read in self.reads],
+                "authority": self.authority, "scope": self.scope, "catalog": self.catalog}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "CardGroupIntent":
+        if not isinstance(raw, Mapping) or raw.get("schema") != GROUP_INTENT_RECORD_SCHEMA:
+            raise DecisionRefused("card_intent_invalid")
+        try:
+            return cls(transaction_id=raw["transaction_id"], intent_digest=raw["intent_digest"],
+                       members=tuple(CardGroupMemberIntent.from_mapping(member) for member in raw["members"]),
+                       effects=tuple(dict(effect) for effect in raw.get("effects") or ()),
+                       actor_subject=str(raw.get("actor_subject") or ""),
+                       actor_kind=str(raw.get("actor_kind") or ""),
+                       reads=tuple(dict(read) for read in raw.get("reads") or ()),
+                       authority=str(raw.get("authority") or ""), scope=str(raw.get("scope") or ""),
+                       catalog=str(raw.get("catalog") or ""))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DecisionRefused("card_intent_invalid") from exc
+
+
+def intent_from_mapping(raw: Any) -> "CardIntent | CardGroupIntent":
+    """A recorded intent of either shape, by its schema."""
+    if isinstance(raw, Mapping) and raw.get("schema") == GROUP_INTENT_RECORD_SCHEMA:
+        return CardGroupIntent.from_mapping(raw)
+    return CardIntent.from_mapping(raw)
+
+
 class CardIntentSource(Protocol):
     async def load(self, transaction_id: str) -> CardIntent: ...
 
@@ -250,7 +329,7 @@ class LocalCardIntentSource:
         from .transaction_store import _checked_id
         return self._store.root / "card-transactions" / "intents" / f"{_checked_id(transaction_id)}.json"
 
-    async def record(self, intent: CardIntent) -> None:
+    async def record(self, intent: "CardIntent | CardGroupIntent") -> None:
         path = self._path(intent.transaction_id)
         existing = await read_json_or_none(path)
         if existing is not None:
@@ -259,11 +338,11 @@ class LocalCardIntentSource:
             return
         await write_json_atomic(path, intent.to_dict())
 
-    async def load(self, transaction_id: str) -> CardIntent:
+    async def load(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
         raw = await read_json_or_none(self._path(transaction_id))
         if raw is None:
             raise DecisionRefused("card_intent_unknown")
-        intent = CardIntent.from_mapping(raw)
+        intent = intent_from_mapping(raw)
         if intent.transaction_id != transaction_id:
             raise DecisionRefused("card_intent_invalid")
         return intent
@@ -305,7 +384,7 @@ class HubCardParticipant:
                        projection_digest(record.intent, PARTICIPANT), projection["candidate_digest"],
                        receipt_digest(local))
 
-    async def _bound_intent(self, transaction_id: str) -> CardIntent:
+    async def _bound_intent(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
         """The Hub intent, refused unless it is exactly what the coordinator's Intent names."""
         intent = await self._intents.load(transaction_id)
         record = await self._decisions.read(transaction_id)
@@ -314,6 +393,8 @@ class HubCardParticipant:
         if record.intent.digest != intent.intent_digest or PARTICIPANT not in record.intent.participants:
             raise DecisionRefused("card_intent_not_bound")
         projection = hub_projection(record.intent)
+        if isinstance(intent, CardGroupIntent):
+            return self._bound_group(intent, projection)
         expected = card_intent_payload_digest(original=intent.original, candidate=intent.candidate,
                                               effects=intent.effects)
         # The global intent names exactly this Card change. Every projection
@@ -338,8 +419,33 @@ class HubCardParticipant:
             raise DecisionRefused("card_intent_not_bound")
         return intent
 
+    @staticmethod
+    def _bound_group(intent: "CardGroupIntent", projection: Mapping[str, Any]) -> "CardGroupIntent":
+        """W578: every aggregate field and member the group intent stages, compared with the projection."""
+        from .card_group import verify_group_projection
+        if projection.get("binding_kind") != "connection-hub.card-group":
+            raise DecisionRefused("card_intent_not_bound")
+        verify_group_projection(projection, intent.candidate_value())
+        if (reads_from_dependencies(projection["dependency_revisions"]) != sorted(
+                (dict(read) for read in intent.reads), key=lambda read: (read["subject_hash"], read["access_id"]))
+                or catalog_reservation_from_dependencies(projection["dependency_revisions"]) != intent.catalog
+                or not intent.actor_subject or projection["actor_subject"] != intent.actor_subject
+                or projection["actor_kind"] != intent.actor_kind):
+            raise DecisionRefused("card_intent_not_bound")
+        return intent
+
     async def prepare(self, transaction_id: str) -> Receipt:
         intent = await self._bound_intent(transaction_id)
+        if isinstance(intent, CardGroupIntent):
+            try:
+                prepared = await self._service.stage_group_transaction(
+                    transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
+                    members=[(member.subject_hash, member.original, member.candidate, member.action)
+                             for member in intent.members],
+                    now=self._now(), effects=intent.effects, reads=intent.reads, catalog=intent.catalog)
+            except CardTransactionRefused as exc:
+                raise DecisionRefused(str(exc)) from exc
+            return await self._receipt(prepared)
         try:
             prepared = await self._service.stage_transaction(
                 transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
@@ -365,6 +471,8 @@ class HubCardParticipant:
                 raise
             tombstone = await abort_unstaged(self._store, transaction_id, intent_digest=record.intent.digest)
             return await self._tombstone_receipt(record, tombstone)
+        if isinstance(intent, CardGroupIntent):
+            return await self._finish_group(intent, transaction_id, decision)
         if decision == "aborted" and await read_state(self._store, transaction_id=transaction_id) is None:
             # Never durably prepared here (a lost prepare reply, or a stage
             # that crashed first): an idempotent abort tombstone (W581 F1),
@@ -386,6 +494,26 @@ class HubCardParticipant:
             raise DecisionRefused(str(exc)) from exc
         return await self._receipt(decided)
 
+    async def _finish_group(self, intent: "CardGroupIntent", transaction_id: str, decision: str) -> Receipt:
+        """W578: an unstaged group aborts by tombstone under its lead's section; otherwise every member."""
+        if decision == "aborted" and await read_state(self._store, transaction_id=transaction_id) is None:
+            lead = intent.members[0]
+            tombstone = await self._service.abort_unstaged_transaction(
+                transaction_id=transaction_id, subject_hash=lead.subject_hash,
+                access_id=lead.candidate.access_id, intent_digest=intent.intent_digest)
+            if tombstone.get("state") != "aborted" or tombstone.get("schema"):  # a stage won the section
+                return await self._finish_group(intent, transaction_id, decision)
+            record = await self._decisions.read(transaction_id)
+            if record is None or record.intent.digest != intent.intent_digest:
+                raise DecisionRefused("card_intent_not_bound")
+            return await self._tombstone_receipt(record, tombstone)
+        try:
+            decided = await self._service.decide_group_transaction(
+                transaction_id=transaction_id, intent_digest=intent.intent_digest, decision=decision)
+        except CardTransactionRefused as exc:
+            raise DecisionRefused(str(exc)) from exc
+        return await self._receipt(decided)
+
     @staticmethod
     async def _tombstone_receipt(record: Any, tombstone: Mapping[str, Any]) -> Receipt:
         projection = hub_projection(record.intent)
@@ -395,7 +523,7 @@ class HubCardParticipant:
 
     async def read_pending(self, transaction_id: str) -> Receipt | None:
         receipt = await read_state(self._store, transaction_id=transaction_id)
-        return await self._receipt(receipt) if receipt is not None and receipt["state"] == "prepared" else None
+        return await self._receipt(receipt) if _prepared_as_a_whole(receipt) else None
 
     async def list_prepared(self, *, limit: int) -> Sequence[Receipt]:
         listed = await list_in_doubt(self._store)
@@ -404,9 +532,16 @@ class HubCardParticipant:
         result = []
         for entry in listed:
             receipt = await read_state(self._store, transaction_id=entry["transaction_id"])
-            if receipt is not None and receipt["state"] == "prepared":
+            if _prepared_as_a_whole(receipt):
                 result.append(await self._receipt(receipt))
         return result
+
+
+def _prepared_as_a_whole(receipt: Mapping[str, Any] | None) -> bool:
+    """A prepare acknowledgement: a prepared Card, or a group only once EVERY member is staged."""
+    if receipt is None or receipt["state"] != "prepared":
+        return False
+    return bool(receipt["staged"]) if "staged" in receipt else True
 
 
 class HubLocalReceiptVerifier:
@@ -444,7 +579,8 @@ class HubLocalReceiptVerifier:
         await self._check(receipt, (record.state,))
 
 
-__all__ = ["CardIntent", "CardIntentSource", "DecisionStorePort", "HubCardParticipant", "HubLocalReceiptVerifier",
+__all__ = ["CardGroupIntent", "CardGroupMemberIntent", "CardIntent", "CardIntentSource",
+           "GROUP_INTENT_RECORD_SCHEMA", "intent_from_mapping", "DecisionStorePort", "HubCardParticipant", "HubLocalReceiptVerifier",
            "LocalCardIntentSource", "PARTICIPANT", "candidate_value", "candidate_value_digest", "dependency_revisions",
            "reads_from_dependencies", "catalog_reservation_from_dependencies",
            "card_intent_payload_digest", "hub_participant_input",

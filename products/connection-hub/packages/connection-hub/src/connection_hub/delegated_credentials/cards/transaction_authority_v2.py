@@ -36,6 +36,8 @@ from service_foundation.coordination.durable_wire import (
 
 from .card_participant import candidate_value_digest
 
+GROUP_BINDING_KIND = "connection-hub.card-group"  # cards/card_group.py; imported lazily (no import cycle)
+
 PROTOCOL = "card-transaction-authority.v2"
 UNSIGNED_FIELDS = frozenset({
     "schema", "phase", "request_echo", "audience", "participant", "global_intent_bytes",
@@ -141,7 +143,17 @@ def verify_card_authority_v2(
         _refuse("authority_projection_mismatch")
 
     candidate = unsigned["candidate"]
-    if (type(candidate) is not dict or set(candidate) != CANDIDATE_FIELDS
+    if isinstance(projection, Mapping) and projection.get("binding_kind") == GROUP_BINDING_KIND:
+        # W578: a card group. Every aggregate field is recomputed from the members
+        # (binding_ref, target_scope, the fixed revisions, the digest), never trusted.
+        from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+        from .card_group import verify_group_projection
+        try:
+            verify_group_projection(projection, candidate)
+        except DecisionRefused:
+            _refuse("authority_candidate_invalid")
+    elif (type(candidate) is not dict or set(candidate) != CANDIDATE_FIELDS
             or type(candidate["access_id"]) is not str or not candidate["access_id"]
             or candidate["access_id"] != projection["binding_ref"]
             or type(candidate["original_revision"]) is not int
