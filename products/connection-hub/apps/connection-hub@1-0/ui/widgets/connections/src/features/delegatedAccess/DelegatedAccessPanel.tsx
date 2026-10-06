@@ -157,11 +157,23 @@ import {
 import {
   accessCardFocusRequest,
   accessCardFocusRequestsEdit,
+  controlFocusKey,
   findAccessCardFocus,
+  freshestCard,
+  staleEdit,
   matchesAccessCardFocus,
   isRequestLimitRefusal,
   unavailableAccessCardMessage,
 } from './accessCardFocus';
+import {
+  catalogPinAtStart,
+  controlFocusRead,
+  isStaleEditRefusal,
+  pinAfterRefusal,
+  pinAfterSave,
+  pinAtStart,
+  withLinkedOperation,
+} from './cardFreshness';
 import {
   isLinkedControlCard,
   linkedControlOpenTarget,
@@ -178,7 +190,7 @@ import {
   projectAgentCardFocus,
   projectAgentCardUpdateTarget,
 } from './projectAgentCard';
-import { cardReadOnlyReason } from './cardEditability';
+import { cardPermissionUnknown, cardReadOnlyReason, cardSaveBlockedReason } from './cardEditability';
 import {
   projectControlCardUpdateTarget,
 } from './projectControlCard';
@@ -1063,6 +1075,9 @@ function CatalogDriftNotice({ drift }: { drift?: DelegatedCatalogDrift }) {
   );
 }
 
+// W587: one wording for an edit the server version has overtaken.
+const STALE_EDIT_MESSAGE = 'This Card or its service catalog changed on the server since you opened it, so your changes cannot be saved. Press Reload this Card to edit the current version.';
+
 export function DelegatedAccessPanel({ openParams }: { openParams?: Record<string, string> } = {}) {
   const dispatch = useAppDispatch();
   const platformUserId = useAppSelector((s) => s.identity.platformUserId || s.delegatedAccess.platformUserId);
@@ -1165,13 +1180,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Per-record EDIT state for granted agent rows: access_id being edited and
   // the checkbox set keyed `${resource}:${claim}`.
   const [editingAccessId, setEditingAccessId] = useState<string | null>(null);
+  // W587: the Card revision the open edit started from (see saveEdit), and
+  // whether the server already refused this edit as stale (409).
+  const editBaseRevision = useRef<number | null>(null);
+  const editBaseCatalog = useRef<string | null>(null);
+  const editRequest = useRef<string | null>(null);
+  const [editRefusedStale, setEditRefusedStale] = useState(false);
+  const [openReadError, setOpenReadError] = useState('');
   // W360: while a project person's or invitation's Control Card is edited,
   // the catalog it is offered leaves out what the service marks
   // `person_card: false` (decided for a person by role alone).
   const editingPersonControl = useMemo(() => {
     if (!editingAccessId) return false;
-    const record = items.find((it) => it.access_id === editingAccessId)
-      || (focusedCard?.access_id === editingAccessId ? focusedCard : null);
+    const record = freshestCard(items, focusedCard, editingAccessId);
     return Boolean(record && projectPersonControlCoordinates(record));
   }, [editingAccessId, focusedCard, items]);
   const resources = useMemo(
@@ -1895,7 +1916,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const editButton = (item: DelegatedAccessRecord, compact = false) => (
     // W260: a Card this viewer only reads (through a project) offers no Edit.
     cardReadOnlyReason(item, focusedViewer) ? null : (
-      <button className="btn" type="button" disabled={busy} onClick={() => startEdit(item)}>
+      <button className="btn" type="button" disabled={busy} onClick={() => { void beginEdit(item); }}>
         {compact ? 'Edit' : <>Edit</>}
       </button>
     )
@@ -2245,6 +2266,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   }, [editingAccessId, editSeedRevision]);
   const editDirty = editingAccessId !== null && currentSnapshot !== editSeedRef.current;
   const startEdit = useCallback((item: DelegatedAccessRecord) => {
+    editBaseRevision.current = pinAtStart(item);
+    editBaseCatalog.current = catalogPinAtStart(item);
+    setEditRefusedStale(false);
     const picks: Record<string, boolean> = {};
     Object.entries(item.resource_grants || {}).forEach(([resource, grants]) => {
       grants.forEach((claim) => { picks[`${resource}:${claim}`] = true; });
@@ -2310,6 +2334,51 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditAcceptedOperations({});
     setEditSeedRevision((current) => current + 1);
   }, [resources, seedAccountScopeFromRecord]);
+  // W587, the operator's rule (2026-10-06 13:43): "hib editor always load
+  // the card when i simply open it. when i press edit it loads it again."
+  // One read for every kind of Card: a Control through whoever holds it, a
+  // project agent Card through its project, any other from the owner list.
+  const readCurrentCard = useCallback(async (
+    item: DelegatedAccessRecord,
+  ): Promise<DelegatedAccessRecord | null> => {
+    try {
+      if (item.source === 'control') {
+        const personControl = projectPersonControlCoordinates(item);
+        const projectControl = projectControlCardUpdateTarget(item);
+        const result = await dispatch(loadControlCard({
+          controlId: item.access_id,
+          projectRef: personControl?.projectRef || projectControl?.projectRef,
+          targetSubject: personControl?.kind === 'person' ? personControl.targetSubject : undefined,
+          invitationRef: personControl?.kind === 'invitation' ? personControl.invitationRef : undefined,
+        })).unwrap();
+        return result.access?.access_id === item.access_id ? result.access : null;
+      }
+      const projectAgent = projectAgentCardUpdateTarget(item);
+      if (projectAgent) {
+        const record = await dispatch(loadProjectAgentCard(projectAgent)).unwrap();
+        return record.access_id === item.access_id ? record : null;
+      }
+      const listed = await dispatch(loadDelegatedAccess()).unwrap();
+      return (listed.items || []).find((candidate) => candidate.access_id === item.access_id) || null;
+    } catch {
+      return null;
+    }
+  }, [dispatch]);
+  // Edit reads the Card first, then seeds the draft and pins its revision
+  // from that read, never from a copy this tab loaded earlier.
+  const beginEdit = useCallback(async (item: DelegatedAccessRecord): Promise<boolean> => {
+    setOpenReadError('');
+    editRequest.current = item.access_id;
+    const current = await readCurrentCard(item);
+    // A later Edit on another Card supersedes this one: its read is dropped.
+    if (editRequest.current !== item.access_id) return false;
+    if (!current) {
+      setOpenReadError('This Card could not be read from Connection Hub, so the editor was not opened. Try again.');
+      return false;
+    }
+    startEdit(current);
+    return true;
+  }, [readCurrentCard, startEdit]);
   // Human label for one connected account (falls back to the id).
   const accountLabelById = useMemo(() => {
     const map = new Map<string, string>();
@@ -2339,33 +2408,57 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // W319: a project link to another person's agent Card, opened through the project.
   const projectAgentCardAttempt = useRef<string | null>(null);
   const projectAgentCardPending = useRef(false);
+  // W587: the focus a fresh server read has answered. A Control link always
+  // reads the server, even when a copy is cached: another admin may have
+  // saved since this tab loaded it, and only the read shows that revision.
+  const [controlFocusReadKey, setControlFocusReadKey] = useState<string | null>(null);
+  // The Card a Control link's own read just opened (its open read is done).
+  const openReadDone = useRef<string | null>(null);
+  // Keyed by value, not object identity, so a re-render never re-reads.
+  const controlFocus = accessCardFocus?.controlOnly ? accessCardFocus : null;
+  const controlFocusValue = controlFocus ? controlFocusKey(controlFocus) : null;
   useEffect(() => {
-    if (!accessCardFocus?.controlOnly) return;
-    if (focusedCard && matchesAccessCardFocus(focusedCard, accessCardFocus)) {
-      setAccessCardFocusState('resolved');
-      return;
-    }
+    const read = controlFocusRead(accessCardFocus);
+    if (!read || !accessCardFocus) return;
     let current = true;
+    const key = controlFocusKey(accessCardFocus);
+    setControlFocusReadKey(null);
     setAccessCardFocusState('loading');
-    void dispatch(loadControlCard({
-      controlId: accessCardFocus.accessId,
-      projectRef: accessCardFocus.projectRef,
-      targetSubject: accessCardFocus.targetSubject,
-      invitationRef: accessCardFocus.invitationRef,
-    })).unwrap()
+    void dispatch(loadControlCard(read)).unwrap()
       .then((result) => {
         if (!current) return;
-        setAccessCardFocusState(
-          result.access && matchesAccessCardFocus(result.access, accessCardFocus)
-            ? 'resolved'
-            : 'unavailable',
-        );
+        const found = Boolean(result.access && matchesAccessCardFocus(result.access, accessCardFocus));
+        setAccessCardFocusState(found ? 'resolved' : 'unavailable');
+        if (found) {
+          openReadDone.current = accessCardFocus.accessId;
+          setControlFocusReadKey(key);
+        }
       })
       .catch(() => {
         if (current) setAccessCardFocusState('unavailable');
       });
     return () => { current = false; };
-  }, [accessCardFocus, dispatch, focusedCard?.access_id]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [controlFocusValue, dispatch]);
+  // W587, the operator's rule (14:50): "i asked not to refetch! i asked only
+  // when card is opened in connection hub (clicked on it for preview) and when
+  // edit is pressed. only then". Opening a Card reads it ONCE; nothing re-reads
+  // it while it is open (no list reload, tab return, re-render or Card update).
+  // A Control link already read the Card to open it: that read is this open's.
+  useEffect(() => {
+    if (!viewAccessId) {
+      openReadDone.current = null;
+      return;
+    }
+    if (openReadDone.current === viewAccessId) {
+      openReadDone.current = null;
+      return;
+    }
+    const record = freshestCard(items, focusedCard, viewAccessId);
+    if (record) void readCurrentCard(record);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [viewAccessId]);
+
   useEffect(() => {
     if (!accessCardFocus) {
       focusedAccessId.current = null;
@@ -2373,10 +2466,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setViewAccessId(null);
       return;
     }
-    const item = findAccessCardFocus(
+    if (accessCardFocus.controlOnly && controlFocusReadKey !== controlFocusKey(accessCardFocus)) return;
+    const match = findAccessCardFocus(
       [...items, ...(focusedCard ? [focusedCard] : [])],
       accessCardFocus,
     );
+    const item = match && freshestCard(items, focusedCard, match.access_id);
     if (!item) {
       if (!accessCardFocus.controlOnly) {
         setAccessCardFocusState(
@@ -2391,15 +2486,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setViewAccessId(item.access_id);
       // A link opens the Card to read. Only a link that asks for a change (an
       // operation to grant, an account or claims to allow) opens the editor.
-      if (accessCardFocusRequestsEdit(accessCardFocus)) startEdit(item);
-      if (accessCardFocus.resource && accessCardFocus.outerOperation) {
-        setEditResourceOperations((current) => ({
-          ...current,
-          [accessCardFocus.resource as string]: Array.from(new Set([
-            ...(current[accessCardFocus.resource as string] || []),
-            accessCardFocus.outerOperation as string,
-          ])),
-        }));
+      if (accessCardFocusRequestsEdit(accessCardFocus)) {
+        // W587: the requested operation is added only after beginEdit's read
+        // seeded the draft; added before, the seed would drop it.
+        const { resource, outerOperation } = accessCardFocus;
+        void beginEdit(item).then((opened) => {
+          if (opened) setEditResourceOperations((current) => withLinkedOperation(current, resource, outerOperation));
+        });
       }
     }
     if (accessCardFocus.accountId) {
@@ -2415,11 +2508,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
   }, [
     accessCardFocus,
+    controlFocusReadKey,
     items,
     focusedCard,
     accounts,
     delegatedAccessLoading,
-    startEdit,
+    beginEdit,
   ]);
   useEffect(() => {
     // The Card is not in this person's own list: ask for it through the
@@ -2877,6 +2971,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const clearEditState = () => {
+    editBaseRevision.current = null;
+    editBaseCatalog.current = null;
+    setEditRefusedStale(false);
     setEditingAccessId(null);
     setEditPicks({});
     setEditResourceOperations({});
@@ -3109,7 +3206,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   };
 
   const saveEdit = async (item: DelegatedAccessRecord) => {
-    const readOnlyReason = cardReadOnlyReason(item, focusedViewer);
+    // W587: a stale edit is refused here; no request leaves the browser.
+    if (staleEdit(editBaseRevision.current, item.card_revision, editRefusedStale)) {
+      setEditActionError(STALE_EDIT_MESSAGE);
+      return;
+    }
+    const readOnlyReason = cardSaveBlockedReason(item, focusedViewer);
     if (readOnlyReason) {
       setEditActionError(readOnlyReason);
       return;
@@ -3270,9 +3372,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           : undefined,
         accountScope: editAccountScope,
         // What this editor was opened on. The server refuses the save when
-        // either moved.
-        expectedCardRevision: item.card_revision,
-        expectedCatalogVersion: item.catalog_drift?.current_version || item.catalog_version,
+        // either moved. W587: the revision is the one the edit STARTED from,
+        // pinned at startEdit, so a background refresh never turns a draft
+        // made against an older Card into an overwrite of a newer one.
+        expectedCardRevision: editBaseRevision.current ?? item.card_revision,
+        expectedCatalogVersion: editBaseCatalog.current ?? catalogPinAtStart(item) ?? undefined,
         // Changed descriptors the grantor reviewed and accepts with this save;
         // every other changed selected operation stays as it was: suspended
         // on a remote MCP connector, in effect for review on a catalog row.
@@ -3292,14 +3396,20 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (!updated || updated.ok === false) {
       // Keep every draft choice in place. A conflict may refresh the record in
       // Redux, but the operator decides how to reconcile it with this draft.
-      setEditActionError(
-        updated?.message
-        || (updated?.status === 409
-          ? 'This card or its service catalog changed while you were editing. Your draft is still here; review it against the refreshed card and save again.'
-          : `Save was not applied: ${updated?.error || 'request refused'}`),
-      );
+      // W587: after a 409 the edit stays pinned and is refused until the
+      // person reloads the Card; the read shows them the server version.
+      if (isStaleEditRefusal(updated)) {
+        // No automatic re-read (operator, 14:50); "Reload this Card" reads it.
+        editBaseRevision.current = pinAfterRefusal(editBaseRevision.current);
+        setEditRefusedStale(true);
+        setEditActionError(STALE_EDIT_MESSAGE);
+        return;
+      }
+      setEditActionError(updated?.message || `Save was not applied: ${updated?.error || 'request refused'}`);
       return;
     }
+    // W587: the base save advanced the Card; a retry continues from that revision.
+    editBaseRevision.current = pinAfterSave(editBaseRevision.current, updated.access);
     const completedOperations: string[] = [];
     for (const { resource, operation, mode } of focusedAdditions) {
       try {
@@ -4658,13 +4768,23 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
 
   // ── The workbench and the compact rows ─────────────────────────────────
   const viewRecord = viewAccessId
-    ? items.find((item) => item.access_id === viewAccessId)
-      || (focusedCard?.access_id === viewAccessId ? focusedCard : null)
+    ? freshestCard(items, focusedCard, viewAccessId) || null
     : null;
   const editingRecord = editingAccessId
-    ? items.find((it) => it.access_id === editingAccessId)
-      || (focusedCard?.access_id === editingAccessId ? focusedCard : null)
+    ? freshestCard(items, focusedCard, editingAccessId) || null
     : null;
+  // W587: "Reload this Card" replaces the draft with the server version and
+  // keeps the editor open on it, with a new pin. Nothing from the old draft
+  // is merged; the person redoes their changes on the current Card.
+  const reloadEdit = async (item: DelegatedAccessRecord) => {
+    const current = await readCurrentCard(item);
+    if (!current) {
+      setEditActionError('This Card could not be read from Connection Hub. Your draft is unchanged and still cannot be saved; try Reload again.');
+      return;
+    }
+    setEditActionError('');
+    startEdit(current);
+  };
   const isEditableRecord = (item: DelegatedAccessRecord): boolean =>
     item.source === 'agent'
     || (item.source === 'oauth' && Boolean(item.client_id))
@@ -4702,7 +4822,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Switching cards while editing discards the edit in progress: ask first.
   const switchEdit = (item: DelegatedAccessRecord) => {
     if (item.access_id === editingAccessId) return;
-    if (!editDirty) { startEdit(item); return; }
+    if (!editDirty) { void beginEdit(item); return; }
     setPendingLeave({ kind: 'switch', item });
   };
   const openLinkedControlCard = async (
@@ -4739,7 +4859,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         const action = pendingLeave;
         setPendingLeave(null);
         if (!action) return;
-        if (action.kind === 'switch') startEdit(action.item);
+        if (action.kind === 'switch') void beginEdit(action.item);
         else clearEditState();
       }}
     />
@@ -5381,6 +5501,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </>
           ) : null}
           <div className="form-actions form-actions--sticky">
+            {staleEdit(editBaseRevision.current, record.card_revision, editRefusedStale) ? (
+              <div className="notice" role="status">
+                {(record.card_revision ?? 0) > (editBaseRevision.current ?? 0)
+                  ? `This Card was saved elsewhere: it is now revision ${record.card_revision}, and this edit started from revision ${editBaseRevision.current}. `
+                  : ''}
+                {STALE_EDIT_MESSAGE}{' '}
+                <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => { void reloadEdit(record); }}>
+                  Reload this Card
+                </button>
+              </div>
+            ) : null}
             {editActionError || delegatedAccessError || problemText ? (
               <div className="error form-actions__error" role="alert">
                 {editActionError || delegatedAccessError || problemText}
@@ -5408,10 +5539,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               type="button"
               disabled={busy
                 || problems.length > 0
-                || Boolean(cardReadOnlyReason(record, focusedViewer))
+                || staleEdit(editBaseRevision.current, record.card_revision, editRefusedStale)
+                || Boolean(cardSaveBlockedReason(record, focusedViewer))
                 || (residentCapabilityCard && !residentCapabilityAuthority)
                 || (descriptorCapabilityControl && !descriptorCapabilityAuthority)}
-              title={cardReadOnlyReason(record, focusedViewer) || problemText || undefined}
+              title={cardSaveBlockedReason(record, focusedViewer) || problemText || undefined}
               onClick={() => saveEdit(record)}
             >
               Save
@@ -5551,8 +5683,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                   <button
       className="btn"
       type="button"
-      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardReadOnlyReason(item, focusedViewer))}
-      title={cardReadOnlyReason(item, focusedViewer) || editSaveProblems(item)
+      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardSaveBlockedReason(item, focusedViewer))}
+      title={cardSaveBlockedReason(item, focusedViewer) || editSaveProblems(item)
         .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
         .join(' ') || undefined}
       onClick={() => saveEdit(item)}
@@ -5768,8 +5900,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           <button
       className="btn"
       type="button"
-      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardReadOnlyReason(item, focusedViewer))}
-      title={cardReadOnlyReason(item, focusedViewer) || editSaveProblems(item)
+      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardSaveBlockedReason(item, focusedViewer))}
+      title={cardSaveBlockedReason(item, focusedViewer) || editSaveProblems(item)
         .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
         .join(' ') || undefined}
       onClick={() => saveEdit(item)}
@@ -5807,11 +5939,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       {accessCardFocus && accessCardFocusState === 'loading' ? (
         <div className="notice" role="status">Opening the requested Card...</div>
       ) : null}
+      {openReadError ? <div className="error" role="alert">{openReadError}</div> : null}
       {accessCardFocus && accessCardFocusState === 'unavailable' ? (
         <div className="error" role="alert">
           <strong>{isRequestLimitRefusal(delegatedAccessError) ? 'Too many requests.' : 'Card unavailable.'}</strong>{' '}
           {unavailableAccessCardMessage(accessCardFocus, delegatedAccessError)}
         </div>
+      ) : null}
+      {focusedCard && accessCardFocusState === 'resolved' && cardPermissionUnknown(focusedCard, focusedViewer) ? (
+        <div className="notice" role="status">{cardPermissionUnknown(focusedCard, focusedViewer)}</div>
       ) : null}
       {focusedCard && accessCardFocusState === 'resolved' && cardReadOnlyReason(focusedCard, focusedViewer) ? (
         // Said up front: this viewer reads this Card and cannot change it.
