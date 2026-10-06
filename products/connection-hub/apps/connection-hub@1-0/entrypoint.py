@@ -3885,22 +3885,32 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if not config.uses_postgresql or pg_pool is None or persistence is None:
             return unavailable
         try:
+            # Caller secrets are needed to verify the proof; nothing else is built yet.
             built = await _card_participant_callers(self, persistence)
-            if not built.callers:
-                return unavailable
-            decisions = await _card_decision_store(self, pg_pool)
-            card_transaction_coordinator(
-                persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
-                policies=_invocation_policy_service(self), authorities=built.authorities,
-                catalog_store=_delegated_catalog_store(self))
         except Exception:  # noqa: BLE001 - never internal text to a peer
-            LOGGER.exception("[connection-hub.card-transactions] participant operation unavailable")
+            LOGGER.exception("[connection-hub.card-transactions] participant callers unavailable")
             return unavailable
+        if not built.callers:
+            return unavailable
+
+        async def compose_after_authentication() -> None:
+            # Only an authenticated, fresh request reaches the decision store (EMain #607 N1).
+            try:
+                decisions = await _card_decision_store(self, pg_pool)
+                card_transaction_coordinator(
+                    persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
+                    policies=_invocation_policy_service(self), authorities=built.authorities,
+                    catalog_store=_delegated_catalog_store(self))
+            except Exception:
+                LOGGER.exception("[connection-hub.card-transactions] participant operation unavailable")
+                raise
+
         tenant, project = _runtime_tenant_project(self)
         operation = CardTransactionParticipantOperation(
             callers=built.callers, card_store=persistence.card_store, nonces=redis,
             enabled=card_transactions_enabled(_connections_config(self)), clock=time.time,
-            nonce_prefix=f"connection-hub:{tenant}:{project}:card-participant:nonce:")
+            nonce_prefix=f"connection-hub:{tenant}:{project}:card-participant:nonce:",
+            after_authentication=compose_after_authentication)
         return await operation.answer(payload)
 
     @api(method="POST", alias="delegated_admission", route="public")

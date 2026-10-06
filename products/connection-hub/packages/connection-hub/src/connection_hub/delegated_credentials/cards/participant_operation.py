@@ -32,7 +32,7 @@ import asyncio
 import json
 import re
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Awaitable, Callable, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
 from service_foundation.coordination.participant_answer import request_digest as shared_request_digest
@@ -156,7 +156,8 @@ class CardTransactionParticipantOperation:
 
     def __init__(self, *, callers: Mapping[str, ParticipantCaller], card_store: Any, nonces: Any,
                  enabled: bool, clock: Callable[[], float], budget_seconds: float = 20.0,
-                 nonce_prefix: str = "connection-hub:card-participant:nonce:") -> None:
+                 nonce_prefix: str = "connection-hub:card-participant:nonce:",
+                 after_authentication: Callable[[], Awaitable[None]] | None = None) -> None:
         self._callers = dict(callers)
         self._card_store = card_store
         self._intents = LocalCardIntentSource(card_store)
@@ -165,6 +166,10 @@ class CardTransactionParticipantOperation:
         self._clock = clock
         self._budget = budget_seconds
         self._nonce_prefix = nonce_prefix
+        # Work only an authenticated request may cause (EMain #607 N1): the
+        # composition root binds the decision store and Card composition here,
+        # so an unauthenticated call never reaches first-creation DDL.
+        self._after_authentication = after_authentication
 
     async def answer(self, data: Any) -> dict[str, Any]:
         # Frozen once, before any await (CodeApp 19:35): what is authenticated is
@@ -197,6 +202,11 @@ class CardTransactionParticipantOperation:
             return _unsigned_refusal("card_participant_unavailable", 503)
         if not fresh:
             return _unsigned_refusal("card_participant_unauthenticated", 401)
+        if self._after_authentication is not None:
+            try:
+                await self._after_authentication()
+            except Exception:  # noqa: BLE001 - nothing served, so nothing signed
+                return _unsigned_refusal("card_participant_unavailable", 503)
         try:
             # A budget overrun cancels the participant mid-call. Stage and finish
             # are crash-safe by design (every step resumes on replay), so a
