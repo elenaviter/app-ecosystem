@@ -159,6 +159,9 @@ bundles:
           #     full_snapshot_operation: "opaque_issuer_full_snapshot"
           # Read and full export are separate capabilities, never implied by
           # the write operation. Full snapshots are internal personal data.
+          # Exact widening updates use the configured write issuer and an
+          # issuer-owned immutable context. Their internal orchestration scope
+          # is not a request/descriptor grant and does not approve a mutation.
           #     service_id: "connection-hub"
           #     peer_proof_secret_ref: "existing.approved.peer_secret"
           #     adapter_id: "authority-app:issuer-v1"

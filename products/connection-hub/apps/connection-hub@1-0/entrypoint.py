@@ -292,6 +292,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "issuer_managed_lifecycle_apply",
     "issuer_managed_lifecycle_read",
     "issuer_managed_card_snapshots",
+    "issuer_managed_card_update",
     "delegated_access_update",
     "delegated_access_apply_profile",
     "delegated_access_add_operations",
@@ -6414,6 +6415,47 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return {"ok": False, "error": "issuer_snapshot_requires_internal_orchestration", "status": 403}
         if _protected_lifecycle_read_context(self) != host:
             return {"ok": False, "error": "issuer_snapshot_context_changed", "status": 409, "retryable": True}
+        return result
+
+    @api(method="POST", alias="issuer_managed_card_update", route="operations", csrf=True,
+         user_types=["registered", "privileged"])
+    async def issuer_managed_card_update(self, data: Optional[Dict[str, Any]] = None,
+            request: Any = None, user_id: Optional[str] = None, fingerprint: Optional[str] = None,
+            **kwargs: Any) -> Dict[str, Any]:
+        del user_id, fingerprint
+        host = _protected_lifecycle_read_context(self)
+        if not host[0]:
+            return {"ok": False, "error": "issuer_update_requires_platform_human_scope", "status": 403}
+        from connection_hub.delegated_credentials.issuer_update import IssuerUpdateQuery, IssuerUpdateRefused
+        from connection_hub.delegated_credentials.issuer_update_host import issuer_update_orchestration_is_bound
+        try:
+            payload = IssuerUpdateQuery.from_mapping(_payload(data, **kwargs)).to_dict()
+        except IssuerUpdateRefused:
+            return {"ok": False, "error": "issuer_update_query_invalid", "status": 400}
+
+        def host_is_current():
+            return issuer_update_orchestration_is_bound() and _protected_lifecycle_read_context(self) == host
+
+        if not issuer_update_orchestration_is_bound():
+            return {"ok": False, "error": "issuer_update_requires_internal_orchestration", "status": 403}
+        service = await _automation_access_service(self, request)
+        if not host_is_current():
+            return {"ok": False, "error": "issuer_update_context_changed", "status": 409, "retryable": True}
+        bind = getattr(service, "bind_issuer_update_host", None)
+        apply = getattr(service, "issuer_managed_card_update", None)
+        if not callable(bind) or not callable(apply):
+            return {"ok": False, "error": "issuer_update_host_unavailable", "status": 503, "retryable": True}
+        actor, classification, tenant, project = host
+        bind(actor_subject=actor, actor_classification=classification, tenant=tenant, project=project,
+             host_is_current=host_is_current)
+        result = await apply(payload)
+        if not host_is_current():
+            # Do not erase an already committed write when delivery context
+            # changes; withhold the full Card and retain recoverable outcome.
+            committed = result.get("state") == "committed"
+            safe = {k: v for k, v in result.items() if k not in ("authority", "authority_fingerprint")}
+            return {**safe, "ok": False, "status": 202 if committed else 409,
+                    "reason": "issuer_update_context_changed", "retryable": True}
         return result
 
     # ── delegated to KDCube (KDCube -> external provider for user) ──
