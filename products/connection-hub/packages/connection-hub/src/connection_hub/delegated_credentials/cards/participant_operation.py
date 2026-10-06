@@ -95,6 +95,9 @@ class ParticipantCaller:
     # never a credential selector: keys, audience and authority stay the caller's.
     bind: Callable[[str], ScopeBinding]
     scope_field: str = ""           # the verified intent payload key the request scope must equal
+    # card_census_read entitlement (EMain #616): the scopes this caller may read,
+    # by prefix ("" = no census at all). Never inferred from the request.
+    census_scope_prefix: str = ""
 
     def __post_init__(self) -> None:
         for secret in (self.request_secret, self.receipt_secret):
