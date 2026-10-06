@@ -45,6 +45,12 @@ from ..contract.scoped_collection import CollectionError, ScopedKeysetCursor
 
 # Selective receives allowed between two ordinary receives (W563, Q11).
 SELECTIVE_RECEIVE_BUDGET = 3
+# W563 (Root, 6 October 08:44 UTC): window control (READY requests, renewals,
+# START, ALL CLEAR, CANCEL) arrives on one correlation from one executor. A
+# held agent receives it by that correlation and sender on its own bounded
+# budget, so releasing a hold never needs an ordinary receive that leases
+# unrelated work. One control correlation at a time between ordinary receives.
+CONTROL_SELECTION_BUDGET = 8
 # W563 (coordinator, 2026-10-06 00:35Z): a backlog mark sets at most this
 # many pending messages aside, and keeps this many earlier marks as history.
 BACKLOG_MARK_MAXIMUM = 5000
@@ -3565,6 +3571,8 @@ class SharedFieldStore:
                 "last_inbox_check_at": str(previous.get("last_inbox_check_at") or ""),
                 "general_receive_due": bool(previous.get("general_receive_due")),
                 "selective_receives_since_general": int(previous.get("selective_receives_since_general") or 0),
+                "control_selection_key": str(previous.get("control_selection_key") or ""),
+                "control_selections_used": int(previous.get("control_selections_used") or 0),
                 "last_message_refs": list(previous.get("last_message_refs") or []),
                 "last_control_refs": list(previous.get("last_control_refs") or []),
                 "observed_control_plane_state": str(
@@ -3617,6 +3625,7 @@ class SharedFieldStore:
         state: str = "waiting",
         inbox_checked: bool = False,
         selective_receive: bool = False,
+        control_selection: str = "",
         message_refs: Sequence[str] = (),
         control_refs: Sequence[str] = (),
         observed_control_plane_state: str | None = None,
@@ -3648,7 +3657,12 @@ class SharedFieldStore:
                 heartbeat_at=now,
                 revision=int(listener.get("revision") or 0) + 1,
             )
-            if selective_receive:
+            if selective_receive and control_selection:
+                # Window control on its own budget (CONTROL_SELECTION_BUDGET);
+                # the general selective budget is untouched.
+                listener["control_selection_key"] = control_selection
+                listener["control_selections_used"] = int(listener.get("control_selections_used") or 0) + 1
+            elif selective_receive:
                 # W563 (Q11, coordinator 2026-10-05): up to SELECTIVE_RECEIVE_BUDGET
                 # selective receives between ordinary ones; the ordinary receive
                 # still serves the oldest mail, so old mail keeps moving.
@@ -3658,6 +3672,8 @@ class SharedFieldStore:
             if inbox_checked:
                 listener["general_receive_due"] = False
                 listener["selective_receives_since_general"] = 0
+                listener["control_selection_key"] = ""
+                listener["control_selections_used"] = 0
                 observed_message_refs = _bounded_message_refs(message_refs)
                 listener.update(
                     last_inbox_check_at=now,
