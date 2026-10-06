@@ -107,6 +107,34 @@ provide non-secret `lifecycle_labels`; those labels appear on every lifecycle
 record and let the product carry its stable channel identity and replacement
 epoch across object-local generation resets.
 
+A failed App Foundation-owned reconnect attempt is retried by default, with a
+doubling delay up to a cap, until the client is closed. An owner that knows
+which refusals cannot heal by retrying passes two optional constructor
+arguments:
+
+- `refusal_classifier(error) -> bool` is called with each failed reconnect
+  attempt's exception and returns True when the refusal is permanent (for
+  example, a revoked credential). The client knows no product codes; the owner
+  supplies them all.
+- `on_terminal_refusal(record)` is called once, when the classifier first
+  answers True, with the same record `terminal_refusal` returns.
+
+Both callbacks are synchronous: they run on the client's event loop, must not
+block, and must not await. A classifier that raises is logged and its answer
+is taken as transient, so a fault in the owner's code never ends the
+reconnect. An exception from `on_terminal_refusal` is logged and does not
+change the terminal state.
+
+After a permanent refusal the client is terminal. `terminal_refusal` returns
+`state` `refused_permanent` with the error code and type,
+`transport_recovering` is False, and the reconnect loop has stopped. A
+terminal client stays disconnected until it is closed: `connect()` raises
+`DataBusClientError` with the stored code and the `terminal_refusal` record
+in its details, without an attempt, and no disconnect or reconnect path opens
+it again. There is no reset. The owner closes the client and creates a new
+one, for example with a new credential. Without a classifier, behaviour is
+unchanged: every failure is retried until close.
+
 ## Boundary
 
 Applications serving real users repeatedly need the same host capabilities:

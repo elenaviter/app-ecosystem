@@ -92,6 +92,10 @@ def _drive(
             await asyncio.wait_for(task, timeout=5)
         except asyncio.CancelledError:
             pass  # close() cancels the loop, or the test's safety ceiling did
+        finally:
+            # Close and drain every client this helper creates, so no
+            # reconnect task outlives the event loop.
+            await client.close()
 
     asyncio.run(scenario())
     # The loop stopped before the safety ceiling only if close() (or the loop
@@ -210,3 +214,66 @@ def test_c_a_failing_terminal_callback_never_restarts_the_loop(monkeypatch):
 
     assert ended is True and attempts == 1
     assert holder[0].terminal_refusal["state"] == "refused_permanent"
+
+
+def _terminal_client(attempts: list[int]) -> FederatedDataBusClient:
+    client = FederatedDataBusClient(
+        platform_url="http://127.0.0.1:9", claim=_claim(), refusal_classifier=lambda error: True,
+    )
+    client._reconnect_delay_seconds = 0
+
+    async def refused() -> None:
+        attempts.append(1)
+        raise _Refused("synthetic_permanent")
+
+    client._connect_namespace = refused  # type: ignore[method-assign]
+    return client
+
+
+def test_c_a_terminal_client_refuses_a_public_connect_without_an_attempt():
+    # Infra's witness on cdbc3045 (W573 review, 6 October 2026, 06:26 UTC):
+    # the public connect() opened a terminal client again.
+    attempts: list[int] = []
+
+    async def scenario() -> None:
+        client = _terminal_client(attempts)
+        try:
+            client._reconnect_task = asyncio.get_running_loop().create_task(client._reconnect())
+            await asyncio.wait_for(client._reconnect_task, 1)
+            assert len(attempts) == 1 and client.terminal_refusal["state"] == "refused_permanent"
+            with pytest.raises(client_module.DataBusClientError) as refused:
+                await client.connect()
+            assert refused.value.code == "synthetic_permanent"
+            assert refused.value.details["terminal_refusal"]["state"] == "refused_permanent"
+            assert len(attempts) == 1, "a terminal client made a second open attempt through connect()"
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_c_a_terminal_client_is_fenced_on_disconnect_and_reconnect_entry():
+    attempts: list[int] = []
+
+    async def scenario() -> None:
+        client = _terminal_client(attempts)
+        try:
+            client._reconnect_task = asyncio.get_running_loop().create_task(client._reconnect())
+            await asyncio.wait_for(client._reconnect_task, 1)
+            assert len(attempts) == 1 and client._reconnect_task is None
+
+            # A late disconnect of an active socket does not start a loop.
+            client._connection_generation = max(1, client._connection_generation)
+            client._socket_is_active = lambda socket, token: True  # type: ignore[method-assign]
+            client._deactivate_socket = lambda socket, token: None  # type: ignore[method-assign]
+            await client._on_disconnect(object(), object())
+            assert client._reconnect_task is None
+
+            # A loop entered directly returns at once, with no attempt.
+            await asyncio.wait_for(client._reconnect(), 1)
+            assert len(attempts) == 1
+            assert client.terminal_refusal["state"] == "refused_permanent"
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())

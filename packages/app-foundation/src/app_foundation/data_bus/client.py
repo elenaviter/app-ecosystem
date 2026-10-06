@@ -535,7 +535,10 @@ class FederatedDataBusClient:
 
         Set only when the owner's ``refusal_classifier`` called a connect
         failure permanent: ``state`` is ``refused_permanent``, with the error
-        code and type. The client then stays disconnected until it is closed.
+        code and type. The client then stays disconnected until it is closed:
+        ``connect()`` refuses with this code without an attempt, and no
+        disconnect or reconnect path opens it again. There is no reset; the
+        owner closes it and creates a new client.
         """
 
         return dict(self._terminal_refusal) if self._terminal_refusal is not None else None
@@ -927,6 +930,7 @@ class FederatedDataBusClient:
             self._owns_reconnect
             and self._connection_generation
             and not self._closed
+            and self._terminal_refusal is None
             and (self._reconnect_task is None or self._reconnect_task.done())
         ):
             self._reconnect_task = asyncio.create_task(self._reconnect())
@@ -994,6 +998,14 @@ class FederatedDataBusClient:
         if self._closed:
             raise DataBusClientError(
                 "data_bus_client_closed", "The Data Bus client is already closed."
+            )
+        if self._terminal_refusal is not None:
+            # Terminal has no reset: the owner closes this client and builds a
+            # new one, for example with a new credential (W573).
+            raise DataBusClientError(
+                str(self._terminal_refusal["code"]),
+                "The Data Bus client stopped after a permanent refusal; close it and create a new one.",
+                details={"terminal_refusal": dict(self._terminal_refusal)},
             )
         if self._expired():
             if isinstance(self.credential, DataBusClaim):
@@ -1133,9 +1145,11 @@ class FederatedDataBusClient:
 
         delay = self._reconnect_delay_seconds
         try:
-            while not self._closed:
+            # A terminal client never reconnects; the fence holds however the
+            # loop is entered (W573).
+            while not self._closed and self._terminal_refusal is None:
                 await asyncio.sleep(delay)
-                if self._closed:
+                if self._closed or self._terminal_refusal is not None:
                     return
                 try:
                     await self._connect_namespace()
