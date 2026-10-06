@@ -938,3 +938,24 @@ async def test_connector_consent_without_a_resource_is_still_incomplete() -> Non
     )
 
     assert seed == {"ok": False, "error": "oauth_consent_identity_incomplete"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replace_authority", [True, False])
+async def test_a_consent_approved_by_a_delegated_bearer_creates_no_card(replace_authority):
+    # W585 gate (d), Ops 14:11: an integration bearer can reach the consent routes; the Hub
+    # never records a Card whose grantor is a delegated identity.
+    store = _GrantStore({})
+    persistence = _Persistence()
+    service = _service(store, persistence)
+    with pytest.raises(CardConflict) as refused:
+        await service.record_oauth_grant(
+            grantor_subject="integration:dcr-agent:user-1",
+            client_id="dcr-other",
+            resource=RESOURCE,
+            resource_grants={RESOURCE: ["fixture:use"]},
+            replace_authority=replace_authority,
+            expected_card_revision=1 if replace_authority else None,
+        )
+    assert refused.value.reason == "delegated_access_requires_grantor"
+    assert persistence.cards == {}
