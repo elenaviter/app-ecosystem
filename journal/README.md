@@ -110,6 +110,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-06 | Terminal issuer receipts must finish active-intent retirement | — |
 
+| 2026-10-06 | Account disconnect refuses incomplete grant pruning | Deterministic account ids can revive surviving grant bindings after reconnect. The app now verifies complete pruning before disconnect, refuses unavailable or partial results, and retains the explicit concurrent-binding and post-prune failure limits. |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).

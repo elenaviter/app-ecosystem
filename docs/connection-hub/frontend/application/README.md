@@ -238,6 +238,12 @@ account at call time.
   `delegated_to_kdcube_connect_credential`, `delegated_to_kdcube_disconnect`,
   `delegated_to_kdcube_resolve` (operations) — current widget and server-side
   broker helpers for delegated external accounts.
+  Disconnect requires verified complete grant pruning before removing the
+  account; partial or unavailable pruning returns the retryable
+  `account_binding_not_pruned` refusal and keeps the account connected. Some
+  bindings may already have been narrowed. See the
+  [disconnect response contract](../../../../products/connection-hub/apps/connection-hub@1-0/interface/README.md#request-payload-shapes)
+  for response fields and the remaining concurrent/atomicity limits.
 - `delegated_to_kdcube_oauth_callback` (public) — the shared OAuth browser
   redirect for delegated to KDCube providers such as Gmail and Slack.
 - `delegated_admission` (public, disabled by default) — direct operation-level
