@@ -63,13 +63,16 @@ def test_a_broken_target_shows_its_errors():
 
 def test_a_changed_revision_rereads_only_the_modules_in_use():
     skill = " ".join((source_package_path() / "SKILL.md").read_text(encoding="utf-8").split())
+    assert "When the revision changed, load this skill once, as Start Or Resume says." in skill
+    assert "A changed installed revision means one full load of the new skill." in skill
     assert (
-        "read in full each changed reference or module you had loaded or now need for your acts, and keep the rest; "
-        "a module that is new or that you have not needed is read when its act comes up, not because it is listed"
+        "read in full each changed reference or module you had loaded or now need for your acts, and keep the rest. "
+        "A module that is new or that you have not needed is read when its act comes up, not because it is listed"
     ) in skill
+    assert "load this skill once if it is among them" not in skill, "no condition that contradicts Start Or Resume"
     assert "read those files in full and keep the rest" not in skill
     purpose = " ".join(
         (source_package_path() / "references/coordinator/what-the-coordinator-is-for.md").read_text(encoding="utf-8").split()
     )
-    assert "read whole the changed modules you had loaded or now need" in purpose
+    assert "load the skill once, read whole the changed modules you had loaded or now need" in purpose
     assert "read those whole, keep the rest" not in purpose
