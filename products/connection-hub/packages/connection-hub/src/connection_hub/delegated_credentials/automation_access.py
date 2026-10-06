@@ -9000,18 +9000,24 @@ class AutomationAccessService:
         therefore closes the bindings too; ``Reconnect`` (re-approval without
         disconnecting) is the action that preserves them.
 
-        Never raises: a pruning failure must not fail the disconnect itself.
+        Never raises. A Card it could not prune (for example one with an
+        unresolved transaction) is reported in ``not_pruned`` with ``ok``
+        False, never skipped silently: its binding would otherwise survive
+        and revive on reconnect (W580 finding 2). The caller decides whether
+        the disconnect may proceed.
         """
         subject = _clean(grantor_subject)
         provider = _clean(provider_id)
         account = _clean(account_id)
         if not subject or not provider or not account:
-            return {"pruned": 0, "grants": []}
+            return {"ok": True, "pruned": 0, "grants": [], "not_pruned": []}
         try:
             candidates = await self._list_active_records(subject)
         except Exception:
-            return {"pruned": 0, "grants": []}
+            return {"ok": False, "pruned": 0, "grants": [], "not_pruned": [],
+                    "reason": "grants_unreadable", "retryable": True}
         pruned: list[str] = []
+        not_pruned: list[str] = []
         for record in candidates:
             access_id = record.access_id
             try:
@@ -9050,6 +9056,7 @@ class AutomationAccessService:
                     "(non-fatal): access_id=%s provider=%s account=%s",
                     access_id, provider, account, exc_info=True,
                 )
+                not_pruned.append(access_id)
                 continue
         if pruned:
             _LOGGER.info(
@@ -9057,7 +9064,10 @@ class AutomationAccessService:
                 "provider=%s account=%s grants=%s",
                 len(pruned), provider, account, pruned,
             )
-        return {"pruned": len(pruned), "grants": pruned}
+        outcome = {"ok": not not_pruned, "pruned": len(pruned), "grants": pruned, "not_pruned": not_pruned}
+        if not_pruned:
+            outcome.update(reason="account_binding_not_pruned", retryable=True)
+        return outcome
 
 
     async def extend_client_access(

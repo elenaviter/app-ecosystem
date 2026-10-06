@@ -306,3 +306,51 @@ async def test_prolonging_a_card_with_an_unresolved_transaction_extends_nothing(
     assert refused["reason"] == "card_transaction_unresolved" and refused["retryable"] is True
     assert store.extended_refresh == [] and store.extended_grants == []
     assert harness.persistence.cards[access_id][0] == before
+
+
+@pytest.mark.asyncio
+async def test_prune_reports_a_card_it_could_not_prune_instead_of_skipping_it(tmp_path):
+    # W580 finding 2: a binding left on a Card revives on reconnect, so a Card
+    # the prune could not change (here: an unresolved transaction) is named.
+    from connection_hub.delegated_credentials.cards.service import CardConflict
+    harness = _Harness(tmp_path)
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    record = (await harness.service._list_active_records(USER["user_id"]))[0]
+    bound = dataclasses.replace(record, account_scope={"google": {"acct-1": ("mail",)}})
+
+    async def records(subject):
+        return [bound]
+
+    async def staged(*args, **kwargs):
+        raise CardConflict("card_transaction_unresolved")
+
+    harness.service._list_active_records = records
+    harness.service._persist_record = staged
+    outcome = await harness.service.prune_account_from_grants(
+        grantor_subject=USER["user_id"], provider_id="google", account_id="acct-1")
+    assert outcome["ok"] is False and outcome["not_pruned"] == [access_id]
+    assert outcome["reason"] == "account_binding_not_pruned" and outcome["retryable"] is True
+    assert outcome["pruned"] == 0
+
+
+@pytest.mark.asyncio
+async def test_prune_of_an_unstaged_card_still_succeeds(tmp_path):
+    harness = _Harness(tmp_path)
+    await _manual_card(harness, ttl=3600)
+    record = (await harness.service._list_active_records(USER["user_id"]))[0]
+    bound = dataclasses.replace(record, account_scope={"google": {"acct-1": ("mail",)}})
+    written = []
+
+    async def records(subject):
+        return [bound]
+
+    async def persist(rec, *, expected_revision, **kwargs):
+        written.append((rec.account_scope, expected_revision))
+
+    harness.service._list_active_records = records
+    harness.service._persist_record = persist
+    outcome = await harness.service.prune_account_from_grants(
+        grantor_subject=USER["user_id"], provider_id="google", account_id="acct-1")
+    assert outcome == {"ok": True, "pruned": 1, "grants": [record.access_id], "not_pruned": []}
+    assert written == [({}, record.card_revision)]
