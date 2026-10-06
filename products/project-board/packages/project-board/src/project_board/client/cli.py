@@ -736,6 +736,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
     )
     command.add_argument("--home", help="Testing or alternate user home.")
+    command.add_argument(
+        "--detail", action="store_true",
+        help="Brief output lists the package manifest and every changed file, not only the verdict.",
+    )
     command = procedure_commands.add_parser(
         "install", help="Install the complete package as a local coding-agent skill."
     )
@@ -6595,13 +6599,16 @@ def _procedure_command(args: Any) -> dict[str, Any]:
                     "installed": verified,
                 },
             )
-        return {
+        result = {
             "procedure": str(source_path()),
             "package": package,
             "targets": targets,
             "targets_from": targets_from,
             "verified": verified,
         }
+        if getattr(args, "detail", False):
+            result["detail"] = True
+        return result
     if args.procedure_command == "install":
         claude_code = "claude-code" in (args.target or [])
         if claude_code:

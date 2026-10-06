@@ -226,6 +226,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_worker_inbox(result, flags)
     if schema == "problem-board.first-run-status.v1":
         return _render_first_run_status(result)
+    if _is_procedure_verify(result) and not result.get("detail"):
+        return _render_procedure_verify(result)
     if schema == "problem-board.note-read.v1":
         lines = [
             "note: {} · item {} · ordinal {} · by {} · at {}".format(
@@ -265,6 +267,58 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
     lines = _flatten(result, prefix="")
     if isinstance(result.get("team"), list) and result.get("team"):
         lines.extend(_team_usage_lines(result["team"]))
+    return lines
+
+
+def _is_procedure_verify(result: Mapping[str, Any]) -> bool:
+    return isinstance(result.get("verified"), list) and isinstance(result.get("package"), Mapping)
+
+
+def _render_procedure_verify(result: Mapping[str, Any]) -> list[str]:
+    """A verdict per target; the manifest and changed files with --detail (W563).
+
+    Root, 2026-10-06 05:17 UTC (W563 note_e42209a9): adopting .15, the brief
+    verify printed the whole package inventory and the same 48 changed files
+    for both runtimes. The adoption decision needs, per target, whether it is
+    current and intact and whether its entrypoint changed.
+    """
+
+    package = result["package"]
+    files = package.get("files") if isinstance(package.get("files"), Mapping) else {}
+    lines = [
+        "procedure: {} · revision {} · digest {} · {} files".format(
+            package.get("package_id") or "-", package.get("revision") or "-",
+            str(package.get("source_digest") or "")[:12] or "-", len(files) or "?",
+        )
+    ]
+    entrypoint = str(package.get("entrypoint") or "SKILL.md")
+    for row in result["verified"]:
+        if not isinstance(row, Mapping):
+            continue
+        changed = [str(path) for path in row.get("changed_files") or []]
+        errors = [str(error) for error in row.get("errors") or []]
+        lines.append(
+            "--- {} · {} · installed {} · digest {} · files verified {} · errors {}".format(
+                row.get("target") or "-", row.get("state") or "-", row.get("installed_revision") or "-",
+                "matches" if row.get("installed_digest") and row.get("installed_digest") == row.get("source_digest")
+                else "DIFFERS",
+                row.get("files_verified", "?"), len(errors) or "none",
+            )
+        )
+        for error in errors[:3]:
+            lines.append(f"  error: {_preview(error, maximum_bytes=200)}")
+        if row.get("changed_since_revision"):
+            lines.append(
+                "  changed since {}: {} file(s) · {} {}".format(
+                    row["changed_since_revision"], len(changed), entrypoint,
+                    "changed: load it once" if entrypoint in changed else "unchanged",
+                )
+            )
+    lines.append(
+        "read: of the changed files, only the modules you had loaded or now need for your acts; "
+        "a newly available module is read when its act comes up"
+    )
+    lines.append("detail: add --detail for the manifest and every changed file; --format json for every field")
     return lines
 
 
