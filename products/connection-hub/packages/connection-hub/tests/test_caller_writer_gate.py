@@ -237,3 +237,57 @@ def test_reset_needs_a_service_the_card_holds_and_a_resource():
         gate.reset_candidate(card, resource=OTHER, control_operations=(), control_grants=())
     with pytest.raises(gate.CallerWriteRefused, match="caller_writer_reset_resource_required"):
         gate.reset_candidate(card, resource=" ", control_operations=(), control_grants=())
+
+
+# ── inside the real durable commit ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revalidate_allow", [True, False])
+async def test_the_gate_decides_inside_the_real_card_commit_and_a_refusal_leaves_no_effect(tmp_path, revalidate_allow):
+    from contextlib import asynccontextmanager
+    from connection_hub.delegated_credentials.cards.service import DelegatedCardService
+    from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+    from test_card_service import _Cache, _authority, SUBJECT_HASH, NOW as CARD_NOW
+
+    held = False
+
+    @asynccontextmanager
+    async def mutation_lock(**kwargs):
+        nonlocal held
+        held = True
+        try:
+            yield
+        finally:
+            held = False
+
+    bound = dataclasses.replace(_authority(), control_card=ControlCardBinding(
+        control_id="control-person", issuer_ref="work:project:one", issuer_kind="project", control_revision=2))
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    await service.commit(bound, subject_hash=SUBJECT_HASH, expected_revision=0, now=CARD_NOW)
+    candidate = dataclasses.replace(bound, card_revision=bound.card_revision + 1, label="edited by owner")
+    policy = Policy(revalidate_allow=revalidate_allow)
+    seen_inside = []
+    original = policy.revalidate
+
+    async def revalidate(request, initial):
+        seen_inside.append(held)
+        return await original(request, initial)
+
+    policy.revalidate = revalidate
+    before_commit, _ = await gate.caller_writer_before_commit(
+        _registry(policy), bound, actor_subject="owner", action="update", candidate=candidate.to_dict(),
+        request_id="r-1", now=lambda: NOW)
+    if revalidate_allow:
+        await service.commit(candidate, subject_hash=SUBJECT_HASH, expected_revision=1, now=CARD_NOW,
+                             before_commit=before_commit)
+        expected = candidate
+    else:
+        with pytest.raises(gate.CallerWriteRefused):
+            await service.commit(candidate, subject_hash=SUBJECT_HASH, expected_revision=1, now=CARD_NOW,
+                                 before_commit=before_commit)
+        expected = bound
+    assert seen_inside == [True]  # revalidated under the target lock
+    current = await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=bound.access_id)
+    assert current[1] == expected and held is False

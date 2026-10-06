@@ -38,6 +38,9 @@ from connection_hub.delegated_credentials.issuer_gate import (
     IssuerDecision, IssuerRegistry, IssuerRequest, IssuerWriteRefused,
     change_digest, issuer_write_refusal,
 )
+from connection_hub.delegated_credentials.caller_writer_gate import (
+    CallerWriteRefused, caller_write_outcome, caller_writer_before_commit, reset_candidate,
+)
 from connection_hub.authority_inventory import (
     AuthorityGrantInventory,
     PlatformAuthorityInventoryProvider,
@@ -2573,6 +2576,63 @@ class AutomationAccessService:
 
         return before_commit, request
 
+    def bind_caller_writers(self, registry: Any) -> None:
+        """W578: the hosting composition registers the caller-writer policies once."""
+        self._caller_writers = registry
+
+    def _caller_actor_subject(self, user: Mapping[str, Any]) -> str:
+        # The authenticated hosting actor when the host bound one (a person
+        # acting on another owner's Card through a hosting route), else the
+        # caller itself; never the storage owner.
+        return self._issuer_actor_subject if self._issuer_actor_subject_bound else _subject_from_user(user)
+
+    async def reset_service_to_control(
+        self, user: Mapping[str, Any], *, access_id: str, resource: str,
+        expected_card_revision: int, request_id: str = "", context_ref: str = "",
+    ) -> dict[str, Any]:
+        """W578: explicit per-service Reset to Control, decided like any bound owner write.
+
+        One service's selection becomes the current Control's selection for
+        that service, resolved through the authoritative Control (never a
+        caller-supplied selection); every other service, the identity and the
+        credentials are unchanged. Nothing calls this on a read or on a
+        Control change.
+        """
+        grantor_subject = _subject_from_user(user)
+        existing = await self._load_record(_clean(access_id), grantor_subject=grantor_subject)
+        if existing is None:
+            return {"ok": False, "status": 404, "error": "access_not_found"}
+        if int(expected_card_revision) != int(existing.card_revision):
+            return {"ok": False, "status": 409, "error": "card_revision_conflict",
+                    "expected": int(expected_card_revision), "actual": int(existing.card_revision)}
+        if existing.control_card is None:
+            return {"ok": False, "status": 409, "error": "caller_writer_reset_requires_control"}
+        try:
+            control, _ = await self._compose_with_control(existing)
+        except (CardUnavailable, ControlCardMismatch) as exc:
+            return {"ok": False, "status": 503, "error": "control_card_unavailable",
+                    "reason": getattr(exc, "reason", ""), "retryable": True}
+        if control is None:
+            return {"ok": False, "status": 503, "error": "control_card_unresolvable", "retryable": True}
+        control_authority = card_authority_from_record(control)
+        resource = _clean(resource)
+        try:
+            candidate = reset_candidate(
+                card_authority_from_record(existing), resource=resource,
+                control_operations=control_authority.resource_operations.get(resource, ()),
+                control_grants=control_authority.resource_grants.get(resource, ()),
+            )
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
+        return await self.update_access(
+            user, access_id=existing.access_id,
+            resource_grants={key: list(value) for key, value in candidate["resource_grants"].items()},
+            resource_operations={key: list(value) for key, value in candidate["resource_operations"].items()},
+            expected_card_revision=existing.card_revision,
+            _issuer_request_id=request_id, _issuer_context_ref=context_ref,
+            _caller_write_action="reset",
+        )
+
     async def _issuer_outcome(self, request: IssuerRequest | None, *,
                               state: str, card_revision: int) -> dict[str, Any]:
         if request is None:
@@ -4963,6 +5023,7 @@ class AutomationAccessService:
         _issuer_decision: IssuerDecision | None = None,
         _issuer_request_id: str = "",
         _issuer_context_ref: str = "",
+        _caller_write_action: str = "update",
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -5334,17 +5395,39 @@ class AutomationAccessService:
             )
         except IssuerWriteRefused as exc:
             return exc.to_dict()
+        # W578: a Card bound to a Control whose kind has a registered caller
+        # policy is decided by that policy, before and inside the commit, when
+        # the issuer gate does not already govern it.
+        caller_request = None
+        if before_commit is None:
+            try:
+                before_commit, caller_request = await caller_writer_before_commit(
+                    getattr(self, "_caller_writers", None), card_authority_from_record(existing),
+                    actor_subject=self._caller_actor_subject(user), action=_caller_write_action,
+                    candidate=card_authority_from_record(updated).to_dict(),
+                    request_id=_clean(_issuer_request_id) or secrets.token_urlsafe(18),
+                    context_ref=_issuer_context_ref,
+                )
+            except CallerWriteRefused as exc:
+                return exc.to_dict()
+        gate_digest = (issuer_request or caller_request).change_digest if before_commit is not None else ""
         try:
-            guard = {"before_commit": before_commit, "expected_issuer_digest": issuer_request.change_digest} if before_commit is not None else {}
+            guard = {"before_commit": before_commit, "expected_issuer_digest": gate_digest} if before_commit is not None else {}
             await self._persist_record(updated, expected_revision=existing.card_revision, **guard)
-        except IssuerWriteRefused as exc:
+        except (IssuerWriteRefused, CallerWriteRefused) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=existing.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=existing.card_revision))
             return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
             outcome = await self._issuer_outcome(issuer_request, state="committed", card_revision=updated.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="committed", card_revision=updated.card_revision))
             return {**_serving_state_unavailable(exc), **outcome}
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=existing.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=existing.card_revision))
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
@@ -5354,6 +5437,8 @@ class AutomationAccessService:
                 **outcome,
             }
         outcome = await self._issuer_outcome(issuer_request, state="committed", card_revision=updated.card_revision)
+        outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                  state="committed", card_revision=updated.card_revision))
         await self.notify_change(
             _clean(_notification_subject) or grantor_subject,
             action="updated",
@@ -9527,12 +9612,28 @@ class AutomationAccessService:
             )
         except IssuerWriteRefused as exc:
             return exc.to_dict()
+        # W578: a revoke of a bound Card is decided by its binding's policy.
+        caller_request = None
+        if before_commit is None:
+            try:
+                before_commit, caller_request = await caller_writer_before_commit(
+                    getattr(self, "_caller_writers", None), card_authority_from_record(record),
+                    actor_subject=self._caller_actor_subject(user), action="revoke",
+                    candidate={"action": "revoke", "access_id": record.access_id,
+                               "card_revision": record.card_revision},
+                    request_id=_clean(_issuer_request_id) or secrets.token_urlsafe(18),
+                    context_ref=_issuer_context_ref,
+                )
+            except CallerWriteRefused as exc:
+                return exc.to_dict()
         serving_error: CardServingUnavailable | None = None
         try:
             guard = {"before_commit": before_commit} if before_commit is not None else {}
             await self._forget_record(record, **guard)
-        except IssuerWriteRefused as exc:
+        except (IssuerWriteRefused, CallerWriteRefused) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=record.card_revision))
             return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
             # Durable revocation already won. Continue invalidating the
@@ -9541,6 +9642,8 @@ class AutomationAccessService:
             serving_error = exc
         except CardConflict as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=record.card_revision))
             if has_expectations and exc.reason == "card_revision_moved":
                 return {"ok": False, "error": "delegated_card_revision_conflict",
                         "reason": exc.reason, "retryable": False, "status": 409, **outcome}
@@ -9548,6 +9651,8 @@ class AutomationAccessService:
                     "reason": exc.reason, "retryable": True, "status": 503, **outcome}
         except (CardUnavailable, CardCommitFailed) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=record.card_revision))
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
@@ -9557,6 +9662,8 @@ class AutomationAccessService:
                 **outcome,
             }
         outcome = await self._issuer_outcome(issuer_request, state="committed", card_revision=record.card_revision + 1)
+        outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                  state="committed", card_revision=record.card_revision + 1))
         removed_session = False
         if record.session_id:
             authority = self._authority
