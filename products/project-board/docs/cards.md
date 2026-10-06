@@ -81,6 +81,21 @@ authority to add a named-service capability: that expansion fails closed
 until a qualified live capability port exists. Catalog refreshes do not add
 permissions to saved Cards.
 
+Protected identity discovery is separate from Card editing. Connection Hub
+asks PB twice with a signed `issuer-read.v1` request for one exact Control/My
+pair. PB records the proof nonce durably before checking the current human,
+hosting scope, project role, both management Cards and the target's current
+membership. The second check repeats those facts; neither an earlier allow
+nor a browser selector supplies authority. Only identity-marker scalar fields
+are exposed, not credentials, full Card contents or broad provenance.
+
+A removed person's pair must have been recorded before removal. A legacy row
+containing only a Control Card identifier cannot reconstruct the person's My
+Card, and a person who has since rejoined is not a pending removal target.
+This endpoint does not approve migration, widen permissions or authorize
+bootstrap. Full migration snapshots and exact approved updates use separate
+protocols and still require their independent qualification.
+
 ## Project files
 
 Two operations govern the [project files](concepts.md#project-files):
