@@ -879,6 +879,12 @@ def _coordinate(f):
 class _Extends(_Grants):
     """Every lifetime call the grant store offers, each recorded."""
 
+    live = True
+
+    async def card_credentials_live(self, access_id):
+        # Read-only (W578 79e0bd5b): not an extension, so not recorded.
+        return self.live
+
     async def extend_refresh_token(self, token, ttl):
         self.calls.append(("extend_refresh_token", ttl))
         return True
@@ -949,3 +955,83 @@ async def test_a_coordinated_prolong_staged_after_its_load_extends_nothing(tmp_p
     assert result["ok"] is False and result["retryable"] is True, result
     assert f.grants.calls == [] and applied == []
     assert await f.handles.read(f.card) == f.held
+
+
+@pytest.mark.asyncio
+async def test_a_coordinated_prolong_of_an_ended_credential_is_refused_before_any_stage(tmp_path, redis_client):
+    f = await _bound(tmp_path, redis_client, source="oauth")
+    f.grants = f.service._store = _Extends()
+    f.grants.live = False
+    decisions = _coordinate(f)
+    policy = _bind_answer(f, "allow")
+    applied = []
+
+    async def apply(kind, key, payload, *, transaction_id):
+        applied.append(kind)
+
+    f.cards.bind_effect_applier(apply)
+    result = await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong", ttl_seconds=7200)
+    assert result["ok"] is False and result["error"] == "delegated_access_credential_expired", result
+    assert decisions.decisions == [] and applied == [] and f.grants.calls == []
+    assert await _current(f) == f.card
+    assert await tx.list_in_doubt(f.store) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    reason="W580 finding 6: an ended-credential prolong is decided by the binding "
+    "policy (F5 order) and refused by the live check, but never finalized",
+)
+async def test_an_ended_credential_prolong_finalizes_the_decision_it_asked_for(tmp_path, redis_client):
+    f = await _bound(tmp_path, redis_client, source="oauth")
+    f.grants = f.service._store = _Extends()
+    f.grants.live = False
+    _coordinate(f)
+    policy = _bind_answer(f, "allow")
+    await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong", ttl_seconds=7200)
+    decided = [c for c in policy.calls if c[0] == "decide"]
+    assert not decided or ("finalize", "refused") in policy.calls, policy.calls
+
+
+async def _legacy_control(tmp_path, redis_client):
+    """A Control whose snapshot property is gone, so asking for it migrates it."""
+
+    from connection_hub.delegated_credentials.controls.snapshot import (
+        CONTROL_SNAPSHOT_PROPERTY, control_snapshot_is_exact,
+    )
+    from test_resident_profile_cards import GRANTOR
+
+    h, control = await _empty_control(tmp_path, redis_client)
+    properties = dict(control.properties or {})
+    properties.pop(CONTROL_SNAPSHOT_PROPERTY, None)
+    legacy = dataclasses.replace(control, card_revision=control.card_revision + 1, properties=properties)
+    await h.cards.commit(legacy, subject_hash=subject_hash_for(GRANTOR),
+                         expected_revision=control.card_revision, now=h.now)
+    assert not control_snapshot_is_exact(legacy)
+    return h, legacy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["before", "after_load"])
+async def test_a_snapshot_migration_of_a_staged_control_is_refused_with_no_effect(tmp_path, redis_client, stage):
+    h, legacy = await _legacy_control(tmp_path, redis_client)
+    if stage == "before":
+        await _stage_on(h, legacy)
+    else:
+        _stage_before(h, "_ensure_control_snapshot", legacy)
+    result = await _control(h)
+    assert result["ok"] is False and result.get("retryable") is True, result
+    await _decide(h, "aborted")
+    assert await _read(h, legacy) == legacy
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_migration_without_a_transaction_still_migrates(tmp_path, redis_client):
+    from connection_hub.delegated_credentials.controls.snapshot import control_snapshot_is_exact
+
+    h, legacy = await _legacy_control(tmp_path, redis_client)
+    result = await _control(h)
+    assert result["ok"] is True and result["created"] is False, result
+    current = await _read(h, legacy)
+    assert current.card_revision == legacy.card_revision + 1 and control_snapshot_is_exact(current)
