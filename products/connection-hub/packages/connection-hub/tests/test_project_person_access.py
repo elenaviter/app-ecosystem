@@ -235,6 +235,7 @@ class _Host:
                 named_service_operations=named_service_operations,
                 account_scope=kwargs.get("account_scope", existing.account_scope),
                 properties=kwargs.get("properties", existing.properties),
+                composition_mode=kwargs.get("composition_mode", existing.composition_mode),
             )
         )
         transform = kwargs["_record_transform"]
@@ -453,7 +454,7 @@ async def test_ordinary_new_my_card_starts_equal_to_its_selected_control_card() 
 
 
 @pytest.mark.asyncio
-async def test_create_refuses_union_composition_before_storage() -> None:
+async def test_create_accepts_upstream_union_composition() -> None:
     host = _Host()
 
     result = await _lifecycle(host, _Port()).create(
@@ -465,12 +466,9 @@ async def test_create_refuses_union_composition_before_storage() -> None:
         label="Quickstart member",
     )
 
-    assert result == {
-        "ok": False,
-        "error": "project_person_control_requires_and",
-        "status": 400,
-    }
-    assert host.records == {}
+    assert result["ok"] is True, result
+    identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=TARGET)
+    assert host.records[(identity.project_subject, identity.control_id)][0].composition_mode == "or"
 
 
 @pytest.mark.asyncio
@@ -521,11 +519,13 @@ async def test_a_member_is_refused_its_own_project_card_by_the_policy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_refuses_union_composition_before_write() -> None:
+async def test_update_accepts_upstream_union_without_rewriting_my() -> None:
     host = _Host()
     lifecycle = _lifecycle(host, _Port())
     await _create(lifecycle)
     host.update_calls.clear()
+    person = ProjectPersonCardIdentity.build(project_ref=PROJECT_REF, person_subject=TARGET)
+    original_my = host.records[(TARGET, person.my_card_id)][0].authority.to_dict()
 
     result = await lifecycle.update(
         actor_subject=ADMIN,
@@ -536,12 +536,9 @@ async def test_update_refuses_union_composition_before_write() -> None:
         expected_card_revision=1,
     )
 
-    assert result == {
-        "ok": False,
-        "error": "project_person_control_requires_and",
-        "status": 400,
-    }
-    assert host.update_calls == []
+    assert result["ok"] is True, result
+    assert host.update_calls[0]["composition_mode"] == "or"
+    assert host.records[(TARGET, person.my_card_id)][0].authority.to_dict() == original_my
 
 
 @pytest.mark.asyncio
@@ -1145,10 +1142,46 @@ async def test_the_lifecycle_s_own_cards_compose_through_the_project_held_path()
 
 
 @pytest.mark.asyncio
+async def test_human_lifecycle_reads_current_ancestor_without_my_rewrite() -> None:
+    from connection_hub.delegated_credentials.cards.model import ControlCardBinding
+    from connection_hub.delegated_credentials.controls.model import new_credentialless_card
+
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle, migration=True)
+    identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=TARGET)
+    person = ProjectPersonCardIdentity.build(project_ref=PROJECT_REF, person_subject=TARGET)
+    child, _ = host.records[(identity.project_subject, identity.control_id)]
+    child = _Record(dataclasses.replace(child.authority,
+        resource_grants={RESOURCE: (GRANT,)}, resource_operations={RESOURCE: (OPERATION,)}))
+    my, _ = host.records[(TARGET, person.my_card_id)]
+    host.records[(TARGET, person.my_card_id)] = (_Record(dataclasses.replace(my.authority,
+        resource_grants={RESOURCE: (GRANT,)}, resource_operations={RESOURCE: (OPERATION,)})), CARD_STATE_ACTIVE)
+    original_my = host.records[(TARGET, person.my_card_id)][0].authority.to_dict()
+    parent = new_credentialless_card(grantor_subject=identity.project_subject,
+        catalog_version=child.catalog_version, control_id="ancestor", issuer_ref="issuer:ancestor",
+        issuer_kind="service", initial_selection=child.authority, now=1)
+    child = dataclasses.replace(child.authority, composition_mode="or", control_card=ControlCardBinding(
+        control_id=parent.access_id, issuer_ref=parent.issuer_ref, issuer_kind=parent.issuer_kind,
+        control_revision=parent.card_revision))
+    host.records[(identity.project_subject, identity.control_id)] = (_Record(child), CARD_STATE_ACTIVE)
+    host.records[(identity.project_subject, parent.access_id)] = (
+        _Record(dataclasses.replace(parent, resource_grants={}, resource_operations={})), CARD_STATE_ACTIVE)
+    request = ProjectOperationRequest(person_subject=TARGET, project_ref=PROJECT_REF,
+        resource=RESOURCE, operation=OPERATION, required_grants=(GRANT,))
+    assert (await lifecycle.authorize_operation(request)).allowed is False
+    host.records[(identity.project_subject, parent.access_id)] = (
+        _Record(dataclasses.replace(parent, card_revision=2)), CARD_STATE_ACTIVE)
+    assert (await lifecycle.authorize_operation(request)).allowed is True
+    del host.records[(identity.project_subject, parent.access_id)]
+    assert (await lifecycle.authorize_operation(request)).allowed is False
+    assert host.records[(TARGET, person.my_card_id)][0].authority.to_dict() == original_my
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("change", "reason"),
     [
-        ({"composition_mode": "or"}, "project_person_control_requires_and"),
         ({"issuer_ref": "work:project:other"}, None),
         ({"identity_scope": "delegate"}, "control_card_identity_scope_mismatch"),
         ({"state": "revoked"}, "control_card_not_active"),
