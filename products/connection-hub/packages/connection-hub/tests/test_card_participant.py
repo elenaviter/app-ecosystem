@@ -22,6 +22,7 @@ from test_card_service import SUBJECT_HASH
 from test_card_transaction_store import EFFECTS, _Applier, _setup, _visible
 
 TXID = "e" * 64
+WITNESS = "c" * 64  # the initiating application's post-state witness (W581 F5)
 
 
 class _Store:
@@ -56,7 +57,7 @@ class _Store:
                 raise DecisionRefused("decision_conflict")
             return row
         self.decisions.append(decision)
-        return await self._put(replace(row, state=decision))
+        return await self._put(replace(row, state=decision, witness_digest=witness_digest))
 
     async def abort_expired(self, transaction_id):
         return await self.decide(transaction_id, "aborted")
@@ -131,7 +132,7 @@ async def test_one_and_two_participant_edits_run_the_same_coordinator(tmp_path, 
     with pytest.raises(CardStorageError, match="card_transaction_undecided"):
         await _visible(store, before)  # prepared, undecided: never served
     assert applier.applied == []  # no effect before the decision
-    await coordinator.decide(record.transaction_id, "committed")
+    await coordinator.decide(record.transaction_id, "committed", witness_digest=WITNESS)
     record = await coordinator.finish(record.transaction_id)
     assert set(record.finished) == set(participants) and decisions.decisions == ["committed"]
     assert await _visible(store, before) == after
@@ -177,7 +178,7 @@ async def test_recovery_lists_the_prepared_card_and_finishes_it(tmp_path):
     hub = coordinator.participants[PARTICIPANT]
     assert [r.transaction_id for r in await hub.list_prepared(limit=10)] == [record.transaction_id]
     assert (await hub.read_pending(record.transaction_id)).participant == PARTICIPANT
-    await coordinator.decide(record.transaction_id, "committed")
+    await coordinator.decide(record.transaction_id, "committed", witness_digest=WITNESS)
     await coordinator.recover(limit=10)
     assert await _visible(store, before) == after and await hub.list_prepared(limit=10) == []
 
