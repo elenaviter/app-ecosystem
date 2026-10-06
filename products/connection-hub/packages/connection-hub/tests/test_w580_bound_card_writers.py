@@ -745,3 +745,112 @@ async def test_a_bound_writer_refused_by_its_policy_changes_nothing(tmp_path, re
         from test_resident_profile_cards import GRANTOR
 
         assert await h.policies.get(owner_subject=GRANTOR, authority=h.moved) is None
+
+
+# C negatives the hub enforces itself, on a bound OAuth Card's prolongation:
+# a missing, refusing, expired or mismatched policy decision, and a candidate
+# that would move expiry backward. Whether a prolongation stays within the
+# Control's own validity is the binding policy's decision (PB), not the hub's.
+
+
+class _Answer(_Policy):
+    def __init__(self, mode: str) -> None:
+        super().__init__(allow=mode != "refuse")
+        self.mode = mode
+
+    def _decision(self, request):
+        from datetime import timedelta
+        from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteDecision
+
+        if self.mode == "expired":
+            return CallerWriteDecision(True, "", "policy:v1", datetime.now(timezone.utc) - timedelta(seconds=1), request)
+        if self.mode == "mismatch":
+            other = dataclasses.replace(request, access_id="another-card")
+            return CallerWriteDecision(True, "", "policy:v1", datetime.now(timezone.utc) + timedelta(minutes=5), other)
+        return super()._decision(request)
+
+
+def _bind_answer(f, mode: str):
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriterRegistry
+
+    registry = CallerWriterRegistry()
+    policy = _Answer(mode)
+    if mode == "missing":
+        registry.require("project")  # bound kind known, no policy registered
+    else:
+        registry.register("project", policy)
+    f.service.bind_caller_writers(registry)
+    return policy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,reason", [
+    ("missing", "caller_writer_policy_unavailable"),
+    ("refuse", "pb_refused"),
+    ("expired", "caller_writer_decision_expired"),
+    ("mismatch", "caller_writer_decision_mismatch"),
+])
+async def test_a_bound_prolong_without_a_valid_decision_is_refused(tmp_path, redis_client, mode, reason):
+    f = await _bound(tmp_path, redis_client, source="oauth")
+    _bind_answer(f, mode)
+    result = await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong")
+    assert result["ok"] is False and result["error"] == reason, result
+    assert await _current(f) == f.card
+    assert await f.handles.read(f.card) == f.held
+    f.service.notify_change.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_bound_prolong_may_not_move_expiry_backward(tmp_path, redis_client):
+    f = await _bound(tmp_path, redis_client, source="oauth")
+    policy = _bind_answer(f, "allow")
+    result = await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong", ttl_seconds=60)
+    assert result["ok"] is False and result["error"] == "caller_writer_prolong_shape_invalid", result
+    assert [c for c in policy.calls if c[0] == "decide"] == [], "the shape is checked before the policy is asked"
+    assert await _current(f) == f.card
+
+
+@pytest.mark.asyncio
+async def test_a_bound_prolong_with_a_valid_decision_extends_forward(tmp_path, redis_client):
+    f = await _bound(tmp_path, redis_client, source="oauth")
+    policy = _bind_answer(f, "allow")
+    result = await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong", ttl_seconds=7200)
+    assert result["ok"] is True, result
+    assert ("decide", "prolong") in policy.calls and ("finalize", "committed") in policy.calls
+    current = await _current(f)
+    assert current.expires_at > f.card.expires_at and current.card_revision == f.card.card_revision + 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    reason="W580 finding 5: _prolong_access extends the credential before the shape "
+    "check and the binding policy decide, so every refused bound prolong still moves it",
+)
+@pytest.mark.parametrize("mode,ttl", [
+    ("missing", None), ("refuse", None), ("expired", None), ("mismatch", None), ("allow", 60),
+])
+async def test_a_refused_bound_prolong_extends_no_credential(tmp_path, redis_client, mode, ttl):
+    f = await _bound(tmp_path, redis_client, source="oauth")
+    _bind_answer(f, mode)
+    result = await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong", ttl_seconds=ttl)
+    assert result["ok"] is False, result
+    assert f.grants.calls == [], "a refused prolong extended the credential"
+
+
+@pytest.mark.parametrize("scope,refusal", [
+    ({"google": {"acct-1": ["mail:read"]}}, None),
+    ({}, None),
+    ({"google": {"acct-1": ["mail:read"], "acct-2": ["mail:read"]}}, "caller_writer_prune_shape_invalid"),
+    ({"google": {"acct-1": ["mail:read", "mail:send"]}}, "caller_writer_prune_shape_invalid"),
+])
+def test_a_prune_may_only_narrow_account_bindings(scope, refusal):
+    from connection_hub.delegated_credentials.caller_writer_gate import candidate_shape_refusal
+
+    before = _card(bound=True, revision=3).to_dict()
+    before["account_scope"] = {"google": {"acct-1": ["mail:read"], "acct-3": ["mail:read"]}}
+    candidate = dict(before, account_scope=scope, card_revision=4)
+    assert candidate_shape_refusal("prune", before, candidate) == refusal
+    # Anything other than the account scope is outside a prune.
+    widened = dict(candidate, label="renamed")
+    assert candidate_shape_refusal("prune", before, widened) == "caller_writer_prune_shape_invalid"
