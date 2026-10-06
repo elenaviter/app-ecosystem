@@ -90,6 +90,7 @@ The package contracts are:
 - [Aggregate delegated MCP gateway](package/delegated-mcp-gateway.md)
 - [Custom MCP connectors and governed invocation](custom-mcp-connector.md)
 - [Delegated access cards](package/delegated-cards.md)
+- [Card transactions (W502)](package/card-transactions.md)
 - [OAuth delegated credential protocol](package/oauth-delegated-credential-protocol.md)
 - [Connection Hub and governed MCP end-to-end acceptance](testing/end-to-end-acceptance.md)
 - [Protect an external backend with Connection Hub](recipes/direct-protected-service.md)
