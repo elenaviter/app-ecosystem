@@ -152,6 +152,16 @@ accountability (operator, 2026-10-03).
     2026-10-05: never by age or kind alone). Have the selection file reviewed,
     then `--apply --digest <digest> --approval-ref <ref>`; a selection that
     changed after review settles nothing.
+  - A backlog that holds current mail back is set aside, not drained first.
+    `pb worker backlog-mark --reason <why>` names the exact messages pending
+    now. The ordinary receive and native wakes then deliver current mail,
+    operator mail first, and backlog wakes no session. Every receive prints
+    the backlog line: how many are pending, how many are requests, decisions
+    or questions, and the oldest. Work it down at a quiet boundary with
+    `pb worker receive --backlog`, and end the mark with
+    `pb worker backlog-mark --clear` when it is empty. The mark settles
+    nothing: an open request or decision in it is still yours to answer
+    (W563, coordinator 2026-10-06 00:35Z).
   - A notification you send carries the action asked and the authoritative
     item or result ref, not a narrative of it. Do not reply only to
     acknowledge: a settlement records receipt.

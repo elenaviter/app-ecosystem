@@ -5366,6 +5366,7 @@ class ProblemBoardRelaySupervisor:
         self._beside_notifies: dict[str, asyncio.Task] = {}
         # W563: per worker, whether each pending message is a quiet notice.
         self._quiet_classified: dict[str, dict[str, bool]] = {}
+        self._quiet_mark: dict[str, str] = {}
         # The session wake's mailbox and listener store calls run in the
         # channel's own thread (W456): a hung mailbox holds that channel only,
         # never another channel's wake or the default pool's scans.
@@ -5818,6 +5819,11 @@ class ProblemBoardRelaySupervisor:
         # no turn and are received with the next wake or receive. Each message
         # is classified once (review of PR 535), and the hold is cleared as on
         # every other branch with nothing to wake for (W334).
+        # A backlog mark changes which pending mail is quiet: classify again.
+        mark = str((await self._channel_off_loop(channel, field.backlog_mark, channel.worker_name)).get("mark_id") or "")
+        if self._quiet_mark.get(channel.worker_name, "") != mark:
+            self._quiet_classified.pop(channel.worker_name, None)
+            self._quiet_mark[channel.worker_name] = mark
         known = self._quiet_classified.setdefault(channel.worker_name, {})
         new = [ref for ref in pending_refs if ref not in known]
         if new:

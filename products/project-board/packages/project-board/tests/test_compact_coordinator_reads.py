@@ -1201,11 +1201,42 @@ def test_workspace_sweep_brief_counts_paths_and_prints_removals_whole() -> None:
     text = _brief(result)
 
     assert "workspace sweep: /ws · trees 56 · would remove 1" in text
+    assert "verdict: 1 tree(s) and 0 scratch run(s) would be removed by --apply" in text
     assert "would_remove: /ws/rv/w9-app-abc" in text
-    assert "--- keep · implementation · item W0 · work/w0 · size 1000 · ignored 300 · /ws/wt/w0-app" in text
-    assert "(+1 more)" in text and "build/cache-299/" not in text
+    assert "trees: keep 55 · remove 1" in text
+    assert "/ws/wt/w0-app" not in text, "kept trees are counted in the verdict, listed with --detail"
+    _assert_budget(text, lines=12, bytes_=1_000)
+
+    detail = _brief({**result, "detail": True})
+    assert "--- keep · implementation · item W0 · work/w0 · size 1000 · ignored 300 · /ws/wt/w0-app" in detail
+    assert "(+1 more)" in detail and "build/cache-299/" not in detail
     # 56 trees: 60 rows are shown whole, so nothing is omitted here.
-    _assert_budget(text, lines=130, bytes_=16_000)
+    _assert_budget(detail, lines=130, bytes_=16_000)
+
+
+def test_a_sweep_with_nothing_eligible_is_a_short_verdict() -> None:
+    # W563, coordinator 2026-10-06 00:35Z: 48 trees, 475 scratch runs and 228
+    # loose entries with nothing eligible printed 8,210 tokens.
+    trees = [
+        {"path": f"/ws/wt/w{index}", "kind": "implementation", "item": f"W{index}", "branch": f"work/w{index}",
+         "action": "keep", "size_bytes": 10, "dirty": ["a"] if index < 3 else [], "untracked": [], "ignored": [],
+         "unpushed_commits": 0, "keep": ["job not ended"]}
+        for index in range(48)
+    ]
+    runs = [{"path": f"/ws/scratch/W{index}/run", "item": f"W{index}", "action": "keep", "keep": ["unpublished"]}
+            for index in range(475)]
+    loose = [{"kind": "file", "path": f"/ws/scratch/loose-{index}"} for index in range(228)]
+    result = {"worker": "claude-code-x", "workspace": "/ws", "trees": trees, "would_remove": [],
+              "total_bytes": 480, "scratch_runs": runs, "loose": loose}
+
+    text = _brief(result)
+
+    assert "verdict: nothing to remove" in text
+    assert "trees: keep 48 · remove 0 · dirty 3 · unpushed 0 · ended 0" in text
+    assert "scratch runs: 475 · keep 475 · remove 0" in text
+    assert "loose entries: 228" in text
+    assert "add --detail" in text
+    _assert_budget(text, lines=10, bytes_=900)
 
 
 def test_a_clipped_scope_is_readable_whole_without_download_links(monkeypatch) -> None:

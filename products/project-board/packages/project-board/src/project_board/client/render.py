@@ -282,6 +282,11 @@ def _render_worker_inbox(result: Mapping[str, Any], flags: list[str]) -> list[st
         ),
         "pending by kind: " + (" · ".join(f"{kind} {count}" for kind, count in by_kind.items()) or "none"),
     ]
+    if result.get("backlog"):
+        lines.append(
+            f"backlog: {result['backlog']} of the pending are set aside by a backlog mark "
+            "(received only with pb worker receive --backlog)"
+        )
     headers = [header for header in result.get("headers") or [] if isinstance(header, Mapping)]
     if not headers:
         lines.append("headers: none")
@@ -297,7 +302,8 @@ def _render_worker_inbox(result: Mapping[str, Any], flags: list[str]) -> list[st
         match = _ITEM_KEY_RE.search(str(header.get("work_ref") or ""))
         lines.append(
             "--- {} · {} · {} · from {}{} · {}".format(
-                label, header.get("created_at") or "-", header.get("kind") or "-", header.get("sender") or "-",
+                label + (" · backlog" if header.get("backlog") else ""),
+                header.get("created_at") or "-", header.get("kind") or "-", header.get("sender") or "-",
                 f" · {match.group(1).upper()}" if match else "",
                 _preview(header.get("subject"), maximum_bytes=120) or "(no subject)",
             )
@@ -384,6 +390,66 @@ def _count(value: Any) -> int:
 
 
 def _render_workspace_sweep(result: Mapping[str, Any]) -> list[str]:
+    """The sweep's verdict: counts, and only what --apply would remove (W563).
+
+    Coordinator, 2026-10-06 00:35Z: a sweep with nothing eligible printed
+    48 trees, 475 scratch runs and 228 loose entries, 8,210 tokens. The brief
+    form is now the verdict; --detail prints a line per tree, run and loose
+    entry, and the JSON keeps every path.
+    """
+
+    if result.get("detail"):
+        return _render_workspace_sweep_detail(result)
+    trees = [tree for tree in result.get("trees") or [] if isinstance(tree, Mapping)]
+    runs = [run for run in result.get("scratch_runs") or [] if isinstance(run, Mapping)]
+    loose = [entry for entry in result.get("loose") or [] if isinstance(entry, Mapping)]
+    removable = [str(path) for path in result.get("would_remove") or []]
+    removable_runs = [run for run in runs if run.get("action") == "remove"]
+    lines = [
+        "workspace sweep: {} · trees {} · would remove {} · size {}".format(
+            result.get("workspace") or "-", len(trees), len(removable), result.get("total_bytes", "not measured")
+        ),
+        "verdict: {}".format(
+            f"{len(removable)} tree(s) and {len(removable_runs)} scratch run(s) would be removed by --apply"
+            if removable or removable_runs
+            else "nothing to remove"
+        ),
+    ]
+    for key in ("state", "reason", "apply_refused"):
+        if _present(result.get(key)):
+            lines.append(f"{key}: {_preview(result[key])}")
+    kept = [tree for tree in trees if tree.get("action") != "remove"]
+    lines.append(
+        "trees: keep {} · remove {} · dirty {} · unpushed {} · ended {}".format(
+            len(kept), len(trees) - len(kept),
+            sum(1 for tree in trees if _count(tree.get("dirty"))),
+            sum(1 for tree in trees if tree.get("unpushed_commits")),
+            sum(1 for tree in trees if tree.get("ended")),
+        )
+    )
+    if runs:
+        lines.append(f"scratch runs: {len(runs)} · keep {len(runs) - len(removable_runs)} · remove {len(removable_runs)}")
+    if loose:
+        lines.append(f"loose entries: {len(loose)} (move each into a run with pb worker scratch --new)")
+    shown, total = _bounded(removable, maximum=_SWEEP_ROWS)
+    for path in shown:
+        lines.append(f"would_remove: {path}")
+    _note_omitted(lines, "removable trees", shown=len(shown), total=total)
+    shown_runs, run_total = _bounded(removable_runs, maximum=_SWEEP_ROWS)
+    for run in shown_runs:
+        lines.append(f"would_remove run: item {run.get('item') or '-'} · {run.get('path') or '-'}")
+    _note_omitted(lines, "removable scratch runs", shown=len(shown_runs), total=run_total)
+    handled = {"worker", "workspace", "trees", "would_remove", "total_bytes", "scratch_runs", "loose",
+               "state", "reason", "apply_refused", "detail"}
+    rest = {key: value for key, value in result.items() if key not in handled}
+    if rest:
+        lines.extend(_flatten(rest, prefix=""))
+    lines.append("detail: add --detail for a line per tree, run and loose entry")
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
+def _render_workspace_sweep_detail(result: Mapping[str, Any]) -> list[str]:
     """One line per tree and run, counts instead of path lists (W563).
 
     The flat form printed every dirty, untracked and ignored path of every
@@ -452,7 +518,7 @@ def _render_workspace_sweep(result: Mapping[str, Any]) -> list[str]:
         lines.append("loose entries: move each into a run with pb worker scratch --new")
         _note_omitted(lines, "loose entries", shown=len(shown_loose), total=loose_total)
     handled = {"worker", "workspace", "trees", "would_remove", "total_bytes", "scratch_runs", "loose",
-               "state", "reason", "apply_refused"}
+               "state", "reason", "apply_refused", "detail"}
     rest = {key: value for key, value in result.items() if key not in handled}
     if rest:
         lines.extend(_flatten(rest, prefix=""))
@@ -1154,6 +1220,20 @@ def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
             f"NOTE: {total_held - len(items)} held lease(s) are not in this batch. "
             + _cmd(["pb", "worker", "leases"], flags)
         )
+    backlog = result.get("backlog")
+    if isinstance(backlog, Mapping):
+        # W563: the marked mail stays visible on every receive.
+        lines.append(
+            "backlog: pending {} · requests, decisions and questions {} · oldest {} · marked {} at {}{}".format(
+                backlog.get("pending_count", "?"),
+                backlog.get("unresolved_count", "?"),
+                backlog.get("oldest_at") or "-",
+                backlog.get("marked_count", "?"),
+                backlog.get("marked_at") or "-",
+                " · this batch is backlog" if backlog.get("received_now") else "",
+            )
+        )
+        lines.append(str(backlog.get("instruction") or ""))
     selection = result.get("selection")
     if isinstance(selection, Mapping):
         lines.append(

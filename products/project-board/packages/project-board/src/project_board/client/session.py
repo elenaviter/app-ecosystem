@@ -15,7 +15,7 @@ from .io import bounded_text, exclusive_lock
 from .mail_attachments import worker_message_with_attachments
 from .mail_budget import MAX_WORKER_INPUT_BYTES, MailPullBudget
 from .quarantine import quarantine_summary
-from .store import SELECTIVE_RECEIVE_BUDGET, SharedFieldStore
+from .store import BACKLOG_UNRESOLVED_KINDS, SELECTIVE_RECEIVE_BUDGET, SharedFieldStore
 
 
 WORKER_INPUT_SCHEMA = "problem-board.worker-input.v2"
@@ -507,12 +507,34 @@ def _pull_worker_input(
     sender: str = "",
     project_ref: str = "",
     work_ref: str = "",
+    backlog: bool = False,
 ) -> dict[str, Any]:
     """Read the worker's direct mailbox, then every attended project shard."""
 
     worker = field.read_worker(worker_name)
     stable_name = str(worker.get("worker_name") or "")
     selective = bool(message_ref or correlation_id)
+    # W563 (coordinator, 2026-10-06 00:35Z): with a backlog mark the ordinary
+    # receive and a native wake lease current mail; --backlog leases the
+    # marked mail. Both are counted on every receive.
+    mark = field.backlog_mark(stable_name)
+    if backlog:
+        if selective or sender or project_ref or work_ref:
+            raise DomainError("field_mail_selection_invalid", "A backlog receive takes no selection.")
+        if wake_id:
+            raise DomainError(
+                "field_mail_backlog_wake_invalid",
+                "A native wake receives current mail. Receive the backlog without --wake-id.",
+            )
+        if not mark:
+            raise DomainError(
+                "field_mail_backlog_not_marked",
+                "No backlog mark is set. Every pending message is current: run pb worker receive.",
+                status=409,
+            )
+    backlog_ids = field.backlog_message_ids(stable_name) if mark and not selective else None
+    backlog_tally: dict[str, Any] = {"count": 0, "unresolved_count": 0, "oldest_at": "", "oldest_ref": ""}
+    backlog_leased: list[str] = []
     if selective:
         if message_ref and correlation_id:
             raise DomainError("field_mail_selection_invalid", "Choose an exact message ref or a correlation id, not both.")
@@ -1128,7 +1150,12 @@ def _pull_worker_input(
                 project_index=None,
             ),
             measure_message=mailbox_message_size(project_ref="", project_id=""),
+            backlog_ids=backlog_ids,
+            backlog=backlog,
+            backlog_tally=backlog_tally,
         )
+        if backlog:
+            backlog_leased.extend(str(message.get("kind") or "") for message in direct_messages)
         for message in direct_messages:
             claim = remember_claim("", message)
             _notify_stub_sender(field, receiver=stable_name, project_id="", message=message)
@@ -1161,7 +1188,12 @@ def _pull_worker_input(
                 measure_message=mailbox_message_size(
                     project_ref=project_ref, project_id=project_id
                 ),
+                backlog_ids=backlog_ids,
+                backlog=backlog,
+                backlog_tally=backlog_tally,
             )
+            if backlog and not selective:
+                backlog_leased.extend(str(message.get("kind") or "") for message in messages)
             for message in messages:
                 claim = remember_claim(project_id, message)
                 _notify_stub_sender(
@@ -1231,6 +1263,8 @@ def _pull_worker_input(
             remaining_count=budget.remaining_messages,
             limited_by=budget.limited_by,
         )
+        if mark:
+            result["backlog"] = _backlog_view(mark, backlog_tally, leased_kinds=backlog_leased, backlog=backlog)
         payload_bytes = _worker_input_wire_bytes(result)
         result["delivery"]["payload_bytes"] = payload_bytes
         payload_bytes = _worker_input_wire_bytes(result)
@@ -1277,6 +1311,42 @@ def _pull_worker_input(
         raise
 
 
+def _backlog_view(
+    mark: Mapping[str, Any],
+    tally: Mapping[str, Any],
+    *,
+    leased_kinds: Sequence[str],
+    backlog: bool,
+) -> dict[str, Any]:
+    """The backlog line every receive carries while a mark is set (W563)."""
+
+    # The tally counted the marked mail before this batch leased some of it.
+    pending = max(0, int(tally.get("count") or 0) - len(leased_kinds))
+    unresolved = max(
+        0,
+        int(tally.get("unresolved_count") or 0)
+        - sum(1 for kind in leased_kinds if kind in BACKLOG_UNRESOLVED_KINDS),
+    )
+    return {
+        "mark_id": str(mark.get("mark_id") or ""),
+        "marked_at": str(mark.get("marked_at") or ""),
+        "reason": str(mark.get("reason") or ""),
+        "marked_count": int(mark.get("count") or 0),
+        "pending_count": pending,
+        "unresolved_count": unresolved,
+        "oldest_at": str(tally.get("oldest_at") or ""),
+        "oldest_ref": str(tally.get("oldest_ref") or ""),
+        "received_now": backlog,
+        "instruction": (
+            "Backlog: the ordinary receive and native wakes deliver current mail only. "
+            "List it with `pb worker inbox`, receive it with `pb worker receive --backlog`, "
+            "end the mark with `pb worker backlog-mark --clear`."
+            if pending
+            else "The backlog is empty: end the mark with `pb worker backlog-mark --clear`."
+        ),
+    }
+
+
 def pull_worker_input(
     field: SharedFieldStore,
     *,
@@ -1289,6 +1359,7 @@ def pull_worker_input(
     sender: str = "",
     project_ref: str = "",
     work_ref: str = "",
+    backlog: bool = False,
 ) -> dict[str, Any]:
     """Receive addressed mail, serializing selections through their check-in."""
 
@@ -1298,6 +1369,7 @@ def pull_worker_input(
             lease_seconds=lease_seconds, wake_id=wake_id,
             message_ref=message_ref, correlation_id=correlation_id,
             sender=sender, project_ref=project_ref, work_ref=work_ref,
+            backlog=backlog,
         )
 
     if not (message_ref or correlation_id):

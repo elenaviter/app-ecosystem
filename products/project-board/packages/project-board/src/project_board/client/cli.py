@@ -834,6 +834,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Acknowledge the exact automatic Codex wake that requested this receive.",
     )
+    command.add_argument(
+        "--backlog",
+        action="store_true",
+        help="Lease the mail a backlog mark set aside, oldest first (operator mail still comes first).",
+    )
+
+    command = worker_commands.add_parser(
+        "backlog-mark",
+        help=(
+            "Set this worker's pending mail aside as backlog: the ordinary receive and native "
+            "wakes then deliver current mail. Nothing is settled; every receive counts the backlog."
+        ),
+    )
+    _host_config(command)
+    _agent_identity(command)
+    command.add_argument("--reason", default="", help="Why the backlog is set aside (required to set a mark).")
+    command.add_argument("--clear", action="store_true", help="End the mark: its mail is ordinary pending mail again.")
 
     command = worker_commands.add_parser(
         "quarantine", help="Inspect or resolve this worker's held mail."
@@ -1202,6 +1219,7 @@ def build_parser() -> argparse.ArgumentParser:
     command.add_argument("--sweep", action="store_true", help="List every tree in this agent's workspace with its state and what --apply would remove.")
     command.add_argument("--apply", action="store_true", help="With --sweep: remove what the last dry run listed as removable and still is; never with force.")
     command.add_argument("--measure", action="store_true", help="With --sweep: also measure each scratch run's size, which reads every file of every run.")
+    command.add_argument("--detail", action="store_true", help="With --sweep: one brief line per tree, run and loose entry, not only the verdict and what would be removed.")
     command.add_argument("--pin", default="", metavar="CONSUMER", help="With --path: a review or release that still needs this tree; the sweep keeps it.")
     command.add_argument("--unpin", default="", metavar="CONSUMER", help="With --path: that consumer no longer needs this tree.")
     command.add_argument("--generated", default="", metavar="RELATIVE_PATH", help="With --path and --generated-by: an ignored path in this tree that a command makes again; the sweep may let it go.")
@@ -3681,7 +3699,8 @@ def _worker_inbox(field: Any, identity: Any, args: Any) -> dict[str, Any]:
     Within a class the newest comes first, so a new decision thread is found
     behind any backlog. Nothing is leased or settled here; the listed ref is
     received with `pb worker receive --message-ref`, and ordinary receive still
-    delivers the oldest mail first.
+    delivers the oldest current mail first; mail a backlog mark set aside is
+    flagged and received with `--backlog`.
     """
 
     if not 1 <= args.limit <= _INBOX_MAXIMUM:
@@ -3706,6 +3725,7 @@ def _worker_inbox(field: Any, identity: Any, args: Any) -> dict[str, Any]:
         "schema": "problem-board.worker-inbox.v1",
         "worker": identity.worker_name,
         "pending": len(headers),
+        "backlog": sum(1 for header in headers if header.get("backlog")),
         "pending_by_kind": dict(sorted(by_kind.items())),
         "matched": len(selected),
         "returned": len(page),
@@ -5455,8 +5475,15 @@ def _worker_command(args: Any) -> dict[str, Any]:
             sender=args.sender,
             project_ref=args.project_ref,
             work_ref=args.work_ref,
+            backlog=args.backlog,
         )
         return _with_project_files_signals(received, config, field, identity)
+    if args.worker_command == "backlog-mark":
+        if args.clear:
+            if args.reason:
+                raise DomainError("field_mail_backlog_invalid", "--clear takes no --reason.")
+            return {"schema": "problem-board.backlog-mark.v1", "state": "cleared", "ended": field.clear_backlog_mark(identity.worker_name)}
+        return {"schema": "problem-board.backlog-mark.v1", "state": "marked", "mark": field.mark_backlog(identity.worker_name, reason=args.reason)}
     if args.worker_command == "inbox":
         return _worker_inbox(field, identity, args)
     if args.worker_command == "wake-ack":
@@ -5541,7 +5568,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
         return _worker_scratch(identity, args)
     if args.worker_command == "workspace":
         if getattr(args, "sweep", False):
-            return _workspace_sweep(field, identity, args, apply=bool(getattr(args, "apply", False)))
+            swept = _workspace_sweep(field, identity, args, apply=bool(getattr(args, "apply", False)))
+            if getattr(args, "detail", False):
+                swept["detail"] = True
+            return swept
         if getattr(args, "pin", "") or getattr(args, "unpin", "") or getattr(args, "generated", ""):
             return _workspace_pin(args)
         if getattr(args, "end", False):
