@@ -124,7 +124,9 @@ accountability (operator, 2026-10-03).
   - Reload the worker instructions only when their installed revision
     changed (the skill's Receive Addressed Input section). A wake, a mail or a
     compaction is not a reason to reread them. When it changed, `pb procedure
-    verify` names the files in `changed_files`: read those whole, keep the rest.
+    verify` names the files in `changed_files`: load the skill once if it is
+    among them, read whole the changed modules you had loaded or now need, and
+    keep the rest; a new module is read when its act comes up.
   - Before a read, name the decision it can change, read the smallest
     current authoritative projection, and stop when that decision is
     answered. Answer the operator before any backlog or history
