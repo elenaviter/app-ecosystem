@@ -123,7 +123,7 @@ export function unavailableAccessCardMessage(focus: AccessCardFocus, reason = ''
 
 /** The notice on a project-held person Control Card this viewer only reads (W260). */
 export function projectPersonControlNotice(
-  viewer: { can_edit?: boolean } | undefined,
+  viewer: { can_edit?: boolean | null } | undefined,
 ): string {
   return viewer?.can_edit
     ? ''
