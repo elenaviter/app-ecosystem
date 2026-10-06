@@ -6949,38 +6949,63 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             platform_user_id,
             resolved_account_id,
         )
-        operations = _delegated_to_kdcube_operations(self, platform_user_id)
-        # Read the provider BEFORE the account is gone — pruning needs it.
-        provider_id = ""
+        # Refuse before disconnect when pruning cannot be verified. Account ids
+        # are deterministic: a surviving binding would revive on reconnect.
+        refusal = {
+            "ok": False,
+            "removed": False,
+            "account_id": resolved_account_id,
+            "error": "account_binding_not_pruned",
+            "status": 409,
+            "retryable": True,
+        }
         try:
+            operations = _delegated_to_kdcube_operations(self, platform_user_id)
             account = await operations.store.get_account(resolved_account_id)
-            provider_id = str(getattr(account, "provider_id", "") or "")
         except Exception:
             LOGGER.warning(
-                "[connection-hub.delegated_to_kdcube] could not read account before disconnect "
-                "(binding pruning skipped): account=%s", resolved_account_id, exc_info=True,
+                "[connection-hub.delegated_to_kdcube] disconnect refused: account unreadable "
+                "account=%s", resolved_account_id, exc_info=True,
             )
+            return {**refusal, "reason": "account_unreadable"}
+        if account is None:
+            # Preserve the not-removed outcome without issuing a destructive
+            # call against an account that might appear after this read.
+            return {"ok": False, "removed": False, "account_id": resolved_account_id}
+        provider_id = getattr(account, "provider_id", None)
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            return {**refusal, "reason": "account_provider_unavailable"}
+        provider_id = provider_id.strip()
+        try:
+            pruned = await (await _automation_access_service(self, request)).prune_account_from_grants(
+                grantor_subject=platform_user_id,
+                provider_id=provider_id,
+                account_id=resolved_account_id,
+            )
+        except Exception:
+            LOGGER.warning(
+                "[connection-hub.delegated_to_kdcube] disconnect refused: binding pruning unavailable "
+                "account=%s provider=%s", resolved_account_id, provider_id, exc_info=True,
+            )
+            return {**refusal, "reason": "binding_pruning_unavailable"}
+        # Require the complete package contract; an older response without ok
+        # or not_pruned cannot certify that all bindings were removed.
+        if not isinstance(pruned, Mapping):
+            return {**refusal, "reason": "binding_pruning_response_invalid"}
+        count = pruned.get("pruned")
+        grants = pruned.get("grants")
+        if (pruned.get("ok") is not True or pruned.get("not_pruned") != []
+                or type(count) is not int or count < 0
+                or not isinstance(grants, list)
+                or any(not isinstance(grant, str) or not grant.strip() for grant in grants)
+                or count != len(grants) or len(set(grants)) != len(grants)):
+            return {**refusal, "reason": "binding_pruning_incomplete"}
+        # Ordering hardening only: the generalized participant protocol must
+        # still fence new bindings and account changes across this boundary.
         result = await operations.disconnect(account_id=resolved_account_id)
-        # Disconnecting closes this account's per-agent bindings too. Account ids
-        # are deterministic, so a binding left behind would silently revive if the
-        # same account were reconnected later. `Reconnect` (re-approval without
-        # disconnecting) is the action that keeps bindings. Never fails the
-        # disconnect itself.
-        if result.get("removed") and provider_id:
-            try:
-                pruned = await (await _automation_access_service(self, request)).prune_account_from_grants(
-                    grantor_subject=platform_user_id,
-                    provider_id=provider_id,
-                    account_id=resolved_account_id,
-                )
-                if pruned.get("pruned"):
-                    result["bindings_cleared"] = pruned.get("pruned")
-                    result["bindings_cleared_grants"] = pruned.get("grants") or []
-            except Exception:
-                LOGGER.warning(
-                    "[connection-hub.delegated_to_kdcube] binding pruning failed (non-fatal): "
-                    "account=%s provider=%s", resolved_account_id, provider_id, exc_info=True,
-                )
+        if result.get("removed") and count:
+            result["bindings_cleared"] = count
+            result["bindings_cleared_grants"] = grants
         return result
 
     @api(method="POST", alias="delegated_to_kdcube_resolve", route="operations", **_api_visibility("delegated_to_kdcube_resolve"))
