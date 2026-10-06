@@ -408,7 +408,8 @@ issuer. The opaque `context_ref` must identify that issuer's immutable intent;
 the issuer owns its approval, current policy, caller authority and reservation
 rules. A supplied context authorizes nothing by itself. Hub takes a fresh
 sealed decision, then revalidates inside the same Card fence immediately before
-publication. The second decision cannot extend the first decision's expiry.
+publication. The second decision cannot extend the first decision's expiry,
+and the publication deadline cannot outlive the original Card's lifetime.
 The actual file publication thread checks that deadline after writing its
 temporary file and directly before the visibility rename.
 
@@ -431,6 +432,12 @@ preparation recovers as a terminal refusal; a committed receipt is never undone
 or relabelled after a later failure. Started file/Redis writes drain under both
 fences on cancellation or timeout; a hung backend can exceed the logical
 deadline, and the service must not steal its lock.
+
+An expired cache marker can have been read-through restored to the exact
+original Card before a no-write refusal finishes. Recovery recognizes that
+exact original revision and complete fingerprint as a finished removal,
+retires the refused intent and permits later writers. A foreign, malformed or
+unavailable cache entry remains unresolved; recovery never deletes it blindly.
 
 A committed update whose cache/index completion or issuer finalization remains
 pending returns `202`, its committed state and a retryable outcome—not a

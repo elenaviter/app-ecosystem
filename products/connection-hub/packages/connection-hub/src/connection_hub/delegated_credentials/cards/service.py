@@ -481,7 +481,14 @@ class DelegatedCardService:
             if receipt["state"] == "refused":
                 if not await cancellation_safe_await(self._cache.finalize_removal(
                         target.access_id, mutation_id=receipt["transaction_id"])):
-                    return receipt
+                    # An expired marker may already have been read-through
+                    # restored to BEFORE. That is a finished no-write outcome,
+                    # not an intent that should block every later writer.
+                    entry = await self._cache.read(target.access_id)
+                    if (entry is None or not entry.is_card or entry.authority is None
+                            or entry.authority.card_revision != target.expected_card_revision
+                            or entry.authority.content_hash() != target.expected_authority_fingerprint):
+                        return receipt
             else:
                 current = await self._store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
                 if current is None or current[0].to_dict() != receipt["after"]:

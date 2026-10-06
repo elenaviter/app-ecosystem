@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from connection_hub.delegated_credentials.issuer_gate import IssuerRegistry
+from connection_hub.delegated_credentials.issuer_gate import IssuerRegistry, IssuerWriteRefused
 from connection_hub.delegated_credentials.issuer_update import (
     IssuerUpdateQuery, IssuerUpdateRefused, build_candidate, issuer_managed_card_update,
 )
@@ -105,3 +105,28 @@ async def test_missing_registry_port_or_actual_host_never_calls_persistence():
                                                   persistence=persistence, host_is_current=host)
         assert result["ok"] is False and "authority" not in result
     persistence.update_issuer.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_actual_publication_deadline_cannot_outlive_the_original_card():
+    expires = datetime.now(timezone.utc) + timedelta(seconds=5)
+    # Credentialless Controls correctly forbid expiry. Use a valid bounded
+    # credential-bearing authority, with no live credential material here.
+    original = dataclasses.replace(card(), source="oauth", expires_at=expires.timestamp())
+    raw = wire(original)
+    query = IssuerUpdateQuery.from_mapping(raw)
+    candidate = build_candidate(original, query)
+    reg, calls = registry(until_seconds=30)
+    persistence = MagicMock()
+    persistence.read_issuer_update_authority = AsyncMock()
+
+    async def inspect_deadline(query, *, actor_subject, before_commit):
+        assert await before_commit(original, candidate) == expires
+        assert await before_commit(original, candidate) == expires
+        raise IssuerWriteRefused("fixture_no_publish")
+
+    persistence.update_issuer = AsyncMock(side_effect=inspect_deadline)
+    result = await issuer_managed_card_update(raw, actor_subject=ACTOR, registry=reg,
+        persistence=persistence, host_is_current=lambda: True)
+    assert result["error"] == "fixture_no_publish" and len(calls) == 2
+    persistence.read_issuer_update_authority.assert_not_called()

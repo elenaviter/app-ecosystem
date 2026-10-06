@@ -155,6 +155,8 @@ async def issuer_managed_card_update(raw: Mapping[str, Any], *, actor_subject: s
             refusal = issuer_write_refusal(original, request, decision, now=datetime.now(timezone.utc))
             if refusal is not None:
                 raise IssuerWriteRefused(refusal["reason"])
+            if original.expires_at:
+                return min(decision.valid_until, datetime.fromtimestamp(original.expires_at, timezone.utc))
             return decision.valid_until
 
         receipt = await apply(query, actor_subject=actor_subject, before_commit=gate)

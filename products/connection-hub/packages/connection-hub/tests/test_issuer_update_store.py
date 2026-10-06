@@ -249,3 +249,23 @@ async def test_cancelled_publication_drains_started_io_before_fences_release(tmp
     assert held == 0
     assert (await update_store.read_receipt(store, query.transaction_id(ACTOR)))["state"] == "committed"
     assert (await apply(persistence, reg))["ok"] and len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_expired_marker_refilled_with_before_does_not_strand_a_refused_intent(tmp_path):
+    original, query, store, _, persistence, cache, _ = await fixture(tmp_path)
+    reg, calls = registry()
+    cache.read.side_effect = None
+    cache.read.return_value = CardCacheEntry("card", authority=original, card_revision=1)
+    cache.finalize_removal.side_effect = None
+    cache.finalize_removal.return_value = False
+    result = await apply(persistence, reg)
+    assert result["state"] == "refused" and result["reason"] == "issuer_update_serving_fence_lost"
+    assert result["serving_state"] == "complete" and result["requires_new_request_id"]
+    assert not update_store.active_path(store, query.transaction_id(ACTOR)).exists()
+    again = await apply(persistence, reg)
+    assert again["state"] == "refused" and len(calls) == 2
+    current = await store.read_current_authority(subject_hash=query.target.subject_hash, access_id=query.target.access_id)
+    assert current[1] == original
+    # The diagnostic intent is retired; a normal writer may now progress.
+    await store.advance_current(subject_hash=query.target.subject_hash, pointer=current[0])
