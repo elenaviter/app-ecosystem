@@ -8936,8 +8936,14 @@ class AutomationAccessService:
                 record,
                 config=authority_config,
             )
-        # Fails closed by raising when the binding's policy refuses: the
-        # OAuth route must not keep tokens for a refused grant.
+        # Raises CallerWriteRefused when the binding's policy refuses. The SDK
+        # OAuth route then withholds the tokens but does NOT yet revoke them:
+        # its _issue_tokens has already bound the access grant and created the
+        # refresh token, and only its CardConflict branch revokes (KD 3fc59611,
+        # oauth/http/routes.py). Until that route revokes on every withheld
+        # branch (Ops D1, SDK scope), no host may bind a caller-writer
+        # registry: a refused grant would leave live, unreturned tokens, and a
+        # refresh rotation's withheld grant still resolves to the active Card.
         await self._persist_record(record, expected_revision=existing_card_revision,
                                    caller_write=CallerWrite("oauth_grant", grantor))
         _LOGGER.info(
