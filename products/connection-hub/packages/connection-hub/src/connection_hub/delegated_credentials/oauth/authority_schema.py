@@ -132,6 +132,11 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_ACCESS_BINDINGS} (
 CREATE INDEX IF NOT EXISTS connection_hub_oauth_access_card_idx
     ON {schema}.{TABLE_ACCESS_BINDINGS} (registry_access_id, state);
 
+-- W585 (Ops W1): the Card revision whose lifetime last set this binding's
+-- deadline, so a replayed effect from an older revision never moves it.
+ALTER TABLE {schema}.{TABLE_ACCESS_BINDINGS}
+    ADD COLUMN IF NOT EXISTS card_revision BIGINT NOT NULL DEFAULT 0;
+
 CREATE INDEX IF NOT EXISTS connection_hub_oauth_access_expiry_idx
     ON {schema}.{TABLE_ACCESS_BINDINGS} (expires_at)
     WHERE state = 'active';
