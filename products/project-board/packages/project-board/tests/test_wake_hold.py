@@ -232,3 +232,47 @@ def test_a_wake_names_only_the_mail_it_wakes_for_not_the_quiet_backlog(tmp_path,
     quiet.add(question)
     asyncio.run(supervisor._notify_available_input(host, channel))
     assert named == [[question]], "no second wake for the same pending mail"
+
+
+def test_a_wake_that_would_name_nothing_is_not_pushed(tmp_path, monkeypatch):
+    # Ops' review of #573: the only mail that is not quiet can be consumed
+    # between the classification and the authoritative pending read.
+    host, identity, channel, _field_store = _field(tmp_path)
+    backlog = [f"work:mail:20261006T050000Z:mail_{n:032x}:old" for n in range(3)]
+    question = "work:mail:20261006T083000Z:mail_ffffffffffffffffffffffffffffffff:question"
+    reads = {"count": 0}
+    pushed: list[list[str]] = []
+
+    class Field(SharedFieldStore):
+        def worker_listener_session(self, worker_name):
+            return {"state": "attached", "subscription": {}}
+
+        def pending_worker_mail_refs(self, worker_name, *, wait=True):
+            reads["count"] += 1
+            # The first read sees the question; it is consumed before the next.
+            return [*backlog, question] if reads["count"] == 1 else list(backlog)
+
+        def quiet_mail_refs(self, worker_name, refs=None):
+            return {ref for ref in (refs or []) if ref in backlog}
+
+        def quiet_token(self, worker_name):
+            return "mark"
+
+    monkeypatch.setattr(relay, "SharedFieldStore", Field)
+    monkeypatch.setattr(relay, "session_with_limit_state", lambda listener, **_: {**listener, "limit_state": {"kind": "ok"}})
+    supervisor = make_supervisor(host)
+
+    async def reconcile(*_args, **_kwargs):
+        return None
+
+    async def notify(*_args, message_refs=(), **_kwargs):
+        pushed.append(list(message_refs))
+        return {"woken": True}
+
+    monkeypatch.setattr(supervisor, "_reconcile_session_queue", reconcile)
+    monkeypatch.setattr(supervisor, "_notify_session", notify)
+
+    asyncio.run(supervisor._notify_available_input(host, channel))
+
+    assert reads["count"] >= 2, "the authoritative read ran"
+    assert pushed == [], "no wake that names nothing"
