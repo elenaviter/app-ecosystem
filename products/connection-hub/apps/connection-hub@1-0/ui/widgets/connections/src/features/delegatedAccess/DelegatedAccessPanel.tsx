@@ -171,6 +171,10 @@ import { catalogDriftForPersonCard, notOfferedOnPersonCard, resourcesForPersonCa
 import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
 import {
+  delegatedAccessRevokePayload,
+  isRevokeRevisionConflict,
+} from './delegatedAccessRevoke';
+import {
   projectAgentCardFocus,
   projectAgentCardUpdateTarget,
 } from './projectAgentCard';
@@ -526,7 +530,8 @@ function ScriptBlock({ title, script, note }: { title: string; script: string; n
 }
 
 /** What this card's caller can be done TO from a script, with its identifiers
- *  already inlined. A grant can always be revoked by access id; it can also be
+ *  already inlined. Revocation names the displayed access id and revision;
+ *  a conflict requires a fresh read and human confirmation. A grant can also be
  *  EDITED in place, up or down: the card is the authority the guard resolves
  *  live, so the submitted claim set takes effect on that caller's very next
  *  call, on the credential it already holds. A caller with a stable client identity (a
@@ -551,7 +556,7 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
     `  "${operationUrl('delegated_access_revoke')}" \\`,
     `  -H "Authorization: Bearer $TOKEN" \\`,
     `  -H 'Content-Type: application/json' \\`,
-    `  -d '{"access_id": "${accessId}"}'`,
+    `  -d '${JSON.stringify(delegatedAccessRevokePayload(accessId, item.card_revision))}'`,
   ].join('\n');
   // A manual automation is narrowed by rewriting its CARD (keyed on access id):
   // the whole grant map is replaced, so the token it already holds keeps working
@@ -665,7 +670,7 @@ function RevokeScript({ item }: { item: DelegatedAccessRecord }) {
             <ScriptBlock
               title="Revoke"
               script={script}
-              note="$TOKEN is a credential allowed to call this deployment's operations."
+              note="$TOKEN is a credential allowed to call this deployment's operations. A revision conflict requires a fresh Card read and confirmation; never retry this command with a replacement revision automatically."
             />
             </div>
           </div>
@@ -1797,11 +1802,25 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const revoke = async (item: DelegatedAccessRecord) => {
     setConfirmRevokeId(null);
     const projectPersonControl = projectPersonControlCoordinates(item);
-    await dispatch(revokeDelegatedAccess({
+    const result = await dispatch(revokeDelegatedAccess({
       accessId: item.access_id,
+      expectedCardRevision: item.card_revision,
       projectPersonControl: projectPersonControl || undefined,
     })).unwrap().catch(() => undefined);
     void dispatch(loadDelegatedAccess());
+    if (isRevokeRevisionConflict(result) && focusedCard?.access_id === item.access_id) {
+      // The exact-card workbench may not be in the ordinary owner list. Read
+      // its existing owner/project route too; never call revoke again here.
+      const projectControl = projectControlCardUpdateTarget(item);
+      void dispatch(loadControlCard({
+        controlId: item.access_id,
+        projectRef: projectPersonControl?.projectRef || projectControl?.projectRef,
+        targetSubject: projectPersonControl?.kind === 'person'
+          ? projectPersonControl.targetSubject : undefined,
+        invitationRef: projectPersonControl?.kind === 'invitation'
+          ? projectPersonControl.invitationRef : undefined,
+      }));
+    }
   };
   // Expiry as the server saw it, else against the browser clock. An expired
   // card stays listed: its grants are the work, the token is only the key.
@@ -1927,7 +1946,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     if (confirmRevokeId === accessId) {
       return (
         <span className="revoke-confirm">
-          <span className="revoke-confirm__q">Revoke?</span>
+          <span className="revoke-confirm__q">
+            Revoke{item.card_revision !== undefined ? ` revision ${item.card_revision}` : ''}?
+          </span>
           <button className="btn btn-danger" type="button" disabled={busy} onClick={() => revoke(item)}>
             Confirm
           </button>
