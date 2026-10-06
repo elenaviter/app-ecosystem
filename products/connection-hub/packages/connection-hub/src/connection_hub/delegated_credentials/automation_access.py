@@ -8796,6 +8796,13 @@ class AutomationAccessService:
         client = _clean(client_id)
         if not grantor or not client:
             return None
+        if grantor.startswith("integration:"):
+            # W585 gate (d): the same rule as _delegate_mutation_refusal. A
+            # delegated bearer that approved a consent is not a grantor, so no
+            # Card is created or changed under an "integration:" identity
+            # (outside every human's Control chain). Refused before any effect;
+            # the token route withholds the token on CardConflict.
+            raise CardConflict("delegated_access_requires_grantor")
         resource_value = _clean(resource)
         submitted_client_metadata = normalize_public_client_metadata(client_metadata)
         selected_kind = _clean(card_kind)

@@ -992,3 +992,152 @@ async def test_a_binding_is_revoked_by_its_pinned_digest_against_real_postgres()
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
         await pool.close()
+
+
+async def _capped_store():
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn, min_size=2, max_size=4)
+    store = PostgresOAuthAuthorityStore(pg_pool=pool, tenant=f"cap-test-{uuid.uuid4().hex}", project="w585")
+    await store.ensure_schema()
+    await store.ensure_schema()  # W585: the additive DDL is idempotent
+    return pool, store
+
+
+async def _family(pool, store, access_id="aut_card"):
+    async with pool.acquire() as connection:
+        row = await connection.fetchrow(
+            f"""SELECT extract(epoch FROM expires_at)::bigint AS expires_at,
+                       extract(epoch FROM cap_expires_at)::bigint AS cap, card_revision
+                FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = $1""", access_id)
+        generation = await connection.fetchrow(
+            f"""SELECT extract(epoch FROM generation.expires_at)::bigint AS expires_at, generation.state
+                FROM {store.schema}.{TABLE_REFRESH_GENERATIONS} AS generation
+                JOIN {store.schema}.{TABLE_FAMILIES} AS family
+                  ON family.current_generation_id = generation.generation_id
+                WHERE family.registry_access_id = $1""", access_id)
+    return dict(row), dict(generation)
+
+
+async def _drop(pool, store):
+    async with pool.acquire() as connection:
+        await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+    await pool.close()
+
+
+RECORD = {"registry_access_id": "aut_card", "card_kind": "automation", "client_id": "client-1", "sub": "user-1"}
+
+
+@pytest.mark.asyncio
+async def test_w585_rotation_never_outlives_the_committed_card_cap_against_real_postgres() -> None:
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        # No cap at all: rotation behaves exactly as before (now + ttl).
+        token = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600)
+        family, generation = await _family(pool, store)
+        assert family["cap"] is None and abs(family["expires_at"] - (now + 3600)) <= 5
+        # The committed Card lifetime (revision 2) sets the cap; rotation stays under it.
+        cap = now + 600
+        assert await store.set_card_credentials_expiry("aut_card", cap, card_revision=2) == "applied"
+        token = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600)
+        family, generation = await _family(pool, store)
+        assert (family["cap"], family["card_revision"]) == (cap, 2)
+        assert family["expires_at"] == cap and generation["expires_at"] == cap
+        # Ops: a caller cap HIGHER than the stored cap still takes the stored cap.
+        token = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, expires_at_cap=cap + 1000)
+        family, generation = await _family(pool, store)
+        assert family["expires_at"] == cap and generation["expires_at"] == cap
+        # A lower caller cap wins.
+        token = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, expires_at_cap=cap - 100)
+        family, generation = await _family(pool, store)
+        assert family["expires_at"] == cap - 100 and generation["expires_at"] == cap - 100
+        assert token
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_a_passed_cap_or_a_moved_incarnation_refuses_without_consuming_the_token() -> None:
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        assert await store.set_card_credentials_expiry("aut_card", now + 600, card_revision=3) == "applied"
+        # The caller read Card revision 2; the family is capped by revision 3.
+        assert await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, card_incarnation=2) is None
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active"  # not consumed: a re-read caller can retry
+        assert await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, expires_at_cap=now - 1) is None
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active"
+        rotated = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, card_incarnation=3)
+        assert rotated
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_an_older_card_revision_never_moves_the_cap_back() -> None:
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        assert await store.set_card_credentials_expiry("aut_card", now + 300, card_revision=4) == "applied"
+        # A replayed effect from revision 3 does not touch the family.
+        await store.set_card_credentials_expiry("aut_card", now + 3000, card_revision=3)
+        family, _ = await _family(pool, store)
+        assert (family["cap"], family["card_revision"], family["expires_at"]) == (now + 300, 4, now + 300)
+        # The same revision replays without a write.
+        assert await store.set_card_credentials_expiry("aut_card", now + 300, card_revision=4) == "applied"
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_issuance_carries_the_cap_from_the_start() -> None:
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        await store.create_refresh_token(RECORD, ttl_seconds=3600, cap_expires_at=now + 120, card_revision=5)
+        family, generation = await _family(pool, store)
+        assert (family["cap"], family["card_revision"]) == (now + 120, 5)
+        assert family["expires_at"] == now + 120 and generation["expires_at"] == now + 120
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order", ["rotate_first", "effect_first", "concurrent"])
+async def test_w585_rotation_racing_the_lifetime_effect_never_passes_the_committed_cap(order) -> None:
+    # Ops gate (a): rotation versus the credential_lifetime FINISH, in both orders and concurrently.
+    import asyncio
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        cap = now + 400
+
+        async def rotate():
+            return await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600)
+
+        async def effect():
+            return await store.set_card_credentials_expiry("aut_card", cap, card_revision=2)
+
+        if order == "rotate_first":
+            await rotate()
+            await effect()
+        elif order == "effect_first":
+            await effect()
+            await rotate()
+        else:
+            await asyncio.gather(rotate(), effect())
+        family, generation = await _family(pool, store)
+        assert family["cap"] == cap and family["card_revision"] == 2
+        assert family["expires_at"] <= cap and generation["expires_at"] <= cap  # never revived or extended
+    finally:
+        await _drop(pool, store)

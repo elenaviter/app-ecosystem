@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import time
 from typing import Any, Dict, List, Mapping, Optional
 
 from connection_hub.delegated_credentials.oauth.authority_store import (
@@ -713,14 +714,24 @@ class GrantStore:
         card_kind: Optional[str] = None,
         state: Optional[RefreshTokenState] = None,
         refresh_request_fingerprint: str = "",
+        expires_at_cap: Optional[int] = None,
+        card_incarnation: Optional[int] = None,
     ) -> Optional[str]:
         """Rotate a refresh token and persist any freshly resolved authority.
 
         Pointer-backed callers resolve the current grant card before rotation.
         Their replacement record keeps that live snapshot for observability and
         consistency, while the pointer remains the authority on every use.
+
+        W585: ``expires_at_cap`` (the Card's absolute deadline) bounds the
+        successor. On the SQL authority it is combined with the family's own
+        stored cap, and ``card_incarnation`` is checked, in the successor's
+        transaction. The Redis fallback has no family rows: it bounds the
+        successor's TTL by the cap and cannot check an incarnation.
         """
         token = str(refresh_token or "").strip()
+        if expires_at_cap is not None and (type(expires_at_cap) is not int or expires_at_cap <= 0):
+            raise ValueError("refresh_cap_invalid")
         current = state or await self.get_refresh_token_state(
             token, refresh_request_fingerprint=refresh_request_fingerprint
         )
@@ -792,7 +803,16 @@ class GrantStore:
                     if refresh_request_fingerprint
                     else {}
                 ),
+                **({"expires_at_cap": expires_at_cap} if expires_at_cap is not None else {}),
+                **({"card_incarnation": card_incarnation} if card_incarnation is not None else {}),
             )
+
+        redis_ttl = int(self._refresh_ttl)
+        if expires_at_cap is not None:
+            remaining = expires_at_cap - int(time.time())
+            if remaining <= 0:
+                return None  # refresh_cap_passed: no successor
+            redis_ttl = min(redis_ttl, remaining)
 
         # A generated-token collision must not consume the old token. The Lua
         # transition checks the replacement key before deleting the old key.
@@ -809,7 +829,7 @@ class GrantStore:
                 self._key("refresh", new_token),
                 current.raw,
                 encoded_replacement,
-                self._refresh_ttl,
+                redis_ttl,
             )
             code = int(result)
             if code == 1:
@@ -1029,8 +1049,13 @@ class GrantStore:
         await self._redis_call("access_grant.revoke_by_digest", "delete", self._key("agrant", digest))
         return "unbound"
 
-    async def set_card_credentials_expiry(self, registry_access_id: str, expires_at: int) -> str:
-        """W582: one absolute deadline for a Card's live OAuth credentials (SQL authority only)."""
+    async def set_card_credentials_expiry(self, registry_access_id: str, expires_at: int, *,
+                                          card_revision: int = 0) -> str:
+        """W582: one absolute deadline for a Card's live OAuth credentials (SQL authority only).
+
+        W585: ``card_revision`` is the committed Card revision that set it; the
+        family's cap never moves back to an older revision's deadline.
+        """
         if self._authority_store is None:
             raise GrantStoreUnavailable("card_credentials.set_expiry.authority_not_configured")
         return str(
@@ -1039,6 +1064,7 @@ class GrantStore:
                 "set_card_credentials_expiry",
                 str(registry_access_id or "").strip(),
                 int(expires_at),
+                card_revision=int(card_revision),
             )
         )
 
