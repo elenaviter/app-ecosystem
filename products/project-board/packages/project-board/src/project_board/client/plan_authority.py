@@ -167,16 +167,25 @@ def await_plan_item_resolution(
         "elapsed_seconds": elapsed_seconds,
         "last_observed_state": last_state or "unknown",
         "retry_count": last_retry_count,
+        # W563 (Root, 2026-10-06 04:14-04:18 UTC, note_e2512d98): four sends
+        # stopped here, and their outbox entries were read as if they were the
+        # messages. Every caller validates the work reference before its own
+        # action, so that action was not sent; the outbox entry is the lookup.
+        "stage": "work_reference_validation",
+        "action_sent": False,
+        "outbox_entry": "the work-reference lookup (project.plan.index), not the requested action",
+        "retry": "Run the same command unchanged, with the same idempotency key, once the channel answers.",
     }
     if last_error_code:
         details["last_error_code"] = last_error_code
     raise DomainError(
         "field_plan_authority_deadline_exceeded",
         (
-            f"The local {deadline_seconds:g}-second deadline expired while waiting "
-            "for the governed plan authority to validate this work reference. "
-            "The command did not receive an authority result and did not report "
-            "success; the queued request may still finish after this deadline."
+            f"Not sent: the work reference was not validated within {deadline_seconds:g} seconds, "
+            "so the requested action did not start. "
+            f"Outbox entry {clean_outbox_id} is that work-reference lookup, not the action; "
+            "its receipt, if it comes, proves only that the item resolved. "
+            "Run the same command unchanged, with the same idempotency key, once the channel answers."
         ),
         status=504,
         details=details,

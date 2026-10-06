@@ -14,6 +14,10 @@ from connection_hub.delegated_credentials.issuer_read import (
     IssuerReadRegistry, IssuerReadRefused, RemoteIssuerReadAdapter,
     issuer_read_request_from_mapping, sign_issuer_read_request,
 )
+from connection_hub.delegated_credentials.issuer_snapshot import (
+    IssuerSnapshotRegistry, RemoteIssuerSnapshotAdapter,
+    issuer_snapshot_request_from_mapping, sign_issuer_snapshot_request,
+)
 from connection_hub.delegated_credentials.remote_issuer import (
     RemoteIssuerAdapter, issuer_request_from_mapping,
     sign_issuer_envelope, sign_issuer_request,
@@ -59,6 +63,10 @@ class _PeerTransport:
             body = sign_issuer_read_request(**signing,
                 request=issuer_read_request_from_mapping(payload["request"]),
                 phase=payload["phase"], snapshots=payload["snapshots"])
+        elif protocol == "issuer-snapshot.v1":
+            body = sign_issuer_snapshot_request(**signing,
+                request=issuer_snapshot_request_from_mapping(payload["request"]),
+                phase=payload["phase"], snapshots=payload["snapshots"])
         else:
             body = sign_issuer_envelope(**signing, protocol=protocol, payload=payload)
         response = await self._caller(bundle_id=self._config["bundle_id"], operation=operation,
@@ -78,6 +86,30 @@ class _PeerTransport:
 
     async def read(self, payload):
         return await self._call(self._config.get("read_operation", ""), protocol="issuer-read.v1", payload=payload)
+
+    async def snapshot(self, payload):
+        return await self._call(self._config.get("full_snapshot_operation", ""),
+                                protocol="issuer-snapshot.v1", payload=payload)
+
+
+def issuer_snapshot_registry_from_connections(*, connections: Mapping[str, Any],
+        resolve_secret: SecretResolver, caller: BundleCaller) -> IssuerSnapshotRegistry:
+    """Full authority export requires its own explicitly configured capability."""
+    registry = IssuerSnapshotRegistry()
+    delegated = connections.get("delegated_credentials")
+    rows = delegated.get("issuer_authorities") if isinstance(delegated, Mapping) else None
+    if not isinstance(rows, Mapping):
+        return registry
+    required = ("bundle_id", "full_snapshot_operation", "service_id", "peer_proof_secret_ref", "adapter_id")
+    for kind, value in rows.items():
+        if (type(kind) is not str or not kind.strip() or not isinstance(value, Mapping)
+                or any(type(value.get(k)) is not str or not value[k].strip() for k in required)):
+            continue  # no read/write or local-owner fallback authorizes full export
+        config = {k: value[k].strip() for k in required}
+        peer = _PeerTransport(config=config, resolve_secret=resolve_secret, caller=caller)
+        registry.register(RemoteIssuerSnapshotAdapter(
+            issuer_kind=kind.strip(), adapter_id=config["adapter_id"], transport=peer.snapshot))
+    return registry
 
 
 def issuer_read_registry_from_connections(*, connections: Mapping[str, Any],

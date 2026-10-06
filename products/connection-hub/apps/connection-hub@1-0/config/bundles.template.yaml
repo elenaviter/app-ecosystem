@@ -155,6 +155,10 @@ bundles:
           #     operation: "opaque_issuer_decide"
           #     prepare_operation: "opaque_issuer_prepare"
           #     finalize_operation: "opaque_issuer_finalize"
+          #     read_operation: "opaque_issuer_identity_read"
+          #     full_snapshot_operation: "opaque_issuer_full_snapshot"
+          # Read and full export are separate capabilities, never implied by
+          # the write operation. Full snapshots are internal personal data.
           #     service_id: "connection-hub"
           #     peer_proof_secret_ref: "existing.approved.peer_secret"
           #     adapter_id: "authority-app:issuer-v1"

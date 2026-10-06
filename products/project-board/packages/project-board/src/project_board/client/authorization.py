@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..contract.errors import DomainError
+from ..contract.errors import PERMANENT_CREDENTIAL_CODES, DomainError
 from ..contract.runtime_account import normalize_runtime_account
 from .credential_refusal import RECONNECT_CODES, requires_browser_reconnect as _requires_browser_reconnect
 from .host_config import HostRelayConfig, WorkerChannelConfig
@@ -609,6 +609,17 @@ async def authorize_worker_profile(
     )
 
 
+# The state and action for each permanent credential code the branches above
+# do not already name.
+_PERMANENT_STATES = {
+    "delegated_card_revoked": ("delegated_card_revoked", "replace_card"),
+    "delegated_card_not_found": ("delegated_card_revoked", "replace_card"),
+    "delegated_capability_not_granted": ("delegated_resource_not_granted", "grant_access"),
+    "delegated_card_refresh_refused": ("credential_expired_or_invalid", "reconnect"),
+    "work_worker_card_required": ("delegated_card_not_active", "authorize"),
+}
+
+
 def authorization_observation(error: BaseException) -> dict[str, Any]:
     """Classify relay credential failures without exposing credential material."""
 
@@ -656,6 +667,11 @@ def authorization_observation(error: BaseException) -> dict[str, Any]:
             "repair_relay_credential_access",
             False,
         )
+    elif code in PERMANENT_CREDENTIAL_CODES:
+        # W461 C4: the relay already treats these as permanent; a revoked or
+        # unknown Card, a missing grant or a refused refresh never comes back
+        # by retrying the same Card, so the channel parks for authorization.
+        state, action, terminal = _PERMANENT_STATES.get(code, ("delegated_card_not_active", "authorize")) + (True,)
     else:
         state, action, terminal = "connection_unavailable", "retry", False
     return {

@@ -203,6 +203,29 @@ or legacy multi-Card lifecycle authority is added.
 See the [portable issuer contract](../../../../../docs/connection-hub/issuer-managed-writes.md)
 for request binding, expiry, lock-local revalidation and qualification boundaries.
 
+### Protected issuer full snapshots
+
+`issuer_managed_card_snapshots` is POST on the operations route, restricted to
+the actual registered/privileged platform human and runtime tenant/project,
+with CSRF protection. Its body is `{data: {context_ref, request_id, targets}}`;
+the two targets contain exactly `owner_subject`, `access_id`, `issuer_kind`,
+and `issuer_ref`. Extra query fields cannot select an actor, policy or export.
+Context movement while constructing the request-local service refuses.
+The caller must be trusted server orchestration wrapping its request-bound SDK
+call in the public `bind_issuer_snapshot_orchestration()` scope. Direct browser
+and HTTP calls refuse; headers cannot supply this scope. It grants no issuer
+authority, and the calling app must never return the raw result to a browser.
+
+The trusted issuer row must explicitly configure `full_snapshot_operation`.
+The separately signed `issuer-snapshot.v1` protocol rechecks fresh policy before
+and after a fenced raw storage read. Identity-read or write configuration never
+implies this capability. Both complete original authorities and their full
+fingerprints are returned, or neither; credential-shaped material refuses the
+whole pair instead of being redacted. This is an internal orchestration result,
+not a widget/Team listing API. The
+[full-snapshot contract](../../../../../docs/connection-hub/issuer-full-snapshot.md)
+owns the wire, credential-refusal and qualification boundaries.
+
 ### Public OAuth routes
 
 A browser redirect target, not a JSON op — reached by the external provider after
