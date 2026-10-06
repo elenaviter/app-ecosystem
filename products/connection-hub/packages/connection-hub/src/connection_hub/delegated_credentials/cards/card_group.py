@@ -61,6 +61,10 @@ def _refuse(reason: str) -> DecisionRefused:
     return DecisionRefused(reason)
 
 
+def _exact_int(value: Any, expected: int) -> bool:
+    return type(value) is int and value == expected
+
+
 def group_member(*, original: CardAuthority | None, candidate: CardAuthority, action: str) -> dict[str, Any]:
     """One member entry; ``original`` None means a newly minted id with no history."""
     return {"subject_hash": subject_hash_for(candidate.grantor_subject), "access_id": candidate.access_id,
@@ -214,8 +218,10 @@ def verify_group_projection(projection: Mapping[str, Any], value: Any) -> dict[s
     if (projection.get("participant") != PARTICIPANT
             or projection.get("binding_ref") != group_binding_ref(checked)
             or projection.get("target_scope") != group_target_scope(checked)
-            or projection.get("target_incarnation") != 1 or projection.get("action") != "create"
-            or projection.get("before_revision") != 0 or projection.get("candidate_revision") != 1
+            # Exact integers: True == 1 and False == 0 in Python, so the type is checked too (CodeApp 23:45).
+            or not _exact_int(projection.get("target_incarnation"), 1) or projection.get("action") != "create"
+            or not _exact_int(projection.get("before_revision"), 0)
+            or not _exact_int(projection.get("candidate_revision"), 1)
             or projection.get("candidate_digest") != sha256_hex(canonical_json_bytes(checked))
             or projection.get("provisioning") != {}
             or projection.get("actor_kind") not in ("caller", "grantor")
