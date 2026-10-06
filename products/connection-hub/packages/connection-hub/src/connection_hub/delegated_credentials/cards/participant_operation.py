@@ -29,6 +29,7 @@ name (``project_ref`` for Problem Board) comes from the caller's descriptor.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Mapping
@@ -165,6 +166,12 @@ class CardTransactionParticipantOperation:
         self._nonce_prefix = nonce_prefix
 
     async def answer(self, data: Any) -> dict[str, Any]:
+        # Frozen once, before any await (CodeApp 19:35): what is authenticated is
+        # exactly what is dispatched and signed, whatever the caller's object does.
+        try:
+            data = json.loads(json.dumps(dict(data), allow_nan=False)) if isinstance(data, Mapping) else None
+        except (TypeError, ValueError):
+            data = None
         if not _valid_request(data):
             return _unsigned_refusal("card_participant_request_invalid", 400)
         raw_proof = data["service_proof"]
