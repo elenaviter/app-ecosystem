@@ -157,10 +157,7 @@ test('an exact Control Card reuses the Card editor without joining the agent-car
   assert.doesNotMatch(slice, /state\.items\.push\(action\.payload\.access\)/)
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
-  // W587: the Control link's coordinates are built by controlFocusRead (cardFreshness.ts).
-  assert.match(panel, /const read = controlFocusRead\(accessCardFocus\);[\s\S]*?dispatch\(loadControlCard\(read\)\)/)
-  const freshness = source('src/features/delegatedAccess/cardFreshness.ts')
-  assert.match(freshness, /controlId: focus\.accessId,\s+projectRef: focus\.projectRef,\s+targetSubject: focus\.targetSubject,\s+invitationRef: focus\.invitationRef,/)
+  assert.match(panel, /dispatch\(loadControlCard\(\{[\s\S]*?controlId: accessCardFocus\.accessId,[\s\S]*?projectRef: accessCardFocus\.projectRef,[\s\S]*?targetSubject: accessCardFocus\.targetSubject,[\s\S]*?invitationRef: accessCardFocus\.invitationRef,/)
   assert.match(panel, /projectPersonControl: projectPersonControl \|\| undefined/)
   // The badge names the kind: an operator Card or a Control Card (controlCardKind.ts).
   assert.match(panel, /if \(item\.source === 'control'\) return controlCardLabel\(item\)/)
