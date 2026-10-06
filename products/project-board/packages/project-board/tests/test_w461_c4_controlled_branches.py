@@ -26,6 +26,7 @@ from project_board.client.coordinate_queue import CoordinateQueue
 from project_board.client.coordinate_recovery import CoordinateRecovery, coordinate_request_hash
 from project_board.contract.errors import DomainError
 from project_board.contract.operation_identity import transport_request_hash
+from project_board.contract.operation_outcomes import require_successful_operation_envelope
 
 from relay_helpers import make_host
 
@@ -240,12 +241,18 @@ def _peer_that_commits_then_loses_the_reply(client, effects, *, ledger=False, re
                     "This operation is not part of the governed Problem Board service.",
                     status=403, details={"operation": "operation.receipt.get"},
                 )
-            if receipt_state is not None:
-                return {"ok": True, "object": dict(receipt_state)}
             row = rows.get(arguments["payload"]["idempotency_key"])
-            if row is None:
-                return {"ok": True, "object": {"state": "no_record"}}
-            return {"ok": True, "object": {"state": "applied", "outcome": row, "settled_at": "2026-10-06T06:30:00Z"}}
+            if receipt_state is not None:
+                body = dict(receipt_state)
+            elif row is None:
+                body = {"state": "no_record"}
+            else:
+                body = {"state": "applied", "outcome": row, "settled_at": "2026-10-06T06:30:00Z"}
+            # Through the same success-envelope check the real MCP client
+            # applies to every reply (mcp_client.py), as Ops found it runs.
+            return require_successful_operation_envelope(
+                "operation.receipt.get", {"ok": True, "operation": "operation.receipt.get", "object": body},
+            )
         transport_id = arguments["transport_request_id"]
         if transport_id not in effects:
             effects[transport_id] = {"ok": True, "object": {"saved": True}}
@@ -347,6 +354,36 @@ def test_a_refused_receipt_fails_the_request_with_the_stored_code_without_a_rese
     assert len(_mutation_sends(client)) == 1
     assert first is None and second is not None and second["ok"] is False
     assert second["error"]["code"] == "work_item_revision_conflict"
+
+
+def test_an_applied_receipt_with_a_mixed_stored_outcome_raises_its_own_code(tmp_path, monkeypatch):
+    # The stored outcome gets the check its first reply would have had.
+    from test_connected_degraded_admission import _fixture
+
+    host, _identity, channel, supervisor, _session, client = _fixture(tmp_path)
+    queue = CoordinateQueue(host.field_root)
+    mixed = {
+        "ok": True, "operation": "plan.item.update",
+        "object": {"state": "partially_applied", "summary": "Synthetic mixed outcome."},
+    }
+    _peer_that_commits_then_loses_the_reply(
+        client, {}, ledger=True, receipt_state={"state": "applied", "outcome": mixed},
+    )
+
+    _request, first, second = _serve_twice(supervisor, queue, channel, monkeypatch)
+
+    assert len(_mutation_sends(client)) == 1
+    assert first is None and second["ok"] is False
+    assert second["error"]["code"] == "work_operation_mixed"
+
+
+def test_a_receipt_read_is_not_judged_by_the_state_it_reports():
+    refused = {
+        "ok": True, "operation": "operation.receipt.get",
+        "object": {"state": "refused", "code": "work_item_revision_conflict", "message": "Stale."},
+    }
+
+    assert require_successful_operation_envelope("operation.receipt.get", refused) is refused
 
 
 @pytest.mark.parametrize(

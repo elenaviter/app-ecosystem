@@ -47,6 +47,7 @@ from .worktree_files import (
 )
 from ..contract.errors import PERMANENT_CREDENTIAL_CODES, DomainError
 from ..contract.operation_identity import transport_request_hash
+from ..contract.operation_outcomes import require_successful_operation_envelope
 from ..contract.worker_operation_contract import operation_is_read
 from ..contract.mail_attachments import MAX_MAIL_ATTACHMENT_BYTES, validate_mail_attachment
 from ..contract.delivery_failures import resolve_delivery_failure_target
@@ -500,6 +501,9 @@ async def _settle_unknown_by_receipt(
     state = str((body or {}).get("state") or "") if isinstance(body, Mapping) else ""
     if state == "applied":
         outcome = body.get("outcome") if isinstance(body.get("outcome"), Mapping) else {}
+        # The stored outcome gets the check the original reply would have had:
+        # a mixed or refused outcome raises its own code (W574).
+        require_successful_operation_envelope(action, outcome)
         return {**dict(outcome), "receipt_read": {"state": "applied", "settled_at": str(body.get("settled_at") or "")}}
     if state == "refused":
         raise DomainError(

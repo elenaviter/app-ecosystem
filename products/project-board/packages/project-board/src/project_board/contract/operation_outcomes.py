@@ -150,6 +150,9 @@ def require_applied_operation_outcome(
     )
 
 
+RECEIPT_READ_OPERATION = "operation.receipt.get"
+
+
 def require_successful_operation_envelope(
     operation: str,
     envelope: Any,
@@ -159,6 +162,12 @@ def require_successful_operation_envelope(
     if not isinstance(envelope, Mapping) or envelope.get("ok") is not True:
         return envelope
     action = str(envelope.get("operation") or operation)
+    if action == RECEIPT_READ_OPERATION or operation == RECEIPT_READ_OPERATION:
+        # A receipt read succeeded even when the receipt it returns says the
+        # original was refused: its ``state`` is the stored outcome of
+        # another request, which the caller reads by state (W574). The
+        # caller checks an applied receipt's stored outcome itself.
+        return envelope
     for field in ("object", "result"):
         nested = envelope.get(field)
         if isinstance(nested, Mapping):
