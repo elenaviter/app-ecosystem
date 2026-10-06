@@ -1,0 +1,323 @@
+{
+  "notice": "Synthetic test-only vectors for card-census-answer.v1 (AE #616). config.secret is public fixture material, never a credential. Producer (Hub) and consumer (PB) load these exact bytes. Card entries carry the AE #618 shape (identity fields, all non-personal properties, edge provenance); values are synthetic and authenticate only, they are not business evidence.",
+  "config": {
+    "schema": "card-census-answer.v1",
+    "request_schema": "card-census-read.v1",
+    "signer_id": "hub.test@1",
+    "audience": "authority.test@1",
+    "direction": "hub-to-authority",
+    "now": 1800000000,
+    "secret": "synthetic-census-fixture-key-not-a-credential-00"
+  },
+  "vectors": [
+    {
+      "name": "census",
+      "request": {
+        "schema": "card-census-read.v1",
+        "request_echo": "00000000000000000000000000000000",
+        "scope": "work:project:one",
+        "persons": [
+          "user:admin-1",
+          "user:member-2"
+        ],
+        "include_catalog": true
+      },
+      "request_digest": "7e7d2b588e3d7d63a4787e6f250c1d2964dc6183de301bbfe65719eac1024e9d",
+      "answer": {
+        "schema": "card-census-answer.v1",
+        "direction": "hub-to-authority",
+        "audience": "authority.test@1",
+        "request_echo": "00000000000000000000000000000000",
+        "request_digest": "7e7d2b588e3d7d63a4787e6f250c1d2964dc6183de301bbfe65719eac1024e9d",
+        "scope": "work:project:one",
+        "persons": [
+          "user:admin-1",
+          "user:member-2"
+        ],
+        "include_catalog": true,
+        "result": {
+          "kind": "census",
+          "persons": [
+            {
+              "person": "user:admin-1",
+              "my": {
+                "subject_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "access_id": "person-my-card-89abcdef0123456789abcdef",
+                "state": "present",
+                "revision": 2,
+                "authority": {
+                  "access_id": "person-my-card-89abcdef0123456789abcdef",
+                  "grantor_subject": "user:admin-1",
+                  "card_revision": 2,
+                  "card_kind": "automation",
+                  "state": "active",
+                  "control_card": {
+                    "control_id": "person-control-0123456789abcdef01234567",
+                    "control_revision": 3
+                  },
+                  "provenance": {
+                    "project_identity_edge": {
+                      "schema": "synthetic"
+                    }
+                  },
+                  "schema": "connection_hub.delegated_card_authority.v7",
+                  "client_id": "automation:person-my-card-89abcdef0123456789abcdef",
+                  "delegate_subject": "user:admin-1",
+                  "issuer_kind": "project_person_my_card",
+                  "issuer_ref": "work:project:one",
+                  "properties": {}
+                }
+              },
+              "control": {
+                "subject_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "access_id": "person-control-0123456789abcdef01234567",
+                "state": "present",
+                "revision": 3,
+                "authority": {
+                  "access_id": "person-control-0123456789abcdef01234567",
+                  "grantor_subject": "project-authority:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                  "card_revision": 3,
+                  "card_kind": "automation",
+                  "source": "manual",
+                  "state": "active",
+                  "catalog_version": "catalog_v1",
+                  "expires_at": 2000000000,
+                  "composition_mode": "and",
+                  "operations": [
+                    "review.accept"
+                  ],
+                  "resource_grants": {
+                    "https://board.example.test/mcp": [
+                      "work:review"
+                    ]
+                  },
+                  "resource_operations": {
+                    "https://board.example.test/mcp": [
+                      "review.accept"
+                    ]
+                  },
+                  "schema": "connection_hub.delegated_card_authority.v7",
+                  "client_id": "automation:person-control-0123456789abcdef01234567",
+                  "delegate_subject": "integration:person-control-0123456789abcdef01234567",
+                  "issuer_kind": "project_person_control",
+                  "issuer_ref": "work:project:one",
+                  "properties": {
+                    "connection_hub.project_person_control": {
+                      "schema": "synthetic"
+                    },
+                    "connection_hub.control_snapshot": {
+                      "schema": "synthetic"
+                    },
+                    "service_composition_modes": {
+                      "https://board.example.test/mcp": "and"
+                    }
+                  },
+                  "provenance": {}
+                }
+              },
+              "edge": {
+                "state": "valid"
+              },
+              "chain": {
+                "state": "complete",
+                "cards": [
+                  {
+                    "subject_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "access_id": "person-control-0123456789abcdef01234567",
+                    "state": "present",
+                    "revision": 3,
+                    "authority": {
+                      "access_id": "person-control-0123456789abcdef01234567",
+                      "grantor_subject": "project-authority:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                      "card_revision": 3,
+                      "card_kind": "automation",
+                      "source": "manual",
+                      "state": "active",
+                      "catalog_version": "catalog_v1",
+                      "expires_at": 2000000000,
+                      "composition_mode": "and",
+                      "operations": [
+                        "review.accept"
+                      ],
+                      "resource_grants": {
+                        "https://board.example.test/mcp": [
+                          "work:review"
+                        ]
+                      },
+                      "resource_operations": {
+                        "https://board.example.test/mcp": [
+                          "review.accept"
+                        ]
+                      },
+                      "schema": "connection_hub.delegated_card_authority.v7",
+                      "client_id": "automation:person-control-0123456789abcdef01234567",
+                      "delegate_subject": "integration:person-control-0123456789abcdef01234567",
+                      "issuer_kind": "project_person_control",
+                      "issuer_ref": "work:project:one",
+                      "properties": {
+                        "connection_hub.project_person_control": {
+                          "schema": "synthetic"
+                        },
+                        "connection_hub.control_snapshot": {
+                          "schema": "synthetic"
+                        },
+                        "service_composition_modes": {
+                          "https://board.example.test/mcp": "and"
+                        }
+                      },
+                      "provenance": {}
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "person": "user:member-2",
+              "my": {
+                "subject_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "access_id": "person-my-card-fedcba9876543210fedcba98",
+                "state": "absent"
+              },
+              "control": {
+                "subject_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "access_id": "person-control-fedcba9876543210fedcba98",
+                "state": "in_transaction"
+              },
+              "edge": {
+                "state": "missing"
+              },
+              "chain": {
+                "state": "missing",
+                "cards": []
+              }
+            }
+          ],
+          "catalog": {
+            "version": "catalog_v1",
+            "content_hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "document": {
+              "version": "catalog_v1"
+            }
+          }
+        },
+        "receipt_proof": {
+          "service_id": "hub.test@1",
+          "timestamp": "1800000000",
+          "signature": "0uJ2ZKC1z2wpK0i1I_Qbim-s7tvAJloQ8anIl9AwiRM"
+        }
+      }
+    },
+    {
+      "name": "catalog_only",
+      "request": {
+        "schema": "card-census-read.v1",
+        "request_echo": "01010101010101010101010101010101",
+        "scope": "work:project:one",
+        "persons": [],
+        "include_catalog": true
+      },
+      "request_digest": "5bcea5132185d69873713a50fc9379d3dc7223c0a36a8d31327116ba141d9f98",
+      "answer": {
+        "schema": "card-census-answer.v1",
+        "direction": "hub-to-authority",
+        "audience": "authority.test@1",
+        "request_echo": "01010101010101010101010101010101",
+        "request_digest": "5bcea5132185d69873713a50fc9379d3dc7223c0a36a8d31327116ba141d9f98",
+        "scope": "work:project:one",
+        "persons": [],
+        "include_catalog": true,
+        "result": {
+          "kind": "census",
+          "persons": [],
+          "catalog": null
+        },
+        "receipt_proof": {
+          "service_id": "hub.test@1",
+          "timestamp": "1800000000",
+          "signature": "fX2PUUFRVBIV0AqKp2HG2iULmz0vr8hVZQmfUmZPrD0"
+        }
+      }
+    },
+    {
+      "name": "scope_forbidden",
+      "request": {
+        "schema": "card-census-read.v1",
+        "request_echo": "02020202020202020202020202020202",
+        "scope": "work:project:one",
+        "persons": [
+          "user:admin-1"
+        ],
+        "include_catalog": false
+      },
+      "request_digest": "2d7b4865de5d52641efca6172e7c1e6b125ef1dcd578c5d8fd9070f19c85913e",
+      "answer": {
+        "schema": "card-census-answer.v1",
+        "direction": "hub-to-authority",
+        "audience": "authority.test@1",
+        "request_echo": "02020202020202020202020202020202",
+        "request_digest": "2d7b4865de5d52641efca6172e7c1e6b125ef1dcd578c5d8fd9070f19c85913e",
+        "scope": "work:project:one",
+        "persons": [
+          "user:admin-1"
+        ],
+        "include_catalog": false,
+        "result": {
+          "kind": "refused",
+          "code": "card_census_scope_forbidden",
+          "status": 403
+        },
+        "receipt_proof": {
+          "service_id": "hub.test@1",
+          "timestamp": "1800000000",
+          "signature": "HtropOPSdOo1bG4cHOwaI-OjoCz11fZPH9-bcuv9Sm8"
+        }
+      }
+    },
+    {
+      "name": "too_large",
+      "request": {
+        "schema": "card-census-read.v1",
+        "request_echo": "03030303030303030303030303030303",
+        "scope": "work:project:one",
+        "persons": [
+          "user:admin-1"
+        ],
+        "include_catalog": true
+      },
+      "request_digest": "7432deb356ad568e27cc22ad968308fe966c47e1b0b810f64982e22ff8835c0b",
+      "answer": {
+        "schema": "card-census-answer.v1",
+        "direction": "hub-to-authority",
+        "audience": "authority.test@1",
+        "request_echo": "03030303030303030303030303030303",
+        "request_digest": "7432deb356ad568e27cc22ad968308fe966c47e1b0b810f64982e22ff8835c0b",
+        "scope": "work:project:one",
+        "persons": [
+          "user:admin-1"
+        ],
+        "include_catalog": true,
+        "result": {
+          "kind": "refused",
+          "code": "card_census_too_large",
+          "status": 413
+        },
+        "receipt_proof": {
+          "service_id": "hub.test@1",
+          "timestamp": "1800000000",
+          "signature": "-kdeOnta0V6DMEaQ2NDFxyzcdXJPGNh6aZAmZp5rYzw"
+        }
+      }
+    }
+  ],
+  "signed_fields": [
+    "schema",
+    "direction",
+    "audience",
+    "request_echo",
+    "request_digest",
+    "scope",
+    "persons",
+    "include_catalog",
+    "result"
+  ]
+}

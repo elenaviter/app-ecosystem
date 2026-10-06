@@ -150,6 +150,32 @@ field tamper, new-echo replay, and wrong audience/direction. The fixture uses a
 public test-only key, never a production credential. Consumer adapters load
 these same vectors and validate their own result semantics on top.
 
+### Fixed census contract
+
+The same three helpers also accept the keyword-only trusted selection
+`contract=AnswerContract.CENSUS`. Import `AnswerContract` from the helper
+module. Its closed enum has only `PARTICIPANT` and `CENSUS`; strings,
+caller-supplied field lists, and extensible contract objects are refused.
+Applications select the contract in their trusted adapter code, independently
+of request bodies. The default remains `AnswerContract.PARTICIPANT`, with
+identical existing digests, signature bytes, and verification rules.
+
+The census request contains exactly `schema`, `request_echo`, `scope`,
+`persons`, and `include_catalog`. Its unsigned answer contains exactly
+`schema`, `direction`, `audience`, `request_echo`, `request_digest`, `scope`,
+`persons`, `include_catalog`, and `result`. Each echoed field is bound using
+the same type-sensitive canonical bytes; array order is significant, and
+boolean `true` differs from integer `1`. The three-field `receipt_proof`,
+HMAC frame, trusted configuration, fresh-attempt echo, and timestamp checks
+are the same as for participant answers. Extra or missing fields refuse;
+the helper never converts census into a synthetic transaction request.
+
+Applications still own request semantics, authorized scope, membership
+completeness, and result validation. A signed census result proves the peer's
+answer to this exact request; it grants no write authority and does not prove
+the requested person list is complete. Shared synthetic census vectors are
+in `packages/service-foundation/tests/fixtures/census_answer_vectors.json`.
+
 ## Bounded recovery pages
 
 The legacy `list_in_doubt(limit=...)` and `Coordinator.recover(limit=...)`
