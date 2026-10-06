@@ -168,6 +168,7 @@ import {
 import {
   catalogPinAtStart,
   controlFocusRead,
+  isStaleEditRefusal,
   pinAfterRefusal,
   pinAfterSave,
   pinAtStart,
@@ -3376,7 +3377,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       // Redux, but the operator decides how to reconcile it with this draft.
       // W587: after a 409 the edit stays pinned and is refused until the
       // person reloads the Card; the read shows them the server version.
-      if (updated?.status === 409) {
+      if (isStaleEditRefusal(updated)) {
         // No automatic re-read (operator, 14:50); "Reload this Card" reads it.
         editBaseRevision.current = pinAfterRefusal(editBaseRevision.current);
         setEditRefusedStale(true);

@@ -74,3 +74,17 @@ export function withLinkedOperation(
   if (!resource || !operation) return operations;
   return { ...operations, [resource]: Array.from(new Set([...(operations[resource] || []), operation])) };
 }
+
+/** W587 follow-up (EMain 15:13): the refusals that mean the Card or its catalog
+ *  moved since the editor read it. Only these make an edit stale; every other
+ *  409 is a plain refusal shown with the server's own reason, Save still open. */
+export const STALE_EDIT_REFUSALS: ReadonlySet<string> = new Set([
+  'delegated_access_precondition_failed',
+  'delegated_card_save_conflict',
+  'delegated_card_revision_conflict',
+  'consent_catalog_changed',
+]);
+
+export function isStaleEditRefusal(result: { status?: number; error?: string } | null | undefined): boolean {
+  return Number(result?.status) === 409 && STALE_EDIT_REFUSALS.has(String(result?.error || ''));
+}
