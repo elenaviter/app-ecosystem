@@ -1,5 +1,5 @@
 {
-  "notice": "Synthetic test-only vectors for card-census-answer.v1 (AE #616). config.secret is public fixture material, never a credential. Producer (Hub) and consumer (PB) load these exact bytes.",
+  "notice": "Synthetic test-only vectors for card-census-answer.v1 (AE #616). config.secret is public fixture material, never a credential. Producer (Hub) and consumer (PB) load these exact bytes. Card entries carry the AE #618 shape (identity fields, all non-personal properties, edge provenance); values are synthetic and authenticate only, they are not business evidence.",
   "config": {
     "schema": "card-census-answer.v1",
     "request_schema": "card-census-read.v1",
@@ -59,7 +59,13 @@
                     "project_identity_edge": {
                       "schema": "synthetic"
                     }
-                  }
+                  },
+                  "schema": "connection_hub.delegated_card_authority.v7",
+                  "client_id": "automation:person-my-card-89abcdef0123456789abcdef",
+                  "delegate_subject": "user:admin-1",
+                  "issuer_kind": "project_person_my_card",
+                  "issuer_ref": "work:project:one",
+                  "properties": {}
                 }
               },
               "control": {
@@ -89,7 +95,24 @@
                     "https://board.example.test/mcp": [
                       "review.accept"
                     ]
-                  }
+                  },
+                  "schema": "connection_hub.delegated_card_authority.v7",
+                  "client_id": "automation:person-control-0123456789abcdef01234567",
+                  "delegate_subject": "integration:person-control-0123456789abcdef01234567",
+                  "issuer_kind": "project_person_control",
+                  "issuer_ref": "work:project:one",
+                  "properties": {
+                    "connection_hub.project_person_control": {
+                      "schema": "synthetic"
+                    },
+                    "connection_hub.control_snapshot": {
+                      "schema": "synthetic"
+                    },
+                    "service_composition_modes": {
+                      "https://board.example.test/mcp": "and"
+                    }
+                  },
+                  "provenance": {}
                 }
               },
               "edge": {
@@ -125,7 +148,24 @@
                         "https://board.example.test/mcp": [
                           "review.accept"
                         ]
-                      }
+                      },
+                      "schema": "connection_hub.delegated_card_authority.v7",
+                      "client_id": "automation:person-control-0123456789abcdef01234567",
+                      "delegate_subject": "integration:person-control-0123456789abcdef01234567",
+                      "issuer_kind": "project_person_control",
+                      "issuer_ref": "work:project:one",
+                      "properties": {
+                        "connection_hub.project_person_control": {
+                          "schema": "synthetic"
+                        },
+                        "connection_hub.control_snapshot": {
+                          "schema": "synthetic"
+                        },
+                        "service_composition_modes": {
+                          "https://board.example.test/mcp": "and"
+                        }
+                      },
+                      "provenance": {}
                     }
                   }
                 ]
@@ -163,7 +203,7 @@
         "receipt_proof": {
           "service_id": "hub.test@1",
           "timestamp": "1800000000",
-          "signature": "5dEhslxb3W-6wZW19fzF9wnpSAVmwo2iJIrdWMzyGWo"
+          "signature": "0uJ2ZKC1z2wpK0i1I_Qbim-s7tvAJloQ8anIl9AwiRM"
         }
       }
     },

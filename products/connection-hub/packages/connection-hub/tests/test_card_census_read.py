@@ -96,12 +96,15 @@ async def test_present_and_absent_cards_and_the_active_catalog(tmp_path):
     by_person = {entry["person"]: entry for entry in result["persons"]}
     admin = by_person[ADMIN]
     full = control.to_dict()
-    assert admin["control"] == {"subject_hash": subject_hash_for(identity.project_subject),
-                                "access_id": identity.control_id, "state": "present",
-                                "revision": control.card_revision,
-                                "authority": {name: full[name] for name in CAPABILITY_FIELDS if name in full}}
-    assert not {"label", "provenance", "properties", "client_metadata", "delegate_subject", "last_four"} & set(
-        admin["control"]["authority"])  # only what a capability evaluation reads (EMain 20:19)
+    assert admin["control"]["revision"] == control.card_revision and admin["control"]["state"] == "present"
+    assert {name: admin["control"]["authority"][name] for name in CAPABILITY_FIELDS if name in full} == {
+        name: full[name] for name in CAPABILITY_FIELDS if name in full}
+    from connection_hub.delegated_credentials.cards.census_read import PERSONAL_PROPERTIES
+
+    assert not {"label", "client_metadata", "last_four", "created_at", "manage_url"} & set(
+        admin["control"]["authority"])  # only what an identity/capability evaluation reads (EMain 20:19)
+    assert admin["control"]["authority"]["properties"] == {
+        name: value for name, value in (control.properties or {}).items() if name not in PERSONAL_PROPERTIES}
     assert admin["my"] == {"subject_hash": subject_hash_for(ADMIN), "access_id": identity.my_card_id,
                            "state": "absent"}
     assert by_person[OTHER]["control"]["state"] == "absent"
@@ -363,3 +366,47 @@ def test_the_hub_reproduces_each_shared_census_vector(vector):
         tampered = {**answer, field: "f" * 32 if isinstance(answer[field], str) else {"tampered": True}}
         assert census_answer_signature(tampered, secret=config["secret"], signer_id=proof["service_id"],
                                        timestamp=proof["timestamp"]) != proof["signature"], field
+
+
+@pytest.mark.asyncio
+async def test_the_transmitted_cards_rebuild_and_pass_the_qualified_evaluation(tmp_path, redis_client):
+    # CodeApp 20:34: rebuild each CardAuthority from the ANSWER and run the qualified path on it.
+    from connection_hub.delegated_credentials.cards.model import CardAuthority
+    from connection_hub.delegated_credentials.controls.hierarchy import compose_resolved_control_hierarchy
+    from connection_hub.delegated_credentials.controls.project_person import ProjectPersonControlIdentity
+    from test_w502_my_card_fence_real_path import TARGET, PROJECT_REF, _create, _service
+
+    h = await _service(tmp_path, redis_client)
+    assert (await _create(h, "request-create"))["ok"] is True
+    caller = _caller(PEER, prefix="work:project:")
+    operation = CardCensusReadOperation(callers={PEER: caller}, card_store=h.store, catalog_store=None,
+                                        nonces=_Nonces(), clock=lambda: NOW)
+    request = _request([TARGET], scope=PROJECT_REF, include_catalog=False)
+    entry = _verified(await operation.answer(request), request)["persons"][0]
+    my = CardAuthority.from_mapping(entry["my"]["authority"])
+    chain = [CardAuthority.from_mapping(card["authority"]) for card in entry["chain"]["cards"]]
+    identity = ProjectPersonCardIdentity.from_my_card(my)
+    assert identity.edge_ref == ProjectPersonCardIdentity.build(project_ref=PROJECT_REF,
+                                                                person_subject=TARGET).edge_ref
+    assert ProjectPersonControlIdentity.from_authority(chain[0]).control_id == identity.control_id
+    assert identity.edge(control_card=chain[0], my_card=my).validation_reason() == ""
+    hierarchy = compose_resolved_control_hierarchy(my, tuple(chain))
+    assert hierarchy.effective_card.access_id == my.access_id
+    from connection_hub.delegated_credentials.cards.census_read import PERSONAL_PROPERTIES
+
+    for card in (my, *chain):
+        assert not set(card.properties or {}) & set(PERSONAL_PROPERTIES)  # person-owned settings never travel
+
+
+@pytest.mark.asyncio
+async def test_person_owned_settings_are_withheld_and_authorization_properties_kept(tmp_path):
+    from connection_hub.delegated_credentials.cards.census_read import _present
+
+    operation, store, control, identity, catalog_store = await _world(tmp_path)
+    card = dataclasses.replace(control, properties={
+        "connection_hub.github": {"login": "someone"}, "connection_hub.commit_email": "a@example.test",
+        "connection_hub.control_snapshot": {"schema": "x"}, "kdcube.application_operations": {"enabled": True},
+        "service_composition_modes": {"https://x.test/mcp": "or"}})
+    sent = _present(card)["authority"]["properties"]
+    assert set(sent) == {"connection_hub.control_snapshot", "kdcube.application_operations",
+                         "service_composition_modes"}
