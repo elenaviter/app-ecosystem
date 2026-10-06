@@ -46,6 +46,7 @@ from .worktree_files import (
     observe_assignments,
 )
 from ..contract.errors import PERMANENT_CREDENTIAL_CODES, DomainError
+from ..contract.operation_identity import transport_request_hash
 from ..contract.mail_attachments import MAX_MAIL_ATTACHMENT_BYTES, validate_mail_attachment
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
@@ -415,6 +416,93 @@ def _limit_ended_after_refusal(state: Any) -> bool:
         and bool(state.get("refusal"))
         and bool(state.get("cleared_at"))
         and not str(state.get("resets_at") or "")
+    )
+
+
+RECEIPT_READ_OPERATION = "operation.receipt.get"
+
+
+class ReceiptPending(DomainError):
+    """The board admitted the request and has not settled it yet (W574)."""
+
+
+async def _settle_unknown_by_receipt(
+    stable_action: Any, request: Mapping[str, Any], arguments: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Read the durable receipt of a request whose earlier send ended unknown (W574).
+
+    Returns the response to complete the request with, raises the stored
+    refusal or ``ReceiptPending``, or returns None when the request was never
+    sent with an unknown outcome, carries no idempotency key, or the board
+    does not have the read operation yet (then the old same-transport resend
+    applies). ``in_progress`` and ``no_record`` ("not admitted at the time of
+    this read", never "no effect") are read again until the request expires,
+    then reported as an unknown outcome with the last read as evidence.
+    Resending is the caller's explicit decision, never automatic.
+    """
+
+    last_error = request.get("last_transport_error")
+    if not isinstance(last_error, Mapping) or last_error.get("code") != "data_bus_outcome_unknown":
+        return None
+    payload = arguments.get("payload") if isinstance(arguments.get("payload"), Mapping) else {}
+    key = str(payload.get("idempotency_key") or "").strip()
+    action = str(arguments.get("action") or "")
+    if not key or action == RECEIPT_READ_OPERATION:
+        return None
+    object_ref = str(arguments.get("object_ref") or "")
+    attempt = int(request.get("transport_attempts") or 1)
+    try:
+        receipt = await stable_action(
+            object_ref=object_ref,
+            action=RECEIPT_READ_OPERATION,
+            payload={
+                "operation": action,
+                "idempotency_key": key,
+                "request_hash": transport_request_hash(action, object_ref, payload),
+            },
+            transport_request_id=f"{request.get('request_id') or ''}:receipt:{attempt}",
+        )
+    except DomainError as exc:
+        details = exc.details if isinstance(exc.details, Mapping) else {}
+        if exc.code == "work_worker_stream_operation_denied" and details.get("operation") == RECEIPT_READ_OPERATION:
+            return None
+        raise
+    body = receipt.get("object") if isinstance(receipt, Mapping) and isinstance(receipt.get("object"), Mapping) else receipt
+    state = str((body or {}).get("state") or "") if isinstance(body, Mapping) else ""
+    if state == "applied":
+        outcome = body.get("outcome") if isinstance(body.get("outcome"), Mapping) else {}
+        return {**dict(outcome), "receipt_read": {"state": "applied", "settled_at": str(body.get("settled_at") or "")}}
+    if state == "refused":
+        raise DomainError(
+            str(body.get("code") or "work_coordinate_refused"),
+            str(body.get("message") or "The governed operation was refused."),
+            status=409,
+            details={"receipt_read": "refused"},
+        )
+    if state == "in_progress":
+        raise ReceiptPending(
+            "data_bus_outcome_unknown",
+            "The board admitted this request and has not settled it yet; read again, never resend.",
+            status=504,
+            details={"receipt_read": "in_progress", "admitted_at": str(body.get("admitted_at") or "")},
+        )
+    if state == "no_record":
+        # Not admitted at the time of this read, which is not "no effect": the
+        # original may still be on its way through the queue or the Data Bus
+        # (Ops, 06:22 UTC). It is read again on the same bounded schedule as
+        # in_progress and, at the request's expiry, reported as unknown.
+        raise ReceiptPending(
+            "data_bus_outcome_unknown",
+            "The board had not admitted this request at the time of this read; read again, never resend. "
+            "It may still arrive.",
+            status=504,
+            details={"receipt_read": "no_record", "ledger_cutover_at": str(body.get("ledger_cutover_at") or "")},
+        )
+    raise DomainError(
+        "work_coordinate_receipt_invalid",
+        "The receipt read returned no known state.",
+        status=502,
+        details={"state": state},
     )
 
 
@@ -6891,10 +6979,18 @@ class ProblemBoardRelaySupervisor:
                 }
                 action_started = time.monotonic()
                 try:
-                    result = await stable_action(
-                        **arguments,
-                        transport_request_id=str(request.get("request_id") or ""),
-                    )
+                    # W574: a mutation whose earlier send ended with an unknown
+                    # outcome is settled by reading the board's durable receipt,
+                    # never by sending it again. Only a board without the read
+                    # operation keeps the same-transport resend.
+                    settled = await _settle_unknown_by_receipt(stable_action, request, arguments)
+                    if settled is not None:
+                        result = settled
+                    else:
+                        result = await stable_action(
+                            **arguments,
+                            transport_request_id=str(request.get("request_id") or ""),
+                        )
                 finally:
                     governed_action_seconds = time.monotonic() - action_started
                 if not isinstance(result, Mapping):

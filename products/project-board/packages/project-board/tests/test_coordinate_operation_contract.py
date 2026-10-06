@@ -49,6 +49,23 @@ def _args(action, *, object_ref="", payload=None, config="", contract=False, ide
     )
 
 
+@pytest.fixture(autouse=True)
+def board_before_receipt_read(request, monkeypatch):
+    """The W404 ledger tests model a board without operation.receipt.get.
+
+    Their reruns resend the unchanged request, as such a board requires. A
+    test that sends the real receipt read (W574) asks for ``receipt_read``.
+    """
+
+    if "receipt_read" not in request.fixturenames:
+        monkeypatch.setattr(cli, "_settle_by_remote_receipt", lambda *args, **kwargs: None)
+
+
+@pytest.fixture
+def receipt_read():
+    """Marks a test that runs the CLI's real W574 receipt read."""
+
+
 @pytest.fixture
 def submits(monkeypatch):
     calls: list[dict] = []
@@ -529,25 +546,118 @@ def test_an_applied_review_accept_is_recovered_without_a_second_request(submits,
     assert len(submits) == 1
 
 
-def test_an_outcome_still_unknown_is_resent_as_the_exact_same_request(submits, monkeypatch, tmp_path):
+def test_an_outcome_still_unknown_is_resent_as_the_exact_same_request(receipt_read, submits, monkeypatch, tmp_path):
     host, identity, channel = make_host(tmp_path)
     monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
     payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w2"}
     args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
 
-    def outcome_unknown(queue_, path, *, worker_name, request_id, timeout_seconds):
-        raise DomainError("work_coordinate_outcome_unknown", "unknown", status=504, details={})
-
-    monkeypatch.setattr(cli, "_await_coordinate_response", outcome_unknown)
+    # A board before W574 refuses the receipt read; the rerun then resends
+    # the exact same request under the same key.
+    monkeypatch.setattr(cli, "_await_coordinate_response", _board_answering_reads(submits, None))
     for _ in range(2):
         with pytest.raises(DomainError):
             cli._coordinate_command(args)
-    assert len(submits) == 2
-    assert submits[0]["payload"] == submits[1]["payload"] == payload
+    sends = [values for values in submits if values["action"] != "operation.receipt.get"]
+    reads = [values for values in submits if values["action"] == "operation.receipt.get"]
+    assert len(sends) == 2 and len(reads) == 1
+    assert sends[0]["payload"] == sends[1]["payload"] == payload
     record = CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w2")
     assert record["state"] == "outcome_unknown"
     assert len(record["request_ids"]) == 2
     assert record["request_hash"] == coordinate_request_hash("review.accept", PROJECT, payload)
+
+
+def _board_answering_reads(submits, receipt):
+    """Every mutation ends unknown; a receipt read gets ``receipt``, or the
+    refusal of a board that predates W574 when ``receipt`` is None."""
+
+    def answer(queue_, path, *, worker_name, request_id, timeout_seconds):
+        (values,) = [values for values in submits if values.get("request_id") == request_id]
+        if values["action"] != "operation.receipt.get":
+            raise DomainError("work_coordinate_outcome_unknown", "unknown", status=504, details={})
+        if receipt is None:
+            return {"ok": False, "error": {
+                "code": "work_worker_stream_operation_denied", "message": "Not governed here.", "status": 403,
+                "details": {"operation": "operation.receipt.get"},
+            }}
+        return {"ok": True, "result": {"operation": "operation.receipt.get", "object": dict(receipt)}}
+
+    return answer
+
+
+def test_a_rerun_settles_an_unknown_outcome_from_the_applied_receipt_without_a_resend(receipt_read, submits, monkeypatch, tmp_path):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w574"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+    stored = {"operation": "review.accept", "state": "applied", "object": {"saved": True}}
+    monkeypatch.setattr(cli, "require_successful_operation_envelope", lambda operation, result: None)
+    monkeypatch.setattr(
+        cli, "_await_coordinate_response",
+        _board_answering_reads(submits, {"state": "applied", "outcome": stored, "settled_at": "2026-10-06T06:30:00Z"}),
+    )
+    with pytest.raises(DomainError):
+        cli._coordinate_command(args)
+
+    result = cli._coordinate_command(args)
+
+    assert [values["action"] for values in submits] == ["review.accept", "operation.receipt.get"]
+    assert submits[1]["payload"] == {
+        "operation": "review.accept", "idempotency_key": "accept-w574",
+        "request_hash": coordinate_request_hash("review.accept", PROJECT, payload),
+    }
+    assert result["object"] == {"saved": True}
+    assert result["recovery"]["source"] == "remote_receipt"
+    record = CoordinateRecovery(host.field_root).read(channel.worker_name, "accept-w574")
+    assert record["state"] == "applied"
+    # A third run is answered from the local receipt: nothing is sent.
+    cli._coordinate_command(args)
+    assert len(submits) == 2
+
+
+@pytest.mark.parametrize(
+    ("receipt", "code"),
+    [
+        ({"state": "refused", "code": "work_item_revision_conflict", "message": "Stale."}, "work_item_revision_conflict"),
+        ({"state": "in_progress", "admitted_at": "2026-10-06T06:29:00Z"}, "work_coordinate_outcome_unknown"),
+    ],
+    ids=["refused", "in_progress"],
+)
+def test_a_rerun_reports_a_refused_or_admitted_receipt_without_a_resend(receipt_read, submits, monkeypatch, tmp_path, receipt, code):
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w574b"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+    monkeypatch.setattr(cli, "_await_coordinate_response", _board_answering_reads(submits, receipt))
+    with pytest.raises(DomainError):
+        cli._coordinate_command(args)
+
+    with pytest.raises(DomainError) as rerun:
+        cli._coordinate_command(args)
+
+    assert rerun.value.code == code
+    assert [values["action"] for values in submits] == ["review.accept", "operation.receipt.get"]
+
+
+def test_a_rerun_after_no_record_resends_unchanged_as_the_callers_choice(receipt_read, submits, monkeypatch, tmp_path):
+    # no_record is "not admitted at the time of this read", never "no
+    # effect". Running the command again is the caller's choice to resend it
+    # unchanged; admission deduplicates the key (Ops, 06:22 UTC).
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w574c"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+    monkeypatch.setattr(
+        cli, "_await_coordinate_response",
+        _board_answering_reads(submits, {"state": "no_record", "ledger_cutover_at": "2026-10-06T07:00:00Z"}),
+    )
+    for _ in range(2):
+        with pytest.raises(DomainError):
+            cli._coordinate_command(args)
+
+    assert [values["action"] for values in submits] == ["review.accept", "operation.receipt.get", "review.accept"]
+    assert submits[0]["payload"] == submits[2]["payload"] == payload
 
 
 def test_a_refusal_frees_the_key_for_a_corrected_request(submits, monkeypatch, tmp_path):
@@ -679,7 +789,7 @@ def _oversized_success(queue, worker_name, request_id):
     ],
 )
 def test_a_queued_uncertain_result_keeps_the_request_for_its_unchanged_retry(
-    submits, monkeypatch, tmp_path, relay, code
+    receipt_read, submits, monkeypatch, tmp_path, relay, code
 ):
     # W404 review return (codex-app, 2026-09-29): these three queued error
     # envelopes freed the key as if the service had refused, so a retry could
@@ -722,8 +832,11 @@ def test_a_queued_uncertain_result_keeps_the_request_for_its_unchanged_retry(
 
     with pytest.raises(DomainError):
         cli._coordinate_command(args)
-    assert len(submits) == 2
-    assert submits[1]["payload"] == payload, "the retry is the exact same request"
+    # W574: the retry first reads the board's receipt. Here that read ends
+    # uncertain too, so nothing is resent; the unchanged resend after a
+    # refused read is test_an_outcome_still_unknown_is_resent_as_the_exact_same_request.
+    assert [values["action"] for values in submits] == ["review.accept", "operation.receipt.get"]
+    assert submits[1]["payload"]["request_hash"] == record["request_hash"]
 
 
 def test_an_unsent_retry_does_not_free_a_key_an_earlier_attempt_may_have_applied(

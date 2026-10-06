@@ -69,8 +69,10 @@ from .relay_pacing import channel_pending_refusal, channel_reconnect_state
 from .relay_channel_status import channel_status
 from .coordinate_contract import coordinate_contract, require_coordinate_shape
 from .coordinate_recovery import (
+    RECEIPT_READ_OPERATION,
     CoordinateRecovery,
     error_outcome,
+    lookup_remote_receipt,
     mutation_idempotency_key,
     recovery_identity,
 )
@@ -2786,7 +2788,9 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             "timeout_seconds must be between 1 and 600.",
         )
     queue = CoordinateQueue(config.field_root)
-    key = mutation_idempotency_key(payload)
+    # The receipt read names the original's key in its payload; it is a read,
+    # not a mutation held under that key.
+    key = "" if action == RECEIPT_READ_OPERATION else mutation_idempotency_key(payload)
     recovery = CoordinateRecovery(config.field_root) if key else None
     if recovery is not None:
         # A completed exact receipt is local proof, not a new channel request.
@@ -2814,6 +2818,11 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
         if not created:
             recovered = _recover_prior_mutation(
                 queue, recovery, prior, worker_name=channel.worker_name, key=key
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _settle_by_remote_receipt(
+                args, recovery, prior, worker_name=channel.worker_name, key=key,
             )
             if recovered is not None:
                 return recovered
@@ -3112,6 +3121,80 @@ def _recover_prior_mutation(
         # Only settlement proving every attempt had no effect releases a key.
         # A refusal beside an earlier unknown is not a completed failure.
         raise refusal
+    return None
+
+
+def _settle_by_remote_receipt(
+    args: Any,
+    recovery: CoordinateRecovery,
+    prior: Mapping[str, Any],
+    *,
+    worker_name: str,
+    key: str,
+) -> dict[str, Any] | None:
+    """Settle an earlier unknown attempt by reading the board's receipt (W574).
+
+    Applied returns the stored outcome and refused raises the stored code,
+    with no mutation sent. In progress raises outcome unknown: the board holds
+    the request and a resend would add nothing. No record means "not admitted
+    at the time of this read", never "no effect"; running the same command
+    again is the caller's choice to resend it unchanged, which admission
+    deduplicates on the key. None (no record, or a board without the read)
+    keeps that unchanged resend.
+    """
+
+    def read(action: str, object_ref: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        return _coordinate_command(
+            argparse.Namespace(
+                action=action,
+                object_ref=object_ref,
+                payload_json=json.dumps(dict(payload)),
+                payload_file="",
+                runtime_kind=getattr(args, "runtime_kind", ""),
+                runtime_session_id=getattr(args, "runtime_session_id", ""),
+                config=getattr(args, "config", None),
+                timeout_seconds=getattr(args, "timeout_seconds", DEFAULT_COORDINATE_TIMEOUT_SECONDS),
+            )
+        )
+
+    receipt = lookup_remote_receipt(prior, read)
+    if receipt is None:
+        return None
+    state = str(receipt.get("state") or "")
+    action = str(prior.get("action") or "")
+    unknown = [
+        request_id
+        for request_id, outcome in (recovery.read(worker_name, key) or prior).get("attempts", {}).items()
+        if outcome == "unknown"
+    ] or [str(value) for value in prior.get("request_ids") or []]
+    if state == "applied":
+        outcome = receipt.get("outcome") if isinstance(receipt.get("outcome"), Mapping) else {}
+        result = _coordinate_response({"ok": True, "result": outcome}, expected_action=action)
+        record = recovery.settle_attempt(
+            worker_name, key, unknown[-1], "applied", receipt=result,
+            expected_request_hash=str(prior.get("request_hash") or ""),
+        )
+        result["recovery"] = recovery_identity(record or prior, source="remote_receipt")
+        return result
+    if state == "refused":
+        raise DomainError(
+            str(receipt.get("code") or "work_coordinate_refused"),
+            str(receipt.get("message") or "The board refused the original request."),
+            status=409,
+            details={"receipt_read": "refused", "recovery": recovery_identity(prior, source="remote_receipt")},
+        )
+    if state == "in_progress":
+        raise DomainError(
+            "work_coordinate_outcome_unknown",
+            "The board admitted the original request and has not settled it yet. "
+            "It was not sent again; run the same command later to read its receipt.",
+            status=504,
+            details={
+                "receipt_read": "in_progress",
+                "admitted_at": str(receipt.get("admitted_at") or ""),
+                "recovery": recovery_identity(prior, source="remote_receipt"),
+            },
+        )
     return None
 
 
