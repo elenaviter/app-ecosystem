@@ -846,3 +846,79 @@ async def test_a_decided_transaction_whose_entry_survived_is_listed_for_finish(t
     assert [(e["transaction_id"], e["state"], e.get("needs_finish")) for e in listed] == [(TX, "committed", True)]
     await _decide(store, "committed")
     assert await tx.list_in_doubt(store) == []
+
+
+# ── H-N1 (W580 F1/F3/F4): effects only after a COMMITTED decision ──────────
+
+EFFECTS = [{"kind": "grant_binding", "key": "tok-1", "payload": {"access_id": "aut_abc123"}},
+           {"kind": "invocation_policy", "key": "memories/search", "payload": {"mode": "always"}}]
+
+
+class _Applier:
+    def __init__(self, fail_on=None):
+        self.applied, self.fail_on = [], fail_on
+
+    async def __call__(self, kind, key, payload, *, transaction_id):
+        if (kind, key) == self.fail_on:
+            self.fail_on = None
+            raise RuntimeError("killed while applying")
+        self.applied.append((transaction_id, kind, key))
+
+
+async def _staged_with_effects(tmp_path, applier):
+    from datetime import datetime, timezone
+    store, service, before, after = await _setup(tmp_path)
+    service.bind_effect_applier(applier)
+    when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+    await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
+                                    effects=EFFECTS)
+    return store, service, before, after
+
+
+@pytest.mark.asyncio
+async def test_effects_are_recorded_at_prepare_and_applied_only_after_commit(tmp_path):
+    applier = _Applier()
+    store, service, before, after = await _staged_with_effects(tmp_path, applier)
+    assert applier.applied == [] and (await tx.state(store, transaction_id=TX))["effects"] == EFFECTS
+    await _service_decide(store, service, before, "committed")
+    assert applier.applied == [(TX, "grant_binding", "tok-1"), (TX, "invocation_policy", "memories/search")]
+    assert await _visible(store, before) == after and await tx.list_in_doubt(store) == []
+
+
+@pytest.mark.asyncio
+async def test_an_abort_applies_no_effect(tmp_path):
+    applier = _Applier()
+    store, service, before, after = await _staged_with_effects(tmp_path, applier)
+    await _service_decide(store, service, before, "aborted")
+    assert applier.applied == [] and await _visible(store, before) == before
+
+
+@pytest.mark.asyncio
+async def test_a_crash_between_commit_and_effects_fences_reads_and_recovery_applies_each_once(tmp_path):
+    from connection_hub.delegated_credentials.cards.service import CardServingUnavailable as Unavailable
+    applier = _Applier(fail_on=("invocation_policy", "memories/search"))
+    store, service, before, after = await _staged_with_effects(tmp_path, applier)
+    with pytest.raises(Unavailable):
+        await _service_decide(store, service, before, "committed")
+    assert (await tx.state(store, transaction_id=TX))["state"] == "committed"
+    with pytest.raises(CardStorageError, match="card_effects_pending"):  # never served without its effects
+        await _visible(store, before)
+    with pytest.raises(CardStorageError, match="card_effects_pending"):  # nor written over
+        await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    listed = await tx.list_in_doubt(store)
+    assert listed[0]["needs_finish"] is True
+    await _service_decide(store, service, before, "committed")  # recovery re-drives FINISH
+    assert applier.applied == [(TX, "grant_binding", "tok-1"), (TX, "invocation_policy", "memories/search")]
+    assert await _visible(store, before) == after and await tx.list_in_doubt(store) == []
+
+
+@pytest.mark.asyncio
+async def test_a_replay_must_carry_the_same_effects(tmp_path):
+    from datetime import datetime, timezone
+    store, service, before, after = await _staged_with_effects(tmp_path, _Applier())
+    when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_replay_changed"):
+        await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                        subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
+                                        effects=EFFECTS[:1])

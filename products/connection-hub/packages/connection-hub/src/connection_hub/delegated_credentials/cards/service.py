@@ -218,9 +218,13 @@ class DelegatedCardService:
 
     async def stage_transaction(
         self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
-        original: CardAuthority, candidate: CardAuthority, now: Any,
+        original: CardAuthority, candidate: CardAuthority, now: Any, effects: Any = (),
     ) -> dict[str, Any]:
         """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served.
+
+        ``effects`` are the writer's non-Card changes, recorded in the prepared
+        receipt and applied only when FINISH materializes a COMMITTED decision
+        (W580 F1/F3/F4); an ABORT discards them.
 
         The serving projection is marked updating with the transaction's own
         mutation id BEFORE the first durable write, so no cached resolver
@@ -252,7 +256,7 @@ class DelegatedCardService:
                 try:
                     return await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                        participant=participant, subject_hash=subject_hash, original=original,
-                                       candidate=candidate, now=now)
+                                       candidate=candidate, now=now, effects=effects)
                 except (CardStorageError, CardTransactionRefused):
                     if existing is None and await read_receipt(self._store, transaction_id) is None:
                         # Nothing was staged: release the marker rather than
@@ -300,6 +304,16 @@ class DelegatedCardService:
                         raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
                 decided = await decide(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                        decision=decision, reason=reason)
+                if decided["state"] == "committed" and decided.get("effects"):
+                    # Effects before serving: readers refuse until they are applied.
+                    from .transaction_store import apply_effects
+                    applier = getattr(self, "_effect_applier", None)
+                    if applier is None:
+                        raise CardServingUnavailable("card_effect_applier_unavailable", access_id=access_id)
+                    try:
+                        await apply_effects(self._store, decided, applier)
+                    except Exception as exc:
+                        raise CardServingUnavailable("card_effects_pending", access_id=access_id) from exc
                 if decided["state"] != "committed":
                     try:
                         await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
@@ -329,6 +343,10 @@ class DelegatedCardService:
                 return decided
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
+
+    def bind_effect_applier(self, applier: Any) -> None:
+        """The hosting composition's idempotent ``apply(kind, key, payload, *, transaction_id)``."""
+        self._effect_applier = applier
 
     async def _mark_transaction_updating(self, *, access_id: str, mutation_id: str, expected_revision: int,
                                          committing: Mapping[str, Any] | None = None) -> None:

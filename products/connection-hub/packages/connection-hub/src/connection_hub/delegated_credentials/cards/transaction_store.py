@@ -65,6 +65,61 @@ def receipt_path(store: Any, transaction_id: str):
 MAX_ACTIVE_TRANSACTIONS = 1024
 
 
+def _effects_valid(effects: Any) -> bool:
+    if not isinstance(effects, list) or not effects or len(effects) > MAX_EFFECTS:
+        return False
+    seen = set()
+    for effect in effects:
+        if (not isinstance(effect, Mapping) or set(effect) != {"kind", "key", "payload"}
+                or not isinstance(effect["kind"], str) or not effect["kind"]
+                or not isinstance(effect["key"], str) or not effect["key"]
+                or not isinstance(effect["payload"], Mapping) or (effect["kind"], effect["key"]) in seen):
+            return False
+        seen.add((effect["kind"], effect["key"]))
+    return True
+
+
+MAX_EFFECTS = 32
+
+
+def effects_path(store: Any, transaction_id: str):
+    """Which of a committed transaction's effects are applied: its readiness record."""
+    return store.root / "card-transactions" / "effects" / f"{_checked_id(transaction_id)}.json"
+
+
+async def pending_effects(store: Any, receipt: Mapping[str, Any]) -> list[tuple[int, Mapping[str, Any]]]:
+    effects = receipt.get("effects") or []
+    if not effects:
+        return []
+    raw = await read_json_or_none(effects_path(store, receipt["transaction_id"]))
+    applied = set(raw.get("applied") or []) if isinstance(raw, Mapping) else set()
+    return [(index, effect) for index, effect in enumerate(effects) if index not in applied]
+
+
+async def apply_effects(store: Any, receipt: Mapping[str, Any], apply: Any) -> None:
+    """Apply a COMMITTED transaction's recorded effects, each exactly once, then retire it.
+
+    Effects are the writer's non-Card changes (a grant binding, an invocation
+    policy, a credential lifetime): recorded in the prepared receipt, never
+    applied before the decision (W580 F1/F3/F4). ``apply(kind, key, payload,
+    transaction_id=...)`` must be idempotent by (transaction_id, kind, key):
+    a crash after it and before the applied record re-applies it once more.
+    Until every effect is applied the Card stays fenced and readers refuse
+    (card_effects_pending), never serving AFTER without its effects.
+    """
+
+    if receipt["state"] != "committed":
+        raise CardTransactionRefused("card_transaction_not_committed")
+    for index, effect in await pending_effects(store, receipt):
+        await apply(effect["kind"], effect["key"], dict(effect["payload"]),
+                    transaction_id=receipt["transaction_id"])
+        raw = await read_json_or_none(effects_path(store, receipt["transaction_id"]))
+        applied = sorted(set(raw.get("applied") or []) | {index}) if isinstance(raw, Mapping) else [index]
+        await write_json_atomic(effects_path(store, receipt["transaction_id"]), {"applied": applied})
+    await _retire_pointer(store, receipt)
+    await _clear_marker(store, receipt)
+
+
 def active_path(store: Any, transaction_id: str):
     """An in-flight transaction's index entry: written before its receipt, removed once decided."""
     return store.root / "card-transactions" / "active" / f"{_checked_id(transaction_id)}.json"
@@ -72,9 +127,10 @@ def active_path(store: Any, transaction_id: str):
 
 def _validate(raw: Any, transaction_id: str) -> dict[str, Any]:
     try:
-        if (not isinstance(raw, Mapping) or set(raw) != {
-                "schema", "transaction_id", "intent_digest", "participant", "subject_hash", "access_id",
+        base = {"schema", "transaction_id", "intent_digest", "participant", "subject_hash", "access_id",
                 "state", "reason", "before", "after", "change_digest"}
+        if (not isinstance(raw, Mapping) or set(raw) not in (base, base | {"effects"})
+                or ("effects" in raw and not _effects_valid(raw["effects"]))
                 or raw["schema"] != TRANSACTION_RECEIPT_SCHEMA or raw["transaction_id"] != transaction_id
                 or raw["state"] not in ("prepared", *DECISIONS)
                 or not _HEX64.fullmatch(str(raw["intent_digest"])) or not _HEX64.fullmatch(str(raw["change_digest"]))
@@ -150,6 +206,10 @@ async def resolve_pointer(store: Any, payload: Any, *, subject_hash: str, access
     if not consult_decision:
         return CardCurrentPointer.from_mapping(receipt["after" if receipt["state"] == "committed" else "before"])
     state = await _authoritative_state(store, receipt)
+    if state == "committed" and receipt.get("effects") and (
+            receipt["state"] != "committed" or await pending_effects(store, receipt)):
+        # Readiness fence: AFTER is never served without its effects.
+        raise CardStorageError("card_effects_pending")
     return CardCurrentPointer.from_mapping(receipt["after" if state == "committed" else "before"])
 
 
@@ -272,6 +332,8 @@ async def assert_replaceable(store: Any, *, subject_hash: str, access_id: str) -
     receipt = await read_receipt(store, raw["transaction_id"])
     if receipt["state"] == "prepared":
         raise CardStorageError("card_transaction_unresolved")
+    if receipt["state"] == "committed" and await pending_effects(store, receipt):
+        raise CardStorageError("card_effects_pending")  # no writer builds on an unfinished commit
 
 
 async def _is_staged(store: Any, receipt: Mapping[str, Any]) -> bool:
@@ -323,7 +385,8 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
 
 
 async def stage(store: Any, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
-                original: CardAuthority, candidate: CardAuthority, now: datetime) -> dict[str, Any]:
+                original: CardAuthority, candidate: CardAuthority, now: datetime,
+                effects: Any = ()) -> dict[str, Any]:
     """Stage ``candidate`` behind a transaction pointer; nothing becomes visible. Caller holds the fence.
 
     A replay of a prepared transaction RESUMES its missing steps, but only
@@ -344,8 +407,12 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
             raise
         except Exception:  # noqa: BLE001 - an unknown decision does not block resuming its own staging
             pass
+    recorded_effects = [{"kind": e["kind"], "key": e["key"], "payload": dict(e["payload"])} for e in (effects or ())]
+    if recorded_effects and not _effects_valid(recorded_effects):
+        raise CardTransactionRefused("card_transaction_effects_invalid")
     if existing is not None:
         if (existing["intent_digest"] != intent_digest
+                or existing.get("effects", []) != recorded_effects
                 or existing["change_digest"] != change_digest(candidate.to_dict())
                 or existing["access_id"] != original.access_id or existing["subject_hash"] != subject_hash):
             raise CardTransactionRefused("card_transaction_replay_changed")
@@ -377,6 +444,8 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
                "intent_digest": intent_digest, "participant": participant.strip(), "subject_hash": subject_hash,
                "access_id": original.access_id, "state": "prepared", "reason": "",
                "before": before.to_dict(), "after": after.to_dict(), "change_digest": change_digest(candidate.to_dict())}
+    if recorded_effects:
+        receipt["effects"] = recorded_effects
     _validate(receipt, transaction_id)
     # 1. The prepared receipt, then 2. the per-Card marker: the Card is fenced
     #    from here on, even before 3. the after-revision and 4. the pointer.
@@ -420,8 +489,9 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
     if receipt["state"] in DECISIONS:
         if receipt["state"] != decision:
             raise CardTransactionRefused("card_transaction_decision_conflict")
-        await _retire_pointer(store, receipt)
-        await _clear_marker(store, receipt)
+        if not (decision == "committed" and await pending_effects(store, receipt)):
+            await _retire_pointer(store, receipt)
+            await _clear_marker(store, receipt)
         return receipt
     if decision == "committed" and not await _is_staged(store, receipt):
         raise CardTransactionRefused("card_transaction_not_staged")
@@ -440,6 +510,8 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
     _validate(decided, transaction_id)
     # The one visibility point: the receipt rename. COMMITTED readers get AFTER.
     await write_json_atomic(receipt_path(store, transaction_id), decided)
+    if decision == "committed" and decided.get("effects"):
+        return decided  # FINISH applies its effects (apply_effects), then retires
     await _retire_pointer(store, decided)
     await _clear_marker(store, decided)
     return decided
@@ -452,6 +524,6 @@ async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
 
 
 __all__ = ["CardTransactionRefused", "DECISIONS", "TRANSACTION_POINTER_SCHEMA", "TRANSACTION_RECEIPT_SCHEMA",
-           "TransactionDecisionPort", "active_path", "assert_replaceable", "bind_transaction_decisions", "decide",
-           "list_in_doubt", "marker_path",
+           "TransactionDecisionPort", "active_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
+           "effects_path", "list_in_doubt", "marker_path", "pending_effects",
            "read_receipt", "resolve_pointer", "stage", "state"]
