@@ -55,7 +55,7 @@ flags supported by that installed version.
 
 | You changed | It reaches the runtime when | Not enough |
 | --- | --- | --- |
-| Platform or SDK Python (`kdcube_ai_app/...`), including server-rendered OAuth consent pages | `kdcube refresh --path "$REPO" --build`, with `$REPO` a clean export of the commit the ref names | bare `refresh --build`, which rebuilds the old staged copy; restarting containers |
+| Platform or SDK Python (`kdcube_ai_app/...`), including server-rendered OAuth consent pages | `kdcube refresh --path "$REPO" --build`, with `$REPO` a clean **git worktree** checked out at the commit the ref names (a plain export is refused: `init --path requires a local git repo`) | bare `refresh --build`, which rebuilds the old staged copy; restarting containers |
 | Every `app-ecosystem` distribution the images import (read the list from the runtime's requirements files, `requirements-chat*.txt`, and what they declare, never from memory) | the same refresh, with every such distribution staged in the SAME build through `--maintainer-local-python-package DIST=SOURCE`, SOURCE a clean export of the commit the ref names, as [the maintainer rebuild procedure](repo:app-ecosystem/products/kdcube/procedures/maintainer-rebuild.md) shows | rebuilding without the selector, which keeps the published version |
 | Widget `src/` | the app deploy below for the widget's bundle; the pipeline builds `dist/`, and the reload returns before that build finishes | editing `src/` alone, building widgets by hand, or reading the reload receipt as the widget being live |
 | Descriptor content (`bundles.yaml`) | `bundle config apply` or `bundle reload <bundle-id>` | `refresh`, which preserves `$WORKDIR/config` |
@@ -201,8 +201,9 @@ Execute the action the table names for the tree, at the commit the ref names:
   Why: the entry was hand-synced
   twice on 2026-09-26 by two different scratch scripts and still differed
   from the template (W353).
-- **The platform:** `kdcube refresh --build` from clean exports of the
-  commits the ref names, with the package selectors above.
+- **The platform:** `kdcube refresh --path <clean git worktree of the KDCube
+  commit the ref names> --build`, with the package selectors above, each
+  selector's SOURCE a clean export of the App Ecosystem commit the ref names.
 - **The Problem Board client** on the same host: select only the approved
   App Ecosystem commit, under the host agreement in the worker procedure's
   [client source selection](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/problem-board-worker/references/runtime-actions.md#client-source-selection):
@@ -251,6 +252,47 @@ A bundle reload returns before the widget build finishes, and a widget has
 three states after a reload: build pending, no build because the signature
 was unchanged and the artifact is already current, and no build because it
 broke. The receipt does not tell them apart, only the verification below does.
+
+### A narrow platform rebuild: one package fix, nothing else
+
+When only one change in an App Ecosystem package must reach the image (a
+fix the operator needs now), a refresh from `main` would also stage every
+other package change since the image was built. Build the narrow candidate
+from the image's own base instead:
+
+1. **Find the commit the image was built from**, from the running artifact:
+   copy each imported package out of the container (`docker cp
+   <chat-proc>:/opt/venv/lib/python3.12/site-packages/<package> ...`), hash
+   every `.py` as a git blob, and find the App Ecosystem commit whose package
+   trees match with zero differences (`git ls-tree -r <commit> -- <package src>`
+   for each candidate commit). Check all imported packages at once; they were
+   staged from one commit.
+2. **Cherry-pick only the reviewed fix onto that commit**, push it as a
+   release branch, and show its changed lines equal the merged change's
+   (`git range-diff` or a sorted line-set diff).
+3. **Run the package suites inside a throwaway container of the running
+   image**, pinned by its ID, never by the `latest` tag (a local build can
+   move the tag while the running stack keeps an older image):
+   `IMAGE_ID=$(docker inspect --format '{{.Image}}' <running chat-proc container>)`,
+   then `docker run --rm --entrypoint sh -v <release tree>:/src:ro "$IMAGE_ID" ...`,
+   with the release tree's package sources first on `PYTHONPATH`, so the tests
+   see exactly the running image's dependencies. Record `IMAGE_ID` in the
+   window ledger.
+4. **Refresh with the deployed platform commit, not a newer one:**
+   `kdcube refresh --path <git worktree of the deployed KDCube commit> --build`
+   plus `--maintainer-local-python-package` for every imported distribution,
+   each from a clean export of the release commit. `--path` must be a **git
+   worktree**: a plain export is refused before anything runs
+   (`init --path requires a local git repo`).
+5. When the same window moves an app, check its deploy worktree out before the
+   refresh (above).
+
+**After the refresh**, relay channels fail with `oauth_challenge_not_advertised`
+and 502/503 for about three minutes while chat-proc warms up, then reopen.
+That is expected; a failure that continues past that is not. `kdcube info`
+compares the *selected* with the *deployed* platform version; a mismatch that
+predates the window (the selection moved without a refresh) is reported as
+such, not as this window's failure.
 
 ## Verify in the running artifact (coordinator step 6)
 
@@ -332,5 +374,17 @@ coordinator's list.
   is the documented maintainer one, and exit 0 is not verification.
 - **2026-09-25 11:23-11:27Z, `ImportError: card_delegable_grants`:** a reload
   after a refresh kept cached submodules (Execute, above).
+- **2026-10-06 15:38-15:47Z, a narrow package rebuild.** A Connection Hub
+  package fix had to go live while `main` carried many unqualified package
+  changes. The image's base was found by matching its installed package files
+  to one commit, the fix was cherry-picked onto it, and the refresh used the
+  deployed platform commit (A narrow platform rebuild, above). The first
+  attempt passed a plain export as `--path` and was refused before any change.
+- **2026-10-06 15:47:56Z, a reload during an operator's live test.** A
+  seconds-long board reload, announced to agents, coincided with the operator
+  pressing Edit on a Card. The Hub's permission check got the board's
+  `ApplicationNotReadyError` and showed the operator as read-only. Tell the
+  operator before a reload when they are testing, and treat "the board is
+  restarting" as its own state in the UI.
 - **2026-09-26 03:32-03:36Z, W326:** a board reload alone met the image's old
   operation contract (Does This Change Move Board Operations?, above).
