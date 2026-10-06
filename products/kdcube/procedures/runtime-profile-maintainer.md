@@ -55,7 +55,7 @@ flags supported by that installed version.
 
 | You changed | It reaches the runtime when | Not enough |
 | --- | --- | --- |
-| Platform or SDK Python (`kdcube_ai_app/...`), including server-rendered OAuth consent pages | `kdcube refresh --path "$REPO" --build`, with `$REPO` a clean export of the commit the ref names | bare `refresh --build`, which rebuilds the old staged copy; restarting containers |
+| Platform or SDK Python (`kdcube_ai_app/...`), including server-rendered OAuth consent pages | `kdcube refresh --path "$REPO" --build`, with `$REPO` a clean **git worktree** checked out at the commit the ref names (a plain export is refused: `init --path requires a local git repo`) | bare `refresh --build`, which rebuilds the old staged copy; restarting containers |
 | Every `app-ecosystem` distribution the images import (read the list from the runtime's requirements files, `requirements-chat*.txt`, and what they declare, never from memory) | the same refresh, with every such distribution staged in the SAME build through `--maintainer-local-python-package DIST=SOURCE`, SOURCE a clean export of the commit the ref names, as [the maintainer rebuild procedure](repo:app-ecosystem/products/kdcube/procedures/maintainer-rebuild.md) shows | rebuilding without the selector, which keeps the published version |
 | Widget `src/` | the app deploy below for the widget's bundle; the pipeline builds `dist/`, and the reload returns before that build finishes | editing `src/` alone, building widgets by hand, or reading the reload receipt as the widget being live |
 | Descriptor content (`bundles.yaml`) | `bundle config apply` or `bundle reload <bundle-id>` | `refresh`, which preserves `$WORKDIR/config` |
@@ -201,8 +201,9 @@ Execute the action the table names for the tree, at the commit the ref names:
   Why: the entry was hand-synced
   twice on 2026-09-26 by two different scratch scripts and still differed
   from the template (W353).
-- **The platform:** `kdcube refresh --build` from clean exports of the
-  commits the ref names, with the package selectors above.
+- **The platform:** `kdcube refresh --path <clean git worktree of the KDCube
+  commit the ref names> --build`, with the package selectors above, each
+  selector's SOURCE a clean export of the App Ecosystem commit the ref names.
 - **The Problem Board client** on the same host: select only the approved
   App Ecosystem commit, under the host agreement in the worker procedure's
   [client source selection](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/problem-board-worker/references/runtime-actions.md#client-source-selection):
@@ -269,10 +270,14 @@ from the image's own base instead:
 2. **Cherry-pick only the reviewed fix onto that commit**, push it as a
    release branch, and show its changed lines equal the merged change's
    (`git range-diff` or a sorted line-set diff).
-3. **Run the package suites inside a throwaway container of the current
-   image** (`docker run --rm --entrypoint sh -v <release tree>:/src:ro
-   kdcube-chat-proc:latest ...`), with the release tree's package sources
-   first on `PYTHONPATH`, so the tests see exactly the image's dependencies.
+3. **Run the package suites inside a throwaway container of the running
+   image**, pinned by its ID, never by the `latest` tag (a local build can
+   move the tag while the running stack keeps an older image):
+   `IMAGE_ID=$(docker inspect --format '{{.Image}}' <running chat-proc container>)`,
+   then `docker run --rm --entrypoint sh -v <release tree>:/src:ro "$IMAGE_ID" ...`,
+   with the release tree's package sources first on `PYTHONPATH`, so the tests
+   see exactly the running image's dependencies. Record `IMAGE_ID` in the
+   window ledger.
 4. **Refresh with the deployed platform commit, not a newer one:**
    `kdcube refresh --path <git worktree of the deployed KDCube commit> --build`
    plus `--maintainer-local-python-package` for every imported distribution,
