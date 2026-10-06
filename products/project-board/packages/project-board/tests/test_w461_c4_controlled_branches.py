@@ -108,7 +108,7 @@ def test_b_a_revoked_card_is_a_named_terminal_refusal(code):
 
     assert observed["error_code"] == code
     assert observed["terminal_channel"] is True, "a revoked Card must not be retried"
-    assert (observed["state"], observed["action"]) == ("delegated_card_revoked", "authorize")
+    assert (observed["state"], observed["action"]) == ("delegated_card_revoked", "replace_card")
 
 
 def test_b_no_permanent_credential_code_is_classified_retryable():

@@ -612,8 +612,8 @@ async def authorize_worker_profile(
 # The state and action for each permanent credential code the branches above
 # do not already name.
 _PERMANENT_STATES = {
-    "delegated_card_revoked": ("delegated_card_revoked", "authorize"),
-    "delegated_card_not_found": ("delegated_card_revoked", "authorize"),
+    "delegated_card_revoked": ("delegated_card_revoked", "replace_card"),
+    "delegated_card_not_found": ("delegated_card_revoked", "replace_card"),
     "delegated_capability_not_granted": ("delegated_resource_not_granted", "grant_access"),
     "delegated_card_refresh_refused": ("credential_expired_or_invalid", "reconnect"),
     "work_worker_card_required": ("delegated_card_not_active", "authorize"),
