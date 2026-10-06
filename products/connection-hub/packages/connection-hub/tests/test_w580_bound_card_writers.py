@@ -197,10 +197,10 @@ async def test_renew_of_an_unbound_card_without_a_transaction_still_prolongs(tmp
 # persistence swapped for the transactional one above.
 
 
-async def _hub(tmp_path, redis_client):
+async def _hub(tmp_path, redis_client, *, connections=None):
     from test_resident_profile_cards import _Harness
 
-    h = _Harness(tmp_path)
+    h = _Harness(tmp_path, connections=connections)
     store = BundleStorageDelegatedCardStore(tmp_path / "cards")
     tx.bind_transaction_decisions(store, Decisions())
 
@@ -580,3 +580,54 @@ async def test_a_token_rotation_without_a_transaction_still_records(tmp_path, re
     assert recorded is not None and recorded.access_id == card.access_id
     assert (await _read(h, card)).card_revision == card.card_revision + 1
     assert (await h.handles.read(card)).access_token == "at-2"
+
+
+# The issuer's Control Card: a start from a profile, and the legacy snapshot
+# migration that control_card_create runs on an existing Control.
+
+
+async def _control(h, **changes):
+    from test_resident_profile_cards import USER
+
+    made = await h.service.control_card_create(
+        USER, issuer_ref="work:project:one", issuer_kind="application", **changes
+    )
+    return made
+
+
+async def _empty_control(tmp_path, redis_client):
+    from test_resident_profile_cards import _connections_with_authorization_profiles
+
+    h = await _hub(tmp_path, redis_client, connections=_connections_with_authorization_profiles())
+    made = await _control(h)
+    assert made["ok"] is True and made["started_from"] == {}
+    card = await _read(h, SimpleNamespace(access_id=made["authority"]["access_id"]))
+    return h, card
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["before", "after_precondition"])
+async def test_starting_a_staged_control_from_a_profile_is_refused_with_no_effect(
+    tmp_path, redis_client, stage
+):
+    h, control = await _empty_control(tmp_path, redis_client)
+    if stage == "before":
+        await _stage_on(h, control)
+    else:
+        # Staged after the Control loaded, before its start commits.
+        _stage_before(h, "control_card_update", control)
+    result = await _control(h, initial_profile="coordinator")
+    assert result["ok"] is False and result.get("retryable") is True, result
+    assert h.grant_store.bindings == {}
+    await _decide(h, "aborted")
+    assert await _read(h, control) == control
+
+
+@pytest.mark.asyncio
+async def test_starting_a_control_without_a_transaction_still_starts(tmp_path, redis_client):
+    h, control = await _empty_control(tmp_path, redis_client)
+    result = await _control(h, initial_profile="coordinator")
+    assert result["ok"] is True and result["started"] is True, result
+    current = await _read(h, control)
+    assert current.card_revision > control.card_revision
+    assert any(current.resource_grants.values())
