@@ -122,6 +122,7 @@ def test_each_refused_read_set_is_refused_by_name(vector):
 
 @pytest.mark.parametrize("field,value", [
     ("binding_ref", "reads:" + "0" * 64), ("target_scope", "0" * 64), ("target_incarnation", 2),
+    ("target_incarnation", True), ("before_revision", True), ("candidate_revision", True),
     ("action", "update"), ("before_revision", 0), ("candidate_revision", 2), ("candidate_digest", "0" * 64),
     ("provisioning", {"x": 1}), ("actor_kind", "human"), ("actor_subject", ""), ("actor_subject", 7),
     ("dependency_revisions", {}),

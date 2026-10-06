@@ -199,6 +199,7 @@ def test_each_refused_group_is_refused_by_name(vector):
 
 @pytest.mark.parametrize("field,value", [
     ("binding_ref", "group:" + "0" * 64), ("target_scope", "0" * 64), ("target_incarnation", 2),
+    ("target_incarnation", True), ("before_revision", False), ("candidate_revision", True),
     ("action", "update"), ("before_revision", 1), ("candidate_revision", 2), ("candidate_digest", "0" * 64),
     ("provisioning", {"x": 1}), ("actor_kind", "human"), ("actor_subject", ""), ("actor_subject", 7),
     ("actor_subject", " platform-user-2"), ("actor_subject", None),

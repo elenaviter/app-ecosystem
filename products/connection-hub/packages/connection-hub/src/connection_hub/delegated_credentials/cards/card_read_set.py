@@ -46,6 +46,10 @@ def _refuse(reason: str) -> DecisionRefused:
     return DecisionRefused(reason)
 
 
+def _exact_int(value: Any, expected: int = 1) -> bool:
+    return type(value) is int and value == expected
+
+
 def _is_hex64(value: Any) -> bool:
     return type(value) is str and len(value) == 64 and set(value) <= _HEX
 
@@ -117,8 +121,10 @@ def verify_read_set_projection(projection: Mapping[str, Any], value: Any) -> dic
     dependencies = projection.get("dependency_revisions")
     if (projection.get("participant") != PARTICIPANT
             or any(projection.get(name) != expected[name] for name in expected)
-            or projection.get("target_incarnation") != 1 or projection.get("action") != "read"
-            or projection.get("before_revision") != 1 or projection.get("candidate_revision") != 1
+            # Exact integers: True == 1 in Python, so the type is checked too (CodeApp 23:45).
+            or not _exact_int(projection.get("target_incarnation")) or projection.get("action") != "read"
+            or not _exact_int(projection.get("before_revision"))
+            or not _exact_int(projection.get("candidate_revision"))
             or projection.get("provisioning") != {}
             or projection.get("actor_kind") not in ("caller", "grantor")
             or type(projection.get("actor_subject")) is not str or not projection["actor_subject"].strip()
