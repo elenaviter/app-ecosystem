@@ -6,6 +6,10 @@ loop retries a dropped socket while the client is open, doubling its delay up
 to `_RECONNECT_DELAY_MAX_SECONDS`; it has no attempt limit and ends only when
 the client is closed, which is what the relay does when it replaces a session.
 
+W573 adds an owner-supplied refusal classifier: a permanent refusal ends the
+loop in the named state refused_permanent; without a classifier the loop
+retries until close(), which stays the pinned default.
+
 Synthetic only: no server, no credential; the connect is a stub that always
 fails, and the delay is recorded instead of slept.
 """
@@ -49,12 +53,24 @@ class _AsyncioWithRecordedSleep:
         await self._real_sleep(0)
 
 
-def _drive(monkeypatch, *, close_after: int, ceiling: int) -> tuple[list[float], int, bool]:
+class _Refused(Exception):
+    def __init__(self, code: str) -> None:
+        super().__init__(f"synthetic refusal {code}")
+        self.code = code
+
+
+def _drive(
+    monkeypatch, *, close_after: int, ceiling: int, classifier=None, error=None, holder=None,
+) -> tuple[list[float], int, bool]:
     """Run the loop against a connect that always fails; close after ``close_after`` attempts."""
 
     delays: list[float] = []
     monkeypatch.setattr(client_module, "asyncio", _AsyncioWithRecordedSleep(delays))
-    client = FederatedDataBusClient(platform_url="http://127.0.0.1:9", claim=_claim())
+    client = FederatedDataBusClient(
+        platform_url="http://127.0.0.1:9", claim=_claim(), refusal_classifier=classifier,
+    )
+    if holder is not None:
+        holder.append(client)
     attempts = 0
 
     async def failing_connect() -> None:
@@ -64,7 +80,7 @@ def _drive(monkeypatch, *, close_after: int, ceiling: int) -> tuple[list[float],
             asyncio.get_running_loop().create_task(client.close())
         if attempts >= ceiling:
             raise asyncio.CancelledError
-        raise ConnectionError("synthetic: the bus is unreachable")
+        raise error if error is not None else ConnectionError("synthetic: the bus is unreachable")
 
     client._connect_namespace = failing_connect  # type: ignore[method-assign]
 
@@ -103,14 +119,55 @@ def test_c_closing_the_client_ends_the_reconnect_loop(monkeypatch, record_proper
     assert attempts == 3, "no attempt after the client was closed"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "W461 C4 finding: the Data Bus client's _reconnect loop has no attempt limit; "
-        "it retries every _RECONNECT_DELAY_MAX_SECONDS until the client is closed"
-    ),
-)
-def test_c_the_reconnect_loop_ends_by_itself_after_a_bounded_number_of_attempts(monkeypatch):
+def test_c_without_a_classifier_the_loop_retries_until_close(monkeypatch):
+    # W573 [1]: the default consumer behaviour is pinned. A client whose owner
+    # supplies no classifier keeps retrying on the capped delay until close().
     _delays, attempts, ended = _drive(monkeypatch, close_after=0, ceiling=200)
 
-    assert ended is True and attempts < 200, "the loop gave up on its own before 200 attempts"
+    # The test's safety ceiling cancels the task; the loop's own handoff then
+    # starts a fresh one, which is the resident behaviour being pinned.
+    assert ended is False and attempts >= 200, "no classifier: the loop does not end by itself"
+
+
+def test_c_a_permanent_refusal_ends_the_loop_in_a_named_state(monkeypatch, record_property):
+    # W573: Mint's finding 3. The owner's classifier calls the refusal
+    # permanent; the loop stops after that one attempt, by itself.
+    holder: list = []
+    started = time.monotonic()
+    _delays, attempts, ended = _drive(
+        monkeypatch, close_after=0, ceiling=200, holder=holder,
+        classifier=lambda error: getattr(error, "code", "") == "synthetic_permanent",
+        error=_Refused("synthetic_permanent"),
+    )
+    record_property("c_data_bus_attempts_until_terminal", attempts)
+    record_property("c_data_bus_terminal_ms", round((time.monotonic() - started) * 1000, 3))
+
+    assert ended is True and attempts == 1
+    client = holder[0]
+    assert client.terminal_refusal == {
+        "state": "refused_permanent", "code": "synthetic_permanent", "error_type": "_Refused",
+    }
+    assert client.transport_recovering is False, "the owner replaces the session rather than waiting"
+
+
+def test_c_a_transient_failure_keeps_retrying_with_a_classifier(monkeypatch):
+    holder: list = []
+    _delays, attempts, ended = _drive(
+        monkeypatch, close_after=5, ceiling=200, holder=holder,
+        classifier=lambda error: getattr(error, "code", "") == "synthetic_permanent",
+    )
+
+    assert ended is True and attempts == 5, "only close() ended it"
+    assert holder[0].terminal_refusal is None
+
+
+def test_c_a_failing_classifier_is_treated_as_transient(monkeypatch):
+    def broken(error):
+        raise RuntimeError("synthetic classifier fault")
+
+    holder: list = []
+    _delays, attempts, _ended = _drive(
+        monkeypatch, close_after=4, ceiling=200, holder=holder, classifier=broken, error=_Refused("anything"),
+    )
+
+    assert attempts == 4 and holder[0].terminal_refusal is None

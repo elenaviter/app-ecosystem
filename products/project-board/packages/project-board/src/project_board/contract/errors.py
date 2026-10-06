@@ -23,6 +23,12 @@ PERMANENT_CREDENTIAL_CODES = frozenset(
 )
 
 
+def permanent_credential_refusal(error: BaseException) -> bool:
+    """Whether a connect failure is a permanent credential refusal (W573)."""
+
+    return str(getattr(error, "code", "") or "") in PERMANENT_CREDENTIAL_CODES
+
+
 class DomainError(RuntimeError):
     def __init__(
         self,

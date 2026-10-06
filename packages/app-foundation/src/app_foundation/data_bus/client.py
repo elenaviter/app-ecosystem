@@ -363,6 +363,7 @@ class FederatedDataBusClient:
         event_queue_size: int = 256,
         clock: Callable[[], float] = time.time,
         lifecycle_labels: Mapping[str, str | int | bool] | None = None,
+        refusal_classifier: Callable[[BaseException], bool] | None = None,
     ) -> None:
         self.platform_url = str(platform_url or "").rstrip("/")
         if not self.platform_url:
@@ -407,6 +408,13 @@ class FederatedDataBusClient:
         self._closed = False
         self._reconnect_task: asyncio.Task[None] | None = None
         self._reconnect_delay_seconds = _RECONNECT_DELAY_SECONDS
+        # W573: the owner may say which connect failures are permanent. Such
+        # a refusal ends this client's own reconnect in a named terminal state
+        # instead of being retried on the capped delay forever; the client
+        # knows no owner codes. Without a classifier every failure is retried
+        # until close(), as before.
+        self._refusal_classifier = refusal_classifier
+        self._terminal_refusal: dict[str, Any] | None = None
         self._namespace_outcome: asyncio.Future[
             tuple[str, dict[str, Any] | None]
         ] | None = None
@@ -518,6 +526,17 @@ class FederatedDataBusClient:
         )
 
     @property
+    def terminal_refusal(self) -> dict[str, Any] | None:
+        """The permanent refusal that ended this client's reconnect, or None (W573).
+
+        Set only when the owner's ``refusal_classifier`` called a connect
+        failure permanent: ``state`` is ``refused_permanent``, with the error
+        code and type. The client then stays disconnected until it is closed.
+        """
+
+        return dict(self._terminal_refusal) if self._terminal_refusal is not None else None
+
+    @property
     def transport_recovering(self) -> bool:
         """True while a plain transport drop is being repaired by this client.
 
@@ -534,7 +553,7 @@ class FederatedDataBusClient:
 
         if self._closed or not self._owns_reconnect or self.connected:
             return False
-        if self._expired() or self._episode_refused:
+        if self._expired() or self._episode_refused or self._terminal_refusal is not None:
             return False
         dropped_at = self._disconnected_at
         task = self._reconnect_task
@@ -1078,6 +1097,20 @@ class FederatedDataBusClient:
                 details=refusal,
             )
 
+    def _refusal_is_permanent(self, error: BaseException) -> bool:
+        classifier = self._refusal_classifier
+        if classifier is None:
+            return False
+        try:
+            return bool(classifier(error))
+        except Exception:  # noqa: BLE001 - a faulty classifier never ends recovery
+            logger.warning(
+                "Data Bus refusal classifier failed; the failure is treated as transient%s",
+                self._lifecycle_log_suffix(),
+                exc_info=True,
+            )
+            return False
+
     async def _reconnect(self) -> None:
         """Retry a dropped production socket without Socket.IO's wait default."""
 
@@ -1092,6 +1125,20 @@ class FederatedDataBusClient:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - reconnect stays resident
+                    if self._refusal_is_permanent(exc):
+                        self._terminal_refusal = {
+                            "state": "refused_permanent",
+                            "code": str(getattr(exc, "code", "") or type(exc).__name__),
+                            "error_type": type(exc).__name__,
+                        }
+                        logger.warning(
+                            "Data Bus socket lifecycle event=reconnect_stopped_permanent "
+                            "connection_generation=%d code=%s%s",
+                            self._connection_generation,
+                            self._terminal_refusal["code"],
+                            self._lifecycle_log_suffix(),
+                        )
+                        return
                     logger.warning(
                         "Data Bus socket lifecycle event=reconnect_attempt_failed "
                         "connection_generation=%d delay_seconds=%g error=%s%s",
@@ -1110,7 +1157,12 @@ class FederatedDataBusClient:
                 # callback, before this task unwinds. _on_disconnect cannot
                 # replace a reconnect task that is still running, so close
                 # that narrow handoff race here.
-                if self._owns_reconnect and not self._closed and not self.connected:
+                if (
+                    self._owns_reconnect
+                    and not self._closed
+                    and not self.connected
+                    and self._terminal_refusal is None
+                ):
                     self._reconnect_task = asyncio.create_task(self._reconnect())
 
     async def _handshake_auth(self) -> dict[str, Any]:
