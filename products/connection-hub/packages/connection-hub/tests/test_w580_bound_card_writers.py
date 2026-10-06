@@ -690,6 +690,11 @@ async def _bound_writer(h, writer):
     if writer == "extend":
         card, _ = await _oauth_card(h)
         return card, lambda: _extend(h, card)
+    if writer == "fold":
+        from test_resident_profile_cards import CLIENT
+
+        _legacy, stable, _held, h.moved = await _fold_setup(h)
+        return stable, lambda: h.service.migrate_resident_profile(USER, client_id=CLIENT)
     if writer == "prune":
         card = _scoped_card(h)
         await _seed(h, card)
@@ -700,7 +705,7 @@ async def _bound_writer(h, writer):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("writer", ["consent", "extend", "prune", "reissue"])
+@pytest.mark.parametrize("writer", ["consent", "extend", "prune", "reissue", "fold"])
 async def test_a_bound_writer_commits_only_what_its_binding_policy_allows(tmp_path, redis_client, writer):
     h = await _hub(tmp_path, redis_client)
     card, call = await _bound_writer(h, writer)
@@ -723,6 +728,7 @@ _MINTS_BEFORE_POLICY = pytest.mark.xfail(
 @pytest.mark.parametrize("writer", [
     pytest.param("consent", marks=_MINTS_BEFORE_POLICY), "extend", "prune",
     pytest.param("reissue", marks=_MINTS_BEFORE_POLICY),
+    pytest.param("fold", marks=_MINTS_BEFORE_POLICY),
 ])
 async def test_a_bound_writer_refused_by_its_policy_changes_nothing(tmp_path, redis_client, writer):
     h = await _hub(tmp_path, redis_client)
@@ -735,3 +741,7 @@ async def test_a_bound_writer_refused_by_its_policy_changes_nothing(tmp_path, re
     assert await _read(h, bound) == bound
     assert await h.handles.read(bound) == held
     assert h.grant_store.bindings == {}, "a refused write left a live grant binding"
+    if writer == "fold":
+        from test_resident_profile_cards import GRANTOR
+
+        assert await h.policies.get(owner_subject=GRANTOR, authority=h.moved) is None
