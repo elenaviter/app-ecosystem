@@ -156,9 +156,11 @@ async def main(request: dict) -> dict:
         if action == "single":
             outcomes = []
             for card in cards:
-                current = await persistence.current_revision(card.access_id,
-                                                             subject_hash=subject_hash_for(card.grantor_subject))
                 try:
+                    # Since W578 (Ops 11:22) the writer's precondition read is itself
+                    # fenced, so the refusal can arrive here, before the commit.
+                    current = await persistence.current_revision(card.access_id,
+                                                                 subject_hash=subject_hash_for(card.grantor_subject))
                     await persistence._cards.commit(dataclasses.replace(card, card_revision=current + 1),
                         subject_hash=subject_hash_for(card.grantor_subject), expected_revision=current)
                     outcomes.append("committed")
