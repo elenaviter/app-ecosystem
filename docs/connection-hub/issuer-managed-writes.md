@@ -465,3 +465,42 @@ live-data/bootstrap or activation qualification. It changes the durable pointer
 reader contract, so a reviewed combined reader/writer rollout is mandatory;
 old readers fail closed on the new pointer schema. No live config, credentials,
 data or runtime changes are authorized by the source change.
+
+### Disposable real-backend UPDATE recovery witness
+
+The app test `tests/test_issuer_update_real_backend_recovery.py` runs the
+production SDK persistence and ordered file fences, filesystem Card/receipt
+storage, Redis Lua cache transitions and Redis grantor index. Its caller pins
+the App Ecosystem and SDK source overlays. Each boundary starts a new child,
+kills only that child, then uses fresh processes for reads, competing writes,
+identical recovery and changed replay. It covers intent, marker, sidecar,
+revision, prepared pointer, committed receipt, projection and completed receipt;
+the final case creates a legitimate later revision before recovery. Additional
+cases cover real marker expiry/read-through, a foreign marker that must remain
+untouched, and loss of a committed projection. The same cases are available for
+standalone Redis and Redis Cluster; a missing backend is reported as a skip,
+not real-backend evidence.
+
+No backend is provisioned or restarted by the tests. The fixture owner must
+first identify a dedicated disposable test server, never a deployed server,
+and provide an existing non-production loopback target. Then set `REDIS_URL`
+for standalone Redis or `REDIS_CLUSTER_NODE` for Cluster, together with
+`CONNECTION_HUB_TEST_DISPOSABLE_REDIS=1`. Targets carrying credentials, remote
+hosts, malformed paths or the conventional deployed Redis port 6379 refuse
+before connection. Explicit confirmation is a safety gate, not proof that the
+server is disposable; that proof belongs to the fixture owner's record.
+
+Use the project's prepared interpreter and exact source overlay, with pytest's
+base temporary directory inside the caller's registered scratch run. Each case
+uses a fresh random synthetic tenant and a fixture-owned storage root. Cleanup
+deletes only the exact Card/index/epoch/lock keys of that namespace, one key at a
+time for Cluster; it never scans or flushes a database. The previous source can
+be run through the same test files with its package overlay to establish the
+serving-complete boundary's baseline failure without editing production code.
+
+The external issuer is still a synthetic adapter through the real
+`IssuerRegistry`; the current-host predicate is synthetic too. There is no
+real domain approval, issuer nonce store, mounted human request, PostgreSQL
+credential custody or service-restart/Redis rollback qualification here. Those
+remain separately named gates. A source-only run with both targets unset runs
+only fixture-safety tests and explicitly skips every backend recovery case.
