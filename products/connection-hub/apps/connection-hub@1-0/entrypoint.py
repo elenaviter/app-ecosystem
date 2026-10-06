@@ -3521,7 +3521,21 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         coordinator, _ = card_transaction_coordinator(
             persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
             policies=_invocation_policy_service(self))
-        return {"enabled": True, **await recover_card_transactions(coordinator, limit=100)}
+        # The cron runs on one process per tick, not always the same one, so the
+        # page cursor is shared in Redis; a missing or unreadable one restarts at "".
+        tenant, project = _runtime_tenant_project(self)
+        cursor_key = f"connection-hub:card-transactions:recovery-cursor:{tenant}:{project}"
+        try:
+            stored = await redis.get(cursor_key)
+            after = stored.decode("utf-8") if isinstance(stored, bytes) else (stored or "")
+        except Exception:  # noqa: BLE001 - a lost cursor only restarts the scan
+            after = ""
+        report = await recover_card_transactions(coordinator, limit=100, after=after, max_pages=5)
+        try:
+            await redis.set(cursor_key, report["next_after"])
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("[connection-hub.card-transactions] recovery cursor not saved")
+        return {"enabled": True, **report}
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 

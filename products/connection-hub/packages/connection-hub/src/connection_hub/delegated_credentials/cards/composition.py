@@ -116,35 +116,50 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
     return coordinator
 
 
-async def recover_card_transactions(coordinator: Coordinator, *, limit: int = 100) -> dict[str, Any]:
-    """One bounded recovery pass (EMain #599: the activation gate).
+async def recover_card_transactions(coordinator: Coordinator, *, limit: int = 100, after: str = "",
+                                    max_pages: int = 5) -> dict[str, Any]:
+    """One bounded recovery pass of at most ``max_pages`` pages from cursor ``after``.
 
     Finishes every decided transaction on every participant, presumes ABORT
     for an undecided one past its expiry (the store's own CAS), and leaves an
-    unexpired undecided one. A participant failure does not stop the pass; it
-    is logged by transaction id and refusal code and retried next pass. A
-    backlog larger than ``limit`` is a named result, never an exception
-    (EMain #601); draining it page by page needs the kernel's paged read.
+    unexpired undecided one. A participant failure does not stop the pass: it
+    is logged by transaction id and refusal code, the cursor moves past it, and
+    it is retried after the cursor wraps (EMain 18:42). The result's
+    ``next_after`` is where the next pass starts; it is "" once the last page
+    has been read, so every row is revisited.
     """
     from service_foundation.coordination.durable_decision_log import DecisionRefused, RecoveryIncomplete
 
-    try:
-        records = await coordinator.recover(limit=limit)
-    except RecoveryIncomplete as exc:
-        records, failed = list(exc.completed), exc.failures
-    except DecisionRefused as exc:
-        if str(exc) != "recovery_unbounded":
-            raise
-        LOGGER.warning("[connection-hub.card-transactions] recovery backlog exceeds limit=%s", limit)
-        return {"ok": False, "reason": "recovery_unbounded", "finished": 0, "pending": 0, "failed": 0}
-    else:
-        failed = {}
+    cursor = after if type(after) is str and len(after) <= 128 else ""
+    finished = pending = 0
+    failed: dict[str, Any] = {}
+    pages = 0
+    while pages < max_pages:
+        pages += 1
+        try:
+            records, next_after, has_more = await coordinator.recover_page(limit=limit, after=cursor)
+            page_failures = {}
+        except RecoveryIncomplete as exc:
+            next_after, has_more = getattr(exc, "next_after", None), getattr(exc, "has_more", None)
+            if type(next_after) is not str or type(has_more) is not bool:
+                raise  # a kernel without the paging contract: never guess a cursor
+            records, page_failures = list(exc.completed), exc.failures
+        for record in records:
+            if record.terminal and set(record.finished) == set(record.intent.participants):
+                finished += 1
+            else:
+                pending += 1
+        failed.update(page_failures)
+        if not has_more:
+            cursor = ""
+            break
+        cursor = next_after
     for transaction_id, error in failed.items():
         reason = str(error) if isinstance(error, DecisionRefused) else type(error).__name__
         LOGGER.warning("[connection-hub.card-transactions] recovery failed transaction=%s reason=%s",
                        transaction_id, reason)
-    finished = sum(1 for record in records if record.terminal and set(record.finished) == set(record.intent.participants))
-    return {"ok": not failed, "finished": finished, "pending": len(records) - finished, "failed": len(failed)}
+    return {"ok": not failed, "finished": finished, "pending": pending, "failed": len(failed),
+            "pages": pages, "next_after": cursor}
 
 
 __all__ = ["CardTransactionsUnavailable", "DECISION_SCHEMA", "bind_card_transactions", "card_transaction_coordinator",
