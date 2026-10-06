@@ -2,6 +2,10 @@ import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/tool
 import { getOp, postOp } from '../../api/client';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
 import {
+  applyDelegatedAccessRevokeResult,
+  delegatedAccessRevokePayload,
+} from './delegatedAccessRevoke';
+import {
   controlCardGetRequest,
   type ProjectControlCoordinates,
 } from './projectPersonControl';
@@ -380,12 +384,13 @@ export const revokeDelegatedAccess = createAsyncThunk<
   DelegatedAccessRevokeResult,
   {
     accessId: string;
+    expectedCardRevision?: number;
     projectPersonControl?: ProjectControlCoordinates;
   },
   { rejectValue: string }
 >(
   'delegatedAccess/revoke',
-  async ({ accessId, projectPersonControl }, { rejectWithValue }) => {
+  async ({ accessId, expectedCardRevision, projectPersonControl }, { rejectWithValue }) => {
     try {
       const res = await postOp<DelegatedAccessRevokeResult>(
         projectPersonControl ? 'project_person_control_revoke' : 'delegated_access_revoke',
@@ -400,8 +405,11 @@ export const revokeDelegatedAccess = createAsyncThunk<
                 invitation_ref: projectPersonControl.invitationRef,
                 control_id: accessId,
               }
-          : { access_id: accessId },
+          : delegatedAccessRevokePayload(accessId, expectedCardRevision),
       );
+      // A conflict carries a refusal, not a removal. Keep its shape for the
+      // reducer and let the caller refresh reads without retrying the write.
+      if (res?.ok === false && res?.status === 409) return res;
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to revoke delegated access'));
       return res || {};
     } catch (e) {
@@ -651,15 +659,10 @@ const delegatedAccessSlice = createSlice({
         state.error = '';
       })
       .addCase(revokeDelegatedAccess.fulfilled, (state, action) => {
-        state.busy = false;
-        const id = action.meta.arg.accessId;
-        state.items = state.items.filter((item) => item.access_id !== id);
-        if (state.focusedCard?.access_id === id) state.focusedCard = undefined;
-        if (state.issuedAccess?.access_id === id) {
-          state.issuedToken = '';
-          state.issuedHeader = '';
-          state.issuedAccess = undefined;
-        }
+        applyDelegatedAccessRevokeResult(
+          state, action.payload, action.meta.arg.accessId,
+          action.meta.arg.expectedCardRevision,
+        );
       })
       .addCase(revokeDelegatedAccess.rejected, (state, action) => {
         state.busy = false;

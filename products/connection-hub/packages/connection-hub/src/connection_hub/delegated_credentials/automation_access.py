@@ -19,6 +19,7 @@ The Connection Hub bundle should only adapt UI operations to this service.
 from __future__ import annotations
 
 import dataclasses
+import asyncio
 
 import copy
 from fnmatch import fnmatchcase
@@ -29,9 +30,14 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from dataclasses import replace as replace_fields
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 from connection_hub.concurrency import bounded_gather
+from connection_hub.delegated_credentials.issuer_gate import (
+    IssuerDecision, IssuerRegistry, IssuerRequest, IssuerWriteRefused,
+    change_digest, issuer_write_refusal,
+)
 from connection_hub.authority_inventory import (
     AuthorityGrantInventory,
     PlatformAuthorityInventoryProvider,
@@ -1713,6 +1719,8 @@ class AutomationAccessService:
         project_invitation_binding_resolver: (
             ProjectInvitationBindingResolver | None
         ) = None,
+        issuer_registry: IssuerRegistry | None = None,
+        issuer_actor_subject: str = "",
     ) -> None:
         self._redis = redis
         self._tenant = _clean(tenant)
@@ -1742,6 +1750,14 @@ class AutomationAccessService:
         # stored. Composition of the durable implementation belongs to the
         # caller that owns storage.
         self._persistence = card_persistence
+        # Ordinary owner-managed application/descriptor Controls retain their
+        # local rules. Configured adapters override that exception. Every other
+        # opaque issuer requires an adapter, even when its provider is missing.
+        self._issuers = issuer_registry or IssuerRegistry(
+            owner_managed_kinds=("application", AGENT_DESCRIPTOR_ISSUER_KIND)
+        )
+        self._issuer_actor_subject = _clean(issuer_actor_subject)
+        self._issuer_actor_subject_bound = bool(self._issuer_actor_subject)
         # Optional: lets the resident-profile migration carry once/always
         # policies to the stable card and the read model report them. Without
         # it, migration refuses to fold a record whose policies it cannot see.
@@ -1764,6 +1780,29 @@ class AutomationAccessService:
             authority_from_record=card_authority_from_record,
             record_from_authority=record_from_card,
         )
+
+    def bind_issuer_registry(self, registry: IssuerRegistry, *, actor_subject: str) -> None:
+        """Bind trusted request composition without requiring host wrapper kwargs.
+
+        Hosting adapters may inherit this method while retaining their existing
+        constructor. The app calls it before exposing the request-local service.
+        Nothing in the browser update/revoke payload can select these ports.
+        """
+        if not isinstance(registry, IssuerRegistry):
+            raise ValueError("issuer_registry_invalid")
+        self._issuers = registry
+        self._issuer_actor_subject = _clean(actor_subject)
+        # An explicitly bound but unavailable session actor must not fall back
+        # to a legacy owner proxy on a managed write.
+        self._issuer_actor_subject_bound = True
+
+    def bind_issuer_read_registry(self, registry: Any, *, actor_subject: str, actor_classification: str,
+                                  tenant: str, project: str) -> None:
+        from .issuer_read import IssuerReadRegistry
+        if type(registry) is not IssuerReadRegistry:
+            raise ValueError("issuer_read_registry_invalid")
+        self._issuer_reads = registry
+        self._issuer_read_host = (actor_subject, actor_classification, tenant, project)
 
     def bind_project_authorization_port(
         self,
@@ -2267,13 +2306,34 @@ class AutomationAccessService:
         )
 
     async def _persist_record(
-        self, record: AutomationAccessRecord, *, expected_revision: int
+        self, record: AutomationAccessRecord, *, expected_revision: int,
+        before_commit: Callable[[], Awaitable[None]] | None = None,
+        expected_issuer_digest: str = "",
     ) -> None:
-        await self._cards().persist(
-            card_authority_from_record(record),
+        persistence = self._cards()
+        persist = persistence.persist
+        authority = card_authority_from_record(record)
+        guard = {}
+        if before_commit is not None:
+            persist = getattr(persistence, "persist_guarded", None)
+            if not callable(persist):
+                raise IssuerWriteRefused("issuer_commit_gate_unavailable")
+            supplied_gate = before_commit
+
+            async def bound_commit() -> None:
+                if expected_issuer_digest and change_digest(authority.to_dict()) != expected_issuer_digest:
+                    raise IssuerWriteRefused("issuer_candidate_changed")
+                await supplied_gate()
+                if expected_issuer_digest and change_digest(authority.to_dict()) != expected_issuer_digest:
+                    raise IssuerWriteRefused("issuer_candidate_changed")
+
+            guard["before_commit"] = bound_commit
+        await persist(
+            authority,
             card_handles_from_record(record),
             subject_hash=_subject_key(record.grantor_subject),
             expected_revision=expected_revision,
+            **guard,
         )
 
     async def _forget_record(
@@ -2281,9 +2341,16 @@ class AutomationAccessService:
         record: AutomationAccessRecord,
         *,
         revoked_record: AutomationAccessRecord | None = None,
+        before_commit: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         authority = card_authority_from_record(record)
         subject_hash = _subject_key(record.grantor_subject)
+        if before_commit is not None:
+            forget = getattr(self._cards(), "forget_guarded", None)
+            if not callable(forget) or revoked_record is not None:
+                raise IssuerWriteRefused("issuer_commit_gate_unavailable")
+            await forget(authority, subject_hash=subject_hash, before_commit=before_commit)
+            return
         if revoked_record is None:
             await self._cards().forget(authority, subject_hash=subject_hash)
             return
@@ -2299,6 +2366,181 @@ class AutomationAccessService:
                 state=CARD_STATE_REVOKED,
             ),
         )
+
+    async def issuer_managed_lifecycle_read(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Both identities or neither, with no reservation or mutation effects."""
+        from .issuer_read import (IssuerReadQuery, IssuerReadRequest, IssuerReadRefused,
+                                  issuer_read_request_from_mapping)
+        try:
+            query = IssuerReadQuery.from_mapping(body)
+            host = getattr(self, "_issuer_read_host", ())
+            registry = getattr(self, "_issuer_reads", None)
+            if len(host) != 4 or registry is None:
+                raise IssuerReadRefused("issuer_read_host_unavailable")
+            actor, classification, tenant, project = host
+            request = IssuerReadRequest(actor, classification, tenant, project, query.context_ref, query.request_id, query.targets)
+            request = issuer_read_request_from_mapping(request.to_dict())
+            reader = getattr(self._cards(), "read_lifecycle_identities", None)
+            if not callable(reader):
+                raise IssuerReadRefused("issuer_read_port_unavailable")
+            async with asyncio.timeout(30):
+                first = []
+                for kind in dict.fromkeys(t.issuer_kind for t in request.targets):
+                    decision = await registry.decide(request, issuer_kind=kind)
+                    registry.require(request, decision, issuer_kind=kind, phase="authorize")
+                    first.append(decision)
+                # No peer call within this port's two ordered Card fences.
+                authorities = await reader(request)
+                if len(authorities) != 2:
+                    raise IssuerReadRefused("issuer_read_pair_required")
+                snapshots = [{"target": target.to_dict(), "card_revision": authority.card_revision,
+                    "authority_fingerprint": authority.content_hash(), "identity": registry.identity(authority)}
+                    for target, authority in zip(request.targets, authorities)]
+                fresh = [await registry.revalidate(request, decision, snapshots=snapshots) for decision in first]
+                # Earlier decisions must still be live after the last peer await.
+                for decision in fresh:
+                    registry.require(request, decision, issuer_kind=decision.issuer_kind, phase="validate", snapshots=snapshots)
+                return {"ok": True, "status": 200, "request": request.to_dict(),
+                        "read_digest": request.read_digest, "snapshots": snapshots}
+        except IssuerReadRefused as exc:
+            return {"ok": False, "status": 409 if exc.retryable else 403,
+                    "error": exc.reason, "retryable": exc.retryable}
+        except TimeoutError:
+            return {"ok": False, "status": 503, "error": "issuer_read_timeout", "retryable": True}
+        except Exception:
+            # Never log/return raw authorities or transport/credential details.
+            _LOGGER.warning("[connection-hub] protected identity read unavailable")
+            return {"ok": False, "status": 503, "error": "issuer_read_unavailable", "retryable": True}
+
+    async def issuer_managed_lifecycle_apply(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Host-authenticated generic lifecycle; target hints authorize nothing.
+
+        The hosting operation rejects non-human principals BEFORE exposing
+        this request-local service. Its bound actor cannot come from the DTO.
+        Every target requires its configured issuer, including a credential-
+        backed participant: this is not the old credentialless-only shortcut.
+        """
+        from .cards.lifecycle import LifecycleRefused, LifecycleRequest
+
+        try:
+            lifecycle = LifecycleRequest.from_mapping(body)
+            actor = self._issuer_actor_subject
+            if not self._issuer_actor_subject_bound or not actor:
+                raise LifecycleRefused("issuer_lifecycle_actor_unavailable")
+            persistence = self._cards()
+            apply = getattr(persistence, "revoke_lifecycle", None)
+            read_receipt = getattr(persistence, "load_lifecycle_receipt", None)
+            if not callable(apply) or not callable(read_receipt):
+                raise LifecycleRefused("issuer_lifecycle_commit_gate_unavailable")
+            recorded = await read_receipt(lifecycle, actor_subject=actor)
+            decisions = []
+            if recorded is None:
+                for target in lifecycle.targets:
+                    loaded = await persistence.load_current(target.access_id, subject_hash=target.subject_hash)
+                    authority = None if loaded is None else loaded[0]
+                    target.assert_authority(authority)
+                    request = IssuerRequest(actor_subject=actor, request_id=lifecycle.request_id,
+                        action="revoke", access_id=target.access_id, card_revision=target.expected_card_revision,
+                        issuer_kind=target.issuer_kind, issuer_ref=target.issuer_ref,
+                        change_digest=lifecycle.change_digest, context_ref=lifecycle.context_ref)
+                    decision = await self._issuers.decide(request)
+                    refusal = issuer_write_refusal(authority, request, decision, now=datetime.now(timezone.utc))
+                    if refusal is not None:
+                        raise IssuerWriteRefused(refusal["reason"])
+                    decisions.append((target, authority, request, decision))
+
+            async def before_commit(authorities):
+                if len(decisions) != 2:
+                    raise IssuerWriteRefused("issuer_lifecycle_replay_not_mutation")
+                deadlines = []
+                for (target, _original, request, decision), current in zip(decisions, authorities):
+                    target.assert_authority(current)
+                    fresh = await self._issuers.revalidate(request, decision)
+                    refusal = issuer_write_refusal(current, request, fresh, now=datetime.now(timezone.utc))
+                    if refusal is not None:
+                        raise IssuerWriteRefused(refusal["reason"])
+                    deadlines.append(fresh.valid_until)
+                return min(deadlines)
+
+            receipt = await apply(lifecycle, actor_subject=actor, before_commit=before_commit)
+            committed = receipt["state"] == "committed"
+            complete = receipt["serving_state"] in ("complete", "not_required")
+            # Issuer-owned orchestration consumes this shared outcome. Hub does
+            # not invent a second per-participant policy/finalization protocol.
+            return {"ok": committed and complete, "status": 200 if committed and complete else 202 if committed else 409,
+                "state": receipt["state"], "serving_state": receipt["serving_state"],
+                "transaction_id": receipt["transaction_id"], "request_id": lifecycle.request_id,
+                "change_digest": lifecycle.change_digest, "reason": receipt["reason"],
+                "retryable": not complete, "requires_new_request_id": not committed,
+                "targets": [{"access_id": entry["access_id"], "before_revision": entry["before"]["card_revision"],
+                    "after_revision": entry["after"]["card_revision"] if committed else entry["before"]["card_revision"]}
+                    for entry in receipt["targets"]]}
+        except IssuerWriteRefused as exc:
+            return {"ok": False, "error": "issuer_managed_card", "reason": exc.reason, "status": 403}
+        except LifecycleRefused as exc:
+            return {"ok": False, "error": exc.reason, "status": 409, "requires_new_request_id": True}
+        except CardConflict as exc:
+            return {"ok": False, "error": exc.reason, "status": 409, "retryable": True}
+        except Exception:
+            _LOGGER.exception("[connection-hub] issuer lifecycle unavailable")
+            return {"ok": False, "error": "issuer_lifecycle_unavailable", "status": 503, "retryable": True}
+
+    def _issuer_managed(self, record: AutomationAccessRecord) -> bool:
+        return _record_is_credentialless(record) and self._issuers.is_managed(record.issuer_kind)
+
+    async def _issuer_before_commit(
+        self, record: AutomationAccessRecord, user: Mapping[str, Any], *,
+        action: str, candidate: Mapping[str, Any], request_id: str,
+        context_ref: str, decision: object,
+    ) -> tuple[Callable[[], Awaitable[None]] | None, IssuerRequest | None]:
+        if not self._issuer_managed(record):
+            return None, None
+        guarded_method = "persist_guarded" if action == "update" else "forget_guarded"
+        if not callable(getattr(self._cards(), guarded_method, None)):
+            raise IssuerWriteRefused("issuer_commit_gate_unavailable")
+        if action == "update" and (
+            any(candidate.get(key) != getattr(record, key) for key in
+                ("access_id", "grantor_subject", "issuer_kind", "issuer_ref", "source", "expires_at", "delegate_subject"))
+            or candidate.get("card_revision") != record.card_revision + 1
+        ):
+            raise IssuerWriteRefused("issuer_candidate_binding_mismatch")
+        request = IssuerRequest(
+            actor_subject=(self._issuer_actor_subject if self._issuer_actor_subject_bound
+                           else _subject_from_user(user)),
+            request_id=_clean(request_id) or secrets.token_urlsafe(18),
+            action=action, access_id=record.access_id,
+            card_revision=record.card_revision, issuer_kind=record.issuer_kind,
+            issuer_ref=record.issuer_ref, change_digest=change_digest(candidate),
+            context_ref=_clean(context_ref),
+        )
+        if decision is None:
+            if not request.context_ref:
+                request = await self._issuers.prepare(
+                    request, current=card_authority_from_record(record).to_dict(),
+                    candidate=candidate,
+                )
+            decision = await self._issuers.decide(request)
+        refusal = issuer_write_refusal(record, request, decision, now=datetime.now(timezone.utc))
+        if refusal is not None:
+            confirmed = await self._issuers.finalize(request, state="refused", card_revision=record.card_revision)
+            raise IssuerWriteRefused(refusal["reason"], outcome_confirmed=confirmed)
+
+        async def before_commit() -> None:
+            # The durable port invokes this INSIDE the target mutation lock,
+            # after checking its current revision, before all mutation effects.
+            fresh = await self._issuers.revalidate(request, decision)
+            refusal = issuer_write_refusal(record, request, fresh, now=datetime.now(timezone.utc))
+            if refusal is not None:
+                raise IssuerWriteRefused(refusal["reason"])
+
+        return before_commit, request
+
+    async def _issuer_outcome(self, request: IssuerRequest | None, *,
+                              state: str, card_revision: int) -> dict[str, Any]:
+        if request is None:
+            return {}
+        confirmed = await self._issuers.finalize(request, state=state, card_revision=card_revision)
+        return {"issuer_outcome_confirmed": confirmed}
 
     async def _list_active_records(
         self, grantor_subject: str, *, now: int | None = None
@@ -4680,6 +4922,9 @@ class AutomationAccessService:
         ]
         | None = None,
         _notification_subject: str = "",
+        _issuer_decision: IssuerDecision | None = None,
+        _issuer_request_id: str = "",
+        _issuer_context_ref: str = "",
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -4731,7 +4976,11 @@ class AutomationAccessService:
                 "error": "platform_admin_required",
                 "status": 403,
             }
-        if _record_is_credentialless(existing):
+        if self._issuer_managed(existing) and not control_snapshot_is_exact(
+            card_authority_from_record(existing)
+        ):
+            return IssuerWriteRefused("issuer_snapshot_requires_explicit_migration").to_dict()
+        if _record_is_credentialless(existing) and not self._issuer_managed(existing):
             try:
                 existing = await self._ensure_control_snapshot(existing)
             except CardUnavailable as exc:
@@ -5039,17 +5288,34 @@ class AutomationAccessService:
             updated = _record_transform(existing, updated)
         del remaining
         try:
-            await self._persist_record(updated, expected_revision=existing.card_revision)
+            before_commit, issuer_request = await self._issuer_before_commit(
+                existing, user, action="update",
+                candidate=card_authority_from_record(updated).to_dict(),
+                request_id=_issuer_request_id, context_ref=_issuer_context_ref,
+                decision=_issuer_decision,
+            )
+        except IssuerWriteRefused as exc:
+            return exc.to_dict()
+        try:
+            guard = {"before_commit": before_commit, "expected_issuer_digest": issuer_request.change_digest} if before_commit is not None else {}
+            await self._persist_record(updated, expected_revision=existing.card_revision, **guard)
+        except IssuerWriteRefused as exc:
+            outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=existing.card_revision)
+            return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
-            return _serving_state_unavailable(exc)
+            outcome = await self._issuer_outcome(issuer_request, state="committed", card_revision=updated.card_revision)
+            return {**_serving_state_unavailable(exc), **outcome}
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=existing.card_revision)
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
                 "reason": getattr(exc, "reason", ""),
                 "retryable": True,
                 "status": 503,
+                **outcome,
             }
+        outcome = await self._issuer_outcome(issuer_request, state="committed", card_revision=updated.card_revision)
         await self.notify_change(
             _clean(_notification_subject) or grantor_subject,
             action="updated",
@@ -5057,7 +5323,7 @@ class AutomationAccessService:
         )
         saved = updated.to_public_dict()
         saved["catalog_drift"] = card_drift(card=updated, active=active, baseline=active)
-        return {"ok": True, "access": saved, "pruned": reconciled.to_public_dict()}
+        return {"ok": True, "access": saved, "pruned": reconciled.to_public_dict(), **outcome}
 
     # -- resident caller profile: stable card, legacy fold, read model --------
 
@@ -9138,7 +9404,12 @@ class AutomationAccessService:
         )
         return {"ok": True, "mode": "prolong", "access": prolonged.to_public_dict()}
 
-    async def revoke_access(self, user: Mapping[str, Any], *, access_id: str) -> dict[str, Any]:
+    async def revoke_access(self, user: Mapping[str, Any], *, access_id: str,
+                            expected_access_id: str | None = None,
+                            expected_card_revision: int | None = None,
+                            _issuer_decision: IssuerDecision | None = None,
+                            _issuer_request_id: str = "",
+                            _issuer_context_ref: str = "") -> dict[str, Any]:
         grantor_subject = _subject_from_user(user)
         if not grantor_subject:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
@@ -9148,6 +9419,17 @@ class AutomationAccessService:
         access_id_value = _clean(access_id)
         if not access_id_value:
             return {"ok": False, "error": "delegated_access_id_required"}
+        has_expectations = expected_access_id is not None or expected_card_revision is not None
+        if has_expectations:
+            if (
+                not isinstance(expected_access_id, str)
+                or not expected_access_id.strip()
+                or type(expected_card_revision) is not int
+                or expected_card_revision < 1
+            ):
+                return {"ok": False, "error": "delegated_access_revoke_precondition_invalid", "status": 400}
+            if expected_access_id.strip() != access_id_value:
+                return {"ok": False, "error": "delegated_access_revoke_target_mismatch", "status": 409}
         try:
             # An expired card is still listed for its owner, so it must stay
             # revocable; only an already revoked card has nothing left to end.
@@ -9163,10 +9445,22 @@ class AutomationAccessService:
                 "status": 503,
             }
         if loaded is None or loaded[1] != CARD_STATE_ACTIVE:
+            if has_expectations:
+                return {"ok": False, "error": "delegated_card_revision_conflict",
+                        "reason": "card_revision_moved", "status": 409, "retryable": False}
             return {"ok": True, "removed": False}
         record = loaded[0]
         if record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
+        if self._issuer_managed(record) and not has_expectations:
+            return {"ok": False, "error": "delegated_access_revoke_precondition_required", "status": 409}
+        if has_expectations and record.card_revision != expected_card_revision:
+            return {"ok": False, "error": "delegated_card_revision_conflict",
+                    "reason": "card_revision_moved", "status": 409, "retryable": False}
+        # The loaded record now carries the caller's exact target revision.
+        # forget/forget_guarded passes that same revision to CardService.revoke,
+        # which compares it under the target mutation lock before any effects.
+        # Never reload and adopt a replacement revision after this check.
         if (
             record.source == ACCESS_SOURCE_AGENT
             and record.card_kind == CARD_KIND_AGENT
@@ -9185,22 +9479,46 @@ class AutomationAccessService:
             }
         # The revoked revision commits before any credential cleanup, so a
         # failure below cannot leave the card usable.
+        try:
+            before_commit, issuer_request = await self._issuer_before_commit(
+                record, user, action="revoke", candidate={
+                    "action": "revoke", "access_id": record.access_id,
+                    "card_revision": record.card_revision,
+                }, request_id=_issuer_request_id, context_ref=_issuer_context_ref,
+                decision=_issuer_decision,
+            )
+        except IssuerWriteRefused as exc:
+            return exc.to_dict()
         serving_error: CardServingUnavailable | None = None
         try:
-            await self._forget_record(record)
+            guard = {"before_commit": before_commit} if before_commit is not None else {}
+            await self._forget_record(record, **guard)
+        except IssuerWriteRefused as exc:
+            outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
+            return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
             # Durable revocation already won. Continue invalidating the
             # source-specific credential so a stale serving projection cannot
             # preserve access while Redis is being reconstructed.
             serving_error = exc
-        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+        except CardConflict as exc:
+            outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
+            if has_expectations and exc.reason == "card_revision_moved":
+                return {"ok": False, "error": "delegated_card_revision_conflict",
+                        "reason": exc.reason, "retryable": False, "status": 409, **outcome}
+            return {"ok": False, "error": "delegated_card_not_committed",
+                    "reason": exc.reason, "retryable": True, "status": 503, **outcome}
+        except (CardUnavailable, CardCommitFailed) as exc:
+            outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
                 "reason": getattr(exc, "reason", ""),
                 "retryable": True,
                 "status": 503,
+                **outcome,
             }
+        outcome = await self._issuer_outcome(issuer_request, state="committed", card_revision=record.card_revision + 1)
         removed_session = False
         if record.session_id:
             authority = self._authority
@@ -9228,12 +9546,13 @@ class AutomationAccessService:
             await self._store.revoke_access_grant(record.access_token)
         await self.notify_change(grantor_subject, action="revoked", access_id=access_id_value)
         if serving_error is not None:
-            return _serving_state_unavailable(serving_error)
+            return {**_serving_state_unavailable(serving_error), **outcome}
         return {
             "ok": True,
             "removed": True,
             "session_removed": removed_session,
             "refresh_token_revoked": refresh_revoked,
+            **outcome,
         }
 
     # ------------------------- live-session delivery -------------------------

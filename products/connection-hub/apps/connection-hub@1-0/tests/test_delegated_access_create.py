@@ -119,6 +119,14 @@ async def test_service_factory_injects_invocation_policy_service(monkeypatch):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
+        def bind_issuer_registry(self, registry, *, actor_subject):
+            captured["issuer_registry"] = registry
+            captured["issuer_actor_subject"] = actor_subject
+
+        def bind_issuer_read_registry(self, registry, **host):
+            captured["issuer_read_registry"] = registry
+            captured["issuer_read_host"] = host
+
         def bind_project_authorization_port(self, port):
             captured["project_authorization_port"] = port
 

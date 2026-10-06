@@ -245,8 +245,41 @@ def test_a_decision_is_read_strictly():
 
 def _real_card():
     from test_agent_capability_control_sync import NAMED_RESOURCE, _service
+    from datetime import datetime, timedelta, timezone
+    from connection_hub.delegated_credentials.issuer_gate import IssuerRegistry
 
     service, _ = _service(named_services=True)
+    # This legacy domain-port fixture now also supplies the independent generic
+    # issuer capability required for externally managed credentialless writes.
+    # Its fake store has no suspension between the revision check, gate and write;
+    # the real shared-lock/no-effect behavior is tested in test_issuer_mutations.
+    persistence = service._cards()
+
+    async def persist_guarded(authority, handles, *, subject_hash, expected_revision, before_commit):
+        current = await persistence.current_revision(authority.access_id, subject_hash=subject_hash)
+        if current != expected_revision:
+            from connection_hub.delegated_credentials.cards.service import CardConflict
+            raise CardConflict("card_revision_moved", current_revision=current)
+        await before_commit()
+        await persistence.persist(authority, handles, subject_hash=subject_hash, expected_revision=expected_revision)
+
+    persistence.persist_guarded = persist_guarded
+
+    class FixtureIssuer:
+        issuer_kind = "project"
+        adapter_id = "independent-fixture-issuer"
+
+        async def prepare_context(self, request, **kwargs):
+            return "fixture-exact-request-context"
+
+        async def decide(self, request):
+            return True, "fixture", "fixture-policy-v1", datetime.now(timezone.utc) + timedelta(seconds=30)
+
+        async def finalize_context(self, request, *, outcome):
+            return True
+
+    service._issuers = IssuerRegistry()
+    service._issuers.register(FixtureIssuer())
     creator = {"user_id": CREATOR, "roles": ["kdcube:role:super-admin"], "permissions": []}
     made = asyncio.run(service.control_card_create(
         creator, issuer_ref=PROJECT, issuer_kind="project", issuer_label="One",

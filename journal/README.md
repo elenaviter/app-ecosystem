@@ -102,6 +102,10 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-04 | Host readiness must hold future calls before a client switch | — |
 
+| 2026-10-05 | Opaque issuer authorization gates externally managed Card writes | In-progress phase-one source contract: exact server-built candidate and signed peer context using bounded invocation/digest admission fields, frozen Unicode digest vector, locally sealed decisions, lock-local fresh revalidation, named legacy snapshot refusal, explicit unconfirmed outcomes and descriptor-selected app composition; live provisioning and mounted qualification remain open. Public contract: [issuer-managed writes](../docs/connection-hub/issuer-managed-writes.md). |
+
+| 2026-10-06 | Caller-recorded revocation must survive the next read | Draft preserved for independent journal publication: generic target-ID/revision preconditions reach the durable revoke fence; replacement before load and replacement before lock acquisition refuse without revoking another revision. Source qualification and legacy multi-Card lifecycle limits stay separate. |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).

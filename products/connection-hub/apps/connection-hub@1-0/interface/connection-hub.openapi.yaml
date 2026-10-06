@@ -5,6 +5,11 @@ info:
   description: |
     Interface contract for connection-hub@1-0.
 
+    Externally managed credentialless Card update/revoke also requires a
+    descriptor-selected authenticated issuer decision. Client decision/context
+    fields confer no authority. Missing providers fail closed and legacy managed
+    snapshots require an explicitly authorized migration before mutation.
+
     The app exposes:
     - connection-edge operations for resolving verified external identities to
       platform principal envelopes;
@@ -49,6 +54,47 @@ tags:
 security:
   - PlatformAuth: []
 paths:
+  /bundles/{tenant}/{project}/{bundle_id}/operations/delegated_access_revoke:
+    post:
+      tags: [Delegated Access]
+      summary: Revoke the caller-recorded, owner-scoped Card revision.
+      description: >
+        Externally issuer-managed Cards require expected_access_id and
+        expected_card_revision. Both the initial read and the inside-lock
+        durable comparison must match. A changed target refuses without
+        revoking its replacement. No ownership or issuer-policy bypass is
+        conferred by these fields. Ordinary unmanaged owner writes may omit
+        both; a supplied pair must be complete and valid. A revision conflict
+        is non-retryable and requires caller reconciliation. This is not a
+        qualification of legacy multi-Card lifecycle operations.
+      operationId: delegated_access_revoke
+      x-kdcube-result-alias: delegated_access_revoke
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  required: [access_id]
+                  dependentRequired:
+                    expected_access_id: [expected_card_revision]
+                    expected_card_revision: [expected_access_id]
+                  properties:
+                    access_id: { type: string, minLength: 1 }
+                    expected_access_id: { type: string, minLength: 1 }
+                    expected_card_revision: { type: integer, minimum: 1 }
+      responses:
+        "200":
+          description: Revocation result or structured 400/409 refusal in the operation result.
+
   /bundles/{tenant}/{project}/{bundle_id}/widgets/connections_settings:
     get:
       tags: [Widgets]

@@ -367,6 +367,15 @@ invalidate the cache.
 
 ## Direct Admission State
 
+Externally managed credentialless Card mutations may also use descriptor-owned
+`connections.delegated_credentials.issuer_authorities` ports. Only opaque provider
+coordinates and secret references belong in that configuration. Actual-candidate
+reservations, nonce replay claims and terminal receipts belong to the external
+authority's shared/durable store, not a Hub module-level cache or browser payload.
+The Hub retains the existing Card revision store and invokes fresh revalidation
+inside its target mutation lock before effects. See [issuer-managed writes](../../../issuer-managed-writes.md)
+for the separate store boundaries and unconfirmed terminal outcomes.
+
 Direct protected-service admission adds no card or catalog store. It reads the
 same access binding, current card, and active catalog used by managed REST/MCP
 guards. Its additional state is:

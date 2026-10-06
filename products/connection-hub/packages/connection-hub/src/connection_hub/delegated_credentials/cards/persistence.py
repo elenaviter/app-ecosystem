@@ -48,6 +48,7 @@ from connection_hub.delegated_credentials.cards.resolver import (
     DelegatedCardResolver,
 )
 from connection_hub.delegated_credentials.cards.service import (
+    BeforeCardCommit,
     CardConflict,
     CardMutationLock,
     CardServingUnavailable,
@@ -72,6 +73,17 @@ class CardPersistence(Protocol):
         *,
         subject_hash: str,
         expected_revision: int,
+    ) -> None: ...
+
+    async def persist_guarded(
+        self, authority: CardAuthority, handles: CardCredentialHandles, *,
+        subject_hash: str, expected_revision: int,
+        before_commit: BeforeCardCommit,
+    ) -> None: ...
+
+    async def forget_guarded(
+        self, authority: CardAuthority, *, subject_hash: str,
+        before_commit: BeforeCardCommit,
     ) -> None: ...
 
     async def forget(
@@ -169,13 +181,16 @@ class DurableCardPersistence:
         *,
         subject_hash: str,
         expected_revision: int,
+        before_commit: BeforeCardCommit | None = None,
     ) -> None:
         now = int(time.time())
+        guard = {"before_commit": before_commit} if before_commit is not None else {}
         await self._cards.commit(
             authority,
             subject_hash=subject_hash,
             expected_revision=expected_revision,
             now=now,
+            **guard,
         )
         try:
             if authority_is_credential_free(authority):
@@ -188,18 +203,58 @@ class DurableCardPersistence:
                 "credential_handles_unavailable", access_id=authority.access_id
             ) from exc
 
+    async def persist_guarded(
+        self, authority: CardAuthority, handles: CardCredentialHandles, *,
+        subject_hash: str, expected_revision: int,
+        before_commit: BeforeCardCommit,
+    ) -> None:
+        await self.persist(authority, handles, subject_hash=subject_hash,
+                           expected_revision=expected_revision, before_commit=before_commit)
+
+    async def forget_guarded(
+        self, authority: CardAuthority, *, subject_hash: str,
+        before_commit: BeforeCardCommit,
+    ) -> None:
+        await self.forget(authority, subject_hash=subject_hash, before_commit=before_commit)
+
+    async def read_lifecycle_identities(self, request: Any) -> tuple[CardAuthority, CardAuthority]:
+        # Deliberately bypass load_current/resolver, which may restore caches.
+        return await self._cards.read_lifecycle_identities(request)
+
+    async def revoke_lifecycle(self, request: Any, *, actor_subject: str, before_commit: Any) -> dict[str, Any]:
+        async def cleanup(authorities):
+            # Executed after shared authoritative commit but while BOTH Card
+            # fences are still held. Failure leaves committed/serving-pending.
+            for authority in authorities:
+                await self._handles.remove(authority)
+
+        return await self._cards.revoke_lifecycle(request, actor_subject=actor_subject,
+                                                 before_commit=before_commit, after_commit=cleanup)
+
+    async def load_lifecycle_receipt(self, request: Any, *, actor_subject: str) -> dict[str, Any] | None:
+        from .lifecycle import LifecycleRefused
+        from .lifecycle_store import read_receipt
+
+        receipt = await read_receipt(self._store, request.transaction_id(actor_subject))
+        if receipt is not None and receipt["binding"] != request.binding(actor_subject):
+            raise LifecycleRefused("issuer_lifecycle_replay_changed")
+        return receipt
+
     async def forget(
         self,
         authority: CardAuthority,
         *,
         subject_hash: str,
         revoked_authority: CardAuthority | None = None,
+        before_commit: BeforeCardCommit | None = None,
     ) -> None:
+        guard = {"before_commit": before_commit} if before_commit is not None else {}
         await self._cards.revoke(
             subject_hash=subject_hash,
             access_id=authority.access_id,
             expected_revision=authority.card_revision,
             revoked_authority=revoked_authority,
+            **guard,
         )
         await self._handles.remove(authority)
 

@@ -238,6 +238,10 @@ class CardProjectionReconciler:
                 )
 
     async def _sweep(self, *, token: str, now: int | None) -> ReconcileReport:
+        from .lifecycle_store import _active_intents
+
+        async for _receipt in _active_intents(self._store):
+            return ReconcileReport(0, 0, 1, completed=False)
         moment = int(now if now is not None else time.time())
         checked = repaired = failed = 0
         async for key in self._redis.scan_iter(match=self._cache.card_key_pattern(), count=200):
@@ -285,6 +289,8 @@ class CardProjectionReconciler:
                     access_id,
                     exc_info=True,
                 )
+        async for _receipt in _active_intents(self._store):
+            return ReconcileReport(checked, repaired, failed + 1, completed=False)
         return ReconcileReport(checked, repaired, failed, completed=failed == 0)
 
     async def _repair(self, access_id: str, projected: int, authority: Any, moment: int) -> bool:

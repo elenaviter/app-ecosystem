@@ -144,6 +144,20 @@ bundles:
             # Empty -> derived from the request host at runtime.
           public_base_url: "https://<PUBLIC_HOST>"
         delegated_credentials:
+          # Opaque external issuer ports; no policy or secret values here.
+          # Missing required issuer providers fail closed. Enable only after
+          # both peers, nonce/reservation stores and existing secret refs qualify.
+          issuer_authorities: {}
+          # Example row (deployment-owned strings, not built-in operation names):
+          # issuer_authorities:
+          #   external-authority:
+          #     bundle_id: "authority-app@1-0"
+          #     operation: "opaque_issuer_decide"
+          #     prepare_operation: "opaque_issuer_prepare"
+          #     finalize_operation: "opaque_issuer_finalize"
+          #     service_id: "connection-hub"
+          #     peer_proof_secret_ref: "existing.approved.peer_secret"
+          #     adapter_id: "authority-app:issuer-v1"
           # The source stays selected until a reviewed cutover writes its
           # activation receipt. After apply, select postgresql and add the
           # exact generation_id returned by that receipt.

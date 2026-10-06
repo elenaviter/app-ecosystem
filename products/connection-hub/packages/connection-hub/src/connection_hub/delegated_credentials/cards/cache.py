@@ -24,6 +24,7 @@ an ordinary projection whose revision it strictly supersedes.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -158,6 +159,69 @@ elseif ARGV[3] == '' then
 else
   redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[3])
 end
+return 1
+"""
+
+# Two participant keys plus epoch and sweep-lock keys are one Redis operation.
+# Redis Cluster deployments whose existing keys are in different slots refuse
+# CROSSSLOT; there is no sequential fallback. Markers NEVER expire: recovery
+# under both production fences owns their removal. Invalidating the epoch AND
+# sweep token prevents a pre-existing sweep from blessing superseded cache.
+_CLAIM_LIFECYCLE_LUA = """
+for i = 1, 2 do
+  local raw = redis.call('GET', KEYS[i])
+  if raw then
+    local ok, card = pcall(cjson.decode, raw)
+    if not ok or type(card) ~= 'table' or card['kind'] ~= 'card'
+       or tonumber(card['card_revision']) ~= tonumber(ARGV[i * 2]) then return 0 end
+  end
+end
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[2], ARGV[3])
+redis.call('DEL', KEYS[3], KEYS[4])
+return 1
+"""
+
+_FINISH_LIFECYCLE_LUA = """
+for i = 1, 2 do
+  local raw = redis.call('GET', KEYS[i])
+  if raw then
+    local ok, card = pcall(cjson.decode, raw)
+    if not ok or type(card) ~= 'table' then return 0 end
+    local owned = card['kind'] == 'updating' and card['mutation_id'] == ARGV[5]
+    local done = card['kind'] == 'revoked' and tonumber(card['card_revision']) == tonumber(ARGV[i * 2])
+    local stale = card['kind'] == 'card' and tonumber(card['card_revision']) == tonumber(ARGV[i * 2]) - 1
+    if not owned and not done and not stale then return 0 end
+  end
+end
+redis.call('SET', KEYS[1], ARGV[1])
+redis.call('SET', KEYS[2], ARGV[3])
+redis.call('DEL', KEYS[3], KEYS[4])
+return 1
+"""
+
+_RELEASE_LIFECYCLE_LUA = """
+for i = 1, 2 do
+  local raw = redis.call('GET', KEYS[i])
+  if raw then
+    local ok, card = pcall(cjson.decode, raw)
+    if ok and type(card) == 'table' and card['kind'] == 'updating'
+       and card['mutation_id'] == ARGV[1] then redis.call('DEL', KEYS[i]) end
+  end
+end
+redis.call('DEL', KEYS[3], KEYS[4])
+return 1
+"""
+
+_LIFECYCLE_FENCED_LUA = """
+for i = 1, 2 do
+  local raw = redis.call('GET', KEYS[i])
+  if not raw then return 0 end
+  local ok, card = pcall(cjson.decode, raw)
+  if not ok or type(card) ~= 'table' or card['kind'] ~= 'updating'
+     or card['mutation_id'] ~= ARGV[1] then return 0 end
+end
+if redis.call('GET', KEYS[3]) then return 0 end
 return 1
 """
 
@@ -473,6 +537,74 @@ class DelegatedCardRuntimeCache:
     async def _eval_bool(self, script: str, access_id: str, *args: str) -> bool:
         result = await self._redis.eval(script, 1, self.card_key(access_id), *args)
         return bool(int(result or 0))
+
+    async def _lifecycle_eval(self, script: str, access_ids: tuple[str, str], *args: str) -> bool:
+        if len(access_ids) != 2 or access_ids[0] == access_ids[1]:
+            raise ValueError("lifecycle_participants_invalid")
+        keys = [self.card_key(item) for item in access_ids] + [self.projection_epoch_key(), self.reconcile_lock_key()]
+        return bool(int(await self._redis.eval(script, 4, *keys, *args) or 0))
+
+    async def _lifecycle_redis_mode(self) -> int:
+        """Read-only backend capability; never infer standalone from a URL."""
+        try:
+            raw = await self._redis.info("cluster")
+            if not isinstance(raw, Mapping):
+                raise ValueError()
+            flag = raw.get("cluster_enabled")
+            if type(flag) is int and flag in (0, 1):
+                return flag
+            if type(flag) is str and flag in ("0", "1"):
+                return int(flag)
+            # RedisCluster INFO may be returned per node. A distributed client
+            # is supported only as a REFUSAL profile, never as standalone.
+            if raw and all(isinstance(v, Mapping) and type(v.get("cluster_enabled")) is int
+                           and v["cluster_enabled"] == 1 for v in raw.values()):
+                return 1
+            raise ValueError()
+        except Exception as exc:
+            raise CardCacheUnusable("lifecycle_redis_mode_unverified") from exc
+
+    async def require_lifecycle_backend(self) -> None:
+        if await self._lifecycle_redis_mode() != 0:
+            raise CardCacheUnusable("lifecycle_redis_cluster_unsupported")
+
+    async def claim_lifecycle(self, authorities: tuple[CardAuthority, CardAuthority], *, mutation_id: str) -> bool:
+        args = []
+        for authority in authorities:
+            args.extend([encode_cache_value({"kind": CARD_CACHE_KIND_UPDATING,
+                "mutation_id": mutation_id, "card_revision": authority.card_revision}), str(authority.card_revision)])
+        return await self._lifecycle_eval(_CLAIM_LIFECYCLE_LUA,
+            tuple(card.access_id for card in authorities), *args)
+
+    async def lifecycle_fenced(self, access_ids: tuple[str, str], *, mutation_id: str) -> bool:
+        return await self._lifecycle_eval(_LIFECYCLE_FENCED_LUA, access_ids, mutation_id)
+
+    async def finish_lifecycle(self, authorities: tuple[CardAuthority, CardAuthority], *, mutation_id: str) -> bool:
+        args = []
+        for authority in authorities:
+            args.extend([encode_cache_value({"kind": CARD_CACHE_KIND_REVOKED,
+                "card_revision": authority.card_revision + 1}), str(authority.card_revision + 1)])
+        return await self._lifecycle_eval(_FINISH_LIFECYCLE_LUA,
+            tuple(card.access_id for card in authorities), *args, mutation_id)
+
+    async def release_lifecycle(self, access_ids: tuple[str, str], *, mutation_id: str) -> None:
+        try:
+            await self._lifecycle_eval(_RELEASE_LIFECYCLE_LUA, access_ids, mutation_id)
+        except Exception as exc:
+            # Recover OLD refused cluster attempts only with positive evidence
+            # that this transaction owns NO marker. Never suppress a generic
+            # EVAL failure or leave an owned marker while declaring completion.
+            text = str(exc).upper()
+            if not any(part in text for part in ("CROSSSLOT", "ALL KEYS MUST MAP TO THE SAME KEY SLOT",
+                                                "KEYS IN REQUEST DON'T HASH TO THE SAME SLOT")):
+                raise
+            if await self._lifecycle_redis_mode() != 1:
+                raise
+            for access_id in access_ids:
+                entry = await self.read(access_id)  # malformed/unavailable also refuses
+                if entry is not None and entry.is_updating and entry.mutation_id == mutation_id:
+                    raise CardCacheUnusable("lifecycle_cluster_owned_marker_unresolved") from exc
+            # No keys are deleted. Other mutations' markers remain untouched.
 
 
 __all__ = [
