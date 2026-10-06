@@ -65,6 +65,19 @@ async def _decision(_authorities):
     return datetime.now(timezone.utc) + timedelta(seconds=30)
 
 
+async def _refused_by_preflight(persistence, store, cluster, cache, cards, request):
+    """One pair attempt is refused by the backend preflight, before any effect."""
+
+    from connection_hub.delegated_credentials.cards import lifecycle_store
+    from connection_hub.delegated_credentials.cards.lifecycle import LifecycleRefused
+
+    with pytest.raises(LifecycleRefused) as refused:
+        await persistence.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=_decision)
+    assert refused.value.reason == "issuer_lifecycle_redis_cluster_unsupported"
+    assert not lifecycle_store.active_intent_path(store, request.transaction_id(ACTOR)).exists(), "no intent"
+    assert [await cluster.exists(key) for key in _keys(cache, cards)] == [0, 0, 0, 0], "no lifecycle key"
+
+
 @pytest.mark.asyncio
 async def test_the_pair_claim_is_refused_on_the_client_and_the_server_and_writes_no_key(cluster, namespace):
     import redis.asyncio as redis_asyncio
@@ -94,11 +107,11 @@ async def test_the_pair_claim_is_refused_on_the_client_and_the_server_and_writes
 async def test_a_refused_cluster_pair_leaves_both_cards_active(tmp_path, cluster, namespace):
     store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
     persistence = DurableCardPersistence(redis=cluster, tenant=namespace[0], project=namespace[1], card_store=store)
+    cache = DelegatedCardRuntimeCache(cluster, tenant=namespace[0], project=namespace[1])
     cards = _pair()
     await _seed(store, cards)
 
-    with pytest.raises(Exception):
-        await persistence.revoke_lifecycle(_request(cards), actor_subject=ACTOR, before_commit=_decision)
+    await _refused_by_preflight(persistence, store, cluster, cache, cards, _request(cards))
 
     assert await _durable(store, cards) == [("active", 1), ("active", 1)]
 
@@ -116,11 +129,11 @@ async def test_the_identical_retry_resolves_a_refused_cluster_pair_and_frees_bot
 
     store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
     persistence = DurableCardPersistence(redis=cluster, tenant=namespace[0], project=namespace[1], card_store=store)
+    cache = DelegatedCardRuntimeCache(cluster, tenant=namespace[0], project=namespace[1])
     cards = _pair()
     await _seed(store, cards)
     request = _request(cards)
-    with pytest.raises(Exception):
-        await persistence.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=_decision)
+    await _refused_by_preflight(persistence, store, cluster, cache, cards, request)
 
     retried = await persistence.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=_decision)
 
@@ -188,9 +201,13 @@ async def test_an_old_stuck_cluster_refusal_with_an_owned_or_damaged_marker_stay
              if marker == "owned" else "{damaged")
     await cluster.set(key, value)
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception) as blocked:
         await persistence.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=_decision)
 
+    if marker == "owned":
+        assert getattr(blocked.value, "reason", "") == "lifecycle_cluster_owned_marker_unresolved", blocked.value
+    else:
+        assert (type(blocked.value).__name__, getattr(blocked.value, "reason", "")) == ("CardCacheUnusable", "cached_card_not_decodable"), blocked.value
     assert await cluster.get(key) == value.encode(), "the marker is never deleted or relabelled"
     assert await _durable(store, cards) == [("active", 1), ("active", 1)]
     for card in cards:
