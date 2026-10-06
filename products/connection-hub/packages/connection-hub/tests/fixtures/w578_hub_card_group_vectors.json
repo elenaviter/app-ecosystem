@@ -1,0 +1,3399 @@
+{
+ "about": "The connection-hub.card-group participant input (CodeApp 23:01). participant_inputs['connection-hub.card'] = participant_input and participant_candidates['connection-hub.card'] = candidate_value; candidate_digest = sha256(kernel canonical_json_bytes(candidate_value)). The aggregate's own revision fields are fixed (before 0, candidate 1, incarnation 1, action create); binding_ref names the members at their base revisions and is NOT unique per transaction (a replay after ABORT reuses it): the transaction id, epoch and global intent digest separate transactions. A bound parent Control must be a member or a PRESENT read (revision >= 1). Members are sorted by (subject_hash, access_id); an absent original is explicit (original_absent true, original_revision 0, candidate revision 1, action create). Each refused vector is complete and names the Hub's refusal.",
+ "accepted": {
+  "candidate_digest": "c78a5f77bfb01b9d31a366b13725036057b5646ffc90d3b5b4c820111c973f55",
+  "candidate_value": {
+   "cards": [
+    {
+     "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+     "action": "create",
+     "candidate": {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "account_scope": {},
+      "card_kind": "control",
+      "card_revision": 1,
+      "catalog_version": "catalog-v1",
+      "client_id": "project-person:my-card",
+      "client_metadata": {},
+      "composition_mode": "and",
+      "control_card": {
+       "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "control_revision": 1,
+       "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "issuer_kind": "project_person_control",
+       "issuer_ref": "work:project:quickstart"
+      },
+      "created_at": 1780000000,
+      "delegate_subject": "",
+      "entry_resource": "",
+      "expires_at": 0,
+      "grantor_subject": "platform-user-2",
+      "identity_scope": "",
+      "issuer_kind": "project_person_my_card",
+      "issuer_label": "",
+      "issuer_ref": "work:project:quickstart",
+      "label": "My card",
+      "last_four": "",
+      "last_issued_at": 0,
+      "manage_url": "",
+      "named_service_operations": {},
+      "named_services": {},
+      "operations": [
+       "messages.search"
+      ],
+      "properties": {},
+      "provenance": {},
+      "resource_acceptance": {},
+      "resource_grants": {
+       "https://example.test/mcp": [
+        "messages:read"
+       ]
+      },
+      "resource_operations": {
+       "https://example.test/mcp": [
+        "messages.search"
+       ]
+      },
+      "schema": "connection_hub.delegated_card_authority.v7",
+      "source": "control",
+      "state": "active"
+     },
+     "original_absent": true,
+     "original_revision": 0,
+     "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+    },
+    {
+     "access_id": "invitation-control-7f3a",
+     "action": "revoke",
+     "candidate": {
+      "access_id": "invitation-control-7f3a",
+      "account_scope": {},
+      "card_kind": "control",
+      "card_revision": 2,
+      "catalog_version": "catalog-v1",
+      "client_id": "control-card:project",
+      "client_metadata": {},
+      "composition_mode": "and",
+      "created_at": 1780000000,
+      "delegate_subject": "",
+      "entry_resource": "",
+      "expires_at": 0,
+      "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+      "identity_scope": "",
+      "issuer_kind": "project_invitation_control",
+      "issuer_label": "",
+      "issuer_ref": "work:project:quickstart",
+      "label": "Invitation",
+      "last_four": "",
+      "last_issued_at": 0,
+      "manage_url": "",
+      "named_service_operations": {},
+      "named_services": {},
+      "operations": [
+       "messages.search"
+      ],
+      "properties": {},
+      "provenance": {},
+      "resource_acceptance": {},
+      "resource_grants": {
+       "https://example.test/mcp": [
+        "messages:read"
+       ]
+      },
+      "resource_operations": {
+       "https://example.test/mcp": [
+        "messages.search"
+       ]
+      },
+      "schema": "connection_hub.delegated_card_authority.v7",
+      "source": "control",
+      "state": "revoked"
+     },
+     "original_absent": false,
+     "original_revision": 1,
+     "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+    },
+    {
+     "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+     "action": "create",
+     "candidate": {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "account_scope": {},
+      "card_kind": "control",
+      "card_revision": 1,
+      "catalog_version": "catalog-v1",
+      "client_id": "control-card:project",
+      "client_metadata": {},
+      "composition_mode": "and",
+      "control_card": {
+       "control_id": "control-624192ef1bc6c4d30ce85bed",
+       "control_revision": 1,
+       "holder_subject": "project-creator",
+       "issuer_kind": "application",
+       "issuer_ref": "work:project:quickstart"
+      },
+      "created_at": 1780000000,
+      "delegate_subject": "",
+      "entry_resource": "",
+      "expires_at": 0,
+      "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+      "identity_scope": "",
+      "issuer_kind": "project_person_control",
+      "issuer_label": "",
+      "issuer_ref": "work:project:quickstart",
+      "label": "Invited member",
+      "last_four": "",
+      "last_issued_at": 0,
+      "manage_url": "",
+      "named_service_operations": {},
+      "named_services": {},
+      "operations": [
+       "messages.search"
+      ],
+      "properties": {},
+      "provenance": {},
+      "resource_acceptance": {},
+      "resource_grants": {
+       "https://example.test/mcp": [
+        "messages:read"
+       ]
+      },
+      "resource_operations": {
+       "https://example.test/mcp": [
+        "messages.search"
+       ]
+      },
+      "schema": "connection_hub.delegated_card_authority.v7",
+      "source": "control",
+      "state": "active"
+     },
+     "original_absent": true,
+     "original_revision": 0,
+     "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+    }
+   ],
+   "effects": [],
+   "schema": "connection-hub.card-group.v1"
+  },
+  "catalog_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "name": "invitation_redemption_group",
+  "participant_input": {
+   "action": "create",
+   "actor_kind": "grantor",
+   "actor_subject": "platform-user-2",
+   "before_revision": 0,
+   "binding_kind": "connection-hub.card-group",
+   "binding_ref": "group:bffd6ea42d8800276522cba57edbd98a94d998c8dfe6648fc72588fd48a1b78a",
+   "candidate_digest": "c78a5f77bfb01b9d31a366b13725036057b5646ffc90d3b5b4c820111c973f55",
+   "candidate_revision": 1,
+   "dependency_revisions": {
+    "card:2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2:control-624192ef1bc6c4d30ce85bed": 1,
+    "catalog-active:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": 1
+   },
+   "participant": "connection-hub.card",
+   "provisioning": {},
+   "target_incarnation": 1,
+   "target_scope": "421565fdf93d8495f657180e5c54c2a8c482e5d6c3847a8b63d19560519840ef"
+  },
+  "reads": [
+   {
+    "access_id": "control-624192ef1bc6c4d30ce85bed",
+    "revision": 1,
+    "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+   }
+  ]
+ },
+ "binding_kind": "connection-hub.card-group",
+ "refused": [
+  {
+   "candidate_value": {
+    "cards": [],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "empty_group",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_empty"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "too_many_members",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_too_large"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "duplicate_target",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_member_duplicate"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "members_not_canonical",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_not_canonical"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "absent_original_not_revision_one",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_absent_original_invalid"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "create",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "existing_original_as_create",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_member_revision_invalid"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "member_scope_not_its_grantor",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_member_invalid"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "read_overlaps_target",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    },
+    {
+     "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+     "revision": 0,
+     "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+    }
+   ],
+   "reason": "card_group_read_overlaps_target"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "present_and_absent_read",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    },
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 0,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_dependency_contradiction"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "project_control_read_missing",
+   "reads": [],
+   "reason": "card_group_control_read_missing"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "project_control_read_absent",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 0,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_control_read_missing"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "read_revision_not_an_integer",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": "1",
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_read_invalid"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "read_revision_negative",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": -1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_read_invalid"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "read_extra_field",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "note": "x",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_read_invalid"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [
+     {
+      "key": "k",
+      "kind": "grant"
+     }
+    ],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "effect_missing_payload",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_effect_invalid"
+  },
+  {
+   "candidate_value": {
+    "cards": [
+     {
+      "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-my-card-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "project-person:my-card",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+        "control_revision": 1,
+        "holder_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+        "issuer_kind": "project_person_control",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "platform-user-2",
+       "identity_scope": "",
+       "issuer_kind": "project_person_my_card",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "My card",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "0d0181ad9273ff7d7df37150df32ddaca3dd0713577f29d5168051803232396e"
+     },
+     {
+      "access_id": "invitation-control-7f3a",
+      "action": "revoke",
+      "candidate": {
+       "access_id": "invitation-control-7f3a",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 2,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_invitation_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invitation",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "revoked"
+      },
+      "original_absent": false,
+      "original_revision": 1,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     },
+     {
+      "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+      "action": "create",
+      "candidate": {
+       "access_id": "person-control-ab5f7fb1f5ecc82017c40de6",
+       "account_scope": {},
+       "card_kind": "control",
+       "card_revision": 1,
+       "catalog_version": "catalog-v1",
+       "client_id": "control-card:project",
+       "client_metadata": {},
+       "composition_mode": "and",
+       "control_card": {
+        "control_id": "control-624192ef1bc6c4d30ce85bed",
+        "control_revision": 1,
+        "holder_subject": "project-creator",
+        "issuer_kind": "application",
+        "issuer_ref": "work:project:quickstart"
+       },
+       "created_at": 1780000000,
+       "delegate_subject": "",
+       "entry_resource": "",
+       "expires_at": 0,
+       "grantor_subject": "project-authority:a53c2d60520c56cde0f2e91bdd6327564eaf3b508b342d3500926e364bc237bd",
+       "identity_scope": "",
+       "issuer_kind": "project_person_control",
+       "issuer_label": "",
+       "issuer_ref": "work:project:quickstart",
+       "label": "Invited member",
+       "last_four": "",
+       "last_issued_at": 0,
+       "manage_url": "",
+       "named_service_operations": {},
+       "named_services": {},
+       "operations": [
+        "messages.search"
+       ],
+       "properties": {},
+       "provenance": {},
+       "resource_acceptance": {},
+       "resource_grants": {
+        "https://example.test/mcp": [
+         "messages:read"
+        ]
+       },
+       "resource_operations": {
+        "https://example.test/mcp": [
+         "messages.search"
+        ]
+       },
+       "schema": "connection_hub.delegated_card_authority.v7",
+       "source": "control",
+       "state": "active"
+      },
+      "original_absent": true,
+      "original_revision": 0,
+      "subject_hash": "2b8a473a4958544c88af95918740dd866c011fe8e79bc308ed25c9881741ca9e"
+     }
+    ],
+    "effects": [
+     {
+      "key": "k",
+      "kind": "grant",
+      "payload": {}
+     },
+     {
+      "key": "k",
+      "kind": "grant",
+      "payload": {}
+     }
+    ],
+    "schema": "connection-hub.card-group.v1"
+   },
+   "name": "effect_duplicate_kind_key",
+   "reads": [
+    {
+     "access_id": "control-624192ef1bc6c4d30ce85bed",
+     "revision": 1,
+     "subject_hash": "2f9d98f5aafc9ed5a82638f2cf1547fcebda09aff90f74cf9f1e8b234c994eb2"
+    }
+   ],
+   "reason": "card_group_effect_invalid"
+  }
+ ],
+ "schema": "w578.hub-card-group-vectors.v1"
+}
