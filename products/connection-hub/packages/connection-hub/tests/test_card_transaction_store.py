@@ -1026,3 +1026,20 @@ async def test_each_applied_effect_keeps_its_named_outcome(tmp_path):
     store, service, before, after = await _staged_with_effects(tmp_path, _Named())
     await _service_decide(store, service, before, "committed")
     assert await tx.effect_outcomes(store, TX) == {"0": "d" * 64, "1": "no_active_credentials"}
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_effect_key_is_refused_by_name_at_stage(tmp_path):
+    from datetime import datetime, timezone
+    store, service, before, after = await _setup(tmp_path)
+    when = datetime.fromtimestamp(NOW, timezone.utc)
+    oversized = [{"kind": "invocation_policy", "key": "r" * (tx.MAX_EFFECT_KEY_BYTES + 1), "payload": {}}]
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_effects_invalid"):
+        await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                        subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
+                                        effects=oversized)
+    assert await tx.state(store, transaction_id=TX) is None and await _visible(store, before) == before
+    fits = [{"kind": "invocation_policy", "key": "r" * tx.MAX_EFFECT_KEY_BYTES, "payload": {}}]
+    await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
+                                    effects=fits)

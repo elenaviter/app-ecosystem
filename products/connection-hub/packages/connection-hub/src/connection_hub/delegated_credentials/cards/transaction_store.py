@@ -73,6 +73,7 @@ def _effects_valid(effects: Any) -> bool:
         if (not isinstance(effect, Mapping) or set(effect) != {"kind", "key", "payload"}
                 or not isinstance(effect["kind"], str) or not effect["kind"]
                 or not isinstance(effect["key"], str) or not effect["key"]
+                or len(effect["key"].encode("utf-8")) > MAX_EFFECT_KEY_BYTES
                 or not isinstance(effect["payload"], Mapping) or (effect["kind"], effect["key"]) in seen):
             return False
         seen.add((effect["kind"], effect["key"]))
@@ -80,6 +81,9 @@ def _effects_valid(effects: Any) -> bool:
 
 
 MAX_EFFECTS = 32
+# "<64-hex transaction id>:<key>" must fit a 256-byte invocation id (the
+# policy change id); a longer key is refused by name, never truncated.
+MAX_EFFECT_KEY_BYTES = 256 - 65
 
 
 def effects_path(store: Any, transaction_id: str):
