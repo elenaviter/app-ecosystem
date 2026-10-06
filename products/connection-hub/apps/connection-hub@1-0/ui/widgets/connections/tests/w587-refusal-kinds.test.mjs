@@ -26,6 +26,7 @@ test('any other refusal is shown as itself and never marks the edit stale', () =
   assert.equal(isStaleEditRefusal({ status: 503, error: 'delegated_card_save_conflict' }), false)
   assert.equal(isStaleEditRefusal(null), false)
   const save = panel.slice(panel.indexOf('if (isStaleEditRefusal(updated)) {'))
-  assert.match(save, /return;\s+\}\s+setEditActionError\(updated\?\.message \|\| `Save was not applied: \$\{updated\?\.error \|\| 'request refused'\}`\);/)
+  // W587 C: only a restarting board gets its own words; every other refusal is shown as itself.
+  assert.match(save, /return;\s+\}\s+setEditActionError\(isBoardRestarting\(updated\?\.error\)\s+\? `Save was not applied: \$\{BOARD_RESTARTING_MESSAGE\} Your draft is kept\.`\s+: updated\?\.message \|\| `Save was not applied: \$\{updated\?\.error \|\| 'request refused'\}`\);/)
   assert.doesNotMatch(panel, /if \(updated\?\.status === 409\) \{/)
 })

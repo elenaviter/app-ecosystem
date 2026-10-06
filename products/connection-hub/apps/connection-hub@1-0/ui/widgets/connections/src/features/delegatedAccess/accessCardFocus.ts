@@ -98,6 +98,16 @@ export function isRequestLimitRefusal(reason = ''): boolean {
   return /\b(burst|hourly) limit exceeded\b/i.test(reason);
 }
 
+/** W587 follow-up C, the operator (2026-10-06 15:58): "It's clear that uh,
+ *  something was restarted." Connection Hub answers project_board_restarting
+ *  while the board reloads (an older package names the resolver's
+ *  project_membership_provider_not_ready instead). Not a refusal, not a yes. */
+export const BOARD_RESTARTING_MESSAGE = 'Problem Board is restarting; try again in a few seconds.';
+
+export function isBoardRestarting(reason = ''): boolean {
+  return /\b(project_board_restarting|project_membership_provider_not_ready)\b/.test(reason);
+}
+
 /** Why a requested Card did not open, with Connection Hub's own reason when it
  *  gave one (W260: "Open my Control Card" showed only "does not exist"). */
 export function unavailableAccessCardMessage(focus: AccessCardFocus, reason = ''): string {
@@ -111,6 +121,7 @@ export function unavailableAccessCardMessage(focus: AccessCardFocus, reason = ''
       + `reached its request limit ${hourly ? 'for the hour' : 'for one minute'} (${reason.trim().replace(/\.$/, '')}). `
       + `${hourly ? 'Wait and try again later.' : 'Wait about a minute and try again.'}`;
   }
+  if (isBoardRestarting(reason)) return `Card ${focus.accessId} was not loaded. ${BOARD_RESTARTING_MESSAGE}`;
   const base = `Card ${focus.accessId} does not exist or is not visible to this account.`;
   const why = reason.trim() ? ` Connection Hub answered: ${reason.trim().replace(/\.$/, '')}.` : '';
   // A person's own Card (My Card) is not a Control Card: a link that asks for
