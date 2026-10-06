@@ -1414,11 +1414,12 @@ properties retain the existing Card-wide conjunction; they have no independent
 per-resource selector. Do not infer account authority from a resource OR.
 
 Composing a Control with its parent preserves that Control's own downstream
-mode map, exact identity, credentialless state and revision. An ancestor AND
-continues to cap its controlled subtree: if P is AND and C is OR for service X,
-My's effective X selection is `P AND (C OR My)`, not
-`My OR (P AND C)`. Each level first composes with its current effective parent,
-then reapplies earlier ancestor AND ceilings. An unrelated foreign-holder link
+mode map, exact identity, credentialless state and revision. Each upstream
+operation applies to the entire downstream subtree. For Controls P and C and
+My Card M, the expression is `P op_P (C op_C M)`, using each upstream's mode
+for that resource, not `(P op_P C) op_C M`. Thus an ancestor AND caps its
+subtree, while an ancestor OR contributes to the complete lower result even
+when a lower AND excludes that capability. An unrelated foreign-holder link
 or descriptor-controlled agent still refuses OR, including a per-service OR
 override of a global AND default.
 

@@ -481,12 +481,10 @@ def effective_card_authority(
 
 
 def compose_card_authority_selection(
-    card: CardAuthority, control: CardAuthority, *, ceiling_only: bool = False,
+    card: CardAuthority, control: CardAuthority,
 ) -> CardAuthority:
     """Compose validated selections without changing caller identity or lifetime.
 
-    ``ceiling_only`` reapplies an ancestor's AND ceilings. OR dimensions are
-    inert in that pass: they neither restrict nor contribute new authority.
     Binding/ownership checks belong to the ordinary or exact-identity adapter.
     """
 
@@ -518,12 +516,6 @@ def compose_card_authority_selection(
     for resource in set(card.resource_grants) | set(control.resource_grants):
         resource_mode = service_composition_mode(control, resource)
         if resource_mode == CONTROL_COMPOSITION_OR:
-            if ceiling_only:
-                if resource not in card.resource_grants:
-                    continue
-                resource_grants[resource] = tuple(card.resource_grants[resource])
-                resource_operations[resource] = tuple(card.resource_operations.get(resource, ()))
-                continue
             combine = _union_values
         else:
             if resource not in card.resource_grants or resource not in control.resource_grants:
@@ -548,7 +540,7 @@ def compose_card_authority_selection(
             resource_operations.update(family_operations)
     properties = copy.deepcopy(
         {**dict(control.properties or {}), **dict(card.properties or {})}
-        if authority_is_credentialless(card) or ceiling_only
+        if authority_is_credentialless(card)
         else {**dict(card.properties or {}), **dict(control.properties or {})}
     )
     if authority_is_credentialless(card):
@@ -562,8 +554,6 @@ def compose_card_authority_selection(
     # property. An absent side contributes no cross-application reads.
     properties[CONVERSATION_TARGETS_PROPERTY] = list(
         compose_conversation_targets(card.properties, control.properties, mode=mode)
-        if not ceiling_only or mode == CONTROL_COMPOSITION_AND
-        else compose_conversation_targets(card.properties, card.properties, mode=mode)
     )
     properties.update(capability_properties)
     if projection is not None:
@@ -587,10 +577,7 @@ def compose_card_authority_selection(
         )
         effective_policy = None
         effective_operations: tuple[str, ...] = ()
-        if ceiling_only and application_mode == CONTROL_COMPOSITION_OR:
-            effective_policy = card_policy
-            effective_operations = tuple(card.resource_operations.get(APPLICATION_API_RESOURCE, ()))
-        elif card_policy is not None and control_policy is not None:
+        if card_policy is not None and control_policy is not None:
             effective_policy, effective_operations = (
                 compose_application_operation_role_policy(
                     card_policy,
@@ -661,13 +648,12 @@ def compose_card_authority_selection(
         or_resources = {r: g for r, g in resource_grants.items() if r not in and_resources}
         and_selection, and_services = _intersect_named_services(card, control, and_resources)
         or_selection, or_services = _union_named_services(
-            card, card if ceiling_only else control, or_resources)
+            card, control, or_resources)
         named_selection = NamedServiceSelection.exact({
             **and_selection.operations, **or_selection.operations})
         named_services = merge_named_service_configs(and_services, or_services)
         if mode == CONTROL_COMPOSITION_OR:
-            account_scope = (normalize_account_scope(card.account_scope) if ceiling_only
-                             else _union_accounts(card.account_scope, control.account_scope))
+            account_scope = _union_accounts(card.account_scope, control.account_scope)
         else:
             # Descriptor control owns application capability, not the user's
             # provider-account choice. That choice remains on the caller Card
@@ -689,7 +675,7 @@ def compose_card_authority_selection(
         manage_url=control.manage_url or binding.manage_url,
         control_revision=control.card_revision,
         holder_subject=str(getattr(binding, "holder_subject", "") or ""),
-    ) if binding is not None and not ceiling_only else binding
+    ) if binding is not None else binding
     return dataclasses.replace(
         card,
         operations=(),

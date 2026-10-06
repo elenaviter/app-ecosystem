@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Awaitable, Callable
 
 from connection_hub.delegated_credentials.cards.model import CardAuthority
@@ -46,18 +46,21 @@ def compose_resolved_control_hierarchy(
     if chain[-1].control_card is not None:
         raise ControlCardMismatch("control_card_unresolvable")
 
-    effective = chain[-1]
-    ancestors: list[CardAuthority] = []
-    effective_control = None
-    for child in reversed(chain[:-1]):
-        parent = effective
-        if child is card:
-            effective_control = parent
-        effective = (compose_with_project_held_control(child, parent)
-                     if project_held_control(child) else effective_card_authority(child, parent))
-        for ancestor in ancestors:
-            effective = compose_card_authority_selection(effective, ancestor, ceiling_only=True)
-        ancestors.append(parent)
+    def compose_subtree(leaf: CardAuthority, parents: tuple[CardAuthority, ...]) -> CardAuthority:
+        selection = leaf
+        for index, parent in enumerate(parents):
+            previous_binding = selection.control_card
+            selection = compose_card_authority_selection(selection, parent)
+            if index:
+                # The result still identifies the leaf's immediate Control,
+                # never an ancestor revision under that immediate Control ID.
+                selection = replace(selection, control_card=previous_binding)
+        return selection
+
+    # Each upstream operation applies to EVERYTHING below it. Folding from
+    # the leaf gives P op_P (C op_C My), not (P op_P C) op_C My.
+    effective = compose_subtree(card, dependencies)
+    effective_control = compose_subtree(dependencies[0], dependencies[1:]) if dependencies else None
     return ControlHierarchy(effective, dependencies[0] if dependencies else None,
                             effective_control, dependencies)
 
@@ -67,7 +70,7 @@ async def compose_control_hierarchy(
     load_control: Callable[..., Awaitable[CardAuthority | None]],
     max_depth: int = 32,
 ) -> ControlHierarchy:
-    """Resolve exact current coordinates and retain transitive AND ceilings.
+    """Resolve exact current coordinates and compose the downstream subtree.
 
     Every edge is validated against the raw current Card, including special
     exact-identity cross-owner edges. Dependencies are re-read before return;

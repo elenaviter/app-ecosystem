@@ -79,10 +79,8 @@ async def test_all_32_current_parent_control_my_compositions(parent_mode, child_
     person = caller([RESOURCE] if m else [], child)
     originals = (parent.to_dict(), child.to_dict(), person.to_dict())
     result = await resolve(person, {("owner", "parent"): parent, ("owner", "child"): child})
-    current_child = (p and c) if parent_mode == "and" else (p or c)
-    expected = (current_child and m) if child_mode == "and" else (current_child or m)
-    if parent_mode == "and":
-        expected = expected and p
+    downstream = (c and m) if child_mode == "and" else (c or m)
+    expected = (p and downstream) if parent_mode == "and" else (p or downstream)
     assert (RESOURCE in result.effective_card.resource_grants) is expected
     assert result.effective_card.access_id == person.access_id
     assert result.effective_card.client_id == person.client_id
@@ -157,6 +155,16 @@ async def test_three_levels_cannot_reopen_an_ancestor_and_ceiling():
     assert person.resource_grants == {RESOURCE: ("read",)}
 
 
+async def test_upstream_or_combines_with_everything_downstream():
+    parent = dataclasses.replace(control("parent", [RESOURCE], "or"), card_revision=5)
+    child = dataclasses.replace(control("child", [], "and"), card_revision=2, control_card=binding(parent))
+    person = caller([], child)
+    result = await resolve(person, {("owner", "parent"): parent, ("owner", "child"): child})
+    assert RESOURCE in result.effective_card.resource_grants
+    assert result.effective_card.control_card.control_id == child.access_id
+    assert result.effective_card.control_card.control_revision == child.card_revision
+
+
 async def test_dependency_changing_during_resolution_is_refused():
     from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
     from connection_hub.delegated_credentials.controls.effective import ControlCardMismatch
@@ -198,10 +206,8 @@ def test_actual_human_evaluator_all_32_compositions(parent_mode, child_mode, p, 
         control_card=ProjectCardResolution.current(child, control_dependencies=(parent,)),
         my_card=ProjectCardResolution.current(person),
     )
-    current_child = (p and c) if parent_mode == "and" else (p or c)
-    expected = (current_child and m) if child_mode == "and" else (current_child or m)
-    if parent_mode == "and":
-        expected = expected and p
+    downstream = (c and m) if child_mode == "and" else (c or m)
+    expected = (p and downstream) if parent_mode == "and" else (p or downstream)
     assert decision.allowed is expected, decision
 
 
