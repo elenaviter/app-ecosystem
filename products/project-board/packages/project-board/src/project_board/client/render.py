@@ -345,8 +345,14 @@ def _render_first_run_status(result: Mapping[str, Any]) -> list[str]:
     target = _mapping(machine.get("default_target"))
     if target:
         lines.append(f"target: {target.get('target_id') or '-'} · host {target.get('host_id') or '-'}")
+    # Who must approve the next step is the deciding fact in a recovery:
+    # relay install, restart and source selection are the operator's (Ops,
+    # review of 1ffd4a22).
+    approval = str(following.get("approval") or "")
     if following.get("command"):
-        lines.append(f"next command: {following['command']}")
+        lines.append(f"next command: {following['command']} · approval {approval or 'none'}")
+    elif approval and approval != "none":
+        lines.append(f"next approval: {approval}")
     if following.get("explain"):
         lines.append(f"why: {_preview(following['explain'], maximum_bytes=300)}")
     lines.append(_FULL_DETAIL_LINE)

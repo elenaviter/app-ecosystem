@@ -70,3 +70,18 @@ def test_a_parked_channel_names_its_refusal():
     text = render_envelope({"ok": True, "result": status})
 
     assert "refusal: delegated_card_not_active · permanent True · credential refused True" in text
+
+
+def test_the_next_step_names_who_must_approve_it():
+    # Ops, review of 1ffd4a22: a runnable command without its approver hides
+    # that relay install, restart and source selection are the operator's.
+    status = _status()
+    status["next"] = {"step": "restart_relay", "command": "pb relay-service restart", "approval": "operator",
+                      "explain": "The relay is installed but not running."}
+
+    text = render_envelope({"ok": True, "result": status})
+
+    assert "next command: pb relay-service restart · approval operator" in text
+
+    status["next"] = {"step": "authorize", "command": "", "approval": "card_owner", "explain": ""}
+    assert "next approval: card_owner" in render_envelope({"ok": True, "result": status})
