@@ -174,3 +174,25 @@ def test_audit_refuses_an_event_without_an_authority_change() -> None:
             before=before,
             after=unchanged_revision,
         )
+
+
+def test_an_accept_only_save_is_an_audited_change() -> None:
+    # W587 follow-up (EMain 15:13): accepting a reviewed catalog change alone changes
+    # catalog_version and resource_acceptance; it was refused as "nothing changed".
+    from connection_hub.delegated_credentials.catalog.descriptors import ResourceAcceptance
+    from connection_hub.delegated_credentials.controls.project_invitation import project_invitation_control_diff
+
+    identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=TARGET)
+    before = bind_project_person_control(_authority(), identity=identity)
+    accepted = dataclasses.replace(
+        before, card_revision=2, catalog_version="catalog-10-04",
+        resource_acceptance={RESOURCE: ResourceAcceptance(
+            kind="catalog", revision="catalog-10-04", digest="a" * 64,
+            grants=(), operations={"review.return": "b" * 64})},
+    )
+    audit = ProjectPersonControlAudit.build(
+        action="updated", actor_subject="platform-admin-1", identity=identity,
+        request_id="request-accept", occurred_at=1_759_760_000, before=before, after=accepted)
+    assert set(audit.changes) == {"catalog_version", "resource_acceptance"}
+    assert audit.changes["catalog_version"]["after"] == "catalog-10-04"
+    assert set(project_invitation_control_diff(before, accepted)) == {"catalog_version", "resource_acceptance"}
