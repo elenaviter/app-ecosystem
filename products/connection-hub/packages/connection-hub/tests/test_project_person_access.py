@@ -33,6 +33,8 @@ from connection_hub.delegated_credentials.controls.snapshot import (
     materialize_control_snapshot,
 )
 from connection_hub.delegated_credentials.project_authorization import (
+    ProjectAuthorizationError,
+    ResolverBackedProjectAuthorizationPort,
     PROJECT_PERSON_CONTROL_CREATE,
     PROJECT_PERSON_CONTROL_READ,
     PROJECT_PERSON_CONTROL_REVOKE,
@@ -1474,3 +1476,99 @@ async def test_an_unanswered_permission_check_is_not_shown_as_a_refusal() -> Non
         "reason": "project_person_control_permission_unavailable",
         "retryable": True,
     }
+
+
+class _BoardRestartingResolver:
+    """The live path at 15:48 (W587 follow-up C): the project host's application
+    was still starting, so the membership call failed and the resolver named it."""
+
+    def __init__(self, reason: str = "project_membership_provider_not_ready") -> None:
+        self.reason = reason
+
+    async def resolve_project_membership(self, *, project_ref: str, subject: str):
+        raise ProjectAuthorizationError(self.reason)
+
+
+def _restarting_port(reason: str = "project_membership_provider_not_ready") -> ResolverBackedProjectAuthorizationPort:
+    return ResolverBackedProjectAuthorizationPort(
+        resolver=_BoardRestartingResolver(reason), administrative_roles=("admin",),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_restarting_board_is_said_so_on_the_view_and_never_as_a_refusal() -> None:
+    """Operator, 2026-10-06 15:58: "It's clear that uh, something was restarted."
+    The real port turns the resolver's failure into a DENY decision (status 403
+    before this), which #590's raising-port test did not cover."""
+
+    class _EditQuestionRestarting(_Port):
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                return await _restarting_port().authorize_project_person_control(request)
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _EditQuestionRestarting()).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["ok"] is True
+    assert view["viewer"] == {"can_edit": None, "reason": "project_board_restarting", "retryable": True}
+
+
+@pytest.mark.asyncio
+async def test_a_restarting_board_refuses_reads_and_saves_as_retryable_not_forbidden() -> None:
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    restarting = _lifecycle(host, _restarting_port())
+    read = await restarting.get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    saved = await restarting.update(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET,
+        request_id="request-update", label="Wider",
+    )
+    expected = {
+        "ok": False, "error": "project_board_restarting",
+        "reason": "project_membership_provider_not_ready", "retryable": True, "status": 503,
+    }
+    assert read == expected
+    assert saved == expected
+    assert host.update_calls == [], "fail closed: nothing is written while the board restarts"
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_project_host_is_an_unknown_permission_not_a_refusal() -> None:
+    class _EditQuestionUnreachable(_Port):
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                port = _restarting_port("project_membership_provider_unavailable")
+                return await port.authorize_project_person_control(request)
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _EditQuestionUnreachable()).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["viewer"] == {
+        "can_edit": None, "reason": "project_person_control_permission_unavailable", "retryable": True,
+    }
+    saved = await _lifecycle(host, _restarting_port("project_membership_provider_unavailable")).update(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET,
+        request_id="request-update", label="Wider",
+    )
+    assert saved == {
+        "ok": False, "error": "project_person_control_authorization_unavailable",
+        "reason": "project_membership_provider_unavailable", "retryable": True, "status": 503,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_provider_refusal_is_still_forbidden() -> None:
+    # Only the two unanswered reasons are retryable; a host's own refusal stays a 403.
+    saved = await _lifecycle(_Host(), _restarting_port("project_membership_provider_refused")).update(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET,
+        request_id="request-update", label="Wider",
+    )
+    assert saved == {"ok": False, "error": "project_membership_provider_refused", "status": 403}
