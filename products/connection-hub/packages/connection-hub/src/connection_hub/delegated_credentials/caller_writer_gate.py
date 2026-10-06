@@ -1,4 +1,11 @@
-"""Caller-writer gate: a bound owner write is decided by its binding's policy (W578).
+"""Caller-writer gate: a bound owner write is AUTHORIZED by its binding's policy (W578).
+
+Scope, stated plainly: this is an authorization seam only. A decision here
+plus a revalidation inside the durable commit closes the bypass of ordinary
+owner writes; it is NOT a staged participant, a business-transaction
+decision or a reader publication barrier, and it does not make a PB
+membership change and a Card change visible atomically. That participant
+(prepare/stage/decision/recover) is a separate generic Protocol.
 
 An ordinary owner write (update, per-service reset, revoke, attach, detach)
 of a Card that is bound to a Control persists today with no external policy:
@@ -87,6 +94,14 @@ class CallerWriterRegistry:
 
     def __init__(self) -> None:
         self._policies: dict[str, CallerWriterPolicy] = {}
+        self._required: set[str] = set()
+
+    def require(self, binding_kind: str) -> None:
+        """Declare a trusted binding kind whose writes must have a policy: missing means refused."""
+        kind = str(binding_kind or "").strip()
+        if not kind:
+            raise ValueError("caller_writer_policy_registration_invalid")
+        self._required.add(kind)
 
     def register(self, binding_kind: str, policy: CallerWriterPolicy) -> None:
         kind = str(binding_kind or "").strip()
@@ -97,7 +112,8 @@ class CallerWriterRegistry:
         self._policies[kind] = policy
 
     def is_bound(self, binding_kind: str) -> bool:
-        return str(binding_kind or "") in self._policies
+        kind = str(binding_kind or "")
+        return kind in self._policies or kind in self._required
 
     def policy_for(self, binding_kind: str) -> CallerWriterPolicy | None:
         return self._policies.get(str(binding_kind or ""))
@@ -139,6 +155,7 @@ async def caller_writer_before_commit(
     request_id: str,
     context_ref: str = "",
     now: Callable[[], datetime] | None = None,
+    binding: tuple[str, str] | None = None,
 ) -> tuple[Callable[[], Awaitable[None]] | None, CallerWriteRequest | None]:
     """The commit gate for one bound write, or (None, None) when the Card has no registered binding.
 
@@ -148,7 +165,9 @@ async def caller_writer_before_commit(
     """
 
     clock = now or (lambda: datetime.now(timezone.utc))
-    binding_kind, binding_ref = binding_of(current)
+    # An attach to a Card with no binding yet is governed by the binding it
+    # is about to take; the caller passes it explicitly.
+    binding_kind, binding_ref = binding if binding is not None else binding_of(current)
     if not binding_kind or registry is None or not registry.is_bound(binding_kind):
         return None, None
     policy = registry.policy_for(binding_kind)
@@ -202,7 +221,8 @@ async def caller_writer_before_commit(
     return before_commit, request
 
 
-def reset_candidate(current: Any, *, resource: str, control_operations: Any, control_grants: Any) -> dict[str, Any]:
+def reset_candidate(current: Any, *, resource: str, control_operations: Any, control_grants: Any,
+                    control_named_services: Any = None) -> dict[str, Any]:
     """Explicit per-service Reset to Control: one service's selection becomes the current Control's.
 
     ``control_operations`` and ``control_grants`` are that service's current
@@ -227,18 +247,26 @@ def reset_candidate(current: Any, *, resource: str, control_operations: Any, con
     selected_grants[resource] = grants
     import dataclasses
 
-    reset = dataclasses.replace(current, card_revision=current.card_revision + 1,
-                                resource_operations=selected_operations, resource_grants=selected_grants)
+    changes: dict[str, Any] = {"resource_operations": selected_operations, "resource_grants": selected_grants}
+    # The service's complete authority: its named-service selection follows the
+    # Control's too (Infra, 11:02), only for this resource's entry.
+    named = getattr(current, "named_service_operations", None)
+    if control_named_services is not None and named is not None and not (named.is_all or named.is_unknown):
+        entries = {key: value for key, value in dict(named.operations).items() if key != resource}
+        if control_named_services:
+            entries[resource] = control_named_services
+        changes["named_service_operations"] = type(named).exact(entries)
+    reset = dataclasses.replace(current, card_revision=current.card_revision + 1, **changes)
     before, after = current.to_dict(), reset.to_dict()
     # Only the one service's selection (and the derived flat operation union)
     # and the revision may differ; anything else is a construction error.
-    allowed = {"card_revision", "operations", "resource_operations", "resource_grants"}
+    allowed = {"card_revision", "operations", "resource_operations", "resource_grants", "named_service_operations"}
     if any(before.get(key) != after.get(key) for key in set(before) | set(after) if key not in allowed):
         raise CallerWriteRefused("caller_writer_reset_preservation_failed")
-    for other in set(before.get("resource_operations") or {}) | set(after.get("resource_operations") or {}):
-        if other != resource and (before.get("resource_operations") or {}).get(other) != (
-                after.get("resource_operations") or {}).get(other):
-            raise CallerWriteRefused("caller_writer_reset_preservation_failed")
+    for dimension in ("resource_operations", "resource_grants"):
+        for other in set(before.get(dimension) or {}) | set(after.get(dimension) or {}):
+            if other != resource and (before.get(dimension) or {}).get(other) != (after.get(dimension) or {}).get(other):
+                raise CallerWriteRefused("caller_writer_reset_preservation_failed")
     return after
 
 

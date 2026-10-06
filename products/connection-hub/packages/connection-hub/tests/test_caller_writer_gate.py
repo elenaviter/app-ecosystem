@@ -291,3 +291,27 @@ async def test_the_gate_decides_inside_the_real_card_commit_and_a_refusal_leaves
     assert seen_inside == [True]  # revalidated under the target lock
     current = await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=bound.access_id)
     assert current[1] == expected and held is False
+
+
+def test_a_required_binding_kind_with_no_policy_refuses_rather_than_falling_through():
+    registry = gate.CallerWriterRegistry()
+    registry.require("project")
+    with pytest.raises(gate.CallerWriteRefused, match="caller_writer_policy_unavailable"):
+        _gate(registry, _card())
+
+
+def test_an_unrequired_unregistered_kind_keeps_the_existing_path():
+    registry = gate.CallerWriterRegistry()
+    registry.require("other-kind")
+    assert _gate(registry, _card()) == (None, None)
+
+
+def test_reset_also_resets_that_services_named_service_selection_only():
+    named = NamedServiceSelection.exact({RESOURCE: {"work": ["object.get"]}, OTHER: {"x": ["object.list"]}})
+    card = dataclasses.replace(_two_service_card(), named_service_operations=named)
+    after = gate.reset_candidate(card, resource=RESOURCE, control_operations=("plan.item.update",),
+                                 control_grants=("work:review",),
+                                 control_named_services={"work": ["object.get", "object.search"]})
+    selection = after["named_service_operations"]
+    text = str(selection)
+    assert "object.search" in text and "object.list" in text  # this service reset, the other kept

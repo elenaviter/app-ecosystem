@@ -39,7 +39,7 @@ from connection_hub.delegated_credentials.issuer_gate import (
     change_digest, issuer_write_refusal,
 )
 from connection_hub.delegated_credentials.caller_writer_gate import (
-    CallerWriteRefused, caller_write_outcome, caller_writer_before_commit, reset_candidate,
+    CallerWriteRefused, binding_of, caller_write_outcome, caller_writer_before_commit, reset_candidate,
 )
 from connection_hub.authority_inventory import (
     AuthorityGrantInventory,
@@ -2621,6 +2621,10 @@ class AutomationAccessService:
                 card_authority_from_record(existing), resource=resource,
                 control_operations=control_authority.resource_operations.get(resource, ()),
                 control_grants=control_authority.resource_grants.get(resource, ()),
+                control_named_services=(control_authority.named_service_operations.operations.get(resource)
+                                        if not (control_authority.named_service_operations.is_all
+                                                or control_authority.named_service_operations.is_unknown)
+                                        else None),
             )
         except CallerWriteRefused as exc:
             return exc.to_dict()
@@ -7331,18 +7335,41 @@ class AutomationAccessService:
         )
         if _record_transform is not None:
             updated = _record_transform(record, updated)
+        # W578: a bound attach/detach is decided by the binding's policy.
         try:
-            await self._persist_record(updated, expected_revision=record.card_revision)
+            before_commit, caller_request = await caller_writer_before_commit(
+                getattr(self, "_caller_writers", None), card_authority_from_record(record),
+                actor_subject=self._caller_actor_subject(user), action="attach",
+                candidate=card_authority_from_record(updated).to_dict(),
+                request_id=secrets.token_urlsafe(18), binding=binding_of(card_authority_from_record(record)) if record.control_card is not None else binding_of(card_authority_from_record(updated)),
+            )
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
+        guard = ({"before_commit": before_commit, "expected_issuer_digest": caller_request.change_digest}
+                 if before_commit is not None else {})
+        try:
+            await self._persist_record(updated, expected_revision=record.card_revision, **guard)
+        except CallerWriteRefused as exc:
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="refused", card_revision=record.card_revision)
+            return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
-            return _serving_state_unavailable(exc)
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="committed", card_revision=updated.card_revision)
+            return {**_serving_state_unavailable(exc), **outcome}
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="refused", card_revision=record.card_revision)
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
                 "reason": getattr(exc, "reason", ""),
                 "retryable": True,
                 "status": 503,
+                **outcome,
             }
+        await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                   state="committed", card_revision=updated.card_revision)
         await self.notify_change(
             grantor_subject,
             action="control_card_attached",
@@ -7465,18 +7492,41 @@ class AutomationAccessService:
         )
         if _record_transform is not None:
             updated = _record_transform(record, updated)
+        # W578: a bound attach/detach is decided by the binding's policy.
         try:
-            await self._persist_record(updated, expected_revision=record.card_revision)
+            before_commit, caller_request = await caller_writer_before_commit(
+                getattr(self, "_caller_writers", None), card_authority_from_record(record),
+                actor_subject=self._caller_actor_subject(user), action="detach",
+                candidate=card_authority_from_record(updated).to_dict(),
+                request_id=secrets.token_urlsafe(18), binding=None,
+            )
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
+        guard = ({"before_commit": before_commit, "expected_issuer_digest": caller_request.change_digest}
+                 if before_commit is not None else {})
+        try:
+            await self._persist_record(updated, expected_revision=record.card_revision, **guard)
+        except CallerWriteRefused as exc:
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="refused", card_revision=record.card_revision)
+            return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
-            return _serving_state_unavailable(exc)
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="committed", card_revision=updated.card_revision)
+            return {**_serving_state_unavailable(exc), **outcome}
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="refused", card_revision=record.card_revision)
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
                 "reason": getattr(exc, "reason", ""),
                 "retryable": True,
                 "status": 503,
+                **outcome,
             }
+        await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                   state="committed", card_revision=updated.card_revision)
         await self.notify_change(
             grantor_subject,
             action="control_card_detached",
