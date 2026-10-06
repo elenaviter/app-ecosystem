@@ -152,6 +152,17 @@ def _render_error(error: Any) -> str:
     remaining = {k: v for k, v in error.items() if k not in ("code", "message", "details")}
     if remaining:
         lines.extend(_flatten(remaining, prefix=""))
+    current = details.get("current_revision") if isinstance(details, Mapping) else None
+    if code == "work_item_revision_conflict" and isinstance(current, int) and current > 0:
+        # W563: an additive note (plan.note.append) is retried once with the
+        # same text at the current revision; a replacement edit re-reads the
+        # item and decides again, because its compare-and-set protects
+        # another writer's change. Never retry an outcome-unknown write with
+        # altered content.
+        lines.append(
+            f"retry: plan.note.append only: the same text, unchanged, with \"expected_revision\": {current}. "
+            "A replacement edit (plan.item.update) reads the item again and decides first."
+        )
     return "\n".join(lines) + "\n"
 
 
