@@ -48,6 +48,7 @@ connections:
             operation: project_card_transaction_authority
             response_key: authority
             refusals: {<peer code>: <Hub reason>, ...}
+            request_fields: {}               # optional fixed request fields; never the scope_field
 ```
 
 A caller whose descriptor is malformed, or whose secret is missing or shorter
@@ -78,9 +79,15 @@ obligations, not optional checks.
    `catalog_reserved`, logging the holding transaction ids. Retry after the
    transaction is decided. A crashed publisher's marker is cleared by the
    next publication, or by the recovery cron once the runner lock is stale.
-6. **Census completeness is the caller's.** `card_census_read` answers only for
-   the persons named. The initiator takes the person list from its own fenced
-   membership census, and a missing person must fail its check.
+6. **Census completeness and decoding are the caller's.** `card_census_read`
+   answers only for the persons named. The initiator takes the person list
+   from its own fenced membership census, and a missing person must fail its
+   check. An answer is capped at 512 KiB minus 4 KiB: anything larger is a
+   signed 413 `card_census_too_large`, and the caller subdivides its persons.
+   The caller must decode every person state the Hub signs, tested from the
+   Hub's own projection: edge `valid`, `invalid` or `missing`, and chain
+   `complete`, `missing`, `in_transaction`, `unavailable` (retry) or
+   `invalid` (persistent: that person is not usable).
 7. **Person-owned settings never travel.** The census sends only properties
    classified as authorization in `card_property_classes`. A new property
    key must be classified before it can travel.
