@@ -148,3 +148,29 @@ async def test_a_governed_coordinated_commit_records_the_gates_change_digest(tmp
     row = next(iter(decisions.rows.values()))
     assert seen[0] is not None and row.witness_digest == seen[0].change_digest
     assert ("decide", "extend") in policy.calls and ("finalize", "committed") in policy.calls
+
+
+@pytest.mark.asyncio
+async def test_effects_that_cannot_be_routed_are_refused_never_dropped(tmp_path):
+    host, store, decisions, before, after = await _host(tmp_path)
+    changed = replace(record_from_card(after), access_token="new-bearer")  # not routable yet
+    effects = [{"kind": "credential_lifetime", "key": "card",
+                "payload": {"access_id": before.access_id, "expires_at": 1_790_000_000, "base_card_revision": 1}}]
+    with pytest.raises(CardConflict, match="card_effects_unroutable"):
+        await host._persist_record(changed, expected_revision=before.card_revision, effects=effects)
+    assert await _visible(store, before) == before
+
+
+@pytest.mark.asyncio
+async def test_a_coordinated_write_carries_its_effects_to_finish(tmp_path):
+    # Ops 13:16: the credential's life is applied only after the COMMIT, through the applier.
+    from test_card_transaction_store import _Applier
+    host, store, decisions, before, after = await _host(tmp_path)
+    applier = _Applier()
+    hub = host._card_coordinator[0].participants[PARTICIPANT]
+    hub._service.bind_effect_applier(applier)
+    effects = [{"kind": "credential_lifetime", "key": "card",
+                "payload": {"access_id": before.access_id, "expires_at": 1_790_000_000, "base_card_revision": 1}}]
+    await host._persist_record(record_from_card(after), expected_revision=before.card_revision, effects=effects)
+    assert await _visible(store, before) == after
+    assert [kind for _, kind, _ in applier.applied] == ["credential_lifetime"]

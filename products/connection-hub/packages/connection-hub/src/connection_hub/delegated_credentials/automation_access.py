@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass, field
 from dataclasses import replace as replace_fields
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Iterable, Mapping
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from connection_hub.concurrency import bounded_gather
 from connection_hub.delegated_credentials.issuer_gate import (
@@ -2370,6 +2370,7 @@ class AutomationAccessService:
     async def _coordinated_write(
         self, record: AutomationAccessRecord, authority: CardAuthority, *, expected_revision: int,
         caller_write: CallerWrite | None, gate: Callable[[], Awaitable[None]] | None, witness: str,
+        effects: Sequence[Mapping[str, Any]] = (),
     ) -> bool:
         """Run one existing-Card write as a one-participant transaction; False if not routable yet.
 
@@ -2395,7 +2396,7 @@ class AutomationAccessService:
             return False
         action = caller_write.action if caller_write is not None else "update"
         actor = (caller_write.actor_subject if caller_write is not None else "") or record.grantor_subject
-        payload = card_intent_payload_digest(original=current, candidate=authority)
+        payload = card_intent_payload_digest(original=current, candidate=authority, effects=effects)
         intent = Intent(actor=actor, request_id=(caller_write.request_id if caller_write is not None else "")
                         or secrets.token_urlsafe(18), context=f"{PARTICIPANT}:{action}", payload_digest=payload,
                         participants=(PARTICIPANT,),
@@ -2404,7 +2405,8 @@ class AutomationAccessService:
             row = await decisions.begin(intent)
             transaction_id = row.transaction_id
             await intents.record(CardIntent(transaction_id=transaction_id, intent_digest=intent.digest,
-                                            subject_hash=subject_hash, original=current, candidate=authority))
+                                            subject_hash=subject_hash, original=current, candidate=authority,
+                                            effects=tuple(dict(effect) for effect in effects)))
         except DecisionRefused as exc:
             raise CardConflict(str(exc)) from exc
         try:
@@ -2441,6 +2443,7 @@ class AutomationAccessService:
         expected_issuer_digest: str = "",
         caller_write: CallerWrite | None = None,
         pre_gate: tuple[Any, Any] | None = None,
+        effects: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         persistence = self._cards()
         persist = persistence.persist
@@ -2472,7 +2475,10 @@ class AutomationAccessService:
         try:
             coordinated = await self._coordinated_write(
                 record, authority, expected_revision=expected_revision, caller_write=caller_write,
-                gate=guard.get("before_commit"), witness=witness)
+                gate=guard.get("before_commit"), witness=witness, effects=effects)
+            if effects and not coordinated:
+                # Effects exist only inside the protocol: never dropped silently.
+                raise CardConflict("card_effects_unroutable")
         except BaseException:
             if caller_request is not None:
                 await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
@@ -9782,7 +9788,15 @@ class AutomationAccessService:
                 caller_write=CallerWrite("prolong", self._caller_actor_subject(user)))
         except CallerWriteRefused as exc:
             return exc.to_dict()
-        if record.refresh_token:
+        coordinated = getattr(self, "_card_coordinator", None) is not None
+        # Under the ONE protocol the credential's life is a decision-bound
+        # effect: one ABSOLUTE deadline, applied only after the COMMIT (W582,
+        # Ops 13:16). Without a coordinator (not yet composed) the direct
+        # extension below runs only after the policy allowed it (F5).
+        lifetime = [{"kind": "credential_lifetime", "key": "card",
+                     "payload": {"access_id": record.access_id, "expires_at": int(new_expires_at),
+                                 "base_card_revision": int(committed_revision)}}] if coordinated else []
+        if not coordinated and record.refresh_token:
             extend_refresh = getattr(store, "extend_refresh_token", None)
             if extend_refresh is None:
                 return expired("Reconnect from the client.")
@@ -9792,7 +9806,7 @@ class AutomationAccessService:
                 extend_grant = getattr(store, "extend_access_grant", None)
                 if extend_grant is not None:
                     await extend_grant(record.access_token, ttl)
-        else:
+        elif not coordinated:
             extend_card = getattr(store, "extend_card_credentials", None)
             if extend_card is None or not await extend_card(record.access_id, ttl):
                 return expired("Reconnect from the client.")
@@ -9800,7 +9814,7 @@ class AutomationAccessService:
         try:
             await self._persist_record(prolonged, expected_revision=committed_revision,
                                        caller_write=CallerWrite("prolong", self._caller_actor_subject(user)),
-                                       pre_gate=pre_gate)
+                                       pre_gate=pre_gate, effects=lifetime)
         except CallerWriteRefused as exc:
             return exc.to_dict()
         except CardServingUnavailable as exc:
