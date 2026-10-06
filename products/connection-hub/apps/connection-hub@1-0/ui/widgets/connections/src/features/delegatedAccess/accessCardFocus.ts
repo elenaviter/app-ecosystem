@@ -129,36 +129,3 @@ export function projectPersonControlNotice(
     ? ''
     : 'A project admin decides this Control Card. You can read it here; your own Card (My Card) is what you change.';
 }
-
-/** W587: the newest copy of one Card the panel holds. The owner list is read
- *  once when the panel opens and the focused Card on demand, so either can be
- *  older than the other (another admin may have saved in between). The higher
- *  card_revision wins; on a tie the focused read, which is the later one. */
-export function freshestCard<T extends { access_id: string; card_revision?: number }>(
-  items: readonly T[],
-  focused: T | null | undefined,
-  accessId: string | null | undefined,
-): T | undefined {
-  if (!accessId) return undefined;
-  const listed = items.find((item) => item.access_id === accessId);
-  const read = focused?.access_id === accessId ? focused : undefined;
-  if (!listed) return read;
-  if (!read) return listed;
-  return (listed.card_revision ?? 0) > (read.card_revision ?? 0) ? listed : read;
-}
-
-/** W587: one string per Control focus, so a read answers exactly the focus it was asked for. */
-export function controlFocusKey(focus: {
-  accessId: string; projectRef?: string; targetSubject?: string; invitationRef?: string;
-}): string {
-  return [focus.accessId, focus.projectRef || '', focus.targetSubject || '', focus.invitationRef || ''].join('\n');
-}
-
-/** W587, the operator's rule (2026-10-06 13:43): "if the version on the server
- *  changed since the fetched one ... then the browser changes cannot be saved
- *  and the user must refresh the opened card". An edit is stale once the Card
- *  it started from (``pinned``) is behind the server, or the server refused a
- *  save with 409; only reloading the Card into the editor clears it. */
-export function staleEdit(pinned: number | null, current: number | undefined, refused: boolean): boolean {
-  return refused || (pinned !== null && (current ?? 0) > pinned);
-}
