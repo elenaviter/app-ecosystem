@@ -30,7 +30,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from dataclasses import replace as replace_fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 
 from connection_hub.concurrency import bounded_gather
@@ -2357,6 +2357,70 @@ class AutomationAccessService:
             context_ref=caller_write.context_ref, binding=binding,
         )
 
+    def bind_card_coordinator(self, coordinator: Any, *, intents: Any, decisions: Any,
+                              intent_ttl_seconds: int = 60) -> None:
+        """W502 ONE protocol: Card edits run through the generic coordinator (W581).
+
+        The composition binds the Coordinator with the Hub's HubCardParticipant
+        (built on the SDK DelegatedCardService and its per-Card flock), the
+        LocalCardIntentSource and the coordinator's DecisionStore.
+        """
+        self._card_coordinator = (coordinator, intents, decisions, max(1, int(intent_ttl_seconds)))
+
+    async def _coordinated_write(
+        self, record: AutomationAccessRecord, authority: CardAuthority, *, expected_revision: int,
+        caller_write: CallerWrite | None, gate: Callable[[], Awaitable[None]] | None, witness: str,
+    ) -> bool:
+        """Run one existing-Card write as a one-participant transaction; False if not routable yet.
+
+        Routable now: an existing Card whose credential handles do not change
+        (update, extend, prune, reset, a fold's Card write). Writes that change
+        handles, revokes and creation still take the direct path until their
+        handle changes are recorded effects (W582); nothing binds the
+        coordinator in production yet.
+        """
+        bound = getattr(self, "_card_coordinator", None)
+        if bound is None or expected_revision <= 0:
+            return False
+        from service_foundation.coordination.durable_decision_log import DecisionRefused, Intent
+
+        from .cards.card_participant import PARTICIPANT, CardIntent, card_intent_payload_digest
+        coordinator, intents, decisions, ttl = bound
+        subject_hash = _subject_key(record.grantor_subject)
+        loaded = await self._cards().load(record.access_id, subject_hash=subject_hash)
+        if loaded is None:
+            return False
+        current, handles = loaded
+        if handles != card_handles_from_record(record):
+            return False
+        action = caller_write.action if caller_write is not None else "update"
+        actor = (caller_write.actor_subject if caller_write is not None else "") or record.grantor_subject
+        payload = card_intent_payload_digest(original=current, candidate=authority)
+        intent = Intent(actor=actor, request_id=(caller_write.request_id if caller_write is not None else "")
+                        or secrets.token_urlsafe(18), context=f"{PARTICIPANT}:{action}", payload_digest=payload,
+                        participants=(PARTICIPANT,),
+                        expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl))
+        try:
+            row = await decisions.begin(intent)
+            transaction_id = row.transaction_id
+            await intents.record(CardIntent(transaction_id=transaction_id, intent_digest=intent.digest,
+                                            subject_hash=subject_hash, original=current, candidate=authority))
+        except DecisionRefused as exc:
+            raise CardConflict(str(exc)) from exc
+        try:
+            await coordinator.prepare(intent)
+            if gate is not None:
+                await gate()  # the binding's policy revalidates before the one decision
+        except BaseException as exc:
+            await coordinator.decide(transaction_id, "aborted")
+            await coordinator.finish(transaction_id)
+            if isinstance(exc, DecisionRefused):
+                raise CardConflict(str(exc)) from exc
+            raise
+        await coordinator.decide(transaction_id, "committed", witness_digest=witness or payload)
+        await coordinator.finish(transaction_id)
+        return True
+
     async def _persist_record(
         self, record: AutomationAccessRecord, *, expected_revision: int,
         before_commit: Callable[[], Awaitable[None]] | None = None,
@@ -2387,6 +2451,21 @@ class AutomationAccessService:
                     raise IssuerWriteRefused("issuer_candidate_changed")
 
             guard["before_commit"] = bound_commit
+        witness = caller_request.change_digest if caller_request is not None else expected_issuer_digest
+        try:
+            coordinated = await self._coordinated_write(
+                record, authority, expected_revision=expected_revision, caller_write=caller_write,
+                gate=guard.get("before_commit"), witness=witness)
+        except BaseException:
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=expected_revision)
+            raise
+        if coordinated:
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="committed", card_revision=authority.card_revision)
+            return
         try:
             await persist(
                 authority,
