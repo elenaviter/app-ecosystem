@@ -1412,7 +1412,7 @@ def test_the_coordinator_reference_opens_with_what_the_coordinator_is_for() -> N
     # coordinator's private memory, so it is written here, first.
     # W563: the index lists it first, and its module opens with it.
     index = _read("references/coordinator.md")
-    modules = re.findall(r"\]\((coordinator/[^)]+\.md)\)", index)
+    modules = re.findall(r"\]\((coordinator/[^)]+\.md)\)", index[index.index("## Modules"):])
     assert modules[0] == "coordinator/what-the-coordinator-is-for.md"
     first = _read("references/coordinator/what-the-coordinator-is-for.md")
     assert [line for line in first.splitlines() if line.startswith("## ")][0] == "## What the coordinator is for"
@@ -2582,11 +2582,12 @@ def test_an_operator_restriction_reaches_the_card_before_the_coordinator_routes_
 def test_the_coordinator_reconciles_the_work_and_integrates_promptly() -> None:
     """W466 (operator, 2026-10-02): progress from the assignments, owned next actions, prompt integration."""
 
-    raw = _read("references/coordinator.md")
+    index = _read("references/coordinator.md")
+    raw = reference_text(PROCEDURE_ROOT / "references/coordinator.md")
     coordinator = _words(raw)
     # One reconciliation, read from the assignments, on events and a cadence.
     assert "## Reconcile the work, not the inbox" in raw
-    assert "[Reconcile the work, not the inbox](#reconcile-the-work-not-the-inbox)" in raw
+    assert "[Reconcile the work, not the inbox](coordinator/reconcile-the-work-not-the-inbox.md)" in index
     reconcile = coordinator[coordinator.index("## Reconcile the work, not the inbox"):coordinator.index("## Confirm that work started")]
     assert "never infer it from whichever mail reached you" in reconcile
     assert "about every 30 minutes while a batch is active" in reconcile
