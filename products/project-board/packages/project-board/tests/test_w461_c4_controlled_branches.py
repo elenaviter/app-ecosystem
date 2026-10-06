@@ -384,6 +384,10 @@ def test_a_receipt_read_is_not_judged_by_the_state_it_reports():
     }
 
     assert require_successful_operation_envelope("operation.receipt.get", refused) is refused
+    # A reply to another operation that calls itself a receipt read is still
+    # judged by its state (Ops, 08:25 UTC).
+    with pytest.raises(DomainError):
+        require_successful_operation_envelope("plan.item.update", refused)
 
 
 @pytest.mark.parametrize(
