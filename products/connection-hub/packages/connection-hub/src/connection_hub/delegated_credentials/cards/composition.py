@@ -92,13 +92,15 @@ class _HeldConnection:
 
 
 def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_store: Any, policies: Any,
-                                 authorities: Mapping[str, Any] | None = None,
+                                 authorities: Mapping[str, Any] | None = None, catalog_store: Any = None,
                                  ) -> tuple[Coordinator, LocalCardIntentSource]:
     """One coordinator, participant, verifier and effect applier over this persistence's Card store.
 
     ``authorities`` maps each configured participant caller to its per-scope
     authority reader: a Card staged by that caller's transaction resolves its
     decision there, one the Hub staged itself reads ``decisions``.
+    ``catalog_store`` lets a transaction reserve the active catalog version
+    (``catalog-active:`` dependency); without it such a transaction is refused.
     """
     if persistence is None or decisions is None:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
@@ -108,6 +110,9 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
         raise CardTransactionsUnavailable("card_transactions_unavailable")
     tx.bind_transaction_decisions(card_store, RoutedDecisionPort(local=decisions, card_store=card_store,
                                                                  authorities=authorities or {}))
+    if catalog_store is not None:
+        from ..catalog.reservations import CatalogReservations
+        tx.bind_catalog_reservations(card_store, CatalogReservations(catalog_store))
     compose_card_effects(card_service=card_service, card_store=card_store, grant_store=grant_store,
                          policies=policies)
     intents = LocalCardIntentSource(card_store)
@@ -116,11 +121,12 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
 
 
 def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
-                           policies: Any, authorities: Mapping[str, Any] | None = None) -> Coordinator:
+                           policies: Any, authorities: Mapping[str, Any] | None = None,
+                           catalog_store: Any = None) -> Coordinator:
     """Bind one coordinator, participant, verifier and effect applier to this service's Card store."""
     coordinator, intents = card_transaction_coordinator(persistence=persistence, decisions=decisions,
                                                         grant_store=grant_store, policies=policies,
-                                                        authorities=authorities)
+                                                        authorities=authorities, catalog_store=catalog_store)
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions)
     return coordinator
 

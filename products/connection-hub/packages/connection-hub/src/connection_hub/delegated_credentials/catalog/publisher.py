@@ -27,6 +27,10 @@ from connection_hub.delegated_credentials.catalog.hashing import (
 from connection_hub.delegated_credentials.catalog.models import (
     CatalogDocument,
 )
+from connection_hub.delegated_credentials.catalog.reservations import (
+    CatalogReservationRefused,
+    CatalogReservations,
+)
 from connection_hub.delegated_credentials.catalog.runtime_cache import (
     DelegatedCatalogRuntimeCache,
 )
@@ -43,6 +47,8 @@ SharedStorageOperationRunner = Callable[..., Awaitable[Any]]
 
 
 class CatalogPublicationError(RuntimeError):
+    """A named publication failure. ``catalog_reserved`` is retryable: a Card
+    transaction holds the active version until it is decided (W502)."""
     """The catalog could not be published for this app generation."""
 
     def __init__(self, reason: str) -> None:
@@ -122,8 +128,23 @@ async def ensure_delegated_catalog(
             if not await store.version_exists(document.version):
                 await store.write_version(document)
         else:
-            await store.write_version(document)
-            await store.publish_active(document)
+            # W502: never publish over a Card transaction that reserved the
+            # active version (catalog/reservations.py has the ordering).
+            reservations = CatalogReservations(store)
+            await reservations.begin_publication(document.version)
+            try:
+                await reservations.assert_publishable(document.version)
+                await store.write_version(document)
+                await store.publish_active(document)
+            except CatalogReservationRefused as exc:
+                _LOGGER.warning(
+                    "[connection-hub.delegated-catalog] catalog publication waiting on transaction %s "
+                    "version=%s reason=%s",
+                    ",".join(exc.holders), document.version, reason,
+                )
+                raise CatalogPublicationError(exc.reason) from None
+            finally:
+                await reservations.end_publication()
 
         await cache.cache_version(document, ttl_seconds=residency.version_cache_seconds)
         if not await cache.publish_active(

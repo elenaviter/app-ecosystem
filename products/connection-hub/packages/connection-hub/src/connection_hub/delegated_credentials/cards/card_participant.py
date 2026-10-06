@@ -19,6 +19,8 @@ Intent sources:
 
 from __future__ import annotations
 
+import re
+
 import hashlib
 import json
 from dataclasses import dataclass
@@ -38,6 +40,9 @@ PARTICIPANT = "connection-hub.card"
 INTENT_RECORD_SCHEMA = "connection-hub.card-intent.v1"
 
 
+_HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+
+
 def _canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
                       allow_nan=False).encode("utf-8")
@@ -47,13 +52,18 @@ def receipt_digest(receipt: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical(dict(receipt))).hexdigest()
 
 
-def dependency_revisions(reads: Sequence[Mapping[str, Any]] = ()) -> dict[str, int]:
+def dependency_revisions(reads: Sequence[Mapping[str, Any]] = (), *, catalog_version_digest: str = "",
+                         ) -> dict[str, int]:
     """The projection's ``dependency_revisions`` for read reservations (W502; kernel: values int >= 1).
 
     ``card:<subject_hash>:<access_id>`` -> the unchanged Card's exact revision;
-    ``card-absent:<subject_hash>:<access_id>`` -> 1, meaning that Card must not exist.
+    ``card-absent:<subject_hash>:<access_id>`` -> 1, meaning that Card must not exist;
+    ``catalog-active:<sha256(version)>`` -> 1, meaning the active catalog is exactly
+    that version until the transaction is decided (the initiator's check evaluated it).
     """
     result: dict[str, int] = {}
+    if catalog_version_digest:
+        result[f"catalog-active:{catalog_version_digest}"] = 1
     for read in reads:
         if read["revision"] == 0:
             result[f"card-absent:{read['subject_hash']}:{read['access_id']}"] = 1
@@ -75,6 +85,8 @@ def reads_from_dependencies(dependencies: Any) -> list[dict[str, Any]]:
         raise DecisionRefused("card_dependency_invalid")
     reads = []
     for key, value in dependencies.items():
+        if type(key) is str and key.startswith("catalog-active:"):
+            continue  # catalog_reservation_from_dependencies validates it
         parts = key.split(":", 2) if type(key) is str else []
         if len(parts) != 3 or not parts[1] or not parts[2] or type(value) is not int:
             raise DecisionRefused("card_dependency_invalid")
@@ -87,10 +99,26 @@ def reads_from_dependencies(dependencies: Any) -> list[dict[str, Any]]:
     return sorted(reads, key=lambda read: (read["subject_hash"], read["access_id"]))
 
 
+def catalog_reservation_from_dependencies(dependencies: Any) -> str:
+    """The active catalog version digest a projection reserves ("" when none), or a named refusal."""
+    if not isinstance(dependencies, Mapping):
+        raise DecisionRefused("card_dependency_invalid")
+    found = [(key, value) for key, value in dependencies.items()
+             if type(key) is str and key.startswith("catalog-active:")]
+    if not found:
+        return ""
+    key, value = found[0]
+    digest = key[len("catalog-active:"):]
+    if len(found) != 1 or type(value) is not int or value != 1 or not _HEX64.fullmatch(digest):
+        raise DecisionRefused("card_dependency_invalid")
+    return digest
+
+
 def hub_participant_input(*, original: CardAuthority, candidate: CardAuthority, subject_hash: str,
                           action: str, actor_subject: str, actor_kind: str,
                           effects: Sequence[Mapping[str, Any]] = (),
-                          reads: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+                          reads: Sequence[Mapping[str, Any]] = (),
+                          catalog_version_digest: str = "") -> dict[str, Any]:
     """The Hub's v2 ``participant_inputs[PARTICIPANT]`` for one Card change (W581 v2 kernel).
 
     This is the ONLY shape the Hub stages (EMain C1, 2026-10-06): an initiator
@@ -116,7 +144,8 @@ def hub_participant_input(*, original: CardAuthority, candidate: CardAuthority, 
         "target_scope": subject_hash, "target_incarnation": max(1, original.card_revision), "action": action,
         "before_revision": original.card_revision, "candidate_revision": original.card_revision + 1,
         "candidate_digest": card_intent_payload_digest(original=original, candidate=candidate, effects=effects),
-        "dependency_revisions": dependency_revisions(reads), "actor_subject": actor_subject, "actor_kind": actor_kind,
+        "dependency_revisions": dependency_revisions(reads, catalog_version_digest=catalog_version_digest),
+        "actor_subject": actor_subject, "actor_kind": actor_kind,
         "provisioning": {},
     }
 
@@ -177,6 +206,8 @@ class CardIntent:
     # it was staged under. Readers route the decision by the authority.
     authority: str = ""
     scope: str = ""
+    # W502: the active catalog version digest this transaction reserves ("" when none).
+    catalog: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema": INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
@@ -184,7 +215,8 @@ class CardIntent:
                 "original": self.original.to_dict(), "candidate": self.candidate.to_dict(),
                 "effects": [dict(effect) for effect in self.effects], "action": self.action,
                 "actor_subject": self.actor_subject, "actor_kind": self.actor_kind,
-                "reads": [dict(read) for read in self.reads], "authority": self.authority, "scope": self.scope}
+                "reads": [dict(read) for read in self.reads], "authority": self.authority, "scope": self.scope,
+                "catalog": self.catalog}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CardIntent":
@@ -198,7 +230,8 @@ class CardIntent:
                        action=str(raw.get("action") or ""), actor_subject=str(raw.get("actor_subject") or ""),
                        actor_kind=str(raw.get("actor_kind") or ""),
                        reads=tuple(dict(read) for read in raw.get("reads") or ()),
-                       authority=str(raw.get("authority") or ""), scope=str(raw.get("scope") or ""))
+                       authority=str(raw.get("authority") or ""), scope=str(raw.get("scope") or ""),
+                       catalog=str(raw.get("catalog") or ""))
         except (KeyError, TypeError, ValueError) as exc:
             raise DecisionRefused("card_intent_invalid") from exc
 
@@ -297,6 +330,7 @@ class HubCardParticipant:
                 or projection["target_incarnation"] != max(1, intent.original.card_revision)
                 or reads_from_dependencies(projection["dependency_revisions"]) != sorted(
                     (dict(read) for read in intent.reads), key=lambda read: (read["subject_hash"], read["access_id"]))
+                or catalog_reservation_from_dependencies(projection["dependency_revisions"]) != intent.catalog
                 or not intent.action or projection["action"] != intent.action
                 or not intent.actor_subject or projection["actor_subject"] != intent.actor_subject
                 or projection["actor_kind"] not in ("caller", "grantor")
@@ -310,7 +344,7 @@ class HubCardParticipant:
             prepared = await self._service.stage_transaction(
                 transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
                 subject_hash=intent.subject_hash, original=intent.original, candidate=intent.candidate,
-                now=self._now(), effects=intent.effects, reads=intent.reads)
+                now=self._now(), effects=intent.effects, reads=intent.reads, catalog=intent.catalog)
         except CardTransactionRefused as exc:
             raise DecisionRefused(str(exc)) from exc
         return await self._receipt(prepared)
@@ -412,6 +446,6 @@ class HubLocalReceiptVerifier:
 
 __all__ = ["CardIntent", "CardIntentSource", "DecisionStorePort", "HubCardParticipant", "HubLocalReceiptVerifier",
            "LocalCardIntentSource", "PARTICIPANT", "candidate_value", "candidate_value_digest", "dependency_revisions",
-           "reads_from_dependencies",
+           "reads_from_dependencies", "catalog_reservation_from_dependencies",
            "card_intent_payload_digest", "hub_participant_input",
            "hub_projection", "receipt_digest"]
