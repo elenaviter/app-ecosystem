@@ -116,6 +116,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-06 | One durable transaction decision serves multiple participants | Generic coordinator, production PostgreSQL decision-store source and strict v2 intent/projection wire bytes; application composition and runtime activation remain separate. |
 
+| 2026-10-06 | Fixed census and participant contracts share authenticated response bytes | A closed trusted contract selection preserves participant vectors and binds census scope, person-list order, catalog flag, fresh attempt, peer identity and timestamp. Result policy, complete membership and write authority stay application-owned. [Public contract](../docs/service-foundation/durable-decision.md#fixed-census-contract). |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).
