@@ -33,17 +33,18 @@ lower OR would allow.
   (`ProjectControlLocator`). Nothing in a request selects P. The derived id is
   a consistency check only: a locator that is not P's derived id is refused
   `project_control_locator_mismatch`.
-- **One protocol.** Create, invitation redemption and the repair operation
-  `project_person_control_bind_project` all bind through
+- **No unbound C.** Create and invitation redemption write C already bound
+  under P in its first revision (`project_control_binding.bound_at_creation`):
+  the same binding an attach records, the whole chain composed before the
+  write, and the write gated as a `create` of a bound Card, so the binding's
+  writer policy decides it. P is checked before anything is written, so an
+  absent P (`project_control_absent`), an ended or foreign one, or a P under
+  another Card (`project_control_not_root`) refuses with no C written and no
+  invitation consumed.
+- **An existing C** (found by create, an exact redemption retry, or the repair
+  operation `project_person_control_bind_project`) is bound through
   `project_control_binding.bind_project_control`, which attaches through
-  `attach_control_card`: the caller-writer gate decides it as an attach, the
-  whole chain is composed before the write, and the write is fenced. Create
-  and redemption check P before writing anything, so an absent P
-  (`project_control_absent`), an ended or foreign one, or a P under another
-  Card (`project_control_not_root`) refuses with no C written and no
-  invitation consumed. C itself is committed first and bound in its next
-  revision; if the binding fails in between, the answer names it and
-  repeating the same create or redemption binds C.
+  `attach_control_card`: the caller-writer gate decides it as an attach.
 - **The qualified edge.** C -> P crosses holders (C is held by the project
   authority subject, P by its creator). Only that exact edge is qualified:
   P's id, holder, `application` issuer kind and project must match the binding,
@@ -143,7 +144,12 @@ obligations, not optional checks.
    person and its per-person report shows each one `bound` or
    `already_bound`; only then is this switched on. Until then a census chain
    ends at an unbound C, which the initiator's anchoring check refuses.
-9. **Removing v1 waits.** The v1 authority path is removed only after the peer's
+9. **Person creation is staged.** Creating C, the My Card and their
+   identity edge still takes the direct write path (creation becomes a
+   transaction participant with W582's recorded effects), so they are not yet
+   committed under one approved decision. That staging is W578 scope and must
+   land before this is switched on.
+10. **Removing v1 waits.** The v1 authority path is removed only after the peer's
    writer switch.
 
 Turning it on, changing secrets or peer ids, and restarting are a coordinated
