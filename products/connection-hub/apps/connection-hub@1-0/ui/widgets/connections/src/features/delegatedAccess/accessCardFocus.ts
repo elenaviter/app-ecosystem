@@ -98,6 +98,16 @@ export function isRequestLimitRefusal(reason = ''): boolean {
   return /\b(burst|hourly) limit exceeded\b/i.test(reason);
 }
 
+/** W587 follow-up C, the operator (2026-10-06 15:58): "It's clear that uh,
+ *  something was restarted." Connection Hub answers project_board_restarting
+ *  while the board reloads (an older package names the resolver's
+ *  project_membership_provider_not_ready instead). Not a refusal, not a yes. */
+export const BOARD_RESTARTING_MESSAGE = 'Problem Board is restarting; try again in a few seconds.';
+
+export function isBoardRestarting(reason = ''): boolean {
+  return /\b(project_board_restarting|project_membership_provider_not_ready)\b/.test(reason);
+}
+
 /** Why a requested Card did not open, with Connection Hub's own reason when it
  *  gave one (W260: "Open my Control Card" showed only "does not exist"). */
 export function unavailableAccessCardMessage(focus: AccessCardFocus, reason = ''): string {
@@ -111,6 +121,7 @@ export function unavailableAccessCardMessage(focus: AccessCardFocus, reason = ''
       + `reached its request limit ${hourly ? 'for the hour' : 'for one minute'} (${reason.trim().replace(/\.$/, '')}). `
       + `${hourly ? 'Wait and try again later.' : 'Wait about a minute and try again.'}`;
   }
+  if (isBoardRestarting(reason)) return `Card ${focus.accessId} was not loaded. ${BOARD_RESTARTING_MESSAGE}`;
   const base = `Card ${focus.accessId} does not exist or is not visible to this account.`;
   const why = reason.trim() ? ` Connection Hub answered: ${reason.trim().replace(/\.$/, '')}.` : '';
   // A person's own Card (My Card) is not a Control Card: a link that asks for
@@ -123,9 +134,42 @@ export function unavailableAccessCardMessage(focus: AccessCardFocus, reason = ''
 
 /** The notice on a project-held person Control Card this viewer only reads (W260). */
 export function projectPersonControlNotice(
-  viewer: { can_edit?: boolean } | undefined,
+  viewer: { can_edit?: boolean | null } | undefined,
 ): string {
   return viewer?.can_edit
     ? ''
     : 'A project admin decides this Control Card. You can read it here; your own Card (My Card) is what you change.';
+}
+
+/** W587: the newest copy of one Card the panel holds. The owner list is read
+ *  once when the panel opens and the focused Card on demand, so either can be
+ *  older than the other (another admin may have saved in between). The higher
+ *  card_revision wins; on a tie the focused read, which is the later one. */
+export function freshestCard<T extends { access_id: string; card_revision?: number }>(
+  items: readonly T[],
+  focused: T | null | undefined,
+  accessId: string | null | undefined,
+): T | undefined {
+  if (!accessId) return undefined;
+  const listed = items.find((item) => item.access_id === accessId);
+  const read = focused?.access_id === accessId ? focused : undefined;
+  if (!listed) return read;
+  if (!read) return listed;
+  return (listed.card_revision ?? 0) > (read.card_revision ?? 0) ? listed : read;
+}
+
+/** W587: one string per Control focus, so a read answers exactly the focus it was asked for. */
+export function controlFocusKey(focus: {
+  accessId: string; projectRef?: string; targetSubject?: string; invitationRef?: string;
+}): string {
+  return [focus.accessId, focus.projectRef || '', focus.targetSubject || '', focus.invitationRef || ''].join('\n');
+}
+
+/** W587, the operator's rule (2026-10-06 13:43): "if the version on the server
+ *  changed since the fetched one ... then the browser changes cannot be saved
+ *  and the user must refresh the opened card". An edit is stale once the Card
+ *  it started from (``pinned``) is behind the server, or the server refused a
+ *  save with 409; only reloading the Card into the editor clears it. */
+export function staleEdit(pinned: number | null, current: number | undefined, refused: boolean): boolean {
+  return refused || (pinned !== null && (current ?? 0) > pinned);
 }
