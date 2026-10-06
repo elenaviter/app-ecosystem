@@ -1,6 +1,7 @@
 """Isolated helper checks, not qualification of production target adapters."""
 from copy import deepcopy
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -319,3 +320,223 @@ async def test_policy_key_is_exact_and_oversized_key_is_refused_at_prepare(key, 
     with pytest.raises(ParticipantEffectRefused, match=reason):
         await applier.prepare(effect["kind"], key, effect["payload"], transaction_id=TX)
     assert target.calls == []
+
+
+@pytest.fixture
+def transaction_core():
+    """Joint checks require the explicit writer dependency, not a mock core.
+
+    On the pre-participant integration base this dependency is absent. Those
+    skips are not qualifying evidence: run with the exact writer source plus
+    this helper source, and report both heads and zero skipped joint checks.
+    """
+    import importlib.util
+    name = "connection_hub.delegated_credentials.cards.transaction_store"
+    if importlib.util.find_spec(name) is None:
+        pytest.skip("joint recovery requires the exact Card transaction-store dependency")
+    return __import__(name, fromlist=["transaction_store"])
+
+
+class SQLiteSyntheticTarget:
+    """Synthetic atomic target/identity ledger, not the production token store."""
+    def __init__(self, root, *, crash_point=None, outcome=None):
+        self.path = Path(root) / "synthetic-target.sqlite"
+        self.crash_point = crash_point
+        self.outcome = outcome
+
+    async def apply_once(self, binding, payload):
+        import sqlite3
+        if self.crash_point == "before_target":
+            _stop_for_kill()
+        with sqlite3.connect(self.path) as db:
+            db.execute("CREATE TABLE IF NOT EXISTS effects (tx TEXT, kind TEXT, effect_key TEXT, receipt TEXT, digest TEXT, result TEXT, deadline INTEGER, PRIMARY KEY (tx, kind, effect_key))")
+            db.commit()
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT receipt,digest,result FROM effects WHERE tx=? AND kind=? AND effect_key=?",
+                             (binding.transaction_id, binding.kind, binding.key)).fetchone()
+            if row is None:
+                result = self.outcome or binding.effect_digest
+                db.execute("INSERT INTO effects VALUES (?,?,?,?,?,?,?)", (binding.transaction_id, binding.kind,
+                           binding.key, binding.receipt_digest, binding.effect_digest, result, payload.get("expires_at")))
+            else:
+                if row[:2] != (binding.receipt_digest, binding.effect_digest):
+                    raise ParticipantEffectRefused("card_effect_binding_mismatch")
+                result = row[2]
+            db.commit()
+        if (self.crash_point == "after_target"
+                or self.crash_point == "after_second_target" and binding.kind == "grant_unbind"):
+            _stop_for_kill()
+        return result
+
+
+def _stop_for_kill():
+    import os
+    import signal
+    print("synthetic-checkpoint", flush=True)
+    os.kill(os.getpid(), signal.SIGSTOP)
+
+
+def _effect_crash_worker(root, point):
+    """Child stops at a precise durable boundary; its parent sends SIGKILL."""
+    import asyncio
+    from connection_hub.delegated_credentials.cards import transaction_store as tx
+    from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+    store = BundleStorageDelegatedCardStore(Path(root))
+    async def read(transaction_id):
+        return await tx.read_receipt(store, transaction_id)
+    applier = ParticipantEffectApplier(read_receipt=read, targets={kind: SQLiteSyntheticTarget(store.root, crash_point=point)
+        for kind in ("credential_lifetime", "grant_unbind")})
+    atomic_write = tx.write_json_atomic
+    async def write(path, value):
+        await atomic_write(path, value)
+        if point == "after_marker" and path == tx.effects_path(store, TX):
+            _stop_for_kill()
+    tx.write_json_atomic = write
+    async def finish():
+        saved = await tx.read_receipt(store, TX)
+        await tx.apply_effects(store, saved, applier)
+    asyncio.run(finish())
+
+
+def _kill_at(root, point):
+    import os
+    import select
+    import subprocess
+    import sys
+    own_cards = Path(__file__).resolve().parents[1] / "src/connection_hub/delegated_credentials/cards"
+    script = ("import connection_hub.delegated_credentials.cards as cards; "
+              f"cards.__path__.append({str(own_cards)!r}); "
+              "from test_participant_effects import _effect_crash_worker; "
+              f"_effect_crash_worker({str(root)!r}, {point!r})")
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join([str(Path(__file__).parent), env.get("PYTHONPATH", "")])
+    child = subprocess.Popen([sys.executable, "-c", script], env=env,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        ready, _, _ = select.select([child.stdout], [], [], 10)
+        assert ready, "child did not reach the bounded crash checkpoint"
+        line = child.stdout.readline().strip()
+        assert line == "synthetic-checkpoint", child.communicate(timeout=5)[1] if child.poll() is not None else line
+        child.kill()
+        child.communicate(timeout=5)
+        assert child.returncode == -9
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.communicate(timeout=5)
+
+
+async def _joint_setup(root, tx):
+    from datetime import datetime, timezone
+    from connection_hub.delegated_credentials.cards.model import card_revision_name
+    from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+    from connection_hub.delegated_credentials.durable_io import write_json_atomic
+    store = BundleStorageDelegatedCardStore(root)
+    saved = {**receipt(), "schema": tx.TRANSACTION_RECEIPT_SCHEMA, "reason": ""}
+    for side in ("before", "after"):
+        pointer = saved[side]
+        pointer["revision_name"] = card_revision_name(card_revision=pointer["card_revision"],
+            content_hash=pointer["content_hash"], updated_at=datetime(2026, 10, 6, 12, tzinfo=timezone.utc))
+    await write_json_atomic(tx.receipt_path(store, TX), saved)
+    await write_json_atomic(tx.active_path(store, TX), {"transaction_id": TX})
+    await write_json_atomic(tx.marker_path(store, subject_hash=saved["subject_hash"], access_id="card_1"),
+                            {"transaction_id": TX})
+    await write_json_atomic(store.current_path(subject_hash=saved["subject_hash"], access_id="card_1"),
+                            {"schema": tx.TRANSACTION_POINTER_SCHEMA, "transaction_id": TX,
+                             "before": saved["before"], "after": saved["after"]})
+    return store, saved
+
+
+async def _recover_effects(store, tx, *, outcome=None):
+    async def read(transaction_id):
+        return await tx.read_receipt(store, transaction_id)
+    applier = ParticipantEffectApplier(read_receipt=read, targets={kind: SQLiteSyntheticTarget(store.root, outcome=outcome)
+        for kind in ("credential_lifetime", "grant_unbind")})
+    saved = await tx.read_receipt(store, TX)
+    await tx.apply_effects(store, saved, applier)
+
+
+def _target_rows(root):
+    import sqlite3
+    path = Path(root) / "synthetic-target.sqlite"
+    if not path.exists():
+        return []
+    with sqlite3.connect(path) as db:
+        return db.execute("SELECT receipt,digest,result,deadline FROM effects").fetchall()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("point", ["before_target", "after_target", "after_marker"])
+async def test_sigkill_finish_recovers_exact_target_once_and_keeps_fence_until_ready(tmp_path, transaction_core, point):
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+    tx = transaction_core
+    store, saved = await _joint_setup(tmp_path, tx)
+    _kill_at(tmp_path, point)
+    pending = await tx.pending_effects(store, saved)
+    rows = _target_rows(store.root)
+    assert len(rows) == (0 if point == "before_target" else 1)
+    if point != "after_marker":
+        assert pending
+        with pytest.raises(CardStorageError, match="card_effects_pending"):
+            await tx.assert_replaceable(store, subject_hash=saved["subject_hash"], access_id="card_1")
+        with pytest.raises(CardStorageError, match="card_effects_pending"):
+            await tx.resolve_pointer(store, {"schema": tx.TRANSACTION_POINTER_SCHEMA, "transaction_id": TX,
+                "before": saved["before"], "after": saved["after"]},
+                subject_hash=saved["subject_hash"], access_id="card_1")
+    else:
+        assert pending == []  # target is durable; only pointer/index retirement is unfinished
+    assert await tx.list_in_doubt(store)
+    await _recover_effects(store, tx)
+    await _recover_effects(store, tx)
+    assert len(_target_rows(store.root)) == 1
+    assert _target_rows(store.root)[0][3] == 200  # past absolute expiry remains unchanged on restart
+    assert await tx.pending_effects(store, saved) == []
+    assert await tx.list_in_doubt(store) == []
+    await tx.assert_replaceable(store, subject_hash=saved["subject_hash"], access_id="card_1")
+    assert (await tx.effect_outcomes(store, TX))["0"] == _target_rows(store.root)[0][1]
+
+
+@pytest.mark.asyncio
+async def test_two_consecutive_finish_crashes_keep_readiness_fenced(tmp_path, transaction_core):
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+    tx = transaction_core
+    store, saved = await _joint_setup(tmp_path, tx)
+    for _ in range(2):
+        _kill_at(tmp_path, "after_target")
+        assert len(_target_rows(store.root)) == 1
+        assert await tx.list_in_doubt(store)
+        with pytest.raises(CardStorageError, match="card_effects_pending"):
+            await tx.assert_replaceable(store, subject_hash=saved["subject_hash"], access_id="card_1")
+    await _recover_effects(store, tx)
+    assert await tx.list_in_doubt(store) == []
+    assert len(_target_rows(store.root)) == 1
+
+
+@pytest.mark.asyncio
+async def test_named_noop_is_durable_in_real_effects_record_and_replay(tmp_path, transaction_core):
+    tx = transaction_core
+    store, _ = await _joint_setup(tmp_path, tx)
+    await _recover_effects(store, tx, outcome="no_active_credentials")
+    assert await tx.effect_outcomes(store, TX) == {"0": "no_active_credentials"}
+    await _recover_effects(store, tx)  # later availability cannot change a recorded no-op
+    assert await tx.effect_outcomes(store, TX) == {"0": "no_active_credentials"}
+    assert _target_rows(store.root)[0][2] == "no_active_credentials"
+
+
+@pytest.mark.asyncio
+async def test_partial_effect_completion_does_not_release_readiness(tmp_path, transaction_core):
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+    from connection_hub.delegated_credentials.durable_io import write_json_atomic
+    tx = transaction_core
+    store, saved = await _joint_setup(tmp_path, tx)
+    saved["effects"].append(effect_for("grant_unbind"))
+    await write_json_atomic(tx.receipt_path(store, TX), saved)
+    _kill_at(tmp_path, "after_second_target")
+    assert len(_target_rows(store.root)) == 2
+    assert [index for index, _ in await tx.pending_effects(store, saved)] == [1]
+    with pytest.raises(CardStorageError, match="card_effects_pending"):
+        await tx.assert_replaceable(store, subject_hash=saved["subject_hash"], access_id="card_1")
+    await _recover_effects(store, tx)
+    assert len(_target_rows(store.root)) == 2
+    assert await tx.pending_effects(store, saved) == []
+    assert await tx.list_in_doubt(store) == []
