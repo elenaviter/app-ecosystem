@@ -1035,3 +1035,19 @@ async def test_a_snapshot_migration_without_a_transaction_still_migrates(tmp_pat
     assert result["ok"] is True and result["created"] is False, result
     current = await _read(h, legacy)
     assert current.card_revision == legacy.card_revision + 1 and control_snapshot_is_exact(current)
+
+
+@pytest.mark.asyncio
+async def test_a_fold_without_a_binding_or_transaction_still_folds(tmp_path, redis_client):
+    from test_resident_profile_cards import CLIENT, GRANTOR, MAIL, MEMORIES, USER
+
+    h = await _hub(tmp_path, redis_client)
+    legacy, stable, _held, moved = await _fold_setup(h)
+    result = await h.service.migrate_resident_profile(USER, client_id=CLIENT)
+    assert result["ok"] is True and result["folded"] == [legacy.access_id], result
+    current = await _read(h, stable)
+    assert current.card_revision == stable.card_revision + 1 and current.control_card is None
+    assert set(current.resource_grants) == {MEMORIES, MAIL}
+    assert (await h.policies.get(owner_subject=GRANTOR, authority=moved)).mode == "always"
+    assert (await _read(h, legacy)).state != "active"
+    assert [b["registry_access_id"] for b in h.grant_store.bindings.values()] == [stable.access_id]
