@@ -18,6 +18,7 @@ import pytest
 
 from project_board.client import cli
 from project_board.client.workspace_sweep import apply_sweep, inspect_workspace, sweep_report
+from procedure_reference import reference_text
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -320,7 +321,7 @@ def test_the_procedure_owns_registration_the_sweep_and_its_triggers():
     assert "its item is Done or Cancelled on the board (an open item, or a state the sweep cannot read, keeps it)" in workspace
     assert "The first real sweep on a host with an existing pile is the operator's decision" in workspace
     assert "Never `rm -rf` a worktree folder" in workspace
-    skill = (procedures / "SKILL.md").read_text(encoding="utf-8")
+    skill = reference_text(procedures / "SKILL.md")
     assert skill.count("a sweep removes finished, clean, fully pushed trees at session start, on idle and after a review decision") == 1
 
 

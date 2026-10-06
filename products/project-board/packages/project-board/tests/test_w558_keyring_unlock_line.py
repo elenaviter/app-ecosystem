@@ -64,6 +64,7 @@ import threading
 import types
 
 from project_board.client import prerequisites
+from procedure_reference import reference_text
 
 
 def _fake_secret_service(monkeypatch, *, locked=False, missing=False, block=None):
@@ -228,7 +229,7 @@ def test_every_start_or_resume_begins_with_the_machine_self_test():
     """Operator, 2026-10-05 (W258 decision a): "agents when i resume them can check that and
     say to a usr what he should do in order to restore the servuce (unlock keyring)"."""
 
-    skill = (ROOT / "src" / "project_board" / "procedures" / "problem-board-worker" / "SKILL.md").read_text(encoding="utf-8")
+    skill = reference_text(ROOT / "src" / "project_board" / "procedures" / "problem-board-worker" / "SKILL.md")
     section = skill[skill.index("## Start Or Resume"):]
     test_at = section.index("**First, the machine self-test.**")
     assert test_at < section.index("1. Read the repository instructions")

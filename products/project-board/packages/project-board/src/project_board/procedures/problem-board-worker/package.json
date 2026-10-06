@@ -1,7 +1,7 @@
 {
   "schema": "problem-board.procedure-source.v1",
   "package_id": "problem-board-worker",
-  "revision": "2026.10.06.4",
+  "revision": "2026.10.06.5",
   "entrypoint": "SKILL.md",
   "references": [
     "references/identity-and-authorization.md",
@@ -60,6 +60,9 @@
     "references/project-workspace.md",
     "references/journaling.md",
     "references/knowledge-keeper.md",
-    "references/signals.md"
+    "references/signals.md",
+    "references/start-or-resume.md",
+    "references/source-and-review.md",
+    "references/foundations-and-procedure-gaps.md"
   ]
 }

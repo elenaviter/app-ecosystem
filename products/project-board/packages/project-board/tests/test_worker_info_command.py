@@ -186,7 +186,7 @@ def test_the_procedure_names_the_verbs():
     coordinator = reference_text(root / "references" / "coordinator.md")
     for verb in ("pb worker info show", 'pb worker info write "', "pb worker info clear"):
         assert verb in collaboration
-    for text in (collaboration, coordinator, (root / "SKILL.md").read_text(encoding="utf-8")):
+    for text in (collaboration, coordinator, reference_text(root / "SKILL.md")):
         assert 'pb worker info "' not in text and "pb worker info --clear" not in text
 
 
@@ -199,7 +199,7 @@ def test_the_worker_rereads_its_assignments_periodically():
     import project_board
 
     root = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker"
-    skill = " ".join((root / "SKILL.md").read_text(encoding="utf-8").split())
+    skill = " ".join(reference_text(root / "SKILL.md").split())
     collaboration = " ".join(reference_text(root / "references" / "collaboration.md").split())
     # Operator correction, 2026-10-01: periodic, never per step, wake or guard prompt.
     # Ownership 6: once per native wake batch, plus about every 30 minutes; never per command, message or guard.
@@ -235,7 +235,7 @@ def test_the_wake_lifecycle_scenarios_name_rules_that_exist():
         for name, quote in scenario["governing"]:
             text = " ".join(reference_text(root / name).split())
             assert quote in text, (scenario["id"], name, quote)
-    skill = " ".join((root / "SKILL.md").read_text(encoding="utf-8").split())
+    skill = " ".join(reference_text(root / "SKILL.md").split())
     # The lifecycle sits at the entrypoint, before step 1 of Start Or Resume.
     assert skill.index("**Which session this is.**") < skill.index("1. Read the repository instructions of the folder you are in.")
     assert "replay no enrollment, startup read or full skill load" in skill
