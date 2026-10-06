@@ -40,6 +40,15 @@ as a snapshot proof. The capability that enables it, `full_snapshot_operation`,
 is configured separately. A configured `read_operation` or write operation does
 not imply it.
 
+### Replay protection is the recipient's duty
+
+`verify_issuer_snapshot_request` authenticates a wire proof only: recipient,
+operation, service identity, protocol, every request and evidence byte, and
+expiry. **The issuer endpoint MUST atomically consume each proof's nonce in
+shared durable storage, across processes, before it evaluates policy.** An
+in-process cache does not meet this. The module carries no replay store of its
+own, and the issuer's side must prove it with a second-process replay test.
+
 ### Request and ordering
 
 The query is the identity read's strict DTO: `context_ref`, `request_id` and
