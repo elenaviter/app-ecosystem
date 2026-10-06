@@ -364,6 +364,7 @@ class FederatedDataBusClient:
         clock: Callable[[], float] = time.time,
         lifecycle_labels: Mapping[str, str | int | bool] | None = None,
         refusal_classifier: Callable[[BaseException], bool] | None = None,
+        on_terminal_refusal: Callable[[Mapping[str, Any]], None] | None = None,
     ) -> None:
         self.platform_url = str(platform_url or "").rstrip("/")
         if not self.platform_url:
@@ -415,6 +416,9 @@ class FederatedDataBusClient:
         # until close(), as before.
         self._refusal_classifier = refusal_classifier
         self._terminal_refusal: dict[str, Any] | None = None
+        # Told exactly once when the reconnect ends on a permanent refusal; a
+        # callback that raises is logged and never restarts the loop.
+        self._on_terminal_refusal = on_terminal_refusal
         self._namespace_outcome: asyncio.Future[
             tuple[str, dict[str, Any] | None]
         ] | None = None
@@ -1097,6 +1101,19 @@ class FederatedDataBusClient:
                 details=refusal,
             )
 
+    def _notify_terminal_refusal(self) -> None:
+        callback = self._on_terminal_refusal
+        if callback is None or self._terminal_refusal is None:
+            return
+        try:
+            callback(dict(self._terminal_refusal))
+        except Exception:  # noqa: BLE001 - the owner's fault never restarts the loop
+            logger.warning(
+                "Data Bus terminal refusal callback failed%s",
+                self._lifecycle_log_suffix(),
+                exc_info=True,
+            )
+
     def _refusal_is_permanent(self, error: BaseException) -> bool:
         classifier = self._refusal_classifier
         if classifier is None:
@@ -1125,12 +1142,13 @@ class FederatedDataBusClient:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - reconnect stays resident
-                    if self._refusal_is_permanent(exc):
+                    if self._terminal_refusal is None and self._refusal_is_permanent(exc):
                         self._terminal_refusal = {
                             "state": "refused_permanent",
                             "code": str(getattr(exc, "code", "") or type(exc).__name__),
                             "error_type": type(exc).__name__,
                         }
+                        self._notify_terminal_refusal()
                         logger.warning(
                             "Data Bus socket lifecycle event=reconnect_stopped_permanent "
                             "connection_generation=%d code=%s%s",

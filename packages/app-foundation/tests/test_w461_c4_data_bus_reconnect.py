@@ -60,7 +60,7 @@ class _Refused(Exception):
 
 
 def _drive(
-    monkeypatch, *, close_after: int, ceiling: int, classifier=None, error=None, holder=None,
+    monkeypatch, *, close_after: int, ceiling: int, classifier=None, error=None, holder=None, on_terminal=None,
 ) -> tuple[list[float], int, bool]:
     """Run the loop against a connect that always fails; close after ``close_after`` attempts."""
 
@@ -68,6 +68,7 @@ def _drive(
     monkeypatch.setattr(client_module, "asyncio", _AsyncioWithRecordedSleep(delays))
     client = FederatedDataBusClient(
         platform_url="http://127.0.0.1:9", claim=_claim(), refusal_classifier=classifier,
+        on_terminal_refusal=on_terminal,
     )
     if holder is not None:
         holder.append(client)
@@ -171,3 +172,41 @@ def test_c_a_failing_classifier_is_treated_as_transient(monkeypatch):
     )
 
     assert attempts == 4 and holder[0].terminal_refusal is None
+
+
+def test_c_the_owner_is_told_exactly_once_and_close_stays_idempotent(monkeypatch):
+    # Ops' refinements via Root (06:10 UTC): exactly-once terminal
+    # notification; close() idempotent, resources cleaned, no reconnect.
+    told: list = []
+    holder: list = []
+    _delays, attempts, ended = _drive(
+        monkeypatch, close_after=0, ceiling=200, holder=holder, on_terminal=told.append,
+        classifier=lambda error: True, error=_Refused("synthetic_permanent"),
+    )
+    client = holder[0]
+
+    async def close_twice():
+        await client.close()
+        await client.close()
+        return client._reconnect_task
+
+    remaining_task = asyncio.run(close_twice())
+
+    assert ended is True and attempts == 1
+    assert told == [{"state": "refused_permanent", "code": "synthetic_permanent", "error_type": "_Refused"}]
+    assert remaining_task is None, "no reconnect task left after close"
+    assert client.transport_recovering is False
+
+
+def test_c_a_failing_terminal_callback_never_restarts_the_loop(monkeypatch):
+    def broken(_terminal):
+        raise RuntimeError("synthetic owner fault")
+
+    holder: list = []
+    _delays, attempts, ended = _drive(
+        monkeypatch, close_after=0, ceiling=200, holder=holder, on_terminal=broken,
+        classifier=lambda error: True, error=_Refused("synthetic_permanent"),
+    )
+
+    assert ended is True and attempts == 1
+    assert holder[0].terminal_refusal["state"] == "refused_permanent"
