@@ -162,3 +162,32 @@ def test_the_procedure_lets_a_held_session_acknowledge_a_wake():
         (procedures.source_package_path() / "references" / "runtime-actions.md").read_text(encoding="utf-8").split()
     )
     assert "pb worker wake-ack --wake-id" in text
+
+
+def test_a_codex_wake_tells_a_held_session_to_acknowledge_it_without_receiving(monkeypatch):
+    # W563, coordinator 2026-10-05 23:52 UTC: after .12 was installed, the
+    # native wake still said only "Run `pb worker receive --wake-id …`", so a
+    # session held for a host window kept receiving old mail one at a time.
+    import subprocess
+
+    from project_board.client import codex_queue, session_delivery
+
+    sent = []
+
+    def queue(command, **kwargs):
+        sent.append(command[command.index("--message") + 1])
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(session_delivery, "_codex_executable", lambda: Path("/bin/echo"))
+    monkeypatch.setattr(session_delivery.subprocess, "run", queue)
+    channel = types.SimpleNamespace(runtime_kind="codex", runtime_session_id="thread-1")
+
+    session_delivery.notify_agent_session(channel, event_kind="input.available", wake_id="wake_held_1")
+
+    message = sent[0]
+    assert "`pb worker receive --wake-id wake_held_1`" in message
+    assert "held for a host window, run `pb worker wake-ack --wake-id wake_held_1`" in message
+    assert "`pb worker inbox`" in message
+    # The queue still finds the receive command's wake id, not the wake-ack one.
+    assert codex_queue._WAKE_COMMAND.search(message).group("wake_id") == "wake_held_1"
+    assert codex_queue._WAKE_COMMAND.search(message).start() < message.index("wake-ack")
