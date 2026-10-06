@@ -99,11 +99,12 @@ async def test_present_and_absent_cards_and_the_active_catalog(tmp_path):
     assert admin["control"]["revision"] == control.card_revision and admin["control"]["state"] == "present"
     assert {name: admin["control"]["authority"][name] for name in CAPABILITY_FIELDS if name in full} == {
         name: full[name] for name in CAPABILITY_FIELDS if name in full}
-    from connection_hub.delegated_credentials.cards.census_read import IDENTITY_PROPERTIES
+    from connection_hub.delegated_credentials.cards.census_read import PERSONAL_PROPERTIES
 
     assert not {"label", "client_metadata", "last_four", "created_at", "manage_url"} & set(
         admin["control"]["authority"])  # only what an identity/capability evaluation reads (EMain 20:19)
-    assert set(admin["control"]["authority"]["properties"]) <= set(IDENTITY_PROPERTIES)
+    assert admin["control"]["authority"]["properties"] == {
+        name: value for name, value in (control.properties or {}).items() if name not in PERSONAL_PROPERTIES}
     assert admin["my"] == {"subject_hash": subject_hash_for(ADMIN), "access_id": identity.my_card_id,
                            "state": "absent"}
     assert by_person[OTHER]["control"]["state"] == "absent"
@@ -391,7 +392,21 @@ async def test_the_transmitted_cards_rebuild_and_pass_the_qualified_evaluation(t
     assert identity.edge(control_card=chain[0], my_card=my).validation_reason() == ""
     hierarchy = compose_resolved_control_hierarchy(my, tuple(chain))
     assert hierarchy.effective_card.access_id == my.access_id
-    from connection_hub.delegated_credentials.cards.census_read import IDENTITY_PROPERTIES
+    from connection_hub.delegated_credentials.cards.census_read import PERSONAL_PROPERTIES
 
     for card in (my, *chain):
-        assert set(card.properties or {}) <= set(IDENTITY_PROPERTIES)  # only the evaluation's properties travel
+        assert not set(card.properties or {}) & set(PERSONAL_PROPERTIES)  # person-owned settings never travel
+
+
+@pytest.mark.asyncio
+async def test_person_owned_settings_are_withheld_and_authorization_properties_kept(tmp_path):
+    from connection_hub.delegated_credentials.cards.census_read import _present
+
+    operation, store, control, identity, catalog_store = await _world(tmp_path)
+    card = dataclasses.replace(control, properties={
+        "connection_hub.github": {"login": "someone"}, "connection_hub.commit_email": "a@example.test",
+        "connection_hub.control_snapshot": {"schema": "x"}, "kdcube.application_operations": {"enabled": True},
+        "service_composition_modes": {"https://x.test/mcp": "or"}})
+    sent = _present(card)["authority"]["properties"]
+    assert set(sent) == {"connection_hub.control_snapshot", "kdcube.application_operations",
+                         "service_composition_modes"}
