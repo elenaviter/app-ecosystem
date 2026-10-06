@@ -164,3 +164,126 @@ def test_a_a_lost_answer_is_settled_by_a_status_read_not_a_resend(tmp_path):
     assert hasattr(coordinate_recovery, "lookup_remote_receipt"), (
         "a status read that settles an unknown outcome without a mutation send"
     )
+
+
+# (a) at the transport, (b) older generation, (c) named end state -------------
+
+
+def _peer_that_commits_then_loses_the_reply(client, effects):
+    async def uncertain_action(**arguments):
+        client.calls.append(arguments)
+        transport_id = arguments["transport_request_id"]
+        if transport_id not in effects:
+            effects[transport_id] = {"ok": True, "object": {"saved": True}}
+            raise DomainError("data_bus_outcome_unknown", "Synthetic: reply lost after commit.", status=504)
+        return effects[transport_id]
+
+    client.action_with_transport_identity = uncertain_action
+
+
+def _serve_twice(supervisor, queue, channel, monkeypatch):
+    import asyncio
+    from datetime import datetime, timedelta, timezone
+
+    from project_board.client import coordinate_queue
+    from relay_helpers import submit_request
+
+    async def scenario():
+        request = submit_request(
+            queue, channel, action="plan.item.update",
+            payload={"idempotency_key": "c4-transport-key", "changes": {"title": "Synthetic"}},
+        )
+        supervisor.serve_coordinate_once()
+        await asyncio.gather(*supervisor._coordinate_draining.values())
+        first = queue.take_response(worker_name=channel.worker_name, request_id=request["request_id"])
+        later = datetime.now(timezone.utc) + timedelta(seconds=3)
+        monkeypatch.setattr(coordinate_queue, "utc_now", lambda: later.isoformat())
+        monkeypatch.setattr(coordinate_queue.time, "time", lambda: later.timestamp())
+        supervisor.serve_coordinate_once()
+        await asyncio.gather(*supervisor._coordinate_draining.values())
+        second = queue.take_response(worker_name=channel.worker_name, request_id=request["request_id"])
+        return request, first, second
+
+    return asyncio.run(scenario())
+
+
+def test_a_transport_commit_then_lost_reply_keeps_one_effect_and_the_session(tmp_path, monkeypatch, record_property):
+    from test_connected_degraded_admission import _fixture
+
+    host, _identity, channel, supervisor, session, client = _fixture(tmp_path)
+    queue = CoordinateQueue(host.field_root)
+    effects: dict = {}
+    _peer_that_commits_then_loses_the_reply(client, effects)
+    started = time.monotonic()
+
+    request, first, second = _serve_twice(supervisor, queue, channel, monkeypatch)
+
+    record_property("a_recovery_ms", round((time.monotonic() - started) * 1000, 3))
+    record_property("a_peer_sends", len(client.calls))
+    assert first is None, "the lost reply is not reported as an answer"
+    assert second is not None and second["ok"] is True
+    assert len(effects) == 1, "the peer committed exactly once"
+    assert {call["transport_request_id"] for call in client.calls} == {request["request_id"]}
+    assert supervisor._sessions[channel.worker_name] is session, "the retained session is kept"
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "W461 C4 finding: the lost answer is settled by a second send of the same transport "
+        "request to the peer, not by a status read"
+    ),
+)
+def test_a_transport_lost_reply_is_settled_without_a_second_send(tmp_path, monkeypatch):
+    from test_connected_degraded_admission import _fixture
+
+    host, _identity, channel, supervisor, _session, client = _fixture(tmp_path)
+    queue = CoordinateQueue(host.field_root)
+    _peer_that_commits_then_loses_the_reply(client, {})
+
+    _serve_twice(supervisor, queue, channel, monkeypatch)
+
+    assert len(client.calls) == 1, "zero further mutation sends after the commit"
+
+
+def test_c_an_unknown_outcome_leaves_a_named_degraded_state_with_its_evidence(tmp_path, record_property):
+    from test_connected_degraded_admission import _fixture, _unknown
+
+    host, _identity, channel, supervisor, _session, _client = _fixture(tmp_path)
+    started = time.monotonic()
+    _unknown(supervisor, channel)
+    state = relay_pacing.channel_reconnect_state(host.path, channel.worker_name, clock=lambda: 1000.0)
+    record_property("c_state_read_ms", round((time.monotonic() - started) * 1000, 3))
+
+    assert state["state"] == "degraded"
+    assert state["reason"] == "data_bus_outcome_unknown"
+    assert state["attempts"] == 1 and state["next_attempt_at"]
+
+
+def test_b_a_session_on_a_replaced_card_sends_nothing_and_keeps_the_request(tmp_path):
+    import asyncio
+
+    from relay_helpers import StableClient, make_supervisor, submit_request
+    from test_relay_coordinate_beside_cycle import _bound_session, _write_profile
+
+    host, _, channel = make_host(tmp_path)
+    queue = CoordinateQueue(host.field_root)
+    supervisor = make_supervisor(host)
+    old_client = StableClient()
+    session = _bound_session(host, channel, supervisor, old_client)
+    supervisor._sessions[channel.worker_name] = session
+    _write_profile(host, channel, access_id="synthetic-newer-card", updated_at="later")
+    assert supervisor._card_fingerprint(host, channel) != session.card_fingerprint
+    request = submit_request(queue, channel)
+
+    async def scenario():
+        await supervisor.serve_coordinate_pass()
+        await asyncio.gather(*supervisor._coordinate_draining.values())
+
+    try:
+        asyncio.run(scenario())
+        assert old_client.calls == [], "a session on the older Card writes nothing"
+        assert queue.holds(worker_name=channel.worker_name, request_id=request["request_id"])
+        assert not supervisor._session_matches(host, channel, session, require_card=True)
+    finally:
+        supervisor._store_executors.shutdown()
