@@ -958,7 +958,11 @@ async def test_the_viewer_fails_closed_when_the_edit_question_cannot_be_answered
         request_id="request-read",
     )
     assert read["ok"] is True
+    # W587 follow-up C: still fail closed (can_edit is not true, and the widget
+    # offers no Save while it is unknown), but an unanswered check is named as
+    # unavailable, not shown as an admin's refusal.
     assert read["viewer"] == {
-        "can_edit": False,
-        "reason": "project_person_control_decided_by_admin",
+        "can_edit": None,
+        "reason": "project_person_control_permission_unavailable",
+        "retryable": True,
     }

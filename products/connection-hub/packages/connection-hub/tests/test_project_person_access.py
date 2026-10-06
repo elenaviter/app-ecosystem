@@ -1448,3 +1448,29 @@ async def test_a_stale_revision_and_a_missing_my_card_are_named() -> None:
 
     assert stale == {"ok": False, "error": "project_identity_my_card_revision_conflict", "status": 409}
     assert missing == {"ok": False, "error": "project_identity_my_card_missing", "status": 409}
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_permission_check_is_not_shown_as_a_refusal() -> None:
+    """W587 follow-up C (EMain 15:54): while the board reloaded, the policy port
+    could not answer the edit question and an admin was shown "a project admin
+    decides this". An unavailable port is an unknown permission, not a refusal."""
+
+    class _ReloadingPort(_Port):
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                self.requests.append(request)
+                raise RuntimeError("ApplicationNotReadyError: problem-board is reloading")
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _ReloadingPort()).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["ok"] is True
+    assert view["viewer"] == {
+        "can_edit": None,
+        "reason": "project_person_control_permission_unavailable",
+        "retryable": True,
+    }
