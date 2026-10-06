@@ -173,6 +173,9 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
             "references/pb-command-interface.md",
             "references/project-workspace.md",
         "references/journaling.md",
+        "references/start-or-resume.md",
+        "references/source-and-review.md",
+        "references/foundations-and-procedure-gaps.md",
         "references/knowledge-keeper.md",
         "references/signals.md",
     }
@@ -302,7 +305,10 @@ def test_source_selection_guidance_is_added_without_rewriting_collaboration() ->
 def test_skill_carries_rules_not_stories() -> None:
     skill = _read("SKILL.md")
     words = _words(skill)
-    assert skill.count("\n") < 520, (
+    # The ruling bounds the file every session loads, the entrypoint itself;
+    # its act modules are read when their trigger fires (W563).
+    entrypoint = (PROCEDURE_ROOT / "SKILL.md").read_text(encoding="utf-8")
+    assert entrypoint.count("\n") < 520, (
         "SKILL.md is loaded into every worker session's context, so it holds fewer "
         "than 520 newlines of rules with one clause of reason each (operator ruling, "
         "2026-09-18). Content that does not fit moves to a reference behind one "
@@ -610,7 +616,8 @@ def test_work_report_and_journal_rules() -> None:
     assert "the request may already have applied" in words
     assert "retry the same report unchanged" in words
     assert "A `project.report` request reaches only the coordinator" in words
-    assert "work:journal:<created-at>:<entry-id>:<semantic-name>" in skill
+    # W563: authoring and indexing moved to journaling.md, *Write and index an entry*.
+    assert "work:journal:<created-at>:<entry-id>:<semantic-name>" in journaling
     assert "pb worker journal-index" in skill and "pb worker journal-search" in skill
     assert "no role means no journal work" in words
     assert "the common procedure never assumes a fixed home" in journaling
@@ -618,14 +625,14 @@ def test_work_report_and_journal_rules() -> None:
     assert "Reuse the item's existing worktree when it already changes the journal repository" in journaling
     assert "<workspace>/wt/<item>-<journal-alias>" in journaling
     assert "Never carry a long-lived per-agent journal worktree or branch across unrelated items" in journaling
-    assert "After the journal change request is merged, fetch and fast-forward the clean journal clone" in words
-    assert "an unmerged entry correctly returns `journal_entry_not_found`" in words
+    assert "After the journal change request is merged, fetch and fast-forward the clean journal clone" in journaling
+    assert "an unmerged entry correctly returns `journal_entry_not_found`" in journaling
     # The semantic segment cap that refused a real entry on 2026-09-21 00:26Z.
-    assert "semantic name at most 64 characters of `a-z0-9-`, else `journal_entry_ref_invalid`" in _words(skill)
-    assert "pb worker journal-index-status" in skill
-    assert "pb worker journal-index-resume" in skill
-    assert "Status is observation only" in words
-    assert "Do not rerun the original command to guess what happened" in words
+    assert "semantic name at most 64 characters of `a-z0-9-`, else `journal_entry_ref_invalid`" in journaling
+    assert "pb worker journal-index-status" in journaling
+    assert "pb worker journal-index-resume" in journaling
+    assert "Status is observation only" in journaling
+    assert "Do not rerun the original command to guess what happened" in journaling
     assert "pb worker journal`" not in skill
     assert "pb worker idle" in skill and "pb worker detach" in skill
     assert "pb mail-renew --project-ref" not in skill
@@ -1331,7 +1338,7 @@ def test_connecting_agents_on_another_machine_starts_at_the_operator_decisions()
 def test_an_agent_sets_up_its_workspace_from_the_project_record():
     """W304 finding 39: attending a project brings its record, and the agent clones from it."""
 
-    skill = " ".join((source_package_path() / "SKILL.md").read_text(encoding="utf-8").split())
+    skill = " ".join(reference_text(source_package_path() / "SKILL.md").split())
     reference = " ".join((source_package_path() / "references" / "project-workspace.md").read_text(encoding="utf-8").split())
     assert "whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md)" in skill
     assert "pb worker context --project-ref <project>" in reference

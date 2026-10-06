@@ -24,10 +24,9 @@ wisdom while wokring on the project. something that cannot be included in the
 documentation. something which improves later the understandgin why we did
 this and not that way not to repeat the mistakes we made").
 
-How an entry is authored and indexed (front matter, `entry_ref`,
-`journal-index`) is in the skill's section *Work, Report, And Journal*; this
-page says when an entry is worth writing, what it carries and where other
-knowledge goes. A project journal is optional. When the project declares a
+This page says when an entry is worth writing, what it carries, how it is
+authored and indexed (front matter, `entry_ref`, `journal-index`, in *Write and
+index an entry*) and where other knowledge goes. A project journal is optional. When the project declares a
 repository with role `journal`, that role may name any repository and path;
 the common procedure never assumes a fixed home. With no journal role, there
 is no journal work: keep decisions and findings in the plan item.
@@ -99,6 +98,22 @@ agent and to that agent's successor. A finding about how the team works, or
 about Problem Board itself, is never private memory: it becomes a procedure
 or documentation change so that every agent follows it, and a project's own
 practice becomes a change to that project's files (operator, 2026-10-01).
+
+## Write and index an entry
+
+- Author the complete journal Markdown, front matter included, at the configured relative path in the current item's worktree. Lead with the lesson; keep the
+  mechanism, the rejected alternatives and why, the operator's exact ruling and
+  the evidence that proves it ([journaling](journaling.md)); no empty sections or generic tags. The front matter needs a unique
+  `work:journal:<created-at>:<entry-id>:<semantic-name>` `entry_ref` (semantic
+  name at most 64 characters of `a-z0-9-`, else `journal_entry_ref_invalid`)
+  and this exact `project_ref`; `title`, `summary`, `keywords`, `see_also`,
+  status and attribution make retrieval better. The filename stamp and
+  `<created-at>` both name `recorded_at` in UTC (`date -u`, never `date`, a test
+  enforces it): [collaboration](collaboration.md), finding ten.
+- After the journal change request is merged, fetch and fast-forward the clean journal clone, then run `pb worker journal-index --project-ref ... --repository-journal-ref ...`; an unmerged entry correctly returns `journal_entry_not_found`. The command does not rewrite the file and returns its index, validation and receipt steps.
+  After interruption, inspect with `pb worker journal-index-status --project-ref ... --operation-id ...`, then run `pb worker journal-index-resume --operation-id ...` for the first incomplete step. Status is observation only: it does not rebuild, enqueue, or repair. Do not rerun the original command to guess what happened.
+  For a pre-ledger validation use `journal-index-status --project-ref ... --outbox-id ... --repository-journal-ref ...`; it distinguishes an accepted plan revision from an absent receipt.
+  Search with `pb worker journal-search --query ...` (`--project-ref ...` to name the project explicitly); legacy files remain searchable under a path-derived identity and status names compatibility issues.
 
 ## Finding what the project already knows
 

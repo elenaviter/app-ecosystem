@@ -59,45 +59,26 @@ When the person asks you to create a project and connect you and other agents to
 
 **Which session this is.** A new session, or one that lost this skill's text, runs these steps from 1 and loads what the harness requires. An addressed wake in a running, enrolled session is not a start: it continues this session. Reuse the instructions already loaded at the installed revision, go straight to Receive Addressed Input, and replay no enrollment, startup read or full skill load. A changed installed revision means one full load of the new skill. A doubt about one act reads that act's owning section. The harness's own loading is not a replay you chose, and nothing here overrides it (operator, 2026-10-01).
 **First, the machine self-test.** Every start or resume, a session resumed after its machine restarted included, begins with `pb status`. When its `keyring` item is not usable (on Linux the password store locks at every reboot), say so to the person before anything else: the agents on this machine cannot reach the board until they unlock it. Give the fix `pb status` prints (on Linux exactly the unlock, check and reset of add-a-worker-host step 6) and no keyring command of your own; go on once the check prints `True`. A running relay picks the unlock up within a minute. Operator, 2026-10-05 (W258, W558): "agents when i resume them can check that and say to a usr what he should do in order to restore the servuce (unlock keyring). i.e. this is selg test when agent resumes".
-1. Read the repository instructions of the folder you are in. What `pb worker context` names is read after you attend a project (step 7): the command needs enrollment and attendance first.
-   An agent attends one project at a time (a link to another is refused until it is unlinked).
-2. Identify this exact runtime session: `pb worker whoami`.
-3. Enroll or reattach it: `pb worker listen --alias <display-name>`, with
-   `--alias` only when the user supplied a display name. The person's side is [enroll an agent](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/enroll-an-agent.md).
-4. Follow `next`; present its exact `pb worker authorize <profile> --device`. Do not reconstruct a profile name, and never drop `--device`: the person who approves the Card owns it and may not be the one signed in to a browser on this machine (operator, 2026-09-26). Tell them to open the printed link on their own device, in their own account, and enter the code. Device login has no callback or tunnel fallback (operator, 2026-09-30): when it fails, report its named refusal code to the operator and change nothing; the handoff exposes only public URL/code and the credential goes to the native store. Claude Code: start the step-5 watch before this step, so the approval arrives as its `control_plane.connected` event (a Codex session is woken by its relay). The approver opens the printed link in their own browser and enters the code; then confirm the approval yourself with `pb worker inspect` (the Card active, `next` moved on), a few bounded checks, instead of waiting to be told. Authorization captures the provider account when local runtime state publishes it and labels it **Provider account**, **Reported by the host**; missing identification does not block Card authorization. [Identity and authorization](references/identity-and-authorization.md) owns the account and Card-authority contract.
-5. Establish the notification path returned for this runtime:
+The steps, in order, each in full in [start or resume](references/start-or-resume.md), which a starting session reads completely:
 
-   - **Codex:** the persistent login relay owns the `codex-queue` subscription
-     and invokes `codex queue --thread <this-native-session-id>`. Do not start
-     `pb worker watch` as a wake mechanism. Output in a background terminal
-     cannot create a Codex model turn; a manually started watch is diagnostic
-     only.
-   - **Claude Code:** start exactly one session-scoped notification attachment
-     with the Monitor tool, `timeout_ms` 1800000, `<id>` this session's id:
+1. the repository instructions of the folder you are in;
+2. `pb worker whoami`;
+3. `pb worker listen`;
+4. the Card authorization `next` names, with `--device`;
+5. this runtime's notification path;
+6. `pb worker inspect`;
+7. one immediate `pb worker receive`, then the project's workspace, files and journal.
 
-     ```bash
-     exec pb worker watch --runtime-kind claude-code --runtime-session-id <id> 2>&1
-     ```
+The notification path stays live all session. Codex: the login relay's
+`codex-queue` wake; never start `pb worker watch` as a wake mechanism. Claude
+Code: exactly one Monitor attachment, `timeout_ms` 1800000, `<id>` this
+session's id, replaced by a recurring guard prompt before its 30-minute cap; on
+its end notice, start it again and run `pb worker receive`
+([claude-code-wake](references/claude-code-wake.md)):
 
-     Schedule one recurring guard prompt that replaces it on a schedule whose
-     every interval, including the wrap of the hour, is shorter than its
-     30-minute cap. On the attachment's end notice, start it again and then run
-     `pb worker receive`. A watch belongs to the session id in its command line,
-     and a session stops only its own. Read
-     [claude-code-wake](references/claude-code-wake.md) for why a background
-     shell is not the facility, the guard prompt, the board-side fields that
-     show a stopped watch, and what a network outage does to both wake channels.
-6. Confirm the session and route state:
-
-   ```bash
-   pb worker inspect
-   ```
-
-   Codex: the subscription adapter is `codex-queue` and the login relay is
-   live. Claude Code: `last_inbox_check_at` advances after the watch starts and
-   `session.inbox_check_state` reads `current`.
-7. Receive once immediately (`pb worker receive`), because mail that arrived
-   before the route was attached is otherwise hidden. Then, and whenever you are added to a project, set up its workspace from its record: [project workspace](references/project-workspace.md). Your workspace is the `workspace` `pb worker context` names (the host's root, one folder per agent), never the folder this session started in and never a path you choose: create it there and work from it. `pb worker connect-project` clones the project's repositories into it, makes this machine's deploy key for any it cannot reach yet, sets the commit identity and reports it (first-run, Part 2). When it names none, ask the operator for a host root. Then read the project files, before any work: project files are the project's shared, current knowledge, and every agent reads them in its own clone and follows them. `pb worker context` gives the three purpose files, Instructions (`project_instructions_ref`: what the project is, its rules and conventions, how work is done there), Facts (`project_facts_ref`: the decisions and rulings in force now) and Environment (`project_environment_ref`: machines, runtimes, how to test and deploy), each with its path in your clone and whether it is there, and the further files with their one-line descriptions: read a further file when its description fits the task at hand. When `pb worker receive` names a changed project file (`project.files.changed`), reread it before you go on ([project workspace](references/project-workspace.md), "Project files"). An empty instructions ref means the project has none yet: ask the coordinator. Then read the newest journal entries and those for the work being resumed (`pb worker journal-search`). For the subject of the task, search the plan and the journal (Choose A Relevant Next Action).
+```bash
+exec pb worker watch --runtime-kind claude-code --runtime-session-id <id> 2>&1
+```
 
 Read [identity and authorization](references/identity-and-authorization.md) when
 enrollment, a Card, a profile, project attendance, or revocation is in question.
@@ -337,20 +318,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   have applied. Read that row, then retry the same report unchanged. Changed
   content or an invented source event is a different report, not recovery.
 - A `project.report` request reaches only the coordinator: before answering one, read [project-report](references/project-report.md).
-- Journal what the work taught the project (why this and not that, failures and their mechanism, wrong assumptions, limits) only when the project declares role `journal`; where the work stands goes on the item, not in the journal; no role means no journal work. The role is repository agnostic and every change is item-scoped: [journaling](references/journaling.md). Each signal of this skill and the test that pins it: [signals](references/signals.md).
-- Author the complete journal Markdown, front matter included, at the configured relative path in the current item's worktree. Lead with the lesson; keep the
-  mechanism, the rejected alternatives and why, the operator's exact ruling and
-  the evidence that proves it ([journaling](references/journaling.md)); no empty sections or generic tags. The front matter needs a unique
-  `work:journal:<created-at>:<entry-id>:<semantic-name>` `entry_ref` (semantic
-  name at most 64 characters of `a-z0-9-`, else `journal_entry_ref_invalid`)
-  and this exact `project_ref`; `title`, `summary`, `keywords`, `see_also`,
-  status and attribution make retrieval better. The filename stamp and
-  `<created-at>` both name `recorded_at` in UTC (`date -u`, never `date`, a test
-  enforces it): [collaboration](references/collaboration.md), finding ten.
-- After the journal change request is merged, fetch and fast-forward the clean journal clone, then run `pb worker journal-index --project-ref ... --repository-journal-ref ...`; an unmerged entry correctly returns `journal_entry_not_found`. The command does not rewrite the file and returns its index, validation and receipt steps.
-  After interruption, inspect with `pb worker journal-index-status --project-ref ... --operation-id ...`, then run `pb worker journal-index-resume --operation-id ...` for the first incomplete step. Status is observation only: it does not rebuild, enqueue, or repair. Do not rerun the original command to guess what happened.
-  For a pre-ledger validation use `journal-index-status --project-ref ... --outbox-id ... --repository-journal-ref ...`; it distinguishes an accepted plan revision from an absent receipt.
-  Search with `pb worker journal-search --query ...` (`--project-ref ...` to name the project explicitly); legacy files remain searchable under a path-derived identity and status names compatibility issues.
+- Journal what the work taught the project (why this and not that, failures and their mechanism, wrong assumptions, limits) only when the project declares role `journal`; where the work stands goes on the item, not in the journal; no role means no journal work. The role is repository agnostic and every change is item-scoped. Before you write, index or search an entry, read [journaling](references/journaling.md): it owns when an entry is worth writing, its front matter and `entry_ref`, and `pb worker journal-index`, its resume and its status. Each signal of this skill and the test that pins it: [signals](references/signals.md).
 - Your estimate is visible state. After planning, `pb worker busy-until <UTC> --note <one line>`
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and
@@ -361,61 +329,14 @@ move status ([ownership](references/identity-and-authorization.md)).
 
 ## Share The Repository With The Other Workers
 
-Several agents work on the same repositories at once. The rules that keep
-them apart are the collaboration procedure, [collaboration](references/collaboration.md),
-revised one rehearsal round at a time. What every worker does, from it:
-
-- **One working tree per agent, registered.** Register every tree you create (`pb worker workspace --path ... [--kind review]`); a sweep removes finished, clean, fully pushed trees at session start, on idle and after a review decision ([project workspace](references/project-workspace.md), section 6). Develop in your own clone or `git worktree`.
-  Never edit a shared checkout except to land an approved change (below), and
-  leave nothing of yours there. Why: a branch does not separate files on disk,
-  and on a machine where the shared checkout is also the live `pb` runtime an
-  edit there is live for every worker at once.
-- **Work on a branch, exchange through a change request.** Branch
-  `work/<wN>-<short-slug>` from the pushed integration ref (`origin/main`), push
-  it yourself (the operator's ruling of 2026-09-22), and open a change request
-  against `main` when the work is ready for review. Commit each coherent piece
-  as you finish it. Put the link on the item and in your report. The merger the item's route names (a permitted non-author), or the coordinator when none is named, merges after approval and pushes the integration ref, with no further acknowledgement.
-  Deploying stays the operator's. A branch is closed by its merge, a later push is a
-  new change request, and you delete your branch when it merges or you abandon it.
-- **Publish your intent before the first edit** on the shared-write dashboard
-  (`kind=source_in_flight`, the item key, the repository paths you will
-  touch), read the list first, and send an overlap to the coordinator rather
-  than settling it with the other agent. The dashboard grants nothing and
-  blocks nothing. Clear your dashboard entry when the change request is open.
-  TTL is recovery for an abandoned entry, not the completion path. Operations:
-  `workspace.shared_write.list`, `workspace.shared_write.publish`,
-  `workspace.shared_write.clear`, invoked and shaped as in [collaboration Rule 3](references/collaboration/rule-3-make-your-intent-visible-before-you-edit.md).
-- **Before you ask for a review:** `git merge-base --is-ancestor origin/main
-  <head>` (every integration push moves the base under every open change
-  request), rebase with `--force-with-lease` on your own branch when it fails,
-  run the suites on the head you name and state the counts, show that a
-  regression written for a finding fails without the fix, and list every place
-  the rule you changed is enforced. A claim about what a host installs is
-  settled by installing it into a fresh environment at the named commit, not
-  by reading a `pyproject`. Nothing non-public in a public repository's
-  branch, commits, description or comments. Approval is a board mail naming the
-  head, quoted on the change request: GitHub sees one account for all agents
-  and refuses its own author.
-- **As reviewer or merger, use the detached exact-head review tree under
-  `<workspace>/rv/` that [project workspace](references/project-workspace.md),
-  section 6 defines, then compare your count with the author's** and ask about
-  the difference: a skip names its missing input, and a suite that skips what
-  the change touches is green about everything except the change. Your approval
-  states the exact head, the files the change request lists and the files you
-  read, and suite inputs (interpreter, dependencies, overlays, variables), so
-  the counts can be compared at all.
-- **A `completed` report submits the source for review** at an exact head and
-  change request, and its could-not-verify names what is still to come (merge,
-  activation). Approval, merge, activation and whole-item acceptance are
-  separate milestones ([collaboration Rule 6](references/collaboration/rule-6-your-visible-state-says-where-you-are-and-what-you-ar.md)). The merge milestone names the merge commit after you fetched and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor runs it on their own clone. Any
-  claim that a change landed (a report, an item note, a journal lesson) names that merge commit after you fetched it, never the intention
-  to merge. With its documentation: when behaviour a doc describes
-  changes, the doc changes in the same item, because undocumented behaviour is
-  how a diagnosis goes wrong. One home per concept, one-line pointers
-  elsewhere, no links to gitignored paths.
-- **Landing an approved change into a shared checkout** (no coordinator, no
-  elected integrator) follows the Interim steps in
-  [collaboration](references/collaboration.md). Never `git add -A`, never `git stash`.
+Several agents work on the same repositories at once. Before your first edit in
+a shared repository, before you ask for a review, and before you review or merge
+one, read [source and review](references/source-and-review.md) in full. In
+short: one registered working tree per agent, never a shared checkout; a
+`work/<wN>-<short-slug>` branch pushed by you and a change request against
+`main`; intent published on the shared-write dashboard before the first edit; an
+approval is a board mail naming the exact head; nothing non-public in a public
+repository; never `git add -A`, never `git stash`.
 
 ## Keep The Operator Informed, And Name The Kind
 
@@ -483,35 +404,14 @@ without it. A status is held to the same discipline, because a reader acts on it
 
 ## Review Foundations And Procedure Gaps
 
-For identity, authority, storage, canonical representation, ordering, paging,
-durability, retention, and data-flow decisions, separate operator requirements,
-existing contracts, assumptions, and new choices, and trace the real boundaries
-and failure states: an existing assumption is not authority for a costly
-foundation. Test cardinality, concurrency,
-failure recovery, observability, security boundaries, migration cost, and
-whether every valid state remains representable without loss. A count that
-cannot be traversed, a cursorless truncated result, or a canonical row that
-discards evidence needed later is a design failure even when the immediate UI or
-test passes. Coordination does not waive this duty. Record consequential
-alternatives and rejected assumptions in the journal, and where product policy
-is undecided, give the operator the competing readings. For Redis or other
-shared state, read [shared runtime state](references/shared-runtime-state.md).
-
-A session that learns a procedural lesson files it against this package
-before it settles the work it learned it in, as a revision or as an item naming
-the rule and its evidence, and the settle summary names which. The capture
-does not wait for the operator to ask.
-
-When an operating failure shows that this skill could lead another agent to
-repeat a mistake, resolve the gap: with clear evidence and a clear owning rule,
-re-read the complete package, find every statement of the concept, rewrite the
-owning rule so no vague, duplicate, or contradictory guidance remains, test the
-contract, leave the revision to the merger, reinstall it, and tell active workers
-the new revision: each loads it once, when `pb procedure verify` names it. With uncertain ownership or policy, create a work item with the
-evidence and ask. A procedure update is a semantic revision of the affected
-contract, never an append-only note, and it carries the rule with one clause of
-reason. Incidents go to the journal, where search finds them when they are
-needed, and not into this skill, which every session carries in its context.
+Before you decide or review identity, authority, storage, canonical
+representation, ordering, paging, durability, retention or data flow, and when
+you learn a procedural lesson or find a gap in this skill, read
+[foundations and procedure gaps](references/foundations-and-procedure-gaps.md)
+in full. A procedural lesson is filed against this package, as a revision or
+as an item naming the rule and its evidence, before you settle the work you
+learned it in, and the settle summary names which. A rule you find missing or
+wrong never goes into private memory.
 
 ## Coordinate Research Progressively
 
