@@ -328,10 +328,29 @@ class PostgresDecisionStore:
                 or intent.expires_at != row["expires_at_epoch"]
                 or len(intent.participants) != row["participant_count"]):
             raise DecisionRefused("stored_intent_invalid")
-        prepared = {key: Receipt(**value) for key, value in
-                    json.loads(row["prepared"]).items()}
-        finished = {key: Receipt(**value) for key, value in
-                    json.loads(row["finished"]).items()}
+        def receipts(column: str) -> dict[str, Receipt]:
+            # asyncpg's default JSONB decoder returns text; application pools
+            # can instead install a decoder that returns a dict.
+            value = row[column]
+            try:
+                if isinstance(value, str):
+                    value = json.loads(value)
+                if not isinstance(value, Mapping):
+                    raise DecisionRefused("stored_receipt_invalid")
+                result = {}
+                for participant, fields in value.items():
+                    if not isinstance(participant, str) or not isinstance(fields, Mapping):
+                        raise DecisionRefused("stored_receipt_invalid")
+                    receipt = Receipt(**fields)
+                    if receipt.participant != participant:
+                        raise DecisionRefused("stored_receipt_invalid")
+                    result[participant] = receipt
+                return result
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise DecisionRefused("stored_receipt_invalid") from exc
+
+        prepared = receipts("prepared")
+        finished = receipts("finished")
         if (len(prepared) != row["prepared_count"]
                 or len(finished) != row["finished_count"]):
             raise DecisionRefused("stored_receipt_count_invalid")
@@ -415,7 +434,7 @@ class PostgresDecisionStore:
             # they cannot overwrite another participant's JSONB entry.
             updated = await conn.fetchrow(
                 f"""UPDATE {self.table}
-                    SET prepared=prepared || jsonb_build_object($3::text,$4::jsonb),
+                    SET prepared=prepared || jsonb_build_object($3::text,($4::text)::jsonb),
                         prepared_count=prepared_count+1,
                         state=CASE WHEN prepared_count+1=participant_count
                                    THEN 'prepared' ELSE 'preparing' END
@@ -506,7 +525,7 @@ class PostgresDecisionStore:
             _check_receipt(record, receipt)
             updated = await conn.fetchrow(
                 f"""UPDATE {self.table}
-                    SET finished=finished || jsonb_build_object($3::text,$4::jsonb),
+                    SET finished=finished || jsonb_build_object($3::text,($4::text)::jsonb),
                         finished_count=finished_count+1
                     WHERE namespace=$1 AND transaction_id=$2
                       AND state IN ('committed','aborted')

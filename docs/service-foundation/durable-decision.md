@@ -49,6 +49,9 @@ Coordinates must be supplied together or both omitted. Standalone calls
 allocate an ID and epoch; a caller may reserve them in its own outer SQL
 transaction. When passed a connection already in a transaction, the store
 uses a nested savepoint and never commits or closes the caller's connection.
+Store-allocated epochs come from a PostgreSQL sequence: they increase but
+may have gaps after a rollback. Callers requiring transactional reservation
+must supply their own durable ID and epoch together.
 Receipt writes and terminal decisions offer the same optional connection.
 The coordinator's `prepare_existing(transaction_id)` starts remote stages
 only after the caller's reservation transaction has committed.
@@ -62,6 +65,9 @@ expiry and decision timestamp, prepared and finished receipts and their
 counts, and the witness digest. It also has a unique
 `(namespace, replay_scope, epoch)` key. Receipt writes merge one immutable
 JSONB entry with a conditional SQL update, preserving concurrent receipts.
+The store accepts both text and already-decoded mapping results from asyncpg
+JSONB codecs, and casts serialized receipt text to JSONB in SQL so platform
+pool encoders cannot turn receipt objects into JSON strings.
 An expired but still undecided COMMIT reports `commit_expired`; subsequent
 recovery can durably presume abort. A recovery pass continues past a failed
 participant, then raises `RecoveryIncomplete` with the failed transaction IDs

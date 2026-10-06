@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 
@@ -30,6 +31,34 @@ async def store():
         await connection.execute(f"CREATE SCHEMA {schema}")
     result = PostgresDecisionStore(pool, schema=schema, namespace="test")
     await result.ensure_schema()
+    await result.ensure_schema()
+    try:
+        yield result
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA {schema} CASCADE")
+        await pool.close()
+
+
+@pytest_asyncio.fixture
+async def platform_codec_store():
+    dsn = os.environ.get("SERVICE_FOUNDATION_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("requires a disposable PostgreSQL DSN")
+    import asyncpg
+
+    async def install_codecs(connection):
+        for type_name in ("json", "jsonb"):
+            await connection.set_type_codec(
+                type_name, schema="pg_catalog", encoder=json.dumps,
+                decoder=json.loads)
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=3,
+                                     init=install_codecs)
+    schema = "w581codec_" + uuid.uuid4().hex
+    async with pool.acquire() as connection:
+        await connection.execute(f"CREATE SCHEMA {schema}")
+    result = PostgresDecisionStore(pool, schema=schema, namespace="codec_test")
     await result.ensure_schema()
     try:
         yield result
@@ -83,6 +112,55 @@ class Verifier:
         if receipt.receipt_digest != "c" * 64:
             raise DecisionRefused("untrusted_receipt")
 
+
+@pytest.mark.asyncio
+async def test_platform_jsonb_codec_standalone_and_caller_transaction(platform_codec_store):
+    store = platform_codec_store
+    first = await store.begin(draft(request_id="codec-standalone"))
+    prepared_receipt = await Realm(store, "card").prepare(first.transaction_id)
+    assert (await store.record_prepared(prepared_receipt)).state == "prepared"
+    assert (await store.decide(first.transaction_id, "committed",
+                               witness_digest="e" * 64)).state == "committed"
+    finished_receipt = await Realm(store, "card").finish(first.transaction_id,
+                                                          "committed")
+    assert (await store.record_finished(finished_receipt)).finished["card"] == finished_receipt
+
+    async with store.pool.acquire() as connection:
+        value_types = await connection.fetchrow(
+            f"""SELECT jsonb_typeof(prepared->'card') AS prepared_type,
+                jsonb_typeof(finished->'card') AS finished_type
+                FROM {store.table} WHERE namespace=$1 AND transaction_id=$2""",
+            store.namespace, first.transaction_id)
+    assert value_types["prepared_type"] == "object"
+    assert value_types["finished_type"] == "object"
+
+    async with store.pool.acquire() as connection:
+        with pytest.raises(RuntimeError, match="rollback"):
+            async with connection.transaction():
+                second = await store.begin(
+                    draft(request_id="codec-caller"), transaction_id="codec-caller-tx",
+                    epoch=123, connection=connection)
+                prepared_receipt = Receipt(
+                    second.transaction_id, second.intent.epoch, second.intent.digest,
+                    "card", projection_digest(second.intent, "card"),
+                    participant_projection(second.intent, "card")["candidate_digest"],
+                    "b" * 64)
+                assert (await store.record_prepared(
+                    prepared_receipt, connection=connection)).state == "prepared"
+                assert (await store.decide(
+                    second.transaction_id, "aborted",
+                    connection=connection)).state == "aborted"
+                finished_receipt = Receipt(
+                    second.transaction_id, second.intent.epoch, second.intent.digest,
+                    "card", projection_digest(second.intent, "card"),
+                    participant_projection(second.intent, "card")["candidate_digest"],
+                    "c" * 64)
+                assert (await store.record_finished(
+                    finished_receipt, connection=connection)).finished["card"] == finished_receipt
+                assert (await store.read(second.transaction_id,
+                                         connection=connection)).terminal
+                raise RuntimeError("rollback")
+    assert await store.read("codec-caller-tx") is None
 
 @pytest.mark.asyncio
 async def test_reserved_identity_and_same_connection_rollback(store):
