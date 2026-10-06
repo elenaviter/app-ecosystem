@@ -268,7 +268,11 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     #    write can still land. That stays safe: the moved Card makes a
     #    replay refuse (card_transaction_revision_moved) and a commit refuse
     #    (card_transaction_not_staged), so the coordinator can only abort
-    #    (Ops 11:20, non-blocking a).
+    #    (Ops 11:20, non-blocking a). The same crash also lets a lifecycle
+    #    intent prepare before a replay: a replay then passes only while the
+    #    pointer is still BEFORE, and the lifecycle can only stay blocked
+    #    until this transaction is decided and then abort its own pointer
+    #    (Ops 11:36, non-blocking N2).
     await write_json_atomic(receipt_path(store, transaction_id), receipt)
     await write_json_atomic(marker_path(store, subject_hash=subject_hash, access_id=original.access_id),
                             {"transaction_id": transaction_id})

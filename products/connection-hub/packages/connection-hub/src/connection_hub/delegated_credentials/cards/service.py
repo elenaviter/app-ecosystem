@@ -29,7 +29,7 @@ import time
 import uuid
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
@@ -105,6 +105,20 @@ class CardServingUnavailable(RuntimeError):
         super().__init__(reason)
         self.reason = reason
         self.access_id = access_id
+
+
+def _serves_after(entry: Any, receipt: Mapping[str, Any]) -> bool:
+    """The projection serves exactly this transaction's AFTER: its revision and content, or its tombstone."""
+
+    from ..issuer_gate import change_digest
+
+    if entry is None or entry.card_revision != int(receipt["after"]["card_revision"]):
+        return False
+    if entry.is_revoked:
+        return receipt["after"].get("state") == CARD_STATE_REVOKED
+    authority = getattr(entry, "authority", None)
+    return bool(entry.is_card and authority is not None
+                and change_digest(authority.to_dict()) == receipt["change_digest"])
 
 
 def transaction_mutation_id(transaction_id: str) -> str:
@@ -281,7 +295,7 @@ class DelegatedCardService:
                     try:
                         await self._mark_transaction_updating(
                             access_id=access_id, mutation_id=mutation_id,
-                            expected_revision=int(receipt["before"]["card_revision"]))
+                            expected_revision=int(receipt["before"]["card_revision"]), committing=receipt)
                     except Exception as exc:
                         raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
                 decided = await decide(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
@@ -316,16 +330,26 @@ class DelegatedCardService:
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
 
-    async def _mark_transaction_updating(self, *, access_id: str, mutation_id: str, expected_revision: int) -> None:
-        """Mark updating, or keep the marker this same transaction already holds."""
+    async def _mark_transaction_updating(self, *, access_id: str, mutation_id: str, expected_revision: int,
+                                         committing: Mapping[str, Any] | None = None) -> None:
+        """Mark updating, or keep the marker this same transaction already holds.
+
+        When ``committing`` (the prepared receipt of a recorded COMMITTED), a
+        projection already serving exactly its AFTER also satisfies the mark:
+        a reader restored it from durable state once the stage marker expired
+        and PB had decided, so nothing broader can be served (Ops F9).
+        """
 
         try:
             await self._mark_updating(access_id=access_id, mutation_id=mutation_id,
                                       expected_revision=expected_revision)
         except CardConflict:
             entry = await self._cache.read(access_id)
-            if not (entry is not None and entry.is_updating and entry.mutation_id == mutation_id):
-                raise
+            if entry is not None and entry.is_updating and entry.mutation_id == mutation_id:
+                return
+            if committing is not None and _serves_after(entry, committing):
+                return
+            raise
 
     async def revoke(
         self,

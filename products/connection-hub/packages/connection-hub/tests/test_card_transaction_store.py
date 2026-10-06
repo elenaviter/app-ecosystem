@@ -629,3 +629,50 @@ async def test_a_refused_stage_releases_its_marker(tmp_path, monkeypatch):
         await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                         subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
     assert _served_revision(cache) is None and cache.value is None  # readers fall through to durable BEFORE
+
+
+# ── Ops F9 (11:36): a reader restored AFTER before the Hub materialized it ──
+
+
+@pytest.mark.asyncio
+async def test_commit_completes_after_a_reader_restored_after_from_the_recorded_decision(tmp_path):
+    store, service, cache, before, after = await _served(tmp_path)
+    _record(store, "committed")
+    cache.value = None  # the stage marker expired
+    served = await _resolver(store, cache).resolve(subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
+    assert served.card_revision == after.card_revision and _served_revision(cache) == after.card_revision
+    decided = await _service_decide(store, service, before, "committed")
+    assert decided["state"] == "committed" and _served_revision(cache) == after.card_revision
+    again = await _service_decide(store, service, before, "committed")
+    assert again["state"] == "committed" and _served_revision(cache) == after.card_revision
+    # The Card is writable again once materialized.
+    assert await service.current_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id) == after.card_revision
+
+
+@pytest.mark.asyncio
+async def test_a_served_revision_with_other_content_does_not_satisfy_the_commit_mark(tmp_path):
+    store, service, cache, before, after = await _served(tmp_path)
+    _record(store, "committed")
+    other = replace(after, label="not this transaction's after")
+    cache.value = {"kind": "card", "card_revision": after.card_revision, "authority": other}
+    with pytest.raises(CardServingUnavailable):
+        await _service_decide(store, service, before, "committed")
+    assert (await tx.state(store, transaction_id=TX))["state"] == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_a_staged_revoke_completes_over_its_own_restored_tombstone(tmp_path):
+    from datetime import datetime, timezone
+    from connection_hub.delegated_credentials.cards.model import CARD_STATE_REVOKED
+    from connection_hub.delegated_credentials.cards.service import replace_state
+    store, service, before, _ = await _setup(tmp_path)
+    service._cache = cache = _LuaCache()
+    cache.value = {"kind": "card", "card_revision": before.card_revision, "authority": before}
+    revoked = replace_state(before, CARD_STATE_REVOKED)
+    when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+    await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=revoked, now=when)
+    _record(store, "committed")
+    cache.value = {"kind": "revoked", "card_revision": revoked.card_revision}  # served once the marker expired
+    decided = await _service_decide(store, service, before, "committed")
+    assert decided["state"] == "committed" and cache.value["kind"] == "revoked"
