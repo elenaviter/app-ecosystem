@@ -54,18 +54,25 @@ async def _transaction(request: dict) -> dict:
         if request["action"] == "replay":
             raise AssertionError("durable replay must not publish twice")
 
-    if request["action"] == "fault_commit":
+    if request["action"] in ("fault_prepare", "fault_first_pointer", "fault_commit"):
         original_write = lifecycle_store.write_json_atomic
+        pending_writes = 0
 
-        async def kill_after_committed_receipt(path, payload) -> None:
+        async def kill_after_stage(path, payload) -> None:
+            nonlocal pending_writes
             await original_write(path, payload)
+            if payload.get("schema") == lifecycle_store.LIFECYCLE_POINTER_SCHEMA:
+                pending_writes += 1
+                if request["action"] == "fault_first_pointer" and pending_writes == 1:
+                    os.kill(os.getpid(), signal.SIGKILL)
             if (
                 payload.get("schema") == lifecycle_store.LIFECYCLE_RECEIPT_SCHEMA
-                and payload.get("state") == "committed"
+                and payload.get("state")
+                == ("prepared" if request["action"] == "fault_prepare" else "committed")
             ):
                 os.kill(os.getpid(), signal.SIGKILL)
 
-        lifecycle_store.write_json_atomic = kill_after_committed_receipt
+        lifecycle_store.write_json_atomic = kill_after_stage
 
     return await lifecycle_store.atomic_revoke(
         store,
@@ -81,7 +88,7 @@ def main() -> None:
     action = request.get("action")
     if action == "snapshot":
         result = asyncio.run(_snapshot(request))
-    elif action in ("fault_commit", "replay"):
+    elif action in ("fault_prepare", "fault_first_pointer", "fault_commit", "replay"):
         result = asyncio.run(_transaction(request))
     else:
         raise ValueError("subprocess_action_unknown")
