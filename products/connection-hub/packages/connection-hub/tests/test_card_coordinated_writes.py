@@ -92,3 +92,22 @@ async def test_a_gate_that_refuses_before_the_decision_aborts_the_transaction(tm
                                       caller_write=None, gate=refusing_gate, witness="")
     assert decisions.decisions == ["aborted"] and await _visible(store, before) == before
     assert await tx.list_in_doubt(store) == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_commit_aborts_and_leaves_nothing_fenced(tmp_path):
+    # W581 S2: the store refuses the COMMIT (e.g. the approval expired) after prepare.
+    from service_foundation.coordination.durable_decision_log import DecisionRefused
+    host, store, decisions, before, after = await _host(tmp_path)
+    real_decide = decisions.decide
+
+    async def refuse_commit(transaction_id, decision, *, witness_digest=""):
+        if decision == "committed":
+            raise DecisionRefused("commit_expired")
+        return await real_decide(transaction_id, decision, witness_digest=witness_digest)
+
+    decisions.decide = refuse_commit
+    with pytest.raises(CardConflict, match="commit_expired"):
+        await host._persist_record(record_from_card(after), expected_revision=before.card_revision)
+    assert decisions.decisions == ["aborted"] and await _visible(store, before) == before
+    assert await tx.list_in_doubt(store) == []

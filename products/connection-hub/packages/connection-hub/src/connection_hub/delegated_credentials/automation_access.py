@@ -2417,7 +2417,18 @@ class AutomationAccessService:
             if isinstance(exc, DecisionRefused):
                 raise CardConflict(str(exc)) from exc
             raise
-        await coordinator.decide(transaction_id, "committed", witness_digest=witness or payload)
+        try:
+            await coordinator.decide(transaction_id, "committed", witness_digest=witness or payload)
+        except DecisionRefused as exc:
+            # A refused COMMIT (an approval that expired, say) must not leave
+            # the Card prepared: record the ABORT if nothing is decided yet,
+            # then finish whatever the store holds (W581 S2).
+            try:
+                await coordinator.decide(transaction_id, "aborted")
+            except DecisionRefused:
+                pass  # already decided; finish materializes that decision
+            await coordinator.finish(transaction_id)
+            raise CardConflict(str(exc)) from exc
         await coordinator.finish(transaction_id)
         return True
 
