@@ -33,6 +33,10 @@ class _Persistence:
         current = await self.store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
         return None if current is None else (current[1], CardCredentialHandles(access_id=access_id))
 
+    async def current_revision(self, access_id, *, subject_hash):
+        current = await self.store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+        return 0 if current is None else current[1].card_revision
+
     async def persist(self, authority, handles, *, subject_hash, expected_revision, **kwargs):
         self.direct.append(authority.card_revision)
 
@@ -174,3 +178,51 @@ async def test_a_coordinated_write_carries_its_effects_to_finish(tmp_path):
     await host._persist_record(record_from_card(after), expected_revision=before.card_revision, effects=effects)
     assert await _visible(store, before) == after
     assert [kind for _, kind, _ in applier.applied] == ["credential_lifetime"]
+
+
+@pytest.mark.asyncio
+async def test_t4_a_bound_prolong_through_the_coordinator_extends_nothing_directly(tmp_path):
+    # Ops T4 (13:24): drive a BOUND prolong through the real coordinator; no extend_* before or
+    # after the decision. The credential's life moves only through the committed effect.
+    from connection_hub.delegated_credentials.automation_access import ACCESS_SOURCE_OAUTH
+    from connection_hub.delegated_credentials.cards.model import ControlCardBinding
+    from test_card_transaction_store import _Applier
+    from test_caller_writer_gate import Policy, _registry
+    from test_delegated_access_renewal import _LiveCheckingGrantStore
+    host, store, decisions, before, _ = await _host(tmp_path)
+    hub = host._card_coordinator[0].participants[PARTICIPANT]
+    bound = replace(before, card_revision=before.card_revision + 1, source=ACCESS_SOURCE_OAUTH,
+                    control_card=ControlCardBinding(control_id="control-person", issuer_ref="work:project:one",
+                                                    issuer_kind="project", control_revision=2))
+    await hub._service.commit(bound, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision,
+                              now=bound.created_at)
+    grants = _LiveCheckingGrantStore(live=True)
+    host._store = grants
+    policy = Policy(ttl=10**8)
+    host._caller_writers = _registry(policy)
+    host._issuer_actor_subject, host._issuer_actor_subject_bound = "", False
+    notified = []
+
+    async def notify_change(subject, **kwargs):
+        notified.append(kwargs.get("action"))
+
+    host.notify_change = notify_change
+    seen_at_apply = []
+
+    class _Watching(_Applier):
+        async def __call__(self, kind, key, payload, **kwargs):
+            seen_at_apply.append((list(grants.extended_refresh), list(grants.extended_grants),
+                                  list(grants.extended_cards)))
+            return await super().__call__(kind, key, payload, **kwargs)
+
+    applier = _Watching()
+    hub._service.bind_effect_applier(applier)
+    record = record_from_card(bound)  # handles unchanged: a prolong never moves them
+    result = await host._prolong_access({"sub": bound.grantor_subject}, record=record, ttl_seconds=3600)
+    assert result["ok"] is True, result
+    assert [kind for _, kind, _ in applier.applied] == ["credential_lifetime"]
+    assert seen_at_apply == [([], [], [])]  # nothing extended before the decision
+    assert (grants.extended_refresh, grants.extended_grants, grants.extended_cards) == ([], [], [])
+    visible = await _visible(store, bound)
+    assert visible.card_revision == bound.card_revision + 1 and visible.expires_at == result["access"]["expires_at"]
+    assert [call[0] for call in policy.calls] == ["decide", "revalidate", "finalize"]
