@@ -224,6 +224,8 @@ def _render_result(result: Any, flags: list[str]) -> list[str]:
         return _render_coordinate(result)
     if schema == "problem-board.worker-inbox.v1":
         return _render_worker_inbox(result, flags)
+    if schema == "problem-board.first-run-status.v1":
+        return _render_first_run_status(result)
     if _is_procedure_verify(result) and not result.get("detail"):
         return _render_procedure_verify(result)
     if schema == "problem-board.note-read.v1":
@@ -317,6 +319,97 @@ def _render_procedure_verify(result: Mapping[str, Any]) -> list[str]:
         "a newly available module is read when its act comes up"
     )
     lines.append("detail: add --detail for the manifest and every changed file; --format json for every field")
+    return lines
+
+
+def _mapping(value: Any) -> Mapping[str, Any]:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _render_first_run_status(result: Mapping[str, Any]) -> list[str]:
+    """The machine and session verdict a recovery decision needs (W563).
+
+    Root, 2026-10-06 04:14-04:18 UTC (note_e2512d98): during a relay reconnect
+    the brief status printed 138 lines, about 2,854 tokens, mostly source
+    subtree hashes printed twice, for a decision that needs the channel state,
+    the error, the next retry and the authorization. Those lead here; the
+    source identity is one line per side with a same-or-different verdict,
+    and the JSON keeps every field.
+    """
+
+    machine = _mapping(result.get("machine"))
+    session = _mapping(result.get("session"))
+    following = _mapping(result.get("next"))
+    relay = _mapping(machine.get("relay"))
+    relay_source = _mapping(relay.get("source"))
+    client = _mapping(machine.get("client"))
+    client_source = _mapping(client.get("source"))
+    lines = [f"status: {result.get('state') or '-'} · next step {following.get('step') or 'none'}"]
+    if session:
+        lines.append(
+            "session: {} ({}) · channel {} · authorization {} · control plane {} · projects {}".format(
+                session.get("alias") or "-", session.get("worker_name") or "-",
+                session.get("channel_state") or "-", session.get("authorization") or "-",
+                session.get("control_plane_state") or "-", len(session.get("attended_project_refs") or []),
+            )
+        )
+    connection = _mapping(session.get("connection"))
+    if connection:
+        lines.append(
+            "connection: {} · error {} · attempts {} · schedule {} · next attempt {}{}".format(
+                connection.get("state") or "-", connection.get("reason") or "-",
+                connection.get("attempts", "?"), connection.get("schedule") or "-",
+                connection.get("next_attempt_at") or "-",
+                " · an attempt is running now" if connection.get("attempt_in_progress") else "",
+            )
+        )
+    refusal = _mapping(session.get("refusal"))
+    if refusal:
+        lines.append(
+            "refusal: {} · permanent {} · credential refused {}".format(
+                refusal.get("code") or refusal.get("error_code") or "-",
+                refusal.get("permanent", "?"), refusal.get("credential", "?"),
+            )
+        )
+    relay_commit = str(relay_source.get("commit") or "")
+    client_commit = str(client_source.get("commit") or "")
+    lines.append(
+        "relay: installed {} · running {} · commit {} · release {}".format(
+            relay.get("installed", "?"), relay.get("running", "?"), relay_commit[:12] or "-",
+            str(relay_source.get("release_id") or "")[:12] or "-",
+        )
+    )
+    lines.append(
+        "client: commit {} · pinned {} · {}".format(
+            client_commit[:12] or "-", client.get("pinned", "?"),
+            "same as the relay" if relay_commit and relay_commit == client_commit
+            else "DIFFERS from the relay" if relay_commit and client_commit else "relay source unknown",
+        )
+    )
+    prerequisites = _mapping(machine.get("prerequisites"))
+    checked = [item for item in prerequisites.get("checked") or [] if isinstance(item, Mapping)]
+    keyring = next((item for item in checked if item.get("name") == "keyring"), {})
+    lines.append(
+        "prerequisites: ok {} · missing {} · keyring {}".format(
+            prerequisites.get("ok", "?"), ", ".join(map(str, prerequisites.get("missing") or [])) or "none",
+            "usable" if keyring.get("found") else f"NOT usable, fix: {keyring.get('fix') or 'see --format json'}"
+            if keyring else "not checked",
+        )
+    )
+    target = _mapping(machine.get("default_target"))
+    if target:
+        lines.append(f"target: {target.get('target_id') or '-'} · host {target.get('host_id') or '-'}")
+    # Who must approve the next step is the deciding fact in a recovery:
+    # relay install, restart and source selection are the operator's (Ops,
+    # review of 1ffd4a22).
+    approval = str(following.get("approval") or "")
+    if following.get("command"):
+        lines.append(f"next command: {following['command']} · approval {approval or 'none'}")
+    elif approval and approval != "none":
+        lines.append(f"next approval: {approval}")
+    if following.get("explain"):
+        lines.append(f"why: {_preview(following['explain'], maximum_bytes=300)}")
+    lines.append(_FULL_DETAIL_LINE)
     return lines
 
 
