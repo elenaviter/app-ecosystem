@@ -200,9 +200,18 @@ def participant_projection(intent: GlobalIntent, participant: str) -> dict[str, 
         raise WireRefused("participant_input_invalid")
     if selected["participant"] != participant:
         raise WireRefused("participant_input_mismatch")
-    for name in ("before_revision", "candidate_revision"):
-        if type(selected[name]) is not int or selected[name] < 0:
-            raise WireRefused("revision_invalid")
+    before = selected["before_revision"]
+    candidate = selected["candidate_revision"]
+    if (type(before) is not int or before < 0
+            or before == 0 and selected["action"] != "create"
+            or type(candidate) is not int or candidate < 1):
+        raise WireRefused("revision_invalid")
+    dependencies = selected["dependency_revisions"]
+    if (type(dependencies) is not dict
+            or any(type(name) is not str or not name
+                   or type(revision) is not int or revision < 1
+                   for name, revision in dependencies.items())):
+        raise WireRefused("dependency_revision_invalid")
     return {"global_intent_digest": intent.digest, **selected}
 
 
@@ -210,6 +219,18 @@ def projection_digest(intent: GlobalIntent, participant: str) -> str:
     return sha256_hex(canonical_json_bytes(participant_projection(intent, participant)))
 
 
+def verify_participant_projection(intent: GlobalIntent, participant: str,
+                                  supplied: Mapping[str, Any]) -> str:
+    """Refuse a self-consistent projection that differs from persisted input."""
+
+    if type(supplied) is not dict:
+        raise WireRefused("projection_invalid")
+    expected = participant_projection(intent, participant)
+    if canonical_json_bytes(supplied) != canonical_json_bytes(expected):
+        raise WireRefused("projection_mismatch")
+    return sha256_hex(canonical_json_bytes(expected))
+
+
 __all__ = ["GlobalIntent", "IntentDraft", "INTENT_SCHEMA", "PROJECTION_FIELDS", "WireRefused",
            "canonical_json_bytes", "parse_canonical_json_bytes", "participant_projection",
-           "projection_digest", "sha256_hex"]
+           "projection_digest", "sha256_hex", "verify_participant_projection"]

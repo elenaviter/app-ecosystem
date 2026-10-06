@@ -26,7 +26,8 @@ Each participant projection adds the global intent digest to its exact selected
 input from the persisted intent. A later caller cannot replace that input by
 presenting a self-consistent projection and digest.
 
-`durable_wire.canonical_json_bytes` emits UTF-8 with sorted object keys,
+`durable_wire.canonical_json_bytes` emits UTF-8 with Unicode code-point-sorted
+object keys (the Python `sort_keys` order, not RFC 8785 UTF-16 order),
 significant array order, no whitespace, no Unicode normalization, and only
 JSON null, booleans, strings, arrays, objects, and integers. It rejects floats,
 NaN, Infinity, non-string keys, and lone surrogates. The parser also rejects
@@ -35,6 +36,10 @@ vector in `packages/service-foundation/tests/test_durable_wire.py` has global
 intent digest `1192d0b514933591e4b1c35e5de427697f4e781ab4d525e52138af8d8b5b6d51`
 and Card projection digest
 `436fef32e30b23c40ea6eae2329a6d4843ed00b59f409290cb50e2b46d62c663`.
+`verify_participant_projection` compares a supplied projection to the selected
+persisted input. Before revision zero is accepted only for action `create`;
+candidate revisions and every dependency revision must be positive integers,
+excluding booleans.
 
 The v2 source increment is in `service_foundation.coordination.durable_decision_v2`.
 Its `IntentDraft` captures the full payload before awaiting storage, and
@@ -54,9 +59,17 @@ The generic table is `service_foundation_decisions`, keyed by
 application-computed identity boundary outside the seven-key wire intent.
 The table holds exact canonical intent bytes, the bound epoch, database-time
 expiry and decision timestamp, prepared and finished receipts and their
-counts, and the witness digest. Application tables may reference the one
-generic decision row; the generic table contains no application policy.
+counts, and the witness digest. It also has a unique
+`(namespace, replay_scope, epoch)` key. Receipt writes merge one immutable
+JSONB entry with a conditional SQL update, preserving concurrent receipts.
+An expired but still undecided COMMIT reports `commit_expired`; subsequent
+recovery can durably presume abort. A recovery pass continues past a failed
+participant, then raises `RecoveryIncomplete` with the failed transaction IDs
+and completed records so the caller can retry. Application tables may
+reference the one generic decision row; the generic table contains no
+application policy.
 
-The original `durable_decision_log` checkpoint still exists while the v2
-module is being independently qualified. The v2 source is not yet an
-installed application integration contract or verified live runtime.
+`durable_decision_log` re-exports this one v2 implementation as the stable
+import path. The pre-v2 draft has been removed, with its protocol regressions
+migrated to v2 tests. The source is not yet an installed application
+integration contract or verified live runtime.

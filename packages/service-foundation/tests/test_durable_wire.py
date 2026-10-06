@@ -6,7 +6,7 @@ import pytest
 
 from service_foundation.coordination.durable_wire import (
     GlobalIntent, IntentDraft, WireRefused, canonical_json_bytes, parse_canonical_json_bytes,
-    participant_projection, projection_digest,
+    participant_projection, projection_digest, verify_participant_projection,
 )
 
 
@@ -47,6 +47,32 @@ def test_projection_is_selected_from_original_intent_payload():
     assert self_consistent_later_projection != participant_projection(intent, "card")
     assert canonical_json_bytes(self_consistent_later_projection) != canonical_json_bytes(
         participant_projection(intent, "card"))
+    with pytest.raises(WireRefused, match="projection_mismatch"):
+        verify_participant_projection(intent, "card", self_consistent_later_projection)
+    assert verify_participant_projection(
+        intent, "card", participant_projection(intent, "card")) == projection_digest(intent, "card")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("before_revision", 0), ("candidate_revision", 0),
+    ("dependency_revisions", {"member-a": True}),
+    ("dependency_revisions", {"member-a": 0}),
+])
+def test_projection_revision_rules_refuse_invalid_values(field, value):
+    selected = selected_input()
+    selected[field] = value
+    intent = GlobalIntent("tx-a", 7, "request-a", 1800000000, ("card",),
+                          {"participant_inputs": {"card": selected}})
+    with pytest.raises(WireRefused):
+        participant_projection(intent, "card")
+
+
+def test_zero_before_revision_is_allowed_only_for_exact_create_action():
+    selected = selected_input()
+    selected.update(action="create", before_revision=0, candidate_revision=1)
+    intent = GlobalIntent("tx-a", 7, "request-a", 1800000000, ("card",),
+                          {"participant_inputs": {"card": selected}})
+    assert participant_projection(intent, "card")["before_revision"] == 0
 
 
 @pytest.mark.parametrize("value", [1.5, float("nan"), -0.0, {"a": 1.0},

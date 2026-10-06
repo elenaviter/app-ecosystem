@@ -150,6 +150,22 @@ async def test_v2_expiry_and_witness_are_database_enforced(store):
 
 
 @pytest.mark.asyncio
+async def test_expired_prepared_commit_has_distinct_refusal_and_preserves_identity(store):
+    import time
+
+    row = await store.begin(draft(request_id="late-commit",
+                                  expires_at=int(time.time()) + 2))
+    receipt = await Realm(store, "card").prepare(row.transaction_id)
+    assert (await store.record_prepared(receipt)).state == "prepared"
+    await asyncio.sleep(2.1)
+    with pytest.raises(DecisionRefused, match="commit_expired"):
+        await store.decide(row.transaction_id, "committed", witness_digest="e" * 64)
+    same = await store.read(row.transaction_id)
+    assert same.state == "prepared" and same.intent.digest == row.intent.digest
+    assert (await store.abort_expired(row.transaction_id)).state == "aborted"
+
+
+@pytest.mark.asyncio
 async def test_v2_receipt_and_decision_respect_caller_transaction(store):
     row = await store.begin(draft(request_id="outer"),
                             transaction_id="outer-tx", epoch=11)
@@ -165,3 +181,23 @@ async def test_v2_receipt_and_decision_respect_caller_transaction(store):
                 assert decided.state == "committed"
                 raise RuntimeError("rollback")
     assert (await store.read(row.transaction_id)).state == "preparing"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_receipt_merges_keep_both_participants(store):
+    names = ("card", "business")
+    for number in range(20):
+        row = await store.begin(draft(request_id=f"pair-{number}", names=names))
+        realms = {name: Realm(store, name) for name in names}
+        receipts = await asyncio.gather(*(
+            realm.prepare(row.transaction_id) for realm in realms.values()))
+        prepared = await asyncio.gather(*(
+            store.record_prepared(receipt) for receipt in receipts))
+        assert set((await store.read(row.transaction_id)).prepared) == set(names)
+        assert any(result.state == "prepared" for result in prepared)
+        await store.decide(row.transaction_id, "aborted")
+        receipts = await asyncio.gather(*(
+            realm.finish(row.transaction_id, "aborted") for realm in realms.values()))
+        await asyncio.gather(*(
+            store.record_finished(receipt) for receipt in receipts))
+        assert set((await store.read(row.transaction_id)).finished) == set(names)

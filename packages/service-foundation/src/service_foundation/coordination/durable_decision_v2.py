@@ -29,6 +29,16 @@ class DecisionRefused(ValueError):
     """An exact identity, trusted proof or durable transition is unavailable."""
 
 
+class RecoveryIncomplete(DecisionRefused):
+    """A bounded pass continued past failed rows; retry their durable IDs."""
+
+    def __init__(self, failures: Mapping[str, Exception],
+                 completed: Sequence[DecisionRecord]) -> None:
+        super().__init__("recovery_incomplete")
+        self.failures = dict(failures)
+        self.completed = tuple(completed)
+
+
 @dataclass(frozen=True)
 class Receipt:
     transaction_id: str
@@ -220,19 +230,25 @@ class Coordinator:
         if len(rows) > limit:
             raise DecisionRefused("recovery_unbounded")
         result = []
+        failures: dict[str, Exception] = {}
         for row in rows:
-            if row.terminal:
-                result.append(await self.finish(row.transaction_id))
-                continue
             try:
-                decided = await self.store.abort_expired(row.transaction_id)
-            except DecisionRefused as exc:
-                if str(exc) != "not_expired":
-                    raise
-                result.append(row)
-                continue
-            result.append(await self.finish(row.transaction_id)
-                          if decided.terminal else decided)
+                if row.terminal:
+                    result.append(await self.finish(row.transaction_id))
+                    continue
+                try:
+                    decided = await self.store.abort_expired(row.transaction_id)
+                except DecisionRefused as exc:
+                    if str(exc) != "not_expired":
+                        raise
+                    result.append(row)
+                    continue
+                result.append(await self.finish(row.transaction_id)
+                              if decided.terminal else decided)
+            except Exception as exc:
+                failures[row.transaction_id] = exc
+        if failures:
+            raise RecoveryIncomplete(failures, result)
         return result
 
 
@@ -270,11 +286,20 @@ class PostgresDecisionStore:
                 witness_digest TEXT NOT NULL DEFAULT '',
                 decided_at_epoch BIGINT,
                 PRIMARY KEY (namespace, transaction_id),
-                UNIQUE (namespace, replay_scope, request_id))""")
+                UNIQUE (namespace, replay_scope, request_id),
+                UNIQUE (namespace, replay_scope, epoch))""")
             await connection.execute(f"""CREATE INDEX IF NOT EXISTS
                 service_foundation_decisions_in_doubt
                 ON {self.table} (namespace, transaction_id)
                 WHERE state IN ('preparing','prepared') OR finished_count<participant_count""")
+            # A previous unreleased draft used the same table name with a
+            # different layout. Never silently accept that layout.
+            try:
+                await connection.fetch(f"""SELECT epoch, replay_scope,
+                    expires_at_epoch, prepared_count, decided_at_epoch
+                    FROM {self.table} LIMIT 0""")
+            except Exception as exc:
+                raise DecisionRefused("store_schema_incompatible") from exc
 
     @asynccontextmanager
     async def _transaction(self, connection: Any | None):
@@ -381,31 +406,33 @@ class PostgresDecisionStore:
     async def record_prepared(self, receipt: Receipt, *, connection: Any | None = None
                               ) -> DecisionRecord:
         async with self._transaction(connection) as conn:
-            record = self._decode(await self._row(conn, receipt.transaction_id,
-                                                  lock=True))
+            record = self._decode(await self._row(conn, receipt.transaction_id))
             if record is None:
                 raise DecisionRefused("transaction_unknown")
             _check_receipt(record, receipt)
-            old = record.prepared.get(receipt.participant)
+            # The UPDATE itself merges one immutable receipt. Concurrent
+            # writers recheck its WHERE clause after PostgreSQL's row lock;
+            # they cannot overwrite another participant's JSONB entry.
+            updated = await conn.fetchrow(
+                f"""UPDATE {self.table}
+                    SET prepared=prepared || jsonb_build_object($3::text,$4::jsonb),
+                        prepared_count=prepared_count+1,
+                        state=CASE WHEN prepared_count+1=participant_count
+                                   THEN 'prepared' ELSE 'preparing' END
+                    WHERE namespace=$1 AND transaction_id=$2 AND state='preparing'
+                      AND NOT (prepared ? $3::text)
+                      AND expires_at_epoch>floor(extract(epoch from clock_timestamp()))::bigint
+                    RETURNING *""", self.namespace, receipt.transaction_id,
+                receipt.participant, json.dumps(asdict(receipt)))
+            if updated is not None:
+                return self._decode(updated)
+            latest = self._decode(await self._row(conn, receipt.transaction_id))
+            old = latest.prepared.get(receipt.participant)
             if old is not None:
                 if old != receipt:
                     raise DecisionRefused("prepared_conflict")
-                return record
-            if record.state != "preparing":
-                raise DecisionRefused("late_preparation")
-            prepared = {**record.prepared, receipt.participant: receipt}
-            state = "prepared" if len(prepared) == len(record.intent.participants) else "preparing"
-            updated = await conn.fetchrow(
-                f"""UPDATE {self.table} SET prepared=$3::jsonb,
-                    prepared_count=$4,state=$5
-                    WHERE namespace=$1 AND transaction_id=$2 AND state='preparing'
-                      AND expires_at_epoch>floor(extract(epoch from clock_timestamp()))::bigint
-                    RETURNING *""", self.namespace, receipt.transaction_id,
-                json.dumps({key: asdict(value) for key, value in prepared.items()}),
-                len(prepared), state)
-            if updated is None:
-                raise DecisionRefused("late_preparation")
-            return self._decode(updated)
+                return latest
+            raise DecisionRefused("late_preparation")
 
     async def decide(self, transaction_id: str, decision: str, *,
                      witness_digest: str = "", connection: Any | None = None
@@ -439,6 +466,15 @@ class PostgresDecisionStore:
                     RETURNING *""", self.namespace, transaction_id, decision,
                 witness_digest if decision == "committed" else "")
             if updated is None:
+                if decision == "committed":
+                    expired = await conn.fetchval(
+                        f"""SELECT expires_at_epoch<=
+                            floor(extract(epoch from clock_timestamp()))::bigint
+                            FROM {self.table} WHERE namespace=$1 AND transaction_id=$2
+                              AND state IN ('preparing','prepared')""",
+                        self.namespace, transaction_id)
+                    if expired:
+                        raise DecisionRefused("commit_expired")
                 raise DecisionRefused("decision_conflict")
             return self._decode(updated)
 
@@ -464,27 +500,28 @@ class PostgresDecisionStore:
     async def record_finished(self, receipt: Receipt, *, connection: Any | None = None
                               ) -> DecisionRecord:
         async with self._transaction(connection) as conn:
-            record = self._decode(await self._row(conn, receipt.transaction_id,
-                                                  lock=True))
+            record = self._decode(await self._row(conn, receipt.transaction_id))
             if record is None or not record.terminal:
                 raise DecisionRefused("decision_unknown")
             _check_receipt(record, receipt)
-            old = record.finished.get(receipt.participant)
+            updated = await conn.fetchrow(
+                f"""UPDATE {self.table}
+                    SET finished=finished || jsonb_build_object($3::text,$4::jsonb),
+                        finished_count=finished_count+1
+                    WHERE namespace=$1 AND transaction_id=$2
+                      AND state IN ('committed','aborted')
+                      AND NOT (finished ? $3::text) RETURNING *""",
+                self.namespace, receipt.transaction_id,
+                receipt.participant, json.dumps(asdict(receipt)))
+            if updated is not None:
+                return self._decode(updated)
+            latest = self._decode(await self._row(conn, receipt.transaction_id))
+            old = latest.finished.get(receipt.participant)
             if old is not None:
                 if old != receipt:
                     raise DecisionRefused("finish_conflict")
-                return record
-            finished = {**record.finished, receipt.participant: receipt}
-            updated = await conn.fetchrow(
-                f"""UPDATE {self.table} SET finished=$3::jsonb,finished_count=$4
-                    WHERE namespace=$1 AND transaction_id=$2
-                      AND state IN ('committed','aborted') RETURNING *""",
-                self.namespace, receipt.transaction_id,
-                json.dumps({key: asdict(value) for key, value in finished.items()}),
-                len(finished))
-            if updated is None:
-                raise DecisionRefused("finish_conflict")
-            return self._decode(updated)
+                return latest
+            raise DecisionRefused("finish_conflict")
 
     async def list_in_doubt(self, *, limit: int) -> Sequence[DecisionRecord]:
         if type(limit) is not int or not 1 <= limit <= 1000:
@@ -500,4 +537,5 @@ class PostgresDecisionStore:
 
 
 __all__ = ["Coordinator", "DecisionRecord", "DecisionRefused", "DecisionStore",
-           "Participant", "PostgresDecisionStore", "Receipt", "ReceiptVerifier"]
+           "Participant", "PostgresDecisionStore", "Receipt", "ReceiptVerifier",
+           "RecoveryIncomplete"]
