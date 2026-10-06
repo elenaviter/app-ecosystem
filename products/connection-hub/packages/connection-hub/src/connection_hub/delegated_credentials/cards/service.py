@@ -334,6 +334,43 @@ class DelegatedCardService:
                 async with drain_writes_before_release():
                     yield
 
+    async def read_lifecycle_identities(self, request: Any) -> tuple[CardAuthority, CardAuthority]:
+        """Internal consistent read, not a public authorization capability.
+
+        Both production fences are held only for raw committed storage reads.
+        No cache resolver, repair, marker, receipt, handle or issuer I/O runs
+        here. Unresolved preparation requires a separate authorized recovery.
+        """
+        from ..issuer_read import IssuerReadRefused, IssuerReadRequest, _request_valid
+
+        if type(request) is not IssuerReadRequest or not _request_valid(request):
+            raise IssuerReadRefused("issuer_read_request_invalid")
+        if (getattr(self._store, "lifecycle_publish_backend", "") != "filesystem-atomic-rename"
+                or getattr(self._store, "lifecycle_lock_scope", "") not in ("same-host-flock", "shared-flock-verified")):
+            raise IssuerReadRefused("issuer_read_atomic_fences_unavailable")
+        try:
+            async with asyncio.timeout(CARD_LOCK_WAIT_SECONDS):
+                async with AsyncExitStack() as stack:
+                    for target in sorted(request.targets, key=lambda t: (t.subject_hash, t.access_id)):
+                        await stack.enter_async_context(self._critical_section(
+                            subject_hash=target.subject_hash, access_id=target.access_id))
+                    authorities = []
+                    for target in request.targets:
+                        await self._assert_no_lifecycle_preparation(subject_hash=target.subject_hash, access_id=target.access_id)
+                        current = await self._store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
+                        authority = None if current is None else current[1]
+                        if authority is None:
+                            raise IssuerReadRefused("issuer_read_target_missing")
+                        if (authority.access_id, authority.grantor_subject, authority.issuer_kind, authority.issuer_ref) != (
+                                target.access_id, target.owner_subject, target.issuer_kind, target.issuer_ref):
+                            raise IssuerReadRefused("issuer_read_target_binding_invalid")
+                        authorities.append(authority)
+                    return tuple(authorities)
+        except CardConflict as exc:
+            raise IssuerReadRefused("issuer_read_lifecycle_pending", retryable=True) from exc
+        except (TimeoutError, CardMutationLockTimeout) as exc:
+            raise IssuerReadRefused("issuer_read_timeout", retryable=True) from exc
+
     async def revoke_lifecycle(self, request: Any, *, actor_subject: str,
             before_commit: Callable[[tuple[CardAuthority, CardAuthority]], Awaitable[datetime]],
             after_commit: Callable[[tuple[CardAuthority, CardAuthority]], Awaitable[None]]) -> dict[str, Any]:

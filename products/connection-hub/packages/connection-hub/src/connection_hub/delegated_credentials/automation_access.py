@@ -19,6 +19,7 @@ The Connection Hub bundle should only adapt UI operations to this service.
 from __future__ import annotations
 
 import dataclasses
+import asyncio
 
 import copy
 from fnmatch import fnmatchcase
@@ -1795,6 +1796,14 @@ class AutomationAccessService:
         # to a legacy owner proxy on a managed write.
         self._issuer_actor_subject_bound = True
 
+    def bind_issuer_read_registry(self, registry: Any, *, actor_subject: str, actor_classification: str,
+                                  tenant: str, project: str) -> None:
+        from .issuer_read import IssuerReadRegistry
+        if type(registry) is not IssuerReadRegistry:
+            raise ValueError("issuer_read_registry_invalid")
+        self._issuer_reads = registry
+        self._issuer_read_host = (actor_subject, actor_classification, tenant, project)
+
     def bind_project_authorization_port(
         self,
         authorization_port: ProjectAuthorizationPort | None,
@@ -2357,6 +2366,51 @@ class AutomationAccessService:
                 state=CARD_STATE_REVOKED,
             ),
         )
+
+    async def issuer_managed_lifecycle_read(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Both identities or neither, with no reservation or mutation effects."""
+        from .issuer_read import (IssuerReadQuery, IssuerReadRequest, IssuerReadRefused,
+                                  issuer_read_request_from_mapping)
+        try:
+            query = IssuerReadQuery.from_mapping(body)
+            host = getattr(self, "_issuer_read_host", ())
+            registry = getattr(self, "_issuer_reads", None)
+            if len(host) != 4 or registry is None:
+                raise IssuerReadRefused("issuer_read_host_unavailable")
+            actor, classification, tenant, project = host
+            request = IssuerReadRequest(actor, classification, tenant, project, query.context_ref, query.request_id, query.targets)
+            request = issuer_read_request_from_mapping(request.to_dict())
+            reader = getattr(self._cards(), "read_lifecycle_identities", None)
+            if not callable(reader):
+                raise IssuerReadRefused("issuer_read_port_unavailable")
+            async with asyncio.timeout(30):
+                first = []
+                for kind in dict.fromkeys(t.issuer_kind for t in request.targets):
+                    decision = await registry.decide(request, issuer_kind=kind)
+                    registry.require(request, decision, issuer_kind=kind, phase="authorize")
+                    first.append(decision)
+                # No peer call within this port's two ordered Card fences.
+                authorities = await reader(request)
+                if len(authorities) != 2:
+                    raise IssuerReadRefused("issuer_read_pair_required")
+                snapshots = [{"target": target.to_dict(), "card_revision": authority.card_revision,
+                    "authority_fingerprint": authority.content_hash(), "identity": registry.identity(authority)}
+                    for target, authority in zip(request.targets, authorities)]
+                fresh = [await registry.revalidate(request, decision, snapshots=snapshots) for decision in first]
+                # Earlier decisions must still be live after the last peer await.
+                for decision in fresh:
+                    registry.require(request, decision, issuer_kind=decision.issuer_kind, phase="validate", snapshots=snapshots)
+                return {"ok": True, "status": 200, "request": request.to_dict(),
+                        "read_digest": request.read_digest, "snapshots": snapshots}
+        except IssuerReadRefused as exc:
+            return {"ok": False, "status": 409 if exc.retryable else 403,
+                    "error": exc.reason, "retryable": exc.retryable}
+        except TimeoutError:
+            return {"ok": False, "status": 503, "error": "issuer_read_timeout", "retryable": True}
+        except Exception:
+            # Never log/return raw authorities or transport/credential details.
+            _LOGGER.warning("[connection-hub] protected identity read unavailable")
+            return {"ok": False, "status": 503, "error": "issuer_read_unavailable", "retryable": True}
 
     async def issuer_managed_lifecycle_apply(self, body: Mapping[str, Any]) -> dict[str, Any]:
         """Host-authenticated generic lifecycle; target hints authorize nothing.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import copy
 import html
 import inspect
 import json
@@ -210,7 +211,7 @@ from .surfaces.delegated_gateway import (
 )
 from .surfaces.delegated_gateway_host import build_hosted_gateway_binding
 from .services.durable_authority import ConnectionHubDurableAuthority
-from .services.issuer_authorities import issuer_registry_from_connections
+from .services.issuer_authorities import issuer_registry_from_connections, issuer_read_registry_from_connections
 from .services.project_invitation_binding import (
     descriptor_project_invitation_binding_resolver,
 )
@@ -286,6 +287,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "delegated_access_renew",
     "delegated_access_revoke",
     "issuer_managed_lifecycle_apply",
+    "issuer_managed_lifecycle_read",
     "delegated_access_update",
     "delegated_access_apply_profile",
     "delegated_access_add_operations",
@@ -811,6 +813,21 @@ def _protected_lifecycle_actor(entrypoint: Any) -> str:
     if not actor or actor == "anonymous" or actor.startswith(("telegram_", "integration:")):
         return ""
     return actor
+
+
+def _protected_lifecycle_read_context(entrypoint: Any) -> tuple[str, str, str, str]:
+    actor = _protected_lifecycle_actor(entrypoint)
+    user = getattr(getattr(entrypoint, "comm_context", None), "user", None)
+    classification = getattr(user, "user_type", "")
+    classification = str(getattr(classification, "value", classification) or "")
+    try:
+        scope = entrypoint.runtime_identity()
+    except Exception:
+        scope = {}
+    if (not actor or not isinstance(scope, Mapping)
+            or any(type(scope.get(k)) is not str or not scope[k].strip() for k in ("tenant", "project"))):
+        return "", "", "", ""
+    return actor, classification, scope["tenant"], scope["project"]
 
 
 def _lifecycle_lock_scope(entrypoint: Any) -> str:
@@ -1477,9 +1494,13 @@ async def _automation_access_service_for(
         return await _bundle_secret_value(entrypoint, secret_path=reference,
                                           trace_scope="issuer-authority", warn_missing=False)
 
+    connections = copy.deepcopy(_connections_config(entrypoint))
     issuers = issuer_registry_from_connections(
-        connections=_connections_config(entrypoint), resolve_secret=issuer_secret,
+        connections=connections, resolve_secret=issuer_secret,
         caller=call_bundle_operation,
+    )
+    issuer_reads = issuer_read_registry_from_connections(
+        connections=connections, resolve_secret=issuer_secret, caller=call_bundle_operation,
     )
     service = AutomationAccessService(
         redis=redis,
@@ -1496,6 +1517,9 @@ async def _automation_access_service_for(
         invocation_policy_service=_invocation_policy_service(entrypoint),
     )
     service.bind_issuer_registry(issuers, actor_subject=_platform_user_id(entrypoint))
+    actor, classification, read_tenant, read_project = _protected_lifecycle_read_context(entrypoint)
+    service.bind_issuer_read_registry(issuer_reads, actor_subject=actor, actor_classification=classification,
+                                     tenant=read_tenant, project=read_project)
     service.bind_project_authorization_port(
         await _project_authorization_port(entrypoint)
     )
@@ -6324,6 +6348,25 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # Registry was constructed from trusted, request-frozen configuration.
         service.bind_issuer_registry(service._issuers, actor_subject=actor)
         return await service.issuer_managed_lifecycle_apply(payload)
+
+    @api(method="POST", alias="issuer_managed_lifecycle_read", route="operations", csrf=True,
+         user_types=["registered", "privileged"])
+    async def issuer_managed_lifecycle_read(self, data: Optional[Dict[str, Any]] = None,
+            request: Any = None, user_id: Optional[str] = None, fingerprint: Optional[str] = None,
+            **kwargs: Any) -> Dict[str, Any]:
+        del user_id, fingerprint  # SDK metadata is never identity authority
+        actor, classification, tenant, project = _protected_lifecycle_read_context(self)
+        if not actor:
+            return {"ok": False, "error": "issuer_read_requires_platform_human_scope", "status": 403}
+        from connection_hub.delegated_credentials.issuer_read import IssuerReadQuery, IssuerReadRefused
+        try:
+            payload = IssuerReadQuery.from_mapping(_payload(data, **kwargs)).to_dict()
+        except IssuerReadRefused as exc:
+            return {"ok": False, "error": exc.reason, "status": 400}
+        service = await _automation_access_service(self, request)
+        service.bind_issuer_read_registry(service._issuer_reads, actor_subject=actor,
+            actor_classification=classification, tenant=tenant, project=project)
+        return await service.issuer_managed_lifecycle_read(payload)
 
     # ── delegated to KDCube (KDCube -> external provider for user) ──
 

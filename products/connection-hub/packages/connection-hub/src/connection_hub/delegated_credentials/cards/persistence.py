@@ -217,6 +217,10 @@ class DurableCardPersistence:
     ) -> None:
         await self.forget(authority, subject_hash=subject_hash, before_commit=before_commit)
 
+    async def read_lifecycle_identities(self, request: Any) -> tuple[CardAuthority, CardAuthority]:
+        # Deliberately bypass load_current/resolver, which may restore caches.
+        return await self._cards.read_lifecycle_identities(request)
+
     async def revoke_lifecycle(self, request: Any, *, actor_subject: str, before_commit: Any) -> dict[str, Any]:
         async def cleanup(authorities):
             # Executed after shared authoritative commit but while BOTH Card
