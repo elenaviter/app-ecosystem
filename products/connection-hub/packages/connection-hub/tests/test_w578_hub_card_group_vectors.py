@@ -134,6 +134,10 @@ def build_vectors() -> dict:
                  reads=({**P_READ, "revision": "1"},)),
         _refused("read_revision_negative", "card_group_read_invalid", good, reads=({**P_READ, "revision": -1},)),
         _refused("read_extra_field", "card_group_read_invalid", good, reads=({**P_READ, "note": "x"},)),
+        _refused("effect_missing_payload", "card_group_effect_invalid",
+                 changed(lambda value: value.__setitem__("effects", [{"kind": "grant", "key": "k"}]))),
+        _refused("effect_duplicate_kind_key", "card_group_effect_invalid",
+                 changed(lambda value: value.__setitem__("effects", [{"kind": "grant", "key": "k", "payload": {}}] * 2))),
     ]
     return {
         "schema": "w578.hub-card-group-vectors.v1",
@@ -210,6 +214,32 @@ def test_any_changed_aggregate_field_is_not_bound(field, value):
 def test_the_builder_refuses_a_malformed_actor(actor):
     with pytest.raises(DecisionRefused, match="^card_group_actor_invalid$"):
         hub_group_participant_input(members=_members(), actor_subject=actor, actor_kind="grantor", reads=(P_READ,))
+
+
+def test_an_identical_group_retried_after_an_abort_is_a_new_transaction():
+    """EMain Q1: the kernel keys an intent by (replay_scope, request_id) and epoch, never by binding_ref.
+
+    The same group (same members and base revisions, so the same binding_ref)
+    begun again under a new request binds a new transaction id and a new
+    global intent digest; the Hub stores every member under ids derived from
+    that transaction id, so nothing of the aborted attempt is reused.
+    """
+    from service_foundation.coordination.durable_decision_log import IntentDraft
+    from service_foundation.coordination.durable_wire import participant_projection
+
+    from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
+
+    accepted = VECTORS["accepted"]
+    payload = {"participant_inputs": {PARTICIPANT: accepted["participant_input"]},
+               "participant_candidates": {PARTICIPANT: accepted["candidate_value"]}}
+    first = IntentDraft(replay_scope="pb:group", request_id="attempt-1", expires_at=NOW + 600,
+                        participants=(PARTICIPANT,), payload=payload).bind("a" * 64, 1)
+    retry = IntentDraft(replay_scope="pb:group", request_id="attempt-2", expires_at=NOW + 900,
+                        participants=(PARTICIPANT,), payload=payload).bind("b" * 64, 2)
+    one, two = participant_projection(first, PARTICIPANT), participant_projection(retry, PARTICIPANT)
+    assert one["binding_ref"] == two["binding_ref"]
+    assert first.transaction_id != retry.transaction_id and first.digest != retry.digest
+    assert one["global_intent_digest"] != two["global_intent_digest"]
 
 
 def test_a_changed_member_changes_the_digest_and_binding():

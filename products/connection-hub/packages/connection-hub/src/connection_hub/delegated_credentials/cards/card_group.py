@@ -136,6 +136,13 @@ def validate_group_candidate(value: Any, *, reads: Sequence[Mapping[str, Any]] =
         raise _refuse("card_group_too_large")
     if type(value["effects"]) is not list:
         raise _refuse("card_group_invalid")
+    if value["effects"]:
+        # The same effect shape a one-Card receipt accepts (unique kind/key,
+        # printable keys, mapping payloads, bounded count), checked before staging.
+        from .transaction_store import _effects_valid
+        if not _effects_valid([dict(effect) if isinstance(effect, Mapping) else effect
+                               for effect in value["effects"]]):
+            raise _refuse("card_group_effect_invalid")
     try:
         size = len(canonical_json_bytes(dict(value)))
     except WireRefused as exc:
