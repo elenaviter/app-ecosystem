@@ -63,6 +63,18 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:observe",),
     },
+    "operation.receipt.get": {
+        "description": (
+            "W574: read the durable outcome of this caller's own earlier governed "
+            "request, selected by operation, idempotency key and transport request "
+            "hash: applied (stored outcome), refused (stored code), in_progress "
+            "(admitted, not settled) or no_record (not admitted through this "
+            "transport since the ledger went live; not proof of no effect in "
+            "general). The board authorizes the stored original operation for the "
+            "caller; the request fields only select the caller's own row."
+        ),
+        "grants": ("work:relay",),
+    },
     "project.plan.item": {
         "description": (
             "Read one complete authoritative plan item by canonical URI or its "
@@ -538,6 +550,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.github.use",
         "project.plan.index",
         "project.plan.item",
+        "operation.receipt.get",
         "work.attachment.link",
         "project.plan.history",
         "project.plan.resolve",

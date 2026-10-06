@@ -1,0 +1,62 @@
+{
+  "schema": "problem-board.transport-request-hash.v1",
+  "vectors": [
+    {
+      "name": "ascii",
+      "action": "work.status.set",
+      "object_ref": "work:project:one",
+      "payload": {
+        "work_ref": "work:plan:node:20261006T000000Z:w1:x",
+        "status": "done",
+        "expected_revision": 7,
+        "idempotency_key": "k-1"
+      },
+      "sha256": "e5ec8d3e3325f5f6f2528aa106325ff14ec48a7e2219d400db47663bcdf27d91"
+    },
+    {
+      "name": "non_ascii",
+      "action": "plan.item.update",
+      "object_ref": "work:project:one",
+      "payload": {
+        "work_ref": "work:plan:node:20261006T000000Z:w1:x",
+        "expected_revision": 3,
+        "changes": {
+          "title": "Überprüfung des Empfangs ✓ 日本語",
+          "summary": "naïve café — résumé"
+        },
+        "idempotency_key": "k-2"
+      },
+      "sha256": "6f2a7457600af2d69fe0a49513f5439f0d42fa4496d8dad0b544ad4ca9195f91"
+    },
+    {
+      "name": "emoji_and_escapes",
+      "action": "plan.note.append",
+      "object_ref": "work:project:one",
+      "payload": {
+        "item_key": "W1",
+        "text": "line one\nline \"two\" \\ tab\t end 🎉",
+        "idempotency_key": "k-3"
+      },
+      "sha256": "a75458bcfe7e11db33c3f4f09165f7ca6424f580dcaff2ce9c345d27514033b7"
+    },
+    {
+      "name": "nested_order_and_numbers",
+      "action": "assignment.assign",
+      "object_ref": "work:project:two",
+      "payload": {
+        "z": [
+          3,
+          1,
+          2
+        ],
+        "a": {
+          "y": 1.5,
+          "b": true,
+          "n": null
+        },
+        "idempotency_key": "k-4"
+      },
+      "sha256": "c0f46500f5a7a5378b0b9ec232d22a2dff71450be1eba5449418a863ddf2c2b8"
+    }
+  ]
+}

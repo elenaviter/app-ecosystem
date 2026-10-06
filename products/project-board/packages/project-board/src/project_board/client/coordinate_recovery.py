@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..contract.errors import DomainError
+from ..contract.operation_identity import transport_request_hash
 from .io import atomic_write_json, component, exclusive_lock, read_json, utc_now
 
 COORDINATE_RECOVERY_SCHEMA = "problem-board.coordinate-recovery.v1"
@@ -53,15 +54,13 @@ RECOVERY_RETENTION_SECONDS = 7 * 24 * 3600
 def coordinate_request_hash(
     action: str, object_ref: str, payload: Mapping[str, Any]
 ) -> str:
-    """The hash of the exact serialized request a key stands for."""
+    """The hash of the exact serialized request a key stands for.
 
-    encoded = json.dumps(
-        {"action": str(action), "object_ref": str(object_ref), "payload": payload},
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    It is the shared transport identity the board's ledger records (W574), so
+    a lost reply can be looked up by the same value.
+    """
+
+    return transport_request_hash(action, object_ref, payload)
 
 
 def mutation_idempotency_key(payload: Mapping[str, Any]) -> str:

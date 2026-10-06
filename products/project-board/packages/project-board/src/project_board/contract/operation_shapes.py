@@ -155,6 +155,17 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                                         'item_key)',
                                             'item_key': 'case-insensitive project-scoped item key '
                                                         '(use this or work_ref)'}},
+    'operation.receipt.get': {
+        'description': 'W574: the durable outcome of this caller\'s own earlier governed request: '
+                       'applied, refused, in_progress or no_record (not admitted through this '
+                       'transport since the ledger went live).',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {
+            'operation': 'canonical operation id of the original request',
+            'idempotency_key': 'the original request\'s idempotency key',
+            'request_hash': 'transport_request_hash of the original action, object_ref and payload',
+        },
+    },
     'work.attachment.link': {
         'description': 'W485: one signed download link for one file attached to one work item, '
                        'bound to the caller; reads never carry links.',
