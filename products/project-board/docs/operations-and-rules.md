@@ -49,6 +49,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `shared_write_agents_only` | Shared workspace writes are made by agents, each as itself. |
 | `coordinator_publishes_reports` | A project report is published, or failed, by the project's coordinator. |
 | `attachment_upload_people_only` | Attachments are staged by a signed-in person. |
+| `project_file_edits_people_only` | A listed project-file edit on the board is requested by a signed-in person on the project; the coordinator writes the file through its own relay. The person still needs the applicable role and both current Cards for each requested operation. |
 
 ## Operations a Card holds
 
