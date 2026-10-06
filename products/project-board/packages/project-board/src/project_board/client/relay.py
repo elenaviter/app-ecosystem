@@ -433,9 +433,9 @@ async def _settle_unknown_by_receipt(
 
     Returns the response to complete the request with, raises the stored
     refusal or ``ReceiptPending``, or returns None when the request was never
-    sent with an unknown outcome, carries no idempotency key, or the board
-    does not have the read operation yet (then the old same-transport resend
-    applies). ``in_progress`` and ``no_record`` ("not admitted at the time of
+    sent with an unknown outcome or carries no idempotency key. A board
+    without the read, or a failed read, is ``ReceiptPending`` too: nothing is
+    ever resent automatically. ``in_progress`` and ``no_record`` ("not admitted at the time of
     this read", never "no effect") are read again until the request expires,
     then reported as an unknown outcome with the last read as evidence.
     Resending is the caller's explicit decision, never automatic.
@@ -462,11 +462,27 @@ async def _settle_unknown_by_receipt(
             },
             transport_request_id=f"{request.get('request_id') or ''}:receipt:{attempt}",
         )
-    except DomainError as exc:
-        details = exc.details if isinstance(exc.details, Mapping) else {}
-        if exc.code == "work_worker_stream_operation_denied" and details.get("operation") == RECEIPT_READ_OPERATION:
-            return None
+    except asyncio.CancelledError:
         raise
+    except Exception as exc:  # noqa: BLE001 - an unread receipt is still unknown
+        # A board without the read, or a read that is denied or fails, cannot
+        # confirm the outcome. The request stays unknown on the same bounded
+        # schedule and is never sent again automatically: W574 criterion 3
+        # allows zero automatic extra mutation sends (Ops, 06:46 UTC).
+        details = getattr(exc, "details", None)
+        details = details if isinstance(details, Mapping) else {}
+        denied = (
+            getattr(exc, "code", "") == "work_worker_stream_operation_denied"
+            and details.get("operation") == RECEIPT_READ_OPERATION
+        )
+        raise ReceiptPending(
+            "data_bus_outcome_unknown",
+            "The board cannot confirm this request's outcome: its receipt read is "
+            + ("unavailable on this board" if denied else "failed")
+            + ". It was not sent again.",
+            status=504,
+            details={"receipt_read": "unavailable" if denied else "read_failed"},
+        ) from exc
     body = receipt.get("object") if isinstance(receipt, Mapping) and isinstance(receipt.get("object"), Mapping) else receipt
     state = str((body or {}).get("state") or "") if isinstance(body, Mapping) else ""
     if state == "applied":
@@ -6981,8 +6997,7 @@ class ProblemBoardRelaySupervisor:
                 try:
                     # W574: a mutation whose earlier send ended with an unknown
                     # outcome is settled by reading the board's durable receipt,
-                    # never by sending it again. Only a board without the read
-                    # operation keeps the same-transport resend.
+                    # never by sending it again, on any board.
                     settled = await _settle_unknown_by_receipt(stable_action, request, arguments)
                     if settled is not None:
                         result = settled

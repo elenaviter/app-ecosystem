@@ -2788,6 +2788,7 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             "timeout_seconds must be between 1 and 600.",
         )
     queue = CoordinateQueue(config.field_root)
+    resend_note: dict[str, Any] | None = None
     # The receipt read names the original's key in its payload; it is a read,
     # not a mutation held under that key.
     key = "" if action == RECEIPT_READ_OPERATION else mutation_idempotency_key(payload)
@@ -2824,8 +2825,10 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
             recovered = _settle_by_remote_receipt(
                 args, recovery, prior, worker_name=channel.worker_name, key=key,
             )
-            if recovered is not None:
+            if recovered is not None and "resend_reason" not in recovered:
                 return recovered
+            if recovered is not None:
+                resend_note = recovered
     request_id = new_id("coordinate")
     if recovery is not None:
         # The attempt is registered under its queue request id before the
@@ -2891,6 +2894,8 @@ def _coordinate_command(args: Any) -> dict[str, Any]:
         key=key,
         request_id=request_id,
     )
+    if resend_note is not None:
+        result = {**result, "resent_by_caller": resend_note}
     if action in REVIEW_DECISION_ACTIONS and str(result.get("state") or "applied") == "applied":
         # W423: the reviewer's decision ends that item's review trees; the
         # sweep removes the ones that are safe to lose, never others.
@@ -3139,8 +3144,9 @@ def _settle_by_remote_receipt(
     the request and a resend would add nothing. No record means "not admitted
     at the time of this read", never "no effect"; running the same command
     again is the caller's choice to resend it unchanged, which admission
-    deduplicates on the key. None (no record, or a board without the read)
-    keeps that unchanged resend.
+    deduplicates on the key. A board without the read cannot confirm the
+    outcome; the rerun is likewise the caller's choice. Both return a
+    ``resend_reason`` note, which the resend's result carries.
     """
 
     def read(action: str, object_ref: str, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -3161,6 +3167,18 @@ def _settle_by_remote_receipt(
     if receipt is None:
         return None
     state = str(receipt.get("state") or "")
+    if state in ("unavailable", "no_record"):
+        # The caller ran the command again; that is their choice to resend it
+        # unchanged, and the result says so plainly (Ops, 06:46 UTC).
+        return {
+            "resend_reason": state,
+            "message": (
+                "This board cannot confirm the earlier outcome; you chose to send the same request again."
+                if state == "unavailable"
+                else "The board had not admitted the earlier request when it was read; "
+                "you chose to send the same request again under the same key."
+            ),
+        }
     action = str(prior.get("action") or "")
     unknown = [
         request_id

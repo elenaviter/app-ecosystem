@@ -1576,3 +1576,36 @@ def test_a_numberless_create_is_sent_unchanged(submits, monkeypatch, tmp_path):
         )
     assert unknown.value.code == "work_coordinate_outcome_unknown"
     assert [submitted["payload"] for submitted in submits] == [payload]
+
+
+def test_a_rerun_on_a_board_without_the_receipt_read_says_it_was_the_callers_choice(
+    receipt_read, submits, monkeypatch, tmp_path,
+):
+    # The board cannot confirm the outcome; running the command again is the
+    # caller's own resend, and the result says so plainly (Ops, 06:46 UTC).
+    host, identity, channel = make_host(tmp_path)
+    monkeypatch.setattr(cli, "channel_reconnect_state", lambda *args, **kwargs: None)
+    monkeypatch.setattr(cli, "require_successful_operation_envelope", lambda operation, result: None)
+    monkeypatch.setattr(cli, "REVIEW_DECISION_ACTIONS", frozenset())  # no workspace sweep in this fixture
+    payload = {"work_ref": WORK_REF, "expected_revision": 7, "idempotency_key": "accept-w574d"}
+    args = _args("review.accept", object_ref=PROJECT, payload=payload, config=str(host.path), identity=identity)
+    old_board = _board_answering_reads(submits, None)
+    sends = []
+
+    def answer(queue_, path, *, worker_name, request_id, timeout_seconds):
+        (values,) = [values for values in submits if values.get("request_id") == request_id]
+        if values["action"] == "review.accept":
+            sends.append(request_id)
+            if len(sends) == 2:
+                return {"ok": True, "result": {"operation": "review.accept", "state": "applied", "replayed": True}}
+        return old_board(queue_, path, worker_name=worker_name, request_id=request_id, timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(cli, "_await_coordinate_response", answer)
+    with pytest.raises(DomainError):
+        cli._coordinate_command(args)
+
+    result = cli._coordinate_command(args)
+
+    assert [values["action"] for values in submits] == ["review.accept", "operation.receipt.get", "review.accept"]
+    assert result["resent_by_caller"]["resend_reason"] == "unavailable"
+    assert "cannot confirm" in result["resent_by_caller"]["message"]

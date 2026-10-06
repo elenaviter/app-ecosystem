@@ -436,9 +436,9 @@ def lookup_remote_receipt(record: Mapping[str, Any], read: Any) -> dict[str, Any
     ``read(action, object_ref, payload)`` performs ``operation.receipt.get``
     and returns its result. This is a status read, not a mutation send.
     Returns the receipt (``state`` applied, refused, in_progress or
-    no_record), or None when nothing is unknown or the board predates the
-    read operation (refused with ``work_worker_stream_operation_denied`` for
-    it), in which case the caller keeps the unchanged resend.
+    no_record), ``state`` unavailable when the board predates the read
+    operation (refused with ``work_worker_stream_operation_denied`` for it)
+    and so cannot confirm the outcome, or None when nothing is unknown.
     """
 
     if record.get("state") == STATE_APPLIED:
@@ -461,7 +461,7 @@ def lookup_remote_receipt(record: Mapping[str, Any], read: Any) -> dict[str, Any
     except DomainError as exc:
         details = exc.details if isinstance(exc.details, Mapping) else {}
         if exc.code == "work_worker_stream_operation_denied" and details.get("operation") == RECEIPT_READ_OPERATION:
-            return None
+            return {"state": "unavailable"}
         raise
     body = response.get("object") if isinstance(response, Mapping) else None
     if not isinstance(body, Mapping) or str(body.get("state") or "") not in (

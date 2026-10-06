@@ -267,13 +267,14 @@ def test_early_coordinate_retry_preserves_unknown_mutation_identity(tmp_path, mo
         response = queue.take_response(
             worker_name=channel.worker_name, request_id=request["request_id"]
         )
-        assert response["ok"] is True
+        # W574: the board cannot confirm the outcome, so the request stays
+        # unknown with the same identity; it is never sent again by the relay.
+        assert response is None
+        assert queue.holds(worker_name=channel.worker_name, request_id=request["request_id"])
         sends = [call for call in client.calls if call["action"] != "operation.receipt.get"]
         reads = [call for call in client.calls if call["action"] == "operation.receipt.get"]
-        assert [call["transport_request_id"] for call in sends] == [request["request_id"]] * 2
-        assert all(call["payload"]["idempotency_key"] == "original-mutation-key" for call in sends)
+        assert [call["transport_request_id"] for call in sends] == [request["request_id"]]
         assert [call["payload"]["idempotency_key"] for call in reads] == ["original-mutation-key"]
         assert len(effects) == 1
-        assert supervisor.serve_coordinate_once() == []
 
     asyncio.run(scenario())

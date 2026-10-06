@@ -198,7 +198,7 @@ def test_a_a_lost_answer_is_settled_by_a_status_read_not_a_resend(tmp_path):
     )]
 
 
-def test_a_a_board_without_the_receipt_read_keeps_the_unchanged_resend(tmp_path):
+def test_a_a_board_without_the_receipt_read_is_named_unavailable(tmp_path):
     from project_board.client import coordinate_recovery
 
     record = {
@@ -212,7 +212,7 @@ def test_a_a_board_without_the_receipt_read_keeps_the_unchanged_resend(tmp_path)
             status=403, details={"operation": action},
         )
 
-    assert coordinate_recovery.lookup_remote_receipt(record, old_board) is None
+    assert coordinate_recovery.lookup_remote_receipt(record, old_board) == {"state": "unavailable"}
     assert coordinate_recovery.lookup_remote_receipt({**record, "state": "applied"}, old_board) is None
 
 
@@ -285,7 +285,10 @@ def _serve_twice(supervisor, queue, channel, monkeypatch):
     return asyncio.run(scenario())
 
 
-def test_a_transport_commit_then_lost_reply_keeps_one_effect_and_the_session(tmp_path, monkeypatch, record_property):
+def test_a_board_without_the_receipt_read_gets_no_automatic_resend(tmp_path, monkeypatch, record_property):
+    # W574 criterion 3: zero automatic extra mutation sends, legacy boards
+    # included (Root and Ops, 06:43 and 06:46 UTC). This fails if the old
+    # same-transport resend fallback returns.
     from test_connected_degraded_admission import _fixture
 
     host, _identity, channel, supervisor, session, client = _fixture(tmp_path)
@@ -299,11 +302,10 @@ def test_a_transport_commit_then_lost_reply_keeps_one_effect_and_the_session(tmp
     record_property("a_recovery_ms", round((time.monotonic() - started) * 1000, 3))
     record_property("a_peer_sends", len(_mutation_sends(client)))
     assert first is None, "the lost reply is not reported as an answer"
-    assert second is not None and second["ok"] is True
+    assert second is None, "the board cannot confirm the outcome, so it stays unknown"
     assert len(effects) == 1, "the peer committed exactly once"
-    # A board before W574 refuses the receipt read; the relay then keeps the
-    # same-transport resend under the original identity.
-    assert {call["transport_request_id"] for call in _mutation_sends(client)} == {request["request_id"]}
+    assert len(_mutation_sends(client)) == 1, "no automatic resend on a board without the receipt read"
+    assert queue.holds(worker_name=channel.worker_name, request_id=request["request_id"])
     assert supervisor._sessions[channel.worker_name] is session, "the retained session is kept"
 
 
@@ -432,7 +434,19 @@ def test_b_a_revoked_card_seen_by_the_relay_parks_the_channel(tmp_path, code):
     assert refusal["permanent"] is True
 
 
-def test_an_unsettled_receipt_is_reported_unknown_with_its_evidence_at_expiry(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("ledger", "receipt_state", "evidence"),
+    [
+        (True, {"state": "no_record", "ledger_cutover_at": "2026-10-06T07:00:00Z"},
+         {"receipt_read": "no_record", "ledger_cutover_at": "2026-10-06T07:00:00Z"}),
+        # A board without the read: "receipt read unavailable on this board".
+        (False, None, {"receipt_read": "unavailable"}),
+    ],
+    ids=["no_record", "board_without_the_read"],
+)
+def test_an_unsettled_receipt_is_reported_unknown_with_its_evidence_at_expiry(
+    tmp_path, monkeypatch, ledger, receipt_state, evidence,
+):
     # The re-read is bounded by the request's own expiry; past it the request
     # ends as an unknown outcome naming the last read, and is never resent.
     import asyncio
@@ -444,9 +458,7 @@ def test_an_unsettled_receipt_is_reported_unknown_with_its_evidence_at_expiry(tm
 
     host, _identity, channel, supervisor, _session, client = _fixture(tmp_path)
     queue = CoordinateQueue(host.field_root)
-    _peer_that_commits_then_loses_the_reply(
-        client, {}, ledger=True, receipt_state={"state": "no_record", "ledger_cutover_at": "2026-10-06T07:00:00Z"},
-    )
+    _peer_that_commits_then_loses_the_reply(client, {}, ledger=ledger, receipt_state=receipt_state)
 
     async def scenario():
         request = submit_request(
@@ -474,9 +486,8 @@ def test_an_unsettled_receipt_is_reported_unknown_with_its_evidence_at_expiry(tm
     final = responses[-1]
     assert final is not None and final["ok"] is False
     assert final["error"]["code"] == "work_coordinate_outcome_unknown"
-    evidence = final["error"]["details"]["last_receipt_read"]
-    assert evidence["receipt_read"] == "no_record"
-    assert evidence["ledger_cutover_at"] == "2026-10-06T07:00:00Z"
+    shown = final["error"]["details"]["last_receipt_read"]
+    assert {field: shown[field] for field in evidence} == evidence
     reads = [call for call in client.calls if call["action"] == "operation.receipt.get"]
     assert len(reads) == 2, "read again on the bounded schedule, then stopped at expiry"
     assert len({call["transport_request_id"] for call in reads}) == 2, "each read is its own transport request"
