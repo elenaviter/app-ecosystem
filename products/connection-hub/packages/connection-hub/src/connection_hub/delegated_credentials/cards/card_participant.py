@@ -172,6 +172,11 @@ class CardIntent:
     actor_kind: str = ""
     # W502 read reservations: unchanged dependency Cards held through finish.
     reads: tuple[Mapping[str, Any], ...] = ()
+    # W502 inbound participant: the configured authority that staged this
+    # intent ("" = the Hub's own decision store) and the verified scope value
+    # it was staged under. Readers route the decision by the authority.
+    authority: str = ""
+    scope: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema": INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
@@ -179,7 +184,7 @@ class CardIntent:
                 "original": self.original.to_dict(), "candidate": self.candidate.to_dict(),
                 "effects": [dict(effect) for effect in self.effects], "action": self.action,
                 "actor_subject": self.actor_subject, "actor_kind": self.actor_kind,
-                "reads": [dict(read) for read in self.reads]}
+                "reads": [dict(read) for read in self.reads], "authority": self.authority, "scope": self.scope}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CardIntent":
@@ -192,7 +197,8 @@ class CardIntent:
                        effects=tuple(dict(effect) for effect in raw.get("effects") or ()),
                        action=str(raw.get("action") or ""), actor_subject=str(raw.get("actor_subject") or ""),
                        actor_kind=str(raw.get("actor_kind") or ""),
-                       reads=tuple(dict(read) for read in raw.get("reads") or ()))
+                       reads=tuple(dict(read) for read in raw.get("reads") or ()),
+                       authority=str(raw.get("authority") or ""), scope=str(raw.get("scope") or ""))
         except (KeyError, TypeError, ValueError) as exc:
             raise DecisionRefused("card_intent_invalid") from exc
 
