@@ -7,12 +7,11 @@ reconnect (Ops' branch list, 04:33 UTC). Each case here uses isolated stores,
 an injected clock and synthetic identities only, and fails when its property
 is broken. Each records its own timings as junit properties.
 
-Two cases are expected to fail on the current source, because the property
-they pin does not hold there (strict xfail, so a fix turns them into a pass
-that must be acknowledged):
-- a revoked Card is not a terminal channel refusal;
-- an accepted write whose answer is lost can only be settled by sending the
-  exact request again, since there is no remote receipt lookup.
+Cases marked strict xfail pin a property that does not hold on the current
+source, so a fix turns them into a pass that must be acknowledged: an accepted
+write whose answer is lost can only be settled by sending the exact request
+again, since there is no remote receipt lookup. The revoked-Card finding was
+fixed by W461 C4 fix 1 and is now an ordinary pass.
 """
 
 from __future__ import annotations
@@ -101,19 +100,29 @@ def test_b_an_expired_or_inactive_card_is_a_named_terminal_refusal(code, record_
     assert observed["action"] == "authorize"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "W461 C4 finding: authorization_observation does not list delegated_card_revoked; "
-        "a revoked Card falls to connection_unavailable and is retried on the backoff"
-    ),
-)
 @pytest.mark.parametrize("code", ["delegated_card_revoked", "delegated_card_not_found"])
 def test_b_a_revoked_card_is_a_named_terminal_refusal(code):
+    # Was a strict-xfail finding (Mint, C4 NOT MET 05:36 UTC): a revoked Card
+    # fell to connection_unavailable and was retried on the backoff.
     observed = authorization_observation(_refusal(code))
 
     assert observed["error_code"] == code
     assert observed["terminal_channel"] is True, "a revoked Card must not be retried"
+    assert (observed["state"], observed["action"]) == ("delegated_card_revoked", "authorize")
+
+
+def test_b_no_permanent_credential_code_is_classified_retryable():
+    # Ops design verdict (05:38 UTC): the relay and the classifier read one set
+    # of permanent codes, and none of them may be reported as retryable.
+    from project_board.client import relay
+    from project_board.contract.errors import PERMANENT_CREDENTIAL_CODES
+
+    assert relay.PERMANENT_ERROR_CODES is PERMANENT_CREDENTIAL_CODES
+    retryable = sorted(
+        code for code in PERMANENT_CREDENTIAL_CODES
+        if not authorization_observation(_refusal(code))["terminal_channel"]
+    )
+    assert retryable == []
 
 
 # (a) Accepted write, then unknown outcome ------------------------------------
@@ -287,3 +296,19 @@ def test_b_a_session_on_a_replaced_card_sends_nothing_and_keeps_the_request(tmp_
         assert not supervisor._session_matches(host, channel, session, require_card=True)
     finally:
         supervisor._store_executors.shutdown()
+
+
+@pytest.mark.parametrize("code", ["delegated_card_revoked", "delegated_card_not_found"])
+def test_b_a_revoked_card_seen_by_the_relay_parks_the_channel(tmp_path, code):
+    # W461 C4 fix 1: before, the relay's cycle backed the channel off and kept
+    # opening it with the same dead Card.
+    from project_board.client import host_config
+    from test_reauthorization_signal import _cycle, _host, _refusing_supervisor
+
+    host, identity, _channel = _host(tmp_path)
+
+    _cycle(_refusing_supervisor(host, DomainError(code, "Synthetic: the Card is gone.", status=401)))
+
+    assert host_config.HostRelayConfig.load(host.path).worker(identity).state == "pending_authorization"
+    refusal = relay_pacing.channel_pending_refusal(host.path, identity.worker_name)
+    assert refusal["permanent"] is True

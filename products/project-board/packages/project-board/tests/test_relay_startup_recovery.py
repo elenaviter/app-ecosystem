@@ -217,6 +217,9 @@ async def test_metadata_rejection_at_startup_is_retried_without_ending_relay(
 async def test_permanent_card_rejection_stops_and_names_the_reason(
     tmp_path, caplog
 ) -> None:
+    # W461 C4 fix 1 (Ops design verdict, 2026-10-06 05:38 UTC): a revoked Card
+    # parks the channel for authorization. Before, the cycle raised and the
+    # channel was kept on the backoff, opening again with the same dead Card.
     host, identity, _channel, field = _registered_host(tmp_path)
     attempts = 0
 
@@ -237,24 +240,20 @@ async def test_permanent_card_rejection_stops_and_names_the_reason(
     )
     runtime = HostRelayRuntime(adapter=supervisor)
 
-    with pytest.raises(_StructuredConnectionHubError) as raised:
+    try:
         await runtime.run_once()
+    except Exception:  # noqa: BLE001 - a failed cycle is allowed; the parking is what counts
+        pass
+    await runtime.run_once()
     await supervisor.aclose()
 
-    assert raised.value.code == "delegated_card_revoked"
-    assert attempts == 1
-    assert runtime.health.state == "failed"
-    assert runtime.health.consecutive_failures == 1
+    assert attempts == 1, "a parked channel is not opened again with the same Card"
+    assert host_config.HostRelayConfig.load(host.path).worker(identity).state == "pending_authorization"
+    refusal = relay_pacing.channel_pending_refusal(host.path, identity.worker_name)
+    assert refusal["permanent"] is True
     restarted = relay_pacing.RelayPacing(
         host.path.parent / relay_pacing.PACING_FILENAME,
         forget_permanent=True,
     )
     assert restarted.channel_due(identity.worker_name) is False
-    assert restarted.restart_decisions[identity.worker_name] == {
-        "decision": "kept_backoff",
-        "reason": "delegated_card_revoked",
-    }
-    assert field.read_worker(identity.worker_name)["relay_diagnostic"]["state"] == (
-        "ready"
-    )
     assert "error_code=delegated_card_revoked" in caplog.text
