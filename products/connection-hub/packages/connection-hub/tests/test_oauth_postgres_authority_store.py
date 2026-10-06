@@ -1177,3 +1177,87 @@ async def test_w585_a_stale_lifetime_effect_never_moves_the_access_binding() -> 
         assert await binding() == {"expires_at": now + 600, "card_revision": 5}
     finally:
         await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_issuance_through_the_public_facade_carries_the_cap_against_real_postgres() -> None:
+    # Infra and Ops, 16:13: the SDK issues through GrantStore, never the authority directly.
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        facade = GrantStore(object(), tenant=store.tenant, project=store.project, refresh_ttl=3600,
+                            authority_store=store)
+        token = await facade.create_refresh_token(
+            client_id="client-1", sub="user-1", scopes=[], registry_access_id="aut_card",
+            card_kind="automation", cap_expires_at=now + 120, card_revision=5)
+        assert token
+        family, generation = await _family(pool, store)
+        assert (family["cap"], family["card_revision"]) == (now + 120, 5)
+        assert family["expires_at"] == now + 120 and generation["expires_at"] == now + 120
+        with pytest.raises(ValueError, match="refresh_cap_passed"):
+            await facade.create_refresh_token(client_id="client-1", sub="user-1", scopes=[],
+                                              registry_access_id="aut_late", cap_expires_at=now - 1)
+        async with pool.acquire() as connection:
+            assert await connection.fetchval(
+                f"SELECT count(*) FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = 'aut_late'") == 0
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_the_redis_fallback_bounds_issuance_by_the_cap() -> None:
+    class Redis:
+        def __init__(self) -> None:
+            self.setex_calls: list[tuple[str, int]] = []
+
+        async def setex(self, key, ttl, value):
+            self.setex_calls.append((key, int(ttl)))
+
+    redis = Redis()
+    facade = GrantStore(redis, tenant="t", project="p", refresh_ttl=3600)
+    now = int(time.time())
+    await facade.create_refresh_token(client_id="c", sub="s", scopes=[], cap_expires_at=now + 90)
+    await facade.create_refresh_token(client_id="c", sub="s", scopes=[])
+    assert 85 <= redis.setex_calls[0][1] <= 90
+    assert redis.setex_calls[1][1] == 3600
+    with pytest.raises(ValueError, match="refresh_cap_passed"):
+        await facade.create_refresh_token(client_id="c", sub="s", scopes=[], cap_expires_at=now - 1)
+    assert len(redis.setex_calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cap_source", ["stored", "caller"])
+async def test_w585_a_rotation_that_waits_on_the_family_lock_past_its_cap_is_refused_unconsumed(cap_source) -> None:
+    """Ops' gate (16:14): session A holds the family lock across the cap deadline;
+    session B's rotation, which began before the deadline, must refuse and leave
+    the presented generation unconsumed. now() (the transaction start) passed it."""
+
+    import asyncio
+
+    pool, store = await _capped_store()
+    try:
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        async with pool.acquire() as connection:
+            database_now = int(await connection.fetchval("SELECT extract(epoch FROM now())::bigint"))
+        cap = database_now + 3
+        # "stored": the committed Card wrote the cap (family expiry and cap both).
+        # "caller": only the rotation's own cap bounds it, so the cap check alone refuses.
+        if cap_source == "stored":
+            assert await store.set_card_credentials_expiry("aut_card", cap, card_revision=1) == "applied"
+        caller_cap = {"expires_at_cap": cap} if cap_source == "caller" else {}
+        holder = await pool.acquire()
+        lock = holder.transaction()
+        await lock.start()
+        await holder.execute(f"SELECT 1 FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = 'aut_card' FOR UPDATE")
+        rotation = asyncio.create_task(store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, **caller_cap))
+        await asyncio.sleep(0.5)
+        assert not rotation.done(), "the rotation must be waiting on the family lock"
+        while int(time.time()) <= cap + 1:
+            await asyncio.sleep(0.25)
+        await lock.rollback()
+        await pool.release(holder)
+        assert await asyncio.wait_for(rotation, 10) is None
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active", "the presented generation is not consumed"
+    finally:
+        await _drop(pool, store)
