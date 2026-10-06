@@ -83,6 +83,9 @@ CAPABILITY_FIELDS = (
     "expires_at", "composition_mode", "account_scope", "identity_scope", "operations", "resource_grants",
     "resource_operations", "resource_acceptance", "named_service_operations", "named_services", "control_card",
 )
+# Chain failures a reread may cure; every other ControlCardMismatch is persistent.
+TRANSIENT_CHAIN_REASONS = frozenset({"control_card_lookup_unavailable", "control_card_dependency_changed"})
+
 # Every CLASSIFIED authorization property travels (CodeApp 20:38, EMain #618):
 # card_property_classes decides each key; personal settings and any key not
 # yet classified are withheld (fail closed). The size refusal bounds the answer.
@@ -215,8 +218,16 @@ class CardCensusReadOperation:
             result["edge"] = {"state": "invalid", "reason": "project_identity_edge_conflict"}
             return result
         reason = identity.edge(control_card=control, my_card=my).validation_reason()
-        result["edge"] = {"state": "invalid", "reason": reason} if reason else {"state": "valid"}
-        if reason or control is None or my.control_card is None:
+        if not reason and control_entry["state"] == "absent":
+            reason = "control_card_missing"  # never "valid" around an absent Control (EMain F1)
+        if not reason and my.control_card is None:
+            reason = "my_card_control_binding_missing"
+        if reason:
+            result["edge"] = {"state": "invalid", "reason": reason}
+            return result
+        result["edge"] = {"state": "valid"}
+        if control is None:  # the Control is staged: reread after its decision, never a partial chain
+            result["chain"] = {"state": "in_transaction", "cards": []}
             return result
         result["chain"] = await self._chain(my)
         return result
@@ -236,7 +247,12 @@ class CardCensusReadOperation:
         except ControlCardMismatch as exc:
             if staged:
                 return {"state": "in_transaction", "cards": []}  # an ancestor is staged: reread after its decision
-            return {"state": "unavailable", "reason": exc.reason, "cards": []}
+            if exc.reason in TRANSIENT_CHAIN_REASONS:
+                return {"state": "unavailable", "reason": exc.reason, "cards": []}  # reread may succeed
+            # A persistently broken chain (cycle, too deep, foreign, unresolvable, an
+            # invalid edge): this person is not usable, and the rest of the project's
+            # census stays readable (EMain O1).
+            return {"state": "invalid", "reason": exc.reason, "cards": []}
         return {"state": "complete", "cards": [_present(authority) for authority in hierarchy.dependencies]}
 
     async def _read(self, subject_hash: str, access_id: str, *, my_card: bool = False):

@@ -355,7 +355,8 @@ async def test_a_missing_upstream_ancestor_is_unavailable_not_complete(tmp_path)
     operation = CardCensusReadOperation(callers={}, card_store=store, catalog_store=None, nonces=_Nonces(),
                                         clock=lambda: NOW)
     result = await operation._chain(caller([], child))
-    assert result["state"] == "unavailable" and result["cards"] == [] and result["reason"]
+    # A missing ancestor is persistent (control_card_unresolvable): invalid, not a retryable unavailable (EMain O1).
+    assert result["state"] == "invalid" and result["cards"] == [] and result["reason"]
 
 
 # ── shared census answer vectors for the PB consumer (EMain #616) ──
@@ -443,3 +444,70 @@ def test_the_hub_reproduces_the_foundations_shared_census_vectors():
             vector["answer"], schema=config["schema"], secret=config["secret"], signer_id=config["signer_id"],
             audience=config["audience"], direction=config["direction"], request=vector["request"],
             now=config["now"], contract=AnswerContract.CENSUS) == vector["answer"]["result"]
+
+
+
+# ── EMain F1/O1: the Hub never signs "valid" around an absent Control or an unbound My Card ──
+
+
+@pytest.mark.asyncio
+async def test_an_absent_control_makes_the_edge_invalid_not_valid(tmp_path, redis_client):
+    from test_w502_my_card_fence_real_path import TARGET, PROJECT_REF, _create, _service
+
+    h = await _service(tmp_path, redis_client)
+    assert (await _create(h, "request-create"))["ok"] is True
+    identity = ProjectPersonCardIdentity.build(project_ref=PROJECT_REF, person_subject=TARGET)
+    control_path = h.store.current_path(subject_hash=subject_hash_for(identity.project_subject),
+                                        access_id=identity.control_id)
+    control_path.unlink()  # the Hub's own absent Control
+    operation = CardCensusReadOperation(callers={PEER: _caller(PEER, prefix="work:project:")}, card_store=h.store,
+                                        catalog_store=None, nonces=_Nonces(), clock=lambda: NOW)
+    request = _request([TARGET], scope=PROJECT_REF, include_catalog=False)
+    entry = _verified(await operation.answer(request), request)["persons"][0]
+    assert entry["control"]["state"] == "absent" and entry["my"]["state"] == "present"
+    assert entry["edge"] == {"state": "invalid", "reason": "control_card_missing"}
+    assert entry["chain"] == {"state": "missing", "cards": []}
+
+
+@pytest.mark.asyncio
+async def test_a_staged_control_reads_chain_in_transaction(tmp_path, redis_client):
+    from test_w502_my_card_fence_real_path import TARGET, PROJECT_REF, _control, _create, _service
+
+    h = await _service(tmp_path, redis_client)
+    assert (await _create(h, "request-create"))["ok"] is True
+    control = await _control(h)
+    await tx.stage(h.store, transaction_id=TX, intent_digest=INTENT, participant="project",
+                   subject_hash=subject_hash_for(control.grantor_subject), original=control,
+                   candidate=dataclasses.replace(control, card_revision=control.card_revision + 1, label="staged"),
+                   now=datetime.fromtimestamp(NOW, timezone.utc))
+    operation = CardCensusReadOperation(callers={PEER: _caller(PEER, prefix="work:project:")}, card_store=h.store,
+                                        catalog_store=None, nonces=_Nonces(), clock=lambda: NOW)
+    request = _request([TARGET], scope=PROJECT_REF, include_catalog=False)
+    entry = _verified(await operation.answer(request), request)["persons"][0]
+    assert entry["control"]["state"] == "in_transaction"
+    assert entry["chain"] == {"state": "in_transaction", "cards": []}
+
+
+@pytest.mark.asyncio
+async def test_a_transient_chain_failure_stays_unavailable(tmp_path):
+    from test_control_hierarchy import binding, caller, control
+
+    store, service, before, after = await _setup(tmp_path)
+    parent = control("parent", [])
+    child = dataclasses.replace(control("child", []), control_card=binding(parent))
+    for card in (parent, child):
+        await service.commit(card, subject_hash=subject_hash_for("owner"), expected_revision=0, now=NOW)
+    operation = CardCensusReadOperation(callers={}, card_store=store, catalog_store=None, nonces=_Nonces(),
+                                        clock=lambda: NOW)
+    original = store.read_current_authority
+    calls = []
+
+    async def flaky(*, subject_hash, access_id):
+        calls.append(access_id)
+        if access_id == "parent":
+            raise OSError("storage blip")
+        return await original(subject_hash=subject_hash, access_id=access_id)
+
+    store.read_current_authority = flaky
+    result = await operation._chain(caller([], child))
+    assert result["state"] == "unavailable" and result["reason"] == "control_card_lookup_unavailable"
