@@ -110,7 +110,9 @@ def test_snapshot_alias_is_protected_post_operations():
 async def test_direct_browser_or_http_call_has_no_internal_export_capability(monkeypatch):
     from types import SimpleNamespace
     m = module()
-    factory = AsyncMock()
+    service = MagicMock()
+    service.issuer_managed_card_snapshots = AsyncMock(return_value={"ok": True, "snapshots": [{"personal": "fixture"}]})
+    factory = AsyncMock(return_value=service)
     monkeypatch.setattr(m, "_automation_access_service", factory)
     request = SimpleNamespace(headers={"X-Internal-Call": "true", "X-Issuer-Snapshot": "true"})
     result = await m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(entry(m), request=request, data=body())
@@ -155,6 +157,29 @@ async def test_inherited_call_cannot_outlive_internal_orchestration_scope(monkey
     result = await asyncio.wait_for(task, 1)
     assert result == {"ok": False, "error": "issuer_snapshot_requires_internal_orchestration", "status": 403}
     service.issuer_managed_card_snapshots.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scope_exit_during_snapshot_read_discards_personal_result(monkeypatch):
+    import asyncio
+    m = module()
+    started, release = asyncio.Event(), asyncio.Event()
+    service = MagicMock()
+
+    async def read(payload):
+        started.set()
+        await release.wait()
+        return {"ok": True, "snapshots": [{"personal": "must-not-return"}]}
+
+    service.issuer_managed_card_snapshots = AsyncMock(side_effect=read)
+    monkeypatch.setattr(m, "_automation_access_service", AsyncMock(return_value=service))
+    with bind_issuer_snapshot_orchestration():
+        task = asyncio.create_task(m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(entry(m), data=body()))
+        await asyncio.wait_for(started.wait(), 1)
+    release.set()
+    result = await asyncio.wait_for(task, 1)
+    assert result == {"ok": False, "error": "issuer_snapshot_requires_internal_orchestration", "status": 403}
+    service.issuer_managed_card_snapshots.assert_awaited_once()
 
 
 def descriptor():
