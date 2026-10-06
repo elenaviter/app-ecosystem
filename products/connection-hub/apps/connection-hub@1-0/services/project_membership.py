@@ -150,6 +150,8 @@ class BundleOperationProjectMembershipResolver:
                 if isinstance(membership.get("evidence"), Mapping)
                 else {}
             ),
+            # W502: the host's exact project Control Card, if it has one.
+            project_control=membership.get("project_control"),
         )
 
 

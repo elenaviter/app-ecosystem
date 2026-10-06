@@ -41,6 +41,7 @@ from connection_hub.delegated_credentials.controls.project_person import (
     ProjectPersonControlIdentity,
     bind_project_person_control,
 )
+from connection_hub.delegated_credentials import project_control_binding
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
     ProjectIdentityLifecycle,
     ProjectIdentityLifecycleError,
@@ -287,6 +288,13 @@ class ProjectInvitationRedemption:
                 "error": "project_invitation_binding_request_id_missing",
                 "status": 400,
             }
+        # W502: before the invitation is consumed, refuse a P that is absent
+        # or not exactly this project's, so no C is created to stay unbound.
+        refusal = await project_control_binding.check_project_control(
+            self._host, live_identity, evidence.project_control
+        )
+        if refusal is not None:
+            return refusal
 
         try:
             if pending_state == CARD_STATE_ACTIVE:
@@ -394,9 +402,36 @@ class ProjectInvitationRedemption:
                 action="project_invitation_control_bound",
                 access=live_record.to_public_dict(),
             )
+        try:
+            project_control = await project_control_binding.bind_project_control(
+                self._host, live_identity, evidence.project_control
+            )
+        except (CardConflict, CardCommitFailed) as exc:
+            project_control = {
+                "ok": False,
+                "error": "project_person_control_not_committed",
+                "outcome": "not_bound",
+                "reason": getattr(exc, "reason", ""),
+                "retryable": True,
+                "status": 503,
+            }
+        if project_control.get("ok") is not True:
+            # C and the claim are committed; redeeming again finds both and binds.
+            return {**project_control, "bound": created,
+                    "project_control_binding": project_control.get("outcome", "not_bound")}
+        if project_control["outcome"] == "bound":
+            try:
+                reloaded = await self._host._load_record_any_state(
+                    live_identity.control_id, grantor_subject=live_identity.project_subject
+                )
+            except CardUnavailable:
+                reloaded = None  # committed; the view below is the pre-binding revision
+            if reloaded is not None:
+                live_record = reloaded[0]
         return {
             "ok": True,
             "bound": created,
+            "project_control_binding": project_control["outcome"],
             "pending_control_id": pending_identity.control_id,
             "control_card": live_record.to_public_dict(),
             "my_card": identity_result.my_card.to_public_dict(),

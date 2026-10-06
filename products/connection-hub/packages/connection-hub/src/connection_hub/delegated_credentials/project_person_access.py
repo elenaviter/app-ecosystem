@@ -62,11 +62,13 @@ from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_PERSON_CONTROL_REVOKE,
     PROJECT_PERSON_CONTROL_UPDATE,
     PROJECT_PERSON_MY_CARD_SEED,
+    PROJECT_PERSON_CONTROL_BIND_PROJECT,
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
     ProjectAuthorizationPort,
     ProjectAuthorizationRequest,
 )
+from connection_hub.delegated_credentials import project_control_binding
 from connection_hub.delegated_credentials.project_identity_authorization import (
     ProjectOperationAuthorizationDecision,
     ProjectOperationRequest,
@@ -552,13 +554,21 @@ class ProjectPersonControlLifecycle:
                 ProjectIdentityLifecycleError,
             ) as exc:
                 return self._identity_failure(exc)
+            bound = await self._bind_on_create(identity, decision, created=False)
+            if bound.get("ok") is not True:
+                return bound
             result = await self._view(identity=identity, decision=decision)
             if result.get("ok") is True:
                 result["created"] = False
+                result["project_control_binding"] = bound["outcome"]
                 self._identity_view(result, project_identity)
             return result
         if existing.get("error") != "project_person_control_not_found":
             return existing
+        # W502: a C is never created under a P that is absent or not exactly the project's.
+        refusal = await project_control_binding.check_project_control(self._host, identity, decision.project_control)
+        if refusal is not None:
+            return refusal
 
         try:
             active = await self._host._active_catalog()
@@ -743,12 +753,65 @@ class ProjectPersonControlLifecycle:
             action="project_person_control_created",
             access=record.to_public_dict(),
         )
+        bound = await self._bind_on_create(identity, decision, created=True)
+        if bound.get("ok") is not True:
+            return bound
         result = await self._view(identity=identity, decision=decision)
         if result.get("ok") is True:
             result["created"] = True
             result["pruned"] = pruned
+            result["project_control_binding"] = bound["outcome"]
             self._identity_view(result, project_identity)
         return result
+
+    async def _bind_on_create(self, identity: ProjectPersonControlIdentity,
+                              decision: ProjectAuthorizationDecision, *, created: bool) -> dict[str, Any]:
+        """Create (and redemption through it) binds C under the decision's P.
+
+        A failure after C was committed names that, so the caller repeats the
+        create, which finds C and binds it, or runs the repair operation.
+        """
+        try:
+            bound = await project_control_binding.bind_project_control(self._host, identity, decision.project_control)
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            bound = {"ok": False, "error": "project_person_control_not_committed", "outcome": "not_bound",
+                     "reason": getattr(exc, "reason", ""), "retryable": True, "status": 503}
+        if bound.get("ok") is not True:
+            return {**bound, "created": created, "project_control_binding": bound.get("outcome", "not_bound")}
+        return bound
+
+    async def bind_project_control(
+        self,
+        *,
+        viewer: ViewerAuthority | None = None,
+        actor_subject: str,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """W502 repair: bind one existing person's project Control under the project's Control P.
+
+        The project host decides who may (``project.person_control.bind_project``)
+        and names P in its decision; nothing in the request selects P. The
+        result names this person's outcome, so a migration can prove every
+        person bound: ``bound``, ``already_bound``, or a refusal.
+        """
+        authorized = await self._authorize(
+            viewer=viewer, actor_subject=actor_subject, project_ref=project_ref, target_subject=target_subject,
+            operation=PROJECT_PERSON_CONTROL_BIND_PROJECT, request_id=request_id)
+        if isinstance(authorized, dict):
+            return authorized
+        _request, decision = authorized
+        if decision.project_control is None:
+            return {"ok": False, "error": "project_control_locator_missing", "outcome": "no_project_control",
+                    "person": target_subject, "status": 409}
+        identity = ProjectPersonControlIdentity.build(project_ref=project_ref, target_subject=target_subject)
+        try:
+            outcome = await project_control_binding.bind_project_control(self._host, identity, decision.project_control)
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            return {"ok": False, "error": "project_person_control_not_committed", "outcome": "not_bound",
+                    "reason": getattr(exc, "reason", ""), "retryable": True, "status": 503, "person": target_subject}
+        return {**outcome, "person": target_subject}
 
     async def update(
         self,
