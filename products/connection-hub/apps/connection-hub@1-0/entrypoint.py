@@ -344,6 +344,11 @@ CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
 # or are read-only resolvers. They never inherit browser-operation CSRF.
 CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     "authority_provider_entrypoint_resolve",
+    # W502: authenticated only by the peer's admission proof and single-use
+    # nonce; the browser session is discarded (``del request``) and never
+    # establishes authority (test_w502_peer_endpoints_ignore_the_browser_session).
+    "card_census_read",
+    "card_transaction_participant",
     "delegated_admission",
     "federated_data_bus_claim",
     "project_agent_github_token_issue",
