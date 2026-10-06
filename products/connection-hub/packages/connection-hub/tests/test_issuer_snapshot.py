@@ -173,6 +173,17 @@ def test_ordinary_dotted_names_are_not_mistaken_for_a_jwt(name):
     assert full_authority(card)["label"] == name
 
 
+@pytest.mark.parametrize("value", [f"auth={SYNTHETIC_JWT}", f"see {SYNTHETIC_JWT} here", f"[{SYNTHETIC_JWT}]"])
+def test_a_jwt_embedded_in_a_longer_value_refuses(value):
+    with pytest.raises(IssuerSnapshotRefused, match="credential_material"):
+        full_authority(dataclasses.replace(_pair()[0], label=value))
+
+
+def test_eyj_inside_a_longer_word_is_not_an_embedded_jwt():
+    name = "abceyJxxxxxx.yyyyyyyy.zzzzzzzzq"
+    assert full_authority(dataclasses.replace(_pair()[0], label=name))["label"] == name
+
+
 def test_identity_fields_may_look_random_without_refusing():
     # Opaque identifiers are exempt from the high-entropy rule only.
     opaque = "aB3dE5fG7hJ9kL1mN3pQ5rS7tV9wX1yZ"

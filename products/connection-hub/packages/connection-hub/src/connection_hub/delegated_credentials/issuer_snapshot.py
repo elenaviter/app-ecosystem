@@ -68,6 +68,9 @@ SECRET_SHAPES = tuple(re.compile(pattern) for pattern in (
     # "properties.coordination.version_control".
     r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
 ))
+# A JWT embedded inside a longer value ("auth=eyJ..."): the eyJ header anchor
+# keeps a search with token boundaries specific enough not to hit names.
+EMBEDDED_JWT = re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])")
 # Identity fields hold opaque identifiers that may look random; they are
 # exempt from the high-entropy rule only, not from the issued-secret shapes.
 IDENTITY_FIELDS = ("access_id", "client_id", "grantor_subject", "delegate_subject", "issuer_ref")
@@ -152,7 +155,7 @@ def _request_valid(request: Any) -> bool:
 def _secret_shaped(value: str, *, entropy: bool = True) -> bool:
     """A value that looks like a credential by its complete shape, never by a word in it."""
     text = value.strip()
-    if any(shape.fullmatch(text) for shape in SECRET_SHAPES):
+    if any(shape.fullmatch(text) for shape in SECRET_SHAPES) or EMBEDDED_JWT.search(text):
         return True
     if not entropy or (len(text) == 64 and set(text) <= set("0123456789abcdef")):
         return False  # an identity field, or a lowercase hex fingerprint
