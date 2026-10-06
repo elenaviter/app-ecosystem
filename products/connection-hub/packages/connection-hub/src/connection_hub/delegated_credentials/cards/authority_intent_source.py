@@ -21,6 +21,7 @@ caller. Nothing here is module state.
 
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -35,6 +36,7 @@ from .transaction_authority_v2 import TransactionAuthorityRefused, VerifiedCardA
 # fetch(transaction_id, phase, request_echo) -> the authority's response
 # mapping; a remote refusal raises TransactionAuthorityRefused(reason).
 AuthorityFetch = Callable[[str, str, str], Awaitable[Mapping[str, Any]]]
+_HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,9 @@ class AuthorityCardIntentSource(_AuthorityReads):
             raise DecisionRefused("card_intent_unknown" if exc.reason == "authority_late_stage" else exc.reason) from None
         projection, value = verified.projection, verified.candidate
         subject_hash = projection["target_scope"]
+        if type(subject_hash) is not str or not _HEX64.fullmatch(subject_hash):
+            # The Hub's storage scope, sha256(grantor_subject) hex (EMain C1); never a raw subject.
+            raise DecisionRefused("card_intent_not_bound")
         current = await self._store.read_current_authority(subject_hash=subject_hash, access_id=value["access_id"])
         if current is None or current[1].card_revision != value["original_revision"]:
             raise DecisionRefused("card_intent_base_moved")
