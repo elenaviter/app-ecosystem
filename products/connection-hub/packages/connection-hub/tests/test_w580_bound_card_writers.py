@@ -369,3 +369,214 @@ async def test_a_fold_staged_after_its_precondition_moves_no_policy_or_grant(tmp
     h.service._mint_card_credential = staged_then_mint
     result = await h.service.migrate_resident_profile(USER, client_id=CLIENT)
     await _fold_refused_with_no_effect(h, legacy, stable, held, moved, result)
+
+
+def _stage_before(h, method: str, card) -> None:
+    """The project stages ``card`` just before the writer's ``method`` runs."""
+
+    original = getattr(h.service, method)
+
+    async def staged_then_call(*args, **kwargs):
+        await _stage_on(h, card)
+        return await original(*args, **kwargs)
+
+    setattr(h.service, method, staged_then_call)
+
+
+async def _stable_card(h):
+    from test_resident_profile_cards import MEMORIES, _profile
+
+    stable = dataclasses.replace(h.legacy_authority(
+        resource=MEMORIES, grants=("memories:read",), operations=("search",),
+        created_at=h.now - 100, expires_at=h.now + 30_000),
+        access_id=_profile().access_id, card_revision=1)
+    return stable, await _seed(h, stable)
+
+
+async def _consent(h):
+    from test_resident_profile_cards import CLIENT, TASKS, USER
+
+    return await h.service.create_access(
+        USER, label="", resource_grants={TASKS: ["tasks:use"]},
+        resource_operations={TASKS: ["search"]}, client_id=CLIENT,
+    )
+
+
+async def _refused_untouched(h, card, held, result):
+    assert result["ok"] is False and result["retryable"] is True
+    assert h.grant_store.bindings == {} and h.grant_store.revoked == []
+    assert await h.handles.read(card) == held
+    await _decide(h, "aborted")
+    assert await _read(h, card) == card
+
+
+@pytest.mark.asyncio
+async def test_a_consent_merging_into_a_staged_card_is_refused_with_no_effect(tmp_path, redis_client):
+    h = await _hub(tmp_path, redis_client)
+    stable, held = await _stable_card(h)
+    await _stage_on(h, stable)
+    await _refused_untouched(h, stable, held, await _consent(h))
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    reason="W580 finding 3 (create_access): a consent staged after its precondition "
+    "read binds a minted grant before the refused commit",
+)
+async def test_a_consent_staged_after_its_precondition_binds_no_grant(tmp_path, redis_client):
+    h = await _hub(tmp_path, redis_client)
+    stable, held = await _stable_card(h)
+    _stage_before(h, "_mint_card_credential", stable)
+    await _refused_untouched(h, stable, held, await _consent(h))
+
+
+@pytest.mark.asyncio
+async def test_a_consent_on_a_card_without_a_transaction_still_merges(tmp_path, redis_client):
+    from test_resident_profile_cards import TASKS
+
+    h = await _hub(tmp_path, redis_client)
+    stable, _held = await _stable_card(h)
+    result = await _consent(h)
+    assert result["ok"] is True and result["access"]["access_id"] == stable.access_id
+    current = await _read(h, stable)
+    assert current.card_revision == stable.card_revision + 1
+    assert TASKS in current.resource_grants
+    assert [binding["registry_access_id"] for binding in h.grant_store.bindings.values()] == [
+        stable.access_id
+    ]
+
+
+async def _manual_card(h):
+    from test_resident_profile_cards import USER
+
+    created = await h.service.create_access(
+        USER, label="manual", resource_grants={_memories(): ["memories:read"]},
+        resource_operations={_memories(): ["search"]},
+    )
+    assert created["ok"], created
+    access_id = created["access"]["access_id"]
+    card = await _read(h, SimpleNamespace(access_id=access_id))
+    h.grant_store.bindings.clear()
+    return card, await h.handles.read(card)
+
+
+def _memories():
+    from test_resident_profile_cards import MEMORIES
+
+    return MEMORIES
+
+
+@pytest.mark.asyncio
+async def test_a_reissue_of_a_staged_card_is_refused_with_no_effect(tmp_path, redis_client):
+    from test_resident_profile_cards import USER
+
+    h = await _hub(tmp_path, redis_client)
+    card, held = await _manual_card(h)
+    await _stage_on(h, card)
+    result = await h.service.renew_access(USER, access_id=card.access_id, mode="reissue")
+    await _refused_untouched(h, card, held, result)
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    strict=True,
+    reason="W580 finding 3 (renew reissue): a reissue staged after its precondition "
+    "read binds a minted grant before the refused commit",
+)
+async def test_a_reissue_staged_after_its_precondition_binds_no_grant(tmp_path, redis_client):
+    from test_resident_profile_cards import USER
+
+    h = await _hub(tmp_path, redis_client)
+    card, held = await _manual_card(h)
+    _stage_before(h, "_mint_card_credential", card)
+    result = await h.service.renew_access(USER, access_id=card.access_id, mode="reissue")
+    await _refused_untouched(h, card, held, result)
+
+
+async def _oauth_card(h):
+    from test_oauth_card_extension import _issued
+
+    record = await _issued(h)
+    card = await _read(h, record)
+    return card, await h.handles.read(card)
+
+
+async def _extend(h, card):
+    from test_oauth_card_extension import CLIENT
+    from test_resident_profile_cards import USER
+
+    return await h.service.extend_client_access(
+        USER, client_id=CLIENT, access_id=card.access_id,
+        resource=_memories(), claims=["memories:write"],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["before", "after_precondition"])
+async def test_an_extension_of_a_staged_oauth_card_is_refused_with_no_effect(
+    tmp_path, redis_client, stage
+):
+    h = await _hub(tmp_path, redis_client)
+    card, held = await _oauth_card(h)
+    if stage == "before":
+        await _stage_on(h, card)
+    else:
+        # Staged after the card loaded, before the extension commits.
+        _stage_before(h, "_resolve_card_authority", card)
+    await _refused_untouched(h, card, held, await _extend(h, card))
+
+
+@pytest.mark.asyncio
+async def test_an_extension_of_an_oauth_card_without_a_transaction_still_extends(tmp_path, redis_client):
+    h = await _hub(tmp_path, redis_client)
+    card, _held = await _oauth_card(h)
+    result = await _extend(h, card)
+    assert result["ok"] is True, result
+    current = await _read(h, card)
+    assert current.card_revision == card.card_revision + 1
+    assert "memories:write" in current.resource_grants[_memories()]
+
+
+async def _rotate(h):
+    from test_oauth_card_extension import CLIENT, CONCRETE
+    from test_resident_profile_cards import GRANTOR
+
+    return await h.service.record_oauth_grant(
+        grantor_subject=GRANTOR, client_id=CLIENT, client_label="Claude Code",
+        scopes=["memories:read"], resource=CONCRETE,
+        access_token="at-2", refresh_token="rt-2",
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["before", "after_precondition"])
+async def test_a_token_rotation_on_a_staged_oauth_card_is_refused_with_no_effect(
+    tmp_path, redis_client, stage
+):
+    from connection_hub.delegated_credentials.cards.service import CardConflict
+
+    h = await _hub(tmp_path, redis_client)
+    card, held = await _oauth_card(h)
+    if stage == "before":
+        await _stage_on(h, card)
+    else:
+        _stage_before(h, "_load_record", card)
+    # The token route catches CardConflict and withholds or keeps its tokens.
+    # An already-staged Card is refused at its read, with the generic reason.
+    reason = "delegated_cards_unavailable" if stage == "before" else "card_transaction_unresolved"
+    with pytest.raises(CardConflict, match=reason):
+        await _rotate(h)
+    assert await h.handles.read(card) == held
+    await _decide(h, "aborted")
+    assert await _read(h, card) == card
+
+
+@pytest.mark.asyncio
+async def test_a_token_rotation_without_a_transaction_still_records(tmp_path, redis_client):
+    h = await _hub(tmp_path, redis_client)
+    card, _held = await _oauth_card(h)
+    recorded = await _rotate(h)
+    assert recorded is not None and recorded.access_id == card.access_id
+    assert (await _read(h, card)).card_revision == card.card_revision + 1
+    assert (await h.handles.read(card)).access_token == "at-2"
