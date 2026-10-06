@@ -146,7 +146,7 @@ def test_an_unrecorded_revision_skips_on_an_author_head_and_fails_for_the_merger
 def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     package = json.loads(_read("package.json"))
     skill = _read("SKILL.md")
-    assert package["revision"] == "2026.10.06.5"
+    assert package["revision"] == "2026.10.06.6"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
     # W563: coordinator.md and collaboration.md are indexes over one module
@@ -2712,3 +2712,17 @@ def test_operator_steps_use_only_notes_status_and_assignee() -> None:
     assert "set **Status** to **Working**, choose the agent in **Assignee**, and say in Notes what differs" in collaboration
     assert "Never name a control the dialog does not have." in collaboration
     assert "a review verdict on the item, or a reply to the message" not in collaboration
+
+
+def test_the_entrypoint_itself_keeps_the_must_rules_its_modules_detail() -> None:
+    # Ops' review of #575: rules that have bitten the team stay in SKILL.md,
+    # not only in the act module its trigger opens.
+    entrypoint = _words((PROCEDURE_ROOT / "SKILL.md").read_text(encoding="utf-8"))
+    for rule in (
+        "a claim that a change landed names the merge commit after you fetched it, never the intention to merge",
+        "a claim about what a host installs is settled by a fresh install at the commit",
+        "documentation changes in the same item as the behaviour it describes",
+        "on a schedule whose every interval, including the wrap of the hour, is shorter than its 30-minute cap",
+        "exec pb worker watch --runtime-kind claude-code --runtime-session-id <id> 2>&1",
+    ):
+        assert rule in entrypoint, rule

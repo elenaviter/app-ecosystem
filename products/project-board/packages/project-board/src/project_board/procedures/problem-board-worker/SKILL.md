@@ -72,7 +72,8 @@ The steps, in order, each in full in [start or resume](references/start-or-resum
 The notification path stays live all session. Codex: the login relay's
 `codex-queue` wake; never start `pb worker watch` as a wake mechanism. Claude
 Code: exactly one Monitor attachment, `timeout_ms` 1800000, `<id>` this
-session's id, replaced by a recurring guard prompt before its 30-minute cap; on
+session's id, replaced by a recurring guard prompt on a schedule whose every
+interval, including the wrap of the hour, is shorter than its 30-minute cap; on
 its end notice, start it again and run `pb worker receive`
 ([claude-code-wake](references/claude-code-wake.md)):
 
@@ -335,8 +336,11 @@ one, read [source and review](references/source-and-review.md) in full. In
 short: one registered working tree per agent, never a shared checkout; a
 `work/<wN>-<short-slug>` branch pushed by you and a change request against
 `main`; intent published on the shared-write dashboard before the first edit; an
-approval is a board mail naming the exact head; nothing non-public in a public
-repository; never `git add -A`, never `git stash`.
+approval is a board mail naming the exact head; a claim that a change landed
+names the merge commit after you fetched it, never the intention to merge; a
+claim about what a host installs is settled by a fresh install at the commit;
+documentation changes in the same item as the behaviour it describes; nothing
+non-public in a public repository; never `git add -A`, never `git stash`.
 
 ## Keep The Operator Informed, And Name The Kind
 
