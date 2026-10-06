@@ -82,7 +82,7 @@ test('a project member reads the Card and is told who changes it', () => {
   assert.match(PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE, /A project admin changes this project's Control Card/)
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   // One read-only rule for every project path, checked before anything is written (H1).
-  assert.match(panel, /const readOnlyReason = cardReadOnlyReason\(item, focusedViewer\);/)
+  assert.match(panel, /const readOnlyReason = cardSaveBlockedReason\(item, focusedViewer\);/)
   assert.match(source('src/features/delegatedAccess/cardEditability.ts'), /if \(projectControlCardReadOnly\(item\)\) return PROJECT_CONTROL_CARD_READ_ONLY_MESSAGE;/)
 })
 

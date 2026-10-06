@@ -186,7 +186,7 @@ import {
   projectAgentCardFocus,
   projectAgentCardUpdateTarget,
 } from './projectAgentCard';
-import { cardReadOnlyReason } from './cardEditability';
+import { cardPermissionUnknown, cardReadOnlyReason, cardSaveBlockedReason } from './cardEditability';
 import {
   projectControlCardUpdateTarget,
 } from './projectControlCard';
@@ -3190,7 +3190,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setEditActionError(STALE_EDIT_MESSAGE);
       return;
     }
-    const readOnlyReason = cardReadOnlyReason(item, focusedViewer);
+    const readOnlyReason = cardSaveBlockedReason(item, focusedViewer);
     if (readOnlyReason) {
       setEditActionError(readOnlyReason);
       return;
@@ -5519,10 +5519,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               disabled={busy
                 || problems.length > 0
                 || staleEdit(editBaseRevision.current, record.card_revision, editRefusedStale)
-                || Boolean(cardReadOnlyReason(record, focusedViewer))
+                || Boolean(cardSaveBlockedReason(record, focusedViewer))
                 || (residentCapabilityCard && !residentCapabilityAuthority)
                 || (descriptorCapabilityControl && !descriptorCapabilityAuthority)}
-              title={cardReadOnlyReason(record, focusedViewer) || problemText || undefined}
+              title={cardSaveBlockedReason(record, focusedViewer) || problemText || undefined}
               onClick={() => saveEdit(record)}
             >
               Save
@@ -5662,8 +5662,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                   <button
       className="btn"
       type="button"
-      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardReadOnlyReason(item, focusedViewer))}
-      title={cardReadOnlyReason(item, focusedViewer) || editSaveProblems(item)
+      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardSaveBlockedReason(item, focusedViewer))}
+      title={cardSaveBlockedReason(item, focusedViewer) || editSaveProblems(item)
         .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
         .join(' ') || undefined}
       onClick={() => saveEdit(item)}
@@ -5879,8 +5879,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                           <button
       className="btn"
       type="button"
-      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardReadOnlyReason(item, focusedViewer))}
-      title={cardReadOnlyReason(item, focusedViewer) || editSaveProblems(item)
+      disabled={busy || editSaveProblems(item).length > 0 || Boolean(cardSaveBlockedReason(item, focusedViewer))}
+      title={cardSaveBlockedReason(item, focusedViewer) || editSaveProblems(item)
         .map((problem) => saveProblemText(problem, (resource) => editResourceTitle(item, resource)))
         .join(' ') || undefined}
       onClick={() => saveEdit(item)}
@@ -5924,6 +5924,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           <strong>{isRequestLimitRefusal(delegatedAccessError) ? 'Too many requests.' : 'Card unavailable.'}</strong>{' '}
           {unavailableAccessCardMessage(accessCardFocus, delegatedAccessError)}
         </div>
+      ) : null}
+      {focusedCard && accessCardFocusState === 'resolved' && cardPermissionUnknown(focusedCard, focusedViewer) ? (
+        <div className="notice" role="status">{cardPermissionUnknown(focusedCard, focusedViewer)}</div>
       ) : null}
       {focusedCard && accessCardFocusState === 'resolved' && cardReadOnlyReason(focusedCard, focusedViewer) ? (
         // Said up front: this viewer reads this Card and cannot change it.
