@@ -14,6 +14,8 @@ request) names, for one peer:
 - ``census_scope_prefix``: the scopes this caller may read with
   ``card_census_read`` (``work:project:`` for Problem Board); absent, the
   caller gets no census;
+- ``plan_scope_prefix``: the scopes this caller may plan in with
+  ``card_lifecycle_plan`` (W578); absent, the caller gets no planning;
 - ``authority``: the peer's transaction authority, which the Hub reads back
   through: ``service_id``, ``audience`` and ``secret_ref`` verify its signed
   responses; ``request_signer_id`` and ``request_secret_ref`` sign the Hub's
@@ -56,6 +58,7 @@ class ParticipantCallerDescriptor:
     hub_resource: str
     scope_field: str
     census_scope_prefix: str
+    plan_scope_prefix: str
     authority_service_id: str
     authority_audience: str
     authority_secret_ref: str
@@ -72,16 +75,18 @@ class ParticipantCallerDescriptor:
         values.update({f"authority_{name}": authority.get(name) for name in _AUTHORITY_TEXT})
         scope_field = raw.get("scope_field") or ""
         census_scope_prefix = raw.get("census_scope_prefix") or ""
+        plan_scope_prefix = raw.get("plan_scope_prefix") or ""
         if (type(service_id) is not str or not service_id
                 or any(type(value) is not str or not value for value in values.values())
-                or type(scope_field) is not str or type(census_scope_prefix) is not str):
+                or type(scope_field) is not str or type(census_scope_prefix) is not str
+                or type(plan_scope_prefix) is not str):
             raise ValueError("participant_caller_descriptor_invalid")
         binding = AuthorityBindingConfig.from_mapping(authority.get("binding"))
         if scope_field and scope_field in binding.request_fields:
             # The scope comes from the verified request, never fixed in the descriptor.
             raise ValueError("participant_caller_descriptor_invalid")
         return cls(service_id=service_id, scope_field=scope_field, census_scope_prefix=census_scope_prefix,
-                   binding=binding,
+                   plan_scope_prefix=plan_scope_prefix, binding=binding,
                    authority_service_id=values.pop("authority_service_id"),
                    authority_audience=values.pop("authority_audience"),
                    authority_secret_ref=values.pop("authority_secret_ref"),
@@ -177,7 +182,7 @@ async def build_participant_callers(
             service_id=service_id, request_secret=request_secret, receipt_secret=receipt_secret,
             receipt_signer_id=descriptor.receipt_signer_id, audience=descriptor.audience,
             hub_resource=descriptor.hub_resource, bind=bind, scope_field=descriptor.scope_field,
-            census_scope_prefix=descriptor.census_scope_prefix)
+            census_scope_prefix=descriptor.census_scope_prefix, plan_scope_prefix=descriptor.plan_scope_prefix)
         authorities[service_id] = reader_for
     return BuiltCallers(callers=callers, authorities=authorities)
 
