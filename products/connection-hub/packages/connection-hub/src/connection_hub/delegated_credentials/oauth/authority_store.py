@@ -1342,8 +1342,10 @@ class PostgresOAuthAuthorityStore:
                     f"""
                     SELECT count(*) FROM {self.schema}.{TABLE_ACCESS_BINDINGS}
                     WHERE registry_access_id = $1 AND state = 'active' AND expires_at > now()
+                      AND card_revision <= $2
                     """,
                     access_id,
+                    card_revision,
                 )
                 if not family_ids and not bindings:
                     return "no_active_credentials"
@@ -1378,14 +1380,18 @@ class PostgresOAuthAuthorityStore:
                 await connection.execute(
                     f"""
                     UPDATE {self.schema}.{TABLE_ACCESS_BINDINGS}
-                    SET expires_at = to_timestamp($2), revision = revision + 1, updated_at = now()
+                    SET expires_at = to_timestamp($2), card_revision = $3,
+                        revision = revision + 1, updated_at = now()
                     WHERE registry_access_id = $1
                       AND state = 'active'
                       AND expires_at > now()
-                      AND expires_at IS DISTINCT FROM to_timestamp($2)
+                      AND card_revision <= $3
+                      AND (expires_at IS DISTINCT FROM to_timestamp($2)
+                           OR card_revision IS DISTINCT FROM $3)
                     """,
                     access_id,
                     expires_at,
+                    card_revision,
                 )
         return "applied"
 

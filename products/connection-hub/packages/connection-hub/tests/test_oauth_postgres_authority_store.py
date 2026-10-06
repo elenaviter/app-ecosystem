@@ -1141,3 +1141,39 @@ async def test_w585_rotation_racing_the_lifetime_effect_never_passes_the_committ
         assert family["expires_at"] <= cap and generation["expires_at"] <= cap  # never revived or extended
     finally:
         await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_a_stale_lifetime_effect_never_moves_the_access_binding() -> None:
+    # Ops W1 (14:25): the binding is revision-guarded like the family. A replayed revision-3
+    # effect after the revision-5 cap moves neither the family nor the access binding.
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        await store.bind_access_grant("access-bearer", {"registry_access_id": "aut_card", "operations": ["search"]},
+                                      ttl_seconds=3600)
+        assert await store.set_card_credentials_expiry("aut_card", now + 600, card_revision=5) == "applied"
+
+        async def binding():
+            async with pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    f"""SELECT extract(epoch FROM expires_at)::bigint AS expires_at, card_revision
+                        FROM {store.schema}.{TABLE_ACCESS_BINDINGS} WHERE registry_access_id = 'aut_card'""")
+            return dict(row)
+
+        assert await binding() == {"expires_at": now + 600, "card_revision": 5}
+        for stale in (now + 3000, now + 60):  # later and earlier deadlines from an older revision
+            # Every live row is at a newer revision: the superseded effect is the named no-op.
+            assert await store.set_card_credentials_expiry("aut_card", stale, card_revision=3) == "no_active_credentials"
+            assert await binding() == {"expires_at": now + 600, "card_revision": 5}
+            family, _ = await _family(pool, store)
+            assert (family["cap"], family["card_revision"]) == (now + 600, 5)
+        # A second family issued later without a revision (0) lets the stale effect through the
+        # live-row count; the binding's own guard still leaves it at revision 5.
+        second = {**RECORD, "client_id": "client-2"}
+        await store.create_refresh_token(second, ttl_seconds=3600)
+        await store.set_card_credentials_expiry("aut_card", now + 3000, card_revision=3)
+        assert await binding() == {"expires_at": now + 600, "card_revision": 5}
+    finally:
+        await _drop(pool, store)
