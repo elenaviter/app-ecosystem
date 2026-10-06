@@ -147,16 +147,17 @@ async def test_forged_user_id_and_fingerprint_in_the_body_never_select_the_actor
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("session,status", [
-    (_session(user_type="anonymous", user_id="anonymous"), 401),
+@pytest.mark.parametrize("session,status,detail", [
+    (_session(user_type="anonymous", user_id="anonymous"), 401, "User is required."),
     (_session(user_type="external", user_id="owner-0", username="integration:agent:owner-0",
-              authority={"authority_id": "delegated_client", "grantor_user_id": "owner-0"}), 403),
+              authority={"authority_id": "delegated_client", "grantor_user_id": "owner-0"}), 403,
+     "Bundle operation issuer_managed_lifecycle_apply is not visible to this user"),
 ], ids=["anonymous", "external-owner-equal"])
-async def test_a_non_human_session_is_refused_by_the_mounted_dispatch_before_the_handler(mounted, session, status):
+async def test_a_non_human_session_is_refused_by_the_mounted_dispatch_before_the_handler(mounted, session, status, detail):
     with pytest.raises(HTTPException) as refused:
         await _apply(session, _body())
 
-    assert refused.value.status_code == status
+    assert (refused.value.status_code, refused.value.detail) == (status, detail)
     assert mounted.bound == [] and mounted.applied == []
 
 
@@ -178,7 +179,7 @@ async def test_an_ambient_cookie_session_without_its_single_use_csrf_token_is_re
     with pytest.raises(HTTPException) as refused:
         await _apply(_session(), _body(), request=_request(cookie=True, bearer=False))
 
-    assert refused.value.status_code in (401, 403)
+    assert (refused.value.status_code, refused.value.detail) == (403, "Operation CSRF token is missing, expired, or invalid.")
     assert mounted.bound == [] and mounted.applied == []
 
 
@@ -186,5 +187,5 @@ async def test_an_ambient_cookie_session_without_its_single_use_csrf_token_is_re
 async def test_a_nested_dto_extra_is_refused_after_identity_and_before_the_service(mounted):
     response = await _apply(_session(), {"data": {**_body(), "actor_subject": "owner-0"}})
 
-    assert _result(response)["ok"] is False and _result(response)["status"] == 400, response
+    assert _result(response) == {"ok": False, "error": "issuer_lifecycle_request_invalid", "status": 400}, response
     assert mounted.applied == []
