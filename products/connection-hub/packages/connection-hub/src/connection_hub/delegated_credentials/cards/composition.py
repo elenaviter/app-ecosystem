@@ -55,16 +55,37 @@ async def postgres_decision_store(pg_pool: Any, *, tenant: str, project: str) ->
     N1), so first creation runs under a session advisory lock: one creator at
     a time across processes.
     """
-    store = PostgresDecisionStore(pg_pool, schema=DECISION_SCHEMA,
-                                  namespace=decision_namespace(tenant=tenant, project=project))
+    namespace = decision_namespace(tenant=tenant, project=project)
     async with pg_pool.acquire() as connection:
         await connection.execute("SELECT pg_advisory_lock(hashtext($1))", DECISION_SCHEMA)
         try:
             await connection.execute(f"CREATE SCHEMA IF NOT EXISTS {DECISION_SCHEMA}")
-            await store.ensure_schema()
+            # Schema DDL on the SAME connection that holds the lock, so a pool
+            # of size 1 cannot deadlock waiting for a second one (EMain #599).
+            await PostgresDecisionStore(_HeldConnection(connection), schema=DECISION_SCHEMA,
+                                        namespace=namespace).ensure_schema()
         finally:
             await connection.execute("SELECT pg_advisory_unlock(hashtext($1))", DECISION_SCHEMA)
-    return store
+    return PostgresDecisionStore(pg_pool, schema=DECISION_SCHEMA, namespace=namespace)
+
+
+class _HeldConnection:
+    """A pool-shaped view of one already-acquired connection, for schema setup only."""
+
+    def __init__(self, connection: Any) -> None:
+        self._connection = connection
+
+    def acquire(self) -> Any:
+        connection = self._connection
+
+        class _Lease:
+            async def __aenter__(self):
+                return connection
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Lease()
 
 
 def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_store: Any,

@@ -209,3 +209,25 @@ async def test_a_failing_participant_is_reported_and_retried_not_hidden(tmp_path
         assert (await composition.recover_card_transactions(coordinator))["finished"] == 1
     finally:
         await drop()
+
+
+@pytest.mark.asyncio
+async def test_first_creation_works_with_a_pool_of_one_connection():
+    # EMain #599 edge: ensure_schema must not wait for a second connection while the lock is held.
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+    import asyncio
+
+    import asyncpg
+
+    from connection_hub.delegated_credentials.cards import composition
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
+    try:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {composition.DECISION_SCHEMA} CASCADE")
+        store = await asyncio.wait_for(composition.postgres_decision_store(pool, tenant="t", project="one"), 10)
+        assert await store.list_in_doubt(limit=1) == []
+    finally:
+        await pool.close()
