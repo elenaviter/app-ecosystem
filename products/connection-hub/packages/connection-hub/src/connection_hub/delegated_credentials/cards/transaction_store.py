@@ -120,6 +120,31 @@ async def apply_effects(store: Any, receipt: Mapping[str, Any], apply: Any) -> N
     await _clear_marker(store, receipt)
 
 
+def tombstone_path(store: Any, transaction_id: str):
+    """An ABORT finished for a transaction this participant never durably prepared."""
+    return store.root / "card-transactions" / "aborted" / f"{_checked_id(transaction_id)}.json"
+
+
+async def abort_unstaged(store: Any, transaction_id: str) -> dict[str, Any]:
+    """FINISH(aborted) of a transaction with no prepared receipt: an idempotent abort tombstone.
+
+    The coordinator finishes an ABORT on every intent participant, including
+    one whose prepare reply was lost (W581 F1); a stage that crashed before
+    its receipt also leaves only an index entry. The tombstone makes any late
+    stage of this transaction refuse, and the index entry is released.
+    """
+
+    if await read_receipt(store, transaction_id) is not None:
+        raise CardTransactionRefused("card_transaction_prepared")  # finish it through decide
+    tombstone = {"transaction_id": transaction_id, "state": "aborted"}
+    await write_json_atomic(tombstone_path(store, transaction_id), tombstone)
+    try:
+        active_path(store, transaction_id).unlink(missing_ok=True)
+    except OSError:
+        pass  # an unstaged entry holds no fence; recovery lists it until removed
+    return tombstone
+
+
 def active_path(store: Any, transaction_id: str):
     """An in-flight transaction's index entry: written before its receipt, removed once decided."""
     return store.root / "card-transactions" / "active" / f"{_checked_id(transaction_id)}.json"
@@ -399,6 +424,18 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
         raise CardTransactionRefused("card_transaction_intent_invalid")
     port = getattr(store, "_card_transaction_decisions", None)
     existing = await read_receipt(store, transaction_id)
+    if existing is None:
+        # A late stage never opens a fence the coordinator will not finish:
+        # refuse once an ABORT tombstone exists or a decision is recorded.
+        if await read_json_or_none(tombstone_path(store, transaction_id)) is not None:
+            raise CardTransactionRefused("card_transaction_aborted")
+        if port is not None:
+            try:
+                recorded = await port.decision({"transaction_id": transaction_id, "intent_digest": intent_digest})
+            except Exception:  # noqa: BLE001 - an unknown decision does not block a first stage
+                recorded = "undecided"
+            if recorded in DECISIONS:
+                raise CardTransactionRefused("card_transaction_late_stage")
     if existing is not None and existing["state"] == "prepared" and port is not None:
         try:
             if await port.decision(dict(existing)) == "aborted":
@@ -524,6 +561,6 @@ async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
 
 
 __all__ = ["CardTransactionRefused", "DECISIONS", "TRANSACTION_POINTER_SCHEMA", "TRANSACTION_RECEIPT_SCHEMA",
-           "TransactionDecisionPort", "active_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
+           "TransactionDecisionPort", "abort_unstaged", "active_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
            "effects_path", "list_in_doubt", "marker_path", "pending_effects",
            "read_receipt", "resolve_pointer", "stage", "state"]

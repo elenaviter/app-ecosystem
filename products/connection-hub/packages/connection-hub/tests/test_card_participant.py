@@ -178,3 +178,29 @@ async def test_recovery_lists_the_prepared_card_and_finishes_it(tmp_path):
     await coordinator.decide(record.transaction_id, "committed")
     await coordinator.recover(limit=10)
     assert await _visible(store, before) == after and await hub.list_prepared(limit=10) == []
+
+
+@pytest.mark.asyncio
+async def test_an_abort_finishes_a_participant_whose_prepare_was_never_recorded(tmp_path):
+    # W581 F1: an ABORT reaches every intent participant; the Hub answers with
+    # an idempotent tombstone, and a late stage of that transaction refuses.
+    store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path)
+    await decisions.begin(intent)
+    await coordinator.decide(TXID, "aborted")
+    hub = coordinator.participants[PARTICIPANT]
+    first = await hub.finish(TXID, "aborted")
+    again = await hub.finish(TXID, "aborted")
+    assert first == again and first.participant == PARTICIPANT
+    with pytest.raises(DecisionRefused, match="card_transaction_aborted"):
+        await hub.prepare(TXID)
+    assert await _visible(store, before) == before and await tx.list_in_doubt(store) == []
+
+
+@pytest.mark.asyncio
+async def test_a_stage_after_a_recorded_decision_is_refused(tmp_path):
+    store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path)
+    await decisions.begin(intent)
+    await decisions.decide(TXID, "aborted")
+    with pytest.raises(DecisionRefused, match="card_transaction_late_stage"):
+        await coordinator.participants[PARTICIPANT].prepare(TXID)
+    assert await _visible(store, before) == before

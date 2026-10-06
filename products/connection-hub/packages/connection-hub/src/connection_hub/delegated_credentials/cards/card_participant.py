@@ -149,6 +149,12 @@ class HubCardParticipant:
 
     async def finish(self, transaction_id: str, decision: str) -> Receipt:
         intent = await self._intents.load(transaction_id)
+        if decision == "aborted" and await read_state(self._store, transaction_id=transaction_id) is None:
+            # Never durably prepared here (a lost prepare reply, or a stage
+            # that crashed first): an idempotent abort tombstone (W581 F1).
+            from .transaction_store import abort_unstaged
+            tombstone = await abort_unstaged(self._store, transaction_id)
+            return Receipt(transaction_id, intent.intent_digest, PARTICIPANT, receipt_digest(tombstone))
         try:
             decided = await self._service.decide_transaction(
                 transaction_id=transaction_id, intent_digest=intent.intent_digest, decision=decision,
