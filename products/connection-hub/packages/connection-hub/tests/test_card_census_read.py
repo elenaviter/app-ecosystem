@@ -296,3 +296,70 @@ def test_the_census_signature_is_the_shared_helpers_construction():
         proof = answer.pop("receipt_proof")
         assert answer_frame_signature(answer, schema=shared["config"]["schema"], secret=shared["config"]["secret"],
                                       signer_id=proof["service_id"], timestamp=proof["timestamp"]) == proof["signature"]
+
+
+# ── a deeper real hierarchy with a staged mid-chain ancestor (EMain #616, before activation) ──
+
+
+@pytest.mark.asyncio
+async def test_a_staged_upstream_ancestor_makes_the_chain_in_transaction_then_complete(tmp_path):
+    from test_control_hierarchy import binding, caller, control
+
+    store, service, before, after = await _setup(tmp_path)
+    owner_hash = subject_hash_for("owner")
+    parent = control("parent", ["https://service.example.test/mcp"])
+    child = dataclasses.replace(control("child", []), control_card=binding(parent))
+    for card in (parent, child):
+        await service.commit(card, subject_hash=owner_hash, expected_revision=0, now=NOW)
+    person = caller([], child)
+    operation = CardCensusReadOperation(callers={}, card_store=store, catalog_store=None, nonces=_Nonces(),
+                                        clock=lambda: NOW)
+
+    complete = await operation._chain(person)
+    assert complete["state"] == "complete"
+    assert [card["access_id"] for card in complete["cards"]] == ["child", "parent"]  # direct Control first
+    assert all(card["subject_hash"] == owner_hash and card["revision"] == 1 for card in complete["cards"])
+
+    await tx.stage(store, transaction_id=TX, intent_digest=INTENT, participant="project", subject_hash=owner_hash,
+                   original=parent, candidate=dataclasses.replace(parent, card_revision=2, label="staged"),
+                   now=datetime.fromtimestamp(NOW, timezone.utc))
+    assert await operation._chain(person) == {"state": "in_transaction", "cards": []}  # never a partial complete
+
+    store._card_transaction_decisions.recorded[TX] = "aborted"
+    await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="aborted")
+    assert (await operation._chain(person))["state"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_a_missing_upstream_ancestor_is_unavailable_not_complete(tmp_path):
+    from test_control_hierarchy import binding, caller, control
+
+    store, service, before, after = await _setup(tmp_path)
+    parent = control("parent", [])
+    child = dataclasses.replace(control("child", []), control_card=binding(parent))
+    await service.commit(child, subject_hash=subject_hash_for("owner"), expected_revision=0, now=NOW)
+    operation = CardCensusReadOperation(callers={}, card_store=store, catalog_store=None, nonces=_Nonces(),
+                                        clock=lambda: NOW)
+    result = await operation._chain(caller([], child))
+    assert result["state"] == "unavailable" and result["cards"] == [] and result["reason"]
+
+
+# ── shared census answer vectors for the PB consumer (EMain #616) ──
+
+CENSUS_VECTORS = __import__("json").loads((__import__("pathlib").Path(__file__).parent / "fixtures"
+                                           / "w502_census_answer_vectors.json").read_text())
+
+
+@pytest.mark.parametrize("vector", CENSUS_VECTORS["vectors"], ids=[v["name"] for v in CENSUS_VECTORS["vectors"]])
+def test_the_hub_reproduces_each_shared_census_vector(vector):
+    config = CENSUS_VECTORS["config"]
+    assert (config["schema"], config["request_schema"]) == (ANSWER_SCHEMA, REQUEST_SCHEMA)
+    assert census_request_digest(vector["request"]) == vector["request_digest"]
+    answer = dict(vector["answer"])
+    proof = answer.pop("receipt_proof")
+    assert census_answer_signature(answer, secret=config["secret"], signer_id=proof["service_id"],
+                                   timestamp=proof["timestamp"]) == proof["signature"]
+    for field in CENSUS_VECTORS["signed_fields"]:
+        tampered = {**answer, field: "f" * 32 if isinstance(answer[field], str) else {"tampered": True}}
+        assert census_answer_signature(tampered, secret=config["secret"], signer_id=proof["service_id"],
+                                       timestamp=proof["timestamp"]) != proof["signature"], field
