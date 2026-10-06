@@ -31,6 +31,7 @@ import hashlib
 import json
 import re
 import time
+import uuid
 from typing import Any
 
 from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
@@ -137,10 +138,25 @@ class CatalogReservations:
 
         return await asyncio.to_thread(read_all)
 
-    async def begin_publication(self, document: Any) -> None:
-        await write_json_atomic(self._store.root / PUBLICATION_MARKER,
-                                {"version_digest": catalog_version_digest(document.version, document.content_hash),
-                                 "started_at": int(time.time())})
+    async def begin_publication(self, document: Any) -> dict[str, Any]:
+        marker = {"version_digest": catalog_version_digest(document.version, document.content_hash),
+                  "started_at": int(time.time()), "nonce": uuid.uuid4().hex}
+        await write_json_atomic(self._store.root / PUBLICATION_MARKER, marker)
+        return marker
+
+    async def reassert_publication(self, marker: dict[str, Any]) -> bool:
+        """After its fence check, the publisher confirms its own marker; True when it had to rewrite it.
+
+        A cron that judged a dead publisher's lock stale just before this one
+        took the lock may have deleted this marker (EMain #611). Rewriting it
+        and checking the fences again restores the ordering: a reservation
+        that slipped into the gap wrote its fence first, so the second check sees it.
+        """
+        path = self._store.root / PUBLICATION_MARKER
+        if await read_json_or_none(path) == marker:
+            return False
+        await write_json_atomic(path, marker)
+        return True
 
     async def clear_dead_publication(self) -> bool:
         """Inside the publisher's serialized section: any marker found belongs to a dead publisher."""
@@ -176,6 +192,8 @@ class CatalogReservations:
                                                      lock_ttl_seconds=lock_ttl_seconds):
             return None
         started = marker.get("started_at") if isinstance(marker, dict) else None
+        if await read_json_or_none(path) != marker:
+            return None  # compare-and-delete: a new publisher wrote its own marker meanwhile
         await self.end_publication()
         return int((time.time() if now is None else now) - started) if type(started) is int else -1
 

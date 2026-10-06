@@ -279,3 +279,46 @@ async def test_a_marker_whose_runner_lock_is_absent_or_stale_is_cleared(tmp_path
     assert await reservations.clear_stale_publication() is not None
     assert not (store.root / PUBLICATION_MARKER).exists()
     await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=await _active(store))
+
+
+@pytest.mark.asyncio
+async def test_the_cron_never_deletes_a_marker_rewritten_after_its_check(tmp_path):
+    # EMain #611: compare-and-delete; a new publisher's marker written between check and delete survives.
+    store, reservations, version = await _catalog(tmp_path)
+    await reservations.begin_publication(await store.read_active())  # a dead publisher's marker, no lock
+    original_alive = reservations.publisher_alive
+
+    def alive_then_replaced(**kwargs):
+        result = original_alive(**kwargs)  # stale: no lock
+        (store.root / PUBLICATION_MARKER).write_text(json.dumps({"version_digest": "new", "started_at": 1,
+                                                                  "nonce": "fresh"}))
+        return result
+
+    reservations.publisher_alive = alive_then_replaced
+    assert await reservations.clear_stale_publication() is None
+    assert json.loads((store.root / PUBLICATION_MARKER).read_text())["nonce"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_a_publisher_whose_marker_was_deleted_rechecks_the_fences(tmp_path):
+    # The other side: the cron deleted this publisher's marker and a reservation slipped in.
+    store, reservations, version = await _catalog(tmp_path)
+    original_assert = CatalogReservations.assert_publishable
+    calls = []
+
+    async def assert_then_race(self, document):
+        calls.append(document.version)
+        if len(calls) == 1:
+            await original_assert(self, document)  # no fence yet
+            await self.end_publication()  # the cron deletes the live marker
+            await self.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=await _active(store))
+            return
+        await original_assert(self, document)
+
+    CatalogReservations.assert_publishable = assert_then_race
+    try:
+        with pytest.raises(CatalogPublicationError, match="catalog_reserved"):
+            await _publish(store, OTHER_CONNECTIONS)
+    finally:
+        CatalogReservations.assert_publishable = original_assert
+    assert len(calls) == 2 and (await store.read_active()).version == version
