@@ -120,14 +120,19 @@ async def build_issuance_context(
 
 
 def integration_user_id(client_id: str, grantor_subject: str) -> str:
-    """The bound session's subject: ``integration:<client>:<grantor>`` (W585)."""
+    """The bound session's subject: the Hub's own ``oauth.grants.integration_subject``
+    (Infra, 17:56: one normalization, not a copy). The Hub refuses an empty
+    client or grantor, and a ``:`` in the client id, which would make the
+    subject ambiguous."""
+
+    from ..oauth.grants import integration_subject
 
     for value in (client_id, grantor_subject):
-        if type(value) is not str or not value or value != value.strip() or any(c.isspace() for c in value):
+        if type(value) is not str or not value.strip():
             raise BoundIssuanceRefused("issuance_user_invalid")
-    if ":" in client_id:
+    if ":" in client_id or grantor_subject != grantor_subject.strip():
         raise BoundIssuanceRefused("issuance_user_invalid")
-    return f"integration:{client_id}:{grantor_subject}"
+    return integration_subject(grantor_subject, client_id=client_id)
 
 
 def _issuance_custody_type() -> type | None:

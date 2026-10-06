@@ -286,8 +286,11 @@ async def test_development_may_use_a_local_custody_in_the_namespace() -> None:
     assert await require_production_custody(custody, production=False) is custody and custody.qualified == 0
 
 
-def test_the_integration_subject_is_client_and_grantor() -> None:
+def test_the_integration_subject_is_the_hubs_own_helper() -> None:
+    from connection_hub.delegated_credentials.oauth.grants import integration_subject
+    assert integration_user_id("client-1", "user:owner") == integration_subject("user:owner", client_id="client-1")
     assert integration_user_id("client-1", "user:owner") == "integration:client-1:user:owner"
-    for bad in (("", "user:owner"), ("client 1", "user:owner"), ("client:1", "user:owner"), ("c", " u")):
+    assert integration_user_id("client 1", "user:owner") == "integration:client_1:user:owner"  # its normalization
+    for bad in (("", "user:owner"), ("  ", "user:owner"), ("client:1", "user:owner"), ("c", " u"), ("c", "")):
         with pytest.raises(BoundIssuanceRefused, match="issuance_user_invalid"):
             integration_user_id(*bad)
