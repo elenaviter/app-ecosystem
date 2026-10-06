@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from typing import Any, Mapping, Protocol
 
 from connection_hub.delegated_credentials.named_service_policy import clean_text
+from connection_hub.delegated_credentials.project_authorization import (
+    ProjectAuthorizationError,
+    ProjectControlLocator,
+)
 
 
 PROJECT_INVITATION_BINDING_SCHEMA = "connection_hub.project_invitation_binding.v1"
@@ -89,6 +93,9 @@ class ProjectInvitationBindingEvidence:
     control_id: str
     person_subject: str
     email: str
+    # W502: the project's Control Card P the redeemed person's C binds under,
+    # from the host's own record; None when the project has none yet.
+    project_control: ProjectControlLocator | None = None
 
     @classmethod
     def build(
@@ -99,8 +106,14 @@ class ProjectInvitationBindingEvidence:
         control_id: Any,
         person_subject: Any,
         email: Any,
+        project_control: Any = None,
     ) -> "ProjectInvitationBindingEvidence":
+        try:
+            locator = ProjectControlLocator.from_mapping(project_control)
+        except ProjectAuthorizationError as exc:
+            raise ProjectInvitationBindingError(exc.reason) from exc
         return cls(
+            project_control=locator,
             project_ref=_required(
                 project_ref,
                 "project_invitation_binding_project_ref_missing",

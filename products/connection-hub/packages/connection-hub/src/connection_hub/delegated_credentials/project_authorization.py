@@ -17,6 +17,8 @@ PROJECT_PERSON_CONTROL_READ = "project.person_control.read"
 PROJECT_PERSON_CONTROL_UPDATE = "project.person_control.update"
 PROJECT_PERSON_CONTROL_REVOKE = "project.person_control.revoke"
 PROJECT_PERSON_MY_CARD_SEED = "project.person_my_card.seed"
+# W502: bind an existing person's project Control under the project's Control P.
+PROJECT_PERSON_CONTROL_BIND_PROJECT = "project.person_control.bind_project"
 PROJECT_INVITATION_CONTROL_CREATE = "project.invitation_control.create"
 PROJECT_INVITATION_CONTROL_READ = "project.invitation_control.read"
 PROJECT_INVITATION_CONTROL_UPDATE = "project.invitation_control.update"
@@ -56,6 +58,7 @@ PROJECT_PERSON_CONTROL_OPERATIONS = frozenset(
         PROJECT_PERSON_CONTROL_UPDATE,
         PROJECT_PERSON_CONTROL_REVOKE,
         PROJECT_PERSON_MY_CARD_SEED,
+        PROJECT_PERSON_CONTROL_BIND_PROJECT,
         *PROJECT_INVITATION_CONTROL_OPERATIONS,
     }
 )
@@ -147,6 +150,33 @@ class ProjectMembershipConfig:
 
 
 @dataclass(frozen=True)
+class ProjectControlLocator:
+    """W502: the project host's exact record of this project's Control Card P.
+
+    ``control_id`` and ``holder_subject`` come from the host's own stored link
+    (Problem Board's control_card_link), never from a request. The Hub binds a
+    person's project Control under exactly this Card, or binds nothing.
+    """
+
+    control_id: str
+    holder_subject: str
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "ProjectControlLocator | None":
+        if raw is None:
+            return None
+        if not isinstance(raw, Mapping):
+            raise ProjectAuthorizationError("project_control_locator_invalid")
+        control_id, holder = clean_text(raw.get("control_id")), clean_text(raw.get("holder_subject"))
+        if not control_id or not holder or set(raw) - {"control_id", "holder_subject"}:
+            raise ProjectAuthorizationError("project_control_locator_invalid")
+        return cls(control_id=control_id, holder_subject=holder)
+
+    def to_dict(self) -> dict[str, str]:
+        return {"control_id": self.control_id, "holder_subject": self.holder_subject}
+
+
+@dataclass(frozen=True)
 class ProjectMembershipEvidence:
     """One host-owned project membership answer, with no implied authority."""
 
@@ -155,6 +185,9 @@ class ProjectMembershipEvidence:
     role: str
     delegable_grants: tuple[str, ...] = ()
     evidence: Mapping[str, Any] = field(default_factory=dict)
+    # W502: the project's Control Card P, a project-level fact the host
+    # answers with the membership; None when the project has none yet.
+    project_control: ProjectControlLocator | None = None
 
     @classmethod
     def build(
@@ -165,10 +198,12 @@ class ProjectMembershipEvidence:
         role: Any,
         delegable_grants: Any = (),
         evidence: Mapping[str, Any] | None = None,
+        project_control: Any = None,
     ) -> ProjectMembershipEvidence:
         if evidence is not None and not isinstance(evidence, Mapping):
             raise ProjectAuthorizationError("project_membership_evidence_invalid")
         return cls(
+            project_control=ProjectControlLocator.from_mapping(project_control),
             project_ref=_required(
                 project_ref,
                 "project_membership_project_ref_missing",
@@ -273,6 +308,8 @@ class ProjectAuthorizationDecision:
     delegable_grants: tuple[str, ...] = ()
     platform_admin: bool = False
     evidence: Mapping[str, Any] = field(default_factory=dict)
+    # W502: the host's exact project Control Card P for this project, if any.
+    project_control: ProjectControlLocator | None = None
 
     @classmethod
     def allow(
@@ -282,8 +319,10 @@ class ProjectAuthorizationDecision:
         delegable_grants: Any = (),
         platform_admin: bool = False,
         evidence: Mapping[str, Any] | None = None,
+        project_control: ProjectControlLocator | None = None,
     ) -> ProjectAuthorizationDecision:
         return cls(
+            project_control=project_control,
             allowed=True,
             actor_subject=request.actor_subject,
             project_ref=request.project_ref,
@@ -485,6 +524,7 @@ class ResolverBackedProjectAuthorizationPort:
             request,
             delegable_grants=actor.delegable_grants,
             evidence=evidence,
+            project_control=actor.project_control,
         )
 
 
@@ -523,6 +563,7 @@ def with_viewer_authority(
     )
 
 __all__ = [
+    "ProjectControlLocator",
     "PROJECT_BOARD_RESTARTING",
     "PROJECT_MEMBERSHIP_PROVIDER_NOT_READY",
     "PROJECT_MEMBERSHIP_PROVIDER_UNAVAILABLE",

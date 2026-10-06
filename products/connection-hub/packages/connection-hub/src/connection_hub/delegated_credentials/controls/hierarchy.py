@@ -13,7 +13,8 @@ from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch, compose_card_authority_selection, effective_card_authority,
 )
 from connection_hub.delegated_credentials.controls.project_person_composition import (
-    compose_with_project_held_control, project_held_control,
+    compose_with_project_control, compose_with_project_held_control, project_control_parent,
+    project_held_control,
 )
 
 
@@ -41,6 +42,8 @@ def compose_resolved_control_hierarchy(
         seen.add(coordinate)
         if project_held_control(child):
             compose_with_project_held_control(child, parent)
+        elif project_control_parent(child):
+            compose_with_project_control(child, parent)  # W502: exact C -> P
         else:
             effective_card_authority(child, parent)
     if chain[-1].control_card is not None:
@@ -103,6 +106,8 @@ async def compose_control_hierarchy(
         # Validate the edge BEFORE consuming or following parent authority.
         if held:
             compose_with_project_held_control(child, parent)
+        elif project_control_parent(child):
+            compose_with_project_control(child, parent)  # W502: exact C -> P
         else:
             effective_card_authority(child, parent)
         chain.append(parent)

@@ -19,6 +19,53 @@ hold before it is switched on. Everything here is **off by default**:
 | Decision routing | `RoutedDecisionPort` | A Card staged by another application's transaction reads its decision from that application's authority. |
 | Recovery | cron `card-transaction-recover` | Finishes or presumes-aborts in-doubt Hub transactions, page by page, with the cursor kept in Redis. |
 
+## The person Control under the project Control (C -> P)
+
+A person's project Control Card C (the per-person Card a project admin edits)
+is bound under the project's own Control Card P, the application Control its
+creator holds at `control_card_id_for_issuer("application", <project>, grantor_subject=<creator>)`.
+The chain is then My -> C -> P, and a project-level AND in P denies what any
+lower OR would allow.
+
+- **The host names P.** Problem Board answers P's `control_id` and
+  `holder_subject` from its own stored link, in the membership answer behind
+  every project-person decision and in the invitation binding evidence
+  (`ProjectControlLocator`). Nothing in a request selects P. The derived id is
+  a consistency check only: a locator that is not P's derived id is refused
+  `project_control_locator_mismatch`.
+- **One protocol.** Create, invitation redemption and the repair operation
+  `project_person_control_bind_project` all bind through
+  `project_control_binding.bind_project_control`, which attaches through
+  `attach_control_card`: the caller-writer gate decides it as an attach, the
+  whole chain is composed before the write, and the write is fenced. Create
+  and redemption check P before writing anything, so an absent P
+  (`project_control_absent`), an ended or foreign one, or a P under another
+  Card (`project_control_not_root`) refuses with no C written and no
+  invitation consumed. C itself is committed first and bound in its next
+  revision; if the binding fails in between, the answer names it and
+  repeating the same create or redemption binds C.
+- **The qualified edge.** C -> P crosses holders (C is held by the project
+  authority subject, P by its creator). Only that exact edge is qualified:
+  P's id, holder, `application` issuer kind and project must match the binding,
+  and P's own operation (AND or OR) applies. Any other cross-holder edge keeps
+  the generic rule (an OR there is refused `control_card_foreign_holder_requires_and`).
+- **P is the top boundary** (Root, option (a)). A P with a parent is refused at
+  bind, and a bound C whose P gains a parent is invalid
+  (`project_control_not_root`), never extended. No other application Control
+  is restricted.
+- **Idempotent, no reset.** The same P again is `already_bound`. A C bound to
+  another live P is `p_conflict`; it moves only after that P has ended. Editing
+  P never rebinds C. Nothing detaches an ancestor or resets a person's
+  selections.
+- **Repair report.** `project_person_control_bind_project` (operation
+  `project.person_control.bind_project`, decided by the host) answers each
+  person's `outcome`: `bound`, `already_bound`, or a refusal (`p_conflict`,
+  `p_invalid`, `control_missing`, `not_bound`), so a migration can show every
+  person bound.
+
+The census stays generic: a chain that ends at C is `complete` [C], and the
+initiator's provider decides whether that chain is anchored at its P.
+
 ## Configuration
 
 All of it lives in the Hub's bundle props under `connections.card_transactions`.
@@ -91,7 +138,12 @@ obligations, not optional checks.
 7. **Person-owned settings never travel.** The census sends only properties
    classified as authorization in `card_property_classes`. A new property
    key must be classified before it can travel.
-8. **Removing v1 waits.** The v1 authority path is removed only after the peer's
+8. **Every person is bound under P first** (EMain R2). Create and redemption
+   bind C under P is deployed first; then the repair binds every existing
+   person and its per-person report shows each one `bound` or
+   `already_bound`; only then is this switched on. Until then a census chain
+   ends at an unbound C, which the initiator's anchoring check refuses.
+9. **Removing v1 waits.** The v1 authority path is removed only after the peer's
    writer switch.
 
 Turning it on, changing secrets or peer ids, and restarting are a coordinated

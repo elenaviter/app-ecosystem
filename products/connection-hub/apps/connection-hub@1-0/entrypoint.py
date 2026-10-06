@@ -287,6 +287,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "project_person_control_update",
     "project_person_control_revoke",
     "project_person_control_bind_invitation",
+    "project_person_control_bind_project",
     "project_person_my_card_seed",
     "project_person_github_key_link",
     "project_person_github_key_unlink",
@@ -2947,6 +2948,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_person_control_update": {"visibility": {"user_types": []}},
                             "project_person_control_revoke": {"visibility": {"user_types": []}},
                             "project_person_control_bind_invitation": {"visibility": {"user_types": []}},
+                            "project_person_control_bind_project": {"visibility": {"user_types": []}},
                             "project_person_my_card_seed": {"visibility": {"user_types": []}},
                             "project_person_github_key_link": {"visibility": {"user_types": []}},
                             "project_person_github_key_unlink": {"visibility": {"user_types": []}},
@@ -5202,6 +5204,41 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             control_id=str(
                 payload.get("control_id") or payload.get("control_card_id") or ""
             ).strip(),
+            request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_control_bind_project",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_control_bind_project"),
+    )
+    async def project_person_control_bind_project(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """W502 repair: bind one person's project Control under the project's Control Card.
+
+        The project host decides and names the Control Card; the request names
+        only the project and the person.
+        """
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_person_control_bind_project(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            target_subject=str(payload.get("target_subject") or "").strip(),
             request_id=_audit_request_id(request),
         )
 

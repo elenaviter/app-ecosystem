@@ -7244,6 +7244,34 @@ class AutomationAccessService:
             request_id=request_id,
         )
 
+    async def project_person_control_bind_project(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """W502 repair: bind one person's project Control under the project's Control Card.
+
+        The project host decides the operation and names the Control Card;
+        the result names this person's outcome for a migration report.
+        """
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.bind_project_control(
+            viewer=await self._viewer_authority(user),
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            request_id=request_id,
+        )
+
     async def project_person_control_bind_invitation(
         self,
         user: Mapping[str, Any],

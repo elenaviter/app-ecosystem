@@ -89,6 +89,8 @@ class BundleOperationProjectInvitationBindingResolver:
             control_id=binding.get("control_id"),
             person_subject=binding.get("person_subject"),
             email=binding.get("email"),
+            # W502: the host's exact project Control Card, if it has one.
+            project_control=binding.get("project_control"),
         )
 
 
