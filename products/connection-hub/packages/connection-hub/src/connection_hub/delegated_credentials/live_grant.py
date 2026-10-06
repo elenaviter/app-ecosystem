@@ -24,14 +24,10 @@ from connection_hub.delegated_credentials.cards.resolver import (
     CardUnavailable,
     DelegatedCardResolver,
 )
-from connection_hub.delegated_credentials.controls.project_person_composition import (
-    compose_with_project_held_control,
-    project_held_control,
-)
 from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
-    effective_card_authority,
 )
+from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 from connection_hub.delegated_credentials.controls.attribution import (
     ResolvedCardComposition,
 )
@@ -146,58 +142,23 @@ async def resolve_live_grant_composition(
     control = None
     effective = caller
     if caller.control_card is not None:
-        control_id = caller.control_card.control_id
-        # A Control Card the project holds for this person is stored under the
-        # project's subject, not the caller's (W260, 2026-09-26).
-        held = project_held_control(caller)
-        # A project Control Card attached through the project path is stored
-        # under its creator, named on the binding (W260).
-        holder = str(getattr(caller.control_card, "holder_subject", "") or "")
-        control_subject_hash = (
-            hashlib.sha256(held.grantor_subject.encode("utf-8")).hexdigest()
-            if held is not None
-            else hashlib.sha256(holder.encode("utf-8")).hexdigest()
-            if holder
-            else subject_hash
-        )
-        if card_store is not None and control_subject_hash:
-            try:
-                control = await DelegatedCardResolver(cache=cache, store=card_store).resolve(
-                    subject_hash=control_subject_hash,
+        async def load_control(control_id: str, *, grantor_subject: str) -> CardAuthority | None:
+            if card_store is not None:
+                return await DelegatedCardResolver(cache=cache, store=card_store).resolve(
+                    subject_hash=hashlib.sha256(grantor_subject.encode("utf-8")).hexdigest(),
                     access_id=control_id,
                 )
-            except CardUnavailable as exc:
-                raise LiveGrantCardError(exc.reason) from exc
-        else:
-            try:
-                in_run, control_entry = await cache.read_in_current_run(control_id)
-            except CardCacheUnusable as exc:
-                raise LiveGrantCardError(exc.reason) from exc
-            except Exception as exc:
-                raise LiveGrantCardError("control_card_lookup_unavailable") from exc
+            in_run, entry = await cache.read_in_current_run(control_id)
             if not in_run:
                 raise LiveGrantCardError("card_projection_reconciling")
-            if control_entry is None:
-                control = None
-            elif control_entry.is_updating:
+            if entry is not None and entry.is_updating:
                 raise LiveGrantCardError("control_card_updating")
-            elif control_entry.is_revoked:
-                control = None
-            else:
-                control = control_entry.authority
-        # A legacy project Control Card lives only in Redis, with no durable
-        # revision a rollback could be checked against, so it is not
-        # authority here. A Card still bound to one fails closed below.
-        if control is None:
-            raise LiveGrantCardError("control_card_unresolvable")
-        if not authority_is_credentialless(control):
-            raise LiveGrantCardError("control_card_has_credential")
+            return entry.authority if entry is not None and not entry.is_revoked else None
+
         try:
-            effective = (
-                compose_with_project_held_control(caller, control)
-                if held is not None
-                else effective_card_authority(caller, control)
-            )
+            result = await compose_control_hierarchy(caller, load_control=load_control)
+            effective = result.effective_card
+            control = result.control_card
         except ControlCardMismatch as exc:
             raise LiveGrantCardError(exc.reason) from exc
     return ResolvedCardComposition(

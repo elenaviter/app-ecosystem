@@ -507,10 +507,10 @@ class ProjectPersonControlLifecycle:
         selected_composition_mode = (
             str(composition_mode or "").strip().lower() or CONTROL_COMPOSITION_AND
         )
-        if selected_composition_mode != CONTROL_COMPOSITION_AND:
+        if selected_composition_mode not in ("and", "or"):
             return {
                 "ok": False,
-                "error": "project_person_control_requires_and",
+                "error": "control_card_composition_mode_invalid",
                 "status": 400,
             }
         identity = ProjectPersonControlIdentity.build(
@@ -766,11 +766,11 @@ class ProjectPersonControlLifecycle:
         request, decision = authorized
         if (
             composition_mode is not None
-            and str(composition_mode).strip().lower() != CONTROL_COMPOSITION_AND
+            and str(composition_mode).strip().lower() not in ("and", "or")
         ):
             return {
                 "ok": False,
-                "error": "project_person_control_requires_and",
+                "error": "control_card_composition_mode_invalid",
                 "status": 400,
             }
         identity = ProjectPersonControlIdentity.build(
@@ -839,7 +839,7 @@ class ProjectPersonControlLifecycle:
                 properties=(
                     properties if properties is not None else existing.properties
                 ),
-                composition_mode=CONTROL_COMPOSITION_AND,
+                composition_mode=composition_mode if composition_mode is not None else existing.composition_mode,
                 label=label,
                 expected_card_revision=expected_card_revision,
                 expected_catalog_version=expected_catalog_version,

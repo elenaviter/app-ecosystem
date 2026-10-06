@@ -5,8 +5,8 @@
 
 The edge is identity evidence, not authority by itself. The host resolves its
 Card references from authoritative storage and supplies the active catalog.
-The evaluator requires catalog AND the project's per-person Control Card AND
-the person's My Card. This cross-owner composition does not relax the
+The evaluator requires the current catalog AND the effective selection from
+the upstream-controlled Card hierarchy. This exact cross-owner composition does not relax the
 same-grantor invariant of ordinary caller-to-Control-Card composition.
 """
 
@@ -42,6 +42,8 @@ from connection_hub.delegated_credentials.controls.project_person import (
 from connection_hub.delegated_credentials.controls.snapshot import (
     control_snapshot_is_exact,
 )
+from connection_hub.delegated_credentials.controls.effective import ControlCardMismatch, service_composition_mode
+from connection_hub.delegated_credentials.controls.hierarchy import compose_resolved_control_hierarchy
 
 PROJECT_IDENTITY_EDGE_SCHEMA = "connection_hub.project_identity_delegation_edge.v1"
 PROJECT_OPERATION_AUTHORIZATION_SCHEMA = (
@@ -292,10 +294,11 @@ class ProjectCardResolution:
     state: str = CARD_RESOLUTION_CURRENT
     authority: CardAuthority | None = None
     reason: str = ""
+    control_dependencies: tuple[CardAuthority, ...] = ()
 
     @classmethod
-    def current(cls, authority: CardAuthority) -> ProjectCardResolution:
-        return cls(authority=authority)
+    def current(cls, authority: CardAuthority, *, control_dependencies: tuple[CardAuthority, ...] = ()) -> ProjectCardResolution:
+        return cls(authority=authority, control_dependencies=control_dependencies)
 
     @classmethod
     def missing(cls) -> ProjectCardResolution:
@@ -444,8 +447,6 @@ def _card_issue(
     if role == BOUNDARY_CONTROL_CARD:
         if card.card_kind != CARD_KIND_CONTROL or not authority_is_credentialless(card):
             return _Issue("control_card_invalid", role)
-        if card.composition_mode != CONTROL_COMPOSITION_AND:
-            return _Issue("control_card_requires_and", role)
         if not control_snapshot_is_exact(card):
             return _Issue("control_card_exact_snapshot_required", role)
         try:
@@ -588,10 +589,17 @@ def authorize_project_operation(
                 my_card=my_card,
             )
 
-    authorities = (
-        (BOUNDARY_CONTROL_CARD, control_card.authority),
-        (BOUNDARY_MY_CARD, my_card.authority),
-    )
+    try:
+        hierarchy = compose_resolved_control_hierarchy(
+            my_card.authority,
+            (control_card.authority, *control_card.control_dependencies),
+        )
+        effective = hierarchy.effective_card
+    except ControlCardMismatch as exc:
+        return _decision(
+            _Issue(exc.reason, BOUNDARY_CONTROL_CARD), request=request,
+            edge=edge, catalog=catalog, control_card=control_card, my_card=my_card,
+        )
     issue = next(
         (
             _Issue(
@@ -599,9 +607,14 @@ def authorize_project_operation(
                 boundary,
                 capability=capability,
             )
-            for boundary, authority in authorities
             for capability in capabilities
-            if authority is None or not card_permits_capability(authority, capability)
+            if not card_permits_capability(effective, capability)
+            for boundary in (
+                BOUNDARY_CONTROL_CARD
+                if service_composition_mode(control_card.authority, capability.resource) == CONTROL_COMPOSITION_AND
+                and not card_permits_capability(hierarchy.effective_control_card, capability)
+                else BOUNDARY_MY_CARD,
+            )
         ),
         None,
     )

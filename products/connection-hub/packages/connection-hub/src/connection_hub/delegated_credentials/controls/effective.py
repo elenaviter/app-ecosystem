@@ -68,6 +68,22 @@ class ControlCardMismatch(RuntimeError):
         self.reason = reason
 
 
+SERVICE_COMPOSITION_MODES_PROPERTY = "service_composition_modes"
+
+
+def service_composition_mode(control: CardAuthority, service: str) -> str:
+    """Only the upstream Control chooses a service's conjunction."""
+
+    return (control.properties.get(SERVICE_COMPOSITION_MODES_PROPERTY, {}).get(service)
+            or control.composition_mode or CONTROL_COMPOSITION_AND)
+
+
+def control_has_union(control: CardAuthority) -> bool:
+    return (control.composition_mode == CONTROL_COMPOSITION_OR
+            or CONTROL_COMPOSITION_OR in control.properties.get(
+                SERVICE_COMPOSITION_MODES_PROPERTY, {}).values())
+
+
 def _string_values(value: Any) -> tuple[str, ...]:
     if isinstance(value, str):
         values = (value,)
@@ -424,7 +440,8 @@ def effective_card_authority(
     The result always preserves the caller Card identity and credential life.
     """
 
-    if isinstance(control, ProjectControlCardAuthority):
+    legacy_control = isinstance(control, ProjectControlCardAuthority)
+    if legacy_control:
         control = control_card_from_legacy(control)
     binding = card.control_card
     if not authority_is_credentialless(control):
@@ -435,6 +452,8 @@ def effective_card_authority(
         raise ControlCardMismatch("control_card_binding_mismatch")
     if binding.issuer_ref != control.issuer_ref:
         raise ControlCardMismatch("control_card_issuer_mismatch")
+    if not legacy_control and binding.issuer_kind and binding.issuer_kind != control.issuer_kind:
+        raise ControlCardMismatch("control_card_issuer_mismatch")
     # The Control Card is the Card grantor's own, or (W260) the one the
     # binding names as its holder: a project Control Card another person
     # created, attached through the project path. Nothing else.
@@ -444,7 +463,7 @@ def effective_card_authority(
     if (
         holder
         and holder != card.grantor_subject
-        and (control.composition_mode or CONTROL_COMPOSITION_AND) != CONTROL_COMPOSITION_AND
+        and control_has_union(control)
     ):
         # Another person's Control Card may only narrow this Card, never
         # contribute authority to it.
@@ -458,12 +477,26 @@ def effective_card_authority(
     if control.state != CARD_STATE_ACTIVE:
         raise ControlCardMismatch("control_card_not_active")
 
+    return compose_card_authority_selection(card, control)
+
+
+def compose_card_authority_selection(
+    card: CardAuthority, control: CardAuthority, *, ceiling_only: bool = False,
+) -> CardAuthority:
+    """Compose validated selections without changing caller identity or lifetime.
+
+    ``ceiling_only`` reapplies an ancestor's AND ceilings. OR dimensions are
+    inert in that pass: they neither restrict nor contribute new authority.
+    Binding/ownership checks belong to the ordinary or exact-identity adapter.
+    """
+
+    binding = card.control_card
     mode = control.composition_mode or CONTROL_COMPOSITION_AND
     try:
         agent_descriptor = descriptor_control(control.properties)
     except AgentCapabilityPolicyError as exc:
         raise ControlCardMismatch(exc.reason) from exc
-    if agent_descriptor is not None and mode != CONTROL_COMPOSITION_AND:
+    if agent_descriptor is not None and control_has_union(control):
         raise ControlCardMismatch("agent_descriptor_control_requires_and")
     try:
         capability_properties = compose_agent_capability_properties(
@@ -480,40 +513,31 @@ def effective_card_authority(
         )
     except AgentCapabilityPolicyError as exc:
         raise ControlCardMismatch(exc.reason) from exc
-    if mode == CONTROL_COMPOSITION_OR:
-        resource_grants = {
-            resource: _union_values(
-                tuple(card.resource_grants.get(resource, ())),
-                tuple(control.resource_grants.get(resource, ())),
-            )
-            for resource in set(card.resource_grants) | set(control.resource_grants)
-        }
-        resource_operations = {
-            resource: _union_values(
-                tuple(card.resource_operations.get(resource, ())),
-                tuple(control.resource_operations.get(resource, ())),
-            )
-            for resource in resource_grants
-        }
-    else:
-        resource_grants = {}
-        for resource, card_grants in card.resource_grants.items():
-            ceiling_grants = control.resource_grants.get(resource)
-            if ceiling_grants is None:
+    resource_grants = {}
+    resource_operations = {}
+    for resource in set(card.resource_grants) | set(control.resource_grants):
+        resource_mode = service_composition_mode(control, resource)
+        if resource_mode == CONTROL_COMPOSITION_OR:
+            if ceiling_only:
+                if resource not in card.resource_grants:
+                    continue
+                resource_grants[resource] = tuple(card.resource_grants[resource])
+                resource_operations[resource] = tuple(card.resource_operations.get(resource, ()))
                 continue
-            # Presence of the resource is distinct from its claims. An
-            # operation can be explicitly claimless, so retaining the shared
-            # resource key lets the operation check decide it accurately.
-            resource_grants[resource] = _intersect_values(
-                tuple(card_grants), tuple(ceiling_grants)
-            )
-        resource_operations = {
-            resource: _intersect_values(
-                tuple(card.resource_operations.get(resource, ())),
-                tuple(control.resource_operations.get(resource, ())),
-            )
-            for resource in resource_grants
-        }
+            combine = _union_values
+        else:
+            if resource not in card.resource_grants or resource not in control.resource_grants:
+                continue
+            combine = _intersect_values
+        resource_grants[resource] = combine(
+            tuple(card.resource_grants.get(resource, ())),
+            tuple(control.resource_grants.get(resource, ())),
+        )
+        resource_operations[resource] = combine(
+            tuple(card.resource_operations.get(resource, ())),
+            tuple(control.resource_operations.get(resource, ())),
+        )
+    if mode != CONTROL_COMPOSITION_OR:
         if projection is not None:
             family_grants, family_operations = _family_resource_authority(
                 card,
@@ -523,12 +547,23 @@ def effective_card_authority(
             resource_grants.update(family_grants)
             resource_operations.update(family_operations)
     properties = copy.deepcopy(
-        {**dict(card.properties or {}), **dict(control.properties or {})}
+        {**dict(control.properties or {}), **dict(card.properties or {})}
+        if authority_is_credentialless(card) or ceiling_only
+        else {**dict(card.properties or {}), **dict(control.properties or {})}
     )
+    if authority_is_credentialless(card):
+        # A derived Control keeps its OWN policy for its children. Ancestor
+        # policy affects its authority, never overwrites its downstream mode.
+        properties.pop(SERVICE_COMPOSITION_MODES_PROPERTY, None)
+        if SERVICE_COMPOSITION_MODES_PROPERTY in card.properties:
+            properties[SERVICE_COMPOSITION_MODES_PROPERTY] = copy.deepcopy(
+                card.properties[SERVICE_COMPOSITION_MODES_PROPERTY])
     # Target authority is a finite set, not an ordinary last-writer-wins Card
     # property. An absent side contributes no cross-application reads.
     properties[CONVERSATION_TARGETS_PROPERTY] = list(
         compose_conversation_targets(card.properties, control.properties, mode=mode)
+        if not ceiling_only or mode == CONTROL_COMPOSITION_AND
+        else compose_conversation_targets(card.properties, card.properties, mode=mode)
     )
     properties.update(capability_properties)
     if projection is not None:
@@ -538,6 +573,7 @@ def effective_card_authority(
             projection.capabilities.get("conversation_targets", ())
         )
     if APPLICATION_API_RESOURCE in resource_grants:
+        application_mode = service_composition_mode(control, APPLICATION_API_RESOURCE)
         card_has_resource = APPLICATION_API_RESOURCE in card.resource_grants
         control_has_resource = APPLICATION_API_RESOURCE in control.resource_grants
         card_policy = _application_policy(card) if card_has_resource else None
@@ -551,7 +587,10 @@ def effective_card_authority(
         )
         effective_policy = None
         effective_operations: tuple[str, ...] = ()
-        if card_policy is not None and control_policy is not None:
+        if ceiling_only and application_mode == CONTROL_COMPOSITION_OR:
+            effective_policy = card_policy
+            effective_operations = tuple(card.resource_operations.get(APPLICATION_API_RESOURCE, ()))
+        elif card_policy is not None and control_policy is not None:
             effective_policy, effective_operations = (
                 compose_application_operation_role_policy(
                     card_policy,
@@ -562,11 +601,11 @@ def effective_card_authority(
                     control_operations=control.resource_operations.get(
                         APPLICATION_API_RESOURCE, ()
                     ),
-                    composition_mode=mode,
+                    composition_mode=application_mode,
                 )
             )
         elif (
-            mode == CONTROL_COMPOSITION_AND
+            application_mode == CONTROL_COMPOSITION_AND
             and card_has_resource
             and card_policy is None
             and control_policy is not None
@@ -583,15 +622,15 @@ def effective_card_authority(
                     control_policy,
                     card_operations=control_operations,
                     control_operations=control_operations,
-                    composition_mode=mode,
+                    composition_mode=application_mode,
                 )
             )
-        elif mode == CONTROL_COMPOSITION_OR and card_policy is not None and not control_has_resource:
+        elif application_mode == CONTROL_COMPOSITION_OR and card_policy is not None and not control_has_resource:
             effective_policy = card_policy
             effective_operations = tuple(
                 card.resource_operations.get(APPLICATION_API_RESOURCE, ())
             )
-        elif mode == CONTROL_COMPOSITION_OR and control_policy is not None and not card_has_resource:
+        elif application_mode == CONTROL_COMPOSITION_OR and control_policy is not None and not card_has_resource:
             effective_policy = control_policy
             effective_operations = tuple(
                 control.resource_operations.get(APPLICATION_API_RESOURCE, ())
@@ -617,15 +656,19 @@ def effective_card_authority(
     else:
         properties.pop(APPLICATION_OPERATIONS_PROPERTY, None)
     try:
+        and_resources = {r: g for r, g in resource_grants.items()
+                         if service_composition_mode(control, r) == CONTROL_COMPOSITION_AND}
+        or_resources = {r: g for r, g in resource_grants.items() if r not in and_resources}
+        and_selection, and_services = _intersect_named_services(card, control, and_resources)
+        or_selection, or_services = _union_named_services(
+            card, card if ceiling_only else control, or_resources)
+        named_selection = NamedServiceSelection.exact({
+            **and_selection.operations, **or_selection.operations})
+        named_services = merge_named_service_configs(and_services, or_services)
         if mode == CONTROL_COMPOSITION_OR:
-            named_selection, named_services = _union_named_services(
-                card, control, resource_grants
-            )
-            account_scope = _union_accounts(card.account_scope, control.account_scope)
+            account_scope = (normalize_account_scope(card.account_scope) if ceiling_only
+                             else _union_accounts(card.account_scope, control.account_scope))
         else:
-            named_selection, named_services = _intersect_named_services(
-                card, control, resource_grants
-            )
             # Descriptor control owns application capability, not the user's
             # provider-account choice. That choice remains on the caller Card
             # and is still enforced by the selected operation's live grants.
@@ -646,7 +689,7 @@ def effective_card_authority(
         manage_url=control.manage_url or binding.manage_url,
         control_revision=control.card_revision,
         holder_subject=str(getattr(binding, "holder_subject", "") or ""),
-    )
+    ) if binding is not None and not ceiling_only else binding
     return dataclasses.replace(
         card,
         operations=(),

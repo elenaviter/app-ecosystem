@@ -5,7 +5,7 @@ summary: "Canonical lifecycle of Connection Hub Cards: credential-backed callers
 status: active
 tags: ["sdk", "solutions", "connections", "connection-hub", "delegated-access", "cards", "grants", "mcp", "named-services"]
 keywords: ["Delegated by KDCube", "AutomationAccessRecord", "resource_grants", "resource_operations", "application operations", "delegated role", "named_service_operations", "account_scope", "registry_access_id", "card authority", "control card", "My Card", "project identity edge", "effective authority", "descriptor drift", "grant lifecycle", "stable resident identity", "resource_acceptance", "multi-resource card", "card read model"]
-updated_at: 2026-09-24
+updated_at: 2026-10-06
 see_also:
   - ./delegated-authority-and-admission.md
   - ./oauth-delegated-credential-protocol.md
@@ -31,7 +31,7 @@ the card therefore changes the next call made with an already-issued bearer.
 The deployment descriptor, published as the delegated catalog, is the ceiling
 around that user decision: every governed call intersects the card with the
 active catalog, so a withdrawn capability is denied without editing the card.
-Any credential-backed caller Card may link one credentialless Card. The link
+Any caller or credentialless Control Card may link one credentialless Card. The link
 gives that Card its **control** role. The two Cards compose with `and` by
 default or with `or` when the grantor selects it; the active catalog still
 bounds the result.
@@ -79,16 +79,16 @@ an inspectable project identity edge with four coordinates:
 - the project-owned, per-person **Control Card** reference and revision;
 - the person-owned **My Card** reference and revision.
 
-The two Cards are positive selections. The Control Card is the administrator's
-ceiling for that person in that project. My Card is the person's selection
-within the ceiling. Widening the Control Card therefore exposes additional
-unchecked choices and grants nothing until the person selects them on My Card.
+The two Cards are positive selections. The upstream Control chooses AND or OR
+for each canonical resource; AND is the compatibility default. My Card remains
+the person's stored selection, even when a current Control change narrows or
+widens effective authority. An AND Control is a ceiling; an OR Control may
+contribute its own authority within every ancestor AND ceiling.
 The effective decision for one exact resource, operation, and required grant is:
 
 ```text
 active catalog
-  AND current per-person Control Card
-  AND current My Card
+  AND current effective Control hierarchy composed with My Card
 ```
 
 The active catalog is evaluated first as the deployment ceiling. Removing an
@@ -107,7 +107,7 @@ never normalized into an empty requirement.
 The host derives the person subject from its authenticated session and resolves
 both Card references through authoritative Connection Hub storage. A public
 caller never supplies a trusted subject, Card authority, revision, or catalog
-version. Cross-owner project edges use this dedicated AND evaluator; they do
+version. Cross-owner project edges use this dedicated exact-identity evaluator; they do
 not relax the same-grantor invariant of ordinary caller-to-Control-Card
 composition.
 
@@ -1350,7 +1350,7 @@ should not carry over, then grant again.
 
 ## Control Cards And Effective Authority
 
-A credential-backed caller Card may link at most one credentialless Card. Both
+A caller or credentialless Control Card may link at most one credentialless Card. Both
 are ordinary Connection Hub Cards. The link, not a separate Card type, gives
 the credentialless Card its control role:
 
@@ -1394,6 +1394,45 @@ caller Card -- optional control_card link --> current linked Card
 No link means the caller Card is used unchanged. A present link is an explicit
 authorization dependency: a missing, unreadable, updating, revoked, or
 mismatched linked Card fails closed and is never treated as no link.
+
+### Current parent hierarchy and service modes
+
+The host-neutral `controls.hierarchy.compose_control_hierarchy` resolves the
+entire current parent chain, at most 32 Control dependencies. Its loader receives
+exact `(grantor_subject, control_id)` coordinates. The ordinary owner/holder
+checks remain; the project-person adapter admits only the exact derived
+person/Control identity. A cycle, wrong issuer/holder, missing/revoked parent,
+invalid exact snapshot, storage failure, or dependency change during the final
+re-read refuses the attempt. It never falls back to an old linked snapshot.
+
+The upstream Control owns `properties.service_composition_modes`, a map from
+canonical Card resource IDs to `and` or `or`. An omitted entry uses that
+Control's `composition_mode`. Resource grants, outer operations, application
+operation policy and named-service namespaces use their resource's mode.
+Card-wide account scope, conversation targets and descriptor capability
+properties retain the existing Card-wide conjunction; they have no independent
+per-resource selector. Do not infer account authority from a resource OR.
+
+Composing a Control with its parent preserves that Control's own downstream
+mode map, exact identity, credentialless state and revision. An ancestor AND
+continues to cap its controlled subtree: if P is AND and C is OR for service X,
+My's effective X selection is `P AND (C OR My)`, not
+`My OR (P AND C)`. Each level first composes with its current effective parent,
+then reapplies earlier ancestor AND ceilings. An unrelated foreign-holder link
+or descriptor-controlled agent still refuses OR, including a per-service OR
+override of a global AND default.
+
+The result contains the raw immediate `control_card`, the derived current
+`effective_control_card`, `effective_card`, and ordered current `dependencies`.
+The automation service, live-grant path and signed-in human evaluator consume
+this same resolver/composer. Readers and Control edits never rewrite My Card,
+normalize its selections or increment its stored revision. An explicit
+single-service reset is a separate writer and uses the effective current
+Control, not its raw pre-parent selection.
+
+Dependency re-reading is a read-side stale-result check, not an atomic
+multi-realm transaction. Business participation, publication barriers and
+all-writer fencing remain the hosting application's separate integration.
 
 `and` intersects resource grants, outer operations, named-service operations,
 connected accounts, and account claims. `or` unions the two Card selections.
@@ -1608,12 +1647,13 @@ coordinates survive the standalone-site iframe boundary. The editor loads,
 saves, and revokes through the project-person operations while every ordinary
 Card continues to use its owner-scoped operations.
 
-A project-held per-person Control Card always composes by **AND**. Effective
-access is the intersection of the project catalog, this project Control Card,
-and the person's own Card; a union would make the project boundary unable to
-narrow authority. The project-person backend rejects any other composition
-mode, the public operation schema admits only `and`, and the editor renders
-the mode as a fixed rule instead of an editable choice.
+A project-held per-person Control Card uses the upstream-owned conjunction and
+current hierarchy described above. The portable create/update lifecycle accepts
+AND and OR without mutating My Card. The application's existing editor and
+published person-Control schema remain AND-only surfaces until their separate
+interface update; a displayed default is not evidence of the full effective
+per-service policy. Pending-invitation and one-time migration-seed restrictions
+are unchanged by the hierarchy resolver.
 
 Creation uses that same port. A project creator receives bootstrap authority
 only when the project application's canonical membership lifecycle returns it;
