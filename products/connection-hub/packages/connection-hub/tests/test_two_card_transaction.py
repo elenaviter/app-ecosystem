@@ -12,6 +12,7 @@ import pathlib
 import signal
 import subprocess
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -28,6 +29,7 @@ from connection_hub.delegated_credentials.cards.model import (
 )
 from connection_hub.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
+    CardStorageError,
     subject_hash_for,
 )
 from connection_hub.delegated_credentials.durable_io import list_child_names
@@ -243,3 +245,65 @@ async def test_committed_receipt_survives_killed_writer_and_replay_is_byte_stabl
     assert json.loads(replayed.stdout) == receipt
     assert receipt_path.read_bytes() == receipt_bytes
     assert _fresh_process_snapshot(tmp_path, pair) == snapshot
+
+
+@pytest.mark.asyncio
+async def test_prepared_intent_fences_an_unstaged_participant_after_writer_crash(
+    tmp_path: pathlib.Path,
+) -> None:
+    """A later single-Card writer cannot publish across a live pair intent."""
+    pair = _pair()
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    await _seed_pair(store, pair)
+    body = _request_body(pair)
+    request = LifecycleRequest.from_mapping(body)
+    actor = "authenticated-human"
+    killed = _run_child(
+        {
+            "action": "fault_prepare",
+            "storage_root": str(tmp_path),
+            "body": body,
+            "actor_subject": actor,
+            "now": _NOW.isoformat(),
+        }
+    )
+    assert killed.returncode == -signal.SIGKILL, killed.stderr
+
+    # Neither current pointer has been staged yet. A normal writer must see
+    # the active intent before it can publish a new current pointer, or must
+    # first recover that intent to a terminal refusal.
+    other = replace(pair[1], card_revision=2, label="independent later mutation")
+    try:
+        pointer = await store.write_revision(
+            subject_hash=subject_hash_for(other.grantor_subject),
+            authority=other,
+            updated_at=_NOW,
+        )
+        await store.advance_current(
+            subject_hash=subject_hash_for(other.grantor_subject), pointer=pointer
+        )
+    except (CardStorageError, LifecycleRefused):
+        pass
+
+    reader = BundleStorageDelegatedCardStore(tmp_path)
+    receipt = await lifecycle_store.read_receipt(reader, request.transaction_id(actor))
+    assert receipt is not None
+    if receipt["state"] == "prepared":
+        observed = []
+        for authority in pair:
+            try:
+                loaded = await reader.read_current_authority(
+                    subject_hash=subject_hash_for(authority.grantor_subject),
+                    access_id=authority.access_id,
+                )
+            except CardStorageError:
+                observed.append("unavailable")
+            else:
+                assert loaded is not None
+                observed.append((loaded[1].state, loaded[1].card_revision))
+        assert observed in [
+            [("active", 1), ("active", 1)],
+            ["unavailable", "unavailable"],
+        ]
+    else:
+        assert receipt["state"] == "refused"
