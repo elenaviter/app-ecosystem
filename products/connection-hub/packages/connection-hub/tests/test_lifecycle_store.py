@@ -1,0 +1,333 @@
+"""Storage visibility tests only: not issuer, serving or mounted qualification."""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+import os
+import signal
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+import pytest
+
+from connection_hub.delegated_credentials.cards import lifecycle_store
+from connection_hub.delegated_credentials.cards.lifecycle import LifecycleRefused, LifecycleRequest
+from connection_hub.delegated_credentials.cards.model import CardAuthority, NamedServiceSelection
+from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore, CardStorageError, subject_hash_for
+from connection_hub.delegated_credentials.issuer_gate import change_digest
+
+MOMENT = datetime(2026, 10, 6, tzinfo=timezone.utc)
+ACTOR = "authenticated-human-admin"
+
+
+def _pair():
+    return tuple(CardAuthority(
+        access_id=f"card-{index}", grantor_subject=f"owner-{index}", source="control",
+        client_id="", delegate_subject="",
+        card_kind="control", card_revision=1, state="active", issuer_kind=f"opaque-{index}",
+        issuer_ref="opaque-lineage", resource_grants={}, resource_operations={},
+        named_service_operations=NamedServiceSelection.none(),
+        properties={"opaque.identity-marker": {"paired-with": f"card-{1-index}"}},
+    ) for index in range(2))
+
+
+def _wire(authorities):
+    targets = [{"owner_subject": card.grantor_subject, "access_id": card.access_id,
+                "expected_card_revision": card.card_revision,
+                "expected_authority_fingerprint": card.content_hash(),
+                "issuer_kind": card.issuer_kind, "issuer_ref": card.issuer_ref}
+               for card in authorities]
+    targets.sort(key=lambda target: (target["owner_subject"], target["access_id"]))
+    return {"context_ref": "synthetic-context", "request_id": "synthetic-request",
+            "action": "revoke", "change_digest": change_digest({"action": "revoke", "targets": targets}),
+            "targets": targets}
+
+
+async def _seed(store, authorities):
+    for card in authorities:
+        scope = subject_hash_for(card.grantor_subject)
+        pointer = await store.write_revision(subject_hash=scope, authority=card, updated_at=MOMENT)
+        await store.advance_current(subject_hash=scope, pointer=pointer)
+
+
+async def _states(store, request):
+    result = []
+    for target in request.targets:
+        current = await store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
+        result.append(None if current is None else (current[1].state, current[1].card_revision))
+    return result
+
+
+async def _allow():
+    pass
+
+
+@pytest.mark.asyncio
+async def test_unsupported_object_backend_refuses_without_manufacturing_local_storage():
+    store = BundleStorageDelegatedCardStore("s3://synthetic-bucket/synthetic-root")
+    assert store.lifecycle_publish_backend == ""
+    with pytest.raises(LifecycleRefused, match="issuer_lifecycle_atomic_backend_unavailable"):
+        await lifecycle_store.atomic_revoke(store, request=LifecycleRequest.from_mapping(_wire(_pair())),
+                                            actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+
+
+@pytest.mark.asyncio
+async def test_both_staged_pointers_still_read_before_one_visibility_point(tmp_path, monkeypatch):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    observations = []
+    original = lifecycle_store.write_json_atomic
+
+    async def write(path, payload):
+        await original(path, payload)
+        if payload.get("schema") == lifecycle_store.LIFECYCLE_POINTER_SCHEMA:
+            observations.append(await _states(BundleStorageDelegatedCardStore(tmp_path), request))
+            with pytest.raises(CardStorageError, match="lifecycle_preparation_unresolved"):
+                await store.advance_current(subject_hash=request.targets[0].subject_hash,
+                                             pointer=await store.read_current(subject_hash=request.targets[0].subject_hash,
+                                                                              access_id=request.targets[0].access_id))
+
+    monkeypatch.setattr(lifecycle_store, "write_json_atomic", write)
+    result = await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+    assert observations == [[("active", 1), ("active", 1)]] * 2
+    assert result["state"] == "committed"
+    assert await _states(store, request) == [("revoked", 2), ("revoked", 2)]
+
+
+@pytest.mark.asyncio
+async def test_failing_second_pointer_never_commits_first_authority(tmp_path, monkeypatch):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    original = lifecycle_store.write_json_atomic
+    staged = 0
+
+    async def write(path, payload):
+        nonlocal staged
+        if payload.get("schema") == lifecycle_store.LIFECYCLE_POINTER_SCHEMA:
+            staged += 1
+            if staged == 2:
+                raise OSError("synthetic second-pointer failure")
+        await original(path, payload)
+
+    monkeypatch.setattr(lifecycle_store, "write_json_atomic", write)
+    with pytest.raises(OSError):
+        await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+    assert await _states(store, request) == [("active", 1), ("active", 1)]
+    receipt = await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR))
+    assert receipt["state"] == "refused"
+
+
+@pytest.mark.asyncio
+async def test_expired_final_gate_leaves_both_authorities_unchanged(tmp_path):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+
+    async def refuse():
+        raise LifecycleRefused("issuer_decision_expired")
+
+    with pytest.raises(LifecycleRefused, match="issuer_decision_expired"):
+        await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=refuse)
+    assert await _states(store, request) == [("active", 1), ("active", 1)]
+
+
+@pytest.mark.asyncio
+async def test_io_error_after_commit_rename_is_not_reported_as_no_write(tmp_path, monkeypatch):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    original = lifecycle_store.write_json_atomic
+
+    async def write(path, payload):
+        await original(path, payload)
+        if payload.get("schema") == lifecycle_store.LIFECYCLE_RECEIPT_SCHEMA and payload.get("state") == "committed":
+            raise OSError("synthetic failure after the commit rename")
+
+    monkeypatch.setattr(lifecycle_store, "write_json_atomic", write)
+    result = await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+    assert result["state"] == "committed"
+    assert await _states(store, request) == [("revoked", 2), ("revoked", 2)]
+
+
+@pytest.mark.asyncio
+async def test_corrupted_shared_binding_fails_closed_for_both_pointers(tmp_path):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    result = await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+    result["binding"]["actor_subject"] = "changed-actor"
+    await lifecycle_store.write_json_atomic(lifecycle_store.receipt_path(store, request.transaction_id(ACTOR)), result)
+    for target in request.targets:
+        with pytest.raises(CardStorageError, match="lifecycle_receipt_invalid"):
+            await store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
+
+
+@pytest.mark.asyncio
+async def test_identical_replay_returns_receipt_without_reapplying_or_using_new_authority(tmp_path):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    result = await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+    next_cards = tuple(dataclasses.replace(card, card_revision=3, label="later legitimate authority") for card in cards)
+    await _seed(store, next_cards)
+
+    async def must_not_run():
+        raise AssertionError("a receipt replay is not another mutation")
+
+    assert await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=must_not_run) == result
+    assert await _states(store, request) == [("active", 3), ("active", 3)]
+
+
+@pytest.mark.asyncio
+async def test_changed_replay_same_key_is_refused(tmp_path):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+    body = _wire(cards)
+    body["targets"][1]["expected_authority_fingerprint"] = "f" * 64
+    body["change_digest"] = change_digest({"action": "revoke", "targets": body["targets"]})
+    changed = LifecycleRequest.from_mapping(body)
+    assert changed.transaction_id(ACTOR) == request.transaction_id(ACTOR)
+    with pytest.raises(LifecycleRefused, match="issuer_lifecycle_replay_changed"):
+        await lifecycle_store.atomic_revoke(store, request=changed, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+    assert await _states(store, request) == [("revoked", 2), ("revoked", 2)]
+
+
+@pytest.mark.asyncio
+async def test_marker_rebinding_fingerprint_is_checked_before_intent_or_first_effect(tmp_path):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    actual = (cards[0], dataclasses.replace(cards[1], properties={"opaque.identity-marker": {"paired-with": "different-card"}}))
+    await _seed(store, actual)
+    with pytest.raises(LifecycleRefused, match="issuer_lifecycle_fingerprint_moved"):
+        await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+    assert await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR)) is None
+    assert await _states(store, request) == [("active", 1), ("active", 1)]
+
+
+@pytest.mark.asyncio
+async def test_missing_second_target_leaves_first_unchanged(tmp_path):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards[:1])
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    with pytest.raises(LifecycleRefused, match="issuer_lifecycle_target_missing"):
+        await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+    assert await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR)) is None
+    assert await _states(store, request) == [("active", 1), None]
+
+
+@pytest.mark.asyncio
+async def test_missing_receipt_never_falls_back_to_embedded_before_or_after(tmp_path, monkeypatch):
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
+
+    async def missing(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(lifecycle_store, "read_receipt", missing)
+    with pytest.raises(CardStorageError, match="lifecycle_receipt_missing"):
+        await _states(store, request)
+
+
+@pytest.mark.parametrize("revision", [True, 1.0, "1", 0, -1, None])
+def test_request_does_not_coerce_revision(revision):
+    body = _wire(_pair())
+    body["targets"][0]["expected_card_revision"] = revision
+    with pytest.raises(LifecycleRefused, match="issuer_lifecycle_revision_invalid"):
+        LifecycleRequest.from_mapping(body)
+
+
+@pytest.mark.parametrize("field", ["actor_subject", "user_id", "viewer", "approval_hash"])
+def test_request_cannot_supply_actor_or_self_authenticating_approval(field):
+    body = _wire(_pair())
+    body[field] = "forged"
+    with pytest.raises(LifecycleRefused, match="issuer_lifecycle_request_invalid"):
+        LifecycleRequest.from_mapping(body)
+
+
+_KILL_CHILD = r'''
+import asyncio, json, os, signal, sys
+from datetime import datetime, timezone
+from connection_hub.delegated_credentials.cards import lifecycle_store as module
+from connection_hub.delegated_credentials.cards.lifecycle import LifecycleRequest
+from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+store = BundleStorageDelegatedCardStore(sys.argv[1])
+request = LifecycleRequest.from_mapping(json.loads(sys.argv[2]))
+original = module.write_json_atomic
+stage = sys.argv[3]
+count = 0
+async def write(path, payload):
+    global count
+    await original(path, payload)
+    if payload.get('schema') == module.LIFECYCLE_POINTER_SCHEMA:
+        count += 1
+        if stage == str(count):
+            os.kill(os.getpid(), signal.SIGKILL)
+    if payload.get('schema') == module.LIFECYCLE_RECEIPT_SCHEMA:
+        if stage == payload.get('state'):
+            os.kill(os.getpid(), signal.SIGKILL)
+module.write_json_atomic = write
+async def allow(): pass
+asyncio.run(module.atomic_revoke(store, request=request, actor_subject='authenticated-human-admin',
+    now=datetime(2026,10,6,tzinfo=timezone.utc), before_publish=allow))
+'''
+
+_RECOVER_CHILD = r'''
+import asyncio, json, sys
+from connection_hub.delegated_credentials.cards import lifecycle_store as module
+from connection_hub.delegated_credentials.cards.lifecycle import LifecycleRequest
+from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+store = BundleStorageDelegatedCardStore(sys.argv[1])
+request = LifecycleRequest.from_mapping(json.loads(sys.argv[2]))
+async def run():
+    async def states():
+        values = []
+        for t in request.targets:
+            _, card = await store.read_current_authority(subject_hash=t.subject_hash, access_id=t.access_id)
+            values.append([card.state, card.card_revision])
+        return values
+    before = await states()
+    first = await module.abort_prepared(store, request=request, actor_subject='authenticated-human-admin')
+    second = await module.abort_prepared(store, request=request, actor_subject='authenticated-human-admin')
+    print(json.dumps({'before': before, 'after': await states(), 'state': first['state'], 'idempotent': first == second}))
+asyncio.run(run())
+'''
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["prepared", "1", "2", "committed"])
+async def test_killed_disposable_writer_and_fresh_process_recovery(tmp_path, stage):
+    # Only these fixture-owned subprocesses are killed. No running client,
+    # production state, service, credentials or platform process is touched.
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    cards = _pair()
+    await _seed(store, cards)
+    body = json.dumps(_wire(cards))
+    environment = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    killed = subprocess.run([sys.executable, "-c", _KILL_CHILD, str(tmp_path), body, stage],
+                            env=environment, capture_output=True, text=True, timeout=10)
+    assert killed.returncode == -signal.SIGKILL, killed.stderr
+    recovered = subprocess.run([sys.executable, "-c", _RECOVER_CHILD, str(tmp_path), body],
+                               env=environment, capture_output=True, text=True, timeout=10, check=True)
+    proof = json.loads(recovered.stdout)
+    expected = [["revoked", 2], ["revoked", 2]] if stage == "committed" else [["active", 1], ["active", 1]]
+    assert proof["before"] == proof["after"] == expected
+    assert proof["state"] == ("committed" if stage == "committed" else "refused")
+    assert proof["idempotent"] is True

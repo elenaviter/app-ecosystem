@@ -119,6 +119,14 @@ class BundleStorageDelegatedCardStore:
 
     def __init__(self, storage_root: str | os.PathLike[str]) -> None:
         self._root = pathlib.Path(storage_root) / CARDS_DIRNAME / CARDS_LAYOUT_VERSION
+        # This implementation uses pathlib IO and same-directory OS rename.
+        # An object-storage URI is NOT that backend and must not accidentally
+        # become a relative local path for lifecycle transactions.
+        source = os.fspath(storage_root)
+        self.lifecycle_publish_backend = (
+            "filesystem-atomic-rename"
+            if pathlib.Path(storage_root).is_absolute() and "://" not in source else ""
+        )
 
     @property
     def root(self) -> pathlib.Path:
@@ -150,6 +158,11 @@ class BundleStorageDelegatedCardStore:
         )
         if payload is None:
             return None
+        # Old readers reject this schema. New readers resolve staged pointers
+        # through ONE shared transaction visibility point, never independently.
+        from .lifecycle_store import LIFECYCLE_POINTER_SCHEMA, resolve_pointer
+        if payload.get("schema") == LIFECYCLE_POINTER_SCHEMA:
+            return await resolve_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
         return CardCurrentPointer.from_mapping(payload)
 
     async def read_revision(
@@ -231,6 +244,8 @@ class BundleStorageDelegatedCardStore:
         )
 
     async def advance_current(self, *, subject_hash: str, pointer: CardCurrentPointer) -> None:
+        from .lifecycle_store import assert_pointer_replaceable
+        await assert_pointer_replaceable(self, subject_hash=subject_hash, access_id=pointer.access_id)
         await write_json_atomic(
             self.current_path(subject_hash=subject_hash, access_id=pointer.access_id),
             pointer.to_dict(),
