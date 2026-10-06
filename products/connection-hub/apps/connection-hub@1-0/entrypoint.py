@@ -1132,6 +1132,12 @@ def _delegated_catalog_resolver(entrypoint: Any, redis: Any) -> Any:
     )
 
 
+def _delegated_catalog_store(entrypoint: Any) -> Any:
+    """W502: the catalog store a Card transaction reserves its active version in, or None (fail closed)."""
+    storage_root = entrypoint.bundle_storage_root()
+    return BundleStorageDelegatedCatalogStore(storage_root) if storage_root is not None else None
+
+
 async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
     """Durable card persistence, or ``None`` when bundle storage is
     unavailable — card operations then fail closed."""
@@ -1582,7 +1588,8 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
     decisions = await _card_decision_store(entrypoint, pg_pool)
     bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
                            policies=_invocation_policy_service(entrypoint),
-                           authorities=(await _card_participant_callers(entrypoint, persistence)).authorities)
+                           authorities=(await _card_participant_callers(entrypoint, persistence)).authorities,
+                           catalog_store=_delegated_catalog_store(entrypoint))
 
 
 async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
@@ -3546,7 +3553,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         coordinator, _ = card_transaction_coordinator(
             persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
             policies=_invocation_policy_service(self),
-            authorities=(await _card_participant_callers(self, persistence)).authorities)
+            authorities=(await _card_participant_callers(self, persistence)).authorities,
+            catalog_store=_delegated_catalog_store(self))
         # The cron runs on one process per tick, not always the same one, so the
         # page cursor is shared in Redis; a missing or unreadable one restarts at "".
         tenant, project = _runtime_tenant_project(self)
@@ -3873,7 +3881,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             decisions = await _card_decision_store(self, pg_pool)
             card_transaction_coordinator(
                 persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
-                policies=_invocation_policy_service(self), authorities=built.authorities)
+                policies=_invocation_policy_service(self), authorities=built.authorities,
+                catalog_store=_delegated_catalog_store(self))
         except Exception:  # noqa: BLE001 - never internal text to a peer
             LOGGER.exception("[connection-hub.card-transactions] participant operation unavailable")
             return unavailable

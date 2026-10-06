@@ -29,7 +29,9 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused, GlobalIntent
 
-from .card_participant import PARTICIPANT, CardIntent, LocalCardIntentSource, reads_from_dependencies
+from .card_participant import (
+    PARTICIPANT, CardIntent, LocalCardIntentSource, catalog_reservation_from_dependencies, reads_from_dependencies,
+)
 from .model import CardAuthority
 from .transaction_authority_v2 import TransactionAuthorityRefused, VerifiedCardAuthority, verify_card_authority_v2
 
@@ -158,7 +160,8 @@ class AuthorityCardIntentSource(_AuthorityReads):
                             effects=tuple(dict(effect) for effect in value["effects"]),
                             action=projection["action"], actor_subject=projection["actor_subject"],
                             actor_kind=projection["actor_kind"], reads=reads, authority=self._authority_id,
-                            scope=intent_scope(verified.intent, self._scope_field))
+                            scope=intent_scope(verified.intent, self._scope_field),
+                            catalog=catalog_reservation_from_dependencies(projection["dependency_revisions"]))
         await self._local.record(intent)
         return intent
 

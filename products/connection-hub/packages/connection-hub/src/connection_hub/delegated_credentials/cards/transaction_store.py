@@ -157,6 +157,7 @@ async def abort_unstaged(store: Any, transaction_id: str) -> dict[str, Any]:
         raise CardTransactionRefused("card_transaction_prepared")  # finish it through decide
     tombstone = {"transaction_id": transaction_id, "state": "aborted"}
     await write_json_atomic(tombstone_path(store, transaction_id), tombstone)
+    await _release_catalog(store, transaction_id)  # a stage that crashed after its catalog fence
     try:
         active_path(store, transaction_id).unlink(missing_ok=True)
     except OSError:
@@ -245,8 +246,10 @@ def _validate(raw: Any, transaction_id: str) -> dict[str, Any]:
     try:
         base = {"schema", "transaction_id", "intent_digest", "participant", "subject_hash", "access_id",
                 "state", "reason", "before", "after", "change_digest"}
-        if (not isinstance(raw, Mapping)
-                or set(raw) not in (base, base | {"effects"}, base | {"reads"}, base | {"effects", "reads"})
+        optional = set(raw) - base if isinstance(raw, Mapping) else set()
+        if (not isinstance(raw, Mapping) or not base <= set(raw)
+                or not optional <= {"effects", "reads", "catalog"}
+                or ("catalog" in raw and not _HEX64.fullmatch(str(raw["catalog"])))
                 or ("effects" in raw and not _effects_valid(raw["effects"]))
                 or ("reads" in raw and not _reads_valid(raw["reads"], raw.get("subject_hash"), raw.get("access_id")))
                 or raw["schema"] != TRANSACTION_RECEIPT_SCHEMA or raw["transaction_id"] != transaction_id
@@ -284,6 +287,29 @@ class TransactionDecisionPort(Protocol):
 
 def bind_transaction_decisions(store: Any, port: TransactionDecisionPort | None) -> None:
     store._card_transaction_decisions = port
+
+
+def bind_catalog_reservations(store: Any, reservations: Any) -> None:
+    """W502: the catalog's ``CatalogReservations``; a transaction naming a catalog version reserves it."""
+    store._catalog_reservations = reservations
+
+
+async def _reserve_catalog(store: Any, transaction_id: str, intent_digest: str, catalog: str) -> None:
+    reservations = getattr(store, "_catalog_reservations", None)
+    if reservations is None:
+        raise CardTransactionRefused("card_catalog_reservation_unavailable")
+    from ..catalog.reservations import CatalogReservationRefused
+    try:
+        await reservations.reserve(transaction_id=transaction_id, intent_digest=intent_digest,
+                                   version_digest=catalog)
+    except CatalogReservationRefused as exc:
+        raise CardTransactionRefused(exc.reason) from None
+
+
+async def _release_catalog(store: Any, transaction_id: str) -> None:
+    reservations = getattr(store, "_catalog_reservations", None)
+    if reservations is not None:
+        await reservations.release(transaction_id)
 
 
 async def _authoritative_state(store: Any, receipt: Mapping[str, Any]) -> str:
@@ -358,6 +384,8 @@ async def _clear_marker(store: Any, receipt: Mapping[str, Any]) -> None:
             pass  # the decided receipt already releases the fence
     if receipt["state"] in DECISIONS:
         await _release_reads(store, receipt)
+        if receipt.get("catalog"):
+            await _release_catalog(store, receipt["transaction_id"])
         try:
             active_path(store, receipt["transaction_id"]).unlink(missing_ok=True)
         except OSError:
@@ -507,7 +535,7 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
 
 async def stage(store: Any, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
                 original: CardAuthority, candidate: CardAuthority, now: datetime,
-                effects: Any = (), reads: Any = ()) -> dict[str, Any]:
+                effects: Any = (), reads: Any = (), catalog: str = "") -> dict[str, Any]:
     """Stage ``candidate`` behind a transaction pointer; nothing becomes visible. Caller holds the fence.
 
     A replay of a prepared transaction RESUMES its missing steps, but only
@@ -547,6 +575,8 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
                       for r in (reads or ())]
     if recorded_reads and not _reads_valid(recorded_reads, subject_hash, original.access_id):
         raise CardTransactionRefused("card_transaction_reads_invalid")
+    if catalog and not _HEX64.fullmatch(str(catalog)):
+        raise CardTransactionRefused("card_transaction_reads_invalid")
     if existing is not None and existing["state"] in DECISIONS:
         # A decided transaction is never staged again (Ops N2).
         raise CardTransactionRefused("card_transaction_aborted" if existing["state"] == "aborted"
@@ -555,6 +585,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
         if (existing["intent_digest"] != intent_digest
                 or existing.get("effects", []) != recorded_effects
                 or existing.get("reads", []) != recorded_reads
+                or existing.get("catalog", "") != (catalog or "")
                 or existing["change_digest"] != change_digest(candidate.to_dict())
                 or existing["access_id"] != original.access_id or existing["subject_hash"] != subject_hash):
             raise CardTransactionRefused("card_transaction_replay_changed")
@@ -592,6 +623,8 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
         receipt["effects"] = recorded_effects
     if recorded_reads:
         receipt["reads"] = recorded_reads
+    if catalog:
+        receipt["catalog"] = catalog
     _validate(receipt, transaction_id)
     # 1. The prepared receipt, then 2. the per-Card marker: the Card is fenced
     #    from here on, even before 3. the after-revision and 4. the pointer.
@@ -608,6 +641,10 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
     if recorded_reads:
         await _reserve_reads(store, transaction_id, recorded_reads)  # fenced before the receipt makes them live
+    if catalog:
+        # The active catalog version, held before the receipt like the Card reads; a
+        # refusal leaves only the index entry (an unstaged stage), never a receipt.
+        await _reserve_catalog(store, transaction_id, intent_digest, catalog)
     await write_json_atomic(receipt_path(store, transaction_id), receipt)
     await write_json_atomic(marker_path(store, subject_hash=subject_hash, access_id=original.access_id),
                             {"transaction_id": transaction_id})

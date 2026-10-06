@@ -219,6 +219,7 @@ class DelegatedCardService:
     async def stage_transaction(
         self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
         original: CardAuthority, candidate: CardAuthority, now: Any, effects: Any = (), reads: Any = (),
+        catalog: str = "",
     ) -> dict[str, Any]:
         """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served.
 
@@ -265,7 +266,8 @@ class DelegatedCardService:
                 try:
                     staged = await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                          participant=participant, subject_hash=subject_hash, original=original,
-                                         candidate=candidate, now=now, effects=effects, reads=reads)
+                                         candidate=candidate, now=now, effects=effects, reads=reads,
+                                         catalog=catalog)
                     await self._run_effect_hook("_effect_preparer", staged, refusal="card_effect_prepare_failed")
                     return staged
                 except (CardStorageError, CardTransactionRefused):
