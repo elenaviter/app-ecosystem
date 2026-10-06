@@ -30,6 +30,7 @@ from .card_participant import (
     PARTICIPANT, DecisionStorePort, HubCardParticipant, HubLocalReceiptVerifier, LocalCardIntentSource,
 )
 from .effect_targets import compose_card_effects
+from .participant_operation import RoutedDecisionPort
 
 LOGGER = logging.getLogger("kdcube.connection_hub.card_transactions")
 DECISION_SCHEMA = "connection_hub_card_decisions"
@@ -90,16 +91,23 @@ class _HeldConnection:
         return _Lease()
 
 
-def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_store: Any,
-                                 policies: Any) -> tuple[Coordinator, LocalCardIntentSource]:
-    """One coordinator, participant, verifier and effect applier over this persistence's Card store."""
+def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_store: Any, policies: Any,
+                                 authorities: Mapping[str, Any] | None = None,
+                                 ) -> tuple[Coordinator, LocalCardIntentSource]:
+    """One coordinator, participant, verifier and effect applier over this persistence's Card store.
+
+    ``authorities`` maps each configured participant caller to its per-scope
+    authority reader: a Card staged by that caller's transaction resolves its
+    decision there, one the Hub staged itself reads ``decisions``.
+    """
     if persistence is None or decisions is None:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
     card_store = getattr(persistence, "card_store", None)
     card_service = getattr(persistence, "card_service", None)
     if card_store is None or card_service is None:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
-    tx.bind_transaction_decisions(card_store, DecisionStorePort(decisions))
+    tx.bind_transaction_decisions(card_store, RoutedDecisionPort(local=decisions, card_store=card_store,
+                                                                 authorities=authorities or {}))
     compose_card_effects(card_service=card_service, card_store=card_store, grant_store=grant_store,
                          policies=policies)
     intents = LocalCardIntentSource(card_store)
@@ -108,10 +116,11 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
 
 
 def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
-                           policies: Any) -> Coordinator:
+                           policies: Any, authorities: Mapping[str, Any] | None = None) -> Coordinator:
     """Bind one coordinator, participant, verifier and effect applier to this service's Card store."""
     coordinator, intents = card_transaction_coordinator(persistence=persistence, decisions=decisions,
-                                                        grant_store=grant_store, policies=policies)
+                                                        grant_store=grant_store, policies=policies,
+                                                        authorities=authorities)
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions)
     return coordinator
 

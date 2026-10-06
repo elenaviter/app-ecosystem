@@ -156,7 +156,8 @@ class CardTransactionParticipantOperation:
     """``answer(data)`` for ``card_transaction_participant``; bound by the composition root."""
 
     def __init__(self, *, callers: Mapping[str, ParticipantCaller], card_store: Any, nonces: Any,
-                 enabled: bool, clock: Callable[[], float], budget_seconds: float = 20.0) -> None:
+                 enabled: bool, clock: Callable[[], float], budget_seconds: float = 20.0,
+                 nonce_prefix: str = "connection-hub:card-participant:nonce:") -> None:
         self._callers = dict(callers)
         self._card_store = card_store
         self._intents = LocalCardIntentSource(card_store)
@@ -164,6 +165,7 @@ class CardTransactionParticipantOperation:
         self._enabled = enabled is True
         self._clock = clock
         self._budget = budget_seconds
+        self._nonce_prefix = nonce_prefix
 
     async def answer(self, data: Any) -> dict[str, Any]:
         if not _valid_request(data):
@@ -184,7 +186,7 @@ class CardTransactionParticipantOperation:
         if not verdict.allowed:
             return _unsigned_refusal("card_participant_unauthenticated", 401)
         try:
-            fresh = await self._nonces.set(f"connection-hub:card-participant:nonce:{caller.service_id}:{proof.nonce}",
+            fresh = await self._nonces.set(f"{self._nonce_prefix}{caller.service_id}:{proof.nonce}",
                                            "1", ex=2 * MAX_SKEW_SECONDS, nx=True)
         except Exception:  # noqa: BLE001 - no replay protection, no answer
             return _unsigned_refusal("card_participant_unavailable", 503)

@@ -52,6 +52,8 @@ from connection_hub.delegated_credentials.cards.composition import (
     postgres_decision_store,
     recover_card_transactions,
 )
+from connection_hub.delegated_credentials.cards.participant_descriptor import build_participant_callers
+from connection_hub.delegated_credentials.cards.participant_operation import CardTransactionParticipantOperation
 from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
 
 SITE_BUILD_COMMAND = "cp index.html site.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/"
@@ -1579,7 +1581,30 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
     decisions = await _card_decision_store(entrypoint, pg_pool)
     bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
-                           policies=_invocation_policy_service(entrypoint))
+                           policies=_invocation_policy_service(entrypoint),
+                           authorities=(await _card_participant_callers(entrypoint, persistence)).authorities)
+
+
+async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
+    """W502: each configured application allowed to drive the Hub's Card participant.
+
+    From connections.card_transactions.callers only (bundle props); secrets by
+    reference. The same authorities bind every Card store decision port, so a
+    Card another application staged reads its decision from that authority.
+    """
+    from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_operation
+
+    async def resolve(reference: str) -> str:
+        return await _bundle_secret_value(entrypoint, secret_path=reference,
+                                          trace_scope="card-transaction-participant", warn_missing=False)
+
+    async def call(**kwargs: Any) -> Any:
+        # A peer's transaction authority is a public operation it authenticates by proof.
+        return await call_bundle_operation(route="public", **kwargs)
+
+    return await build_participant_callers(
+        _connections_config(entrypoint), resolve_secret=resolve, call=call,
+        card_store=getattr(persistence, "card_store", None), card_service=getattr(persistence, "card_service", None))
 
 
 async def _automation_access_service(
@@ -3520,7 +3545,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         decisions = await _card_decision_store(self, pg_pool)
         coordinator, _ = card_transaction_coordinator(
             persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
-            policies=_invocation_policy_service(self))
+            policies=_invocation_policy_service(self),
+            authorities=(await _card_participant_callers(self, persistence)).authorities)
         # The cron runs on one process per tick, not always the same one, so the
         # page cursor is shared in Redis; a missing or unreadable one restarts at "".
         tenant, project = _runtime_tenant_project(self)
@@ -3814,6 +3840,49 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         )
 
     # ── direct protected-service admission ──────────────────────────────────
+
+    @api(method="POST", alias="card_transaction_participant", route="public")
+    async def card_transaction_participant(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W502: the Hub's Card participant, driven by another application's coordinator.
+
+        Platform and browser session values never establish this authority:
+        the caller is the admission proof's service id, configured under
+        connections.card_transactions.callers. Every authenticated answer is
+        signed (card-transaction-participant-receipt.v1); anything that cannot
+        be authenticated or served is an unsigned refusal, which the caller
+        treats as unavailable. Disabled refuses only a new prepare.
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        config = _delegated_authority_config(self)
+        pg_pool = getattr(self, "pg_pool", None)
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if not config.uses_postgresql or pg_pool is None or persistence is None:
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+            if not built.callers:
+                return unavailable
+            decisions = await _card_decision_store(self, pg_pool)
+            card_transaction_coordinator(
+                persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
+                policies=_invocation_policy_service(self), authorities=built.authorities)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] participant operation unavailable")
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        operation = CardTransactionParticipantOperation(
+            callers=built.callers, card_store=persistence.card_store, nonces=redis,
+            enabled=card_transactions_enabled(_connections_config(self)), clock=time.time,
+            nonce_prefix=f"connection-hub:{tenant}:{project}:card-participant:nonce:")
+        return await operation.answer(payload)
 
     @api(method="POST", alias="delegated_admission", route="public")
     async def delegated_admission(
