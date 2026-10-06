@@ -602,6 +602,24 @@ async def test_an_absent_card_stays_absent_until_finish(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_an_absent_reservation_leaves_a_listed_id_that_every_reader_sees_as_absent(tmp_path):
+    # EMain #603 Q2: the fence directory makes list_card_ids name the id; every sweep
+    # resolves it through read_current_authority, which reads None, so nothing trips on it.
+    store, service, coordinator, decisions, draft, before, after, dependency, applier = await _with_reads(
+        tmp_path, absent=True)
+    await coordinator.prepare(draft)
+    for phase in ("live fence", "released"):
+        assert dependency.access_id in await store.list_card_ids(subject_hash=SUBJECT_HASH), phase
+        assert await store.read_current_authority(subject_hash=SUBJECT_HASH,
+                                                  access_id=dependency.access_id) is None, phase
+        assert await store.find_current_authority(dependency.access_id) is None, phase
+        if phase == "live fence":  # the staged TARGET reads undecided until finish, as before #603
+            await coordinator.decide(TXID, "committed", witness_digest=WITNESS)
+            await coordinator.finish(TXID)
+    assert await store.find_current_authority(before.access_id) == after
+
+
+@pytest.mark.asyncio
 async def test_an_absent_reservation_refuses_when_the_card_exists(tmp_path):
     store, service, coordinator, decisions, draft, before, after, dependency, applier = await _with_reads(
         tmp_path, absent=True)

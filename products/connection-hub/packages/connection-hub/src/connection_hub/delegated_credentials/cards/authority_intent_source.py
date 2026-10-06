@@ -29,7 +29,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused, GlobalIntent
 
-from .card_participant import PARTICIPANT, CardIntent, LocalCardIntentSource
+from .card_participant import PARTICIPANT, CardIntent, LocalCardIntentSource, reads_from_dependencies
 from .model import CardAuthority
 from .transaction_authority_v2 import TransactionAuthorityRefused, VerifiedCardAuthority, verify_card_authority_v2
 
@@ -136,11 +136,14 @@ class AuthorityCardIntentSource(_AuthorityReads):
             candidate = CardAuthority.from_mapping(value["candidate"])
         except (KeyError, TypeError, ValueError):
             raise DecisionRefused("card_intent_invalid") from None
+        # The read reservations come from the VERIFIED projection, exactly as the
+        # participant re-derives them in _bound_intent (EMain #603).
+        reads = tuple(reads_from_dependencies(projection["dependency_revisions"]))
         intent = CardIntent(transaction_id=transaction_id, intent_digest=verified.intent.digest,
                             subject_hash=subject_hash, original=current[1], candidate=candidate,
                             effects=tuple(dict(effect) for effect in value["effects"]),
                             action=projection["action"], actor_subject=projection["actor_subject"],
-                            actor_kind=projection["actor_kind"])
+                            actor_kind=projection["actor_kind"], reads=reads)
         await self._local.record(intent)
         return intent
 

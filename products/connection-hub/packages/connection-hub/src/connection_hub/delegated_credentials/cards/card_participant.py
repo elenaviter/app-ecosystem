@@ -63,7 +63,14 @@ def dependency_revisions(reads: Sequence[Mapping[str, Any]] = ()) -> dict[str, i
 
 
 def reads_from_dependencies(dependencies: Any) -> list[dict[str, Any]]:
-    """The read reservations a projection names, or a named refusal for any other key."""
+    """The read reservations a projection names, or a named refusal for any other key.
+
+    A reservation is exclusive: while one transaction is prepared on a
+    dependency Card, another that reads or writes it is refused
+    (card_dependency_reserved). Within one Problem Board project the
+    board's own fence already serializes; this is only seen across projects
+    that share a Control (EMain #603).
+    """
     if not isinstance(dependencies, Mapping):
         raise DecisionRefused("card_dependency_invalid")
     reads = []
