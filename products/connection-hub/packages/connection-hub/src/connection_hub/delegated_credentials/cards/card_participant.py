@@ -363,7 +363,7 @@ class HubCardParticipant:
             record = await self._decisions.read(transaction_id)
             if record is None or record.state != "aborted":
                 raise
-            tombstone = await abort_unstaged(self._store, transaction_id)
+            tombstone = await abort_unstaged(self._store, transaction_id, intent_digest=record.intent.digest)
             return await self._tombstone_receipt(record, tombstone)
         if decision == "aborted" and await read_state(self._store, transaction_id=transaction_id) is None:
             # Never durably prepared here (a lost prepare reply, or a stage
@@ -371,7 +371,7 @@ class HubCardParticipant:
             # written under the Card's own section so it cannot race a stage.
             tombstone = await self._service.abort_unstaged_transaction(
                 transaction_id=transaction_id, subject_hash=intent.subject_hash,
-                access_id=intent.original.access_id)
+                access_id=intent.original.access_id, intent_digest=intent.intent_digest)
             if tombstone.get("state") != "aborted":  # the stage won the section: finish its receipt
                 return await self.finish(transaction_id, decision)
             record = await self._decisions.read(transaction_id)

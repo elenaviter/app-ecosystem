@@ -33,23 +33,35 @@ import re
 import time
 from typing import Any
 
+from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
+
 from ..durable_io import read_json_or_none, write_json_atomic
 
 RESERVATIONS_DIRNAME = "reservations"
 PUBLICATION_MARKER = "publication-pending.json"
+# A publication marker older than this belongs to a publisher that died: no
+# live publisher holds ensure_delegated_catalog's critical section this long.
+# (Assumed bound on the shared-storage runner's hold; EMain #609.)
+MARKER_STALE_SECONDS = 900
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
 
 
 class CatalogReservationRefused(RuntimeError):
-    def __init__(self, reason: str, *, holders: tuple[str, ...] = ()) -> None:
+    def __init__(self, reason: str, *, holders: tuple[str, ...] = (), age_seconds: int | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
         self.holders = holders
+        self.age_seconds = age_seconds
 
 
-def catalog_version_digest(version: str) -> str:
-    """The digest a ``catalog-active:<digest>`` dependency key names."""
-    return hashlib.sha256(str(version).encode("utf-8")).hexdigest()
+def catalog_version_digest(version: str, content_hash: str) -> str:
+    """The digest a ``catalog-active:<digest>`` dependency key names.
+
+    sha256 of the kernel canonical JSON of ``{"content_hash", "version"}``: the
+    version AND its immutable content (CodeApp 19:29), so a same-named version
+    with other content can never satisfy a reservation.
+    """
+    return sha256_hex(canonical_json_bytes({"content_hash": str(content_hash), "version": str(version)}))
 
 
 class CatalogReservations:
@@ -67,7 +79,7 @@ class CatalogReservations:
 
     async def _active_digest(self) -> str:
         active = await self._store.read_active()
-        return catalog_version_digest(active.version) if active is not None else ""
+        return catalog_version_digest(active.version, active.content_hash) if active is not None else ""
 
     async def reserve(self, *, transaction_id: str, intent_digest: str, version_digest: str) -> None:
         """Hold ``version_digest`` as the active catalog for this transaction, or refuse."""
@@ -82,13 +94,28 @@ class CatalogReservations:
         await write_json_atomic(path, {"transaction_id": transaction_id, "intent_digest": intent_digest,
                                        "version_digest": version_digest})
         pending = await read_json_or_none(self._store.root / PUBLICATION_MARKER)
-        if pending is not None or await self._active_digest() != version_digest:
-            await self.release(transaction_id)
+        if pending is not None:
+            await self.release(transaction_id, intent_digest=intent_digest)  # never live: this call wrote it
+            started = pending.get("started_at") if isinstance(pending, dict) else None
+            age = int(time.time()) - started if type(started) is int else None
+            raise CatalogReservationRefused("catalog_publication_pending", age_seconds=age)
+        if await self._active_digest() != version_digest:
+            await self.release(transaction_id, intent_digest=intent_digest)
             raise CatalogReservationRefused("catalog_version_moved")
 
-    async def release(self, transaction_id: str) -> None:
+    async def release(self, transaction_id: str, *, intent_digest: str) -> None:
+        """Release only the fence of exactly this transaction and intent (CodeApp 19:29).
+
+        Callers release on an authenticated terminal decision only: a decided
+        receipt or an ABORT tombstone. A fence with no receipt is UNKNOWN and
+        stays; a fence naming another intent is never cleared.
+        """
+        path = self._path(transaction_id)
+        fence = await read_json_or_none(path)
+        if not isinstance(fence, dict) or fence.get("intent_digest") != intent_digest:
+            return
         try:
-            self._path(transaction_id).unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
         except OSError:
             pass  # a held fence only delays publication until the next release
 
@@ -106,9 +133,32 @@ class CatalogReservations:
 
         return await asyncio.to_thread(read_all)
 
-    async def begin_publication(self, version: str) -> None:
+    async def begin_publication(self, document: Any) -> None:
         await write_json_atomic(self._store.root / PUBLICATION_MARKER,
-                                {"version_digest": catalog_version_digest(version), "started_at": int(time.time())})
+                                {"version_digest": catalog_version_digest(document.version, document.content_hash),
+                                 "started_at": int(time.time())})
+
+    async def clear_dead_publication(self) -> bool:
+        """Inside the publisher's serialized section: any marker found belongs to a dead publisher."""
+        path = self._store.root / PUBLICATION_MARKER
+        if await read_json_or_none(path) is None and not path.exists():
+            return False
+        await self.end_publication()
+        return True
+
+    async def clear_stale_publication(self, *, now: int | None = None,
+                                      max_age_seconds: int = MARKER_STALE_SECONDS) -> int | None:
+        """Outside the section (the recovery cron): clear a marker older than the bound; its age, or None."""
+        path = self._store.root / PUBLICATION_MARKER
+        marker = await read_json_or_none(path)
+        if marker is None:
+            return None
+        started = marker.get("started_at") if isinstance(marker, dict) else None
+        age = (int(time.time()) if now is None else now) - started if type(started) is int else None
+        if age is not None and age <= max_age_seconds:
+            return None
+        await self.end_publication()  # unreadable or past the bound: no live publisher holds it
+        return age if age is not None else -1
 
     async def end_publication(self) -> None:
         try:
@@ -116,14 +166,14 @@ class CatalogReservations:
         except OSError:
             pass
 
-    async def assert_publishable(self, version: str) -> None:
-        """Refuse (retryable) while a transaction holds another catalog version."""
-        digest = catalog_version_digest(version)
+    async def assert_publishable(self, document: Any) -> None:
+        """Refuse (retryable) while a transaction holds another catalog version or content."""
+        digest = catalog_version_digest(document.version, document.content_hash)
         blocking = tuple(str(fence.get("transaction_id") or "") for fence in await self.holders()
                          if fence.get("version_digest") != digest)
         if blocking:
             raise CatalogReservationRefused("catalog_reserved", holders=blocking)
 
 
-__all__ = ["CatalogReservationRefused", "CatalogReservations", "catalog_version_digest",
-           "PUBLICATION_MARKER", "RESERVATIONS_DIRNAME"]
+__all__ = ["CatalogReservationRefused", "CatalogReservations", "MARKER_STALE_SECONDS", "PUBLICATION_MARKER",
+           "RESERVATIONS_DIRNAME", "catalog_version_digest"]

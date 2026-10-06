@@ -50,38 +50,45 @@ async def _catalog(tmp_path):
     return store, CatalogReservations(store), first.version
 
 
+def _digest(version, content_hash):
+    return catalog_version_digest(version, content_hash)
+
+
+async def _active(store):
+    active = await store.read_active()
+    return _digest(active.version, active.content_hash)
+
+
 # ── the reservation and the publisher, both orders ──
 
 
 @pytest.mark.asyncio
 async def test_a_reserved_version_blocks_another_publication_until_released(tmp_path, caplog):
     store, reservations, version = await _catalog(tmp_path)
-    await reservations.reserve(transaction_id=TXID, intent_digest=INTENT,
-                               version_digest=catalog_version_digest(version))
+    await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=await _active(store))
     with caplog.at_level(logging.WARNING), pytest.raises(CatalogPublicationError, match="catalog_reserved"):
         await _publish(store, OTHER_CONNECTIONS)
     assert (await store.read_active()).version == version
     assert not (store.root / PUBLICATION_MARKER).exists()
     assert any(f"catalog publication waiting on transaction {TXID}" in r.getMessage() for r in caplog.records)
-    await reservations.release(TXID)
+    await reservations.release(TXID, intent_digest=INTENT)
     assert (await _publish(store, OTHER_CONNECTIONS)).version != version
 
 
 @pytest.mark.asyncio
 async def test_the_same_version_republishes_while_reserved(tmp_path):
     store, reservations, version = await _catalog(tmp_path)
-    await reservations.reserve(transaction_id=TXID, intent_digest=INTENT,
-                               version_digest=catalog_version_digest(version))
+    await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=await _active(store))
     assert (await _publish(store, CONNECTIONS)).version == version  # unchanged content: no new publication
 
 
 @pytest.mark.asyncio
 async def test_a_reservation_after_publication_of_a_newer_version_is_refused(tmp_path):
     store, reservations, version = await _catalog(tmp_path)
+    old = await _active(store)
     await _publish(store, OTHER_CONNECTIONS)
     with pytest.raises(CatalogReservationRefused, match="catalog_version_moved"):
-        await reservations.reserve(transaction_id=TXID, intent_digest=INTENT,
-                                   version_digest=catalog_version_digest(version))
+        await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=old)
     assert await reservations.holders() == []  # the refused fence is removed
 
 
@@ -89,19 +96,18 @@ async def test_a_reservation_after_publication_of_a_newer_version_is_refused(tmp
 async def test_a_reservation_during_a_pending_publication_is_refused(tmp_path):
     # The other order: the publisher has marked its publication before this fence.
     store, reservations, version = await _catalog(tmp_path)
-    await reservations.begin_publication("next-version")
-    with pytest.raises(CatalogReservationRefused, match="catalog_version_moved"):
-        await reservations.reserve(transaction_id=TXID, intent_digest=INTENT,
-                                   version_digest=catalog_version_digest(version))
+    await reservations.begin_publication(await store.read_active())
+    with pytest.raises(CatalogReservationRefused, match="catalog_publication_pending") as refused:
+        await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=await _active(store))
+    assert refused.value.age_seconds is not None and refused.value.age_seconds >= 0
     await reservations.end_publication()
-    await reservations.reserve(transaction_id=TXID, intent_digest=INTENT,
-                               version_digest=catalog_version_digest(version))
+    await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=await _active(store))
 
 
 @pytest.mark.asyncio
 async def test_a_replay_holds_the_same_reservation_and_a_changed_one_is_refused(tmp_path):
     store, reservations, version = await _catalog(tmp_path)
-    digest = catalog_version_digest(version)
+    digest = await _active(store)
     await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=digest)
     await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=digest)
     with pytest.raises(CatalogReservationRefused, match="catalog_reservation_changed"):
@@ -112,17 +118,18 @@ async def test_a_replay_holds_the_same_reservation_and_a_changed_one_is_refused(
 # ── through the Hub participant ──
 
 
-async def _hub(tmp_path, *, digest, bind=True, recorded_catalog=None):
+async def _hub(tmp_path, *, bind=True, recorded_catalog=None):
     store, service, before, after = await _setup(tmp_path)
     service.bind_effect_applier(_Applier())
     catalog_store, reservations, version = await _catalog(tmp_path)
+    digest = await _active(catalog_store)
     if bind:
         tx.bind_catalog_reservations(store, reservations)
     decisions = _Store()
     tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
     hub_input = hub_participant_input(original=before, candidate=after, subject_hash=SUBJECT_HASH, action="update",
                                       actor_subject="person", actor_kind="caller", effects=EFFECTS,
-                                      catalog_version_digest=digest(version))
+                                      catalog_version_digest=digest)
     draft = _draft(before, after, hub_input=hub_input)
     row = await decisions.begin(draft)
     intents = LocalCardIntentSource(store)
@@ -130,7 +137,7 @@ async def _hub(tmp_path, *, digest, bind=True, recorded_catalog=None):
         transaction_id=row.transaction_id, intent_digest=row.intent.digest, subject_hash=SUBJECT_HASH,
         original=before, candidate=after, effects=tuple(EFFECTS), action="update", actor_subject="person",
         actor_kind="caller",
-        catalog=digest(version) if recorded_catalog is None else recorded_catalog))
+        catalog=digest if recorded_catalog is None else recorded_catalog))
     hub = HubCardParticipant(service=service, store=store, intents=intents, decisions=decisions)
     return store, catalog_store, reservations, Coordinator(decisions, {PARTICIPANT: hub},
                                                            HubLocalReceiptVerifier(store)), draft, version
@@ -139,10 +146,9 @@ async def _hub(tmp_path, *, digest, bind=True, recorded_catalog=None):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("decision", ["committed", "aborted"])
 async def test_a_card_transaction_holds_the_catalog_from_prepare_to_its_decision(tmp_path, decision):
-    store, catalog_store, reservations, coordinator, draft, version = await _hub(tmp_path,
-                                                                                 digest=catalog_version_digest)
+    store, catalog_store, reservations, coordinator, draft, version = await _hub(tmp_path)
     await coordinator.prepare(draft)
-    assert (await tx.state(store, transaction_id=TXID))["catalog"] == catalog_version_digest(version)
+    assert (await tx.state(store, transaction_id=TXID))["catalog"] == await _active(catalog_store)
     with pytest.raises(CatalogPublicationError, match="catalog_reserved"):
         await _publish(catalog_store, OTHER_CONNECTIONS)
     await coordinator.decide(TXID, decision, **({"witness_digest": WITNESS} if decision == "committed" else {}))
@@ -153,8 +159,7 @@ async def test_a_card_transaction_holds_the_catalog_from_prepare_to_its_decision
 
 @pytest.mark.asyncio
 async def test_a_moved_catalog_refuses_prepare_and_holds_nothing(tmp_path):
-    store, catalog_store, reservations, coordinator, draft, version = await _hub(tmp_path,
-                                                                                 digest=catalog_version_digest)
+    store, catalog_store, reservations, coordinator, draft, version = await _hub(tmp_path)
     await _publish(catalog_store, OTHER_CONNECTIONS)
     with pytest.raises(DecisionRefused, match="catalog_version_moved"):
         await coordinator.prepare(draft)
@@ -165,20 +170,26 @@ async def test_a_moved_catalog_refuses_prepare_and_holds_nothing(tmp_path):
 
 @pytest.mark.asyncio
 async def test_a_crash_after_the_fence_before_the_receipt_is_released_by_the_abort(tmp_path):
-    store, catalog_store, reservations, coordinator, draft, version = await _hub(tmp_path,
-                                                                                 digest=catalog_version_digest)
-    await reservations.reserve(transaction_id=TXID, intent_digest=draft.bind(TXID, 1).digest,
-                               version_digest=catalog_version_digest(version))  # the stage died here
+    store, catalog_store, reservations, coordinator, draft, version = await _hub(tmp_path)
+    intent = draft.bind(TXID, 1).digest
+    await reservations.reserve(transaction_id=TXID, intent_digest=intent,
+                               version_digest=await _active(catalog_store))  # the stage died here
     with pytest.raises(CatalogPublicationError, match="catalog_reserved"):
         await _publish(catalog_store, OTHER_CONNECTIONS)
-    await tx.abort_unstaged(store, TXID)  # the coordinator's ABORT finishes it
+    # No receipt is UNKNOWN, not ABORT (CodeApp 19:29): a replay holds it, and an abort
+    # without this exact intent releases nothing.
+    await reservations.reserve(transaction_id=TXID, intent_digest=intent, version_digest=await _active(catalog_store))
+    await tx.abort_unstaged(store, TXID)
+    await tx.abort_unstaged(store, "f" * 64, intent_digest=intent)
+    await reservations.release(TXID, intent_digest="a" * 64)
+    assert len(await reservations.holders()) == 1
+    await tx.abort_unstaged(store, TXID, intent_digest=intent)  # the coordinator's authenticated ABORT
     assert await reservations.holders() == []
 
 
 @pytest.mark.asyncio
 async def test_the_recorded_catalog_must_equal_the_projections(tmp_path):
-    store, catalog_store, reservations, coordinator, draft, version = await _hub(
-        tmp_path, digest=catalog_version_digest, recorded_catalog="")
+    store, catalog_store, reservations, coordinator, draft, version = await _hub(tmp_path, recorded_catalog="")
     with pytest.raises(DecisionRefused, match="card_intent_not_bound"):
         await coordinator.prepare(draft)
     assert await reservations.holders() == []
@@ -186,8 +197,7 @@ async def test_the_recorded_catalog_must_equal_the_projections(tmp_path):
 
 @pytest.mark.asyncio
 async def test_without_a_catalog_store_a_catalog_reservation_is_refused(tmp_path):
-    store, catalog_store, reservations, coordinator, draft, version = await _hub(
-        tmp_path, digest=catalog_version_digest, bind=False)
+    store, catalog_store, reservations, coordinator, draft, version = await _hub(tmp_path, bind=False)
     with pytest.raises(DecisionRefused, match="card_catalog_reservation_unavailable"):
         await coordinator.prepare(draft)
 
@@ -201,3 +211,35 @@ def test_malformed_catalog_keys_are_refused(dependencies):
 
     with pytest.raises(DecisionRefused, match="card_dependency_invalid"):
         catalog_reservation_from_dependencies(dependencies)
+
+
+@pytest.mark.asyncio
+async def test_the_digest_binds_the_versions_content_not_only_its_name(tmp_path):
+    store, reservations, version = await _catalog(tmp_path)
+    with pytest.raises(CatalogReservationRefused, match="catalog_version_moved"):
+        await reservations.reserve(transaction_id=TXID, intent_digest=INTENT,
+                                   version_digest=_digest(version, "0" * 64))  # same name, other content
+
+
+@pytest.mark.asyncio
+async def test_a_dead_publishers_marker_is_cleared_by_the_next_publication(tmp_path):
+    store, reservations, version = await _catalog(tmp_path)
+    await reservations.begin_publication(await store.read_active())  # a publisher killed here
+    assert (await _publish(store, OTHER_CONNECTIONS)).version != version
+    assert not (store.root / PUBLICATION_MARKER).exists()
+    await reservations.reserve(transaction_id=TXID, intent_digest=INTENT, version_digest=await _active(store))
+
+
+@pytest.mark.asyncio
+async def test_a_stale_marker_is_cleared_by_the_cron_bound_and_a_fresh_one_is_kept(tmp_path):
+    import time
+
+    from connection_hub.delegated_credentials.catalog.reservations import MARKER_STALE_SECONDS
+
+    store, reservations, version = await _catalog(tmp_path)
+    await reservations.begin_publication(await store.read_active())
+    assert await reservations.clear_stale_publication() is None  # fresh: a live publisher may hold it
+    assert (store.root / PUBLICATION_MARKER).exists()
+    later = int(time.time()) + MARKER_STALE_SECONDS + 1
+    assert await reservations.clear_stale_publication(now=later) >= MARKER_STALE_SECONDS
+    assert not (store.root / PUBLICATION_MARKER).exists()

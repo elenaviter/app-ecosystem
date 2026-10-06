@@ -47,9 +47,11 @@ SharedStorageOperationRunner = Callable[..., Awaitable[Any]]
 
 
 class CatalogPublicationError(RuntimeError):
-    """A named publication failure. ``catalog_reserved`` is retryable: a Card
-    transaction holds the active version until it is decided (W502)."""
-    """The catalog could not be published for this app generation."""
+    """The catalog could not be published for this app generation.
+
+    ``catalog_reserved`` is retryable: a Card transaction holds the active
+    version until it is decided (W502).
+    """
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -101,6 +103,10 @@ async def ensure_delegated_catalog(
     registered = {"connections": connections, "hash": expected_hash}
 
     async def _publish() -> None:
+        # Publishers are serialized here, so a marker found now was left by one
+        # that died mid-publication; clear it so reservations resume (EMain #609).
+        if await CatalogReservations(store).clear_dead_publication():
+            _LOGGER.warning("[connection-hub.delegated-catalog] cleared a dead publication marker reason=%s", reason)
         if reread is not None:
             fresh = await reread()
             try:
@@ -131,9 +137,9 @@ async def ensure_delegated_catalog(
             # W502: never publish over a Card transaction that reserved the
             # active version (catalog/reservations.py has the ordering).
             reservations = CatalogReservations(store)
-            await reservations.begin_publication(document.version)
+            await reservations.begin_publication(document)
             try:
-                await reservations.assert_publishable(document.version)
+                await reservations.assert_publishable(document)
                 await store.write_version(document)
                 await store.publish_active(document)
             except CatalogReservationRefused as exc:
