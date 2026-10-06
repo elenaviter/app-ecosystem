@@ -1,0 +1,232 @@
+{
+  "notice": "Synthetic public test vectors; no production credentials. HMAC frame matches the reference producer, independent of the helper implementation.",
+  "config": {
+    "schema": "card-transaction-participant-receipt.v1",
+    "signer_id": "participant.test@1",
+    "audience": "authority.test@1",
+    "direction": "hub-to-authority",
+    "now": 1800000000,
+    "secret": "synthetic-fixture-key-not-a-credential-0000"
+  },
+  "vectors": [
+    {
+      "name": "receipt",
+      "request": {
+        "schema": "card-transaction-participant.v1",
+        "action": "prepare",
+        "request_echo": "00000000000000000000000000000001",
+        "scope": "scope.test",
+        "transaction_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "decision": null,
+        "limit": null,
+        "cursor": null
+      },
+      "request_digest": "50d37822c43e1443714bf2ff15478b0d1f4f6dd8c6a057e186aca51d2ef88a23",
+      "answer": {
+        "schema": "card-transaction-participant-receipt.v1",
+        "direction": "hub-to-authority",
+        "audience": "authority.test@1",
+        "request_digest": "50d37822c43e1443714bf2ff15478b0d1f4f6dd8c6a057e186aca51d2ef88a23",
+        "action": "prepare",
+        "request_echo": "00000000000000000000000000000001",
+        "scope": "scope.test",
+        "transaction_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "decision": null,
+        "limit": null,
+        "cursor": null,
+        "result": {
+          "kind": "receipt",
+          "receipt": {
+            "transaction_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "epoch": 1,
+            "global_intent_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "participant": "participant.test",
+            "projection_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "candidate_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "receipt_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+          }
+        },
+        "receipt_proof": {
+          "service_id": "participant.test@1",
+          "timestamp": "1800000000",
+          "signature": "yJMlU6wD4oCFrfLYY6R5KoatkjOP5z3bhLwLF2BSOq0"
+        }
+      }
+    },
+    {
+      "name": "pending_null",
+      "request": {
+        "schema": "card-transaction-participant.v1",
+        "action": "read_pending",
+        "request_echo": "00000000000000000000000000000002",
+        "scope": "scope.test",
+        "transaction_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "decision": null,
+        "limit": null,
+        "cursor": null
+      },
+      "request_digest": "80525f9321f2e1232f6bcd14a086f8395cc287f8e755f124e7bf2debd310cb0b",
+      "answer": {
+        "schema": "card-transaction-participant-receipt.v1",
+        "direction": "hub-to-authority",
+        "audience": "authority.test@1",
+        "request_digest": "80525f9321f2e1232f6bcd14a086f8395cc287f8e755f124e7bf2debd310cb0b",
+        "action": "read_pending",
+        "request_echo": "00000000000000000000000000000002",
+        "scope": "scope.test",
+        "transaction_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "decision": null,
+        "limit": null,
+        "cursor": null,
+        "result": {
+          "kind": "pending",
+          "receipt": null
+        },
+        "receipt_proof": {
+          "service_id": "participant.test@1",
+          "timestamp": "1800000000",
+          "signature": "xKKI-p0F8sz6H9RDz4LK9XSE5aLhFRKbbrO4zK1ElqQ"
+        }
+      }
+    },
+    {
+      "name": "page",
+      "request": {
+        "schema": "card-transaction-participant.v1",
+        "action": "list_prepared",
+        "request_echo": "00000000000000000000000000000003",
+        "scope": "scope.test",
+        "transaction_id": null,
+        "decision": null,
+        "limit": 1,
+        "cursor": null
+      },
+      "request_digest": "0bdb219bbcae725905b86fe7333e4fa847b49d7bb0b978f5cbc14f4ea6e431f2",
+      "answer": {
+        "schema": "card-transaction-participant-receipt.v1",
+        "direction": "hub-to-authority",
+        "audience": "authority.test@1",
+        "request_digest": "0bdb219bbcae725905b86fe7333e4fa847b49d7bb0b978f5cbc14f4ea6e431f2",
+        "action": "list_prepared",
+        "request_echo": "00000000000000000000000000000003",
+        "scope": "scope.test",
+        "transaction_id": null,
+        "decision": null,
+        "limit": 1,
+        "cursor": null,
+        "result": {
+          "kind": "page",
+          "receipts": [
+            {
+              "transaction_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+              "epoch": 1,
+              "global_intent_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "participant": "participant.test",
+              "projection_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "candidate_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "receipt_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            }
+          ],
+          "next_cursor": "cursor-next"
+        },
+        "receipt_proof": {
+          "service_id": "participant.test@1",
+          "timestamp": "1800000000",
+          "signature": "uvpu0RTbEqqz9FHkYwMk5SV-yqPRBLoIy2OMS2dwa3k"
+        }
+      }
+    },
+    {
+      "name": "refused",
+      "request": {
+        "schema": "card-transaction-participant.v1",
+        "action": "finish",
+        "request_echo": "00000000000000000000000000000004",
+        "scope": "scope.test",
+        "transaction_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "decision": "aborted",
+        "limit": null,
+        "cursor": null
+      },
+      "request_digest": "9f29c83c0053f83439aba71609a382115e7e9502c75ffaf6e3bdfeeb51f2ec39",
+      "answer": {
+        "schema": "card-transaction-participant-receipt.v1",
+        "direction": "hub-to-authority",
+        "audience": "authority.test@1",
+        "request_digest": "9f29c83c0053f83439aba71609a382115e7e9502c75ffaf6e3bdfeeb51f2ec39",
+        "action": "finish",
+        "request_echo": "00000000000000000000000000000004",
+        "scope": "scope.test",
+        "transaction_id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "decision": "aborted",
+        "limit": null,
+        "cursor": null,
+        "result": {
+          "kind": "refused",
+          "code": "example_refused",
+          "status": 409
+        },
+        "receipt_proof": {
+          "service_id": "participant.test@1",
+          "timestamp": "1800000000",
+          "signature": "2RR4mmVZqTTN10t58JftOjxlCPP80wI2ol0YU2cm3qU"
+        }
+      }
+    }
+  ],
+  "signed_field_tampers": [
+    {
+      "field": "schema",
+      "value": "other-answer.v1"
+    },
+    {
+      "field": "direction",
+      "value": "authority-to-hub"
+    },
+    {
+      "field": "audience",
+      "value": "other.test"
+    },
+    {
+      "field": "request_echo",
+      "value": "ffffffffffffffffffffffffffffffff"
+    },
+    {
+      "field": "request_digest",
+      "value": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "field": "action",
+      "value": "read_pending"
+    },
+    {
+      "field": "scope",
+      "value": "other-scope"
+    },
+    {
+      "field": "transaction_id",
+      "value": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    },
+    {
+      "field": "decision",
+      "value": "committed"
+    },
+    {
+      "field": "limit",
+      "value": 2
+    },
+    {
+      "field": "cursor",
+      "value": "another-cursor"
+    },
+    {
+      "field": "result",
+      "value": {
+        "kind": "refused",
+        "code": "tampered",
+        "status": 403
+      }
+    }
+  ],
+  "new_request_echo": "99999999999999999999999999999999"
+}

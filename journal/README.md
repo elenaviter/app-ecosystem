@@ -7,6 +7,7 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-10-06 | Authenticated replies bind a participant to one exact request attempt | Shared canonical HMAC envelopes verify configured signer, audience, direction, every frozen request field and fresh retry echo; signed refusals stay distinct from unsigned transport failure, while application policy and the seven-field durable Receipt remain unchanged. |
 | 2026-10-06 | Bounded recovery pages preserve durable completion and legacy refusal | Generic keyset paging advances past failed and unexpired rows, carries failure continuation, wraps to retry, and retains restart-safe finish receipts without another decision ledger; both PostgreSQL JSON codecs and unchanged legacy bounds are tested. |
 | 2026-10-06 | Exact issuer updates preserve the original Card and recover one durable intent | A widening-only delta binds the full original fingerprint and immutable issuer context; receipt-backed visibility, publication-thread expiry checks, cancellation drain and truthful committed/pending recovery do not claim mounted or activation qualification. |
 | 2026-10-06 | Full Card snapshots keep a separate issuer capability | Request-local host wiring preserves the independent snapshot proof and registry, actual human/scope binding, whole-pair credential refusal and original fingerprints; source tests are not mounted or activation evidence. |
