@@ -5032,6 +5032,7 @@ class AutomationAccessService:
         _issuer_request_id: str = "",
         _issuer_context_ref: str = "",
         _caller_write_action: str = "update",
+        _caller_actor_subject: str = "",
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -5411,7 +5412,8 @@ class AutomationAccessService:
             try:
                 before_commit, caller_request = await caller_writer_before_commit(
                     getattr(self, "_caller_writers", None), card_authority_from_record(existing),
-                    actor_subject=self._caller_actor_subject(user), action=_caller_write_action,
+                    actor_subject=_clean(_caller_actor_subject) or self._caller_actor_subject(user),
+                    action=_caller_write_action,
                     candidate=card_authority_from_record(updated).to_dict(),
                     request_id=_clean(_issuer_request_id) or secrets.token_urlsafe(18),
                     context_ref=_issuer_context_ref,
