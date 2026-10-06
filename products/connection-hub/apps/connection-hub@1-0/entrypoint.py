@@ -52,6 +52,7 @@ from connection_hub.delegated_credentials.cards.composition import (
     postgres_decision_store,
     recover_card_transactions,
 )
+from connection_hub.delegated_credentials.cards.census_read import CardCensusReadOperation
 from connection_hub.delegated_credentials.cards.participant_descriptor import build_participant_callers
 from connection_hub.delegated_credentials.cards.participant_operation import CardTransactionParticipantOperation
 from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
@@ -3911,6 +3912,40 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             enabled=card_transactions_enabled(_connections_config(self)), clock=time.time,
             nonce_prefix=f"connection-hub:{tenant}:{project}:card-participant:nonce:",
             after_authentication=compose_after_authentication)
+        return await operation.answer(payload)
+
+    @api(method="POST", alias="card_census_read", route="public")
+    async def card_census_read(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W502: a signed, optimistic read of one project's person Cards, chains and the active catalog.
+
+        Same peer authentication as card_transaction_participant (the caller
+        descriptor under connections.card_transactions.callers). The answer is
+        never a census by itself: the caller supplies the persons and owns
+        completeness; prepare re-verifies every revision it then reserves.
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] census callers unavailable")
+            return unavailable
+        if not built.callers:
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        operation = CardCensusReadOperation(
+            callers=built.callers, card_store=persistence.card_store, catalog_store=_delegated_catalog_store(self),
+            nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-census:nonce:")
         return await operation.answer(payload)
 
     @api(method="POST", alias="delegated_admission", route="public")
