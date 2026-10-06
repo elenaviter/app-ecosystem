@@ -50,6 +50,9 @@ import re
 from typing import Any, Callable, Mapping
 
 from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
+from service_foundation.coordination.participant_answer import AnswerContract
+from service_foundation.coordination.participant_answer import request_digest as shared_request_digest
+from service_foundation.coordination.participant_answer import sign_participant_answer
 
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
 from ..controls.project_person import (
@@ -80,6 +83,9 @@ CAPABILITY_FIELDS = (
     "expires_at", "composition_mode", "account_scope", "identity_scope", "operations", "resource_grants",
     "resource_operations", "resource_acceptance", "named_service_operations", "named_services", "control_card",
 )
+# Chain failures a reread may cure; every other ControlCardMismatch is persistent.
+TRANSIENT_CHAIN_REASONS = frozenset({"control_card_lookup_unavailable", "control_card_dependency_changed"})
+
 # Every CLASSIFIED authorization property travels (CodeApp 20:38, EMain #618):
 # card_property_classes decides each key; personal settings and any key not
 # yet classified are withheld (fail closed). The size refusal bounds the answer.
@@ -89,7 +95,8 @@ _BOUNDED = 256
 
 
 def census_request_digest(request: Mapping[str, Any]) -> str:
-    return sha256_hex(canonical_json_bytes({name: request[name] for name in REQUEST_FIELDS}))
+    """The shared helper's digest under the closed census contract (AE #619)."""
+    return shared_request_digest({name: request[name] for name in REQUEST_FIELDS}, contract=AnswerContract.CENSUS)
 
 
 def answer_frame_signature(unsigned: Mapping[str, Any], *, schema: str, secret: str | bytes, signer_id: str,
@@ -107,8 +114,9 @@ def answer_frame_signature(unsigned: Mapping[str, Any], *, schema: str, secret: 
 
 def census_answer_signature(unsigned: Mapping[str, Any], *, secret: str | bytes, signer_id: str,
                             timestamp: str) -> str:
-    return answer_frame_signature(unsigned, schema=ANSWER_SCHEMA, secret=secret, signer_id=signer_id,
-                                  timestamp=timestamp)
+    """The shared helper's signature under the closed census contract (AE #619)."""
+    return sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=secret, signer_id=signer_id,
+                                   timestamp=timestamp, contract=AnswerContract.CENSUS)["signature"]
 
 
 def _bounded(value: Any) -> bool:
@@ -210,8 +218,16 @@ class CardCensusReadOperation:
             result["edge"] = {"state": "invalid", "reason": "project_identity_edge_conflict"}
             return result
         reason = identity.edge(control_card=control, my_card=my).validation_reason()
-        result["edge"] = {"state": "invalid", "reason": reason} if reason else {"state": "valid"}
-        if reason or control is None or my.control_card is None:
+        if not reason and control_entry["state"] == "absent":
+            reason = "control_card_missing"  # never "valid" around an absent Control (EMain F1)
+        if not reason and my.control_card is None:
+            reason = "my_card_control_binding_missing"
+        if reason:
+            result["edge"] = {"state": "invalid", "reason": reason}
+            return result
+        result["edge"] = {"state": "valid"}
+        if control is None:  # the Control is staged: reread after its decision, never a partial chain
+            result["chain"] = {"state": "in_transaction", "cards": []}
             return result
         result["chain"] = await self._chain(my)
         return result
@@ -231,7 +247,12 @@ class CardCensusReadOperation:
         except ControlCardMismatch as exc:
             if staged:
                 return {"state": "in_transaction", "cards": []}  # an ancestor is staged: reread after its decision
-            return {"state": "unavailable", "reason": exc.reason, "cards": []}
+            if exc.reason in TRANSIENT_CHAIN_REASONS:
+                return {"state": "unavailable", "reason": exc.reason, "cards": []}  # reread may succeed
+            # A persistently broken chain (cycle, too deep, foreign, unresolvable, an
+            # invalid edge): this person is not usable, and the rest of the project's
+            # census stays readable (EMain O1).
+            return {"state": "invalid", "reason": exc.reason, "cards": []}
         return {"state": "complete", "cards": [_present(authority) for authority in hierarchy.dependencies]}
 
     async def _read(self, subject_hash: str, access_id: str, *, my_card: bool = False):
@@ -265,10 +286,9 @@ class CardCensusReadOperation:
         unsigned = unsigned_for(result)
         if len(canonical_json_bytes(unsigned)) > MAX_ANSWER_BYTES:
             unsigned = unsigned_for({"kind": "refused", "code": "card_census_too_large", "status": 413})
-        timestamp = str(int(self._clock()))
-        proof = {"service_id": caller.receipt_signer_id, "timestamp": timestamp,
-                 "signature": census_answer_signature(unsigned, secret=caller.receipt_secret,
-                                                      signer_id=caller.receipt_signer_id, timestamp=timestamp)}
+        proof = sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=caller.receipt_secret,
+                                        signer_id=caller.receipt_signer_id, timestamp=str(int(self._clock())),
+                                        contract=AnswerContract.CENSUS)
         return {"ok": unsigned["result"].get("kind") != "refused",
                 "census_answer": {**unsigned, "receipt_proof": proof}}
 
