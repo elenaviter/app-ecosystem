@@ -978,20 +978,16 @@ async def test_a_coordinated_prolong_of_an_ended_credential_is_refused_before_an
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="W580 finding 6: an ended-credential prolong is decided by the binding "
-    "policy (F5 order) and refused by the live check, but never finalized",
-)
-async def test_an_ended_credential_prolong_finalizes_the_decision_it_asked_for(tmp_path, redis_client):
+async def test_an_ended_credential_prolong_opens_no_policy_decision(tmp_path, redis_client):
+    """W580 finding 6, fixed in W578 3751e64a: liveness is checked before the policy is asked."""
+
     f = await _bound(tmp_path, redis_client, source="oauth")
     f.grants = f.service._store = _Extends()
     f.grants.live = False
     _coordinate(f)
     policy = _bind_answer(f, "allow")
     await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong", ttl_seconds=7200)
-    decided = [c for c in policy.calls if c[0] == "decide"]
-    assert not decided or ("finalize", "refused") in policy.calls, policy.calls
+    assert policy.calls == [], policy.calls
 
 
 async def _legacy_control(tmp_path, redis_client):
