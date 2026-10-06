@@ -2394,9 +2394,9 @@ class AutomationAccessService:
         bound = getattr(self, "_card_coordinator", None)
         if bound is None or expected_revision <= 0:
             return False
-        from service_foundation.coordination.durable_decision_log import DecisionRefused, Intent
+        from service_foundation.coordination.durable_decision_log import DecisionRefused, IntentDraft
 
-        from .cards.card_participant import PARTICIPANT, CardIntent, card_intent_payload_digest
+        from .cards.card_participant import PARTICIPANT, CardIntent, card_intent_payload_digest, hub_participant_input
         coordinator, intents, decisions, ttl = bound
         subject_hash = _subject_key(record.grantor_subject)
         loaded = await self._cards().load(record.access_id, subject_hash=subject_hash)
@@ -2407,21 +2407,27 @@ class AutomationAccessService:
             return False
         action = caller_write.action if caller_write is not None else "update"
         actor = (caller_write.actor_subject if caller_write is not None else "") or record.grantor_subject
+        actor_kind = "caller" if caller_write is not None and caller_write.actor_subject else "grantor"
         payload = card_intent_payload_digest(original=current, candidate=authority, effects=effects)
-        intent = Intent(actor=actor, request_id=(caller_write.request_id if caller_write is not None else "")
-                        or secrets.token_urlsafe(18), context=f"{PARTICIPANT}:{action}", payload_digest=payload,
-                        participants=(PARTICIPANT,),
-                        expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl))
+        request_id = (caller_write.request_id if caller_write is not None else "") or secrets.token_urlsafe(18)
+        # W581 v2 (46a29992): one global intent; the Hub's input is its projection,
+        # whose candidate_digest commits to base, candidate and every effect.
+        draft = IntentDraft(
+            replay_scope=f"{PARTICIPANT}:{subject_hash}:{actor}", request_id=request_id,
+            expires_at=int(datetime.now(timezone.utc).timestamp()) + ttl, participants=(PARTICIPANT,),
+            payload={"participant_inputs": {PARTICIPANT: hub_participant_input(
+                original=current, candidate=authority, subject_hash=subject_hash, action=action,
+                actor_subject=actor, actor_kind=actor_kind, effects=effects)}})
         try:
-            row = await decisions.begin(intent)
+            row = await decisions.begin(draft)
             transaction_id = row.transaction_id
-            await intents.record(CardIntent(transaction_id=transaction_id, intent_digest=intent.digest,
+            await intents.record(CardIntent(transaction_id=transaction_id, intent_digest=row.intent.digest,
                                             subject_hash=subject_hash, original=current, candidate=authority,
                                             effects=tuple(dict(effect) for effect in effects)))
         except DecisionRefused as exc:
             raise CardConflict(str(exc)) from exc
         try:
-            await coordinator.prepare(intent)
+            await coordinator.prepare_existing(transaction_id)
             if gate is not None:
                 await gate()  # the binding's policy revalidates before the one decision
         except BaseException as exc:
