@@ -56,7 +56,8 @@ async def _world(tmp_path, *, catalog=True):
         await _publish(catalog_store, CONNECTIONS)
     caller = ParticipantCaller(service_id=PEER, request_secret=REQUEST_SECRET, receipt_secret=RECEIPT_SECRET,
                                receipt_signer_id="connection-hub@1-0", audience="problem-board@1-0",
-                               hub_resource="connection-hub@1-0", bind=None, scope_field="project_ref")
+                               hub_resource="connection-hub@1-0", bind=None, scope_field="project_ref",
+                               census_scope_prefix="work:project:")
     operation = CardCensusReadOperation(callers={PEER: caller}, card_store=store, catalog_store=catalog_store,
                                         nonces=_Nonces(), clock=lambda: NOW)
     return operation, store, control, identity, catalog_store
@@ -220,7 +221,8 @@ async def test_a_real_pair_returns_a_valid_edge_and_the_complete_upstream_chain(
     assert (await _create(h, "request-create"))["ok"] is True
     caller = ParticipantCaller(service_id=PEER, request_secret=REQUEST_SECRET, receipt_secret=RECEIPT_SECRET,
                                receipt_signer_id="connection-hub@1-0", audience="problem-board@1-0",
-                               hub_resource="connection-hub@1-0", bind=None, scope_field="project_ref")
+                               hub_resource="connection-hub@1-0", bind=None, scope_field="project_ref",
+                               census_scope_prefix="work:project:")
     operation = CardCensusReadOperation(callers={PEER: caller}, card_store=h.store, catalog_store=None,
                                         nonces=_Nonces(), clock=lambda: NOW)
     request = _request([TARGET], scope=PROJECT_REF, include_catalog=False)
@@ -251,10 +253,46 @@ async def test_a_staged_chain_card_makes_the_chain_in_transaction(tmp_path, redi
                    now=datetime.fromtimestamp(NOW, timezone.utc))
     caller = ParticipantCaller(service_id=PEER, request_secret=REQUEST_SECRET, receipt_secret=RECEIPT_SECRET,
                                receipt_signer_id="connection-hub@1-0", audience="problem-board@1-0",
-                               hub_resource="connection-hub@1-0", bind=None, scope_field="project_ref")
+                               hub_resource="connection-hub@1-0", bind=None, scope_field="project_ref",
+                               census_scope_prefix="work:project:")
     operation = CardCensusReadOperation(callers={PEER: caller}, card_store=h.store, catalog_store=None,
                                         nonces=_Nonces(), clock=lambda: NOW)
     request = _request([TARGET], scope=PROJECT_REF, include_catalog=False)
     entry = _verified(await operation.answer(request), request)["persons"][0]
     assert entry["control"]["state"] == "in_transaction"
     assert entry["chain"]["state"] != "complete"  # never a chain built around a staged Control
+
+
+# ── entitlement (EMain #616) and the signature pinned to the shared helper ──
+
+
+def _caller(service_id, *, prefix):
+    return ParticipantCaller(service_id=service_id, request_secret=REQUEST_SECRET, receipt_secret=RECEIPT_SECRET,
+                             receipt_signer_id="connection-hub@1-0", audience="problem-board@1-0",
+                             hub_resource="connection-hub@1-0", bind=None, census_scope_prefix=prefix)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["", "work:other-app:"])
+async def test_a_caller_without_entitlement_to_the_scope_reads_nothing(tmp_path, prefix):
+    operation, store, control, identity, catalog_store = await _world(tmp_path)
+    other = CardCensusReadOperation(callers={"other-app": _caller("other-app", prefix=prefix)}, card_store=store,
+                                    catalog_store=catalog_store, nonces=_Nonces(), clock=lambda: NOW)
+    request = _request([ADMIN], service_id="other-app")
+    assert _verified(await other.answer(request), request) == {
+        "kind": "refused", "code": "card_census_scope_forbidden", "status": 403}
+
+
+def test_the_census_signature_is_the_shared_helpers_construction():
+    import json as _json
+    from pathlib import Path
+
+    from connection_hub.delegated_credentials.cards.census_read import answer_frame_signature
+
+    shared = _json.loads((Path(__file__).resolve().parents[5] / "packages" / "service-foundation" / "tests"
+                          / "fixtures" / "participant_answer_vectors.json").read_text())
+    for vector in shared["vectors"]:
+        answer = dict(vector["answer"])
+        proof = answer.pop("receipt_proof")
+        assert answer_frame_signature(answer, schema=shared["config"]["schema"], secret=shared["config"]["secret"],
+                                      signer_id=proof["service_id"], timestamp=proof["timestamp"]) == proof["signature"]

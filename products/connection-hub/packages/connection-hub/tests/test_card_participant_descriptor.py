@@ -43,7 +43,7 @@ def _connections(**changes):
     caller = {
         "request_secret_ref": "refs.request", "receipt_secret_ref": "refs.receipt",
         "receipt_signer_id": "connection-hub@1-0", "audience": "problem-board@1-0",
-        "hub_resource": "connection-hub@1-0", "scope_field": "project_ref",
+        "hub_resource": "connection-hub@1-0", "scope_field": "project_ref", "census_scope_prefix": "work:project:",
         "authority": {
             "service_id": AUTHORITY.service_id, "audience": AUTHORITY.audience, "secret_ref": "refs.authority",
             "request_signer_id": "connection-hub", "request_secret_ref": "refs.signer",
@@ -118,6 +118,7 @@ async def test_the_descriptor_built_operation_prepares_and_finishes_through_prob
     built = await build_participant_callers(_connections(), resolve_secret=_resolve, call=pb,
                                             card_store=world.store, card_service=world.service)
     assert set(built.callers) == {PEER}
+    assert built.callers[PEER].census_scope_prefix == "work:project:"
 
     class _Persistence:
         card_store, card_service = world.store, world.service

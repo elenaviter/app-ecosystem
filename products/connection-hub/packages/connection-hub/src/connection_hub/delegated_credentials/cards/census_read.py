@@ -9,6 +9,9 @@ those inputs, server to server (CodeApp 20:17):
 - authenticated exactly like ``card_transaction_participant``: the caller is
   the admission proof's service id from the same caller descriptor, with a
   durable single-use nonce, and the request is frozen before any await;
+- the caller may read only scopes its descriptor entitles it to
+  (``census_scope_prefix``; none, no census), refused signed
+  ``card_census_scope_forbidden`` otherwise;
 - the caller names the scope and the persons; the Hub DERIVES each person's
   My Card and project Control ids from them, so only that project's person
   Cards are readable, then follows the QUALIFIED identity path: the My Card's
@@ -81,13 +84,23 @@ def census_request_digest(request: Mapping[str, Any]) -> str:
     return sha256_hex(canonical_json_bytes({name: request[name] for name in REQUEST_FIELDS}))
 
 
-def census_answer_signature(unsigned: Mapping[str, Any], *, secret: str | bytes, signer_id: str,
-                            timestamp: str) -> str:
-    """The shared participant-answer construction under this schema: HMAC-SHA256 over the newline join."""
+def answer_frame_signature(unsigned: Mapping[str, Any], *, schema: str, secret: str | bytes, signer_id: str,
+                           timestamp: str) -> str:
+    """The shared participant-answer construction (AE #608): HMAC-SHA256 over the newline join.
+
+    #608's helper fixes the participant's field sets, so this answer signs with
+    the same construction here; a test pins it to the helper's bytes (EMain #616).
+    """
     key = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
-    frame = "\n".join((ANSWER_SCHEMA, signer_id, timestamp, unsigned["request_echo"],
+    frame = "\n".join((schema, signer_id, timestamp, unsigned["request_echo"],
                        sha256_hex(canonical_json_bytes(dict(unsigned))))).encode("utf-8")
     return base64.urlsafe_b64encode(hmac.new(key, frame, hashlib.sha256).digest()).rstrip(b"=").decode("ascii")
+
+
+def census_answer_signature(unsigned: Mapping[str, Any], *, secret: str | bytes, signer_id: str,
+                            timestamp: str) -> str:
+    return answer_frame_signature(unsigned, schema=ANSWER_SCHEMA, secret=secret, signer_id=signer_id,
+                                  timestamp=timestamp)
 
 
 def _bounded(value: Any) -> bool:
@@ -155,6 +168,10 @@ class CardCensusReadOperation:
         if not fresh:
             return _unsigned_refusal("card_participant_unauthenticated", 401)
         try:
+            prefix = caller.census_scope_prefix
+            if not prefix or not data["scope"].startswith(prefix):
+                # Only scopes the caller's descriptor entitles it to read (EMain #616).
+                raise _Refused("card_census_scope_forbidden", 403)
             result = {"kind": "census", "persons": [await self._person(data["scope"], person)
                                                     for person in data["persons"]],
                       "catalog": await self._active_catalog() if data["include_catalog"] else None}
@@ -265,6 +282,6 @@ class _Refused(Exception):
         self.code, self.status = code, status
 
 
-__all__ = ["ANSWER_SCHEMA", "CAPABILITY_FIELDS", "CardCensusReadOperation", "MAX_ANSWER_BYTES", "MAX_PERSONS",
+__all__ = ["ANSWER_SCHEMA", "answer_frame_signature", "CAPABILITY_FIELDS", "CardCensusReadOperation", "MAX_ANSWER_BYTES", "MAX_PERSONS",
            "OPERATION", "REQUEST_FIELDS",
            "REQUEST_SCHEMA", "census_answer_signature", "census_request_digest"]
