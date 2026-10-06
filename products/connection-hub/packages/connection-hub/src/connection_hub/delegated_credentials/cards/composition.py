@@ -20,6 +20,7 @@ but the PostgreSQL authority or Card storage is missing, composition refuses
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Mapping
 
 from service_foundation.coordination.durable_decision_log import Coordinator, PostgresDecisionStore
@@ -30,6 +31,7 @@ from .card_participant import (
 )
 from .effect_targets import compose_card_effects
 
+LOGGER = logging.getLogger("kdcube.connection_hub.card_transactions")
 DECISION_SCHEMA = "connection_hub_card_decisions"
 
 
@@ -120,16 +122,27 @@ async def recover_card_transactions(coordinator: Coordinator, *, limit: int = 10
     Finishes every decided transaction on every participant, presumes ABORT
     for an undecided one past its expiry (the store's own CAS), and leaves an
     unexpired undecided one. A participant failure does not stop the pass; it
-    is reported by transaction id count only, and the next pass retries it.
+    is logged by transaction id and refusal code and retried next pass. A
+    backlog larger than ``limit`` is a named result, never an exception
+    (EMain #601); draining it page by page needs the kernel's paged read.
     """
-    from service_foundation.coordination.durable_decision_log import RecoveryIncomplete
+    from service_foundation.coordination.durable_decision_log import DecisionRefused, RecoveryIncomplete
 
     try:
         records = await coordinator.recover(limit=limit)
     except RecoveryIncomplete as exc:
         records, failed = list(exc.completed), exc.failures
+    except DecisionRefused as exc:
+        if str(exc) != "recovery_unbounded":
+            raise
+        LOGGER.warning("[connection-hub.card-transactions] recovery backlog exceeds limit=%s", limit)
+        return {"ok": False, "reason": "recovery_unbounded", "finished": 0, "pending": 0, "failed": 0}
     else:
         failed = {}
+    for transaction_id, error in failed.items():
+        reason = str(error) if isinstance(error, DecisionRefused) else type(error).__name__
+        LOGGER.warning("[connection-hub.card-transactions] recovery failed transaction=%s reason=%s",
+                       transaction_id, reason)
     finished = sum(1 for record in records if record.terminal and set(record.finished) == set(record.intent.participants))
     return {"ok": not failed, "finished": finished, "pending": len(records) - finished, "failed": len(failed)}
 

@@ -231,3 +231,48 @@ async def test_first_creation_works_with_a_pool_of_one_connection():
         assert await store.list_in_doubt(limit=1) == []
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_backlog_over_the_limit_is_a_named_result_not_an_exception(tmp_path, caplog):
+    # EMain #601: until the kernel offers a paged read, a pass over the limit reports it by name.
+    import asyncio
+    import logging
+
+    composition, decisions, persistence, store, before, after, drop = await _recovery_setup(tmp_path)
+    try:
+        from connection_hub.delegated_credentials.cards.card_participant import hub_participant_input  # noqa: F401
+        for index in range(3):
+            await decisions.begin(_hub_draft(before, after, request_id=f"backlog-{index}", expires_in=1))
+        await asyncio.sleep(2)
+        coordinator, _ = composition.card_transaction_coordinator(persistence=persistence, decisions=decisions,
+                                                                  grant_store=None, policies=None)
+        with caplog.at_level(logging.WARNING, logger="kdcube.connection_hub.card_transactions"):
+            report = await composition.recover_card_transactions(coordinator, limit=2)
+        assert report == {"ok": False, "reason": "recovery_unbounded", "finished": 0, "pending": 0, "failed": 0}
+        assert any("recovery backlog exceeds limit=2" in record.getMessage() for record in caplog.records)
+    finally:
+        await drop()
+
+
+@pytest.mark.asyncio
+async def test_each_failed_transaction_is_logged_by_id_and_reason(tmp_path, caplog):
+    import logging
+
+    composition, decisions, persistence, store, before, after, drop = await _recovery_setup(tmp_path)
+    try:
+        coordinator, txid = await _staged(composition, decisions, persistence, store, before, after,
+                                          request_id="logged-failure")
+        await coordinator.decide(txid, "committed", witness_digest="c" * 64)
+
+        async def failing(transaction_id, decision):
+            raise RuntimeError("secret detail never logged")
+
+        coordinator.participants[PARTICIPANT].finish = failing
+        with caplog.at_level(logging.WARNING, logger="kdcube.connection_hub.card_transactions"):
+            await composition.recover_card_transactions(coordinator)
+        lines = [record.getMessage() for record in caplog.records]
+        assert any(f"transaction={txid} reason=RuntimeError" in line for line in lines)
+        assert not any("secret detail" in line for line in lines)
+    finally:
+        await drop()
