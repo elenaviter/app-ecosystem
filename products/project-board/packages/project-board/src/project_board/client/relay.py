@@ -5882,8 +5882,9 @@ class ProblemBoardRelaySupervisor:
         # no turn and are received with the next wake or receive. Each message
         # is classified once (review of PR 535), and the hold is cleared as on
         # every other branch with nothing to wake for (W334).
-        # A backlog mark changes which pending mail is quiet: classify again.
-        mark = str((await self._channel_off_loop(channel, field.backlog_mark, channel.worker_name)).get("mark_id") or "")
+        # A backlog mark or a wake deferral changes which pending mail is
+        # quiet: classify again.
+        mark = await self._channel_off_loop(channel, field.quiet_token, channel.worker_name)
         if self._quiet_mark.get(channel.worker_name, "") != mark:
             self._quiet_classified.pop(channel.worker_name, None)
             self._quiet_mark[channel.worker_name] = mark
