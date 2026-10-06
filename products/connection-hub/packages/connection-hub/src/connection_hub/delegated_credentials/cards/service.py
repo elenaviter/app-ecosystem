@@ -406,6 +406,21 @@ class DelegatedCardService:
                 refusal = candidate_shape_refusal(action, before, after)
             if refusal is not None:
                 raise CardTransactionRefused(refusal)
+        # The whole in-group Control graph composes before any write (a planned P
+        # and its C and My included); a live parent outside the group is read as is.
+        from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+        from .card_group import compose_group_chains, group_member
+
+        async def load_live(subject_hash: str, access_id: str) -> CardAuthority | None:
+            found = await self._store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+            return None if found is None else found[1]
+
+        try:
+            await compose_group_chains([group_member(original=original, candidate=candidate, action=action)
+                                        for _, original, candidate, action in ordered], load_live)
+        except DecisionRefused as exc:
+            raise CardTransactionRefused(str(exc)) from exc
         try:
             # Under the lead member's section: the same section an ABORT of a never
             # staged group takes (abort_unstaged_transaction), so a late begin and

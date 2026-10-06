@@ -225,6 +225,46 @@ def verify_group_projection(projection: Mapping[str, Any], value: Any) -> dict[s
     return checked
 
 
-__all__ = ["GROUP_BINDING_KIND", "GROUP_SCHEMA", "MAX_GROUP_CANDIDATE_BYTES", "MAX_GROUP_MEMBERS",
+async def compose_group_chains(members: Sequence[Mapping[str, Any]], load_live: Any) -> None:
+    """Validate every member's whole Control chain over the PLANNED group, before any write.
+
+    A parent that is a member of the group is the member's candidate (a
+    planned P in a brand-new project, a planned C under it); any other
+    parent is the live current Card from ``load_live(subject_hash,
+    access_id)``. The chain is then composed by the Hub's own in-memory
+    composer, so the qualified C -> P edge, P as the top boundary and every
+    ordinary guard apply exactly as they will after commit. Refuses
+    ``card_group_chain_invalid``; the composer's reason is the cause.
+    """
+    from ..controls.effective import ControlCardMismatch
+    from ..controls.hierarchy import compose_resolved_control_hierarchy
+
+    planned = {_member_key(member): CardAuthority.from_mapping(member["candidate"]) for member in members}
+    for member in members:
+        card = planned[_member_key(member)]
+        chain: list[CardAuthority] = []
+        current = card
+        while current.control_card is not None:
+            if len(chain) > 32:
+                raise _refuse("card_group_chain_invalid")
+            binding = current.control_card
+            holder = str(binding.holder_subject or "") or current.grantor_subject
+            key = (subject_hash_for(holder), binding.control_id)
+            parent = planned.get(key)
+            if parent is None:
+                parent = await load_live(*key)
+            if parent is None:
+                raise _refuse("card_group_chain_invalid")
+            chain.append(parent)
+            current = parent
+        if not chain:
+            continue
+        try:
+            compose_resolved_control_hierarchy(card, tuple(chain))
+        except ControlCardMismatch as exc:
+            raise _refuse("card_group_chain_invalid") from exc
+
+
+__all__ = ["GROUP_BINDING_KIND", "compose_group_chains", "GROUP_SCHEMA", "MAX_GROUP_CANDIDATE_BYTES", "MAX_GROUP_MEMBERS",
            "group_binding_ref", "group_candidate_value", "group_member", "group_target_scope",
            "hub_group_participant_input", "validate_group_candidate", "verify_group_projection"]

@@ -30,7 +30,8 @@ from typing import Any, Awaitable, Callable, Mapping
 from service_foundation.coordination.durable_decision_log import DecisionRefused, GlobalIntent
 
 from .card_participant import (
-    PARTICIPANT, CardIntent, LocalCardIntentSource, catalog_reservation_from_dependencies, reads_from_dependencies,
+    PARTICIPANT, CardGroupIntent, CardGroupMemberIntent, CardIntent, LocalCardIntentSource,
+    catalog_reservation_from_dependencies, reads_from_dependencies,
 )
 from .model import CardAuthority
 from .transaction_authority_v2 import TransactionAuthorityRefused, VerifiedCardAuthority, verify_card_authority_v2
@@ -129,7 +130,7 @@ class AuthorityCardIntentSource(_AuthorityReads):
         self._scope_field = scope_field
         self._local = LocalCardIntentSource(store)
 
-    async def load(self, transaction_id: str) -> CardIntent:
+    async def load(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
         try:
             return await self._local.load(transaction_id)  # already verified and recorded once
         except DecisionRefused as exc:
@@ -141,6 +142,8 @@ class AuthorityCardIntentSource(_AuthorityReads):
             # A closed stage window with no local record: nothing was staged here.
             raise DecisionRefused("card_intent_unknown" if exc.reason == "authority_late_stage" else exc.reason) from None
         projection, value = verified.projection, verified.candidate
+        if projection.get("binding_kind") == "connection-hub.card-group":
+            return await self._load_group(transaction_id, verified)
         subject_hash = projection["target_scope"]
         if type(subject_hash) is not str or not _HEX64.fullmatch(subject_hash):
             # The Hub's storage scope, sha256(grantor_subject) hex (EMain C1); never a raw subject.
@@ -162,6 +165,43 @@ class AuthorityCardIntentSource(_AuthorityReads):
                             actor_kind=projection["actor_kind"], reads=reads, authority=self._authority_id,
                             scope=intent_scope(verified.intent, self._scope_field),
                             catalog=catalog_reservation_from_dependencies(projection["dependency_revisions"]))
+        await self._local.record(intent)
+        return intent
+
+    async def _load_group(self, transaction_id: str, verified: Any) -> CardGroupIntent:
+        """W578: the group intent from the VERIFIED group candidate; each original is the Hub's own Card.
+
+        A present member's current Card must be exactly at its base revision;
+        an absent member's id must still have no current Card (staging also
+        refuses an id with committed history). Nothing from the response
+        stands in for the Hub's own state.
+        """
+        projection, value = verified.projection, verified.candidate
+        members = []
+        for member in value["cards"]:
+            current = await self._store.read_current_authority(subject_hash=member["subject_hash"],
+                                                               access_id=member["access_id"])
+            if member["original_absent"]:
+                if current is not None:
+                    raise DecisionRefused("card_intent_base_moved")
+                original = None
+            else:
+                if current is None or current[1].card_revision != member["original_revision"]:
+                    raise DecisionRefused("card_intent_base_moved")
+                original = current[1]
+            try:
+                candidate = CardAuthority.from_mapping(member["candidate"])
+            except (KeyError, TypeError, ValueError):
+                raise DecisionRefused("card_intent_invalid") from None
+            members.append(CardGroupMemberIntent(subject_hash=member["subject_hash"], original=original,
+                                                 candidate=candidate, action=member["action"]))
+        intent = CardGroupIntent(
+            transaction_id=transaction_id, intent_digest=verified.intent.digest, members=tuple(members),
+            effects=tuple(dict(effect) for effect in value["effects"]),
+            actor_subject=projection["actor_subject"], actor_kind=projection["actor_kind"],
+            reads=tuple(reads_from_dependencies(projection["dependency_revisions"])), authority=self._authority_id,
+            scope=intent_scope(verified.intent, self._scope_field),
+            catalog=catalog_reservation_from_dependencies(projection["dependency_revisions"]))
         await self._local.record(intent)
         return intent
 
