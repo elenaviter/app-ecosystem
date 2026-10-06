@@ -211,6 +211,10 @@ with CSRF protection. Its body is `{data: {context_ref, request_id, targets}}`;
 the two targets contain exactly `owner_subject`, `access_id`, `issuer_kind`,
 and `issuer_ref`. Extra query fields cannot select an actor, policy or export.
 Context movement while constructing the request-local service refuses.
+The caller must be trusted server orchestration wrapping its request-bound SDK
+call in the public `bind_issuer_snapshot_orchestration()` scope. Direct browser
+and HTTP calls refuse; headers cannot supply this scope. It grants no issuer
+authority, and the calling app must never return the raw result to a browser.
 
 The trusted issuer row must explicitly configure `full_snapshot_operation`.
 The separately signed `issuer-snapshot.v1` protocol rechecks fresh policy before

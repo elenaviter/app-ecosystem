@@ -12,6 +12,12 @@ from connection_hub.delegated_credentials.issuer_snapshot import (
     IssuerSnapshotRefused, IssuerSnapshotRequest, verify_issuer_snapshot_request,
 )
 from test_issuer_read_entrypoint import body, entry, module
+from connection_hub.delegated_credentials.issuer_snapshot_host import bind_issuer_snapshot_orchestration
+
+
+async def internal_call(m, e, **kwargs):
+    with bind_issuer_snapshot_orchestration():
+        return await m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(e, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -22,8 +28,8 @@ async def test_snapshot_host_uses_actual_context_not_sdk_metadata(monkeypatch, c
     service.issuer_managed_card_snapshots = AsyncMock(return_value={"ok": True})
     factory = AsyncMock(return_value=service)
     monkeypatch.setattr(m, "_automation_access_service", factory)
-    result = await m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(
-        entry(m, classification=classification), user_id="forged", fingerprint="forged", **body())
+    result = await internal_call(m, entry(m, classification=classification),
+        user_id="forged", fingerprint="forged", **body())
     assert result == {"ok": True}
     service.bind_issuer_snapshot_registry.assert_called_once_with(service._issuer_snapshots,
         actor_subject="actual-human", actor_classification=classification,
@@ -39,8 +45,7 @@ async def test_snapshot_query_cannot_supply_authority(monkeypatch, field):
     m = module()
     factory = AsyncMock()
     monkeypatch.setattr(m, "_automation_access_service", factory)
-    result = await m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(
-        entry(m), data={**body(), field: "forged"})
+    result = await internal_call(m, entry(m), data={**body(), field: "forged"})
     assert result == {"ok": False, "status": 400, "error": "issuer_snapshot_query_invalid"}
     factory.assert_not_called()
 
@@ -54,7 +59,7 @@ async def test_snapshot_requires_platform_human_and_real_scope_before_factory(mo
     m = module()
     factory = AsyncMock()
     monkeypatch.setattr(m, "_automation_access_service", factory)
-    result = await m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(entry(m, **kwargs), data=body())
+    result = await internal_call(m, entry(m, **kwargs), data=body())
     assert result["status"] == 403 and result["ok"] is False
     factory.assert_not_called()
 
@@ -79,7 +84,7 @@ async def test_context_movement_during_service_construction_refuses_before_expor
         return service
 
     monkeypatch.setattr(m, "_automation_access_service", factory)
-    result = await m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(e, data=body())
+    result = await internal_call(m, e, data=body())
     assert result == {"ok": False, "error": "issuer_snapshot_context_changed", "status": 409, "retryable": True}
     service.bind_issuer_snapshot_registry.assert_not_called()
     service.issuer_managed_card_snapshots.assert_not_called()
@@ -89,7 +94,7 @@ async def test_context_movement_during_service_construction_refuses_before_expor
 async def test_missing_snapshot_host_port_is_a_named_refusal(monkeypatch):
     m = module()
     monkeypatch.setattr(m, "_automation_access_service", AsyncMock(return_value=object()))
-    result = await m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(entry(m), data=body())
+    result = await internal_call(m, entry(m), data=body())
     assert result == {"ok": False, "error": "issuer_snapshot_host_unavailable", "status": 503, "retryable": True}
 
 
@@ -99,6 +104,57 @@ def test_snapshot_alias_is_protected_post_operations():
     assert method.alias == "issuer_managed_card_snapshots" and method.http_method == "POST"
     assert method.route == "operations"
     assert method.alias in m.CSRF_PROTECTED_OPERATION_ALIASES
+
+
+@pytest.mark.asyncio
+async def test_direct_browser_or_http_call_has_no_internal_export_capability(monkeypatch):
+    from types import SimpleNamespace
+    m = module()
+    factory = AsyncMock()
+    monkeypatch.setattr(m, "_automation_access_service", factory)
+    request = SimpleNamespace(headers={"X-Internal-Call": "true", "X-Issuer-Snapshot": "true"})
+    result = await m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(entry(m), request=request, data=body())
+    assert result == {"ok": False, "error": "issuer_snapshot_requires_internal_orchestration", "status": 403}
+    factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_context_movement_during_snapshot_read_discards_complete_result(monkeypatch):
+    m = module()
+    e = entry(m)
+    service = MagicMock()
+
+    async def read(payload):
+        e.comm_context.user.user_id = "replacement-human"
+        return {"ok": True, "snapshots": [{"personal": "must-not-return"}]}
+
+    service.issuer_managed_card_snapshots = AsyncMock(side_effect=read)
+    monkeypatch.setattr(m, "_automation_access_service", AsyncMock(return_value=service))
+    result = await internal_call(m, e, data=body())
+    assert result == {"ok": False, "error": "issuer_snapshot_context_changed", "status": 409, "retryable": True}
+
+
+@pytest.mark.asyncio
+async def test_inherited_call_cannot_outlive_internal_orchestration_scope(monkeypatch):
+    import asyncio
+    m = module()
+    started, release = asyncio.Event(), asyncio.Event()
+    service = MagicMock()
+    service.issuer_managed_card_snapshots = AsyncMock()
+
+    async def factory(*args):
+        started.set()
+        await release.wait()
+        return service
+
+    monkeypatch.setattr(m, "_automation_access_service", factory)
+    with bind_issuer_snapshot_orchestration():
+        task = asyncio.create_task(m.ConnectionHubEntrypoint.issuer_managed_card_snapshots(entry(m), data=body()))
+        await asyncio.wait_for(started.wait(), 1)
+    release.set()
+    result = await asyncio.wait_for(task, 1)
+    assert result == {"ok": False, "error": "issuer_snapshot_requires_internal_orchestration", "status": 403}
+    service.issuer_managed_card_snapshots.assert_not_called()
 
 
 def descriptor():

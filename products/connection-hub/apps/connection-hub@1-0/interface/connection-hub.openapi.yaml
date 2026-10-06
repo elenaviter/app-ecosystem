@@ -61,7 +61,9 @@ paths:
       description: >
         Internal issuer orchestration only, not a widget or Team listing.
         Requires the actual registered/privileged platform human, actual
-        runtime tenant/project and CSRF protection. Caller coordinates are
+        runtime tenant/project and a server-bound internal orchestration scope.
+        Direct browser/HTTP requests refuse; no header can bind this scope.
+        CSRF protection remains declared. Caller coordinates are
         selectors, never authorization. The separately configured
         full_snapshot_operation supplies sealed issuer-snapshot.v1 decisions
         before and after the fenced read. Identity-read and write capabilities

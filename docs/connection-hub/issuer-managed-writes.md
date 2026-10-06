@@ -347,6 +347,16 @@ Neither an identity-read capability nor a write capability implies full export.
 See [Issuer full Card snapshot](issuer-full-snapshot.md) for its one authoritative
 payload, credential-refusal, ordering and proof contract.
 
+Trusted server orchestration must wrap its existing request-bound SDK call in
+`bind_issuer_snapshot_orchestration()` from the public `issuer_snapshot_host`
+module. No HTTP header, cookie, bearer or query field can bind that scope; a
+direct browser/HTTP call refuses before service construction. This is delivery
+confinement, not issuer authorization. The calling app must retain the raw
+personal payload internally and expose only its separately authorized result,
+never the complete snapshots. Nested calls restore the outer scope; exiting
+or cancelling the caller revokes an inherited child's scope as well. The alias
+rechecks scope and actual human/runtime context after awaits and before return.
+
 The app builds a fresh registry from the same request-frozen descriptor rows,
 resolves existing workload secrets only for each signed peer call, and binds
 actual session identity/classification and runtime tenant/project. If that

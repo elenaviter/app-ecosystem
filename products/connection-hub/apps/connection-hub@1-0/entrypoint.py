@@ -6393,7 +6393,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             payload = IssuerReadQuery.from_mapping(_payload(data, **kwargs)).to_dict()
         except IssuerReadRefused:
             return {"ok": False, "error": "issuer_snapshot_query_invalid", "status": 400}
+        from connection_hub.delegated_credentials.issuer_snapshot_host import issuer_snapshot_orchestration_is_bound
+        if not issuer_snapshot_orchestration_is_bound():
+            return {"ok": False, "error": "issuer_snapshot_requires_internal_orchestration", "status": 403}
         service = await _automation_access_service(self, request)
+        if not issuer_snapshot_orchestration_is_bound():
+            return {"ok": False, "error": "issuer_snapshot_requires_internal_orchestration", "status": 403}
         if _protected_lifecycle_read_context(self) != host:
             return {"ok": False, "error": "issuer_snapshot_context_changed", "status": 409, "retryable": True}
         registry = getattr(service, "_issuer_snapshots", None)
@@ -6402,7 +6407,14 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         actor, classification, tenant, project = host
         service.bind_issuer_snapshot_registry(registry, actor_subject=actor,
             actor_classification=classification, tenant=tenant, project=project)
-        return await service.issuer_managed_card_snapshots(payload)
+        result = await service.issuer_managed_card_snapshots(payload)
+        # An inherited task must not deliver personal data after its caller
+        # has exited, nor to a changed request identity/scope after peer awaits.
+        if not issuer_snapshot_orchestration_is_bound():
+            return {"ok": False, "error": "issuer_snapshot_requires_internal_orchestration", "status": 403}
+        if _protected_lifecycle_read_context(self) != host:
+            return {"ok": False, "error": "issuer_snapshot_context_changed", "status": 409, "retryable": True}
+        return result
 
     # ── delegated to KDCube (KDCube -> external provider for user) ──
 

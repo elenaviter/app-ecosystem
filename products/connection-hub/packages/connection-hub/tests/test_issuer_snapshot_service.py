@@ -9,6 +9,38 @@ from connection_hub.delegated_credentials.issuer_read import IssuerReadRegistry
 from connection_hub.delegated_credentials.issuer_snapshot import IssuerSnapshotRegistry
 from test_issuer_snapshot import HOST, query
 from test_lifecycle_store import _pair
+from connection_hub.delegated_credentials.issuer_snapshot_host import (
+    bind_issuer_snapshot_orchestration, issuer_snapshot_orchestration_is_bound,
+)
+
+
+def test_delivery_scope_defaults_closed_and_restores_nested_scope_after_exception():
+    assert not issuer_snapshot_orchestration_is_bound()
+    with bind_issuer_snapshot_orchestration():
+        assert issuer_snapshot_orchestration_is_bound()
+        with pytest.raises(RuntimeError):
+            with bind_issuer_snapshot_orchestration():
+                raise RuntimeError("fixture")
+        assert issuer_snapshot_orchestration_is_bound()
+    assert not issuer_snapshot_orchestration_is_bound()
+
+
+@pytest.mark.asyncio
+async def test_delivery_scope_is_task_local_and_revoked_in_inherited_context():
+    import asyncio
+    release = asyncio.Event()
+
+    async def child():
+        assert issuer_snapshot_orchestration_is_bound()
+        await release.wait()
+        return issuer_snapshot_orchestration_is_bound()
+
+    with bind_issuer_snapshot_orchestration():
+        task = asyncio.create_task(child())
+        await asyncio.sleep(0)
+    assert not issuer_snapshot_orchestration_is_bound()
+    release.set()
+    assert await asyncio.wait_for(task, 1) is False
 
 
 def service():
