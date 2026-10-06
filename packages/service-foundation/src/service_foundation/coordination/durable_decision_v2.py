@@ -35,10 +35,14 @@ class RecoveryIncomplete(DecisionRefused):
     """A bounded pass continued past failed rows; retry their durable IDs."""
 
     def __init__(self, failures: Mapping[str, Exception],
-                 completed: Sequence[DecisionRecord]) -> None:
+                 completed: Sequence[DecisionRecord], *,
+                 next_after: str | None = None,
+                 has_more: bool | None = None) -> None:
         super().__init__("recovery_incomplete")
         self.failures = dict(failures)
         self.completed = tuple(completed)
+        self.next_after = next_after
+        self.has_more = has_more
 
 
 @dataclass(frozen=True)
@@ -110,6 +114,13 @@ class DecisionStore(Protocol):
                               ) -> DecisionRecord: ...
 
     async def list_in_doubt(self, *, limit: int) -> Sequence[DecisionRecord]: ...
+
+
+class PagingDecisionStore(DecisionStore, Protocol):
+    """Optional bounded enumeration; legacy decision stores need not implement it."""
+
+    async def list_in_doubt_page(self, *, limit: int, after: str = ""
+                                 ) -> tuple[list[DecisionRecord], bool]: ...
 
 
 class Participant(Protocol):
@@ -231,6 +242,36 @@ class Coordinator:
         rows = await self.store.list_in_doubt(limit=limit)
         if len(rows) > limit:
             raise DecisionRefused("recovery_unbounded")
+        return await self._recover_rows(rows)
+
+    async def recover_page(self, *, limit: int = 100, after: str = ""
+                           ) -> tuple[list[DecisionRecord], str, bool]:
+        """Recover one keyset page, advancing past failures without forgetting them.
+
+        The caller keeps the cursor and wraps to an empty cursor after the last
+        page so unfinished and newly inserted earlier IDs are revisited.
+        Durable finish receipts, not this cursor, record completion.
+        """
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise DecisionRefused("recovery_limit_invalid")
+        if type(after) is not str or len(after) > 128:
+            raise DecisionRefused("recovery_cursor_invalid")
+        read_page = getattr(self.store, "list_in_doubt_page", None)
+        if not callable(read_page):
+            raise DecisionRefused("recovery_paging_unavailable")
+        rows, has_more = await read_page(limit=limit, after=after)
+        if len(rows) > limit:
+            raise DecisionRefused("recovery_unbounded")
+        if type(has_more) is not bool or (not rows and has_more):
+            raise DecisionRefused("recovery_page_invalid")
+        next_after = rows[-1].transaction_id if rows else ""
+        result = await self._recover_rows(rows, next_after=next_after,
+                                           has_more=has_more)
+        return result, next_after, has_more
+
+    async def _recover_rows(self, rows: Sequence[DecisionRecord], *,
+                            next_after: str | None = None,
+                            has_more: bool | None = None) -> list[DecisionRecord]:
         result = []
         failures: dict[str, Exception] = {}
         for row in rows:
@@ -250,7 +291,8 @@ class Coordinator:
             except Exception as exc:
                 failures[row.transaction_id] = exc
         if failures:
-            raise RecoveryIncomplete(failures, result)
+            raise RecoveryIncomplete(failures, result, next_after=next_after,
+                                     has_more=has_more)
         return result
 
 
@@ -562,6 +604,24 @@ class PostgresDecisionStore:
         return [self._decode(row) for row in rows]
 
 
+    async def list_in_doubt_page(self, *, limit: int, after: str = ""
+                                 ) -> tuple[list[DecisionRecord], bool]:
+        """One namespace-bound keyset page; unlike legacy reads, excess is normal."""
+        if type(limit) is not int or not 1 <= limit <= 1000:
+            raise DecisionRefused("recovery_limit_invalid")
+        if type(after) is not str or len(after) > 128:
+            raise DecisionRefused("recovery_cursor_invalid")
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT {_ROW_COLUMNS} FROM {self.table}
+                    WHERE namespace=$1 AND
+                    (state IN ('preparing','prepared') OR finished_count<participant_count)
+                    AND transaction_id > $2
+                    ORDER BY transaction_id LIMIT $3""",
+                self.namespace, after, limit + 1)
+        return [self._decode(row) for row in rows[:limit]], len(rows) > limit
+
+
 __all__ = ["Coordinator", "DecisionRecord", "DecisionRefused", "DecisionStore",
-           "Participant", "PostgresDecisionStore", "Receipt", "ReceiptVerifier",
+           "PagingDecisionStore", "Participant", "PostgresDecisionStore", "Receipt", "ReceiptVerifier",
            "RecoveryIncomplete"]
