@@ -106,8 +106,8 @@ test('a Control or project agent Card read updates the list row in the store', (
 
 test('an edit link keeps its requested operation: it is added after the read seeded the draft', () => {
   const seeded = { '*/mcp/problem_board*': ['plan.item.update'] } // what startEdit seeded from the server read
-  assert.deepEqual(withLinkedOperation(seeded, '*/mcp/problem_board*', 'project.role.assign'), {
-    '*/mcp/problem_board*': ['plan.item.update', 'project.role.assign'],
+  assert.deepEqual(withLinkedOperation(seeded, '*/mcp/problem_board*', 'project.role.manage'), {
+    '*/mcp/problem_board*': ['plan.item.update', 'project.role.manage'],
   })
   assert.deepEqual(withLinkedOperation(seeded, '*/mcp/problem_board*', 'plan.item.update'), seeded)
   assert.deepEqual(withLinkedOperation({}, 'r', 'op'), { r: ['op'] })
