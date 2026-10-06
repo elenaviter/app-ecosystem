@@ -23,6 +23,12 @@ see_also:
 
 ## The rules
 
+The uniform owner/admin Card requirement described below is a proposed
+enforcement contract, not proof of a superseding operator ruling. The earlier
+owner and project-administrator exceptions remain a disputed policy choice;
+their removal and migration grants must not be activated before the operator
+states their exact scope. Source checks do not decide that policy.
+
 - **Which operations a Card holds is edited in Connection Hub, and only
   there.** Problem Board links to a Card, optionally with a preselection or a
   focus for the purpose the link serves; it builds no editor of Card
@@ -58,6 +64,21 @@ see_also:
   A Card Refresh is capped by the project Control Card too:
   after new operations reach the catalog, a project admin ticks them on the
   project Control Card first. A catalog offer never widens an existing Card.
+
+## Issuer candidate checks
+
+Connection Hub supplies the actual transformed Card candidate to the signed
+PB issuer policy. PB checks its immutable target, current project role and
+the editor's current delegable selection; Hub owns the revision-fenced write.
+Pure project-read selections reuse the established membership classification,
+without changing the authorization of ordinary read requests. A composite
+save is not a read or a new composite grant.
+
+An existing exact named-service read capability or transport grant may be
+retained or narrowed if still offered. A PB MCP-operation decision is not
+authority to add a named-service capability: that expansion fails closed
+until a qualified live capability port exists. Catalog refreshes do not add
+permissions to saved Cards.
 
 ## Project files
 
