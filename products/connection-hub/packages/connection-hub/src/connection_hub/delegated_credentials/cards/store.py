@@ -170,6 +170,10 @@ class BundleStorageDelegatedCardStore:
         from .update_store import UPDATE_POINTER_SCHEMA, resolve_pointer as resolve_update_pointer
         if payload.get("schema") == UPDATE_POINTER_SCHEMA:
             return await resolve_update_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
+        # W578: a staged cross-realm transaction resolves through its receipt too.
+        from .transaction_store import TRANSACTION_POINTER_SCHEMA, resolve_pointer as resolve_transaction_pointer
+        if payload.get("schema") == TRANSACTION_POINTER_SCHEMA:
+            return await resolve_transaction_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
         return CardCurrentPointer.from_mapping(payload)
 
     async def read_revision(
@@ -212,6 +216,11 @@ class BundleStorageDelegatedCardStore:
                     != (subject_hash, access_id, revision_name)):
                 raise CardStorageError("issuer_update_revision_binding_invalid")
             return receipt["state"] == "committed"
+        transaction_marker = await read_json_or_none(path.with_suffix(".card-transaction.json"))
+        if transaction_marker is not None:
+            from .transaction_store import revision_is_committed
+            return await revision_is_committed(self, transaction_marker, subject_hash=subject_hash,
+                                               access_id=access_id, revision_name=revision_name)
         marker = await read_json_or_none(path.with_suffix(".lifecycle.json"))
         if marker is None:
             return True  # ordinary immutable revision, unchanged v1 format

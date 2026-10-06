@@ -29,7 +29,7 @@ import time
 import uuid
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
@@ -105,6 +105,26 @@ class CardServingUnavailable(RuntimeError):
         super().__init__(reason)
         self.reason = reason
         self.access_id = access_id
+
+
+def _serves_after(entry: Any, receipt: Mapping[str, Any]) -> bool:
+    """The projection serves exactly this transaction's AFTER: its revision and content, or its tombstone."""
+
+    from ..issuer_gate import change_digest
+
+    if entry is None or entry.card_revision != int(receipt["after"]["card_revision"]):
+        return False
+    if entry.is_revoked:
+        return receipt["after"].get("state") == CARD_STATE_REVOKED
+    authority = getattr(entry, "authority", None)
+    return bool(entry.is_card and authority is not None
+                and change_digest(authority.to_dict()) == receipt["change_digest"])
+
+
+def transaction_mutation_id(transaction_id: str) -> str:
+    """The serving mutation id of one staged transaction: stable across its retries."""
+
+    return "tx-" + str(transaction_id)
 
 
 class DelegatedCardService:
@@ -196,6 +216,218 @@ class DelegatedCardService:
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
 
+    async def stage_transaction(
+        self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
+        original: CardAuthority, candidate: CardAuthority, now: Any, effects: Any = (),
+    ) -> dict[str, Any]:
+        """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served.
+
+        ``effects`` are the writer's non-Card changes, recorded in the prepared
+        receipt and applied only when FINISH materializes a COMMITTED decision
+        (W580 F1/F3/F4); an ABORT discards them. Their prepare hook runs after
+        the receipt is written, so a failed prepare refuses the stage but the
+        Card stays fenced (card_transaction_unresolved) until the coordinator
+        records the ABORT and finishes it (Ops 13:05 correction).
+
+        The serving projection is marked updating with the transaction's own
+        mutation id BEFORE the first durable write, so no cached resolver
+        serves BEFORE while the Card is undecided or after PB committed it
+        (Ops F8). When the marker expires, a cache miss reads durable state,
+        which refuses while undecided or follows PB's recorded decision. A
+        replay keeps its own marker; a refused stage releases it; decide and
+        abort finalize it with the same id.
+        """
+        from .transaction_store import CardTransactionRefused, read_receipt, stage
+
+        mutation_id = transaction_mutation_id(transaction_id)
+        access_id = original.access_id
+        try:
+            async with self._critical_section(subject_hash=subject_hash, access_id=access_id):
+                existing = await read_receipt(self._store, transaction_id)
+                if existing is None:
+                    # A fresh stage passes the full shared fence (Ops F2); a
+                    # replay of this transaction's own prepared receipt is
+                    # validated by stage() itself, which this fence would refuse.
+                    await self._assert_no_lifecycle_preparation(subject_hash=subject_hash, access_id=access_id)
+                if existing is None or existing["state"] == "prepared":
+                    try:
+                        await self._mark_transaction_updating(
+                            access_id=access_id, mutation_id=mutation_id,
+                            expected_revision=int(original.card_revision))
+                    except Exception as exc:
+                        raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
+                try:
+                    staged = await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                         participant=participant, subject_hash=subject_hash, original=original,
+                                         candidate=candidate, now=now, effects=effects)
+                    await self._run_effect_hook("_effect_preparer", staged, refusal="card_effect_prepare_failed")
+                    return staged
+                except (CardStorageError, CardTransactionRefused):
+                    if existing is None and await read_receipt(self._store, transaction_id) is None:
+                        # Nothing was staged: release the marker rather than
+                        # hold readers closed until it expires.
+                        try:
+                            await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
+                        except Exception:  # noqa: BLE001 - it only expires; readers stay closed
+                            pass
+                    raise
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def decide_transaction(
+        self, *, transaction_id: str, intent_digest: str, decision: str, subject_hash: str, access_id: str,
+        reason: str = "", now: int | None = None,
+    ) -> dict[str, Any]:
+        """W578: materialize the coordinator's recorded decision, keeping serving consistent.
+
+        For COMMITTED the serving projection is marked updating BEFORE the
+        receipt rename (the one visibility point), so no resolver serves the
+        broader BEFORE as current after a narrowing commit (Ops F3); the
+        after-state is installed after it. The serving mutation id is derived
+        from the transaction, so a retry owns the marker an earlier attempt
+        left. A replay of an already committed decision skips the mark (the
+        rename already happened) and re-installs the after-state over its own
+        marker, an absent key or an older projection; one already served is
+        left as it is, so finishing COMMITTED succeeds (Ops F7). A serving
+        failure after the rename raises CardServingUnavailable and the
+        decision stands. ABORTED serves nothing new and releases this
+        transaction's marker, if one was left.
+        """
+        from .transaction_store import CardTransactionRefused, decide, read_receipt
+
+        moment = int(now if now is not None else time.time())
+        mutation_id = transaction_mutation_id(transaction_id)
+        try:
+            async with self._critical_section(subject_hash=subject_hash, access_id=access_id):
+                receipt = await read_receipt(self._store, transaction_id)
+                if decision == "committed" and receipt is not None and receipt["state"] == "prepared":
+                    try:
+                        await self._mark_transaction_updating(
+                            access_id=access_id, mutation_id=mutation_id,
+                            expected_revision=int(receipt["before"]["card_revision"]), committing=receipt)
+                    except Exception as exc:
+                        raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
+                decided = await decide(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                       decision=decision, reason=reason)
+                if decided["state"] == "committed" and decided.get("effects"):
+                    # Effects before serving: readers refuse until they are applied.
+                    from .transaction_store import apply_effects
+                    applier = getattr(self, "_effect_applier", None)
+                    if applier is None:
+                        raise CardServingUnavailable("card_effect_applier_unavailable", access_id=access_id)
+                    try:
+                        await apply_effects(self._store, decided, applier)
+                    except Exception as exc:
+                        raise CardServingUnavailable("card_effects_pending", access_id=access_id) from exc
+                if decided["state"] != "committed":
+                    # An ABORT releases what STAGE prepared (an invocation-policy
+                    # marker); a failure leaves the decision standing and the
+                    # re-driven FINISH releases again.
+                    try:
+                        await self._run_effect_hook("_effect_releaser", decided, refusal="card_effects_release_pending")
+                    except CardTransactionRefused as exc:
+                        raise CardServingUnavailable(str(exc), access_id=access_id) from exc
+                    try:
+                        await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
+                    except Exception:  # noqa: BLE001 - an unreleased marker only expires; readers stay closed
+                        pass
+                    return decided
+                current = await self._store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+                if current is None:
+                    raise CardServingUnavailable("serving_state_unavailable", access_id=access_id)
+                authority = current[1]
+                try:
+                    if authority.state == CARD_STATE_REVOKED:
+                        # A staged revoke: serve its tombstone, exactly as revoke() does.
+                        await self._cache.commit_tombstone(
+                            access_id, card_revision=authority.card_revision, mutation_id=mutation_id,
+                            ttl_seconds=self._settings.revoked_tombstone_seconds,
+                        )
+                        await self._cache.index_remove(subject_hash=subject_hash, access_id=access_id)
+                    else:
+                        await self._cache.commit_projection(
+                            authority, mutation_id=mutation_id,
+                            ttl_seconds=authority_projection_ttl(authority, moment),
+                        )
+                        await self._index(authority=authority, subject_hash=subject_hash, moment=moment)
+                except Exception as exc:
+                    raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
+                return decided
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def abort_unstaged_transaction(self, *, transaction_id: str, subject_hash: str,
+                                         access_id: str) -> dict[str, Any]:
+        """W581 F1 under the Card's section (Ops B2): tombstone a transaction never prepared here.
+
+        Inside the same section every stage of this Card takes, so an in-flight
+        stage either finished first (its receipt exists: returned as is, and
+        the caller finishes it through decide) or will see the tombstone and
+        refuse. The stage's serving marker, if a crash left it, is released.
+        """
+        from .transaction_store import abort_unstaged, read_receipt
+
+        try:
+            async with self._critical_section(subject_hash=subject_hash, access_id=access_id):
+                existing = await read_receipt(self._store, transaction_id)
+                if existing is not None:
+                    return existing
+                tombstone = await abort_unstaged(self._store, transaction_id)
+                try:
+                    await self._cache.finalize_removal(access_id, mutation_id=transaction_mutation_id(transaction_id))
+                except Exception:  # noqa: BLE001 - it only expires; readers stay closed meanwhile
+                    pass
+                return tombstone
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def _run_effect_hook(self, name: str, receipt: Mapping[str, Any], *, refusal: str) -> None:
+        """Call the bound prepare/release hook once per recorded effect; every hook is idempotent."""
+        from .transaction_store import CardTransactionRefused
+
+        hook = getattr(self, name, None)
+        if hook is None or not receipt.get("effects"):
+            return
+        for effect in receipt["effects"]:
+            try:
+                await hook(effect["kind"], effect["key"], dict(effect["payload"]),
+                           transaction_id=receipt["transaction_id"])
+            except Exception as exc:
+                raise CardTransactionRefused(refusal) from exc
+
+    def bind_effect_preparer(self, preparer: Any) -> None:
+        """``prepare(kind, key, payload, *, transaction_id)`` at STAGE (e.g. a policy marker); idempotent."""
+        self._effect_preparer = preparer
+
+    def bind_effect_releaser(self, releaser: Any) -> None:
+        """``release(kind, key, payload, *, transaction_id)`` at FINISH(aborted); idempotent."""
+        self._effect_releaser = releaser
+
+    def bind_effect_applier(self, applier: Any) -> None:
+        """The hosting composition's idempotent ``apply(kind, key, payload, *, transaction_id)``."""
+        self._effect_applier = applier
+
+    async def _mark_transaction_updating(self, *, access_id: str, mutation_id: str, expected_revision: int,
+                                         committing: Mapping[str, Any] | None = None) -> None:
+        """Mark updating, or keep the marker this same transaction already holds.
+
+        When ``committing`` (the prepared receipt of a recorded COMMITTED), a
+        projection already serving exactly its AFTER also satisfies the mark:
+        a reader restored it from durable state once the stage marker expired
+        and PB had decided, so nothing broader can be served (Ops F9).
+        """
+
+        try:
+            await self._mark_updating(access_id=access_id, mutation_id=mutation_id,
+                                      expected_revision=expected_revision)
+        except CardConflict:
+            entry = await self._cache.read(access_id)
+            if entry is not None and entry.is_updating and entry.mutation_id == mutation_id:
+                return
+            if committing is not None and _serves_after(entry, committing):
+                return
+            raise
+
     async def revoke(
         self,
         *,
@@ -283,7 +515,14 @@ class DelegatedCardService:
 
     async def current_revision(self, *, subject_hash: str, access_id: str) -> int:
         """The committed revision whatever its state; 0 with no history. Same
-        read as the precondition below."""
+        read as the precondition below.
+
+        This is a writer's precondition read, so it applies the shared fence
+        first: a Card with an unresolved transaction or preparation is refused
+        here, before the writer makes any side write (a minted credential, an
+        invocation policy), not only later at commit (Ops 11:22). The commit
+        still rechecks it."""
+        await self._assert_no_lifecycle_preparation(subject_hash=subject_hash, access_id=access_id)
         current = await self._store.read_current_authority(
             subject_hash=subject_hash, access_id=access_id
         )
@@ -311,7 +550,8 @@ class DelegatedCardService:
             await assert_pointer_replaceable(self._store, subject_hash=subject_hash, access_id=access_id)
         except CardStorageError as exc:
             if str(exc) in ("lifecycle_preparation_unresolved", "lifecycle_recovery_queue_unavailable",
-                            "issuer_update_preparation_unresolved", "issuer_update_recovery_queue_unavailable"):
+                            "issuer_update_preparation_unresolved", "issuer_update_recovery_queue_unavailable",
+                            "card_transaction_unresolved"):
                 raise CardConflict(str(exc)) from exc
             raise
 

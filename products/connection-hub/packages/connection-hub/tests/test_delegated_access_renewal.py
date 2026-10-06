@@ -282,3 +282,321 @@ async def test_prolonging_refusals(tmp_path):
 
     unknown_mode = await harness.service.renew_access(USER, access_id=access_id, mode="forever")
     assert unknown_mode["ok"] is False and unknown_mode["error"] == "invalid_renew_mode"
+
+
+@pytest.mark.asyncio
+async def test_prolonging_a_card_with_an_unresolved_transaction_extends_nothing(tmp_path):
+    # W580 finding 1: the fenced precondition read comes BEFORE the credential
+    # extension, and its refusal is a structured answer, not an exception.
+    from connection_hub.delegated_credentials.cards.service import CardConflict
+    harness = _Harness(tmp_path)
+    store = _ProlongingGrantStore()
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    before = harness.persistence.cards[access_id][0]
+
+    async def staged(*args, **kwargs):
+        raise CardConflict("card_transaction_unresolved")
+
+    harness.persistence.current_revision = staged
+    refused = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert refused["ok"] is False and refused["error"] == "delegated_card_not_committed"
+    assert refused["reason"] == "card_transaction_unresolved" and refused["retryable"] is True
+    assert store.extended_refresh == [] and store.extended_grants == []
+    assert harness.persistence.cards[access_id][0] == before
+
+
+@pytest.mark.asyncio
+async def test_prune_reports_a_card_it_could_not_prune_instead_of_skipping_it(tmp_path):
+    # W580 finding 2: a binding left on a Card revives on reconnect, so a Card
+    # the prune could not change (here: an unresolved transaction) is named.
+    from connection_hub.delegated_credentials.cards.service import CardConflict
+    harness = _Harness(tmp_path)
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    record = (await harness.service._list_active_records(USER["user_id"]))[0]
+    bound = dataclasses.replace(record, account_scope={"google": {"acct-1": ("mail",)}})
+
+    async def records(subject):
+        return [bound]
+
+    async def staged(*args, **kwargs):
+        raise CardConflict("card_transaction_unresolved")
+
+    harness.service._list_active_records = records
+    harness.service._persist_record = staged
+    outcome = await harness.service.prune_account_from_grants(
+        grantor_subject=USER["user_id"], provider_id="google", account_id="acct-1")
+    assert outcome["ok"] is False and outcome["not_pruned"] == [access_id]
+    assert outcome["reason"] == "account_binding_not_pruned" and outcome["retryable"] is True
+    assert outcome["pruned"] == 0
+
+
+@pytest.mark.asyncio
+async def test_prune_of_an_unstaged_card_still_succeeds(tmp_path):
+    harness = _Harness(tmp_path)
+    await _manual_card(harness, ttl=3600)
+    record = (await harness.service._list_active_records(USER["user_id"]))[0]
+    bound = dataclasses.replace(record, account_scope={"google": {"acct-1": ("mail",)}})
+    written = []
+
+    async def records(subject):
+        return [bound]
+
+    async def persist(rec, *, expected_revision, **kwargs):
+        written.append((rec.account_scope, expected_revision))
+
+    harness.service._list_active_records = records
+    harness.service._persist_record = persist
+    outcome = await harness.service.prune_account_from_grants(
+        grantor_subject=USER["user_id"], provider_id="google", account_id="acct-1")
+    assert outcome == {"ok": True, "pruned": 1, "grants": [record.access_id], "not_pruned": []}
+    assert written == [({}, record.card_revision)]
+
+
+def _bind(harness, access_id):
+    from connection_hub.delegated_credentials.cards.model import ControlCardBinding
+
+    persistence = harness.persistence
+
+    async def persist_guarded(authority, handles, *, subject_hash, expected_revision, before_commit):
+        await before_commit()  # production calls it inside the target lock, after its revision check
+        await persistence.persist(authority, handles, subject_hash=subject_hash, expected_revision=expected_revision)
+
+    persistence.persist_guarded = persist_guarded
+    authority, handles = harness.persistence.cards[access_id]
+    harness.persistence.cards[access_id] = (
+        dataclasses.replace(authority, control_card=ControlCardBinding(
+            control_id="control-1", issuer_ref="work:project:one", issuer_kind="project", control_revision=1)),
+        handles,
+    )
+
+
+class _Policy:
+    def __init__(self, allow):
+        self.allow, self.calls = allow, []
+
+    def _decision(self, request):
+        from datetime import datetime, timedelta, timezone
+        from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteDecision
+        return CallerWriteDecision(self.allow, "" if self.allow else "pb_refused", "policy:v1",
+                                   datetime.now(timezone.utc) + timedelta(minutes=5), request)
+
+    async def decide(self, request):
+        self.calls.append(("decide", request.action))
+        return self._decision(request)
+
+    async def revalidate(self, request, initial):
+        self.calls.append(("revalidate", request.action))
+        return self._decision(request)
+
+    async def finalize(self, request, *, state, card_revision):
+        self.calls.append(("finalize", state))
+        return True
+
+
+def _registry(policy):
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriterRegistry
+    registry = CallerWriterRegistry()
+    registry.register("project", policy)
+    return registry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow", [True, False])
+async def test_prolonging_a_bound_card_is_decided_by_its_binding_policy(tmp_path, allow):
+    # W580/B: prolongation changes the duration of authority, so it is governed.
+    harness = _Harness(tmp_path)
+    harness.service._store = _ProlongingGrantStore()
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    _bind(harness, access_id)
+    before = harness.persistence.cards[access_id][0]
+    policy = _Policy(allow)
+    harness.service.bind_caller_writers(_registry(policy))
+    outcome = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert [c for c in policy.calls if c[0] != "finalize"] == [("decide", "prolong"), ("revalidate", "prolong")][: 2 if allow else 1]
+    assert ("finalize", "committed" if allow else "refused") in policy.calls
+    after = harness.persistence.cards[access_id][0]
+    if allow:
+        assert outcome["ok"] is True and after.card_revision == before.card_revision + 1
+    else:
+        assert outcome == {"ok": False, "status": 403, "error": "pb_refused", "caller_write_outcome_confirmed": True}
+        assert after == before
+
+
+@pytest.mark.asyncio
+async def test_prolonging_an_unbound_card_asks_no_policy(tmp_path):
+    harness = _Harness(tmp_path)
+    harness.service._store = _ProlongingGrantStore()
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    policy = _Policy(False)
+    harness.service.bind_caller_writers(_registry(policy))
+    assert (await harness.service.renew_access(USER, access_id=access_id, mode="prolong"))["ok"] is True
+    assert policy.calls == []
+
+
+# ── Ops B2/B3 (12:14): the single write paths themselves, not a stub ──────
+
+
+async def _bound_card(tmp_path, *, allow=True):
+    harness = _Harness(tmp_path)
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _bind(harness, access_id)
+    policy = _Policy(allow)
+    harness.service.bind_caller_writers(_registry(policy))
+    return harness, access_id, policy
+
+
+@pytest.mark.asyncio
+async def test_persist_refuses_an_unnamed_write_of_a_governed_card_before_any_effect(tmp_path):
+    from connection_hub.delegated_credentials.automation_access import record_from_card
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWrite, CallerWriteRefused
+    harness, access_id, policy = await _bound_card(tmp_path)
+    before = harness.persistence.cards[access_id][0]
+    writes = harness.persistence.persist_calls
+    candidate = record_from_card(dataclasses.replace(before, card_revision=before.card_revision + 1,
+                                                     label="unnamed edit"))
+    with pytest.raises(CallerWriteRefused, match="caller_writer_not_enlisted"):
+        await harness.service._persist_record(candidate, expected_revision=before.card_revision)
+    assert harness.persistence.persist_calls == writes and harness.persistence.cards[access_id][0] == before
+    assert policy.calls == []
+    # Named, the binding's policy decides, the write commits and its outcome is finalized.
+    await harness.service._persist_record(candidate, expected_revision=before.card_revision,
+                                          caller_write=CallerWrite("extend", "platform-user-1"))
+    assert harness.persistence.cards[access_id][0].label == "unnamed edit"
+    assert policy.calls == [("decide", "extend"), ("revalidate", "extend"), ("finalize", "committed")]
+
+
+@pytest.mark.asyncio
+async def test_forget_refuses_an_unnamed_revoke_of_a_governed_card(tmp_path):
+    from connection_hub.delegated_credentials.automation_access import record_from_card
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+    harness, access_id, policy = await _bound_card(tmp_path)
+    before = harness.persistence.cards[access_id][0]
+    with pytest.raises(CallerWriteRefused, match="caller_writer_not_enlisted"):
+        await harness.service._forget_record(record_from_card(before))
+    assert harness.persistence.cards[access_id][0] == before and policy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_card_is_written_and_revoked_as_before(tmp_path):
+    from connection_hub.delegated_credentials.automation_access import record_from_card
+    harness = _Harness(tmp_path)
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    policy = _Policy(False)
+    harness.service.bind_caller_writers(_registry(policy))
+    before = harness.persistence.cards[access_id][0]
+    await harness.service._persist_record(
+        record_from_card(dataclasses.replace(before, card_revision=before.card_revision + 1, label="x")),
+        expected_revision=before.card_revision)
+    await harness.service._forget_record(record_from_card(harness.persistence.cards[access_id][0]))
+    assert harness.persistence.cards[access_id][0].state == CARD_STATE_REVOKED and policy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_bound_prolong_extends_no_credential(tmp_path):
+    # W580 F5: the policy decides before the credential's life is touched.
+    harness = _Harness(tmp_path)
+    store = _ProlongingGrantStore()
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    _bind(harness, access_id)
+    harness.service.bind_caller_writers(_registry(_Policy(False)))
+    refused = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert refused["ok"] is False and refused["error"] == "pb_refused"
+    assert store.extended_refresh == [] and store.extended_grants == []
+
+
+class _LiveCheckingGrantStore(_ProlongingGrantStore):
+    """Adds the SQL authority's read-only live check (Ops 13:19)."""
+
+    def __init__(self, *, live: bool) -> None:
+        super().__init__()
+        self.live = live
+        self.live_checks: list[str] = []
+
+    async def card_credentials_live(self, access_id):
+        self.live_checks.append(access_id)
+        return self.live
+
+
+async def _coordinated_prolong(tmp_path, *, live: bool):
+    harness = _Harness(tmp_path)
+    store = _LiveCheckingGrantStore(live=live)
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    before = harness.persistence.cards[access_id][0]
+    persisted: list[tuple] = []
+
+    async def persist(record, *, expected_revision, effects=(), **kwargs):
+        persisted.append((record, expected_revision, list(effects)))
+
+    harness.service._card_coordinator = object()  # bound: the lifetime is a decision-bound effect
+    harness.service._persist_record = persist
+    result = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    return harness, store, access_id, before, persisted, result
+
+
+@pytest.mark.asyncio
+async def test_a_coordinated_prolong_of_an_ended_credential_is_refused_and_stages_nothing(tmp_path):
+    # Ops 13:19: today's refusal is kept; the live check is read-only and runs before the stage.
+    harness, store, access_id, before, persisted, result = await _coordinated_prolong(tmp_path, live=False)
+    assert result["ok"] is False and result["error"] == "delegated_access_credential_expired", result
+    assert store.live_checks == [access_id]
+    assert persisted == []  # nothing staged, so no Card revision
+    assert harness.persistence.cards[access_id][0] == before
+    assert (store.extended_refresh, store.extended_grants, store.extended_cards) == ([], [], [])
+
+
+@pytest.mark.asyncio
+async def test_a_coordinated_prolong_of_a_live_credential_stages_only_its_lifetime_effect(tmp_path):
+    harness, store, access_id, before, persisted, result = await _coordinated_prolong(tmp_path, live=True)
+    assert result["ok"] is True, result
+    assert store.live_checks == [access_id]
+    [(record, expected_revision, effects)] = persisted
+    assert expected_revision == before.card_revision and record.card_revision == before.card_revision + 1
+    assert effects == [{"kind": "credential_lifetime", "key": "card",
+                        "payload": {"access_id": access_id, "expires_at": record.expires_at,
+                                    "base_card_revision": before.card_revision}}]
+    # Under the coordinator nothing is extended directly; the effect applies at FINISH(committed).
+    assert (store.extended_refresh, store.extended_grants, store.extended_cards) == ([], [], [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coordinated", [True, False])
+async def test_an_ended_bound_prolong_leaves_no_policy_decision_open(tmp_path, coordinated):
+    # W580 F6 (Mint 3c7e7ccb, Ops 13:32): under the coordinator the live check runs before the
+    # policy is asked; on the direct path a decision already asked is finalized refused.
+    harness = _Harness(tmp_path)
+    store = _LiveCheckingGrantStore(live=False)
+    store.refresh_alive = False
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    _bind(harness, access_id)
+    policy = _Policy(True)
+    harness.service.bind_caller_writers(_registry(policy))
+    if coordinated:
+        harness.service._card_coordinator = object()
+    before = harness.persistence.cards[access_id][0]
+    ended = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert ended["ok"] is False and ended["error"] == "delegated_access_credential_expired", ended
+    assert harness.persistence.cards[access_id][0] == before
+    assert (store.extended_refresh, store.extended_grants, store.extended_cards) == ([], [], [])
+    if coordinated:
+        assert policy.calls == []
+    else:
+        assert [call[:2] for call in policy.calls] == [("decide", "prolong"), ("finalize", "refused")]
