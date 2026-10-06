@@ -248,8 +248,9 @@ async def test_committed_receipt_survives_killed_writer_and_replay_is_byte_stabl
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fault_action", ["fault_prepare", "fault_first_pointer"])
 async def test_prepared_intent_fences_an_unstaged_participant_after_writer_crash(
-    tmp_path: pathlib.Path,
+    tmp_path: pathlib.Path, fault_action: str,
 ) -> None:
     """A later single-Card writer cannot publish across a live pair intent."""
     pair = _pair()
@@ -260,7 +261,7 @@ async def test_prepared_intent_fences_an_unstaged_participant_after_writer_crash
     actor = "authenticated-human"
     killed = _run_child(
         {
-            "action": "fault_prepare",
+            "action": fault_action,
             "storage_root": str(tmp_path),
             "body": body,
             "actor_subject": actor,
@@ -269,10 +270,11 @@ async def test_prepared_intent_fences_an_unstaged_participant_after_writer_crash
     )
     assert killed.returncode == -signal.SIGKILL, killed.stderr
 
-    # Neither current pointer has been staged yet. A normal writer must see
-    # the active intent before it can publish a new current pointer, or must
-    # first recover that intent to a terminal refusal.
-    other = replace(pair[1], card_revision=2, label="independent later mutation")
+    # The second target has no pending current pointer at either fault point.
+    # A normal writer must see the active intent before publishing a new
+    # current pointer, or recover the intent to a terminal refusal first.
+    unstaged = next(card for card in pair if card.access_id == request.targets[1].access_id)
+    other = replace(unstaged, card_revision=2, label="independent later mutation")
     try:
         pointer = await store.write_revision(
             subject_hash=subject_hash_for(other.grantor_subject),
