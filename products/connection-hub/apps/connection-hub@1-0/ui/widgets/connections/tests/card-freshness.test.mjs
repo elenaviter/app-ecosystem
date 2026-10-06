@@ -10,7 +10,9 @@ import {
   pinAfterRefusal,
   pinAfterSave,
   pinAtStart,
+  catalogPinAtStart,
   tabReturnReads,
+  withLinkedOperation,
   withNewerCard,
 } from '../src/features/delegatedAccess/cardFreshness.ts'
 
@@ -100,4 +102,31 @@ test('a Control or project agent Card read updates the list row in the store', (
   const slice = readFileSync(new URL('../src/features/delegatedAccess/delegatedAccessSlice.ts', import.meta.url), 'utf8')
   assert.match(slice, /loadProjectAgentCard\.fulfilled[^]*?state\.items = withNewerCard\(state\.items, action\.payload\);/)
   assert.match(slice, /loadControlCard\.fulfilled[^]*?state\.items = withNewerCard\(state\.items, action\.payload\.access\);/)
+})
+
+test('an edit link keeps its requested operation: it is added after the read seeded the draft', () => {
+  const seeded = { '*/mcp/problem_board*': ['plan.item.update'] } // what startEdit seeded from the server read
+  assert.deepEqual(withLinkedOperation(seeded, '*/mcp/problem_board*', 'project.role.assign'), {
+    '*/mcp/problem_board*': ['plan.item.update', 'project.role.assign'],
+  })
+  assert.deepEqual(withLinkedOperation(seeded, '*/mcp/problem_board*', 'plan.item.update'), seeded)
+  assert.deepEqual(withLinkedOperation({}, 'r', 'op'), { r: ['op'] })
+  assert.equal(withLinkedOperation(seeded, undefined, 'op'), seeded)
+  // In the panel the addition runs in beginEdit's continuation, never before it (EMain and Ops B1, 13:49).
+  const link = panel.slice(panel.indexOf('if (accessCardFocusRequestsEdit(accessCardFocus)) {'), panel.indexOf('if (accessCardFocus.accountId) {'))
+  assert.match(link, /void beginEdit\(item\)\.then\(\(opened\) => \{\s+if \(opened\) setEditResourceOperations\(\(current\) => withLinkedOperation\(current, resource, outerOperation\)\);/)
+  assert.equal((link.match(/setEditResourceOperations/g) || []).length, 1)
+})
+
+test('a later Edit supersedes an earlier one whose read is still in flight', () => {
+  const begin = panel.slice(panel.indexOf('const beginEdit = useCallback('), panel.indexOf('}, [readCurrentCard, startEdit]);'))
+  assert.match(begin, /editRequest\.current = item\.access_id;\s+const current = await readCurrentCard\(item\);\s+[^]*?if \(editRequest\.current !== item\.access_id\) return false;[^]*?startEdit\(current\);\s+return true;/)
+})
+
+test('the catalog is pinned with the revision when the edit starts', () => {
+  assert.equal(catalogPinAtStart({ catalog_version: 'c-10-03' }), 'c-10-03')
+  assert.equal(catalogPinAtStart({ catalog_version: 'c-10-03', catalog_drift: { current_version: 'c-10-04' } }), 'c-10-04')
+  assert.equal(catalogPinAtStart({}), null)
+  assert.match(panel, /editBaseCatalog\.current = catalogPinAtStart\(item\);/)
+  assert.match(panel, /expectedCatalogVersion: editBaseCatalog\.current \?\? catalogPinAtStart\(item\) \?\? undefined,/)
 })
