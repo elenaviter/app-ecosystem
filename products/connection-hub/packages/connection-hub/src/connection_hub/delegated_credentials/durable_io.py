@@ -18,7 +18,63 @@ import asyncio
 import json
 import os
 import pathlib
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
+from datetime import datetime, timezone
 from typing import Any, Mapping
+
+_DEFERRED_WRITES: ContextVar[list[asyncio.Task] | None] = ContextVar("delegated_lifecycle_writes", default=None)
+_PUBLISH_BEFORE: ContextVar[datetime | None] = ContextVar("delegated_lifecycle_publish_before", default=None)
+
+
+async def cancellation_safe_await(operation):
+    """Finish a started lifecycle mutation before its fences can be released.
+
+    Used for Redis transitions and credential cleanup as well as file writes.
+    Outside the lifecycle scope this preserves ordinary await semantics.
+    """
+    pending = _DEFERRED_WRITES.get()
+    if pending is None:
+        return await operation
+    task = asyncio.create_task(operation)
+    pending.append(task)
+    return await asyncio.shield(task)
+
+
+@asynccontextmanager
+async def drain_writes_before_release():
+    """Lifecycle-only cancellation safety; enter INSIDE all mutation fences.
+
+    Cancelling to_thread does not stop its syscall. No mutation fence may be
+    released until every started write has returned. A hung backend can exceed
+    the logical operation deadline; never pretend cancellation made it safe.
+    """
+    tasks = []
+    token = _DEFERRED_WRITES.set(tasks)
+    try:
+        yield
+    finally:
+        try:
+            if tasks:
+                completion = asyncio.gather(*tasks, return_exceptions=True)
+                while not completion.done():
+                    try:
+                        await asyncio.shield(completion)
+                    except asyncio.CancelledError:
+                        continue
+        finally:
+            _DEFERRED_WRITES.reset(token)
+
+
+@contextmanager
+def require_publish_before(deadline: datetime):
+    if not isinstance(deadline, datetime) or deadline.utcoffset() is None:
+        raise DurableStorageError("issuer_decision_expiry_invalid")
+    token = _PUBLISH_BEFORE.set(deadline)
+    try:
+        yield
+    finally:
+        _PUBLISH_BEFORE.reset(token)
 
 
 class DurableStorageError(RuntimeError):
@@ -53,7 +109,7 @@ async def read_json_or_none(path: pathlib.Path) -> Any | None:
 async def write_json_atomic(path: pathlib.Path, payload: Mapping[str, Any]) -> None:
     text = json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
     try:
-        await asyncio.to_thread(_write_text_atomic, path, text)
+        await cancellation_safe_await(asyncio.to_thread(_write_text_atomic, path, text))
     except OSError as exc:
         raise DurableStorageError("write_failed") from exc
 
@@ -84,6 +140,9 @@ def _write_text_atomic(path: pathlib.Path, text: str) -> None:
     tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}.{os.urandom(6).hex()}")
     try:
         tmp_path.write_text(text, encoding="utf-8")
+        deadline = _PUBLISH_BEFORE.get()
+        if deadline is not None and datetime.now(timezone.utc) >= deadline:
+            raise DurableStorageError("issuer_decision_expired")
         tmp_path.replace(path)
     finally:
         tmp_path.unlink(missing_ok=True)

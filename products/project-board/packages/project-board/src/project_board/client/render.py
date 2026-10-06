@@ -282,6 +282,11 @@ def _render_worker_inbox(result: Mapping[str, Any], flags: list[str]) -> list[st
         ),
         "pending by kind: " + (" · ".join(f"{kind} {count}" for kind, count in by_kind.items()) or "none"),
     ]
+    if result.get("backlog"):
+        lines.append(
+            f"backlog: {result['backlog']} of the pending are set aside by a backlog mark "
+            "(received only with pb worker receive --backlog)"
+        )
     headers = [header for header in result.get("headers") or [] if isinstance(header, Mapping)]
     if not headers:
         lines.append("headers: none")
@@ -297,7 +302,8 @@ def _render_worker_inbox(result: Mapping[str, Any], flags: list[str]) -> list[st
         match = _ITEM_KEY_RE.search(str(header.get("work_ref") or ""))
         lines.append(
             "--- {} · {} · {} · from {}{} · {}".format(
-                label, header.get("created_at") or "-", header.get("kind") or "-", header.get("sender") or "-",
+                label + (" · backlog" if header.get("backlog") else ""),
+                header.get("created_at") or "-", header.get("kind") or "-", header.get("sender") or "-",
                 f" · {match.group(1).upper()}" if match else "",
                 _preview(header.get("subject"), maximum_bytes=120) or "(no subject)",
             )
@@ -384,6 +390,66 @@ def _count(value: Any) -> int:
 
 
 def _render_workspace_sweep(result: Mapping[str, Any]) -> list[str]:
+    """The sweep's verdict: counts, and only what --apply would remove (W563).
+
+    Coordinator, 2026-10-06 00:35Z: a sweep with nothing eligible printed
+    48 trees, 475 scratch runs and 228 loose entries, 8,210 tokens. The brief
+    form is now the verdict; --detail prints a line per tree, run and loose
+    entry, and the JSON keeps every path.
+    """
+
+    if result.get("detail"):
+        return _render_workspace_sweep_detail(result)
+    trees = [tree for tree in result.get("trees") or [] if isinstance(tree, Mapping)]
+    runs = [run for run in result.get("scratch_runs") or [] if isinstance(run, Mapping)]
+    loose = [entry for entry in result.get("loose") or [] if isinstance(entry, Mapping)]
+    removable = [str(path) for path in result.get("would_remove") or []]
+    removable_runs = [run for run in runs if run.get("action") == "remove"]
+    lines = [
+        "workspace sweep: {} · trees {} · would remove {} · size {}".format(
+            result.get("workspace") or "-", len(trees), len(removable), result.get("total_bytes", "not measured")
+        ),
+        "verdict: {}".format(
+            f"{len(removable)} tree(s) and {len(removable_runs)} scratch run(s) would be removed by --apply"
+            if removable or removable_runs
+            else "nothing to remove"
+        ),
+    ]
+    for key in ("state", "reason", "apply_refused"):
+        if _present(result.get(key)):
+            lines.append(f"{key}: {_preview(result[key])}")
+    kept = [tree for tree in trees if tree.get("action") != "remove"]
+    lines.append(
+        "trees: keep {} · remove {} · dirty {} · unpushed {} · ended {}".format(
+            len(kept), len(trees) - len(kept),
+            sum(1 for tree in trees if _count(tree.get("dirty"))),
+            sum(1 for tree in trees if tree.get("unpushed_commits")),
+            sum(1 for tree in trees if tree.get("ended")),
+        )
+    )
+    if runs:
+        lines.append(f"scratch runs: {len(runs)} · keep {len(runs) - len(removable_runs)} · remove {len(removable_runs)}")
+    if loose:
+        lines.append(f"loose entries: {len(loose)} (move each into a run with pb worker scratch --new)")
+    shown, total = _bounded(removable, maximum=_SWEEP_ROWS)
+    for path in shown:
+        lines.append(f"would_remove: {path}")
+    _note_omitted(lines, "removable trees", shown=len(shown), total=total)
+    shown_runs, run_total = _bounded(removable_runs, maximum=_SWEEP_ROWS)
+    for run in shown_runs:
+        lines.append(f"would_remove run: item {run.get('item') or '-'} · {run.get('path') or '-'}")
+    _note_omitted(lines, "removable scratch runs", shown=len(shown_runs), total=run_total)
+    handled = {"worker", "workspace", "trees", "would_remove", "total_bytes", "scratch_runs", "loose",
+               "state", "reason", "apply_refused", "detail"}
+    rest = {key: value for key, value in result.items() if key not in handled}
+    if rest:
+        lines.extend(_flatten(rest, prefix=""))
+    lines.append("detail: add --detail for a line per tree, run and loose entry")
+    lines.append(_FULL_DETAIL_LINE)
+    return lines
+
+
+def _render_workspace_sweep_detail(result: Mapping[str, Any]) -> list[str]:
     """One line per tree and run, counts instead of path lists (W563).
 
     The flat form printed every dirty, untracked and ignored path of every
@@ -452,7 +518,7 @@ def _render_workspace_sweep(result: Mapping[str, Any]) -> list[str]:
         lines.append("loose entries: move each into a run with pb worker scratch --new")
         _note_omitted(lines, "loose entries", shown=len(shown_loose), total=loose_total)
     handled = {"worker", "workspace", "trees", "would_remove", "total_bytes", "scratch_runs", "loose",
-               "state", "reason", "apply_refused"}
+               "state", "reason", "apply_refused", "detail"}
     rest = {key: value for key, value in result.items() if key not in handled}
     if rest:
         lines.extend(_flatten(rest, prefix=""))
@@ -1154,6 +1220,20 @@ def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
             f"NOTE: {total_held - len(items)} held lease(s) are not in this batch. "
             + _cmd(["pb", "worker", "leases"], flags)
         )
+    backlog = result.get("backlog")
+    if isinstance(backlog, Mapping):
+        # W563: the marked mail stays visible on every receive.
+        lines.append(
+            "backlog: pending {} · requests, decisions and questions {} · oldest {} · marked {} at {}{}".format(
+                backlog.get("pending_count", "?"),
+                backlog.get("unresolved_count", "?"),
+                backlog.get("oldest_at") or "-",
+                backlog.get("marked_count", "?"),
+                backlog.get("marked_at") or "-",
+                " · this batch is backlog" if backlog.get("received_now") else "",
+            )
+        )
+        lines.append(str(backlog.get("instruction") or ""))
     selection = result.get("selection")
     if isinstance(selection, Mapping):
         lines.append(
@@ -1618,6 +1698,28 @@ def _payload_without_body_copies(payload: Any, body: Any) -> Any:
 _PROSE_COPY_KEYS = frozenset({"instructions", "body", "text", "description", "task"})
 
 
+def _relay_turns_line(turns: Any) -> str:
+    """W456: this channel's last attendance poll, last success and backoff."""
+
+    if not isinstance(turns, Mapping) or not turns.get("recorded_at"):
+        return "relay turns: not recorded yet"
+    backoff = turns.get("backoff") if isinstance(turns.get("backoff"), Mapping) else None
+    return "relay turns: last attendance poll {} · last success {} · last outcome {}{} · backoff {} · recorded {}".format(
+        turns.get("last_attendance_poll_at") or "-",
+        turns.get("last_success_at") or "-",
+        turns.get("last_outcome") or "-",
+        f" ({turns['last_code']})" if turns.get("last_code") else "",
+        (
+            "none"
+            if backoff is None
+            else "attempt {} · next {} · {}".format(
+                backoff.get("attempts"), backoff.get("next_attempt_at") or "-", backoff.get("reason") or "-"
+            )
+        ),
+        turns.get("recorded_at"),
+    )
+
+
 def _render_inspect(result: Mapping[str, Any]) -> list[str]:
     session = result.get("session") or {}
     worker = result.get("worker") or {}
@@ -1627,6 +1729,7 @@ def _render_inspect(result: Mapping[str, Any]) -> list[str]:
     lines = [
         f"worker: {channel.get('worker_name') or worker.get('worker_name')} · alias {channel.get('alias') or '-'}",
         f"channel: {channel.get('state')} · authorization {authorization.get('state')} · worker authorization {(worker.get('authorization') or {}).get('state')}",
+        _relay_turns_line(channel.get("relay_turns")),
         f"session: {session.get('state')} · heartbeat age {session.get('heartbeat_age_seconds')} s",
         "inbox check: {} · age {} s · overdue by {} s · interval {} s".format(
             session.get("inbox_check_state"),
@@ -2154,7 +2257,47 @@ def _team_row(member: Mapping[str, Any], shared: Mapping[str, int], project_ref:
         )
     lines = ["--- " + " · ".join(facts)]
     lines.extend(_team_wake_lines(member))
+    disk = _team_disk_line(member)
+    if disk:
+        lines.append(disk)
     return lines
+
+
+def _gigabytes(value: Any) -> str:
+    return f"{int(value) / 1_000_000_000:.1f} GB"
+
+
+def _team_disk_line(member: Mapping[str, Any]) -> str:
+    """One teammate's disk and workspace state (W547), for the coordinator's team status.
+
+    The host's free disk, the workspace size and the latest sweep's counts,
+    each with the time it was observed. Not a routing line: the routing view
+    drops it, which keeps W563's routing budget unchanged.
+    """
+
+    usage = member.get("disk_usage")
+    if not isinstance(usage, Mapping) or not usage.get("host_total_bytes"):
+        return ""
+    alias = str(member.get("worker_alias") or member.get("worker_name") or "-")
+    free, total = int(usage.get("host_free_bytes") or 0), int(usage["host_total_bytes"])
+    facts = [f"host free {100 * free / total:.0f}% ({_gigabytes(free)})"]
+    if usage.get("workspace_bytes") is not None:
+        facts.append(f"workspace {_gigabytes(usage['workspace_bytes'])}")
+    reported = str(usage.get("reported_at") or "")
+    if len(reported) >= 16:
+        facts.append(f"reported {reported[5:10]} {reported[11:16]}Z")
+    sweep = usage.get("sweep")
+    if isinstance(sweep, Mapping) and sweep.get("observed_at"):
+        observed = str(sweep["observed_at"])
+        facts.append(
+            f"unregistered {int(sweep.get('unregistered') or 0)} · orphan {int(sweep.get('orphan') or 0)}"
+            f" · ended but kept {int(sweep.get('ended_but_kept') or 0)}"
+            + (f" · swept {observed[5:10]} {observed[11:16]}Z" if len(observed) >= 16 else "")
+        )
+    else:
+        # No sweep reported yet is unknown, never zero.
+        facts.append("sweep not reported")
+    return f"disk {alias}: " + " · ".join(facts)
 
 
 def _team_wake_lines(member: Mapping[str, Any]) -> list[str]:

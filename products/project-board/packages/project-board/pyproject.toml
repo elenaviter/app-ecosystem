@@ -51,6 +51,7 @@ project_board = [
     "procedures/problem-board-worker/*.md",
     "procedures/problem-board-worker/*.json",
     "procedures/problem-board-worker/references/*.md",
+    "procedures/problem-board-worker/references/*/*.md",
 ]
 
 [tool.pytest.ini_options]

@@ -13,6 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from project_board.contract.operation_shapes import PLAN_ITEM_CHANGE_FIELDS
+from procedure_reference import reference_text
 
 PACKAGE = Path(__file__).resolve().parents[1]
 PRODUCT = PACKAGE.parents[1]
@@ -20,7 +21,7 @@ PROCEDURES = PACKAGE / "src" / "project_board" / "procedures" / "problem-board-w
 
 
 def _words(path: Path) -> str:
-    return " ".join(path.read_text(encoding="utf-8").split())
+    return " ".join(reference_text(path).split())
 
 
 def test_the_contract_carries_the_operator_requirement():

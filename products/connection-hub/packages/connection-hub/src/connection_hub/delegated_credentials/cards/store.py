@@ -117,8 +117,20 @@ class DelegatedCardStore(Protocol):
 class BundleStorageDelegatedCardStore:
     """``DelegatedCardStore`` over a shared bundle-storage root."""
 
-    def __init__(self, storage_root: str | os.PathLike[str]) -> None:
+    def __init__(self, storage_root: str | os.PathLike[str], *, lifecycle_lock_scope: str = "") -> None:
         self._root = pathlib.Path(storage_root) / CARDS_DIRNAME / CARDS_LAYOUT_VERSION
+        # This implementation uses pathlib IO and same-directory OS rename.
+        # An object-storage URI is NOT that backend and must not accidentally
+        # become a relative local path for lifecycle transactions.
+        source = os.fspath(storage_root)
+        self.lifecycle_publish_backend = (
+            "filesystem-atomic-rename"
+            if pathlib.Path(storage_root).is_absolute() and "://" not in source else ""
+        )
+        # Explicit host capability, NEVER inferred from an absolute path. A
+        # shared NFS/SMB mount is not proof of coherent cross-host flock.
+        self.lifecycle_lock_scope = lifecycle_lock_scope if lifecycle_lock_scope in (
+            "same-host-flock", "shared-flock-verified") else ""
 
     @property
     def root(self) -> pathlib.Path:
@@ -150,6 +162,11 @@ class BundleStorageDelegatedCardStore:
         )
         if payload is None:
             return None
+        # Old readers reject this schema. New readers resolve staged pointers
+        # through ONE shared transaction visibility point, never independently.
+        from .lifecycle_store import LIFECYCLE_POINTER_SCHEMA, resolve_pointer
+        if payload.get("schema") == LIFECYCLE_POINTER_SCHEMA:
+            return await resolve_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
         return CardCurrentPointer.from_mapping(payload)
 
     async def read_revision(
@@ -167,11 +184,33 @@ class BundleStorageDelegatedCardStore:
     async def _read_revision_payload(
         self, *, subject_hash: str, access_id: str, revision_name: str
     ) -> dict | None:
+        if not await self._revision_is_committed(subject_hash=subject_hash, access_id=access_id,
+                                                revision_name=revision_name):
+            return None
         return await read_json_or_none(
             self.revision_path(
                 subject_hash=subject_hash, access_id=access_id, revision_name=revision_name
             )
         )
+
+    async def _revision_is_committed(self, *, subject_hash: str, access_id: str, revision_name: str) -> bool:
+        path = self.revision_path(subject_hash=subject_hash, access_id=access_id, revision_name=revision_name)
+        marker = await read_json_or_none(path.with_suffix(".lifecycle.json"))
+        if marker is None:
+            return True  # ordinary immutable revision, unchanged v1 format
+        if not isinstance(marker, dict) or set(marker) != {"transaction_id"}:
+            raise CardStorageError("lifecycle_revision_binding_invalid")
+        from .lifecycle_store import read_receipt
+
+        receipt = await read_receipt(self, marker["transaction_id"])
+        if receipt is None:
+            raise CardStorageError("lifecycle_receipt_missing")
+        entries = [entry for entry in receipt["targets"]
+                   if (entry["subject_hash"], entry["access_id"], entry["after"]["revision_name"])
+                   == (subject_hash, access_id, revision_name)]
+        if len(entries) != 1:
+            raise CardStorageError("lifecycle_revision_binding_invalid")
+        return receipt["state"] == "committed"
 
     async def read_current_authority(
         self, *, subject_hash: str, access_id: str
@@ -231,6 +270,8 @@ class BundleStorageDelegatedCardStore:
         )
 
     async def advance_current(self, *, subject_hash: str, pointer: CardCurrentPointer) -> None:
+        from .lifecycle_store import assert_pointer_replaceable
+        await assert_pointer_replaceable(self, subject_hash=subject_hash, access_id=pointer.access_id)
         await write_json_atomic(
             self.current_path(subject_hash=subject_hash, access_id=pointer.access_id),
             pointer.to_dict(),
@@ -339,7 +380,9 @@ class BundleStorageDelegatedCardStore:
     async def list_revision_names(self, *, subject_hash: str, access_id: str) -> list[str]:
         path = self.card_path(subject_hash=subject_hash, access_id=access_id) / REVISIONS_DIRNAME
         names = await list_child_names(path)
-        return [name for name in names if _REVISION_NAME_PATTERN.match(name)]
+        return [name for name in names if _REVISION_NAME_PATTERN.match(name)
+                and await self._revision_is_committed(subject_hash=subject_hash, access_id=access_id,
+                                                      revision_name=name)]
 
     async def read_initial_authority(
         self, *, subject_hash: str, access_id: str

@@ -17,6 +17,7 @@ import pytest
 from project_board.client import project_file_edit
 from project_board.client.project_file_edit import apply_file_edit, commit_message, default_policy
 from test_workspace_report import _git
+from procedure_reference import reference_text
 
 IDENTITY = {"author_name": "claude-coord@host", "author_email": "agents@example.com"}
 
@@ -272,7 +273,7 @@ def test_the_procedures_say_where_card_edits_go_and_how_a_host_opts_in():
 
     root = source_package_path()
     workspace = " ".join((root / "references" / "project-workspace.md").read_text(encoding="utf-8").split())
-    coordinator = " ".join((root / "references" / "coordinator.md").read_text(encoding="utf-8").split())
+    coordinator = " ".join(reference_text(root / "references" / "coordinator.md").split())
     assert "A person may also edit a project file on the card. The board never writes it" in workspace
     assert "refuses it when the file changed since the person opened it" in workspace
     assert "**Edits made on the card come to you.**" in coordinator
@@ -311,7 +312,7 @@ def test_the_edit_opt_in_is_named_where_a_coordinator_machine_is_set_up_or_hande
     host = text(root.parent / "add-a-worker-host.md")
     assert "**If a project coordinator will run on this machine** (optional)" in host and command in host
     assert "one run covers every project coordinated here" in host
-    coordinator = text(root / "references" / "coordinator.md")
+    coordinator = " ".join(reference_text(root / "references" / "coordinator.md").split())
     assert "4. Check that your machine accepts project-file edits made on the card" in coordinator
     first_run = text(root / "references" / "first-run.md")
     assert "If this agent will coordinate the project, its machine needs one opt-in" in first_run
@@ -428,7 +429,7 @@ def test_the_procedures_name_the_service_sign_in_and_the_fallback_signal():
 
     root = source_package_path()
     host = " ".join((root.parent / "add-a-worker-host.md").read_text(encoding="utf-8").split())
-    coordinator = " ".join((root / "references" / "coordinator.md").read_text(encoding="utf-8").split())
+    coordinator = " ".join(reference_text(root / "references" / "coordinator.md").split())
     # W371: the relay opens the edit's pull request under the coordinator
     # owner's key; gh is installed, found by absolute path, never signed in
     # with a token file for the service.

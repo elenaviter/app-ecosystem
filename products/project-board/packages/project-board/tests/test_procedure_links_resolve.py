@@ -153,3 +153,37 @@ def test_a_link_into_a_private_repository_is_refused_and_a_template_is_not():
         "https://github.com/kdcube/applications/settings/keys"
     ]
     assert _BARE_GITHUB.findall("[x](https://github.com/kdcube/kdcube/blob/main/a.md)") == []
+
+
+def test_every_anchor_link_in_the_worker_procedure_names_a_heading_in_its_target():
+    # W563, review of 4704eeb4 (Ops): splitting coordinator.md into modules
+    # left 13 in-file anchors in its index pointing at sections that had
+    # moved. File links resolved, so only an anchor check catches this.
+    import re
+
+    from project_board.client import procedures
+
+    root = procedures.source_package_path()
+
+    def slug(heading: str) -> str:
+        text = re.sub(r"[`*_]", "", heading.strip().lower())
+        return re.sub(r"[^\w\- ]", "", text).replace(" ", "-")
+
+    def anchors(path):
+        found, code = set(), False
+        for line in path.read_text(encoding="utf-8").split("\n"):
+            if line.startswith("```"):
+                code = not code
+            match = None if code else re.match(r"^#{1,6} (.+)$", line)
+            if match:
+                found.add(slug(match.group(1)))
+        return found
+
+    broken = []
+    for document in [root / "SKILL.md", *sorted((root / "references").rglob("*.md"))]:
+        text = document.read_text(encoding="utf-8")
+        for match in re.finditer(r"\]\((?!https?:|repo:|mailto:)([^)\s]*)#([\w-]+)\)", text):
+            target = (document.parent / match.group(1)).resolve() if match.group(1) else document
+            if not target.is_file() or match.group(2) not in anchors(target):
+                broken.append(f"{document.relative_to(root)}: {match.group(1)}#{match.group(2)}")
+    assert broken == []

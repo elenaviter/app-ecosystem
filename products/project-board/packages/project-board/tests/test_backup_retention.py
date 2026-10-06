@@ -21,6 +21,7 @@ import pytest
 
 from project_board.client import backups, cli
 from project_board.contract.errors import DomainError
+from procedure_reference import reference_text
 
 PROJECT_REF = "work:project:demo-project"
 
@@ -255,9 +256,9 @@ def test_the_runtime_actions_procedure_owns_the_backup_step():
     assert "`pg_restore --list` cannot read a plain dump" in actions
     assert "Either check proves integrity, never that the backup restores" in actions
     assert "never an agent's scratch folder" in actions
-    coordinator = read(procedures / "coordinator.md")
+    coordinator = " ".join(reference_text(procedures / "coordinator.md").split())
     assert "back up the board tables into the host's backup folder" in coordinator
-    assert "(runtime-actions.md#runtime-window-database-backups)" in coordinator
+    assert "(../runtime-actions.md#runtime-window-database-backups)" in coordinator
     workspace = read(procedures / "project-workspace.md")
     assert "Runtime-window database backups follow the same lifetime rule" in workspace
     assert "(runtime-actions.md#runtime-window-database-backups)" in workspace

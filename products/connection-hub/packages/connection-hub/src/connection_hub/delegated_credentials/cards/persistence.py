@@ -217,6 +217,29 @@ class DurableCardPersistence:
     ) -> None:
         await self.forget(authority, subject_hash=subject_hash, before_commit=before_commit)
 
+    async def read_lifecycle_identities(self, request: Any) -> tuple[CardAuthority, CardAuthority]:
+        # Deliberately bypass load_current/resolver, which may restore caches.
+        return await self._cards.read_lifecycle_identities(request)
+
+    async def revoke_lifecycle(self, request: Any, *, actor_subject: str, before_commit: Any) -> dict[str, Any]:
+        async def cleanup(authorities):
+            # Executed after shared authoritative commit but while BOTH Card
+            # fences are still held. Failure leaves committed/serving-pending.
+            for authority in authorities:
+                await self._handles.remove(authority)
+
+        return await self._cards.revoke_lifecycle(request, actor_subject=actor_subject,
+                                                 before_commit=before_commit, after_commit=cleanup)
+
+    async def load_lifecycle_receipt(self, request: Any, *, actor_subject: str) -> dict[str, Any] | None:
+        from .lifecycle import LifecycleRefused
+        from .lifecycle_store import read_receipt
+
+        receipt = await read_receipt(self._store, request.transaction_id(actor_subject))
+        if receipt is not None and receipt["binding"] != request.binding(actor_subject):
+            raise LifecycleRefused("issuer_lifecycle_replay_changed")
+        return receipt
+
     async def forget(
         self,
         authority: CardAuthority,

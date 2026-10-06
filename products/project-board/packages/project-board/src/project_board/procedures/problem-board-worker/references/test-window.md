@@ -66,7 +66,7 @@ that keeps acting on the running system changes what the requester observes.
 6. Wait for the coordinator to say the window has closed, then continue.
 
 Only the installer the route names deploys (the coordinator when none is
-named; [collaboration](collaboration.md) Rule 2). In a freeze it starts once every affected
+named; [collaboration Rule 2](collaboration/rule-2-work-on-a-branch-exchange-through-a-change-request.md)). In a freeze it starts once every affected
 worker that is available has reported paused. For a worker that is
 unavailable, the coordinator first establishes from evidence that it has no
 operation in flight the freeze would conflict with (its tree clean at its
@@ -77,5 +77,5 @@ includes a host client switch or relay restart, the additional
 Absence is
 not quiescence: an unreachable or limited worker may still have an operation
 running, and its absence neither pauses it nor holds the freeze by itself
-([collaboration](collaboration.md) Rule 10). If finishing cleanly will take longer than the requester
+([collaboration Rule 10](collaboration/rule-10-a-runtime-window-speaks-one-channel-that-survives-it.md)). If finishing cleanly will take longer than the requester
 would expect, say so, so they can decide whether to wait.

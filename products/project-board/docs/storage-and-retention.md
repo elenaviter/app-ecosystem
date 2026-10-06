@@ -3,7 +3,7 @@ id: project-board-storage-and-retention
 title: Problem Board Storage And Retention
 summary: Where Problem Board state lives, remote and on each machine, how mailbox reconciliation receipts are published, the rules that keep each relay's local state bounded, how the owner-worker conversation and the project timeline are kept, and how a worker, its mail and its projects continue across long-running work.
 tags: [project-board, storage, timeline, retention, conversation]
-keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal, relay local state, retention, pending folder, hour partition, cold tier, event archive, hot_days]
+keywords: [artifact uri, mailbox link, conversation turns, postgres, local field, git journal, relay local state, retention, pending folder, hour partition, cold tier, event archive, mail archive, hot_days]
 see_also:
   - ./README.md
   - ./domain-model-and-activity.md
@@ -283,7 +283,33 @@ bundle property `disk_alert_free_percent` changes it), the operator gets a
 `decision` mail and the acting coordinator a mail naming the machine, its
 largest agent workspaces and `pb worker workspace --sweep`. One alert per host
 crossing, however many agents run there: the state is kept per host, and a
-report above the threshold from any of its agents re-arms it.
+report above the threshold from any of its agents re-arms it. A host is
+critical when its free share is below half the alert threshold (5% at the
+default), and the alert's subject says so.
+
+Each sweep (`pb worker workspace --sweep`, and the automatic sweeps at
+session start, idle and a review decision) also writes
+`.problem-board/sweep-summary.json` in the agent's own workspace. It holds
+counts only: worktrees, unregistered, orphan, ended but kept, would remove,
+and scratch runs kept, with the sweep's own `observed_at`. Never a path, a
+name or a file list (W547). The heartbeat carries it as `disk_usage.sweep`,
+which is one small file read and never a walk. The board accepts only those
+bounded counts and drops a malformed `sweep` by itself, with a
+`worker.disk_usage_dropped` event, keeping the disk bytes.
+
+Where it is seen:
+
+- **The operator:** on the agent card.
+- **The coordinator:** on each teammate's `disk` line in `pb worker context`.
+  The line shows the host's free disk, the workspace size and the sweep counts,
+  each with the time it was observed. The routing view (`--routing`) leaves the
+  line out.
+
+An agent that has not swept yet shows "sweep not reported": unknown, never
+zero. The coordinator's team status asks an agent with unregistered or orphan
+folders, or on a host below the threshold, to sweep. It never sweeps or
+deletes for that agent (the coordinator procedure, "Reconcile the work, not
+the inbox").
 
 ## Owner And Worker Conversation
 
@@ -386,6 +412,10 @@ snapshot, so later pages follow the same order and `matched_count` is exact:
   `enabled.cron.timeline-snapshot-sweep: false` turns the job off.
 - **One person keeps at most three** live snapshots per project: a new search
   deletes their older ones, and a cursor into a deleted snapshot answers 409.
+- **An open search is not re-ranked by board activity.** The Timeline keeps its
+  snapshot and page while the board polls; activity after the search was
+  ranked shows "New activity since this search" with a Refresh, which re-runs
+  the same search from page 1. Search, Reset or a project change re-rank.
 
 The snapshot tables are a cache. Emptying them loses no data; open cursors
 answer 409 until the next search.
@@ -428,6 +458,79 @@ Some events stay in Postgres whatever their age:
 A timeline search whose date range starts before the newest archived event
 also reads the archived days in that range. A search without a start date
 reads Postgres only.
+
+## Mail Archive
+
+The same daily job also moves inbox mail (`problem_board_inbox`, mail an
+agent sent a person) and controls (`problem_board_controls`, mail a person or
+an agent sent an agent) older than the hot window to bundle storage. The
+steps are the same as for events: write the part, read it back and verify
+it, and only then delete the rows. Each batch is a row in
+`problem_board_mail_archive_batches`. One part holds one project's, one
+conversation's (one agent's) and one UTC day's messages, each record a
+whole row:
+
+```text
+<board bundle storage>/mail/<project-id>/<agent>/<yyyy>/<mm>/<dd>/
+  <batch-id>.jsonl.gz        the day's messages, one JSON record per line
+  <batch-id>.manifest.json   row count, message ids, time range, SHA-256
+```
+
+A message stays in Postgres while anything still acts on it:
+- mail its person has not read yet;
+- a control still pending, leased, or with a discard requested;
+- the current control of an active assignment;
+- retirement delivery evidence;
+- each agent's latest notice of a kind its heartbeat replays.
+
+A message and the control that answered it move together. A row that
+changed after its part was written is not deleted. Assignments and their
+ownership history are the board's current state and are not archived by age.
+
+An archived message leaves a small index row in Postgres
+(`problem_board_inbox_archived`, `problem_board_controls_archived`). It holds
+the message's identity, its dedupe key, the fields that decide who may read
+it, and its time; the body and payload are in the archive. With that row:
+- a resent message is still answered as a replay, so there is no second row
+  and no second Telegram post;
+- a reply to an archived control still finds its sender;
+- thread counts and the Inbox's dated worker search include archived mail.
+
+Reading archived mail back:
+- A dated timeline search reads the archived days in its range, like events.
+- An Inbox conversation pages its live and archived messages in one order.
+  Unread mail stays live past the window, so the two interleave in time.
+- Both mark an archived row `storage: cold`; the board shows it as
+  **Cold archive**.
+- An Inbox conversation's search with dates and no text lists that
+  conversation's messages in the range, newest first, live and archived alike.
+  It reads the board's own thread (`inbox.thread.page` with `date_from` and
+  `date_to`), not the platform's turn catalog, which holds only live turns.
+  A search with text still uses the platform's ranked search, which reaches
+  archived turns through its own cold arm.
+
+**The way back.** Code without the mail archive cannot read archived
+messages. A rollback past it would hide them, although they stay in their
+parts and index rows. So before such a rollback, the board's
+`mail-archive-restore` job returns them:
+
+- **Where it runs.** Inside the board, with the board's own database and
+  storage, so no credential leaves the runtime.
+- **When it runs.** Its schedule (`mail_archive_restore_cron`) is `disable`
+  until the runtime maintainer sets one near-term minute, the same way an
+  archive tick is run.
+- **In `check` mode, the default.** It reads and verifies every part, and
+  names any required column a part lacks. It changes nothing.
+- **In `apply` mode.** It restores, but only when that check passes, no
+  archive run is unfinished, and `mail_archive_restore_apply_date` names
+  today's UTC date. The date makes `apply` one-shot: a schedule left behind
+  cannot restore again the next day, after the nightly archive moved the
+  mail back. In one transaction per batch, it re-inserts the
+  rows into the live tables (a row already live stays as it is, and a column
+  the part lacks takes its default), then deletes their index rows and the
+  batch's ledger row.
+
+The parts stay in storage. Running it twice on the same day changes nothing.
 
 The bundle property `enabled.cron.event-archive: false` turns the job off.
 Deleting rows makes their space reusable for new rows; it does not shrink the

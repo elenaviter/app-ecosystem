@@ -33,12 +33,9 @@ _DEPTH = threading.local()
 
 
 # Named, reviewed exceptions only. Each states why it is not yet off the loop.
-EXEMPT = {
-    # W321: the outbox claim runs on the loop with a non-blocking lock so a
-    # turn cancelled while waiting claims nothing. Moving it to a thread needs
-    # a release of claimed rows on cancellation; that design is its own item.
-    ("SharedFieldStore.pull_outbox", "relay.py:_flush_outbox_unlocked"),
-}
+# W456 (Infra's review of cf48): the outbox claim, once exempt here, runs in a
+# thread and returns what a cancelled turn claimed (``_claim_outbox``).
+EXEMPT: set[tuple[str, str]] = set()
 
 
 class LoopGuard:

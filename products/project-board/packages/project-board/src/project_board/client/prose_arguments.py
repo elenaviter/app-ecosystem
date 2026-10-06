@@ -163,3 +163,151 @@ def guard_inline_payload_prose(payload: Mapping[str, Any], *, argument: str, fil
         value = payload.get(key)
         if isinstance(value, str) and ("\n" in value or "\r" in value):
             require_single_line(value, argument=f"{argument} field {key!r}", file_argument=file_argument)
+
+
+# A word of three or more letters run straight into a number, outside code:
+# "ALLCLEAR22:06", "Apps1204f593", "fresh215625". A ref is not prose: one that
+# starts after ":", "/", "@", ".", "#" or "-" (work:mail:..., a path, an
+# address, a version) is never matched, and a short ref like W563 has one letter.
+GLUED_WORD = re.compile(r"(?<![\w:/@.#-])([A-Za-z]{3,})(\d[\w:.%]*)")
+# Real terms that end in digits. Anything else is written with a space, or put
+# in backticks when it is a literal.
+GLUED_TERMS = frozenset({
+    "sha1", "sha224", "sha256", "sha384", "sha512", "base32", "base64", "utf8", "utf16", "utf32",
+    "arm64", "amd64", "ipv4", "ipv6", "ext2", "ext3", "ext4", "http2", "http3", "int8", "int16",
+    "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float16", "float32", "float64",
+    "win32", "win64", "i386", "oauth2", "h264", "h265", "k8s", "i18n", "l10n", "a11y", "python3",
+    "pip3", "gzip2", "bzip2", "md5sum", "sha256sum", "x509", "pkcs7", "pkcs8", "pkcs12", "aes128", "aes256",
+})
+COMMIT_HASH = re.compile(r"[0-9a-f]{7,40}")
+
+
+def _glued(match: re.Match[str]) -> bool:
+    """A word run into a number, and not a commit hash, a host name or a known term.
+
+    Review of 36eeb9b8: a short commit hash that starts with three hex letters
+    (cabeb2f6, bef2c40c) and a host name with one trailing digit (spark1,
+    Redis7) are not glue. A glued run of two digits or more, or a time
+    (ALLCLEAR22:06), still is.
+    """
+
+    token = match.group(0)
+    if COMMIT_HASH.fullmatch(token):
+        return False
+    digits = re.match(r"\d+", match.group(2)).group(0)
+    if len(digits) < 2 and ":" not in match.group(2):
+        return False
+    return (token.lower().rstrip(".:%") not in GLUED_TERMS
+            and match.group(1).lower() + digits not in GLUED_TERMS)
+
+
+_LIST_OR_ROW = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s|^\s*\|")
+
+
+def _blocks(prose: str) -> list[str]:
+    """The text's blocks: each list item or table row alone, prose by paragraph.
+
+    Review of ff3c9e38: a Markdown list or table has no blank lines between
+    its items, so splitting only at blank lines made a readable 12-item list
+    or a 25-row results table one "wall". An indented line continues its list
+    item; only a run of plain prose lines is a paragraph.
+    """
+
+    blocks: list[str] = []
+    current: list[str] = []
+    in_item = False
+    for line in prose.split("\n"):
+        text = line.strip()
+        if not text:
+            if current:
+                blocks.append(" ".join(current))
+            current, in_item = [], False
+        elif _LIST_OR_ROW.match(line) or text.startswith("#"):
+            if current:
+                blocks.append(" ".join(current))
+            current, in_item = [text], not text.startswith("#")
+        elif in_item and line[:1] in (" ", "\t"):
+            current.append(text)
+        else:
+            if in_item:
+                blocks.append(" ".join(current))
+                current, in_item = [], False
+            current.append(text)
+    if current:
+        blocks.append(" ".join(current))
+    return blocks
+
+
+# A paragraph longer than this reads as a wall in a phone notification.
+OPERATOR_PARAGRAPH_MAXIMUM = 900
+OPERATOR_RECIPIENTS = frozenset({"operator", "owner"})
+
+
+def refuse_unreadable_operator_prose(value: Any, *, argument: str) -> Any:
+    """Return ``value`` unchanged, or refuse operator mail a person cannot read.
+
+    Operator mail reaches Telegram exactly as written. On 2026-10-05 a decision
+    mail arrived as one 1,400-character paragraph with "ALLCLEAR22:06",
+    "fresh215625" and "Require64GB" in it; the stored body was already glued,
+    so no renderer could have fixed it. Operator, asked whether the procedure
+    needs a rule: "yes we need it", then "do not file - fix". Code spans and
+    fenced blocks are literals and are not checked.
+    """
+
+    if not isinstance(value, str):
+        return value
+    prose = _without_code(value)
+    glued = sorted({match.group(0) for match in GLUED_WORD.finditer(prose) if _glued(match)})
+    if glued:
+        raise DomainError(
+            "problem_board_operator_prose_glued",
+            f"{argument} runs words into numbers ({', '.join(glued[:5])}): write them with a space "
+            "(\"ALL CLEAR 22:06\", \"Apps 1204f593\"), or put a literal in backticks.",
+            details={"argument": argument, "glued": glued[:20], "count": len(glued)},
+        )
+    longest = max((len(block) for block in _blocks(prose)), default=0)
+    if longest > OPERATOR_PARAGRAPH_MAXIMUM:
+        raise DomainError(
+            "problem_board_operator_prose_wall",
+            f"{argument} has a {longest}-character paragraph: split operator mail into short "
+            f"paragraphs or a list (at most {OPERATOR_PARAGRAPH_MAXIMUM} characters each).",
+            details={"argument": argument, "longest_paragraph": longest,
+                     "maximum": OPERATOR_PARAGRAPH_MAXIMUM},
+        )
+    return value
+
+
+# Text people read on the board: the project banner and a work item's fields.
+# Operator instruction relayed by the coordinator, 2026-10-05 22:41 UTC: the
+# readability standard "applies especially to project banners, operator
+# messages, and work-item descriptions, results, review notes, and test
+# instructions".
+_READ_ON_THE_BOARD = {
+    "project.announcement.publish": ("text",),
+    "plan.item.create": ("title", "summary", "description", "result", "blocked_reason"),
+    "plan.item.update": ("title", "summary", "description", "result", "blocked_reason"),
+}
+_REVIEW_FIELDS = ("look_at", "could_not_verify")
+
+
+def refuse_unreadable_board_text(action: str, payload: Mapping[str, Any], *, argument: str) -> None:
+    """Refuse a banner or work-item field a person cannot read (W563).
+
+    The same rule as operator mail: no word run into a number, no wall
+    paragraph. Only the named prose fields of these operations are checked.
+    """
+
+    fields = _READ_ON_THE_BOARD.get(action)
+    if not fields:
+        return
+    values = payload.get("changes") if action == "plan.item.update" else payload
+    if not isinstance(values, Mapping):
+        return
+    for key in fields:
+        if isinstance(values.get(key), str):
+            refuse_unreadable_operator_prose(values[key], argument=f"{argument} {key}")
+    review = values.get("review")
+    if isinstance(review, Mapping):
+        for key in _REVIEW_FIELDS:
+            if isinstance(review.get(key), str):
+                refuse_unreadable_operator_prose(review[key], argument=f"{argument} review.{key}")

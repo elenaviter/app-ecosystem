@@ -45,6 +45,15 @@ from ..contract.scoped_collection import CollectionError, ScopedKeysetCursor
 
 # Selective receives allowed between two ordinary receives (W563, Q11).
 SELECTIVE_RECEIVE_BUDGET = 3
+# W563 (coordinator, 2026-10-06 00:35Z): a backlog mark sets at most this
+# many pending messages aside, and keeps this many earlier marks as history.
+BACKLOG_MARK_MAXIMUM = 5000
+BACKLOG_MARK_HISTORY = 20
+# Kinds that can carry an open question for the receiver: counted apart in
+# the backlog line so they stay visible on every receive.
+BACKLOG_UNRESOLVED_KINDS = frozenset({"request", "decision", "question"})
+# Message refs a wake-ack defers at most; older ones simply wake again.
+WAKE_DEFERRED_MAXIMUM = 1000
 
 # A local plan is a shard until a complete server generation is mirrored
 # here. These name the two states so no reader has to guess which it has.
@@ -3613,6 +3622,7 @@ class SharedFieldStore:
         observed_control_plane_state: str | None = None,
         wake_id: str = "",
         observed_project_refs: Sequence[str] | None = None,
+        acknowledge_wake: bool = False,
     ) -> dict[str, Any]:
         worker = self.read_worker(worker_name)
         clean_name = str(worker.get("worker_name") or "")
@@ -3657,6 +3667,32 @@ class SharedFieldStore:
                         for value in list(control_refs)[-20:]
                     ],
                 )
+            # W563 (window w563-client-46543807-0335, 03:14 and 03:20 UTC):
+            # a held session that acknowledged a wake was woken again every
+            # 20 to 30 seconds for the same unread mail, because wake-ack
+            # leaves it pending. The mail the wake named is deferred: it wakes
+            # no session until the next ordinary receive, which clears the
+            # deferral. Mail that arrives later still wakes the session, and
+            # operator mail is never deferred (quiet_mail_refs).
+            if inbox_checked:
+                row.pop("wake_deferred", None)
+            elif acknowledge_wake and wake_id:
+                current_subscription = listener.get("subscription")
+                named = (
+                    current_subscription.get("last_wake_message_refs") or []
+                    if isinstance(current_subscription, Mapping)
+                    else []
+                )
+                previous = row.get("wake_deferred")
+                earlier = previous.get("refs") or [] if isinstance(previous, Mapping) else []
+                refs = sorted({str(ref) for ref in [*earlier, *named] if ref})[-WAKE_DEFERRED_MAXIMUM:]
+                if refs:
+                    row["wake_deferred"] = {"refs": refs, "at": now, "token": new_id("deferral")}
+            # W563: a session held for a window acknowledges a native wake
+            # without an ordinary receive (pb worker wake-ack), so its backlog
+            # is not delivered while it may only do window control.
+            if inbox_checked or (acknowledge_wake and wake_id):
+                observed_message_refs = _bounded_message_refs(message_refs)
                 subscription = dict(listener.get("subscription") or {})
                 outstanding_wake_id = str(
                     subscription.get("outstanding_wake_id") or ""
@@ -4109,6 +4145,43 @@ class SharedFieldStore:
             row.update(listener=listener, updated_at=now)
             atomic_write_json(path, row)
             return dict(recovery)
+
+    def acknowledge_worker_wake(self, worker_name: str, *, wake_id: str) -> dict[str, Any]:
+        """Acknowledge a native wake without receiving any mail (W563).
+
+        A Codex session held for a host window may only do window control, but
+        a native wake could be acknowledged only by an ordinary receive, which
+        delivers the oldest backlog first (Root, 2026-10-05 22:19 UTC:
+        field_mail_selection_wake_invalid). This records the wake as handled,
+        leases nothing and leaves every pending message where it is; the
+        session finds window mail with pb worker inbox and takes it with
+        receive --message-ref.
+        """
+
+        listener = self.worker_listener_session(worker_name) or {}
+        state = str(listener.get("state") or "waiting")
+        if state == "detached":
+            raise DomainError(
+                "field_worker_not_listening",
+                "This coding-agent session must run worker listen before acknowledging a wake.",
+                status=409,
+            )
+        updated = self.check_in_worker_listener(
+            worker_name, state=state, wake_id=wake_id, acknowledge_wake=True,
+        )
+        subscription = updated.get("subscription") if isinstance(updated.get("subscription"), Mapping) else {}
+        receipt = subscription.get("last_wake_receipt") if isinstance(subscription.get("last_wake_receipt"), Mapping) else {}
+        state_name = str(receipt.get("state") or "unrecorded") if str(receipt.get("wake_id") or "") == wake_id else "unrecorded"
+        return {
+            "schema": "problem-board.worker-wake-ack.v1",
+            "wake": {
+                "id": wake_id,
+                "state": state_name,
+                "expected_id": str(receipt.get("expected_wake_id") or "") if state_name == "stale" else "",
+            },
+            "pending_unchanged": True,
+            "next": "Find window mail with pb worker inbox; receive it with pb worker receive --message-ref.",
+        }
 
     def record_wake_recovery(
         self,
@@ -5714,6 +5787,7 @@ class SharedFieldStore:
                 continue
             if parsed.kind == "project":
                 scopes.append((parsed.object_id, str(project_ref)))
+        backlog = self.backlog_message_ids(clean_name)
         headers: list[dict[str, Any]] = []
         for project_id, project_ref in scopes:
             for path in sorted((self._mail_root(project_id, clean_name) / "inbox").glob("*.json")):
@@ -5722,6 +5796,7 @@ class SharedFieldStore:
                 if not message_ref:
                     continue
                 payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+                operator = self._is_admitted_operator_mail(row)
                 headers.append({
                     "message_ref": message_ref,
                     "project_ref": project_ref,
@@ -5731,13 +5806,265 @@ class SharedFieldStore:
                     "created_at": str(row.get("created_at") or ""),
                     "correlation_id": str(row.get("correlation_id") or ""),
                     "work_ref": str(row.get("work_ref") or ""),
-                    "operator": self._is_admitted_operator_mail(row),
+                    "operator": operator,
                     "expected_reaction": str(payload.get("expected_reaction") or ""),
+                    "backlog": path.stem in backlog and not operator,
                 })
         return headers
 
+    def _backlog_path(self, clean_name: str) -> Path:
+        return self.control / "backlog" / f"{component(clean_name, field='worker_name')}.json"
+
+    def backlog_message_ids(self, worker_name: str) -> frozenset[str]:
+        """The message ids this worker's current backlog mark set aside, or none (W563)."""
+
+        row = read_json(self._backlog_path(str(worker_name).lower()), required=False) or {}
+        if not row.get("mark_id"):
+            return frozenset()
+        return frozenset(str(item) for item in row.get("message_ids") or [] if item)
+
+    def wake_deferred_refs(self, worker_name: str) -> frozenset[str]:
+        """Mail a wake-ack deferred until the next ordinary receive (W563)."""
+
+        deferred = self.read_worker(worker_name).get("wake_deferred")
+        refs = deferred.get("refs") if isinstance(deferred, Mapping) else None
+        return frozenset(str(ref) for ref in refs or [] if ref)
+
+    def quiet_token(self, worker_name: str) -> str:
+        """Changes whenever which pending mail is quiet can change: the backlog mark or a wake deferral."""
+
+        worker = self.read_worker(worker_name)
+        mark = worker.get("backlog_mark")
+        deferred = worker.get("wake_deferred")
+        return "{}|{}".format(
+            str(mark.get("mark_id") or "") if isinstance(mark, Mapping) else "",
+            str(deferred.get("token") or "") if isinstance(deferred, Mapping) else "",
+        )
+
+    def backlog_mark(self, worker_name: str) -> dict[str, Any]:
+        """The current backlog mark's summary, or empty when none is set."""
+
+        mark = self.read_worker(worker_name).get("backlog_mark")
+        return dict(mark) if isinstance(mark, Mapping) and mark.get("mark_id") else {}
+
+    def mark_backlog(self, worker_name: str, *, reason: str) -> dict[str, Any]:
+        """Set this worker's pending mail aside as its backlog (W563).
+
+        Coordinator, 2026-10-06 00:35Z: native wakes leased the five oldest
+        bodies of a long backlog while the current window control waited
+        behind them. The mark names the exact messages pending now, so mail
+        that arrives later is never backlog, whatever its timestamp. Operator
+        mail is never backlog. Backlog mail stays pending, unread and counted:
+        nothing is settled, retired or deleted here. The ordinary receive and
+        native wakes then deliver current mail; ``receive --backlog`` delivers
+        the backlog. A new mark replaces the previous one, which is kept as
+        history.
+        """
+
+        reason = bounded_text(reason, field="reason", maximum=500, required=True)
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        headers = [header for header in self.pending_mail_headers(clean_name) if not header["operator"]]
+        ids: list[str] = []
+        for header in headers:
+            try:
+                ids.append(parse_ref(header["message_ref"]).object_id)
+            except DomainError:
+                continue
+        if len(ids) > BACKLOG_MARK_MAXIMUM:
+            raise DomainError(
+                "field_mail_backlog_too_large",
+                f"A backlog mark covers at most {BACKLOG_MARK_MAXIMUM} messages.",
+                status=409,
+                details={"pending_count": len(ids), "maximum": BACKLOG_MARK_MAXIMUM},
+            )
+        created = sorted(str(header["created_at"]) for header in headers if header["created_at"])
+        mark = {
+            "mark_id": new_id("backlog"),
+            "marked_at": utc_now(),
+            "reason": reason,
+            "count": len(ids),
+            "unresolved_count": sum(1 for header in headers if header["kind"] in BACKLOG_UNRESOLVED_KINDS),
+            "oldest_at": created[0] if created else "",
+            "newest_at": created[-1] if created else "",
+        }
+        self._write_backlog_mark(clean_name, mark, sorted(set(ids)))
+        _LOGGER.info(
+            "[problem-board.backlog] marked worker=%s mark=%s count=%s unresolved=%s reason=%s",
+            clean_name, mark["mark_id"], mark["count"], mark["unresolved_count"], reason,
+        )
+        return mark
+
+    def clear_backlog_mark(self, worker_name: str) -> dict[str, Any]:
+        """End the backlog mark: its mail is ordinary pending mail again. Returns the ended mark."""
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        ended = self.backlog_mark(clean_name)
+        if ended:
+            self._write_backlog_mark(clean_name, {}, [])
+            _LOGGER.info("[problem-board.backlog] cleared worker=%s mark=%s", clean_name, ended["mark_id"])
+        return ended
+
+    def _write_backlog_mark(self, clean_name: str, mark: Mapping[str, Any], ids: Sequence[str]) -> None:
+        path = self._backlog_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            previous = read_json(path, required=False) or {}
+            history = list(previous.get("history") or [])
+            if previous.get("mark_id"):
+                history.append(
+                    {key: previous.get(key) for key in (
+                        "mark_id", "marked_at", "reason", "count", "unresolved_count", "oldest_at", "newest_at",
+                    )} | {"ended_at": utc_now()}
+                )
+            atomic_write_json(path, {**dict(mark), "message_ids": list(ids), "history": history[-BACKLOG_MARK_HISTORY:]})
+            worker_path = self._worker_path(clean_name)
+            row = read_json(worker_path)
+            if mark:
+                row["backlog_mark"] = dict(mark)
+            else:
+                row.pop("backlog_mark", None)
+            atomic_write_json(worker_path, row)
+
+    def _own_mail_scopes(self, worker_name: str) -> tuple[str, list[tuple[str, str]]]:
+        """This worker's stable name and mailboxes: direct, then each attended project."""
+
+        worker = self.read_worker(worker_name)
+        clean_name = str(worker.get("worker_name") or "")
+        scopes = [("", "")]
+        for project_ref in worker.get("attended_project_refs") or []:
+            try:
+                parsed = parse_ref(str(project_ref))
+            except DomainError:
+                continue
+            if parsed.kind == "project":
+                scopes.append((parsed.object_id, str(project_ref)))
+        return clean_name, scopes
+
+    def retirement_rows(self, worker_name: str) -> list[dict[str, Any]]:
+        """This worker's own mail for a retirement plan, bodies hashed, never returned (W563).
+
+        Pending and leased rows of every mailbox the worker owns. A leased row
+        is listed so the plan can name it as excluded; it is never retired.
+        """
+
+        from .inbox_retire import content_hash
+
+        clean_name, scopes = self._own_mail_scopes(worker_name)
+        rows: list[dict[str, Any]] = []
+        for project_id, project_ref in scopes:
+            root = self._mail_root(project_id, clean_name)
+            for state in ("inbox", "leased"):
+                for path in sorted((root / state).glob("*.json")):
+                    row = read_json(path, required=False)
+                    if not row.get("message_ref"):
+                        continue
+                    if str(row.get("recipient") or "").lower() != clean_name:
+                        continue
+                    rows.append({
+                        "message_ref": str(row.get("message_ref") or ""),
+                        "project_ref": project_ref,
+                        "kind": str(row.get("kind") or ""),
+                        "sender": str(row.get("sender") or ""),
+                        "created_at": str(row.get("created_at") or ""),
+                        "operator": self._is_admitted_operator_mail(row),
+                        "leased": state == "leased",
+                        "payload": row.get("payload") if isinstance(row.get("payload"), Mapping) else None,
+                        "content_hash": content_hash(row),
+                    })
+        return rows
+
+    def retire_mail(
+        self,
+        worker_name: str,
+        *,
+        lease_owner: str,
+        approved: Mapping[str, str],
+        summaries: Mapping[str, str],
+    ) -> list[dict[str, Any]]:
+        """Lease exactly the approved messages or none of them, then settle each (W563).
+
+        ``approved`` maps each message ref to the content hash the reviewed
+        dry run recorded. Under every mailbox lock, each must still be pending
+        with that hash; one that is missing, leased or changed refuses the
+        whole call before anything is leased. All-or-nothing holds for the
+        lease step. Settlement, the ordinary acknowledged settle with the given
+        summary once per message, runs after the locks are released: a crash
+        in between leaves leases that expire and are recovered, writes no
+        receipt, and a re-run's dry run then differs from the reviewed digest.
+        """
+
+        from .inbox_retire import content_hash
+
+        clean_name, scopes = self._own_mail_scopes(worker_name)
+        lock_paths = sorted(
+            {
+                path
+                for project_id, _ in scopes
+                for path in (
+                    self._mail_lock(project_id, clean_name),
+                    self._mail_root(project_id, clean_name) / ".mail.lock",
+                )
+            },
+            key=str,
+        )
+        found: dict[str, list[Path]] = {project_id: [] for project_id, _ in scopes}
+        claimed: list[tuple[str, dict[str, Any]]] = []
+        with ExitStack() as locks:
+            for path in lock_paths:
+                locks.enter_context(exclusive_lock(path))
+            seen: set[str] = set()
+            for project_id, _ in scopes:
+                self._recover_expired_mail(project_id, clean_name)
+                for path in sorted((self._mail_root(project_id, clean_name) / "inbox").glob("*.json")):
+                    row = read_json(path, required=False)
+                    ref = str(row.get("message_ref") or "")
+                    if ref in approved and str(row.get("recipient") or "").lower() == clean_name:
+                        if content_hash(row) != approved[ref]:
+                            raise DomainError(
+                                "field_inbox_retire_selection_changed",
+                                "A selected message changed after the dry run; nothing was retired.",
+                                status=409,
+                                details={"message_ref": ref},
+                            )
+                        found[project_id].append(path)
+                        seen.add(ref)
+            missing = sorted(set(approved) - seen)
+            if missing:
+                raise DomainError(
+                    "field_inbox_retire_selection_changed",
+                    "A selected message is no longer pending; nothing was retired.",
+                    status=409,
+                    details={"missing": missing[:20], "missing_count": len(missing)},
+                )
+            for project_id, paths in found.items():
+                # pull_mail leases at most 100 per call.
+                for start in range(0, len(paths), 100):
+                    for row in self.pull_mail(
+                        project_id,
+                        worker_name=clean_name,
+                        lease_owner=lease_owner,
+                        limit=100,
+                        selected_paths=paths[start:start + 100],
+                        lock_held=True,
+                    ):
+                        claimed.append((project_id, row))
+        results: list[dict[str, Any]] = []
+        for project_id, row in claimed:
+            ref = str(row.get("message_ref") or "")
+            settled = self.settle_mail(
+                project_id,
+                worker_name=clean_name,
+                message_ref=ref,
+                lease_id=str(row["lease"]["lease_id"]),
+                lease_owner=lease_owner,
+                outcome="acknowledged",
+                summary=summaries.get(ref, ""),
+            )
+            self.record_worker_mail_settlement(clean_name, message_ref=ref)
+            results.append({"message_ref": ref, "state": str(settled.get("state") or "settled")})
+        return results
+
     def quiet_mail_refs(self, worker_name: str, refs: Sequence[str] | None = None) -> set[str]:
-        """Pending notices that need no action and wake no session (W563, Q2).
+        """Pending mail that wakes no session (W563, Q2): quiet notices and backlog.
 
         Only mail its producer marked `expected_reaction: acknowledge_only`
         (a Done or Cancelled assignment notice, terminal assignee information)
@@ -5750,14 +6077,19 @@ class SharedFieldStore:
         PR 535).
         """
 
+        deferred = self.wake_deferred_refs(worker_name)
         if refs is None:
             return {
                 header["message_ref"]
                 for header in self.pending_mail_headers(worker_name)
-                if header.get("expected_reaction") == "acknowledge_only" and not header.get("operator")
+                if header.get("backlog")
+                or (not header.get("operator") and (
+                    header.get("expected_reaction") == "acknowledge_only" or header["message_ref"] in deferred
+                ))
             }
         worker = self.read_worker(worker_name)
         clean_name = str(worker.get("worker_name") or "")
+        backlog = self.backlog_message_ids(clean_name)
         wanted: dict[str, str] = {}
         for ref in refs:
             try:
@@ -5779,7 +6111,11 @@ class SharedFieldStore:
                 if not row:
                     continue
                 payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
-                if payload.get("expected_reaction") == "acknowledge_only" and not self._is_admitted_operator_mail(row):
+                if not self._is_admitted_operator_mail(row) and (
+                    message_id in backlog
+                    or ref in deferred
+                    or payload.get("expected_reaction") == "acknowledge_only"
+                ):
                     quiet.add(ref)
                 break
         return quiet
@@ -7646,6 +7982,32 @@ class SharedFieldStore:
             path.name,
         )
 
+    @classmethod
+    def _backlog_candidates(
+        cls,
+        candidates: Iterable[tuple[Path, dict[str, Any] | None, Exception | None]],
+        backlog_ids: frozenset[str],
+        *,
+        backlog: bool,
+        tally: dict[str, Any] | None,
+    ) -> Iterable[tuple[Path, dict[str, Any] | None, Exception | None]]:
+        """Current or backlog candidates, counting the backlog ones (W563)."""
+
+        for candidate in candidates:
+            path, row = candidate[0], candidate[1]
+            marked = path.stem in backlog_ids and not (row is not None and cls._is_admitted_operator_mail(row))
+            if marked and tally is not None:
+                tally["count"] = int(tally.get("count") or 0) + 1
+                kind = str((row or {}).get("kind") or "")
+                if kind in BACKLOG_UNRESOLVED_KINDS:
+                    tally["unresolved_count"] = int(tally.get("unresolved_count") or 0) + 1
+                created = str((row or {}).get("created_at") or "")
+                if created and (not tally.get("oldest_at") or created < str(tally["oldest_at"])):
+                    tally["oldest_at"] = created
+                    tally["oldest_ref"] = str((row or {}).get("message_ref") or "")
+            if marked == backlog:
+                yield candidate
+
     @staticmethod
     def _mail_receive_candidate(
         path: Path,
@@ -7780,8 +8142,15 @@ class SharedFieldStore:
         selected_paths: Sequence[Path] | None = None,
         lock_held: bool = False,
         priority_only: bool = False,
+        backlog_ids: frozenset[str] | None = None,
+        backlog: bool = False,
+        backlog_tally: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Lease one bounded mailbox batch.
+
+        With ``backlog_ids`` (a backlog mark, W563) the batch is current mail
+        only, or with ``backlog`` the marked mail only; operator mail is never
+        backlog. ``backlog_tally`` counts the marked mail this shard holds.
 
         ``priority_only`` leases admitted operator mail only: the receive runs
         that pass over every mailbox before its ordinary pass, so operator mail
@@ -7835,6 +8204,11 @@ class SharedFieldStore:
                 candidates = (
                     candidate for candidate in candidates
                     if candidate[1] is not None and self._is_admitted_operator_mail(candidate[1])
+                )
+            shard_tally: dict[str, Any] = {"count": 0}
+            if not priority_only and backlog_ids is not None:
+                candidates = self._backlog_candidates(
+                    candidates, backlog_ids, backlog=backlog, tally=shard_tally
                 )
             sources = heapq.nsmallest(
                 take,
@@ -8004,16 +8378,31 @@ class SharedFieldStore:
                 if limited_by == "response_byte_limit":
                     byte_budget.record_mailbox(remaining=0, limited_by=limited_by)
             elif byte_budget is not None:
+                # With a backlog mark, only this receive's side of it remains
+                # for this receive; the other side is counted in its own line.
+                eligible = len(paths)
+                if backlog_ids is not None:
+                    marked = int(shard_tally.get("count") or 0)
+                    eligible = marked if backlog else len(paths) - marked
                 remaining_count = max(
                     0,
-                    len(paths) - len(claimed_paths),
+                    eligible - len(claimed_paths),
                 )
-                if not limited_by and remaining_count and take < len(paths):
+                if not limited_by and remaining_count and take < eligible:
                     limited_by = "item_limit"
                 byte_budget.record_mailbox(
                     remaining=remaining_count,
                     limited_by=limited_by,
                 )
+        if backlog_tally is not None and not priority_only:
+            backlog_tally["count"] = int(backlog_tally.get("count") or 0) + int(shard_tally.get("count") or 0)
+            backlog_tally["unresolved_count"] = (
+                int(backlog_tally.get("unresolved_count") or 0) + int(shard_tally.get("unresolved_count") or 0)
+            )
+            oldest = str(shard_tally.get("oldest_at") or "")
+            if oldest and (not backlog_tally.get("oldest_at") or oldest < str(backlog_tally["oldest_at"])):
+                backlog_tally["oldest_at"] = oldest
+                backlog_tally["oldest_ref"] = str(shard_tally.get("oldest_ref") or "")
         return claimed
 
     def record_stub_notice(
@@ -12622,6 +13011,38 @@ class SharedFieldStore:
                 atomic_write_json(destination, row)
                 claimed.append(row)
         return claimed
+
+    def release_outbox_claims(
+        self,
+        outbox_ids: Sequence[str],
+        *,
+        relay_id: str,
+        wait: bool = True,
+    ) -> list[str]:
+        """Undo a claim nobody will send: its rows return to pending as they were.
+
+        A relay claims in a thread (W456 criterion 4). When the turn that asked
+        is cancelled while the claim runs, the claimed rows go back at once
+        (W321: a cancelled claim leaves nothing claimed), without a retry count
+        or backoff. A row no longer leased to this relay is left alone.
+        """
+
+        released: list[str] = []
+        with exclusive_lock(self._outbox.lock, wait=wait):
+            for outbox_id in outbox_ids:
+                found = self._outbox.find(component(outbox_id, field="outbox_id"))
+                if found is None or found[1] != "leased":
+                    continue
+                source = found[0]
+                row = read_json(source)
+                lease = row.get("lease") if isinstance(row.get("lease"), Mapping) else {}
+                if str(lease.get("relay_id") or "") != str(relay_id):
+                    continue
+                row.update(state="pending", updated_at=utc_now())
+                row.pop("lease", None)
+                self._outbox.move_in_flight(source, row, "pending")
+                released.append(str(outbox_id))
+        return released
 
     def retry_outbox(
         self,

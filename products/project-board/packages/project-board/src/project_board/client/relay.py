@@ -96,6 +96,7 @@ from .relay_failures import (
     staged_failure,
 )
 from .local_state_maintenance import run_local_state_maintenance
+from .relay_channel_status import ChannelStatusBook, write_channel_status
 from .project_connect import github_repository
 from .project_file_edit import FILE_EDIT_KIND, apply_file_edit
 from .project_files import file_state
@@ -172,6 +173,14 @@ _ADAPTER_EXECUTORS = ChannelExecutors(thread_name_prefix="problem-board-adapter"
 # W423: how often the relay re-measures an agent's workspace size (W461:
 # held per path by WorkspaceSizes, which the per-poll adapters share).
 DISK_USAGE_REMEASURE_SECONDS = REMEASURE_SECONDS
+
+def _sweep_summary_of(workspace: str) -> dict[str, Any] | None:
+    """The agent's latest sweep counts (W547): one small file read, never a walk."""
+
+    from .sweep_plan import read_summary
+
+    return read_summary(workspace)
+
 
 def _disk_usage_of(workspace: str) -> tuple[Any, str] | None:
     """``shutil.disk_usage`` and the resolved path of an existing workspace, else None.
@@ -3588,9 +3597,10 @@ class ProblemBoardHostRelayAdapter:
         """An outbox store call that takes the outbox lock without blocking the loop.
 
         The call runs with ``wait=False``; while another holder has the lock it
-        is retried after an awaited, capped backoff. Nothing runs in a thread
-        (W321): the store refuses a busy lock before it reads or moves a row,
-        so a claim cancelled while waiting leaves nothing claimed. A settle or
+        is retried after an awaited, capped backoff. Nothing here runs in a
+        thread (W321): the store refuses a busy lock before it reads or moves a
+        row, so a call cancelled while waiting leaves nothing changed. The
+        claim itself runs in a thread through ``_claim_outbox`` (W456). A settle or
         retry of a row already sent (``finish=True``) runs as its own task on
         the loop, awaited through a shield, so a cancelled turn still records
         the delivery instead of leaving the row leased for a resend.
@@ -3621,6 +3631,48 @@ class ProblemBoardHostRelayAdapter:
 
         return finished
 
+    async def _claim_outbox(self, **kwargs: Any) -> list[dict[str, Any]]:
+        """Claim pending rows in a thread; a cancelled claim leaves nothing claimed.
+
+        W456 criterion 4 (Infra's review of cf48: with a pending row the claim
+        listed and moved rows on the loop, 1.6 s). The claim keeps the outbox
+        lock's ``wait=False`` and the awaited backoff of ``_outbox_store``.
+        W321: a claim cancelled while it waits for the lock has claimed
+        nothing; one cancelled while its thread runs cannot be stopped there,
+        so the rows it claimed return to pending as soon as it ends
+        (``release_outbox_claims``), never left leased for a resend.
+        """
+
+        delay = self.OUTBOX_LOCK_RETRY_FIRST_SECONDS
+        while True:
+            claim = asyncio.ensure_future(
+                asyncio.to_thread(self.field.pull_outbox, wait=False, **kwargs)
+            )
+            try:
+                return await asyncio.shield(claim)
+            except FileLockBusy:
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self.OUTBOX_LOCK_RETRY_MAX_SECONDS)
+            except asyncio.CancelledError:
+                claim.add_done_callback(self._release_claim_after_cancel)
+                raise
+
+    def _release_claim_after_cancel(self, claim: asyncio.Future) -> None:
+        if claim.cancelled() or claim.exception() is not None:
+            return
+        outbox_ids = [str(row.get("outbox_id") or "") for row in claim.result() or ()]
+        outbox_ids = [outbox_id for outbox_id in outbox_ids if outbox_id]
+        if not outbox_ids:
+            return
+        release = asyncio.ensure_future(
+            asyncio.to_thread(
+                self.field.release_outbox_claims, outbox_ids, relay_id=self.config.relay_id,
+            )
+        )
+        self._outbox_finishes.add(release)
+        release.add_done_callback(self._outbox_finishes.discard)
+        release.add_done_callback(self._outbox_finish_after_cancel)
+
     @staticmethod
     def _outbox_finish_after_cancel(task: asyncio.Future) -> None:
         if not task.cancelled() and task.exception() is not None:
@@ -3642,7 +3694,16 @@ class ProblemBoardHostRelayAdapter:
             "outbox_retried": 0,
             "reconciliation_publications_refused": 0,
         }
-        for row in await self._outbox_store(self.field.pull_outbox)(
+        # W456 criterion 4 (dev-main, 2026-10-05: the claim's directory
+        # listing held the event loop 3.5 s): ask from a thread whether a
+        # claim would find anything, then claim in a thread too
+        # (``_claim_outbox``: a cancelled claim leaves nothing claimed, W321).
+        outbox = getattr(self.field, "_outbox", None)
+        if outbox is not None and not await asyncio.to_thread(
+            outbox.has_in_flight, worker_name=self.config.worker_name
+        ):
+            return counts
+        for row in await self._claim_outbox(
             relay_id=self.config.relay_id,
             worker_name=self.config.worker_name,
             project_ref=(
@@ -4672,6 +4733,14 @@ class ProblemBoardHostRelayAdapter:
         measured = self._workspace_sizes.last(real_path)
         if measured is not None:
             report["workspace_bytes"] = int(measured)
+        # W547: the latest sweep's counts, so the coordinator sees unregistered
+        # and kept folders without anyone logging into the host. No sweep yet
+        # leaves the field out: unknown, never zero.
+        sweep = await run_off_loop(
+            _sweep_summary_of, workspace, executor=getattr(self, "_store_executor", None)
+        )
+        if sweep is not None:
+            report["sweep"] = sweep
         payload["disk_usage"] = report
 
     def _add_workspace_report(self, payload: dict[str, Any], project_ref: str, entry: Mapping[str, Any]) -> None:
@@ -5322,6 +5391,9 @@ class ProblemBoardRelaySupervisor:
         # time; a wait joins a scan already running instead of starting
         # another beside it (W459).
         self._local_work_scanner = LocalWorkScanner()
+        # Per field root: the local-work wait's queue, outbox and resolved key,
+        # built once off the loop (W456 criterion 4).
+        self._local_work_handle_cache: dict[str, tuple[Any, Any, str]] = {}
         self._expected_open_failure_signatures: dict[
             str, tuple[str, str, str]
         ] = {}
@@ -5342,6 +5414,11 @@ class ProblemBoardRelaySupervisor:
         # which wakes the next cycle at once.
         self._channel_turns: dict[str, asyncio.Task] = {}
         self._late_turn_finished: asyncio.Event | None = None
+        # W456 criterion 6: each channel's last attendance poll and last
+        # success, written for `pb worker inspect` from a thread, at most
+        # every relay_channel_status.WRITE_INTERVAL_SECONDS.
+        self._channel_status = ChannelStatusBook()
+        self._channel_status_write: asyncio.Future | None = None
         # A running turn's own wake and the cycle's wake for that channel take
         # turns; the cycle skips a wake the turn is giving right now.
         self._notify_locks: dict[str, asyncio.Lock] = {}
@@ -5350,6 +5427,7 @@ class ProblemBoardRelaySupervisor:
         self._beside_notifies: dict[str, asyncio.Task] = {}
         # W563: per worker, whether each pending message is a quiet notice.
         self._quiet_classified: dict[str, dict[str, bool]] = {}
+        self._quiet_mark: dict[str, str] = {}
         # The session wake's mailbox and listener store calls run in the
         # channel's own thread (W456): a hung mailbox holds that channel only,
         # never another channel's wake or the default pool's scans.
@@ -5368,12 +5446,14 @@ class ProblemBoardRelaySupervisor:
             config_path=self.config_path,
             pacing=self._pacing,
             session_for=lambda worker_name: self._sessions.get(worker_name),
-            session_matches=lambda host, channel, session: self._session_matches(
+            session_matches=lambda host, channel, session, card=None: self._session_matches(
                 host,
                 channel,
                 session,
                 require_card=True,
+                card=card,
             ),
+            card_fingerprint=lambda host, channel: self._card_fingerprint(host, channel),
             drain_lock=self._outbox_drain_lock,
             log=logger,
         )
@@ -5802,6 +5882,12 @@ class ProblemBoardRelaySupervisor:
         # no turn and are received with the next wake or receive. Each message
         # is classified once (review of PR 535), and the hold is cleared as on
         # every other branch with nothing to wake for (W334).
+        # A backlog mark or a wake deferral changes which pending mail is
+        # quiet: classify again.
+        mark = await self._channel_off_loop(channel, field.quiet_token, channel.worker_name)
+        if self._quiet_mark.get(channel.worker_name, "") != mark:
+            self._quiet_classified.pop(channel.worker_name, None)
+            self._quiet_mark[channel.worker_name] = mark
         known = self._quiet_classified.setdefault(channel.worker_name, {})
         new = [ref for ref in pending_refs if ref not in known]
         if new:
@@ -6185,6 +6271,7 @@ class ProblemBoardRelaySupervisor:
         session: _ChannelSession,
         *,
         require_card: bool,
+        card: str | None = None,
     ) -> bool:
         """Whether ``session`` is the one opened for this channel and Card.
 
@@ -6208,7 +6295,8 @@ class ProblemBoardRelaySupervisor:
             or session.channel_identity != channel.worker_identity
         ):
             return False
-        current = self._card_fingerprint(host, channel)
+        # ``card`` is the fingerprint a caller already read off the loop.
+        current = self._card_fingerprint(host, channel) if card is None else card
         if require_card:
             return bool(session.card_fingerprint) and session.card_fingerprint == current
         return session.card_fingerprint == current
@@ -6401,7 +6489,10 @@ class ProblemBoardRelaySupervisor:
         # Read before connecting: a Card replaced while the connection opens
         # leaves this session with the old identity, so it is refused beside
         # the cycle rather than trusted.
-        card_fingerprint = self._card_fingerprint(host, channel)
+        # In a thread (W456 criterion 4, Infra's review of cf48: a slow profile
+        # read here held the shared loop 0.8 s). Still read fresh, before the
+        # connection opens, so the identity fence is unchanged.
+        card_fingerprint = await asyncio.to_thread(self._card_fingerprint, host, channel)
         # Readers of a failed channel see this attempt running rather than a
         # retry time already past (W461). Success clears the whole record
         # below; failure and cancellation clear the mark in the handler.
@@ -7078,7 +7169,10 @@ class ProblemBoardRelaySupervisor:
     async def _poll_channel(
         self, host: HostRelayConfig, channel: WorkerChannelConfig
     ) -> dict[str, Any]:
-        injected = consume_relay_fault(
+        # A file lock and a file read: off the event loop (W456 criterion 4,
+        # dev-main 2026-10-05: the lock's holder write held the loop 4.4 s).
+        injected = await asyncio.to_thread(
+            consume_relay_fault,
             self.config_path,
             worker_name=channel.worker_name,
         )
@@ -7095,8 +7189,11 @@ class ProblemBoardRelaySupervisor:
                 },
             )
         session = self._sessions.get(channel.worker_name)
+        # The Card fingerprint reads the profile file: off the event loop
+        # (W456 criterion 4, dev-main 2026-10-05: that read held it 3.2 s).
         if session is not None and not self._session_matches(
-            host, channel, session, require_card=False
+            host, channel, session, require_card=False,
+            card=await asyncio.to_thread(self._card_fingerprint, host, channel),
         ):
             await self._drop_session(channel.worker_name)
             session = None
@@ -7124,7 +7221,10 @@ class ProblemBoardRelaySupervisor:
                         raise
                     raise failure from exc
                 self._sessions[channel.worker_name] = session
-                if self._session_matches(host, channel, session, require_card=False):
+                if self._session_matches(
+                    host, channel, session, require_card=False,
+                    card=await asyncio.to_thread(self._card_fingerprint, host, channel),
+                ):
                     break
                 logger.info(
                     "Problem Board relay channel lifecycle event=card_replaced_during_open "
@@ -7176,6 +7276,7 @@ class ProblemBoardRelaySupervisor:
             raise failure from exc
         started = time.monotonic()
         try:
+            self._channel_status.note_attendance_poll(channel.worker_name)
             with self._trace.stage(
                 "attendance.poll",
                 channel=channel.worker_name,
@@ -7349,6 +7450,32 @@ class ProblemBoardRelaySupervisor:
             signature.append(("relay-faults", len(fault_entries), newest))
         return tuple(signature)
 
+    async def _local_work_handles(
+        self, field_root: Path
+    ) -> tuple[CoordinateQueue, OutboxStore, str]:
+        """The local-work wait's queue, outbox and resolved key, built off the loop (W456).
+
+        Building them resolves the field path, a filesystem call: on dev-main
+        (2026-10-05) that resolve held the event loop 3.7 s. They are built
+        once per field root in a thread and kept on this relay; a relay serves
+        one field for its lifetime.
+        """
+
+        key = str(field_root)
+        cache = self.__dict__.setdefault("_local_work_handle_cache", {})
+        handles = cache.get(key)
+        if handles is None:
+            def build() -> tuple[CoordinateQueue, OutboxStore, str]:
+                return (
+                    CoordinateQueue(field_root),
+                    OutboxStore(field_root / ".problem-board"),
+                    str(field_root.expanduser().resolve()),
+                )
+
+            handles = await asyncio.to_thread(build)
+            cache[key] = handles
+        return handles
+
     async def _wait_for_local_work(
         self,
         field_root: Path,
@@ -7366,8 +7493,7 @@ class ProblemBoardRelaySupervisor:
         the next wait, and never adds a scan beside it (W459, W321).
         """
 
-        coordinate_queue = CoordinateQueue(field_root)
-        outbox = OutboxStore(field_root / ".problem-board")
+        coordinate_queue, outbox, outbox_key = await self._local_work_handles(field_root)
         scanned = (str(field_root), tuple(sorted(worker_names)))
         scan = self._local_work_scanner.scan
         if await scan(
@@ -7376,7 +7502,6 @@ class ProblemBoardRelaySupervisor:
             worker_names=worker_names,
         ):
             return True
-        outbox_key = str(field_root.expanduser().resolve())
         ready_signature = await scan(
             ("outbox-ready", *scanned), outbox.ready_signature, worker_names=worker_names
         )
@@ -8099,6 +8224,30 @@ class ProblemBoardRelaySupervisor:
             raise
         finally:
             self._trace.end_turn(turn, outcome, code=code)
+            self._channel_status.note_turn(channel.worker_name, outcome, code)
+            self._write_channel_status_soon()
+
+    def _write_channel_status_soon(self) -> None:
+        """Write the channels' status in a thread when due; never awaited by a turn."""
+
+        if not self._channel_status.due():
+            return
+        running = self._channel_status_write
+        if running is not None and not running.done():
+            return
+        snapshot = self._channel_status.take_snapshot()
+        write = asyncio.ensure_future(
+            asyncio.to_thread(write_channel_status, self.config_path, snapshot)
+        )
+        write.add_done_callback(
+            lambda done: done.cancelled()
+            or done.exception() is None
+            or logger.warning(
+                "Problem Board relay channel status not written error_type=%s",
+                type(done.exception()).__name__,
+            )
+        )
+        self._channel_status_write = write
 
     async def _channel_turn_under_deadline(
         self,
@@ -8261,9 +8410,13 @@ class ProblemBoardRelaySupervisor:
     ) -> None:
         if elapsed < self._trace.slow_seconds:
             return
+        # W456 criterion 6: the warning names the stage that took longest
+        # in this turn (open, reconnect, coordinate drain, attendance poll),
+        # not only the channel.
+        stage, stage_seconds = self._trace.slowest_turn_stage()
         logger.warning(
             "Problem Board relay slow channel turn worker=%s outcome=%s "
-            "seconds=%.3f threshold_seconds=%.3f",
+            "seconds=%.3f threshold_seconds=%.3f stage=%s stage_seconds=%.3f",
             channel.worker_name,
             (
                 f"failed:{self._failure_code(result)}"
@@ -8272,6 +8425,8 @@ class ProblemBoardRelaySupervisor:
             ),
             elapsed,
             self._trace.slow_seconds,
+            stage or "none",
+            stage_seconds,
         )
 
     async def _channel_turn_body(

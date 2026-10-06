@@ -5,6 +5,7 @@ import re
 import subprocess
 
 import pytest
+from procedure_reference import reference_text
 
 
 REFERENCES = (
@@ -90,8 +91,8 @@ def test_host_quiescence_has_one_owner_and_no_runtime_only_waiver():
     ):
         assert invariant in owner
     for name in ("test-window.md", "coordinator.md", "collaboration.md"):
-        assert "runtime-actions.md#host-client-window-quiescence" in (REFERENCES / name).read_text()
+        assert "runtime-actions.md#host-client-window-quiescence" in reference_text(REFERENCES / name)
     window = (REFERENCES / "test-window.md").read_text()
     assert "A reload, refresh or client switch loads" not in window
-    coordinator = (REFERENCES / "coordinator.md").read_text()
+    coordinator = reference_text(REFERENCES / "coordinator.md")
     assert "This missing-answer waiver never applies to a host client window" in coordinator

@@ -9,13 +9,14 @@ never makes one, and the window, review and cross-layer places point to it.
 from __future__ import annotations
 
 from pathlib import Path
+from procedure_reference import reference_text
 
 PACKAGE = Path(__file__).resolve().parents[1]
 REFERENCES = PACKAGE / "src" / "project_board" / "procedures" / "problem-board-worker" / "references"
 
 
 def _words(path: Path) -> str:
-    return " ".join(path.read_text(encoding="utf-8").split())
+    return " ".join(reference_text(path).split())
 
 
 def _rule() -> str:
@@ -77,7 +78,7 @@ def test_the_window_review_and_cross_layer_places_point_to_the_one_rule():
     assert "it holds nothing that does not depend on it (a hold names its evidence, Rule 16)." in collaboration
     assert 'It is a hold like any other (Rule 16, "A hold is a claim with evidence").' in collaboration
     assert 'Such a wait is a hold, and names its evidence and clearing actor on the item (Rule 16, "A hold is a claim with evidence").' in collaboration
-    assert 'Rule 16, "A hold is a claim with evidence"). Deferred hardening, another host\'s window and proximity are never such a dependency.' in coordinator
+    assert '[collaboration Rule 16](../collaboration/rule-16-every-task-has-a-living-route-and-each-actor-knows-i.md), "A hold is a claim with evidence"). Deferred hardening, another host\'s window and proximity are never such a dependency.' in coordinator
     # One owning rule: the definition is not repeated elsewhere.
     assert collaboration.count("**A hold is a claim with evidence.**") == 1
     assert "**A hold is a claim with evidence.**" not in coordinator

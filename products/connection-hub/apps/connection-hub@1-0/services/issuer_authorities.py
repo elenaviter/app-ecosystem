@@ -10,6 +10,10 @@ from connection_hub.bundle_operations import normalize_bundle_operation_result
 from connection_hub.delegated_credentials.admission import MIN_SERVICE_SECRET_BYTES
 from connection_hub.delegated_credentials.agent_capability_control import AGENT_DESCRIPTOR_ISSUER_KIND
 from connection_hub.delegated_credentials.issuer_gate import IssuerRegistry, IssuerWriteRefused
+from connection_hub.delegated_credentials.issuer_read import (
+    IssuerReadRegistry, IssuerReadRefused, RemoteIssuerReadAdapter,
+    issuer_read_request_from_mapping, sign_issuer_read_request,
+)
 from connection_hub.delegated_credentials.remote_issuer import (
     RemoteIssuerAdapter, issuer_request_from_mapping,
     sign_issuer_envelope, sign_issuer_request,
@@ -51,6 +55,10 @@ class _PeerTransport:
                        service_id=self._config["service_id"])
         if protocol == "issuer-decision.v1":
             body = sign_issuer_request(**signing, request=issuer_request_from_mapping(payload))
+        elif protocol == "issuer-read.v1":
+            body = sign_issuer_read_request(**signing,
+                request=issuer_read_request_from_mapping(payload["request"]),
+                phase=payload["phase"], snapshots=payload["snapshots"])
         else:
             body = sign_issuer_envelope(**signing, protocol=protocol, payload=payload)
         response = await self._caller(bundle_id=self._config["bundle_id"], operation=operation,
@@ -67,6 +75,33 @@ class _PeerTransport:
 
     async def finalize(self, payload):
         return await self._call(self._config.get("finalize_operation", ""), protocol="issuer-outcome.v1", payload=payload)
+
+    async def read(self, payload):
+        return await self._call(self._config.get("read_operation", ""), protocol="issuer-read.v1", payload=payload)
+
+
+def issuer_read_registry_from_connections(*, connections: Mapping[str, Any],
+        resolve_secret: SecretResolver, caller: BundleCaller) -> IssuerReadRegistry:
+    """Optional read capability, never implied by a write operation/owner."""
+    registry = IssuerReadRegistry()
+    delegated = connections.get("delegated_credentials")
+    rows = delegated.get("issuer_authorities") if isinstance(delegated, Mapping) else None
+    if not isinstance(rows, Mapping):
+        return registry
+    required = ("bundle_id", "read_operation", "service_id", "peer_proof_secret_ref", "adapter_id")
+    for kind, value in rows.items():
+        if (type(kind) is not str or not kind.strip() or not isinstance(value, Mapping)
+                or any(type(value.get(k)) is not str or not value[k].strip() for k in required)):
+            continue  # every unregistered read kind refuses, including local owners
+        paths = value.get("read_identity_leaf_paths", [])
+        if (not isinstance(paths, list) or any(not isinstance(p, list) or not p
+                or any(type(k) is not str for k in p) for p in paths)):
+            continue
+        config = {k: value[k].strip() for k in required}
+        peer = _PeerTransport(config=config, resolve_secret=resolve_secret, caller=caller)
+        registry.register(RemoteIssuerReadAdapter(issuer_kind=kind.strip(), adapter_id=config["adapter_id"],
+            transport=peer.read, identity_leaf_paths=tuple(tuple(p) for p in paths)))
+    return registry
 
 
 def issuer_registry_from_connections(*, connections: Mapping[str, Any],
