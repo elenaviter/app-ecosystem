@@ -957,3 +957,31 @@ async def test_card_credentials_absolute_expiry_is_replay_safe_against_real_post
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_binding_is_revoked_by_its_pinned_digest_against_real_postgres() -> None:
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    store = PostgresOAuthAuthorityStore(pg_pool=pool, tenant=f"authority-test-{uuid.uuid4().hex}",
+                                        project="grant-revoke-digest")
+    try:
+        await store.ensure_schema()
+        await store.bind_access_grant("old-bearer", {"registry_access_id": "aut_card", "operations": ["s"]},
+                                      ttl_seconds=600)
+        await store.bind_access_grant("new-bearer", {"registry_access_id": "aut_card", "operations": ["s"]},
+                                      ttl_seconds=600)
+        old = hashlib.sha256(b"old-bearer").hexdigest()
+        assert await store.revoke_access_grant_by_digest(old) is True
+        assert await store.revoke_access_grant_by_digest(old) is False  # idempotent
+        assert await store.get_access_grant_record("old-bearer") is None
+        assert await store.get_access_grant_record("new-bearer") is not None  # the replacement is untouched
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+        await pool.close()

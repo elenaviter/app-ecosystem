@@ -1012,6 +1012,17 @@ class GrantStore:
             )
         )
 
+    async def revoke_access_grant_by_digest(self, token_sha256: str) -> bool:
+        """W582: revoke one pinned access binding by the digest it is stored under."""
+        digest = str(token_sha256 or "").strip().lower()
+        if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError("token_sha256_invalid")
+        if self._authority_store is not None:
+            return bool(await self._authority_call("access_grant.revoke_by_digest",
+                                                   "revoke_access_grant_by_digest", digest))
+        # The Redis key is already sha256(token) (_agrant_key).
+        return bool(await self._redis_call("access_grant.revoke_by_digest", "delete", self._key("agrant", digest)))
+
     async def set_card_credentials_expiry(self, registry_access_id: str, expires_at: int) -> str:
         """W582: one absolute deadline for a Card's live OAuth credentials (SQL authority only)."""
         if self._authority_store is None:
