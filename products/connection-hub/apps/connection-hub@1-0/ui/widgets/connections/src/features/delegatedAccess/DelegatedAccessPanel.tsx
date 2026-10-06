@@ -166,6 +166,13 @@ import {
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import {
+  controlFocusRead,
+  pinAfterRefusal,
+  pinAfterSave,
+  pinAtStart,
+  tabReturnReads,
+} from './cardFreshness';
+import {
   isLinkedControlCard,
   linkedControlOpenTarget,
   projectPersonControlCoordinates,
@@ -2255,7 +2262,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   }, [editingAccessId, editSeedRevision]);
   const editDirty = editingAccessId !== null && currentSnapshot !== editSeedRef.current;
   const startEdit = useCallback((item: DelegatedAccessRecord) => {
-    editBaseRevision.current = item.card_revision ?? null;
+    editBaseRevision.current = pinAtStart(item);
     setEditRefusedStale(false);
     const picks: Record<string, boolean> = {};
     Object.entries(item.resource_grants || {}).forEach(([resource, grants]) => {
@@ -2400,17 +2407,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const controlFocus = accessCardFocus?.controlOnly ? accessCardFocus : null;
   const controlFocusValue = controlFocus ? controlFocusKey(controlFocus) : null;
   useEffect(() => {
-    if (!accessCardFocus?.controlOnly) return;
+    const read = controlFocusRead(accessCardFocus);
+    if (!read || !accessCardFocus) return;
     let current = true;
     const key = controlFocusKey(accessCardFocus);
     setControlFocusReadKey(null);
     setAccessCardFocusState('loading');
-    void dispatch(loadControlCard({
-      controlId: accessCardFocus.accessId,
-      projectRef: accessCardFocus.projectRef,
-      targetSubject: accessCardFocus.targetSubject,
-      invitationRef: accessCardFocus.invitationRef,
-    })).unwrap()
+    void dispatch(loadControlCard(read)).unwrap()
       .then((result) => {
         if (!current) return;
         const found = Boolean(result.access && matchesAccessCardFocus(result.access, accessCardFocus));
@@ -2428,16 +2431,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   useEffect(() => {
     if (typeof document === 'undefined') return undefined;
     const onVisible = () => {
-      if (document.visibilityState !== 'visible') return;
-      void dispatch(loadDelegatedAccess());
-      if (controlFocus) {
-        void dispatch(loadControlCard({
-          controlId: controlFocus.accessId,
-          projectRef: controlFocus.projectRef,
-          targetSubject: controlFocus.targetSubject,
-          invitationRef: controlFocus.invitationRef,
-        }));
-      }
+      const reads = tabReturnReads(document.visibilityState, controlFocus);
+      if (reads.list) void dispatch(loadDelegatedAccess());
+      if (reads.control) void dispatch(loadControlCard(reads.control));
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
@@ -3404,6 +3400,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       // W587: after a 409 the edit stays pinned and is refused until the
       // person reloads the Card; the read shows them the server version.
       if (updated?.status === 409) {
+        editBaseRevision.current = pinAfterRefusal(editBaseRevision.current);
         setEditRefusedStale(true);
         void readCurrentCard(item);
         setEditActionError(STALE_EDIT_MESSAGE);
@@ -3413,7 +3410,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       return;
     }
     // W587: the base save advanced the Card; a retry continues from that revision.
-    editBaseRevision.current = updated.access?.card_revision ?? null;
+    editBaseRevision.current = pinAfterSave(editBaseRevision.current, updated.access);
     const completedOperations: string[] = [];
     for (const { resource, operation, mode } of focusedAdditions) {
       try {

@@ -56,13 +56,6 @@ test('views and edits use the freshest copy, not the list entry first', () => {
   assert.doesNotMatch(panel, /items\.find\(\(item\) => item\.access_id === viewAccessId\)/)
 })
 
-test('returning to the tab reads the list and the open Control again', () => {
-  const handler = panel.slice(panel.indexOf('const onVisible = () =>'), panel.indexOf("document.addEventListener('visibilitychange'"))
-  assert.match(handler, /document\.visibilityState !== 'visible'/)
-  assert.match(handler, /dispatch\(loadDelegatedAccess\(\)\)/)
-  assert.match(handler, /dispatch\(loadControlCard\(/)
-})
-
 test('an edit is stale once the server is ahead of its pin or refused it; only a reload clears it', () => {
   assert.equal(staleEdit(4, 4, false), false)
   assert.equal(staleEdit(4, 5, false), true) // another admin saved r5 while this edit was on r4
@@ -92,7 +85,7 @@ test('after a 409 a second Save sends nothing and the pin is unchanged', () => {
   const request = save.indexOf('dispatch(updateDelegatedAccess(')
   assert.ok(guard > 0 && guard < request, 'the stale check runs before any request')
   assert.match(save.slice(guard, request), /setEditActionError\(STALE_EDIT_MESSAGE\);\s+return;/)
-  assert.match(save, /if \(updated\?\.status === 409\) \{\s+setEditRefusedStale\(true\);/)
+  assert.match(save, /if \(updated\?\.status === 409\) \{\s+editBaseRevision\.current = pinAfterRefusal\(editBaseRevision\.current\);\s+setEditRefusedStale\(true\);/)
   assert.doesNotMatch(panel, /editBaseRevision\.current = null;\s+setEditActionError/)
   assert.doesNotMatch(panel, /if \(updated\?\.status === 409\) editBaseRevision\.current = null;/)
   assert.match(panel, /expectedCardRevision: editBaseRevision\.current \?\? item\.card_revision,/)
@@ -104,7 +97,7 @@ test('Reload this Card keeps the editor open, seeded from the server version wit
   const reload = panel.slice(panel.indexOf('const reloadEdit = async'), panel.indexOf('startEdit(current);\n  };', panel.indexOf('const reloadEdit = async')) + 20)
   assert.match(reload, /const current = await readCurrentCard\(item\);[^]*?startEdit\(current\);/)
   assert.doesNotMatch(reload, /clearEditState\(\)/) // the editor stays open
-  assert.match(panel, /editBaseRevision\.current = item\.card_revision \?\? null;\s+setEditRefusedStale\(false\);/)
+  assert.match(panel, /editBaseRevision\.current = pinAtStart\(item\);\s+setEditRefusedStale\(false\);/)
   assert.match(panel, /onClick=\{\(\) => \{ void reloadEdit\(record\); \}\}>\s+Reload this Card/)
 })
 

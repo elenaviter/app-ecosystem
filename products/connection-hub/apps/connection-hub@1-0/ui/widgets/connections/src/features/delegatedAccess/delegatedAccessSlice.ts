@@ -1,6 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
+import { withNewerCard } from './cardFreshness';
 import {
   applyDelegatedAccessRevokeResult,
   delegatedAccessRevokePayload,
@@ -514,6 +515,8 @@ const delegatedAccessSlice = createSlice({
       })
       .addCase(loadProjectAgentCard.fulfilled, (state, action) => {
         state.focusedCard = action.payload;
+        // W587: a newer read also replaces the list row, so no row shows an older copy.
+        state.items = withNewerCard(state.items, action.payload);
       })
       .addCase(loadProjectAgentCard.rejected, (state, action) => {
         state.focusedCard = undefined;
@@ -527,6 +530,8 @@ const delegatedAccessSlice = createSlice({
         state.busy = false;
         state.focusedCard = action.payload.access;
         state.focusedViewer = action.payload.viewer;
+        // W587: a newer read also replaces the list row, so no row shows an older copy.
+        state.items = withNewerCard(state.items, action.payload.access);
       })
       .addCase(loadControlCard.rejected, (state, action) => {
         state.busy = false;
