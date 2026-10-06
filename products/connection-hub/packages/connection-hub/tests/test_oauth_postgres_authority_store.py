@@ -1261,3 +1261,69 @@ async def test_w585_a_rotation_that_waits_on_the_family_lock_past_its_cap_is_ref
         assert generation["state"] == "active", "the presented generation is not consumed"
     finally:
         await _drop(pool, store)
+
+
+async def _hold_family_lock(pool, store, access_id="aut_card"):
+    holder = await pool.acquire()
+    lock = holder.transaction()
+    await lock.start()
+    await holder.execute(
+        f"SELECT 1 FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = $1 FOR UPDATE", access_id)
+    return holder, lock
+
+
+async def _release(pool, holder, lock):
+    await lock.rollback()
+    await pool.release(holder)
+
+
+@pytest.mark.asyncio
+async def test_w585_a_no_cap_rotation_that_waits_past_the_generation_expiry_is_refused_unconsumed() -> None:
+    """Ops T5 (16:32): no cap at all, so only generation_live and family_live
+    guard; both read the clock after the lock."""
+
+    import asyncio
+
+    pool, store = await _capped_store()
+    try:
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3)
+        holder, lock = await _hold_family_lock(pool, store)
+        rotation = asyncio.create_task(store.rotate_refresh_token(token, RECORD, ttl_seconds=3600))
+        await asyncio.sleep(0.5)
+        assert not rotation.done(), "the rotation must be waiting on the family lock"
+        await asyncio.sleep(3.5)
+        await _release(pool, holder, lock)
+        assert await asyncio.wait_for(rotation, 10) is None
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active", "the presented generation is not consumed"
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_a_retry_that_waits_past_the_family_end_mints_nothing_and_revives_nothing() -> None:
+    """Ops C1 (16:32): the W408 retry branch decided with now() after the lock,
+    so a retry that started before the family ended minted a successor and
+    revived the family to +ttl."""
+
+    import asyncio
+
+    pool, store = await _capped_store()
+    try:
+        token = await store.create_refresh_token(RECORD, ttl_seconds=4)
+        rotated = await store.rotate_refresh_token(token, RECORD, ttl_seconds=4, refresh_request_fingerprint="fp-1")
+        assert rotated
+        family_before, _ = await _family(pool, store)
+        holder, lock = await _hold_family_lock(pool, store)
+        retry = asyncio.create_task(
+            store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, refresh_request_fingerprint="fp-1"))
+        await asyncio.sleep(0.5)
+        assert not retry.done(), "the retry must be waiting on the family lock"
+        while int(time.time()) <= family_before["expires_at"] + 1:
+            await asyncio.sleep(0.25)
+        await _release(pool, holder, lock)
+        assert await asyncio.wait_for(retry, 10) is None
+        family_after, _ = await _family(pool, store)
+        assert family_after["expires_at"] == family_before["expires_at"], "the family is not revived"
+    finally:
+        await _drop(pool, store)
