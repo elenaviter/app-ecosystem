@@ -106,7 +106,7 @@ SYNTHETIC_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJmaXh0dXJlIn0.c2lnbmF0dXJlLW9ubH
     pytest.param({"provenance": {"nested": {"refresh_token": "x"}}}, id="nested-credential-key"),
     pytest.param({"properties": {"client_secret": "x"}}, id="client-secret-key"),
     pytest.param({"properties": {"credential_handle": "x"}}, id="credential-handle-key"),
-    pytest.param({"client_metadata": {"note": "Bearer abc"}}, id="bearer-value"),
+    pytest.param({"client_metadata": {"note": "Bearer abcdefgh12345678"}}, id="bearer-value"),
     pytest.param({"properties": {"note": SYNTHETIC_JWT}}, id="jwt-value"),
     pytest.param({"named_services": {"svc": {"note": "ghp_" + "a" * 36}}}, id="token-prefix-value"),
     pytest.param({"properties": {"note": "aB3dE5fG7hJ9kL1mN3pQ5rS7tV9wX1yZ"}}, id="high-entropy-value"),
@@ -123,6 +123,55 @@ def test_each_credential_shape_refuses_instead_of_being_redacted(change):
     # The refusal names a reason only: no field value reaches it.
     assert raised.value.reason == "issuer_snapshot_credential_material"
     assert str(raised.value) == "issuer_snapshot_credential_material"
+
+
+GHP = "ghp_" + "A1b2C3d4" * 5
+
+
+class _Raw:
+    """A Card-shaped payload; full_authority only reads to_dict()."""
+
+    def __init__(self, raw):
+        self._raw = raw
+
+    def to_dict(self):
+        return self._raw
+
+
+def _raw_with(**changes):
+    raw = _pair()[0].to_dict()
+    raw.update(changes)
+    return _Raw(raw)
+
+
+@pytest.mark.parametrize("payload", [
+    pytest.param(_raw_with(account_scope={"svc": {"api_token": ["x"]}}), id="account-scope-key"),
+    pytest.param(_raw_with(resource_acceptance={"urn:fixture": {"note": GHP}}), id="resource-acceptance-value"),
+    pytest.param(_raw_with(label=GHP), id="label-value"),
+    pytest.param(_raw_with(identity_scope=GHP), id="top-level-string-value"),
+    pytest.param(_raw_with(operations=[GHP]), id="operation-list-value"),
+    pytest.param(_raw_with(control_card={"control_id": GHP, "issuer_kind": "project", "issuer_ref": "p"}),
+                 id="control-card-value"),
+    pytest.param(_raw_with(access_id="AKIA" + "ABCDEFGH12345678"), id="identity-field-issued-secret-shape"),
+])
+def test_every_field_family_is_scanned_not_only_the_free_form_ones(payload):
+    with pytest.raises(IssuerSnapshotRefused, match="credential_material"):
+        full_authority(payload)
+
+
+@pytest.mark.parametrize("value", [0, False, 1234, ["ab"]])
+def test_a_non_string_last_four_refuses_even_when_falsy(value):
+    with pytest.raises(IssuerSnapshotRefused, match="credential_material"):
+        full_authority(_raw_with(last_four=value))
+
+
+def test_identity_fields_may_look_random_without_refusing():
+    # Opaque identifiers are exempt from the high-entropy rule only.
+    opaque = "aB3dE5fG7hJ9kL1mN3pQ5rS7tV9wX1yZ"
+    card = dataclasses.replace(_pair()[0], access_id=opaque, client_id=opaque)
+    assert full_authority(card)["access_id"] == opaque
+    with pytest.raises(IssuerSnapshotRefused):
+        full_authority(dataclasses.replace(_pair()[0], label=opaque))
 
 
 def test_no_false_refusal_on_a_card_shaped_like_the_live_inventory():

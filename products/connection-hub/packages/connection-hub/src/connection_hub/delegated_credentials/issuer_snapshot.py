@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import secrets
 import time
 from dataclasses import dataclass, field, replace
@@ -42,19 +43,31 @@ _LOGGER = logging.getLogger(__name__)
 
 ISSUER_SNAPSHOT_PROTOCOL = "issuer-snapshot.v1"
 MAX_SNAPSHOT_SECONDS = 60
-# Key names under the free-form fields that hold credential material, matched
-# by how a key ENDS (``api_token``, ``client_secret``, ``credential_handle``).
-# A substring match would refuse standard non-secret metadata such as OAuth's
-# ``token_endpoint_auth_method``. Values are matched by shape, never by word,
-# so a resource name such as ".../delegated_credentials/..." is not refused.
-# A payload holding credential material is refused whole, never redacted.
+# The whole ``to_dict()`` payload is scanned: every mapping key at any depth,
+# and every string value. Key names that hold credential material are matched
+# by how a key ENDS (``api_token``, ``client_secret``, ``credential_handle``);
+# a substring match would refuse standard non-secret metadata such as OAuth's
+# ``token_endpoint_auth_method``. Values are matched by their complete shape,
+# never by a word in them, so a resource name such as
+# ".../delegated_credentials/..." or a label is not refused. A payload holding
+# credential material is refused whole, never redacted.
 CREDENTIAL_KEY_ENDINGS = ("token", "tokens", "secret", "secrets", "bearer", "handle", "handles", "password",
                           "passwords", "passwd", "credential", "credentials", "api_key", "apikey", "private_key",
                           "authorization", "cookie", "cookies")
-# Free-form CardAuthority fields searched for credential material.
-FREEFORM_FIELDS = ("properties", "provenance", "client_metadata", "named_services")
-# Well-known issued-secret prefixes (GitHub, Slack, OpenAI-style, AWS key id).
-TOKEN_PREFIXES = ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "xoxb-", "xoxp-", "xoxa-", "sk-", "akia")
+# Complete shapes of well-known issued secrets, matched against the whole
+# stripped value (GitHub, Slack, OpenAI-style, AWS access key id, HTTP auth).
+SECRET_SHAPES = tuple(re.compile(pattern) for pattern in (
+    r"(?i)(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}",
+    r"gh[pousr]_[A-Za-z0-9]{20,}",
+    r"github_pat_[A-Za-z0-9_]{20,}",
+    r"xox[abpr]-[A-Za-z0-9-]{10,}",
+    r"sk-[A-Za-z0-9_-]{20,}",
+    r"AKIA[0-9A-Z]{16}",
+    r"[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",  # JWT
+))
+# Identity fields hold opaque identifiers that may look random; they are
+# exempt from the high-entropy rule only, not from the issued-secret shapes.
+IDENTITY_FIELDS = ("access_id", "client_id", "grantor_subject", "delegate_subject", "issuer_ref")
 _B64URL = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_")
 
 
@@ -133,22 +146,19 @@ def _request_valid(request: Any) -> bool:
         return False
 
 
-def _secret_shaped(value: str) -> bool:
-    """A value that looks like a credential by its shape, never by a word in it."""
+def _secret_shaped(value: str, *, entropy: bool = True) -> bool:
+    """A value that looks like a credential by its complete shape, never by a word in it."""
     text = value.strip()
-    lowered = text.lower()
-    if lowered.startswith(("bearer ", "basic ")) or lowered.startswith(TOKEN_PREFIXES):
+    if any(shape.fullmatch(text) for shape in SECRET_SHAPES):
         return True
-    parts = text.split(".")
-    if len(parts) == 3 and all(len(part) >= 8 and set(part) <= _B64URL for part in parts):
-        return True  # a JWT: three dot-separated base64url parts
+    if not entropy or (len(text) == 64 and set(text) <= set("0123456789abcdef")):
+        return False  # an identity field, or a lowercase hex fingerprint
     # A long unbroken high-entropy run: mixed case and digits, no separators.
-    # Hex digests are lowercase only, so a content hash is not caught here.
     return (len(text) >= 32 and set(text) <= _B64URL | {"+", "/", "="} and "/" not in text.rstrip("=")
             and any(c.isdigit() for c in text) and any(c.isupper() for c in text) and any(c.islower() for c in text))
 
 
-def _credential_material(value: Any, depth: int = 0) -> bool:
+def _credential_material(value: Any, depth: int = 0, *, entropy: bool = True) -> bool:
     if depth > 16:
         return True  # unbounded nesting is not reviewable; refuse
     if isinstance(value, Mapping):
@@ -156,7 +166,7 @@ def _credential_material(value: Any, depth: int = 0) -> bool:
                    or _credential_material(item, depth + 1) for key, item in value.items())
     if isinstance(value, (list, tuple)):
         return any(_credential_material(item, depth + 1) for item in value)
-    return type(value) is str and _secret_shaped(value)
+    return type(value) is str and _secret_shaped(value, entropy=entropy)
 
 
 def _unsafe_manage_url(url: Any) -> bool:
@@ -176,12 +186,22 @@ def full_authority(authority: Any) -> dict[str, Any]:
     returned, because dropping it would break the original content hash; a
     longer value may be a whole token in the wrong field and refuses. A manage
     URL refuses only when unsafe (not https, userinfo, query or fragment). A
-    credential-named key or a secret-shaped value in a free-form field refuses.
+    credential-named key anywhere, or a secret-shaped value in any field,
+    refuses.
     """
     raw = authority.to_dict()
-    last_four = raw.get("last_four") or ""
-    if (type(last_four) is not str or len(last_four) > 4 or _unsafe_manage_url(raw.get("manage_url"))
-            or any(_credential_material(raw.get(name)) for name in FREEFORM_FIELDS)):
+    last_four = raw.get("last_four", "")
+    if last_four is None:
+        last_four = ""
+    refused = (type(last_four) is not str or len(last_four) > 4 or _unsafe_manage_url(raw.get("manage_url")))
+    for key, value in raw.items():
+        if refused:
+            break
+        # The whole payload, top-level keys included; identity fields skip
+        # only the high-entropy rule. manage_url has its own rule above.
+        refused = ((type(key) is str and key.lower().endswith(CREDENTIAL_KEY_ENDINGS))
+                   or (key != "manage_url" and _credential_material(value, entropy=key not in IDENTITY_FIELDS)))
+    if refused:
         raise IssuerSnapshotRefused("issuer_snapshot_credential_material")
     return raw
 
