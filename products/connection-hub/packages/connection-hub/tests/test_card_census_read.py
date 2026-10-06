@@ -103,8 +103,9 @@ async def test_present_and_absent_cards_and_the_active_catalog(tmp_path):
 
     assert not {"label", "client_metadata", "last_four", "created_at", "manage_url"} & set(
         admin["control"]["authority"])  # only what an identity/capability evaluation reads (EMain 20:19)
-    assert admin["control"]["authority"]["properties"] == {
-        name: value for name, value in (control.properties or {}).items() if name not in PERSONAL_PROPERTIES}
+    from connection_hub.delegated_credentials.card_property_classes import authorization_properties
+
+    assert admin["control"]["authority"]["properties"] == authorization_properties(control.properties)
     assert admin["my"] == {"subject_hash": subject_hash_for(ADMIN), "access_id": identity.my_card_id,
                            "state": "absent"}
     assert by_person[OTHER]["control"]["state"] == "absent"
