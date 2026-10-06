@@ -66,9 +66,9 @@ read.
 A returned payload is never redacted, so anything that looks like credential
 material refuses the whole pair with `issuer_snapshot_credential_material`:
 
-- **A key under `properties`, `provenance`, `client_metadata` or `named_services` whose name ends with a credential word** (`token`, `secret`, `password`, `credential`, `handle`, `api_key`, `private_key`, `authorization`, `cookie`, `bearer`, and their plurals). Keys are matched by how they end, so standard non-secret metadata such as OAuth's `token_endpoint_auth_method` passes.
-- **A value shaped like a secret**: a `Bearer ` or `Basic ` prefix, a JWT (three dot-separated base64url parts), a known issued-token prefix, or a long unbroken high-entropy run. Values are never matched by word, so resource names such as `.../delegated_credentials/...` pass.
-- **A `last_four` longer than four characters.** A value of four characters or fewer is display metadata. It is returned, because dropping it would break the original fingerprint.
+- **A key anywhere in the payload, at any depth, whose name ends with a credential word** (`token`, `secret`, `password`, `credential`, `handle`, `api_key`, `private_key`, `authorization`, `cookie`, `bearer`, and their plurals). Keys are matched by how they end, so standard non-secret metadata such as OAuth's `token_endpoint_auth_method` passes.
+- **Any string value in the payload shaped like a secret**: `Bearer ` or `Basic ` followed by a token, a JWT (three dot-separated base64url parts), a complete GitHub, Slack, OpenAI-style or AWS key-id format, or a long unbroken high-entropy run. Values are matched by their complete shape, never by a word, so labels and resource names such as `.../delegated_credentials/...` pass. Opaque identity fields (`access_id`, `client_id`, `grantor_subject`, `delegate_subject`, `issuer_ref`) and lowercase hex fingerprints are exempt from the high-entropy rule only.
+- **A `last_four` longer than four characters, or one that is not a string.** A value of four characters or fewer is display metadata. It is returned, because dropping it would break the original fingerprint.
 - **An unsafe `manage_url`**: not `https`, or carrying userinfo, a query string or a fragment.
 
 ### Confinement
