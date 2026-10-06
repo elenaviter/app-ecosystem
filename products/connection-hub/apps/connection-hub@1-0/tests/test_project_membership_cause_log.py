@@ -76,3 +76,30 @@ def test_a_failed_peer_call_logs_its_cause_without_the_payload(caplog, build, ca
     assert "is not visible to this user" in line
     assert "bundle=problem-board@1-0" in line
     assert "secret" not in line
+
+
+class ApplicationNotReadyError(RuntimeError):
+    """The platform's exception, by its name (kdcube infra/plugin/app_readiness.py)."""
+
+
+class _StillPreparing(ApplicationNotReadyError):
+    pass
+
+
+@pytest.mark.parametrize("raised_type", [ApplicationNotReadyError, _StillPreparing])
+def test_a_host_application_still_starting_is_named_not_ready(caplog, raised_type):
+    """W587 follow-up C, the live log at 2026-10-06 15:48:17: the board reload
+    raised ApplicationNotReadyError, and the Card said "a project admin decides
+    this". It is now its own reason, which Connection Hub shows as restarting."""
+
+    async def _preparing(**_kwargs):
+        raise raised_type("Application 'problem-board@1-0' is preparing for the requested runtime state")
+
+    resolver = _module().BundleOperationProjectMembershipResolver(
+        bundle_id="problem-board@1-0", operation="project_membership_resolve", caller=_preparing
+    )
+    with caplog.at_level(logging.WARNING, logger="kdcube.connection_hub.project_membership"):
+        with pytest.raises(Exception) as raised:
+            asyncio.run(resolver.resolve_project_membership(project_ref="work:project:one", subject="user:one"))
+    assert getattr(raised.value, "reason", None) == "project_membership_provider_not_ready"
+    assert ["project_membership_provider_not_ready" in r.getMessage() for r in caplog.records] == [True]
