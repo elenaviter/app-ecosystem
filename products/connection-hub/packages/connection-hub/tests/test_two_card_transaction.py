@@ -12,6 +12,7 @@ import pathlib
 import signal
 import subprocess
 import sys
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -27,12 +28,13 @@ from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
     NamedServiceSelection,
 )
+from connection_hub.delegated_credentials.cards.service import CardConflict, DelegatedCardService
 from connection_hub.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
     CardStorageError,
     subject_hash_for,
 )
-from connection_hub.delegated_credentials.durable_io import list_child_names
+from connection_hub.delegated_credentials.durable_io import list_child_names, read_json_or_none
 from connection_hub.delegated_credentials.issuer_gate import change_digest
 
 
@@ -309,3 +311,70 @@ async def test_prepared_intent_fences_an_unstaged_participant_after_writer_crash
         ]
     else:
         assert receipt["state"] == "refused"
+        for authority in pair:
+            scope = subject_hash_for(authority.grantor_subject)
+            loaded = await reader.read_current_authority(
+                subject_hash=scope, access_id=authority.access_id
+            )
+            assert loaded is not None
+            assert (loaded[1].state, loaded[1].card_revision) == (
+                "active",
+                2 if authority.access_id == other.access_id else 1,
+            )
+            raw = await read_json_or_none(
+                reader.current_path(subject_hash=scope, access_id=authority.access_id)
+            )
+            assert raw is not None
+            assert raw.get("schema") != lifecycle_store.LIFECYCLE_POINTER_SCHEMA
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault_action", ["fault_prepare", "fault_first_pointer"])
+async def test_single_card_service_refuses_prepared_pair_before_projection_effect(
+    tmp_path: pathlib.Path, fault_action: str,
+) -> None:
+    pair = _pair()
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    await _seed_pair(store, pair)
+    body = _request_body(pair)
+    request = LifecycleRequest.from_mapping(body)
+    actor = "authenticated-human"
+    killed = _run_child(
+        {
+            "action": fault_action,
+            "storage_root": str(tmp_path),
+            "body": body,
+            "actor_subject": actor,
+            "now": _NOW.isoformat(),
+        }
+    )
+    assert killed.returncode == -signal.SIGKILL, killed.stderr
+
+    @asynccontextmanager
+    async def mutation_lock(**_kwargs):
+        yield None
+
+    class NoProjectionEffects:
+        async def reconcile_projection(self, *args, **kwargs):
+            raise AssertionError("projection_effect_before_intent_guard")
+
+    unstaged = next(card for card in pair if card.access_id == request.targets[1].access_id)
+    other = replace(unstaged, card_revision=2, label="independent later mutation")
+    service = DelegatedCardService(
+        store=BundleStorageDelegatedCardStore(tmp_path),
+        cache=NoProjectionEffects(),
+        mutation_lock=mutation_lock,
+    )
+    with pytest.raises(CardConflict, match="lifecycle_preparation_unresolved"):
+        await service.commit(
+            other,
+            subject_hash=subject_hash_for(other.grantor_subject),
+            expected_revision=1,
+            now=int(_NOW.timestamp()),
+        )
+    assert await lifecycle_store.read_receipt(store, request.transaction_id(actor)) is not None
+    snapshot = _fresh_process_snapshot(tmp_path, pair)
+    assert [(card["state"], card["card_revision"]) for card in snapshot["cards"]] == [
+        ("active", 1),
+        ("active", 1),
+    ]
