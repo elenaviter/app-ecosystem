@@ -389,3 +389,24 @@ async def test_a_group_whose_second_member_moved_never_prepares_and_aborts_clean
     decided = await _service_finish(store, service, "aborted")
     assert decided["state"] == "aborted" and await tx.list_in_doubt(store) == []
     assert await _read(store, before) == before and await _read(store, created) == created
+
+
+@pytest.mark.asyncio
+async def test_a_recorded_commit_never_materializes_part_of_an_unstaged_group(tmp_path):
+    """EMain F1 witness: only member 0 staged, a COMMIT recorded; no member commits, ABORT still clean."""
+    store, service, before, after = await _setup(tmp_path)
+    members = _members(before, after)
+    await _begin(store, members)
+    await _stage_member(store, members, 0)
+    store._card_transaction_decisions.recorded[GROUP] = "committed"
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_not_staged"):
+        await service.decide_group_transaction(transaction_id=GROUP, intent_digest=INTENT, decision="committed")
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_not_staged"):
+        await tx.decide(store, transaction_id=tx.member_transaction_id(GROUP, 0), intent_digest=INTENT,
+                        decision="committed")  # the store's own line, for a caller deciding members directly
+    assert (await tx.read_receipt(store, tx.member_transaction_id(GROUP, 0)))["state"] == "prepared"
+    store._card_transaction_decisions.recorded[GROUP] = "aborted"
+    decided = await service.decide_group_transaction(transaction_id=GROUP, intent_digest=INTENT, decision="aborted")
+    assert decided["state"] == "aborted" and await tx.list_in_doubt(store) == []
+    created = next(candidate for original, candidate in members if original is None)
+    assert await _read(store, before) == before and await _read(store, created) is None

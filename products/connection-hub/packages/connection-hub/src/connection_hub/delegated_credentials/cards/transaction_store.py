@@ -830,6 +830,11 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
         return receipt
     if decision == "committed" and not await _is_staged(store, receipt):
         raise CardTransactionRefused("card_transaction_not_staged")
+    if decision == "committed" and isinstance(receipt.get("group"), Mapping):
+        # EMain F1, the store's own line: a member commits only as part of a group staged as a whole.
+        aggregate = await read_receipt(store, receipt["group"]["transaction_id"])
+        if not is_group_receipt(aggregate) or not aggregate["staged"]:
+            raise CardTransactionRefused("card_transaction_not_staged")
     # Local decide only MATERIALIZES the coordinator's recorded decision; it is
     # never a second, independent business decision (CodeApp, 11:14).
     port = getattr(store, "_card_transaction_decisions", None)

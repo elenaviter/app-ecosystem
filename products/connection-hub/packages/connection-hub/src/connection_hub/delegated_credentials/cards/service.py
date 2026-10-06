@@ -390,6 +390,8 @@ class DelegatedCardService:
 
         ordered = [(str(subject_hash), original, candidate, str(action))
                    for subject_hash, original, candidate, action in members]
+        if not ordered:
+            raise CardTransactionRefused("card_transaction_group_invalid")
         for subject_hash, original, candidate, action in ordered:
             before = original.to_dict() if original is not None else None
             after = candidate.to_dict()
@@ -404,10 +406,17 @@ class DelegatedCardService:
                 refusal = candidate_shape_refusal(action, before, after)
             if refusal is not None:
                 raise CardTransactionRefused(refusal)
-        group = await begin_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
-                                  participant=participant,
-                                  members=[(subject_hash, candidate.access_id)
-                                           for subject_hash, _, candidate, _ in ordered])
+        try:
+            # Under the lead member's section: the same section an ABORT of a never
+            # staged group takes (abort_unstaged_transaction), so a late begin and
+            # that tombstone are ordered, never interleaved.
+            async with self._critical_section(subject_hash=ordered[0][0], access_id=ordered[0][2].access_id):
+                group = await begin_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                          participant=participant,
+                                          members=[(subject_hash, candidate.access_id)
+                                                   for subject_hash, _, candidate, _ in ordered])
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
         for index, (subject_hash, original, candidate, _) in enumerate(ordered):
             lead = index == 0
             await self.stage_transaction(
@@ -432,6 +441,9 @@ class DelegatedCardService:
         group = await read_receipt(self._store, transaction_id)
         if not is_group_receipt(group):
             raise CardTransactionRefused("card_transaction_unknown")
+        if decision == "committed" and not group["staged"]:
+            # EMain F1: never commit any member of a group that was not staged as a whole.
+            raise CardTransactionRefused("card_transaction_not_staged")
         for member in group["members"]:
             if await read_receipt(self._store, member["transaction_id"]) is None:
                 continue
