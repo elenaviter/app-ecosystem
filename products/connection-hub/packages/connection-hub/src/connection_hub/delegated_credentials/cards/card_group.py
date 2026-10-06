@@ -15,11 +15,15 @@ uses exactly those fields and carries its members in the candidate value
   per-Card pseudo-participant.
 - ``binding_kind`` is ``connection-hub.card-group``; ``binding_ref`` is
   ``group:<sha256>`` over the sorted ``[subject_hash, access_id,
-  original_revision]`` of every member, so a group binding is newly minted per
-  transaction and never reused. Its own revisions therefore follow the
-  kernel's create convention: ``before_revision`` 0, ``candidate_revision`` 1,
-  ``target_incarnation`` 1, ``action`` ``create``. What each member does is in
-  the candidate, never in these aggregate fields.
+  original_revision]`` of every member. It names the group's targets at
+  their base revisions; it is NOT unique per transaction (CodeApp 23:06): the
+  same group replayed after an ABORT has the same ``binding_ref``. Separation
+  and recovery are carried by the durable transaction id, its epoch and the
+  immutable global intent digest, as for every participant. The aggregate's
+  own revision fields are fixed: ``before_revision`` 0, ``candidate_revision``
+  1, ``target_incarnation`` 1, ``action`` ``create`` (the kernel's create
+  shape for a binding with no prior state of its own). What each member does
+  is in the candidate, never in these aggregate fields.
 - ``target_scope`` is the sha256 over the sorted unique member subject hashes.
 - ``dependency_revisions`` are the group's unchanged Card, absence and catalog
   reads, with the C1 encoding. ``actor_subject``/``actor_kind`` are the one
@@ -84,6 +88,22 @@ def group_target_scope(value: Mapping[str, Any]) -> str:
     return sha256_hex(canonical_json_bytes({"scopes": sorted({m["subject_hash"] for m in value["cards"]})}))
 
 
+def _validate_reads(reads: Any) -> list[dict[str, Any]]:
+    """Every read is exactly {subject_hash (64 hex), access_id, revision (int >= 0)}; else a typed refusal."""
+    if not isinstance(reads, (list, tuple)):
+        raise _refuse("card_group_read_invalid")
+    checked = []
+    for read in reads:
+        if (not isinstance(read, Mapping) or set(read) != {"subject_hash", "access_id", "revision"}
+                or type(read["subject_hash"]) is not str or len(read["subject_hash"]) != 64
+                or any(char not in "0123456789abcdef" for char in read["subject_hash"])
+                or type(read["access_id"]) is not str or not read["access_id"]
+                or type(read["revision"]) is not int or read["revision"] < 0):
+            raise _refuse("card_group_read_invalid")
+        checked.append(dict(read))
+    return checked
+
+
 def _validate_member(member: Any) -> None:
     if not isinstance(member, Mapping) or set(member) != _MEMBER_FIELDS:
         raise _refuse("card_group_member_invalid")
@@ -129,13 +149,15 @@ def validate_group_candidate(value: Any, *, reads: Sequence[Mapping[str, Any]] =
         raise _refuse("card_group_member_duplicate")
     if keys != sorted(keys):
         raise _refuse("card_group_not_canonical")
-    read_keys = [(str(read["subject_hash"]), str(read["access_id"])) for read in reads]
+    reads = _validate_reads(reads)
+    read_keys = [(read["subject_hash"], read["access_id"]) for read in reads]
     if len(set(read_keys)) != len(read_keys):
         # card:<x> and card-absent:<x> together contradict each other.
         raise _refuse("card_group_dependency_contradiction")
     if set(read_keys) & set(keys):
         raise _refuse("card_group_read_overlaps_target")
-    _require_parent_reads(members, set(keys), set(read_keys))
+    present = {(read["subject_hash"], read["access_id"]) for read in reads if read["revision"] >= 1}
+    _require_parent_reads(members, set(keys), present)
     return dict(value)
 
 
@@ -143,8 +165,9 @@ def _require_parent_reads(members: Sequence[Mapping[str, Any]], targets: set, re
     """Every Control a member binds is a member or a held read: the chain the decision checked stays put.
 
     For a person's project Control C bound under the project's Control P,
-    P (``card:<sha256(creator)>:<P id>``) must be read; for the My Card bound
-    under C, C is normally a member of the same group.
+    P (``card:<sha256(creator)>:<P id>``) must be read PRESENT (revision >= 1;
+    an absence read of the parent does not count); for the My Card bound under
+    C, C is normally a member of the same group.
     """
     for member in members:
         binding = member["candidate"].get("control_card")
@@ -161,7 +184,8 @@ def hub_group_participant_input(*, members: Sequence[Mapping[str, Any]], actor_s
                                 reads: Sequence[Mapping[str, Any]] = (),
                                 catalog_version_digest: str = "") -> dict[str, Any]:
     """The Hub's group ``participant_inputs[PARTICIPANT]``; refuses a group the Hub would never stage."""
-    if actor_kind not in ("caller", "grantor") or not str(actor_subject or "").strip():
+    if (actor_kind not in ("caller", "grantor") or type(actor_subject) is not str or not actor_subject.strip()
+            or actor_subject != actor_subject.strip()):
         raise _refuse("card_group_actor_invalid")
     value = validate_group_candidate(group_candidate_value(members, effects), reads=reads)
     return {
@@ -188,7 +212,8 @@ def verify_group_projection(projection: Mapping[str, Any], value: Any) -> dict[s
             or projection.get("candidate_digest") != sha256_hex(canonical_json_bytes(checked))
             or projection.get("provisioning") != {}
             or projection.get("actor_kind") not in ("caller", "grantor")
-            or not str(projection.get("actor_subject") or "").strip()):
+            or type(projection.get("actor_subject")) is not str or not projection["actor_subject"].strip()
+            or projection["actor_subject"] != projection["actor_subject"].strip()):
         raise _refuse("card_group_not_bound")
     return checked
 

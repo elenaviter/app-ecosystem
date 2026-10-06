@@ -128,14 +128,23 @@ def build_vectors() -> dict:
         _refused("present_and_absent_read", "card_group_dependency_contradiction", good,
                  reads=(P_READ, {**P_READ, "revision": 0})),
         _refused("project_control_read_missing", "card_group_control_read_missing", good, reads=()),
+        _refused("project_control_read_absent", "card_group_control_read_missing", good,
+                 reads=({**P_READ, "revision": 0},)),
+        _refused("read_revision_not_an_integer", "card_group_read_invalid", good,
+                 reads=({**P_READ, "revision": "1"},)),
+        _refused("read_revision_negative", "card_group_read_invalid", good, reads=({**P_READ, "revision": -1},)),
+        _refused("read_extra_field", "card_group_read_invalid", good, reads=({**P_READ, "note": "x"},)),
     ]
     return {
         "schema": "w578.hub-card-group-vectors.v1",
         "about": ("The connection-hub.card-group participant input (CodeApp 23:01). participant_inputs["
                   "'connection-hub.card'] = participant_input and participant_candidates['connection-hub.card'] = "
                   "candidate_value; candidate_digest = sha256(kernel canonical_json_bytes(candidate_value)). The "
-                  "aggregate is a newly minted binding (binding_ref covers every member's base revision): before 0, "
-                  "candidate 1, incarnation 1, action create. Members are sorted by (subject_hash, access_id); an "
+                  "aggregate's own revision fields are fixed (before 0, candidate 1, incarnation 1, action create); "
+                  "binding_ref names the members at their base revisions and is NOT unique per transaction (a replay "
+                  "after ABORT reuses it): the transaction id, epoch and global intent digest separate transactions. "
+                  "A bound parent Control must be a member or a PRESENT read (revision >= 1). "
+                  "Members are sorted by (subject_hash, access_id); an "
                   "absent original is explicit (original_absent true, original_revision 0, candidate revision 1, "
                   "action create). Each refused vector is complete and names the Hub's refusal."),
         "binding_kind": GROUP_BINDING_KIND,
@@ -187,13 +196,20 @@ def test_each_refused_group_is_refused_by_name(vector):
 @pytest.mark.parametrize("field,value", [
     ("binding_ref", "group:" + "0" * 64), ("target_scope", "0" * 64), ("target_incarnation", 2),
     ("action", "update"), ("before_revision", 1), ("candidate_revision", 2), ("candidate_digest", "0" * 64),
-    ("provisioning", {"x": 1}), ("actor_kind", "human"), ("actor_subject", ""),
+    ("provisioning", {"x": 1}), ("actor_kind", "human"), ("actor_subject", ""), ("actor_subject", 7),
+    ("actor_subject", " platform-user-2"), ("actor_subject", None),
 ])
 def test_any_changed_aggregate_field_is_not_bound(field, value):
     accepted = VECTORS["accepted"]
     projection = {**accepted["participant_input"], field: value}
     with pytest.raises(DecisionRefused, match="^card_group_not_bound$"):
         verify_group_projection(projection, accepted["candidate_value"])
+
+
+@pytest.mark.parametrize("actor", ["", " padded", 7, None])
+def test_the_builder_refuses_a_malformed_actor(actor):
+    with pytest.raises(DecisionRefused, match="^card_group_actor_invalid$"):
+        hub_group_participant_input(members=_members(), actor_subject=actor, actor_kind="grantor", reads=(P_READ,))
 
 
 def test_a_changed_member_changes_the_digest_and_binding():
