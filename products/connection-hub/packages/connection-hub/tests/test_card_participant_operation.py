@@ -407,3 +407,23 @@ def test_short_caller_keys_are_refused_at_configuration():
     with pytest.raises(ValueError, match="secret_too_short"):
         ParticipantCaller(service_id=PEER, request_secret="short", receipt_secret=RECEIPT_SECRET,
                           receipt_signer_id="hub", audience="pb", hub_resource="hub", bind=None)
+
+
+@pytest.mark.asyncio
+async def test_the_authenticated_request_is_frozen_before_any_await(tmp_path):
+    # CodeApp 19:35: a caller object mutated during the nonce await must not move the dispatch.
+    world, before, after = await _world(tmp_path)
+    request = _request("prepare")
+
+    class _MutatingNonces(_Nonces):
+        async def set(self, key, value, *, ex, nx):
+            request["scope"] = "work:project:other"
+            request["action"] = "read_pending"
+            return await super().set(key, value, ex=ex, nx=nx)
+
+    world.nonces = _MutatingNonces()
+    frozen = {**request}
+    answer = await world.operation().answer(request)
+    result = _verified(answer, frozen)
+    assert result["kind"] == "receipt" and answer["participant_answer"]["scope"] == PROJECT
+    assert (await tx.state(world.store, transaction_id=TX))["state"] == "prepared"
