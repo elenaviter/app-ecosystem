@@ -7,7 +7,7 @@ from dataclasses import replace
 import pytest
 
 from connection_hub.delegated_credentials.cards import transaction_store as tx
-from connection_hub.delegated_credentials.cards.service import CardConflict, DelegatedCardService
+from connection_hub.delegated_credentials.cards.service import CardConflict, CardServingUnavailable, DelegatedCardService
 from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore, CardStorageError
 from test_card_service import _Cache, _authority, SUBJECT_HASH, NOW
 
@@ -392,3 +392,137 @@ async def test_local_decide_never_makes_an_independent_decision(tmp_path, record
     with pytest.raises(tx.CardTransactionRefused, match="card_transaction_decision_not_recorded"):
         await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision=attempted)
     assert (await tx.state(store, transaction_id=TX))["state"] == "prepared"
+
+
+# ── Ops F7 (11:20): finishing COMMITTED always succeeds ─────────────────────
+
+
+class _LuaCache:
+    """The Redis marker rules, one key per Card: _INSTALL_MARKER_LUA and _FINALIZE_LUA in cards/cache.py."""
+
+    def __init__(self):
+        self.value = None  # {"kind", "card_revision", "mutation_id"}
+
+    async def claim_transition(self, access_id, *, mutation_id, expected_revision, ttl_seconds):
+        v = self.value
+        if v is not None and (v["kind"] not in ("card", "revoked") or v["card_revision"] != expected_revision):
+            return False
+        self.value = {"kind": "updating", "card_revision": expected_revision, "mutation_id": mutation_id}
+        return True
+
+    def _finalize(self, payload, mutation_id, incoming):
+        v = self.value
+        if v is not None:
+            owned = v["kind"] == "updating" and v.get("mutation_id") == mutation_id
+            if not owned and (incoming <= 0 or v["kind"] != "card" or v["card_revision"] >= incoming):
+                return False
+        self.value = payload
+        return True
+
+    async def commit_projection(self, authority, *, mutation_id, ttl_seconds):
+        return self._finalize({"kind": "card", "card_revision": authority.card_revision}, mutation_id,
+                              authority.card_revision)
+
+    async def commit_tombstone(self, access_id, *, card_revision, mutation_id, ttl_seconds):
+        return self._finalize({"kind": "revoked", "card_revision": card_revision}, mutation_id, card_revision)
+
+    async def finalize_removal(self, access_id, *, mutation_id):
+        return self._finalize(None, mutation_id, 0)
+
+    async def read(self, access_id):
+        from connection_hub.delegated_credentials.cards.cache import CardCacheEntry
+        v = self.value
+        return None if v is None else CardCacheEntry(kind=v["kind"], card_revision=v["card_revision"],
+                                                     mutation_id=v.get("mutation_id", ""))
+
+    async def reconcile_projection(self, *args, **kwargs):
+        return False
+
+    async def index_add(self, **kwargs):
+        return None
+
+    async def index_remove(self, **kwargs):
+        return None
+
+
+async def _served(tmp_path):
+    from datetime import datetime, timezone
+    store, service, before, after = await _setup(tmp_path)
+    service._cache = cache = _LuaCache()
+    cache.value = {"kind": "card", "card_revision": before.card_revision}
+    when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+    await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
+    return store, service, cache, before, after
+
+
+async def _service_decide(store, service, before, decision):
+    _record(store, decision)
+    return await service.decide_transaction(transaction_id=TX, intent_digest=INTENT, decision=decision,
+                                            subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_replaying_a_committed_and_served_decision_succeeds(tmp_path):
+    store, service, cache, before, after = await _served(tmp_path)
+    await _service_decide(store, service, before, "committed")
+    assert cache.value == {"kind": "card", "card_revision": after.card_revision}
+    again = await _service_decide(store, service, before, "committed")
+    assert again["state"] == "committed"
+    assert cache.value == {"kind": "card", "card_revision": after.card_revision}
+
+
+@pytest.mark.asyncio
+async def test_a_replay_finishes_serving_a_commit_a_crash_cut_short(tmp_path):
+    store, service, cache, before, after = await _served(tmp_path)
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("killed after the rename")
+
+    real = cache.commit_projection
+    cache.commit_projection = crash
+    with pytest.raises(CardServingUnavailable):
+        await _service_decide(store, service, before, "committed")
+    assert cache.value["kind"] == "updating"  # readers stay closed meanwhile
+    cache.commit_projection = real
+    await _service_decide(store, service, before, "committed")
+    assert cache.value == {"kind": "card", "card_revision": after.card_revision}
+
+
+@pytest.mark.asyncio
+async def test_a_retry_keeps_the_marker_its_own_earlier_attempt_left(tmp_path):
+    store, service, cache, before, after = await _served(tmp_path)
+    from connection_hub.delegated_credentials.cards import transaction_store
+    real = transaction_store.decide
+
+    async def crash(*args, **kwargs):
+        raise RuntimeError("killed between the mark and the rename")
+
+    transaction_store.decide = crash
+    try:
+        with pytest.raises(RuntimeError):
+            await _service_decide(store, service, before, "committed")
+    finally:
+        transaction_store.decide = real
+    assert cache.value["kind"] == "updating"
+    await _service_decide(store, service, before, "committed")
+    assert cache.value == {"kind": "card", "card_revision": after.card_revision}
+
+
+@pytest.mark.asyncio
+async def test_an_abort_releases_the_marker_its_transaction_left(tmp_path):
+    # Ops non-blocking (b): no 15 s fail-closed window after an aborted crash.
+    store, service, cache, before, after = await _served(tmp_path)
+    from connection_hub.delegated_credentials.cards.service import transaction_mutation_id
+    cache.value = {"kind": "updating", "card_revision": before.card_revision,
+                   "mutation_id": transaction_mutation_id(TX)}
+    await _service_decide(store, service, before, "aborted")
+    assert cache.value is None  # readers fall through to the durable BEFORE
+
+
+@pytest.mark.asyncio
+async def test_an_abort_never_removes_another_mutations_marker_or_projection(tmp_path):
+    store, service, cache, before, after = await _served(tmp_path)
+    cache.value = {"kind": "updating", "card_revision": before.card_revision, "mutation_id": "someone-else"}
+    await _service_decide(store, service, before, "aborted")
+    assert cache.value["mutation_id"] == "someone-else"

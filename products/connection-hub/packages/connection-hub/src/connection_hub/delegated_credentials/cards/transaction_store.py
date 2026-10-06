@@ -264,6 +264,11 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     _validate(receipt, transaction_id)
     # 1. The prepared receipt, then 2. the per-Card marker: the Card is fenced
     #    from here on, even before 3. the after-revision and 4. the pointer.
+    #    A crash between 1 and 2 leaves the Card unfenced, so an ordinary
+    #    write can still land. That stays safe: the moved Card makes a
+    #    replay refuse (card_transaction_revision_moved) and a commit refuse
+    #    (card_transaction_not_staged), so the coordinator can only abort
+    #    (Ops 11:20, non-blocking a).
     await write_json_atomic(receipt_path(store, transaction_id), receipt)
     await write_json_atomic(marker_path(store, subject_hash=subject_hash, access_id=original.access_id),
                             {"transaction_id": transaction_id})

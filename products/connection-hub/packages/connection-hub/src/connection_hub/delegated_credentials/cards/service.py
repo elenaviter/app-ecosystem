@@ -107,6 +107,12 @@ class CardServingUnavailable(RuntimeError):
         self.access_id = access_id
 
 
+def transaction_mutation_id(transaction_id: str) -> str:
+    """The serving mutation id of one staged transaction: stable across its retries."""
+
+    return "tx-" + str(transaction_id)
+
+
 class DelegatedCardService:
     def __init__(
         self,
@@ -221,28 +227,37 @@ class DelegatedCardService:
         For COMMITTED the serving projection is marked updating BEFORE the
         receipt rename (the one visibility point), so no resolver serves the
         broader BEFORE as current after a narrowing commit (Ops F3); the
-        after-state is installed after it. A replay of an already committed
-        decision re-installs it, completing a serving step a crash cut short.
-        A serving failure after the rename raises CardServingUnavailable and
-        the decision stands. ABORTED serves nothing new.
+        after-state is installed after it. The serving mutation id is derived
+        from the transaction, so a retry owns the marker an earlier attempt
+        left. A replay of an already committed decision skips the mark (the
+        rename already happened) and re-installs the after-state over its own
+        marker, an absent key or an older projection; one already served is
+        left as it is, so finishing COMMITTED succeeds (Ops F7). A serving
+        failure after the rename raises CardServingUnavailable and the
+        decision stands. ABORTED serves nothing new and releases this
+        transaction's marker, if one was left.
         """
         from .transaction_store import decide, read_receipt
 
         moment = int(now if now is not None else time.time())
+        mutation_id = transaction_mutation_id(transaction_id)
         try:
             async with self._critical_section(subject_hash=subject_hash, access_id=access_id):
                 receipt = await read_receipt(self._store, transaction_id)
-                mutation_id = uuid.uuid4().hex
-                committing = decision == "committed" and receipt is not None and receipt["state"] in ("prepared", "committed")
-                if committing:
+                if decision == "committed" and receipt is not None and receipt["state"] == "prepared":
                     try:
-                        await self._mark_updating(access_id=access_id, mutation_id=mutation_id,
-                                                  expected_revision=int(receipt["before"]["card_revision"]))
+                        await self._mark_transaction_updating(
+                            access_id=access_id, mutation_id=mutation_id,
+                            expected_revision=int(receipt["before"]["card_revision"]))
                     except Exception as exc:
                         raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
                 decided = await decide(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                        decision=decision, reason=reason)
                 if decided["state"] != "committed":
+                    try:
+                        await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
+                    except Exception:  # noqa: BLE001 - an unreleased marker only expires; readers stay closed
+                        pass
                     return decided
                 current = await self._store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
                 if current is None:
@@ -267,6 +282,17 @@ class DelegatedCardService:
                 return decided
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def _mark_transaction_updating(self, *, access_id: str, mutation_id: str, expected_revision: int) -> None:
+        """Mark updating, or keep the marker this same transaction already holds."""
+
+        try:
+            await self._mark_updating(access_id=access_id, mutation_id=mutation_id,
+                                      expected_revision=expected_revision)
+        except CardConflict:
+            entry = await self._cache.read(access_id)
+            if not (entry is not None and entry.is_updating and entry.mutation_id == mutation_id):
+                raise
 
     async def revoke(
         self,
