@@ -341,6 +341,67 @@ async def test_cancellation_drains_started_intent_writer_before_releasing_either
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("cancellation", ["outer_timeout", "external_cancel"])
+async def test_outer_cancellation_propagates_after_started_write_drains_and_fences_release(tmp_path, monkeypatch, cancellation):
+    from connection_hub.delegated_credentials import durable_io
+    from connection_hub.delegated_credentials.cards.service import DelegatedCardService
+
+    store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    held, started, finish = [], threading.Event(), threading.Event()
+    original = durable_io._write_text_atomic
+
+    def write(path, text):
+        if path.parent.name == "active":
+            started.set()
+            assert finish.wait(5), "fixture writer was not released"
+        return original(path, text)
+
+    @asynccontextmanager
+    async def locks(**kwargs):
+        held.append(kwargs["lock_path"])
+        try:
+            yield {}
+        finally:
+            held.pop()
+
+    monkeypatch.setattr(durable_io, "_write_text_atomic", write)
+    service = DelegatedCardService(store=store, cache=_service_cache(), mutation_lock=locks)
+    timeout = asyncio.timeout(None)
+
+    async def invoke():
+        async with timeout:
+            return await service.revoke_lifecycle(request, actor_subject=ACTOR,
+                before_commit=AsyncMock(return_value=datetime.now(timezone.utc) + timedelta(seconds=30)),
+                after_commit=AsyncMock())
+
+    task = asyncio.create_task(invoke())
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        if cancellation == "outer_timeout":
+            timeout.reschedule(asyncio.get_running_loop().time() + 0.02)
+        else:
+            task.cancel("fixture-original-cancellation")
+        await asyncio.sleep(0.08)
+        assert not task.done() and len(held) == 3
+    finally:
+        finish.set()
+    if cancellation == "outer_timeout":
+        with pytest.raises(TimeoutError):
+            await task
+        assert timeout.expired() and not task.cancelled() and task.cancelling() == 0
+    else:
+        with pytest.raises(asyncio.CancelledError, match="fixture-original-cancellation"):
+            await task
+        assert task.cancelled() and not timeout.expired()
+    assert held == []
+    assert await _states(store, request) == [("active", 1), ("active", 1)]
+    assert (await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR)))["state"] == "prepared"
+
+
+@pytest.mark.asyncio
 async def test_expiry_in_commit_write_thread_is_checked_after_temp_write_before_rename(tmp_path, monkeypatch):
     from connection_hub.delegated_credentials.cards.service import DelegatedCardService
     from pathlib import Path
