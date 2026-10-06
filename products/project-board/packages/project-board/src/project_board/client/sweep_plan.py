@@ -26,6 +26,9 @@ PLAN_NAME = "sweep-plan.json"
 SUMMARY_NAME = "sweep-summary.json"
 SUMMARY_SCHEMA = "problem-board.sweep-summary.v1"
 SUMMARY_COUNTS = ("trees", "unregistered", "orphan", "ended_but_kept", "would_remove", "scratch_kept")
+# The board accepts each count up to this; a larger one is capped, never sent
+# to be refused (the board would then drop the whole summary).
+SUMMARY_COUNT_MAX = 10_000
 PINS_NAME = "tree-pins.json"
 GENERATED_NAME = "tree-generated.json"
 
@@ -88,7 +91,7 @@ def write_summary(workspace: Path | str, counts: Mapping[str, int]) -> Path:
     atomic_write_json(path, {
         "schema": SUMMARY_SCHEMA,
         "observed_at": _now_iso(),
-        **{name: max(0, int(counts.get(name) or 0)) for name in SUMMARY_COUNTS},
+        **{name: min(SUMMARY_COUNT_MAX, max(0, int(counts.get(name) or 0))) for name in SUMMARY_COUNTS},
     })
     return path
 

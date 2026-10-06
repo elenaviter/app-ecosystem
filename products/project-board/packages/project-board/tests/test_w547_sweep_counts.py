@@ -133,3 +133,11 @@ def test_the_coordinator_procedure_asks_the_agent_and_never_sweeps_for_it():
                    "Never sweep, end or delete another agent's trees yourself",
                    "--workspace-sweep-auto-apply"):
         assert needle in section, needle
+
+
+def test_a_count_above_the_boards_bound_is_capped_not_sent_to_be_refused(tmp_path):
+    """Review of 9e8115d6: the board drops a whole summary with any count above 10,000."""
+
+    sweep_plan.write_summary(tmp_path, {"trees": 25_000, "unregistered": 10_001})
+    read = sweep_plan.read_summary(tmp_path)
+    assert read["trees"] == read["unregistered"] == sweep_plan.SUMMARY_COUNT_MAX == 10_000
