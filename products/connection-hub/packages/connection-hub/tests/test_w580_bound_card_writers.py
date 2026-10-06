@@ -1047,3 +1047,89 @@ async def test_a_fold_without_a_binding_or_transaction_still_folds(tmp_path, red
     assert (await h.policies.get(owner_subject=GRANTOR, authority=moved)).mode == "always"
     assert (await _read(h, legacy)).state != "active"
     assert [b["registry_access_id"] for b in h.grant_store.bindings.values()] == [stable.access_id]
+
+
+# Ops review of 2f66d439 (G1-G3): the remaining cells of the writer matrix.
+
+
+@pytest.mark.asyncio
+async def test_a_prune_staged_after_its_listing_is_refused_loudly(tmp_path, redis_client):
+    """G1: the transaction starts after prune listed the Card, before its commit."""
+
+    from test_resident_profile_cards import GRANTOR
+
+    h = await _hub(tmp_path, redis_client)
+    card = _scoped_card(h)
+    held = await _seed(h, card)
+    _stage_before(h, "_persist_record", card)
+    result = await h.service.prune_account_from_grants(
+        grantor_subject=GRANTOR, provider_id="google", account_id="acct-1"
+    )
+    assert result["ok"] is False and result["retryable"] is True, result
+    assert result["reason"] == "account_binding_not_pruned" and result["not_pruned"] == [card.access_id]
+    assert result["pruned"] == 0
+    assert await h.handles.read(card) == held
+    await _decide(h, "aborted")
+    assert await _read(h, card) == card
+
+
+@pytest.mark.asyncio
+async def test_a_reissue_of_a_card_without_a_binding_or_transaction_still_reissues(tmp_path, redis_client):
+    """G2: the ordinary manual reissue is unchanged."""
+
+    from test_resident_profile_cards import USER
+
+    h = await _hub(tmp_path, redis_client)
+    card, held = await _manual_card(h)
+    result = await h.service.renew_access(USER, access_id=card.access_id, mode="reissue")
+    assert result["ok"] is True, result
+    current = await _read(h, card)
+    assert current.card_revision == card.card_revision + 1 and current.control_card is None
+    # A manual bearer is not retained; the reissued session and its binding are new.
+    assert (await h.handles.read(card)).session_id not in ("", held.session_id)
+    assert [b["registry_access_id"] for b in h.grant_store.bindings.values()] == [card.access_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow", [True, False])
+async def test_a_bound_token_rotation_is_decided_by_its_binding_policy(tmp_path, redis_client, allow):
+    """G3: record_oauth_grant names oauth_grant; a refusal raises and records nothing."""
+
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+
+    h = await _hub(tmp_path, redis_client)
+    card, _held = await _oauth_card(h)
+    bound, policy = await _bind_policy(h, card, allow=allow)
+    held = await h.handles.read(bound)
+    if allow:
+        recorded = await _rotate(h)
+        assert recorded is not None and recorded.access_id == bound.access_id
+        assert ("decide", "oauth_grant") in policy.calls and ("finalize", "committed") in policy.calls
+        current = await _read(h, bound)
+        assert current.card_revision == bound.card_revision + 1
+        assert (await h.handles.read(bound)).access_token == "at-2"
+    else:
+        with pytest.raises(CallerWriteRefused, match="pb_refused"):
+            await _rotate(h)
+        assert ("decide", "oauth_grant") in policy.calls
+        assert await _read(h, bound) == bound
+        assert await h.handles.read(bound) == held
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow", [True, False])
+async def test_a_bound_control_start_is_decided_by_its_binding_policy(tmp_path, redis_client, allow):
+    """G3: starting a bound Control from a profile is governed; a refusal changes nothing."""
+
+    h, control = await _empty_control(tmp_path, redis_client)
+    bound, policy = await _bind_policy(h, control, allow=allow)
+    result = await _control(h, initial_profile="coordinator")
+    assert [c for c in policy.calls if c[0] == "decide"], policy.calls
+    if allow:
+        assert result["ok"] is True and result["started"] is True, result
+        assert ("finalize", "committed") in policy.calls
+        current = await _read(h, bound)
+        assert current.card_revision == bound.card_revision + 1 and any(current.resource_grants.values())
+    else:
+        assert result["ok"] is False, result
+        assert await _read(h, bound) == bound
