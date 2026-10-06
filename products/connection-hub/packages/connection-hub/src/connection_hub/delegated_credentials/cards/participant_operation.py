@@ -61,13 +61,13 @@ HUB_REFUSALS = frozenset({
     "card_intent_invalid", "card_decision_mismatch", "card_dependency_moved", "card_dependency_reserved",
     "card_dependency_invalid", "card_transaction_undecided", "card_transaction_prepared",
     "card_transaction_unresolved", "card_transaction_staged_revision_mismatch", "card_transaction_not_committed",
-    "card_transactions_unavailable", "participant_listing_unsupported", "card_participant_timeout",
+    "card_transactions_unavailable", "card_participant_cursor_invalid", "card_participant_timeout",
     "card_participant_unavailable", "authority_decision_pending", "authority_late_stage",
     "authority_intent_expired", "authority_transaction_unknown", "authority_unavailable",
     "authority_intent_mismatch", "authority_refused",
 })
 _STATUS = {"transaction_unknown": 404, "authority_transaction_unknown": 404, "card_intent_unknown": 404,
-           "participant_listing_unsupported": 501, "card_transactions_unavailable": 503,
+           "card_transactions_unavailable": 503,
            "card_participant_unavailable": 503, "authority_unavailable": 503, "card_participant_timeout": 504}
 
 
@@ -147,6 +147,7 @@ class CardTransactionParticipantOperation:
     def __init__(self, *, callers: Mapping[str, ParticipantCaller], card_store: Any, nonces: Any,
                  enabled: bool, clock: Callable[[], float], budget_seconds: float = 20.0) -> None:
         self._callers = dict(callers)
+        self._card_store = card_store
         self._intents = LocalCardIntentSource(card_store)
         self._nonces = nonces
         self._enabled = enabled is True
@@ -231,11 +232,46 @@ class CardTransactionParticipantOperation:
             raise _Refused("card_intent_not_bound")
         return record
 
+    async def _list_prepared(self, caller: ParticipantCaller, scope: str, limit: int,
+                             cursor: str | None) -> dict[str, Any]:
+        """This caller's and scope's prepared receipts, in transaction-id order after ``cursor``.
+
+        The partition is the intents recorded with this caller's authority and
+        verified scope at prepare, so it survives a restart. The underlying
+        in-doubt list is complete or fails closed (never truncated), so a page
+        is never a filtered partial list passed off as complete. A cursor must
+        name a transaction of this same partition.
+        """
+        from .transaction_store import list_in_doubt
+
+        expected_scope = scope if caller.scope_field else ""
+
+        def owned(intent: Any) -> bool:
+            return intent is not None and intent.authority == caller.service_id and intent.scope == expected_scope
+
+        if cursor is not None and not owned(await self._local_intent(cursor)):
+            raise _Refused("card_participant_cursor_invalid")
+        listed = sorted(entry["transaction_id"] for entry in await list_in_doubt(self._card_store))
+        receipts: list[dict[str, Any]] = []
+        next_cursor = None
+        for transaction_id in listed:
+            if cursor is not None and transaction_id <= cursor:
+                continue
+            if not owned(await self._local_intent(transaction_id)):
+                continue
+            pending = await caller.participant.read_pending(transaction_id)
+            if pending is None:
+                continue
+            if len(receipts) == limit:
+                next_cursor = receipts[-1]["transaction_id"]
+                break
+            receipts.append(asdict(pending))
+        return {"kind": "page", "receipts": receipts, "next_cursor": next_cursor}
+
     async def _dispatch(self, caller: ParticipantCaller, data: Mapping[str, Any]) -> dict[str, Any]:
         action, txid, scope = data["action"], data["transaction_id"], data["scope"]
         if action == "list_prepared":
-            # No scoped partition yet; a filtered or truncated list must never pass as complete.
-            raise _Refused("participant_listing_unsupported")
+            return await self._list_prepared(caller, scope, data["limit"], data["cursor"])
         if action == "prepare":
             if not self._enabled:
                 raise _Refused("card_transactions_unavailable")

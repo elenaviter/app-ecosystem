@@ -241,11 +241,42 @@ async def test_disabled_refuses_new_prepare_but_finishes_prepared_work(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_list_prepared_is_a_signed_refusal_until_scoped_paging_exists(tmp_path):
+async def test_list_prepared_pages_this_callers_scope_and_recovers_after_a_restart(tmp_path):
     world, before, after = await _world(tmp_path)
-    request = _request("list_prepared", transaction_id=None, limit=10)
-    assert _verified(await world.operation().answer(request), request) == {
-        "kind": "refused", "code": "participant_listing_unsupported", "status": 501}
+    await world.operation().answer(_request("prepare"))
+    # A restart: a fresh world (participant, reader, operation) over the same Card store.
+    fresh = _World(world.store, world.service, world.record)
+    operation = fresh.operation()
+    request = _request("list_prepared", transaction_id=None, limit=1)
+    page = _verified(await operation.answer(request), request)
+    assert page["kind"] == "page" and [r["transaction_id"] for r in page["receipts"]] == [TX]
+    assert page["next_cursor"] is None
+    request = _request("list_prepared", transaction_id=None, limit=1, cursor=TX)
+    assert _verified(await operation.answer(request), request) == {"kind": "page", "receipts": [], "next_cursor": None}
+    request = _request("list_prepared", transaction_id=None, limit=5, scope="work:project:other")
+    assert _verified(await operation.answer(request), request)["receipts"] == []  # another scope sees nothing
+    request = _request("list_prepared", transaction_id=None, limit=5, cursor=TX, scope="work:project:other")
+    assert _verified(await operation.answer(request), request)["code"] == "card_participant_cursor_invalid"
+    request = _request("list_prepared", transaction_id=None, limit=5, cursor="e" * 64)
+    assert _verified(await operation.answer(request), request)["code"] == "card_participant_cursor_invalid"
+    fresh.decision = "committed"
+    request = _request("finish", decision="committed")
+    assert _verified(await operation.answer(request), request)["kind"] == "receipt"
+    request = _request("list_prepared", transaction_id=None, limit=5)
+    assert _verified(await operation.answer(request), request)["receipts"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["schema", "direction", "audience", "request_echo", "request_digest", "action",
+                                   "scope", "transaction_id", "decision", "limit", "cursor", "result"])
+async def test_every_signed_answer_field_is_tamper_evident(tmp_path, field):
+    world, before, after = await _world(tmp_path)
+    request = _request("prepare")
+    answer = dict((await world.operation().answer(request))["participant_answer"])
+    proof = answer.pop("receipt_proof")
+    answer[field] = "f" * 32 if isinstance(answer[field], str) else {"tampered": True}
+    assert answer_signature(answer, secret=RECEIPT_SECRET, service_id=proof["service_id"],
+                            timestamp=proof["timestamp"]) != proof["signature"]
 
 
 @pytest.mark.asyncio
