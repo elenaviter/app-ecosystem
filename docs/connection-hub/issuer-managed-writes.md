@@ -71,6 +71,45 @@ policy version.
 
 ## Target commit and outcome
 
+### Caller-recorded revoke target
+
+`AutomationAccessService.revoke_access` accepts `expected_access_id` and
+`expected_card_revision`. Both are required for externally issuer-managed
+Cards. A supplied revision is a positive JSON/Python integer: booleans,
+floats and strings are not silently coerced. Ordinary unmanaged owner writes
+retain their older behavior when both fields are omitted; supplying either
+field requires the complete valid pair.
+
+The caller records the target before requesting revocation. The expected ID
+must equal `access_id`, and the loaded Card must have the expected revision.
+The service then hands that same revision to the existing durable revoke
+port, which compares it again inside the target mutation lock. It never
+reloads a replacement and adopts its revision. A replacement before the
+initial read or between that read and lock acquisition therefore refuses
+without revoking the replacement, cleaning handles or notifying a change.
+
+The app's authenticated, owner-scoped POST operation
+`delegated_access_revoke` forwards these fields unchanged. Example body:
+
+```json
+{"data":{"access_id":"card-1","expected_access_id":"card-1","expected_card_revision":3}}
+```
+
+Issuer request identifiers and approval context remain server-owned. Actor
+binding, ownership and the configured issuer decision still apply. These
+fields do not create a cross-owner endpoint or a project-policy bypass.
+Missing managed preconditions return
+`delegated_access_revoke_precondition_required`; an incomplete or malformed
+pair returns `delegated_access_revoke_precondition_invalid` (400); a changed
+ID returns `delegated_access_revoke_target_mismatch` (409). A moved, absent
+or already revoked expected target returns `delegated_card_revision_conflict`
+with `card_revision_moved`, status 409 and `retryable: false`. A caller must
+reconcile a conflict, not retry revocation with the replacement's revision.
+
+Legacy domain-specific lifecycle operations are not qualified by this port
+change. In particular, a multi-Card lifecycle needs its own exact-target and
+ordering proof; this contract does not claim a cross-Card transaction.
+
 The durable persistence port invokes `before_commit` inside the target's
 shared mutation lock, after checking its current durable revision and before
 projection, credential-handle, durable or notification effects. Missing a

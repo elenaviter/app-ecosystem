@@ -505,6 +505,7 @@ export interface DelegatedAccessRevokeResult {
   session_removed?: boolean;
   error?: string;
   message?: string;
+  status?: number;
 }
 
 export interface DelegatedInvocationPolicyResult {
