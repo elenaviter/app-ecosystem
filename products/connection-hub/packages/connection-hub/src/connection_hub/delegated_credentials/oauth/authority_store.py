@@ -111,7 +111,12 @@ class RefreshTokenReuseDetected(RuntimeError):
 
 class OAuthAuthorityStore(Protocol):
     async def create_refresh_token(
-        self, record: Mapping[str, Any], *, ttl_seconds: int
+        self,
+        record: Mapping[str, Any],
+        *,
+        ttl_seconds: int,
+        cap_expires_at: int | None = None,
+        card_revision: int = 0,
     ) -> str: ...
 
     async def get_refresh_token_state(
@@ -373,6 +378,9 @@ class PostgresOAuthAuthorityStore:
             registry_access_id,
         )
 
+    # W585 (Ops C1, 16:32): runs after the family lock, so every deadline here
+    # reads clock_timestamp(), never now() (the transaction start), like the
+    # main rotation path; a retry that waited past the family's end mints nothing.
     async def _retried_successor(
         self,
         connection: Any,
@@ -409,14 +417,14 @@ class PostgresOAuthAuthorityStore:
              AND presented.family_id = family.family_id
             WHERE family.family_id = $1
               AND family.state = 'active'
-              AND family.expires_at > now()
+              AND family.expires_at > clock_timestamp()
               AND successor.state = 'active'
-              AND successor.expires_at > now()
+              AND successor.expires_at > clock_timestamp()
               AND successor.record->>'parent_generation_id' = $2
               AND successor.record->>'refresh_request_sha256' = $3
               AND COALESCE((successor.record->>'refresh_retry_count')::int, 0) < $5
               AND presented.state = 'consumed'
-              AND presented.consumed_at > now() - ($4 * interval '1 second')
+              AND presented.consumed_at > clock_timestamp() - ($4 * interval '1 second')
             FOR UPDATE OF successor
             """,
             family_id,
@@ -519,9 +527,9 @@ class PostgresOAuthAuthorityStore:
                            generation.family_id,
                            generation.record,
                            generation.state AS generation_state,
-                           generation.expires_at > now() AS generation_live,
+                           generation.expires_at > clock_timestamp() AS generation_live,
                            family.state AS family_state,
-                           family.expires_at > now() AS family_live
+                           family.expires_at > clock_timestamp() AS family_live
                     FROM {self.schema}.{TABLE_REFRESH_GENERATIONS} AS generation
                     JOIN {self.schema}.{TABLE_FAMILIES} AS family
                       ON family.family_id = generation.family_id
@@ -606,18 +614,23 @@ class PostgresOAuthAuthorityStore:
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 await self._lock_family_of_token(connection, bearer_sha256(token))
+                # W585 (Infra and Ops, 16:13): now() is the transaction START,
+                # and the family lock above may be waited on across the cap.
+                # Every deadline after the lock reads clock_timestamp(), so a
+                # rotation that waited past its cap is refused before the
+                # presented generation is consumed.
                 row = await connection.fetchrow(
                     f"""
                     SELECT generation.generation_id,
                            generation.family_id,
                            generation.state AS generation_state,
-                           generation.expires_at > now() AS generation_live,
+                           generation.expires_at > clock_timestamp() AS generation_live,
                            family.state AS family_state,
-                           family.expires_at > now() AS family_live,
+                           family.expires_at > clock_timestamp() AS family_live,
                            family.card_revision AS card_revision,
                            LEAST(COALESCE(family.cap_expires_at, 'infinity'::timestamptz),
                                  COALESCE(to_timestamp($2::bigint), 'infinity'::timestamptz))
-                               <= now() AS cap_passed
+                               <= clock_timestamp() AS cap_passed
                     FROM {self.schema}.{TABLE_REFRESH_GENERATIONS} AS generation
                     JOIN {self.schema}.{TABLE_FAMILIES} AS family
                       ON family.family_id = generation.family_id
@@ -646,6 +659,15 @@ class PostgresOAuthAuthorityStore:
                 family_id = str(current.get("family_id") or "").strip()
                 retry_of = ""
                 retries = 0
+                if (
+                    str(current.get("generation_state") or "") == "consumed"
+                    and str(current.get("family_state") or "") == "active"
+                    and not bool(current.get("family_live"))
+                ):
+                    # W585 (Ops C1): the family ended (by the clock, after the
+                    # lock) while this request waited. It is expired, not a
+                    # reuse: no successor, no revival, and no reuse alarm.
+                    return None
                 if (
                     str(current.get("generation_state") or "") == "consumed"
                     and str(current.get("family_state") or "") == "active"
@@ -707,7 +729,7 @@ class PostgresOAuthAuthorityStore:
                             state, expires_at
                         )
                         SELECT $1, $2, $3, ($4::text)::jsonb, 'active',
-                               LEAST(now() + ($5 * interval '1 second'),
+                               LEAST(clock_timestamp() + ($5 * interval '1 second'),
                                      COALESCE(family.cap_expires_at, 'infinity'::timestamptz),
                                      COALESCE(to_timestamp($6::bigint), 'infinity'::timestamptz))
                         FROM {self.schema}.{TABLE_FAMILIES} AS family
@@ -740,7 +762,7 @@ class PostgresOAuthAuthorityStore:
                         SET current_generation_id = $2,
                             revision = revision + 1,
                             updated_at = now(),
-                            expires_at = LEAST(now() + ($3 * interval '1 second'),
+                            expires_at = LEAST(clock_timestamp() + ($3 * interval '1 second'),
                                                COALESCE(cap_expires_at, 'infinity'::timestamptz),
                                                COALESCE(to_timestamp($4::bigint), 'infinity'::timestamptz))
                         WHERE family_id = $1 AND state = 'active'
@@ -787,11 +809,11 @@ class PostgresOAuthAuthorityStore:
                            successor.generation_id AS replacement_generation_id,
                            successor.state AS replacement_state,
                            successor.expires_at AS replacement_expires_at,
-                           successor.expires_at > now() AS replacement_live,
+                           successor.expires_at > clock_timestamp() AS replacement_live,
                            family.family_id,
                            family.current_generation_id,
                            family.state AS family_state,
-                           family.expires_at > now() AS family_live
+                           family.expires_at > clock_timestamp() AS family_live
                     FROM {self.schema}.{TABLE_REFRESH_GENERATIONS} AS prior
                     JOIN {self.schema}.{TABLE_FAMILIES} AS family
                       ON family.family_id = prior.family_id
