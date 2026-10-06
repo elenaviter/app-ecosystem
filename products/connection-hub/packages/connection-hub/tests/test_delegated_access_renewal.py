@@ -572,3 +572,31 @@ async def test_a_coordinated_prolong_of_a_live_credential_stages_only_its_lifeti
                                     "base_card_revision": before.card_revision}}]
     # Under the coordinator nothing is extended directly; the effect applies at FINISH(committed).
     assert (store.extended_refresh, store.extended_grants, store.extended_cards) == ([], [], [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("coordinated", [True, False])
+async def test_an_ended_bound_prolong_leaves_no_policy_decision_open(tmp_path, coordinated):
+    # W580 F6 (Mint 3c7e7ccb, Ops 13:32): under the coordinator the live check runs before the
+    # policy is asked; on the direct path a decision already asked is finalized refused.
+    harness = _Harness(tmp_path)
+    store = _LiveCheckingGrantStore(live=False)
+    store.refresh_alive = False
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    _bind(harness, access_id)
+    policy = _Policy(True)
+    harness.service.bind_caller_writers(_registry(policy))
+    if coordinated:
+        harness.service._card_coordinator = object()
+    before = harness.persistence.cards[access_id][0]
+    ended = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert ended["ok"] is False and ended["error"] == "delegated_access_credential_expired", ended
+    assert harness.persistence.cards[access_id][0] == before
+    assert (store.extended_refresh, store.extended_grants, store.extended_cards) == ([], [], [])
+    if coordinated:
+        assert policy.calls == []
+    else:
+        assert [call[:2] for call in policy.calls] == [("decide", "prolong"), ("finalize", "refused")]

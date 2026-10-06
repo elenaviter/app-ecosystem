@@ -9785,27 +9785,13 @@ class AutomationAccessService:
             expires_at=new_expires_at,
             provenance=provenance,
         )
-        # W580 F5: the binding's policy (and the prolong shape rule) decides
-        # BEFORE the credential's life is touched; a refusal extends nothing.
-        try:
-            pre_gate = await self._enlisted_gate(
-                card_authority_from_record(prolonged), expected_revision=committed_revision,
-                caller_write=CallerWrite("prolong", self._caller_actor_subject(user)))
-        except CallerWriteRefused as exc:
-            return exc.to_dict()
         coordinated = getattr(self, "_card_coordinator", None) is not None
-        # Under the ONE protocol the credential's life is a decision-bound
-        # effect: one ABSOLUTE deadline, applied only after the COMMIT (W582,
-        # Ops 13:16). Without a coordinator (not yet composed) the direct
-        # extension below runs only after the policy allowed it (F5).
-        lifetime = [{"kind": "credential_lifetime", "key": "card",
-                     "payload": {"access_id": record.access_id, "expires_at": int(new_expires_at),
-                                 "base_card_revision": int(committed_revision)}}] if coordinated else []
         if coordinated:
             # Ops 13:19: a credential that has already ended is refused, Card
-            # unchanged, exactly as before routing. The check is read-only
-            # and runs before the stage; the effect itself moves only live
-            # credentials, so a credential that ends in between is not revived.
+            # unchanged, exactly as before routing. The check is read-only and
+            # runs BEFORE the policy is asked (W580 F6, Ops 13:32), so no
+            # decision is opened for a write that cannot happen. The effect
+            # moves only live credentials, so one that ends later is not revived.
             credentials_live = getattr(store, "card_credentials_live", None)
             if credentials_live is None:
                 return expired("Reconnect from the client.")
@@ -9815,12 +9801,35 @@ class AutomationAccessService:
             except GrantStoreUnavailable as exc:
                 return {"ok": False, "error": "delegated_credential_store_unavailable",
                         "reason": exc.operation, "retryable": True, "status": 503}
+        # W580 F5: the binding's policy (and the prolong shape rule) decides
+        # BEFORE the credential's life is touched; a refusal extends nothing.
+        try:
+            pre_gate = await self._enlisted_gate(
+                card_authority_from_record(prolonged), expected_revision=committed_revision,
+                caller_write=CallerWrite("prolong", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
+        # Under the ONE protocol the credential's life is a decision-bound
+        # effect: one ABSOLUTE deadline, applied only after the COMMIT (W582,
+        # Ops 13:16). Without a coordinator (not yet composed) the direct
+        # extension below runs only after the policy allowed it (F5).
+        lifetime = [{"kind": "credential_lifetime", "key": "card",
+                     "payload": {"access_id": record.access_id, "expires_at": int(new_expires_at),
+                                 "base_card_revision": int(committed_revision)}}] if coordinated else []
+
+        async def ended_after_decision() -> dict[str, Any]:
+            # W580 F6: the policy was asked, so its decision is finalized
+            # refused like every other refused bound write, never left open.
+            await caller_write_outcome(getattr(self, "_caller_writers", None), pre_gate[1],
+                                       state="refused", card_revision=committed_revision)
+            return expired("Reconnect from the client.")
+
         if not coordinated and record.refresh_token:
             extend_refresh = getattr(store, "extend_refresh_token", None)
             if extend_refresh is None:
-                return expired("Reconnect from the client.")
+                return await ended_after_decision()
             if not await extend_refresh(record.refresh_token, ttl):
-                return expired("Reconnect from the client.")
+                return await ended_after_decision()
             if record.access_token:
                 extend_grant = getattr(store, "extend_access_grant", None)
                 if extend_grant is not None:
@@ -9828,7 +9837,7 @@ class AutomationAccessService:
         elif not coordinated:
             extend_card = getattr(store, "extend_card_credentials", None)
             if extend_card is None or not await extend_card(record.access_id, ttl):
-                return expired("Reconnect from the client.")
+                return await ended_after_decision()
 
         try:
             await self._persist_record(prolonged, expected_revision=committed_revision,
