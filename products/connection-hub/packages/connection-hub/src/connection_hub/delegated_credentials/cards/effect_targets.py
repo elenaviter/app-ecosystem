@@ -43,7 +43,18 @@ def _change_id(binding: EffectBinding) -> str:
 
 
 class CredentialLifetimeTarget:
-    """Absolute expiry for a Card's live OAuth credentials (SQL authority)."""
+    """Absolute expiry for a Card's live OAuth credentials (SQL authority).
+
+    The deadline is written with the committed Card revision (the receipt's
+    ``after`` revision), so the credential family's cap never moves back to an
+    older revision's deadline and rotation is bounded by it (W585).
+
+    Outcome stability (Ops F-b): the outcome is the target's answer at apply
+    time. If a crash falls between the target write and FINISH's marker, and
+    the credentials end in between, the replay records ``no_active_credentials``
+    although the deadline had been applied. The deadline itself is never
+    revived or extended either way; only the recorded outcome differs.
+    """
 
     def __init__(self, grant_store: Any) -> None:
         self._grant_store = grant_store
@@ -52,7 +63,8 @@ class CredentialLifetimeTarget:
         set_expiry = getattr(self._grant_store, "set_card_credentials_expiry", None)
         if set_expiry is None:
             raise ParticipantEffectRefused("card_effect_adapter_unavailable")
-        outcome = await set_expiry(payload["access_id"], payload["expires_at"])
+        committed_revision = int(binding.receipt()["after"]["card_revision"])
+        outcome = await set_expiry(payload["access_id"], payload["expires_at"], card_revision=committed_revision)
         if outcome == "applied":
             return binding.effect_digest
         if outcome == NO_ACTIVE_CREDENTIALS:

@@ -35,8 +35,8 @@ class _Grants:
         self.expiry, self.unbind = expiry, unbind
         self.expiries, self.unbinds = [], []
 
-    async def set_card_credentials_expiry(self, access_id, expires_at):
-        self.expiries.append((access_id, expires_at))
+    async def set_card_credentials_expiry(self, access_id, expires_at, *, card_revision):
+        self.expiries.append((access_id, expires_at, card_revision))
         return self.expiry
 
     async def revoke_access_grant_by_digest(self, token_sha256):
@@ -56,7 +56,8 @@ async def test_lifetime_sets_the_absolute_deadline_and_replays_to_the_same_diges
     first = await applier.apply(effect["kind"], effect["key"], effect["payload"], transaction_id=TX)
     again = await applier.apply(effect["kind"], effect["key"], effect["payload"], transaction_id=TX)
     assert first == again and len(first) == 64
-    assert grants.expiries == [("card_1", 200), ("card_1", 200)]  # absolute; the store does not rewrite it
+    # Absolute, and written with the committed Card revision (the receipt's after: 2), W585.
+    assert grants.expiries == [("card_1", 200, 2), ("card_1", 200, 2)]
 
 
 @pytest.mark.asyncio
@@ -214,6 +215,57 @@ async def test_a_coordinated_prolong_applies_its_lifetime_through_the_composed_t
     result = await host._prolong_access({"sub": bound.grantor_subject}, record=record_from_card(bound),
                                         ttl_seconds=3600)
     assert result["ok"] is True, result
-    assert grants.expiries == [(bound.access_id, result["access"]["expires_at"])]
+    assert grants.expiries == [(bound.access_id, result["access"]["expires_at"], bound.card_revision + 1)]
     visible = await _visible(store, bound)
     assert visible.card_revision == bound.card_revision + 1
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_revoke_outcome_refuses_rather_than_reporting_success():
+    # Ops U2: only revoked, absent and unbound are outcomes; anything else is a binding mismatch.
+    applier = _applier(_unbind_receipt(), {"grant_unbind": GrantUnbindTarget(_Grants(unbind="maybe"))})
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_binding_mismatch"):
+        await applier.apply("grant_unbind", "old-bearer", _unbind_receipt()["effects"][0]["payload"],
+                            transaction_id=TX)
+    bare = _applier(_unbind_receipt(), {"grant_unbind": GrantUnbindTarget(object())})
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_adapter_unavailable"):
+        await bare.apply("grant_unbind", "old-bearer", _unbind_receipt()["effects"][0]["payload"],
+                         transaction_id=TX)
+
+
+@pytest.mark.asyncio
+async def test_the_composed_lifetime_target_caps_the_real_credential_family():
+    # W585 end to end on real PostgreSQL (DSN-gated): the committed Card revision reaches the
+    # family, and rotation afterwards stays under the cap.
+    import os
+    import time
+    import uuid
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+    import asyncpg
+    from connection_hub.delegated_credentials.oauth.authority_schema import TABLE_FAMILIES
+    from connection_hub.delegated_credentials.oauth.authority_store import PostgresOAuthAuthorityStore
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    store = PostgresOAuthAuthorityStore(pg_pool=pool, tenant=f"compose-{uuid.uuid4().hex}", project="w582")
+    try:
+        await store.ensure_schema()
+        record = {"registry_access_id": "card_1", "card_kind": "automation", "client_id": "c", "sub": "u"}
+        token = await store.create_refresh_token(record, ttl_seconds=3600)
+        cap = int(time.time()) + 500
+        saved = _lifetime_receipt()
+        saved["effects"][0]["payload"]["expires_at"] = cap
+        applier = _applier(saved, {"credential_lifetime": CredentialLifetimeTarget(store)})
+        effect = saved["effects"][0]
+        assert len(await applier.apply(effect["kind"], effect["key"], effect["payload"], transaction_id=TX)) == 64
+        assert await store.rotate_refresh_token(token, record, ttl_seconds=3600)
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"SELECT extract(epoch FROM expires_at)::bigint AS e, extract(epoch FROM cap_expires_at)::bigint AS c,"
+                f" card_revision FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = 'card_1'")
+        assert (row["e"], row["c"], row["card_revision"]) == (cap, cap, 2)
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+        await pool.close()
