@@ -210,6 +210,7 @@ async def main(request):
             return await snapshot()
         if action == "drop_projection":
             await client.delete(key)
+            await client.delete(index_key)
             return await snapshot()
         if action == "expire_and_read_through":
             assert await client.expire(key, 1)

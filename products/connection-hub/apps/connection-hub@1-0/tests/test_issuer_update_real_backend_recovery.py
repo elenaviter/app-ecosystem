@@ -17,7 +17,7 @@ import uuid
 
 import pytest
 
-from _issuer_update_recovery_child import STAGES, validate_fixture
+from _issuer_update_recovery_child import STAGES, original_card, update_wire, validate_fixture
 
 CHILD = Path(__file__).with_name("_issuer_update_recovery_child.py")
 COMMITTED = {"committed", "projection", "complete"}
@@ -123,10 +123,25 @@ def test_committed_truth_survives_loss_of_its_real_redis_projection(backend):
     invoke(base, "run", stage="committed", killed=True)
     lost = invoke(base, "drop_projection")
     assert lost["revision"] == 2 and lost["cache_kind"] is None
+    assert lost["index_members"] == []
     completed = invoke(base, "recover")
     assert (completed["state"], completed["serving_state"], completed["active"]) == ("committed", "complete", False)
     assert completed["cache_revision"] == 2 and completed["decisions"] == 0
+    assert completed["index_members"] == ["update-fixture-card"], "real index was not rebuilt"
     assert invoke(base, "recover") == completed
+
+
+def test_fixture_authority_and_exact_widening_query_are_valid_without_any_backend():
+    from connection_hub.delegated_credentials.issuer_update import IssuerUpdateQuery, build_candidate
+
+    original = original_card()
+    query = IssuerUpdateQuery.from_mapping(update_wire())
+    candidate = build_candidate(original, query)
+    assert (original.card_revision, candidate.card_revision) == (1, 2)
+    assert original.content_hash() != candidate.content_hash()
+    mutable = {"card_revision", "operations", "resource_operations", "resource_grants"}
+    assert {k: v for k, v in original.to_dict().items() if k not in mutable} == {
+        k: v for k, v in candidate.to_dict().items() if k not in mutable}
 
 
 @pytest.mark.parametrize("kind,target", [("standalone", "redis://127.0.0.1:16379/3"),

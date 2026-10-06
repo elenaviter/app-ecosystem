@@ -477,7 +477,7 @@ identical recovery and changed replay. It covers intent, marker, sidecar,
 revision, prepared pointer, committed receipt, projection and completed receipt;
 the final case creates a legitimate later revision before recovery. Additional
 cases cover real marker expiry/read-through, a foreign marker that must remain
-untouched, and loss of a committed projection. The same cases are available for
+untouched, and loss of a committed projection and its index. The same cases are available for
 standalone Redis and Redis Cluster; a missing backend is reported as a skip,
 not real-backend evidence.
 
