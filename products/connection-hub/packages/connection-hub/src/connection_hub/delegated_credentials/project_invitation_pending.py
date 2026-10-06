@@ -52,6 +52,8 @@ from connection_hub.delegated_credentials.controls.snapshot import (
 from connection_hub.delegated_credentials.project_authorization import (
     ViewerAuthority,
     with_viewer_authority,
+    PROJECT_BOARD_RESTARTING,
+    unanswered_policy_refusal,
     PROJECT_INVITATION_CONTROL_CREATE,
     PROJECT_INVITATION_CONTROL_READ,
     PROJECT_INVITATION_CONTROL_REVOKE,
@@ -170,6 +172,9 @@ class ProjectInvitationPendingCards:
                 "status": 503,
             }
         if not decision.allowed:
+            unanswered = unanswered_policy_refusal(decision.reason, error="project_invitation_control_authorization_unavailable")
+            if unanswered is not None:
+                return unanswered
             return {"ok": False, "error": decision.reason, "status": 403}
         return request, with_viewer_authority(decision, viewer)
 
@@ -352,9 +357,10 @@ class ProjectInvitationPendingCards:
             # (for example the board was reloading). That is not a refusal, so
             # the viewer is not told "a project admin decides this"; the save
             # is still decided by the port.
+            restarting = admin.get("error") == PROJECT_BOARD_RESTARTING
             return {
                 "can_edit": None,
-                "reason": "project_person_control_permission_unavailable",
+                "reason": PROJECT_BOARD_RESTARTING if restarting else "project_person_control_permission_unavailable",
                 "retryable": True,
             }
         can_edit = not isinstance(admin, dict)

@@ -21,6 +21,26 @@ PROJECT_INVITATION_CONTROL_CREATE = "project.invitation_control.create"
 PROJECT_INVITATION_CONTROL_READ = "project.invitation_control.read"
 PROJECT_INVITATION_CONTROL_UPDATE = "project.invitation_control.update"
 PROJECT_INVITATION_CONTROL_REVOKE = "project.invitation_control.revoke"
+# W587 follow-up C (operator, 2026-10-06 15:58): the project host gave no
+# answer, because its call failed or its application was still starting (a
+# board reload). The resolver names these; they are not refusals, so a Card's
+# viewer is never told "a project admin decides this" for them, and a save
+# fails closed as retryable instead of forbidden.
+PROJECT_MEMBERSHIP_PROVIDER_UNAVAILABLE = "project_membership_provider_unavailable"
+PROJECT_MEMBERSHIP_PROVIDER_NOT_READY = "project_membership_provider_not_ready"
+PROJECT_BOARD_RESTARTING = "project_board_restarting"
+
+
+def unanswered_policy_refusal(reason: str, *, error: str) -> dict[str, Any] | None:
+    """A retryable 503 for a decision the project host never gave, else None."""
+
+    if reason == PROJECT_MEMBERSHIP_PROVIDER_NOT_READY:
+        error = PROJECT_BOARD_RESTARTING
+    elif reason != PROJECT_MEMBERSHIP_PROVIDER_UNAVAILABLE:
+        return None
+    return {"ok": False, "error": error, "reason": reason, "retryable": True, "status": 503}
+
+
 PROJECT_INVITATION_CONTROL_OPERATIONS = frozenset(
     {
         PROJECT_INVITATION_CONTROL_CREATE,
@@ -503,6 +523,10 @@ def with_viewer_authority(
     )
 
 __all__ = [
+    "PROJECT_BOARD_RESTARTING",
+    "PROJECT_MEMBERSHIP_PROVIDER_NOT_READY",
+    "PROJECT_MEMBERSHIP_PROVIDER_UNAVAILABLE",
+    "unanswered_policy_refusal",
     "ViewerAuthority",
     "with_viewer_authority",
     "PROJECT_INVITATION_CONTROL_CREATE",
