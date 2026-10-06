@@ -108,6 +108,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-06 | Caller-recorded revocation must survive the next read | Draft preserved for independent journal publication: generic target-ID/revision preconditions reach the durable revoke fence; replacement before load and replacement before lock acquisition refuse without revoking another revision. Source qualification and legacy multi-Card lifecycle limits stay separate. |
 
+| 2026-10-06 | Terminal issuer receipts must finish active-intent retirement | — |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).
