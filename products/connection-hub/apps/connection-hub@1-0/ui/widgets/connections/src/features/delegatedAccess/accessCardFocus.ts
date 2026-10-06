@@ -153,3 +153,12 @@ export function controlFocusKey(focus: {
 }): string {
   return [focus.accessId, focus.projectRef || '', focus.targetSubject || '', focus.invitationRef || ''].join('\n');
 }
+
+/** W587, the operator's rule (2026-10-06 13:43): "if the version on the server
+ *  changed since the fetched one ... then the browser changes cannot be saved
+ *  and the user must refresh the opened card". An edit is stale once the Card
+ *  it started from (``pinned``) is behind the server, or the server refused a
+ *  save with 409; only reloading the Card into the editor clears it. */
+export function staleEdit(pinned: number | null, current: number | undefined, refused: boolean): boolean {
+  return refused || (pinned !== null && (current ?? 0) > pinned);
+}
