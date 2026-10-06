@@ -183,3 +183,52 @@ def test_review_on_171_pending_is_clamped_to_what_the_board_accepts(tmp_path):
     assert field.record_wake_hold(identity.worker_name, until="2999-01-01T00:00:00Z", pending=5_000_000)["pending"] == 1_000_000
     hold = {"since": "2026-09-26T03:00:00Z", "until": "2026-09-26T05:00:00Z", "pending": 1}
     assert relay.session_with_wake_hold({}, hold=hold, pending=5_000_000)["wake_hold"]["pending"] == 1_000_000
+
+
+def test_a_wake_names_only_the_mail_it_wakes_for_not_the_quiet_backlog(tmp_path, monkeypatch):
+    # W563 (Root, 6 October 08:44 UTC): after the relay restart, a held
+    # session with 300 marked messages and one current question was woken
+    # again 14 to 17 s after every wake-ack. A wake named the last 100 of all
+    # pending refs in inbox-file order, so the question was usually not
+    # named; wake-ack defers only named mail, so the question woke it again.
+    host, identity, channel, _field_store = _field(tmp_path)
+    backlog = [f"work:mail:20261006T050000Z:mail_{n:032x}:old" for n in range(300)]
+    question = "work:mail:20261006T083000Z:mail_ffffffffffffffffffffffffffffffff:w571-question"
+    named: list[list[str]] = []
+    quiet = set(backlog)
+
+    class Field(SharedFieldStore):
+        def worker_listener_session(self, worker_name):
+            return {"state": "attached", "subscription": {}}
+
+        def pending_worker_mail_refs(self, worker_name, *, wait=True):
+            return [*backlog[:150], question, *backlog[150:]]
+
+        def quiet_mail_refs(self, worker_name, refs=None):
+            return {ref for ref in (refs or []) if ref in quiet}
+
+        def quiet_token(self, worker_name):
+            return "deferred" if question in quiet else "mark"
+
+    monkeypatch.setattr(relay, "SharedFieldStore", Field)
+    monkeypatch.setattr(relay, "session_with_limit_state", lambda listener, **_: {**listener, "limit_state": {"kind": "ok"}})
+    supervisor = make_supervisor(host)
+
+    async def reconcile(*_args, **_kwargs):
+        return None
+
+    async def notify(*_args, message_refs=(), **_kwargs):
+        named.append(list(message_refs))
+        return {"woken": True}
+
+    monkeypatch.setattr(supervisor, "_reconcile_session_queue", reconcile)
+    monkeypatch.setattr(supervisor, "_notify_session", notify)
+
+    asyncio.run(supervisor._notify_available_input(host, channel))
+    assert named == [[question]], "the wake names the question, and only it"
+
+    # The wake-ack defers what the wake named: now every pending ref is quiet,
+    # so the held session is not woken again for the same mail.
+    quiet.add(question)
+    asyncio.run(supervisor._notify_available_input(host, channel))
+    assert named == [[question]], "no second wake for the same pending mail"

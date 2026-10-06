@@ -5888,6 +5888,17 @@ class ProblemBoardRelaySupervisor:
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
 
+        def wake_refs() -> list[str]:
+            # W563 (Root, 6 October 08:44 UTC): a wake names only the mail
+            # that is not quiet, the mail it wakes the session for. It used
+            # to name the last MAX_WAKE_MESSAGE_REFS of every pending ref,
+            # backlog included, in inbox-file order, so with 300 marked
+            # messages the one current question was usually not named; a
+            # wake-ack defers only named mail, and that question woke the
+            # held session again after every acknowledgement. Mail read
+            # after classification is not known yet and counts as not quiet.
+            return [ref for ref in pending_refs if not known.get(ref, False)]
+
         async def mailbox_empty() -> bool:
             # W448 fix 3: a queued wake's refs stand in for the mailbox only on
             # the way to the deduplicated return. Every branch that records or
@@ -6069,7 +6080,7 @@ class ProblemBoardRelaySupervisor:
             coalesced = await self._channel_off_loop(channel,
                 field.coalesce_worker_session_wake,
                 channel.worker_name,
-                message_refs=pending_refs,
+                message_refs=wake_refs(),
                 wake_id=outstanding_wake_id,
             )
             if coalesced is None:
@@ -6094,12 +6105,12 @@ class ProblemBoardRelaySupervisor:
                         host,
                         channel,
                         event_kind="input.available",
-                        message_refs=pending_refs,
+                        message_refs=wake_refs(),
                     )
                 coalesced = await self._channel_off_loop(channel,
                     field.coalesce_worker_session_wake,
                     channel.worker_name,
-                    message_refs=pending_refs,
+                    message_refs=wake_refs(),
                     wake_id=outstanding_wake_id,
                 )
             if coalesced is not None:
@@ -6122,7 +6133,7 @@ class ProblemBoardRelaySupervisor:
                     host,
                     channel,
                     event_kind="input.available",
-                    message_refs=pending_refs,
+                    message_refs=wake_refs(),
                     wake_id=outstanding_wake_id,
                     retried=True,
                 )
@@ -6154,7 +6165,7 @@ class ProblemBoardRelaySupervisor:
             host,
             channel,
             event_kind="input.available",
-            message_refs=pending_refs,
+            message_refs=wake_refs(),
         )
 
     @staticmethod

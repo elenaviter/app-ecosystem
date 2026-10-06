@@ -1368,7 +1368,16 @@ def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
             + _cmd(["pb", "worker", "leases"], flags)
         )
     backlog = result.get("backlog")
-    if isinstance(backlog, Mapping):
+    if isinstance(backlog, Mapping) and backlog.get("counted") is False:
+        # W563: a selected receive does not count the marked mail; say so
+        # instead of printing a pending count it never took.
+        lines.append(
+            "backlog: not counted by this selected receive · marked {} at {}".format(
+                backlog.get("marked_count", "?"), backlog.get("marked_at") or "-",
+            )
+        )
+        lines.append(str(backlog.get("instruction") or ""))
+    elif isinstance(backlog, Mapping):
         # W563: the marked mail stays visible on every receive.
         lines.append(
             "backlog: pending {} · requests, decisions and questions {} · oldest {} · marked {} at {}{}".format(
