@@ -83,6 +83,73 @@ import path. The pre-v2 draft has been removed, with its protocol regressions
 migrated to v2 tests. The source is not yet an installed application
 integration contract or verified live runtime.
 
+## Authenticated participant answers
+
+`service_foundation.coordination.participant_answer` owns a product-neutral
+response envelope and HMAC frame. It neither authenticates incoming requests
+nor selects peers, secret references, operation names, authority scope or
+result/refusal policy. Those remain in application adapters. The seven-field
+durable `Receipt`, decision ledger and transaction transitions do not change.
+
+`request_digest(fields)` hashes exactly these eight unsigned request fields:
+`schema`, `action`, `request_echo`, `scope`, `transaction_id`, `decision`,
+`limit`, `cursor`. Keep inactive fields explicitly null. Select those fields
+before calling: a transport request containing `service_proof` is refused,
+not silently stripped. `request_echo` is 32–128 lowercase hexadecimal
+characters; the caller generates a fresh unpredictable value on every attempt,
+including a retry. The helper checks its shape, not its source of randomness.
+Applications validate action-specific field semantics before sending/serving.
+
+The unsigned answer contains exactly `schema`, `direction`, `audience`,
+`request_echo`, `request_digest`, `action`, `scope`, `transaction_id`,
+`decision`, `limit`, `cursor`, and an opaque object `result`.
+`sign_participant_answer(unsigned, schema=..., secret=..., signer_id=...,
+timestamp=...)` returns a three-field proof: `service_id`, `timestamp`,
+`signature`. Add it as `receipt_proof` to the unsigned answer. The HMAC-SHA256
+input is the following five UTF-8 lines, joined by four newline bytes without a
+trailing newline:
+
+```text
+trusted response schema
+trusted signer ID
+canonical decimal UTC Unix seconds
+request_echo
+lowercase SHA-256 of canonical unsigned-answer bytes
+```
+
+The signature is unpadded base64url. Keys are explicit UTF-8 strings or bytes,
+at least 32 bytes long; there is no generated key or unsigned fallback.
+Trusted framing strings are bounded printable nonempty strings, excluding
+newlines. A timestamp has no leading zero except the value `0` itself.
+
+`verify_participant_answer(answer, schema=..., secret=..., signer_id=...,
+audience=..., direction=..., request=..., now=..., max_skew=300)` takes the
+**inner signed envelope**, the frozen eight-field request from this attempt,
+and trusted local peer/key/audience/direction configuration. It checks exact
+field sets, expected schema and signer, every request echo and digest, JSON
+type-sensitive equality (boolean `true` is not integer `1`), inclusive clock
+skew of at most 300 seconds and a constant-time signature comparison. It
+returns a detached authenticated result object. Missing/invalid configuration,
+unsigned transport responses and malformed, mismatched, stale or tampered
+envelopes raise finite `ParticipantAnswerRefused`; these are local verification
+failures, **not authenticated semantic participant refusals**.
+
+The application must still validate its result tagged union, finite refusal
+codes, bounded status, and each seven-field Receipt. Authentication does not
+turn a signed refusal into success. An unsigned outer transport `ok` flag is
+never authority; derive the outcome from the verified result. An unsigned
+refusal or unknown transport outcome remains unavailable/pending rather than
+evidence for a definitive rejection or a new decision. Request admission,
+nonce replay storage, durable scope partitioning, decision comparison and
+restart recovery remain application responsibilities.
+
+Shared synthetic producer/consumer vectors are in
+`packages/service-foundation/tests/fixtures/participant_answer_vectors.json`:
+request digests, receipt, pending-null, page and refused answers, every signed
+field tamper, new-echo replay, and wrong audience/direction. The fixture uses a
+public test-only key, never a production credential. Consumer adapters load
+these same vectors and validate their own result semantics on top.
+
 ## Bounded recovery pages
 
 The legacy `list_in_doubt(limit=...)` and `Coordinator.recover(limit=...)`
