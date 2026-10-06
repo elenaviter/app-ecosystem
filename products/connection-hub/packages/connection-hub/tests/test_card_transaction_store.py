@@ -526,3 +526,17 @@ async def test_an_abort_never_removes_another_mutations_marker_or_projection(tmp
     cache.value = {"kind": "updating", "card_revision": before.card_revision, "mutation_id": "someone-else"}
     await _service_decide(store, service, before, "aborted")
     assert cache.value["mutation_id"] == "someone-else"
+
+
+@pytest.mark.asyncio
+async def test_a_writers_precondition_read_refuses_a_staged_card_before_any_side_write(tmp_path):
+    # Ops 11:22: writers read current_revision before minting a credential or
+    # setting a policy, so the fence there stops side writes, not only the commit.
+    store, service, before, after = await _setup(tmp_path)
+    assert await service.current_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id) == before.card_revision
+    await _stage(store, before, after)
+    _record(store, "committed")  # even once PB decided, until it is materialized locally
+    with pytest.raises(CardConflict, match="card_transaction_unresolved"):
+        await service.current_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    await _decide(store, "committed")
+    assert await service.current_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id) == after.card_revision

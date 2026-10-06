@@ -381,7 +381,14 @@ class DelegatedCardService:
 
     async def current_revision(self, *, subject_hash: str, access_id: str) -> int:
         """The committed revision whatever its state; 0 with no history. Same
-        read as the precondition below."""
+        read as the precondition below.
+
+        This is a writer's precondition read, so it applies the shared fence
+        first: a Card with an unresolved transaction or preparation is refused
+        here, before the writer makes any side write (a minted credential, an
+        invocation policy), not only later at commit (Ops 11:22). The commit
+        still rechecks it."""
+        await self._assert_no_lifecycle_preparation(subject_hash=subject_hash, access_id=access_id)
         current = await self._store.read_current_authority(
             subject_hash=subject_hash, access_id=access_id
         )
