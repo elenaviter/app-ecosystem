@@ -287,10 +287,13 @@ async def test_development_may_use_a_local_custody_in_the_namespace() -> None:
 
 
 def test_the_integration_subject_is_the_hubs_own_helper() -> None:
+    from connection_hub.delegated_credentials.cards.identity import resident_client_id
     from connection_hub.delegated_credentials.oauth.grants import integration_subject
-    assert integration_user_id("client-1", "user:owner") == integration_subject("user:owner", client_id="client-1")
-    assert integration_user_id("client-1", "user:owner") == "integration:client-1:user:owner"
-    assert integration_user_id("client 1", "user:owner") == "integration:client_1:user:owner"  # its normalization
-    for bad in (("", "user:owner"), ("  ", "user:owner"), ("client:1", "user:owner"), ("c", " u"), ("c", "")):
+    for client, grantor in (("client-1", "user:owner"), ("client 1", "user:owner")):
+        assert integration_user_id(client, grantor) == integration_subject(grantor, client_id=client)
+    resident = resident_client_id("app-one", "agent-one")
+    assert ":" in resident  # Infra 18:08: canonical resident ids contain colons
+    assert integration_user_id(resident, "user:owner") == integration_subject("user:owner", client_id=resident)
+    for bad in (("", "user:owner"), ("  ", "user:owner"), ("c", ""), ("c", "  ")):
         with pytest.raises(BoundIssuanceRefused, match="issuance_user_invalid"):
             integration_user_id(*bad)
