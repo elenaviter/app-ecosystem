@@ -2894,6 +2894,20 @@ def _render_plan_search(operation: str, page: Mapping[str, Any]) -> list[str]:
 _INDEX_ITEMS = 100
 
 
+# Dependencies listed per index row; the rest are counted.
+_INDEX_DEPENDENCIES = 8
+
+
+def _dependency_name(dependency: Any) -> str:
+    """A dependency as the exact ref the plan stores, or its key and ref when given as a record."""
+
+    if isinstance(dependency, Mapping):
+        key = str(dependency.get("item_key") or "")
+        ref = str(dependency.get("identity_ref") or dependency.get("work_ref") or dependency.get("item_ref") or "")
+        return f"{key} {ref}".strip() or "-"
+    return str(dependency)
+
+
 def _render_plan_index(operation: str, page: Mapping[str, Any]) -> list[str]:
     """One plan-index page as a status table: two lines per item.
 
@@ -2954,15 +2968,23 @@ def _render_plan_index(operation: str, page: Mapping[str, Any]) -> list[str]:
         ):
             if item.get(key):
                 facts.append(f"{label} {item[key]}")
-        dependencies = item.get("depends_on") or []
-        if dependencies:
-            facts.append(f"depends on {len(dependencies)}")
+        dependencies = [dependency for dependency in item.get("depends_on") or [] if dependency]
+        # W563 (Root, exchange observation 3): a coordinator could not tell an
+        # item with no dependencies from one whose dependencies the brief
+        # left out, and fell back to a JSON read. The count is always shown,
+        # and the dependencies themselves on their own line.
+        facts.append(f"depends on {len(dependencies) or 'none'}")
         lines.append(
             "--- "
             + " · ".join(facts)
             + " · "
             + (_preview(item.get("title"), maximum_bytes=160) or "(untitled)")
         )
+        if dependencies:
+            shown_dependencies, dependency_total = _bounded(dependencies, maximum=_INDEX_DEPENDENCIES)
+            names = [_dependency_name(dependency) for dependency in shown_dependencies]
+            more = f" (+{dependency_total - len(shown_dependencies)} more)" if dependency_total > len(shown_dependencies) else ""
+            lines.append(f"  depends_on: {', '.join(names)}{more}")
         # W563: the key reads the item (`project.plan.item`), which prints the
         # refs a mutation copies; the index does not repeat them per row.
         if isinstance(item.get("reference_error"), Mapping):
