@@ -42,6 +42,7 @@ from connection_hub.delegated_credentials.controls.project_person import (
     bind_project_person_control,
 )
 from connection_hub.delegated_credentials import project_control_binding
+from connection_hub.delegated_credentials.caller_writer_gate import CallerWrite, CallerWriteRefused
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
     ProjectIdentityLifecycle,
     ProjectIdentityLifecycleError,
@@ -364,7 +365,22 @@ class ProjectInvitationRedemption:
                     audit=audit,
                 )
                 live_record = self._record_from_authority(live)
-                await self._host._persist_record(live_record, expected_revision=0)
+                # W502: with a named P, the live C's first revision is already bound under it.
+                bound_record = await project_control_binding.bound_at_creation(
+                    self._host, live_identity, evidence.project_control, live_record
+                )
+                if isinstance(bound_record, dict):
+                    return bound_record
+                live_record = bound_record
+                # A bound C is a create of a bound Card: its binding's policy decides it.
+                enlisted = (
+                    {"caller_write": CallerWrite("create", actor, marker["request_id"])}
+                    if live_record.control_card is not None
+                    else {}
+                )
+                await self._host._persist_record(
+                    live_record, expected_revision=0, **enlisted
+                )
                 created = True
             live = self._authority_from_record(live_record)
             identity_result = await self._project_identities.ensure(
@@ -374,6 +390,8 @@ class ProjectInvitationRedemption:
                     PROJECT_INVITATION_BINDING_PROVENANCE: marker,
                 },
             )
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except (
             CardRecordError,
             ControlCardError,
@@ -402,32 +420,39 @@ class ProjectInvitationRedemption:
                 action="project_invitation_control_bound",
                 access=live_record.to_public_dict(),
             )
-        try:
-            project_control = await project_control_binding.bind_project_control(
-                self._host, live_identity, evidence.project_control
-            )
-        except (CardConflict, CardCommitFailed) as exc:
+        if created:
+            # A C written by this redemption was born bound (or no P was named).
             project_control = {
-                "ok": False,
-                "error": "project_person_control_not_committed",
-                "outcome": "not_bound",
-                "reason": getattr(exc, "reason", ""),
-                "retryable": True,
-                "status": 503,
+                "ok": True,
+                "outcome": "bound" if live_record.control_card is not None else "no_project_control",
             }
-        if project_control.get("ok") is not True:
-            # C and the claim are committed; redeeming again finds both and binds.
-            return {**project_control, "bound": created,
-                    "project_control_binding": project_control.get("outcome", "not_bound")}
-        if project_control["outcome"] == "bound":
+        else:
+            # An existing C (an exact retry) is bound under the evidence's P.
             try:
-                reloaded = await self._host._load_record_any_state(
-                    live_identity.control_id, grantor_subject=live_identity.project_subject
+                project_control = await project_control_binding.bind_project_control(
+                    self._host, live_identity, evidence.project_control
                 )
-            except CardUnavailable:
-                reloaded = None  # committed; the view below is the pre-binding revision
-            if reloaded is not None:
-                live_record = reloaded[0]
+            except (CardConflict, CardCommitFailed) as exc:
+                project_control = {
+                    "ok": False,
+                    "error": "project_person_control_not_committed",
+                    "outcome": "not_bound",
+                    "reason": getattr(exc, "reason", ""),
+                    "retryable": True,
+                    "status": 503,
+                }
+            if project_control.get("ok") is not True:
+                return {**project_control, "bound": created,
+                        "project_control_binding": project_control.get("outcome", "not_bound")}
+            if project_control["outcome"] == "bound":
+                try:
+                    reloaded = await self._host._load_record_any_state(
+                        live_identity.control_id, grantor_subject=live_identity.project_subject
+                    )
+                except CardUnavailable:
+                    reloaded = None  # committed; the view below is the pre-binding revision
+                if reloaded is not None:
+                    live_record = reloaded[0]
         return {
             "ok": True,
             "bound": created,

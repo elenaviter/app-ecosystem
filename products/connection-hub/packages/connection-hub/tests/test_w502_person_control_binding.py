@@ -5,9 +5,10 @@ store and Redis; only the project host's decision (which names P) and its
 invitation evidence are stand-ins. P is a real application Control created by
 ``control_card_create`` under its creator, at the id derived from the project.
 
-- create and redemption bind C under exactly the P the host names, through
-  ``attach_control_card``; the chain then composes C -> P with P's own
-  operation (AND or OR);
+- create and redemption write C already bound under exactly the P the host
+  names, in its first revision (no unbound C is ever visible), gated as a
+  create of a bound Card; an existing C is bound through
+  ``attach_control_card``; the chain composes C -> P with P's own operation;
 - a locator whose id is not P's derived id, or whose P is absent, is refused
   before any C is written;
 - the same P again is a no-op; a C bound to a live other P is ``p_conflict``,
@@ -339,3 +340,96 @@ async def test_a_bound_c_whose_p_gains_a_parent_is_invalid_not_extended(tmp_path
     assert attached["ok"] is True, attached
     with pytest.raises(ControlCardMismatch, match="project_control_not_root"):
         await _effective(h)
+
+
+class _Policy:
+    """The binding's writer policy (a stand-in for Problem Board's), recording what it decided."""
+
+    def __init__(self, allow: bool) -> None:
+        self.allow, self.requests = allow, []
+
+    def _decision(self, request):
+        from datetime import datetime, timedelta, timezone
+
+        from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteDecision
+
+        return CallerWriteDecision(self.allow, "" if self.allow else "pb_refused", "policy:v1",
+                                   datetime.now(timezone.utc) + timedelta(minutes=5), request)
+
+    async def decide(self, request):
+        self.requests.append(request)
+        return self._decision(request)
+
+    async def revalidate(self, request, initial):
+        return self._decision(request)
+
+    async def finalize(self, request, *, state, card_revision):
+        return True
+
+
+def _bind_policy(h, allow):
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriterRegistry
+
+    policy, registry = _Policy(allow), CallerWriterRegistry()
+    registry.register("application", policy)
+    h.service.bind_caller_writers(registry)
+    return policy
+
+
+@pytest.mark.asyncio
+async def test_create_writes_no_unbound_c_revision(tmp_path, redis_client):  # noqa: F811
+    """CodeApp 22:44: C is never visible unbound; its first revision already carries P."""
+    h = await _service(tmp_path, redis_client)
+    p_id = await _project_control(h)
+    assert (await _create(h))["project_control_binding"] == "bound"
+    first = await _control(h)
+    assert first.card_revision == 1 and first.control_card.control_id == p_id
+    assert first.control_card.holder_subject == CREATOR
+
+
+@pytest.mark.asyncio
+async def test_a_bound_create_is_decided_by_the_binding_policy_as_a_create(tmp_path, redis_client):  # noqa: F811
+    h = await _service(tmp_path, redis_client)
+    await _project_control(h)
+    policy = _bind_policy(h, allow=True)
+    assert (await _create(h))["project_control_binding"] == "bound"
+    creates = [r for r in policy.requests if r.action == "create"]
+    assert len(creates) == 1
+    assert (creates[0].binding_kind, creates[0].binding_ref, creates[0].card_revision, creates[0].actor_subject) == (
+        "application", PROJECT_REF, 0, USER["user_id"])
+
+
+@pytest.mark.asyncio
+async def test_a_refused_bound_create_writes_nothing(tmp_path, redis_client):  # noqa: F811
+    h = await _service(tmp_path, redis_client)
+    await _project_control(h)
+    _bind_policy(h, allow=False)
+    refused = await _create(h)
+    assert refused["ok"] is False and refused["error"] == "pb_refused"
+    assert await _no_control_written(h)
+
+
+@pytest.mark.asyncio
+async def test_redemption_writes_no_unbound_c_revision(tmp_path, redis_client):  # noqa: F811
+    h = await _service(tmp_path, redis_client)
+    p_id = await _project_control(h)
+    invitation_ref, email = "invitation-2", "invited2@example.test"
+    assert (await h.service.project_person_control_create(
+        USER, project_ref=PROJECT_REF, invitation_ref=invitation_ref, target_email=email,
+        request_id="request-invite", label="Invited"))["ok"] is True
+    pending_id = ProjectInvitationControlIdentity.build(project_ref=PROJECT_REF, invitation_ref=invitation_ref,
+                                                        target_email=email).control_id
+
+    class _Resolver:
+        async def resolve_project_invitation_binding(self, *, project_ref, invitation_ref):
+            return ProjectInvitationBindingEvidence.build(
+                project_ref=project_ref, invitation_ref=invitation_ref, control_id=pending_id,
+                person_subject=TARGET, email=email, project_control=_locator().to_dict())
+
+    h.service.bind_project_invitation_binding_resolver(_Resolver())
+    bound = await h.service.project_person_control_bind_invitation(
+        {"user_id": TARGET}, project_ref=PROJECT_REF, invitation_ref=invitation_ref, control_id=pending_id,
+        request_id="request-redeem")
+    assert bound["ok"] is True and bound["project_control_binding"] == "bound", bound
+    first = await _control(h)
+    assert first.card_revision == 1 and first.control_card.control_id == p_id

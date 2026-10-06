@@ -14,10 +14,12 @@ is fenced like every other.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
-from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE
+from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE, ControlCardBinding
 from connection_hub.delegated_credentials.cards.resolver import CardUnavailable
+from connection_hub.delegated_credentials.controls.effective import ControlCardMismatch
 from connection_hub.delegated_credentials.controls.model import (
     ControlCardError,
     control_card_id_for_issuer,
@@ -126,4 +128,42 @@ async def _bind(
     return {"ok": True, "outcome": "bound" if result.get("attached") else "already_bound"}
 
 
-__all__ = ["bind_project_control", "check_project_control"]
+async def bound_at_creation(
+    host: Any, identity: ProjectPersonControlIdentity, locator: ProjectControlLocator | None, record: Any,
+) -> Any:
+    """C's first revision, already bound under P, or a refusal; never an unbound C when P is named.
+
+    CodeApp (22:44): a C visible unbound in one write and bound in a later
+    one is a business atomicity gap. So create and redemption write C with
+    its binding in revision 1: the same binding attach would record, the
+    whole chain composed before the write, and the write gated as a
+    ``create`` of a bound Card (the binding the candidate takes decides it).
+    """
+    if locator is None:
+        return record
+    try:
+        refusal = await _check(host, identity, locator)
+        if refusal is not None:
+            return refusal
+        loaded = await host._load_record_any_state(locator.control_id, grantor_subject=locator.holder_subject)
+        if loaded is None:
+            return _p_invalid("project_control_absent")
+        control = loaded[0]
+        binding = ControlCardBinding(
+            control_id=control.access_id, issuer_ref=control.issuer_ref, issuer_kind=control.issuer_kind,
+            issuer_label=control.issuer_label, manage_url=control.manage_url,
+            control_revision=control.card_revision, holder_subject=locator.holder_subject)
+        bound = dataclasses.replace(record, control_card=binding)
+        resolved, _effective = await host._compose_with_control(bound)
+    except CardUnavailable as exc:
+        return _unavailable(exc)
+    except ControlCardMismatch as exc:
+        return {"ok": False, "error": "control_card_invalid", "reason": exc.reason, "outcome": "p_invalid",
+                "status": 409}
+    if resolved is None:
+        return {"ok": False, "error": "control_card_invalid", "reason": "control_card_unresolvable",
+                "outcome": "p_invalid", "status": 409}
+    return bound
+
+
+__all__ = ["bind_project_control", "bound_at_creation", "check_project_control"]

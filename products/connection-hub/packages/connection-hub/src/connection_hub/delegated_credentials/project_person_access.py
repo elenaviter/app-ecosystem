@@ -27,6 +27,7 @@ from connection_hub.delegated_credentials.cards.service import (
     CardServingUnavailable,
     replace_state,
 )
+from connection_hub.delegated_credentials.caller_writer_gate import CallerWrite, CallerWriteRefused
 from connection_hub.delegated_credentials.catalog.descriptors import (
     canonical_digest,
     next_resource_acceptance,
@@ -717,8 +718,19 @@ class ProjectPersonControlLifecycle:
                         provenance=provenance,
                     )
                 )
-            await self._host._persist_record(record, expected_revision=0)
+            # W502: with a named P, C's first revision is already bound under it.
+            bound_record = await project_control_binding.bound_at_creation(
+                self._host, identity, decision.project_control, record)
+            if isinstance(bound_record, dict):
+                return bound_record
+            record = bound_record
+            # A bound C is a create of a bound Card: its binding's policy decides it.
+            enlisted = ({"caller_write": CallerWrite("create", request.actor_subject, request.request_id)}
+                        if record.control_card is not None else {})
+            await self._host._persist_record(record, expected_revision=0, **enlisted)
             project_identity = await self._project_identities.ensure(record)
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CatalogUnavailable as exc:
             return {
                 "ok": False,
@@ -753,24 +765,18 @@ class ProjectPersonControlLifecycle:
             action="project_person_control_created",
             access=record.to_public_dict(),
         )
-        bound = await self._bind_on_create(identity, decision, created=True)
-        if bound.get("ok") is not True:
-            return bound
         result = await self._view(identity=identity, decision=decision)
         if result.get("ok") is True:
             result["created"] = True
             result["pruned"] = pruned
-            result["project_control_binding"] = bound["outcome"]
+            result["project_control_binding"] = (
+                "bound" if record.control_card is not None else "no_project_control")
             self._identity_view(result, project_identity)
         return result
 
     async def _bind_on_create(self, identity: ProjectPersonControlIdentity,
                               decision: ProjectAuthorizationDecision, *, created: bool) -> dict[str, Any]:
-        """Create (and redemption through it) binds C under the decision's P.
-
-        A failure after C was committed names that, so the caller repeats the
-        create, which finds C and binds it, or runs the repair operation.
-        """
+        """An existing C found by create is bound under the decision's P (a new C is born bound)."""
         try:
             bound = await project_control_binding.bind_project_control(self._host, identity, decision.project_control)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
