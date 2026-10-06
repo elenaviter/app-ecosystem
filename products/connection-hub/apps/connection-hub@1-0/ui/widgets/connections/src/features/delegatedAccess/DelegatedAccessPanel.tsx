@@ -162,6 +162,8 @@ import {
   freshestCard,
   staleEdit,
   matchesAccessCardFocus,
+  BOARD_RESTARTING_MESSAGE,
+  isBoardRestarting,
   isRequestLimitRefusal,
   unavailableAccessCardMessage,
 } from './accessCardFocus';
@@ -2317,9 +2319,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // the card when i simply open it. when i press edit it loads it again."
   // One read for every kind of Card: a Control through whoever holds it, a
   // project agent Card through its project, any other from the owner list.
+  // Why the last read failed, so Edit and Reload can say the board is restarting.
+  const lastReadError = useRef('');
   const readCurrentCard = useCallback(async (
     item: DelegatedAccessRecord,
   ): Promise<DelegatedAccessRecord | null> => {
+    lastReadError.current = '';
     try {
       if (item.source === 'control') {
         const personControl = projectPersonControlCoordinates(item);
@@ -2339,7 +2344,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       }
       const listed = await dispatch(loadDelegatedAccess()).unwrap();
       return (listed.items || []).find((candidate) => candidate.access_id === item.access_id) || null;
-    } catch {
+    } catch (error) {
+      lastReadError.current = String(error || '');
       return null;
     }
   }, [dispatch]);
@@ -2352,7 +2358,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     // A later Edit on another Card supersedes this one: its read is dropped.
     if (editRequest.current !== item.access_id) return false;
     if (!current) {
-      setOpenReadError('This Card could not be read from Connection Hub, so the editor was not opened. Try again.');
+      setOpenReadError(isBoardRestarting(lastReadError.current)
+        ? `${BOARD_RESTARTING_MESSAGE} The editor was not opened; press Edit again.`
+        : 'This Card could not be read from Connection Hub, so the editor was not opened. Try again.');
       return false;
     }
     startEdit(current);
@@ -2396,6 +2404,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // Keyed by value, not object identity, so a re-render never re-reads.
   const controlFocus = accessCardFocus?.controlOnly ? accessCardFocus : null;
   const controlFocusValue = controlFocus ? controlFocusKey(controlFocus) : null;
+  // W587 C: "Try again" on a Card that did not open while the board restarted.
+  const [focusRetry, setFocusRetry] = useState(0);
   useEffect(() => {
     const read = controlFocusRead(accessCardFocus);
     if (!read || !accessCardFocus) return;
@@ -2418,7 +2428,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       });
     return () => { current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controlFocusValue, dispatch]);
+  }, [controlFocusValue, focusRetry, dispatch]);
   // W587, the operator's rule (14:50): "i asked not to refetch! i asked only
   // when card is opened in connection hub (clicked on it for preview) and when
   // edit is pressed. only then". Opening a Card reads it ONCE; nothing re-reads
@@ -3369,7 +3379,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         projectControlCard: projectControlCard || undefined,
       })).unwrap();
     } catch (error) {
-      setEditActionError(`Save was not applied: ${String(error || 'request refused')}`);
+      setEditActionError(isBoardRestarting(String(error || ''))
+        ? `Save was not applied: ${BOARD_RESTARTING_MESSAGE} Your draft is kept.`
+        : `Save was not applied: ${String(error || 'request refused')}`);
       return;
     }
     if (!updated || updated.ok === false) {
@@ -3384,7 +3396,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         setEditActionError(STALE_EDIT_MESSAGE);
         return;
       }
-      setEditActionError(updated?.message || `Save was not applied: ${updated?.error || 'request refused'}`);
+      setEditActionError(isBoardRestarting(updated?.error)
+        ? `Save was not applied: ${BOARD_RESTARTING_MESSAGE} Your draft is kept.`
+        : updated?.message || `Save was not applied: ${updated?.error || 'request refused'}`);
       return;
     }
     // W587: the base save advanced the Card; a retry continues from that revision.
@@ -4758,7 +4772,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const reloadEdit = async (item: DelegatedAccessRecord) => {
     const current = await readCurrentCard(item);
     if (!current) {
-      setEditActionError('This Card could not be read from Connection Hub. Your draft is unchanged and still cannot be saved; try Reload again.');
+      setEditActionError(isBoardRestarting(lastReadError.current)
+        ? `${BOARD_RESTARTING_MESSAGE} Your draft is unchanged and still cannot be saved; press Reload this Card again.`
+        : 'This Card could not be read from Connection Hub. Your draft is unchanged and still cannot be saved; try Reload again.');
       return;
     }
     setEditActionError('');
@@ -5921,8 +5937,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       {openReadError ? <div className="error" role="alert">{openReadError}</div> : null}
       {accessCardFocus && accessCardFocusState === 'unavailable' ? (
         <div className="error" role="alert">
-          <strong>{isRequestLimitRefusal(delegatedAccessError) ? 'Too many requests.' : 'Card unavailable.'}</strong>{' '}
+          <strong>
+            {isBoardRestarting(delegatedAccessError) ? 'Problem Board is restarting.'
+              : isRequestLimitRefusal(delegatedAccessError) ? 'Too many requests.' : 'Card unavailable.'}
+          </strong>{' '}
           {unavailableAccessCardMessage(accessCardFocus, delegatedAccessError)}
+          {isBoardRestarting(delegatedAccessError) && controlFocus ? (
+            <>
+              {' '}
+              <button type="button" className="btn btn-ghost" onClick={() => setFocusRetry((n) => n + 1)}>Try again</button>
+            </>
+          ) : null}
         </div>
       ) : null}
       {focusedCard && accessCardFocusState === 'resolved' && cardPermissionUnknown(focusedCard, focusedViewer) ? (
