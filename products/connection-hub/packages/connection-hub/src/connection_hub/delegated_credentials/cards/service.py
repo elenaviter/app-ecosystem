@@ -216,16 +216,30 @@ class DelegatedCardService:
         self, *, transaction_id: str, intent_digest: str, decision: str, subject_hash: str, access_id: str,
         reason: str = "", now: int | None = None,
     ) -> dict[str, Any]:
-        """W578: materialize the coordinator's recorded decision, then serve the result.
+        """W578: materialize the coordinator's recorded decision, keeping serving consistent.
 
-        The receipt rename is the decision's one visibility point; a serving
-        failure after it raises CardServingUnavailable and the decision stands.
+        For COMMITTED the serving projection is marked updating BEFORE the
+        receipt rename (the one visibility point), so no resolver serves the
+        broader BEFORE as current after a narrowing commit (Ops F3); the
+        after-state is installed after it. A replay of an already committed
+        decision re-installs it, completing a serving step a crash cut short.
+        A serving failure after the rename raises CardServingUnavailable and
+        the decision stands. ABORTED serves nothing new.
         """
-        from .transaction_store import decide
+        from .transaction_store import decide, read_receipt
 
         moment = int(now if now is not None else time.time())
         try:
             async with self._critical_section(subject_hash=subject_hash, access_id=access_id):
+                receipt = await read_receipt(self._store, transaction_id)
+                mutation_id = uuid.uuid4().hex
+                committing = decision == "committed" and receipt is not None and receipt["state"] in ("prepared", "committed")
+                if committing:
+                    try:
+                        await self._mark_updating(access_id=access_id, mutation_id=mutation_id,
+                                                  expected_revision=int(receipt["before"]["card_revision"]))
+                    except Exception as exc:
+                        raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
                 decided = await decide(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                        decision=decision, reason=reason)
                 if decided["state"] != "committed":
@@ -234,10 +248,7 @@ class DelegatedCardService:
                 if current is None:
                     raise CardServingUnavailable("serving_state_unavailable", access_id=access_id)
                 authority = current[1]
-                mutation_id = uuid.uuid4().hex
                 try:
-                    await self._mark_updating(access_id=access_id, mutation_id=mutation_id,
-                                              expected_revision=authority.card_revision - 1)
                     if authority.state == CARD_STATE_REVOKED:
                         # A staged revoke: serve its tombstone, exactly as revoke() does.
                         await self._cache.commit_tombstone(
