@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
-from ..contract.errors import DomainError
+from ..contract.errors import DomainError, permanent_credential_refusal
 from ..contract.operator_mail_contract import ROLE_RECIPIENTS
 from ..contract.operation_outcomes import require_successful_operation_envelope
 from ..contract.plan_nodes import plan_node_identity_ref
@@ -7000,6 +7000,10 @@ async def _relay(args: Any) -> Any:
                     lifecycle_labels=channel_lifecycle_labels(
                         channel, replacement_epoch
                     ),
+                    # W573: a permanent credential refusal ends the socket's
+                    # own reconnect, from the same code set the relay parks a
+                    # channel on (W461 C4 fix 1).
+                    refusal_classifier=permanent_credential_refusal,
                 )
                 try:
                     await bus.connect()
