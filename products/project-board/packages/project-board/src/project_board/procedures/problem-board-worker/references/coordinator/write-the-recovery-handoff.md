@@ -23,6 +23,29 @@ ref, never retells it. Write it under these headings, `none` when empty:
 
 No transcript and no history: what is stable stays behind its ref.
 
+### Act-to-command map
+
+A recovered session acts from this map, not from a guessed name (W563: after
+a recovery the coordinator tried commands that do not exist, then read the
+interface to find the real ones). Keep it in the handoff's locators.
+
+| Act | Command |
+|---|---|
+| reply to a message | `pb worker send --kind reply --reply-to <message_ref> --correlation-id <id>` |
+| find mail by header | `pb worker inbox` |
+| receive one message | `pb worker receive --message-ref <ref>` |
+| settle a lease | `pb worker settle --message-ref <ref> --lease-id <id> --outcome acknowledged` |
+| forward a message | `pb worker forward` |
+| report on an assignment | `pb worker report --assignment-ref <ref> --ownership-version <n>` |
+| read an item field whole | `pb worker item-read --item-key <Wn> --field <name>` |
+| read a note whole | `pb worker note-read --item-key <Wn> --note-ref <ref>` |
+| search the journal | `pb worker journal-search --query <words>` |
+| read one item | `pb coordinate project.plan.item` |
+| edit an item | `pb coordinate plan.item.update` |
+| add a note | `pb coordinate plan.note.append` |
+| set a status | `pb coordinate work.status.set` |
+| assign an item | `pb coordinate assignment.assign` |
+
 A longer handoff names the open item that needs the room and why, and stays
 bounded. On resume, reuse the loaded revision when `pb procedure verify`
 names the same one, receive, and act on the handoff; reread no history the

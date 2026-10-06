@@ -7,6 +7,7 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-10-06 | Exact issuer updates preserve the original Card and recover one durable intent | A widening-only delta binds the full original fingerprint and immutable issuer context; receipt-backed visibility, publication-thread expiry checks, cancellation drain and truthful committed/pending recovery do not claim mounted or activation qualification. |
 | 2026-10-06 | Full Card snapshots keep a separate issuer capability | Request-local host wiring preserves the independent snapshot proof and registry, actual human/scope binding, whole-pair credential refusal and original fingerprints; source tests are not mounted or activation evidence. |
 | 2026-10-01 | Explicit interactive account selection through hosted login | Optional host-selected account chooser policy, Cognito authorization extras with reserved-parameter rejection, and focused security/noninteractive regression evidence. |
 | 2026-08-29 | Design note: the ecosystem components repo, Prokura to PyPI first | The founding decisions: the repository's purpose and name, the original Prokura naming and its rationale, the two-phase packaging shape, and the stability constraints. |
@@ -106,6 +107,8 @@ that concern this repository so the history is discoverable from here.
 | 2026-10-05 | Opaque issuer authorization gates externally managed Card writes | In-progress phase-one source contract: exact server-built candidate and signed peer context using bounded invocation/digest admission fields, frozen Unicode digest vector, locally sealed decisions, lock-local fresh revalidation, named legacy snapshot refusal, explicit unconfirmed outcomes and descriptor-selected app composition; live provisioning and mounted qualification remain open. Public contract: [issuer-managed writes](../docs/connection-hub/issuer-managed-writes.md). |
 
 | 2026-10-06 | Caller-recorded revocation must survive the next read | Draft preserved for independent journal publication: generic target-ID/revision preconditions reach the durable revoke fence; replacement before load and replacement before lock acquisition refuse without revoking another revision. Source qualification and legacy multi-Card lifecycle limits stay separate. |
+
+| 2026-10-06 | Terminal issuer receipts must finish active-intent retirement | — |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

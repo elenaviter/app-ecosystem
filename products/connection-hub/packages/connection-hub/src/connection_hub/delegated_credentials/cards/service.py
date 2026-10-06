@@ -310,7 +310,8 @@ class DelegatedCardService:
         try:
             await assert_pointer_replaceable(self._store, subject_hash=subject_hash, access_id=access_id)
         except CardStorageError as exc:
-            if str(exc) in ("lifecycle_preparation_unresolved", "lifecycle_recovery_queue_unavailable"):
+            if str(exc) in ("lifecycle_preparation_unresolved", "lifecycle_recovery_queue_unavailable",
+                            "issuer_update_preparation_unresolved", "issuer_update_recovery_queue_unavailable"):
                 raise CardConflict(str(exc)) from exc
             raise
 
@@ -370,6 +371,145 @@ class DelegatedCardService:
             raise IssuerReadRefused("issuer_read_lifecycle_pending", retryable=True) from exc
         except (TimeoutError, CardMutationLockTimeout) as exc:
             raise IssuerReadRefused("issuer_read_timeout", retryable=True) from exc
+
+    @asynccontextmanager
+    async def _issuer_update_sections(self, query, actor_subject):
+        from .update_store import receipt_path
+        from ..durable_io import drain_writes_before_release
+
+        async with asyncio.timeout(CARD_LOCK_WAIT_SECONDS):
+            async with AsyncExitStack() as stack:
+                transaction_id = query.transaction_id(actor_subject)
+                await stack.enter_async_context(self._mutation_lock(
+                    lock_path=receipt_path(self._store, transaction_id).with_suffix(".lock"),
+                    resource_id=f"delegated-card-issuer-update:{transaction_id}",
+                    operation="delegated-card-issuer-update", wait_seconds=CARD_LOCK_WAIT_SECONDS))
+                await stack.enter_async_context(self._critical_section(
+                    subject_hash=query.target.subject_hash, access_id=query.target.access_id))
+                async with drain_writes_before_release():
+                    yield
+
+    async def update_issuer(self, query, *, actor_subject, before_commit):
+        """Exact widening update under receipt and production Card fences.
+
+        No handle changes. Started file/Redis mutations drain before either
+        fence releases, even on timeout or cancellation. Replay can finish
+        serving state, but never authorizes or applies another Card revision.
+        """
+        from . import update_store as updates
+        from ..issuer_update import IssuerUpdateQuery, IssuerUpdateRefused, build_candidate
+        from ..issuer_gate import IssuerWriteRefused, change_digest
+        from ..durable_io import cancellation_safe_await
+
+        if type(query) is not IssuerUpdateQuery or IssuerUpdateQuery.from_mapping(query.to_dict()) != query:
+            raise IssuerUpdateRefused("issuer_update_query_invalid")
+        if (not callable(before_commit)
+                or getattr(self._store, "lifecycle_publish_backend", "") != "filesystem-atomic-rename"
+                or getattr(self._store, "lifecycle_lock_scope", "") not in ("same-host-flock", "shared-flock-verified")):
+            raise IssuerUpdateRefused("issuer_update_atomic_fences_unavailable")
+        transaction_id = query.transaction_id(actor_subject)
+
+        def deadline(value):
+            now = datetime.now(timezone.utc)
+            if not isinstance(value, datetime) or value.utcoffset() is None:
+                raise IssuerUpdateRefused("issuer_decision_expiry_invalid")
+            if not 0 < (value - now).total_seconds() <= 60:
+                raise IssuerUpdateRefused("issuer_decision_expired")
+            return value
+
+        try:
+            async with self._issuer_update_sections(query, actor_subject):
+                recorded = await updates.read_receipt(self._store, transaction_id)
+                if recorded is not None:
+                    if recorded["binding"] != query.binding(actor_subject):
+                        raise IssuerUpdateRefused("issuer_update_replay_changed")
+                    recorded = await updates.recover_prepared(self._store, recorded)
+                    return await self._finish_issuer_update(recorded)
+                await self._assert_no_lifecycle_preparation(
+                    subject_hash=query.target.subject_hash, access_id=query.target.access_id)
+                candidate = None
+                try:
+                    current = await self._store.read_current_authority(
+                        subject_hash=query.target.subject_hash, access_id=query.target.access_id)
+                    original = None if current is None else current[1]
+                    candidate = build_candidate(original, query)
+                    if current[0].content_hash != original.content_hash():
+                        raise IssuerUpdateRefused("issuer_update_legacy_payload_requires_migration")
+                    initial_deadline = deadline(await before_commit(original, candidate))
+                except (IssuerUpdateRefused, IssuerWriteRefused) as exc:
+                    return await updates.refuse_unprepared(self._store, query, actor_subject, exc.reason,
+                        candidate_digest=change_digest(candidate.to_dict()) if candidate is not None else "")
+                await cancellation_safe_await(self._reconcile(
+                    access_id=original.access_id, current=current, moment=int(time.time())))
+
+                async def claim():
+                    await cancellation_safe_await(self._mark_updating(access_id=original.access_id,
+                        mutation_id=transaction_id, expected_revision=original.card_revision))
+
+                async def publish_gate():
+                    fresh_deadline = deadline(await before_commit(original, candidate))
+                    entry = await self._cache.read(original.access_id)
+                    if entry is None or not entry.is_updating or entry.mutation_id != transaction_id:
+                        raise CardConflict("issuer_update_serving_fence_lost")
+                    return min(initial_deadline, fresh_deadline)
+
+                try:
+                    recorded = await updates.atomic_update(self._store, query=query, actor_subject=actor_subject,
+                        original=original, candidate=candidate, now=datetime.now(timezone.utc),
+                        after_prepare=claim, before_publish=publish_gate)
+                except Exception:
+                    recorded = await updates.read_receipt(self._store, transaction_id)
+                    if recorded is None or recorded["state"] == "prepared":
+                        raise
+                return await self._finish_issuer_update(recorded)
+        except (TimeoutError, CardMutationLockTimeout) as exc:
+            recorded = await updates.read_receipt(self._store, transaction_id)
+            if recorded is not None:
+                return recorded  # committed/pending is never a no-write refusal
+            raise CardConflict("issuer_update_timeout") from exc
+
+    async def _finish_issuer_update(self, receipt):
+        from . import update_store as updates
+        from ..issuer_update import IssuerUpdateQuery
+        from ..durable_io import cancellation_safe_await
+
+        if receipt["serving_state"] != "pending":
+            # A crash or unlink error after the terminal receipt rename may
+            # leave the bounded active queue populated. Identical recovery
+            # retries only retirement, never a mutation or serving rewrite.
+            await updates.retire(self._store, receipt)
+            return receipt
+        query = IssuerUpdateQuery.from_mapping(receipt["binding"]["request"])
+        target = query.target
+        try:
+            if receipt["state"] == "refused":
+                if not await cancellation_safe_await(self._cache.finalize_removal(
+                        target.access_id, mutation_id=receipt["transaction_id"])):
+                    # An expired marker may already have been read-through
+                    # restored to BEFORE. That is a finished no-write outcome,
+                    # not an intent that should block every later writer.
+                    entry = await self._cache.read(target.access_id)
+                    if (entry is None or not entry.is_card or entry.authority is None
+                            or entry.authority.card_revision != target.expected_card_revision
+                            or entry.authority.content_hash() != target.expected_authority_fingerprint):
+                        return receipt
+            else:
+                current = await self._store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
+                if current is None or current[0].to_dict() != receipt["after"]:
+                    return receipt
+                authority = current[1]
+                installed = await cancellation_safe_await(self._cache.commit_projection(authority,
+                    mutation_id=receipt["transaction_id"], ttl_seconds=authority_projection_ttl(authority, int(time.time()))))
+                if not installed:
+                    entry = await self._cache.read(target.access_id)
+                    if entry is None or not entry.is_card or entry.authority != authority:
+                        return receipt
+                await cancellation_safe_await(self._index(authority=authority,
+                    subject_hash=target.subject_hash, moment=int(time.time())))
+            return await updates.mark_serving_complete(self._store, receipt)
+        except Exception:
+            _LOGGER.warning("[connection-hub] issuer update serving pending transaction=%s", receipt["transaction_id"])
+            return receipt
 
     async def revoke_lifecycle(self, request: Any, *, actor_subject: str,
             before_commit: Callable[[tuple[CardAuthority, CardAuthority]], Awaitable[datetime]],
