@@ -135,3 +135,44 @@ async def test_an_unknown_transaction_or_a_bad_id_is_refused(tmp_path):
         await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="committed")
     with pytest.raises(CardStorageError, match="card_transaction_id_invalid"):
         await tx.state(store, transaction_id="not-hex")
+
+
+@pytest.mark.asyncio
+async def test_the_service_stages_under_the_fence_and_serves_only_the_committed_decision(tmp_path):
+    from datetime import datetime, timezone
+    store, service, before, after = await _setup(tmp_path)
+    served = []
+
+    async def projection(authority, **kwargs):
+        served.append(authority.card_revision)
+        return True
+
+    service._cache.commit_projection = projection
+    when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+    receipt = await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                              subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
+    assert receipt["state"] == "prepared" and await _visible(store, before) == before
+    decided = await service.decide_transaction(transaction_id=TX, intent_digest=INTENT, decision="committed",
+                                               subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
+    assert decided["state"] == "committed" and await _visible(store, before) == after
+    assert served == [after.card_revision]  # the committed AFTER is what gets served
+
+
+@pytest.mark.asyncio
+async def test_the_service_abort_serves_nothing_new(tmp_path):
+    from datetime import datetime, timezone
+    store, service, before, after = await _setup(tmp_path)
+    served = []
+
+    async def projection(authority, **kwargs):
+        served.append(authority.card_revision)
+        return True
+
+    service._cache.commit_projection = projection
+    when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+    await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
+    decided = await service.decide_transaction(transaction_id=TX, intent_digest=INTENT, decision="aborted",
+                                               subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
+    assert decided["state"] == "aborted" and await _visible(store, before) == before
+    assert served == []  # an abort serves nothing new

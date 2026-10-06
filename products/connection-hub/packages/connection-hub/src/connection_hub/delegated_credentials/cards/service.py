@@ -196,6 +196,59 @@ class DelegatedCardService:
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
 
+    async def stage_transaction(
+        self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
+        original: CardAuthority, candidate: CardAuthority, now: Any,
+    ) -> dict[str, Any]:
+        """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served."""
+        from .transaction_store import stage
+
+        try:
+            async with self._critical_section(subject_hash=subject_hash, access_id=original.access_id):
+                await self._assert_no_lifecycle_preparation(subject_hash=subject_hash, access_id=original.access_id)
+                return await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                   participant=participant, subject_hash=subject_hash, original=original,
+                                   candidate=candidate, now=now)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def decide_transaction(
+        self, *, transaction_id: str, intent_digest: str, decision: str, subject_hash: str, access_id: str,
+        reason: str = "", now: int | None = None,
+    ) -> dict[str, Any]:
+        """W578: materialize the coordinator's recorded decision, then serve the result.
+
+        The receipt rename is the decision's one visibility point; a serving
+        failure after it raises CardServingUnavailable and the decision stands.
+        """
+        from .transaction_store import decide
+
+        moment = int(now if now is not None else time.time())
+        try:
+            async with self._critical_section(subject_hash=subject_hash, access_id=access_id):
+                decided = await decide(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                       decision=decision, reason=reason)
+                if decided["state"] != "committed":
+                    return decided
+                current = await self._store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+                if current is None:
+                    raise CardServingUnavailable("serving_state_unavailable", access_id=access_id)
+                authority = current[1]
+                mutation_id = uuid.uuid4().hex
+                try:
+                    await self._mark_updating(access_id=access_id, mutation_id=mutation_id,
+                                              expected_revision=authority.card_revision - 1)
+                    await self._cache.commit_projection(
+                        authority, mutation_id=mutation_id,
+                        ttl_seconds=authority_projection_ttl(authority, moment),
+                    )
+                    await self._index(authority=authority, subject_hash=subject_hash, moment=moment)
+                except Exception as exc:
+                    raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
+                return decided
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
     async def revoke(
         self,
         *,
