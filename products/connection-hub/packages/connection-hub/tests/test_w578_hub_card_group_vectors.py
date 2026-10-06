@@ -234,10 +234,13 @@ def test_an_identical_group_retried_after_an_abort_is_a_new_transaction():
                "participant_candidates": {PARTICIPANT: accepted["candidate_value"]}}
     first = IntentDraft(replay_scope="pb:group", request_id="attempt-1", expires_at=NOW + 600,
                         participants=(PARTICIPANT,), payload=payload).bind("a" * 64, 1)
-    retry = IntentDraft(replay_scope="pb:group", request_id="attempt-2", expires_at=NOW + 900,
+    # The SAME original expiry (CodeApp 23:12): a retry never renews the approval; the new
+    # request, transaction id, epoch and global digest alone separate the attempts.
+    retry = IntentDraft(replay_scope="pb:group", request_id="attempt-2", expires_at=NOW + 600,
                         participants=(PARTICIPANT,), payload=payload).bind("b" * 64, 2)
     one, two = participant_projection(first, PARTICIPANT), participant_projection(retry, PARTICIPANT)
     assert one["binding_ref"] == two["binding_ref"]
+    assert first.as_mapping()["expires_at"] == retry.as_mapping()["expires_at"]
     assert first.transaction_id != retry.transaction_id and first.digest != retry.digest
     assert one["global_intent_digest"] != two["global_intent_digest"]
 
