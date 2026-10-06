@@ -9,8 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import sys
+from datetime import datetime
 
+from connection_hub.delegated_credentials.cards import lifecycle_store
+from connection_hub.delegated_credentials.cards.lifecycle import LifecycleRequest
 from connection_hub.delegated_credentials.cards.store import (
     BundleStorageDelegatedCardStore,
 )
@@ -41,11 +46,46 @@ async def _snapshot(request: dict) -> dict:
     return {"cards": cards}
 
 
+async def _transaction(request: dict) -> dict:
+    store = BundleStorageDelegatedCardStore(request["storage_root"])
+    lifecycle_request = LifecycleRequest.from_mapping(request["body"])
+
+    async def before_publish() -> None:
+        if request["action"] == "replay":
+            raise AssertionError("durable replay must not publish twice")
+
+    if request["action"] == "fault_commit":
+        original_write = lifecycle_store.write_json_atomic
+
+        async def kill_after_committed_receipt(path, payload) -> None:
+            await original_write(path, payload)
+            if (
+                payload.get("schema") == lifecycle_store.LIFECYCLE_RECEIPT_SCHEMA
+                and payload.get("state") == "committed"
+            ):
+                os.kill(os.getpid(), signal.SIGKILL)
+
+        lifecycle_store.write_json_atomic = kill_after_committed_receipt
+
+    return await lifecycle_store.atomic_revoke(
+        store,
+        request=lifecycle_request,
+        actor_subject=request["actor_subject"],
+        now=datetime.fromisoformat(request["now"]),
+        before_publish=before_publish,
+    )
+
+
 def main() -> None:
     request = json.load(sys.stdin)
-    if request.get("action") != "snapshot":
+    action = request.get("action")
+    if action == "snapshot":
+        result = asyncio.run(_snapshot(request))
+    elif action in ("fault_commit", "replay"):
+        result = asyncio.run(_transaction(request))
+    else:
         raise ValueError("subprocess_action_unknown")
-    json.dump(asyncio.run(_snapshot(request)), sys.stdout, sort_keys=True)
+    json.dump(result, sys.stdout, sort_keys=True)
     sys.stdout.write("\n")
 
 
