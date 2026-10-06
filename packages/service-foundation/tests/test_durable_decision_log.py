@@ -131,6 +131,31 @@ async def test_commit_cannot_skip_a_participant_and_recovery_cannot_abort_before
 
 
 @pytest.mark.asyncio
+async def test_late_commit_after_abort_reports_terminal_conflict_first():
+    frozen = intent(("card",))
+    store = MemoryStore()
+    manager = Coordinator(store, {}, Verifier())
+    row = await store.begin(frozen)
+    await manager.decide(row.transaction_id, "aborted")
+    with pytest.raises(DecisionRefused, match="decision_conflict"):
+        await manager.decide(row.transaction_id, "committed", witness_digest="e" * 64)
+
+
+@pytest.mark.asyncio
+async def test_commit_requires_exact_nonempty_lowercase_witness_before_store_call():
+    frozen = intent(("card",))
+    store = MemoryStore()
+    manager = Coordinator(store, {}, Verifier())
+    row = await store.begin(frozen)
+    await store.record_prepared(
+        Receipt(row.transaction_id, frozen.digest, "card", "b" * 64))
+    for witness in ("", "e" * 63, "E" * 64):
+        with pytest.raises(DecisionRefused, match="commit_witness_missing"):
+            await manager.decide(row.transaction_id, "committed", witness_digest=witness)
+    assert store.decisions == []
+
+
+@pytest.mark.asyncio
 async def test_abort_requires_every_realm_ack_even_when_stage_receipt_was_lost():
     frozen = intent(("business", "card"))
     store = MemoryStore()
