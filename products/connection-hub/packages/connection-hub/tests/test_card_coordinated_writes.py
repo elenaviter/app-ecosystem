@@ -36,6 +36,10 @@ class _Persistence:
     async def persist(self, authority, handles, *, subject_hash, expected_revision, **kwargs):
         self.direct.append(authority.card_revision)
 
+    async def persist_guarded(self, authority, handles, *, subject_hash, expected_revision, before_commit):
+        await before_commit()
+        self.direct.append(authority.card_revision)
+
 
 async def _host(tmp_path):
     store, service, before, after = await _setup(tmp_path)
@@ -111,3 +115,36 @@ async def test_a_refused_commit_aborts_and_leaves_nothing_fenced(tmp_path):
         await host._persist_record(record_from_card(after), expected_revision=before.card_revision)
     assert decisions.decisions == ["aborted"] and await _visible(store, before) == before
     assert await tx.list_in_doubt(store) == []
+
+
+@pytest.mark.asyncio
+async def test_a_governed_coordinated_commit_records_the_gates_change_digest(tmp_path):
+    # Ops T3: the witness of a governed write is the binding policy's authorized digest.
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWrite
+    from connection_hub.delegated_credentials.cards.model import ControlCardBinding
+    from test_delegated_access_renewal import _Policy, _registry
+    host, store, decisions, before, after = await _host(tmp_path)
+    binding = ControlCardBinding(control_id="c-1", issuer_ref="work:project:one", issuer_kind="project",
+                                 control_revision=1)
+    bound = replace(before, card_revision=before.card_revision + 1, control_card=binding)
+    service = next(iter(host._card_coordinator[0].participants.values()))._service
+    await service.commit(bound, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision,
+                         now=1_780_000_000)
+    policy = _Policy(True)
+    host._caller_writers = _registry(policy)
+    seen = []
+    real = host._enlisted_gate
+
+    async def spy(authority, **kwargs):
+        result = await real(authority, **kwargs)
+        seen.append(result[1])
+        return result
+
+    host._enlisted_gate = spy
+    edited = replace(bound, card_revision=bound.card_revision + 1, label="governed edit")
+    await host._persist_record(record_from_card(edited), expected_revision=bound.card_revision,
+                               caller_write=CallerWrite("extend", "person-1"))
+    assert await _visible(store, before) == edited
+    row = next(iter(decisions.rows.values()))
+    assert seen[0] is not None and row.witness_digest == seen[0].change_digest
+    assert ("decide", "extend") in policy.calls and ("finalize", "committed") in policy.calls

@@ -176,7 +176,21 @@ class HubCardParticipant:
         return self._receipt(prepared)
 
     async def finish(self, transaction_id: str, decision: str) -> Receipt:
-        intent = await self._intents.load(transaction_id)
+        try:
+            intent = await self._intents.load(transaction_id)
+        except DecisionRefused as exc:
+            if str(exc) != "card_intent_unknown" or decision != "aborted":
+                raise
+            # Ops R1: the initiator crashed between the coordinator's begin and
+            # recording this intent. Without an intent nothing was ever staged
+            # here (prepare needs it), so the ABORT is a tombstone by id; a late
+            # stage is refused anyway by the recorded decision.
+            from .transaction_store import abort_unstaged
+            record = await self._decisions.read(transaction_id)
+            if record is None or record.state != "aborted":
+                raise
+            tombstone = await abort_unstaged(self._store, transaction_id)
+            return Receipt(transaction_id, record.intent.digest, PARTICIPANT, receipt_digest(tombstone))
         if decision == "aborted" and await read_state(self._store, transaction_id=transaction_id) is None:
             # Never durably prepared here (a lost prepare reply, or a stage
             # that crashed first): an idempotent abort tombstone (W581 F1),

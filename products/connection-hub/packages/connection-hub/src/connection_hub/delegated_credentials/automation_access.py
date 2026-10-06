@@ -2418,6 +2418,9 @@ class AutomationAccessService:
                 raise CardConflict(str(exc)) from exc
             raise
         try:
+            # Governed Cards carry the gate's authorized change digest; an
+            # ungoverned Card's witness is only its payload digest, which is
+            # not an authorization (audit tells them apart by the binding).
             await coordinator.decide(transaction_id, "committed", witness_digest=witness or payload)
         except DecisionRefused as exc:
             # A refused COMMIT (an approval that expired, say) must not leave

@@ -224,7 +224,10 @@ class DelegatedCardService:
 
         ``effects`` are the writer's non-Card changes, recorded in the prepared
         receipt and applied only when FINISH materializes a COMMITTED decision
-        (W580 F1/F3/F4); an ABORT discards them.
+        (W580 F1/F3/F4); an ABORT discards them. Their prepare hook runs after
+        the receipt is written, so a failed prepare refuses the stage but the
+        Card stays fenced (card_transaction_unresolved) until the coordinator
+        records the ABORT and finishes it (Ops 13:05 correction).
 
         The serving projection is marked updating with the transaction's own
         mutation id BEFORE the first durable write, so no cached resolver

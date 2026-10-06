@@ -329,3 +329,20 @@ async def test_the_hub_never_applies_an_effect_the_coordinator_intent_does_not_n
     with pytest.raises(DecisionRefused, match="card_intent_not_bound"):
         await coordinator.prepare(intent)
     assert await tx.state(store, transaction_id=TXID) is None and applier.applied == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_finishes_an_abort_whose_hub_intent_was_never_recorded(tmp_path):
+    # Ops R1: a crash between begin and intents.record must not strand recovery.
+    store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path)
+    other = Intent(actor="person", request_id="r-orphan", context="connection-hub.card:update",
+                   payload_digest="f" * 64, participants=(PARTICIPANT,),
+                   expires_at=datetime.now(timezone.utc) + timedelta(minutes=5))
+    decisions.rows.clear()
+    orphan = "d" * 64
+    decisions.rows[other.request_id] = DecisionRecord(orphan, other, "preparing", {}, {})  # no Hub intent for it
+    row = await decisions.read(orphan)
+    await decisions.decide(row.transaction_id, "aborted")
+    await coordinator.recover(limit=10)
+    assert (await decisions.read(row.transaction_id)).finished.keys() == {PARTICIPANT}
+    assert await tx.list_in_doubt(store) == [] and await _visible(store, before) == before
