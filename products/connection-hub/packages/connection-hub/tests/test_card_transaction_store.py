@@ -333,11 +333,11 @@ async def test_the_serving_projection_is_marked_updating_before_the_commit_renam
         order.append(("projection", authority.card_revision))
         return True
 
-    service._mark_updating = mark
-    service._cache.commit_projection = projection
     when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
     await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                     subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
+    service._mark_updating = mark
+    service._cache.commit_projection = projection
     _record(store, "committed")
     await service.decide_transaction(transaction_id=TX, intent_digest=INTENT, decision="committed",
                                      subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
@@ -400,8 +400,16 @@ async def test_local_decide_never_makes_an_independent_decision(tmp_path, record
 class _LuaCache:
     """The Redis marker rules, one key per Card: _INSTALL_MARKER_LUA and _FINALIZE_LUA in cards/cache.py."""
 
+    redis = None  # the resolver's reconciler is never reached: every read is "in the current run"
+
     def __init__(self):
         self.value = None  # {"kind", "card_revision", "mutation_id"}
+
+    def reconcile_lock_key(self):
+        return "reconcile-lock"
+
+    def projection_epoch_key(self):
+        return "projection-epoch"
 
     async def claim_transition(self, access_id, *, mutation_id, expected_revision, ttl_seconds):
         v = self.value
@@ -420,8 +428,8 @@ class _LuaCache:
         return True
 
     async def commit_projection(self, authority, *, mutation_id, ttl_seconds):
-        return self._finalize({"kind": "card", "card_revision": authority.card_revision}, mutation_id,
-                              authority.card_revision)
+        return self._finalize({"kind": "card", "card_revision": authority.card_revision, "authority": authority},
+                              mutation_id, authority.card_revision)
 
     async def commit_tombstone(self, access_id, *, card_revision, mutation_id, ttl_seconds):
         return self._finalize({"kind": "revoked", "card_revision": card_revision}, mutation_id, card_revision)
@@ -433,7 +441,18 @@ class _LuaCache:
         from connection_hub.delegated_credentials.cards.cache import CardCacheEntry
         v = self.value
         return None if v is None else CardCacheEntry(kind=v["kind"], card_revision=v["card_revision"],
-                                                     mutation_id=v.get("mutation_id", ""))
+                                                     mutation_id=v.get("mutation_id", ""),
+                                                     authority=v.get("authority"))
+
+    async def read_in_current_run(self, access_id):
+        return True, await self.read(access_id)
+
+    async def restore_projection(self, authority, *, ttl_seconds):
+        if self.value is not None and (self.value["kind"] != "card"
+                                       or self.value["card_revision"] >= authority.card_revision):
+            return False
+        self.value = {"kind": "card", "card_revision": authority.card_revision, "authority": authority}
+        return True
 
     async def reconcile_projection(self, *args, **kwargs):
         return False
@@ -445,11 +464,16 @@ class _LuaCache:
         return None
 
 
+def _served_revision(cache):
+    v = cache.value
+    return v["card_revision"] if v is not None and v["kind"] == "card" else None
+
+
 async def _served(tmp_path):
     from datetime import datetime, timezone
     store, service, before, after = await _setup(tmp_path)
     service._cache = cache = _LuaCache()
-    cache.value = {"kind": "card", "card_revision": before.card_revision}
+    cache.value = {"kind": "card", "card_revision": before.card_revision, "authority": before}
     when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
     await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                     subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
@@ -466,10 +490,10 @@ async def _service_decide(store, service, before, decision):
 async def test_replaying_a_committed_and_served_decision_succeeds(tmp_path):
     store, service, cache, before, after = await _served(tmp_path)
     await _service_decide(store, service, before, "committed")
-    assert cache.value == {"kind": "card", "card_revision": after.card_revision}
+    assert _served_revision(cache) == after.card_revision
     again = await _service_decide(store, service, before, "committed")
     assert again["state"] == "committed"
-    assert cache.value == {"kind": "card", "card_revision": after.card_revision}
+    assert _served_revision(cache) == after.card_revision
 
 
 @pytest.mark.asyncio
@@ -486,7 +510,7 @@ async def test_a_replay_finishes_serving_a_commit_a_crash_cut_short(tmp_path):
     assert cache.value["kind"] == "updating"  # readers stay closed meanwhile
     cache.commit_projection = real
     await _service_decide(store, service, before, "committed")
-    assert cache.value == {"kind": "card", "card_revision": after.card_revision}
+    assert _served_revision(cache) == after.card_revision
 
 
 @pytest.mark.asyncio
@@ -506,7 +530,7 @@ async def test_a_retry_keeps_the_marker_its_own_earlier_attempt_left(tmp_path):
         transaction_store.decide = real
     assert cache.value["kind"] == "updating"
     await _service_decide(store, service, before, "committed")
-    assert cache.value == {"kind": "card", "card_revision": after.card_revision}
+    assert _served_revision(cache) == after.card_revision
 
 
 @pytest.mark.asyncio
@@ -540,3 +564,68 @@ async def test_a_writers_precondition_read_refuses_a_staged_card_before_any_side
         await service.current_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id)
     await _decide(store, "committed")
     assert await service.current_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id) == after.card_revision
+
+
+# ── Ops F8 (11:28): the cached resolver never serves a staged Card's BEFORE ──
+
+
+def _resolver(store, cache):
+    from connection_hub.delegated_credentials.cards.resolver import DelegatedCardResolver
+    return DelegatedCardResolver(cache=cache, store=store)
+
+
+@pytest.mark.asyncio
+async def test_a_staged_undecided_card_is_never_served_from_the_cache(tmp_path):
+    from connection_hub.delegated_credentials.cards.resolver import CardUnavailable
+    from connection_hub.delegated_credentials.cards.service import transaction_mutation_id
+    store, service, cache, before, after = await _served(tmp_path)
+    assert cache.value["kind"] == "updating" and cache.value["mutation_id"] == transaction_mutation_id(TX)
+    resolver = _resolver(store, cache)
+    with pytest.raises(CardUnavailable, match="card_updating"):  # P5
+        await resolver.resolve(subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
+    cache.value = None  # the marker expired: a miss reads durable state, which refuses while undecided
+    with pytest.raises((CardUnavailable, CardStorageError)):
+        await resolver.resolve(subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
+    assert cache.value is None  # nothing was refilled
+
+
+@pytest.mark.asyncio
+async def test_after_pb_commits_the_cache_never_serves_the_wider_before(tmp_path):
+    from connection_hub.delegated_credentials.cards.resolver import CardUnavailable
+    store, service, cache, before, after = await _served(tmp_path)
+    _record(store, "committed")  # P6: PB decided, the Hub has not materialized it
+    resolver = _resolver(store, cache)
+    with pytest.raises(CardUnavailable, match="card_updating"):
+        await resolver.resolve(subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
+    cache.value = None  # marker expired: the durable read follows PB
+    served = await resolver.resolve(subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
+    assert served.card_revision == after.card_revision
+
+
+@pytest.mark.asyncio
+async def test_a_stage_replay_keeps_its_own_marker(tmp_path):
+    from datetime import datetime, timezone
+    store, service, cache, before, after = await _served(tmp_path)
+    marker = dict(cache.value)
+    when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+    await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
+    assert cache.value == marker
+
+
+@pytest.mark.asyncio
+async def test_a_refused_stage_releases_its_marker(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    store, service, before, after = await _setup(tmp_path)
+    service._cache = cache = _LuaCache()
+    cache.value = {"kind": "card", "card_revision": before.card_revision, "authority": before}
+
+    async def refuse(*args, **kwargs):
+        raise tx.CardTransactionRefused("card_transaction_candidate_invalid")
+
+    monkeypatch.setattr(tx, "stage", refuse)
+    when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+    with pytest.raises(tx.CardTransactionRefused):
+        await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                        subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
+    assert _served_revision(cache) is None and cache.value is None  # readers fall through to durable BEFORE

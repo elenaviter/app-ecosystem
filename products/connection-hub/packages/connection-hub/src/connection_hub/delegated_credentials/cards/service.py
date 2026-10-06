@@ -206,15 +206,48 @@ class DelegatedCardService:
         self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
         original: CardAuthority, candidate: CardAuthority, now: Any,
     ) -> dict[str, Any]:
-        """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served."""
-        from .transaction_store import stage
+        """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served.
 
+        The serving projection is marked updating with the transaction's own
+        mutation id BEFORE the first durable write, so no cached resolver
+        serves BEFORE while the Card is undecided or after PB committed it
+        (Ops F8). When the marker expires, a cache miss reads durable state,
+        which refuses while undecided or follows PB's recorded decision. A
+        replay keeps its own marker; a refused stage releases it; decide and
+        abort finalize it with the same id.
+        """
+        from .transaction_store import CardTransactionRefused, read_receipt, stage
+
+        mutation_id = transaction_mutation_id(transaction_id)
+        access_id = original.access_id
         try:
-            async with self._critical_section(subject_hash=subject_hash, access_id=original.access_id):
-                await self._assert_no_lifecycle_preparation(subject_hash=subject_hash, access_id=original.access_id)
-                return await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
-                                   participant=participant, subject_hash=subject_hash, original=original,
-                                   candidate=candidate, now=now)
+            async with self._critical_section(subject_hash=subject_hash, access_id=access_id):
+                existing = await read_receipt(self._store, transaction_id)
+                if existing is None:
+                    # A fresh stage passes the full shared fence (Ops F2); a
+                    # replay of this transaction's own prepared receipt is
+                    # validated by stage() itself, which this fence would refuse.
+                    await self._assert_no_lifecycle_preparation(subject_hash=subject_hash, access_id=access_id)
+                if existing is None or existing["state"] == "prepared":
+                    try:
+                        await self._mark_transaction_updating(
+                            access_id=access_id, mutation_id=mutation_id,
+                            expected_revision=int(original.card_revision))
+                    except Exception as exc:
+                        raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
+                try:
+                    return await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                       participant=participant, subject_hash=subject_hash, original=original,
+                                       candidate=candidate, now=now)
+                except (CardStorageError, CardTransactionRefused):
+                    if existing is None and await read_receipt(self._store, transaction_id) is None:
+                        # Nothing was staged: release the marker rather than
+                        # hold readers closed until it expires.
+                        try:
+                            await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
+                        except Exception:  # noqa: BLE001 - it only expires; readers stay closed
+                            pass
+                    raise
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
 
