@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import copy
 import html
 import inspect
@@ -1562,9 +1563,14 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
     decisions = getattr(entrypoint, "_card_decision_store", None)
     if decisions is None:
-        tenant, project = _runtime_tenant_project(entrypoint)
-        decisions = await postgres_decision_store(pg_pool, tenant=tenant, project=project)
-        entrypoint._card_decision_store = decisions
+        # One creation per entrypoint: concurrent first requests wait for it.
+        lock = entrypoint.__dict__.setdefault("_card_decision_store_lock", asyncio.Lock())
+        async with lock:
+            decisions = getattr(entrypoint, "_card_decision_store", None)
+            if decisions is None:
+                tenant, project = _runtime_tenant_project(entrypoint)
+                decisions = await postgres_decision_store(pg_pool, tenant=tenant, project=project)
+                entrypoint._card_decision_store = decisions
     bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
                            policies=_invocation_policy_service(entrypoint))
 

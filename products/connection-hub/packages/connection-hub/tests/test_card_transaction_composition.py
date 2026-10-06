@@ -75,3 +75,27 @@ async def test_a_composed_service_commits_an_edit_through_the_real_postgres_deci
                 f"DELETE FROM {composition.DECISION_SCHEMA}.service_foundation_decisions WHERE namespace=$1",
                 decision_namespace(tenant=tenant, project=project))
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_creation_of_the_decision_store_succeeds(tmp_path):
+    # EMain #599 N1: concurrent CREATE ... IF NOT EXISTS can fail; creation is serialized.
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+    import asyncio
+
+    import asyncpg
+
+    from connection_hub.delegated_credentials.cards import composition
+
+    pools = [await asyncpg.create_pool(dsn, min_size=1, max_size=2) for _ in range(4)]
+    try:
+        async with pools[0].acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {composition.DECISION_SCHEMA} CASCADE")
+        stores = await asyncio.gather(*(composition.postgres_decision_store(pool, tenant="t", project=f"p{i}")
+                                        for i, pool in enumerate(pools)))
+        assert len(stores) == 4
+    finally:
+        for pool in pools:
+            await pool.close()

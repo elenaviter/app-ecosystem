@@ -49,12 +49,21 @@ def decision_namespace(*, tenant: str, project: str) -> str:
 
 
 async def postgres_decision_store(pg_pool: Any, *, tenant: str, project: str) -> PostgresDecisionStore:
-    """The kernel's one production store, in the Hub's own schema and namespace."""
-    async with pg_pool.acquire() as connection:
-        await connection.execute(f"CREATE SCHEMA IF NOT EXISTS {DECISION_SCHEMA}")
+    """The kernel's one production store, in the Hub's own schema and namespace.
+
+    Concurrent ``CREATE ... IF NOT EXISTS`` can fail in PostgreSQL (EMain #599
+    N1), so first creation runs under a session advisory lock: one creator at
+    a time across processes.
+    """
     store = PostgresDecisionStore(pg_pool, schema=DECISION_SCHEMA,
                                   namespace=decision_namespace(tenant=tenant, project=project))
-    await store.ensure_schema()
+    async with pg_pool.acquire() as connection:
+        await connection.execute("SELECT pg_advisory_lock(hashtext($1))", DECISION_SCHEMA)
+        try:
+            await connection.execute(f"CREATE SCHEMA IF NOT EXISTS {DECISION_SCHEMA}")
+            await store.ensure_schema()
+        finally:
+            await connection.execute("SELECT pg_advisory_unlock(hashtext($1))", DECISION_SCHEMA)
     return store
 
 
