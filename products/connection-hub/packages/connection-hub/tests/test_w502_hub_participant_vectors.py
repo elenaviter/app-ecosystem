@@ -140,3 +140,63 @@ async def test_a_pb_initiated_intent_carries_its_reads_through_the_authority_sou
     moved = replace(held["card"], card_revision=2, label="another admin's edit")
     with pytest.raises(Exception, match="unresolved"):
         await held["service"].commit(moved, subject_hash=scope, expected_revision=1, now=NOW)
+
+
+# ── the accepted vector with read reservations and the catalog key (CodeApp's shared input) ──
+
+RESERVED = VECTORS["accepted_with_reservations"]
+
+
+def test_the_hub_builder_reproduces_the_vector_with_reservations():
+    from connection_hub.delegated_credentials.cards.card_participant import catalog_reservation_from_dependencies
+    from connection_hub.delegated_credentials.cards.card_participant import reads_from_dependencies
+    from connection_hub.delegated_credentials.catalog.reservations import catalog_version_digest
+
+    value = RESERVED["candidate_value"]
+    original = CardAuthority.from_mapping({**value["candidate"], "card_revision": value["original_revision"],
+                                           "label": "CI bot"})
+    rebuilt = hub_participant_input(
+        original=original, candidate=CardAuthority.from_mapping(value["candidate"]),
+        subject_hash=subject_hash_for(VECTORS["grantor_subject"]), action="update",
+        actor_subject="user:project-admin", actor_kind="caller", effects=value["effects"],
+        reads=RESERVED["reads"], catalog_version_digest=RESERVED["catalog"]["digest"])
+    assert rebuilt == RESERVED["participant_input"]
+    assert catalog_version_digest(RESERVED["catalog"]["version"],
+                                  RESERVED["catalog"]["content_hash"]) == RESERVED["catalog"]["digest"]
+    dependencies = RESERVED["participant_input"]["dependency_revisions"]
+    assert reads_from_dependencies(dependencies) == sorted(RESERVED["reads"],
+                                                           key=lambda r: (r["subject_hash"], r["access_id"]))
+    assert catalog_reservation_from_dependencies(dependencies) == RESERVED["catalog"]["digest"]
+    assert RESERVED["candidate_digest"] == VECTORS["accepted"]["candidate_digest"]
+
+
+@pytest.mark.asyncio
+async def test_the_vector_with_reservations_stages_through_the_authority_path(tmp_path):
+    from types import SimpleNamespace
+
+    from connection_hub.delegated_credentials.catalog.reservations import CatalogReservations
+
+    scope = RESERVED["participant_input"]["target_scope"]
+    control = {}
+
+    async def dependencies(service, before):
+        control["card"] = replace(before, access_id=RESERVED["reads"][0]["access_id"], card_revision=1)
+        for revision in (1, 2, 3):
+            card = replace(control["card"], card_revision=revision, label=f"person Control r{revision}")
+            await service.commit(card, subject_hash=scope, expected_revision=revision - 1, now=NOW)
+
+    hub, store, before = await _stage(tmp_path, RESERVED["participant_input"], before_stage=dependencies)
+
+    async def read_active():
+        return SimpleNamespace(version=RESERVED["catalog"]["version"],
+                               content_hash=RESERVED["catalog"]["content_hash"])
+
+    reservations = CatalogReservations(SimpleNamespace(root=tmp_path / "catalog", read_active=read_active))
+    tx.bind_catalog_reservations(store, reservations)
+    receipt = await hub.prepare(TX)
+    assert receipt.candidate_digest == RESERVED["candidate_digest"]
+    staged = await tx.state(store, transaction_id=TX)
+    assert staged["catalog"] == RESERVED["catalog"]["digest"]
+    assert sorted((r["access_id"], r["revision"]) for r in staged["reads"]) == sorted(
+        (r["access_id"], r["revision"]) for r in RESERVED["reads"])
+    assert [fence["transaction_id"] for fence in await reservations.holders()] == [TX]
