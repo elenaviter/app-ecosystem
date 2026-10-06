@@ -113,6 +113,55 @@ class Verifier:
             raise DecisionRefused("untrusted_receipt")
 
 
+def receipt_for(record, name, digest="b" * 64):
+    return Receipt(record.transaction_id, record.intent.epoch,
+                   record.intent.digest, name,
+                   projection_digest(record.intent, name),
+                   participant_projection(record.intent, name)["candidate_digest"],
+                   digest)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prepared_count", [0, 1])
+@pytest.mark.parametrize("caller_connection", [False, True])
+async def test_store_commit_refuses_missing_preparations(
+        store, prepared_count, caller_connection):
+    """The store guard matters even when an app calls decide directly."""
+    names = ("card", "business")
+    request_id = f"guard-{prepared_count}-{caller_connection}"
+
+    async def exercise(connection=None):
+        row = await store.begin(draft(request_id=request_id, names=names),
+                                transaction_id=f"tx-{request_id}",
+                                epoch=20 + prepared_count * 2 + caller_connection,
+                                connection=connection)
+        if prepared_count:
+            await store.record_prepared(receipt_for(row, names[0]),
+                                        connection=connection)
+        before = await store.read(row.transaction_id, connection=connection)
+        with pytest.raises(DecisionRefused, match="commit_unprepared"):
+            await store.decide(row.transaction_id, "committed",
+                               witness_digest="e" * 64, connection=connection)
+        assert await store.read(row.transaction_id, connection=connection) == before
+        for name in names[prepared_count:]:
+            await store.record_prepared(receipt_for(row, name),
+                                        connection=connection)
+        committed = await store.decide(row.transaction_id, "committed",
+                                       witness_digest="e" * 64,
+                                       connection=connection)
+        assert committed.state == "committed"
+        assert set(committed.prepared) == set(names)
+        return row.transaction_id
+
+    if caller_connection:
+        async with store.pool.acquire() as connection:
+            async with connection.transaction():
+                transaction_id = await exercise(connection)
+    else:
+        transaction_id = await exercise()
+    assert (await store.read(transaction_id)).state == "committed"
+
+
 @pytest.mark.asyncio
 async def test_platform_jsonb_codec_standalone_and_caller_transaction(platform_codec_store):
     store = platform_codec_store
@@ -161,6 +210,86 @@ async def test_platform_jsonb_codec_standalone_and_caller_transaction(platform_c
                                          connection=connection)).terminal
                 raise RuntimeError("rollback")
     assert await store.read("codec-caller-tx") is None
+
+
+@pytest.mark.asyncio
+async def test_receipts_round_trip_between_default_and_platform_codecs(
+        platform_codec_store):
+    import asyncpg
+
+    codec_store = platform_codec_store
+    plain_pool = await asyncpg.create_pool(
+        os.environ["SERVICE_FOUNDATION_TEST_POSTGRES_DSN"], min_size=1, max_size=2)
+    plain_store = PostgresDecisionStore(
+        plain_pool, schema=codec_store.schema, namespace=codec_store.namespace)
+    try:
+        for writer, reader, request_id in (
+                (plain_store, codec_store, "plain-writer"),
+                (codec_store, plain_store, "codec-writer")):
+            row = await writer.begin(draft(request_id=request_id))
+            receipt = receipt_for(row, "card")
+            prepared = await writer.record_prepared(receipt)
+            assert prepared.prepared["card"] == receipt
+            assert (await reader.read(row.transaction_id)).prepared["card"] == receipt
+            assert any(candidate.transaction_id == row.transaction_id
+                       for candidate in await reader.list_in_doubt(limit=10))
+            assert (await reader.decide(row.transaction_id, "committed",
+                                        witness_digest="e" * 64)).terminal
+            finished = receipt_for(row, "card", "c" * 64)
+            await reader.record_finished(finished)
+            assert (await writer.read(row.transaction_id)).finished["card"] == finished
+            async with plain_pool.acquire() as connection:
+                types = await connection.fetchrow(
+                    f"""SELECT jsonb_typeof(prepared) AS prepared_column,
+                        jsonb_typeof(prepared->'card') AS prepared_value,
+                        jsonb_typeof(finished) AS finished_column,
+                        jsonb_typeof(finished->'card') AS finished_value
+                        FROM {writer.table} WHERE namespace=$1 AND transaction_id=$2""",
+                    writer.namespace, row.transaction_id)
+            assert set(types.values()) == {"object"}
+    finally:
+        await plain_pool.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_shape", [
+    "value_string", "column_string", "wrong_key", "extra_field", "missing_field",
+])
+async def test_malformed_stored_receipt_fails_closed_across_codecs(
+        platform_codec_store, bad_shape):
+    import asyncpg
+    from dataclasses import asdict
+
+    codec_store = platform_codec_store
+    plain_pool = await asyncpg.create_pool(
+        os.environ["SERVICE_FOUNDATION_TEST_POSTGRES_DSN"], min_size=1, max_size=2)
+    plain_store = PostgresDecisionStore(
+        plain_pool, schema=codec_store.schema, namespace=codec_store.namespace)
+    try:
+        row = await plain_store.begin(draft(request_id=f"bad-{bad_shape}"))
+        fields = asdict(receipt_for(row, "card"))
+        if bad_shape == "value_string":
+            bad = {"card": json.dumps(fields)}
+        elif bad_shape == "column_string":
+            bad = json.dumps({"card": fields})
+        elif bad_shape == "wrong_key":
+            bad = {"other": fields}
+        elif bad_shape == "extra_field":
+            bad = {"card": {**fields, "extra": True}}
+        else:
+            fields.pop("candidate_digest")
+            bad = {"card": fields}
+        async with plain_pool.acquire() as connection:
+            await connection.execute(
+                f"""UPDATE {plain_store.table}
+                    SET prepared=($3::text)::jsonb, prepared_count=1
+                    WHERE namespace=$1 AND transaction_id=$2""",
+                plain_store.namespace, row.transaction_id, json.dumps(bad))
+        for reader in (plain_store, codec_store):
+            with pytest.raises(DecisionRefused, match="stored_receipt_invalid"):
+                await reader.read(row.transaction_id)
+    finally:
+        await plain_pool.close()
 
 @pytest.mark.asyncio
 async def test_reserved_identity_and_same_connection_rollback(store):
