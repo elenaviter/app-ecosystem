@@ -66,7 +66,7 @@ test('an edit is stale once the server is ahead of its pin or refused it; only a
 test('Edit reads the Card from the server before it seeds and pins the draft', () => {
   const begin = panel.slice(panel.indexOf('const beginEdit = useCallback('), panel.indexOf('}, [readCurrentCard, startEdit]);'))
   assert.match(begin, /const current = await readCurrentCard\(item\);[^]*?startEdit\(current\);/)
-  assert.match(begin, /if \(!current\) \{[^]*?return;/) // no read, no editor
+  assert.match(begin, /if \(!current\) \{[^]*?return false;/) // no read, no editor
   // Every way into an edit goes through it.
   assert.match(panel, /onClick=\{\(\) => \{ void beginEdit\(item\); \}\}>/)
   assert.match(panel, /if \(!editDirty\) \{ void beginEdit\(item\); return; \}/)
@@ -97,7 +97,7 @@ test('Reload this Card keeps the editor open, seeded from the server version wit
   const reload = panel.slice(panel.indexOf('const reloadEdit = async'), panel.indexOf('startEdit(current);\n  };', panel.indexOf('const reloadEdit = async')) + 20)
   assert.match(reload, /const current = await readCurrentCard\(item\);[^]*?startEdit\(current\);/)
   assert.doesNotMatch(reload, /clearEditState\(\)/) // the editor stays open
-  assert.match(panel, /editBaseRevision\.current = pinAtStart\(item\);\s+setEditRefusedStale\(false\);/)
+  assert.match(panel, /editBaseRevision\.current = pinAtStart\(item\);\s+editBaseCatalog\.current = catalogPinAtStart\(item\);\s+setEditRefusedStale\(false\);/)
   assert.match(panel, /onClick=\{\(\) => \{ void reloadEdit\(record\); \}\}>\s+Reload this Card/)
 })
 

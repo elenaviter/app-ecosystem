@@ -25,7 +25,7 @@ test('a plain Card link opens it to read, a request-bound link opens the editor'
 const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
 
 test('the linked Card is shown on its own, read only, until Edit', () => {
-  assert.match(panel, /setViewAccessId\(item\.access_id\);\s+\/\/ A link opens the Card to read\.[^]*?if \(accessCardFocusRequestsEdit\(accessCardFocus\)\) void beginEdit\(item\);/)
+  assert.match(panel, /setViewAccessId\(item\.access_id\);\s+\/\/ A link opens the Card to read\.[^]*?if \(accessCardFocusRequestsEdit\(accessCardFocus\)\) \{[^]*?void beginEdit\(item\)/)
   // The old unconditional edit on every resolved link is gone.
   assert.doesNotMatch(panel, /focusedAccessId\.current = accessCardFocus\.accessId;\s+startEdit\(item\);/)
   assert.match(panel, /\{!editingRecord && viewRecord \? \(/)

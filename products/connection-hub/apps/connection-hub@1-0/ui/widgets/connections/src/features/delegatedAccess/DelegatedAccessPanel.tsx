@@ -166,11 +166,13 @@ import {
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import {
+  catalogPinAtStart,
   controlFocusRead,
   pinAfterRefusal,
   pinAfterSave,
   pinAtStart,
   tabReturnReads,
+  withLinkedOperation,
 } from './cardFreshness';
 import {
   isLinkedControlCard,
@@ -1176,6 +1178,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // W587: the Card revision the open edit started from (see saveEdit), and
   // whether the server already refused this edit as stale (409).
   const editBaseRevision = useRef<number | null>(null);
+  const editBaseCatalog = useRef<string | null>(null);
+  const editRequest = useRef<string | null>(null);
   const [editRefusedStale, setEditRefusedStale] = useState(false);
   const [openReadError, setOpenReadError] = useState('');
   // W360: while a project person's or invitation's Control Card is edited,
@@ -2242,6 +2246,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const editDirty = editingAccessId !== null && currentSnapshot !== editSeedRef.current;
   const startEdit = useCallback((item: DelegatedAccessRecord) => {
     editBaseRevision.current = pinAtStart(item);
+    editBaseCatalog.current = catalogPinAtStart(item);
     setEditRefusedStale(false);
     const picks: Record<string, boolean> = {};
     Object.entries(item.resource_grants || {}).forEach(([resource, grants]) => {
@@ -2340,14 +2345,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   }, [dispatch]);
   // Edit reads the Card first, then seeds the draft and pins its revision
   // from that read, never from a copy this tab loaded earlier.
-  const beginEdit = useCallback(async (item: DelegatedAccessRecord) => {
+  const beginEdit = useCallback(async (item: DelegatedAccessRecord): Promise<boolean> => {
     setOpenReadError('');
+    editRequest.current = item.access_id;
     const current = await readCurrentCard(item);
+    // A later Edit on another Card supersedes this one: its read is dropped.
+    if (editRequest.current !== item.access_id) return false;
     if (!current) {
       setOpenReadError('This Card could not be read from Connection Hub, so the editor was not opened. Try again.');
-      return;
+      return false;
     }
     startEdit(current);
+    return true;
   }, [readCurrentCard, startEdit]);
   // Human label for one connected account (falls back to the id).
   const accountLabelById = useMemo(() => {
@@ -2465,15 +2474,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setViewAccessId(item.access_id);
       // A link opens the Card to read. Only a link that asks for a change (an
       // operation to grant, an account or claims to allow) opens the editor.
-      if (accessCardFocusRequestsEdit(accessCardFocus)) void beginEdit(item);
-      if (accessCardFocus.resource && accessCardFocus.outerOperation) {
-        setEditResourceOperations((current) => ({
-          ...current,
-          [accessCardFocus.resource as string]: Array.from(new Set([
-            ...(current[accessCardFocus.resource as string] || []),
-            accessCardFocus.outerOperation as string,
-          ])),
-        }));
+      if (accessCardFocusRequestsEdit(accessCardFocus)) {
+        // W587: the requested operation is added only after beginEdit's read
+        // seeded the draft; added before, the seed would drop it.
+        const { resource, outerOperation } = accessCardFocus;
+        void beginEdit(item).then((opened) => {
+          if (opened) setEditResourceOperations((current) => withLinkedOperation(current, resource, outerOperation));
+        });
       }
     }
     if (accessCardFocus.accountId) {
@@ -2953,6 +2960,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
 
   const clearEditState = () => {
     editBaseRevision.current = null;
+    editBaseCatalog.current = null;
     setEditRefusedStale(false);
     setEditingAccessId(null);
     setEditPicks({});
@@ -3356,7 +3364,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         // pinned at startEdit, so a background refresh never turns a draft
         // made against an older Card into an overwrite of a newer one.
         expectedCardRevision: editBaseRevision.current ?? item.card_revision,
-        expectedCatalogVersion: item.catalog_drift?.current_version || item.catalog_version,
+        expectedCatalogVersion: editBaseCatalog.current ?? catalogPinAtStart(item) ?? undefined,
         // Changed descriptors the grantor reviewed and accepts with this save;
         // every other changed selected operation stays as it was: suspended
         // on a remote MCP connector, in effect for review on a catalog row.

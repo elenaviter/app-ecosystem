@@ -62,3 +62,22 @@ export function withNewerCard<T extends { access_id: string; card_revision?: num
       : item
   ));
 }
+
+/** The catalog an edit starts on, pinned with the revision: a catalog change
+ *  while editing is refused by the server (409), never adopted silently. */
+export function catalogPinAtStart(record: {
+  catalog_version?: string; catalog_drift?: { current_version?: string } | null;
+}): string | null {
+  return record.catalog_drift?.current_version || record.catalog_version || null;
+}
+
+/** A link that asks to grant one operation adds it to the draft AFTER the
+ *  draft was seeded from the server read; seeding never drops it. */
+export function withLinkedOperation(
+  operations: Record<string, string[]>,
+  resource: string | undefined,
+  operation: string | undefined,
+): Record<string, string[]> {
+  if (!resource || !operation) return operations;
+  return { ...operations, [resource]: Array.from(new Set([...(operations[resource] || []), operation])) };
+}
