@@ -354,3 +354,88 @@ async def test_prune_of_an_unstaged_card_still_succeeds(tmp_path):
         grantor_subject=USER["user_id"], provider_id="google", account_id="acct-1")
     assert outcome == {"ok": True, "pruned": 1, "grants": [record.access_id], "not_pruned": []}
     assert written == [({}, record.card_revision)]
+
+
+def _bind(harness, access_id):
+    from connection_hub.delegated_credentials.cards.model import ControlCardBinding
+
+    persistence = harness.persistence
+
+    async def persist_guarded(authority, handles, *, subject_hash, expected_revision, before_commit):
+        await before_commit()  # production calls it inside the target lock, after its revision check
+        await persistence.persist(authority, handles, subject_hash=subject_hash, expected_revision=expected_revision)
+
+    persistence.persist_guarded = persist_guarded
+    authority, handles = harness.persistence.cards[access_id]
+    harness.persistence.cards[access_id] = (
+        dataclasses.replace(authority, control_card=ControlCardBinding(
+            control_id="control-1", issuer_ref="work:project:one", issuer_kind="project", control_revision=1)),
+        handles,
+    )
+
+
+class _Policy:
+    def __init__(self, allow):
+        self.allow, self.calls = allow, []
+
+    def _decision(self, request):
+        from datetime import datetime, timedelta, timezone
+        from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteDecision
+        return CallerWriteDecision(self.allow, "" if self.allow else "pb_refused", "policy:v1",
+                                   datetime.now(timezone.utc) + timedelta(minutes=5), request)
+
+    async def decide(self, request):
+        self.calls.append(("decide", request.action))
+        return self._decision(request)
+
+    async def revalidate(self, request, initial):
+        self.calls.append(("revalidate", request.action))
+        return self._decision(request)
+
+    async def finalize(self, request, *, state, card_revision):
+        self.calls.append(("finalize", state))
+        return True
+
+
+def _registry(policy):
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriterRegistry
+    registry = CallerWriterRegistry()
+    registry.register("project", policy)
+    return registry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow", [True, False])
+async def test_prolonging_a_bound_card_is_decided_by_its_binding_policy(tmp_path, allow):
+    # W580/B: prolongation changes the duration of authority, so it is governed.
+    harness = _Harness(tmp_path)
+    harness.service._store = _ProlongingGrantStore()
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    _bind(harness, access_id)
+    before = harness.persistence.cards[access_id][0]
+    policy = _Policy(allow)
+    harness.service.bind_caller_writers(_registry(policy))
+    outcome = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    assert [c for c in policy.calls if c[0] != "finalize"] == [("decide", "prolong"), ("revalidate", "prolong")][: 2 if allow else 1]
+    assert ("finalize", "committed" if allow else "refused") in policy.calls
+    after = harness.persistence.cards[access_id][0]
+    if allow:
+        assert outcome["ok"] is True and after.card_revision == before.card_revision + 1
+    else:
+        assert outcome == {"ok": False, "status": 403, "error": "pb_refused", "caller_write_outcome_confirmed": True}
+        assert after == before
+
+
+@pytest.mark.asyncio
+async def test_prolonging_an_unbound_card_asks_no_policy(tmp_path):
+    harness = _Harness(tmp_path)
+    harness.service._store = _ProlongingGrantStore()
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    policy = _Policy(False)
+    harness.service.bind_caller_writers(_registry(policy))
+    assert (await harness.service.renew_access(USER, access_id=access_id, mode="prolong"))["ok"] is True
+    assert policy.calls == []

@@ -4226,7 +4226,10 @@ class AutomationAccessService:
             properties=selected_properties,
         )
         try:
-            await self._persist_record(record, expected_revision=committed_revision)
+            await self._persist_record(record, expected_revision=committed_revision, caller_write=CallerWrite(
+                "create" if committed_revision == 0 else "replace", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
@@ -5965,7 +5968,10 @@ class AutomationAccessService:
             properties=merged_properties,
         )
         try:
-            await self._persist_record(record, expected_revision=target_revision)
+            await self._persist_record(record, expected_revision=target_revision,
+                                       caller_write=CallerWrite("fold", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
@@ -6674,7 +6680,10 @@ class AutomationAccessService:
                     origin="created",
                 )
             )
-            await self._persist_record(record, expected_revision=0)
+            await self._persist_record(record, expected_revision=0,
+                                       caller_write=CallerWrite("create", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except (CardRecordError, ControlCardError) as exc:
             return {"ok": False, "error": exc.reason, "status": 400}
         except CardServingUnavailable as exc:
@@ -8901,7 +8910,10 @@ class AutomationAccessService:
                 record,
                 config=authority_config,
             )
-        await self._persist_record(record, expected_revision=existing_card_revision)
+        # Fails closed by raising when the binding's policy refuses: the
+        # OAuth route must not keep tokens for a refused grant.
+        await self._persist_record(record, expected_revision=existing_card_revision,
+                                   caller_write=CallerWrite("oauth_grant", grantor))
         _LOGGER.info(
             "[automation-access] oauth grant recorded card=%s client=%s initial=%s "
             "account_scope_providers=%s",
@@ -9095,7 +9107,8 @@ class AutomationAccessService:
                     card_revision=record.card_revision + 1,
                 )
                 await self._persist_record(
-                    pruned_record, expected_revision=record.card_revision
+                    pruned_record, expected_revision=record.card_revision,
+                    caller_write=CallerWrite("prune", subject),
                 )
                 pruned.append(access_id)
                 await self.notify_change(
@@ -9368,7 +9381,10 @@ class AutomationAccessService:
             card_revision=record.card_revision + 1,
         )
         try:
-            await self._persist_record(updated, expected_revision=record.card_revision)
+            await self._persist_record(updated, expected_revision=record.card_revision,
+                                       caller_write=CallerWrite("extend", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
@@ -9520,7 +9536,10 @@ class AutomationAccessService:
             provenance=provenance,
         )
         try:
-            await self._persist_record(renewed, expected_revision=committed_revision)
+            await self._persist_record(renewed, expected_revision=committed_revision,
+                                       caller_write=CallerWrite("renew", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
@@ -9643,7 +9662,10 @@ class AutomationAccessService:
             provenance=provenance,
         )
         try:
-            await self._persist_record(prolonged, expected_revision=committed_revision)
+            await self._persist_record(prolonged, expected_revision=committed_revision,
+                                       caller_write=CallerWrite("prolong", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:

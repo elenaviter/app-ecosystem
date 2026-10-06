@@ -41,7 +41,8 @@ from .issuer_gate import change_digest
 # is decided by the binding's policy; expiry is governed too. The per-action
 # shape rules below are generic: they bound what an action may change, and
 # the policy decides whether it may happen. No PB semantics live here.
-SYSTEM_WRITE_ACTIONS = ("create", "extend", "oauth_grant", "renew", "prolong", "prune", "fold", "control_snapshot")
+SYSTEM_WRITE_ACTIONS = ("create", "replace", "extend", "oauth_grant", "renew", "prolong", "prune", "fold",
+                        "control_snapshot")
 CALLER_WRITE_ACTIONS = ("update", "reset", "revoke", "attach", "detach", *SYSTEM_WRITE_ACTIONS)
 # The candidate fields a caller write may never change: they are the target's
 # identity, its credentials' subject and its expiry.
@@ -49,7 +50,7 @@ PROTECTED_FIELDS = ("access_id", "grantor_subject", "delegate_subject", "client_
                     "issuer_ref", "source", "card_kind", "expires_at")
 # A Card's identity: no action but create may change it.
 IDENTITY_FIELDS = tuple(name for name in PROTECTED_FIELDS if name != "expires_at")
-# What a prolongation may change: only its expiry, forward, and its bookkeeping.
+# What a prolongation may change: only its expiry, never backward, and its bookkeeping.
 PROLONG_FIELDS = ("expires_at", "provenance", "card_revision")
 PRUNE_FIELDS = ("account_scope", "card_revision")
 
@@ -81,7 +82,7 @@ def candidate_shape_refusal(action: str, before: Mapping[str, Any] | None, candi
         return "caller_writer_candidate_binding_mismatch"
     changed = {name for name in set(before) | set(candidate) if candidate.get(name) != before.get(name)}
     if action == "prolong":
-        if not changed <= set(PROLONG_FIELDS) or int(candidate.get("expires_at") or 0) <= int(before.get("expires_at") or 0):
+        if not changed <= set(PROLONG_FIELDS) or int(candidate.get("expires_at") or 0) < int(before.get("expires_at") or 0):
             return "caller_writer_prolong_shape_invalid"
     elif action == "prune":
         if not changed <= set(PRUNE_FIELDS) or not _scope_subset(candidate.get("account_scope") or {},
