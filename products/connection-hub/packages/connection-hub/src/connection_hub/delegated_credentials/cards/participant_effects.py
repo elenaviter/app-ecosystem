@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from .model import CardCurrentPointer
+from connection_hub.invocation_policy.models import InvocationAuthority, validated_invocation_id
 
 EFFECT_KINDS = frozenset({
     "grant_binding", "credential_lifetime", "invocation_policy", "grant_unbind",
@@ -76,18 +77,19 @@ def _no_secret_fields(value: Any, depth: int = 0) -> None:
             _no_secret_fields(item, depth + 1)
 
 
-def _payload(kind: str, key: str, value: Any, access_id: str) -> str:
+def _payload(kind: str, key: str, value: Any, access_id: str,
+             base_revision: int, subject_hash: str) -> str:
     if not isinstance(value, Mapping):
         _refuse("card_effect_payload_invalid")
     _no_secret_fields(value)
     keys = {
         "grant_binding": {"access_id", "operations", "resource_grants",
                           "resource_operations", "named_services", "expires_at", "slot"},
-        "credential_lifetime": {"access_id", "expires_at"},
-        "invocation_policy": {"access_id", "mode"},
-        "grant_unbind": {"access_id"},
+        "credential_lifetime": {"access_id", "expires_at", "base_card_revision"},
+        "invocation_policy": {"owner_subject", "authority", "mode", "expected_revision"},
+        "grant_unbind": {"access_id", "session_id", "token_sha256"},
     }[kind]
-    if set(value) != keys or value.get("access_id") != access_id:
+    if set(value) != keys or (kind != "invocation_policy" and value.get("access_id") != access_id):
         _refuse("card_effect_payload_binding_invalid")
     if "expires_at" in value and (
             type(value["expires_at"]) is not int or value["expires_at"] < 0):
@@ -100,11 +102,32 @@ def _payload(kind: str, key: str, value: Any, access_id: str) -> str:
         if any(not isinstance(value[field], Mapping) for field in (
                 "resource_grants", "resource_operations", "named_services")):
             _refuse("card_effect_payload_invalid")
-    elif kind == "credential_lifetime" and key not in {"access", "refresh", "card"}:
-        _refuse("card_effect_payload_invalid")
-    elif kind == "invocation_policy" and (
-            type(value["mode"]) is not str or value["mode"] not in {"always", "once"}):
-        _refuse("card_effect_payload_invalid")
+    elif kind == "credential_lifetime":
+        if key not in {"access", "refresh", "card"}:
+            _refuse("card_effect_payload_invalid")
+        if type(value["base_card_revision"]) is not int or value["base_card_revision"] != base_revision:
+            _refuse("card_effect_base_revision_mismatch")
+    elif kind == "invocation_policy":
+        owner = value["owner_subject"]
+        if (type(owner) is not str or not owner or owner != owner.strip()
+                or hashlib.sha256(owner.encode("utf-8")).hexdigest() != subject_hash):
+            _refuse("card_effect_owner_mismatch")
+        if (type(value["mode"]) is not str or value["mode"] not in {"always", "once"}
+                or type(value["expected_revision"]) is not int or value["expected_revision"] < 0):
+            _refuse("card_effect_payload_invalid")
+        try:
+            authority = InvocationAuthority.from_mapping(value["authority"])
+            if authority.to_dict() != value["authority"] or authority.access_id != access_id:
+                _refuse("card_effect_policy_binding_invalid")
+            # The backing policy port forms tx:key; never truncate that identity.
+            validated_invocation_id("0" * 64 + ":" + key)
+        except (ValueError, TypeError, AttributeError):
+            raise ParticipantEffectRefused("card_effect_policy_binding_invalid") from None
+    elif kind == "grant_unbind":
+        if (type(value["session_id"]) is not str or not value["session_id"]
+                or len(value["session_id"]) > 256 or type(value["token_sha256"]) is not str
+                or not _HEX.fullmatch(value["token_sha256"])):
+            _refuse("card_effect_old_handle_invalid")
     return _canonical(dict(value))
 
 
@@ -115,6 +138,7 @@ class EffectBinding:
     The trusted receipt/intent binds the authorized actor. This helper neither
     infers a PB actor nor derives new authority from these stored coordinates.
     Target adapters must retain the identity without retaining raw secrets.
+    Mutable decision state/reason are excluded, so all three phases share it.
     """
 
     transaction_id: str
@@ -139,6 +163,10 @@ class IdempotentEffectTarget(Protocol):
 
     async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str: ...
 
+    async def prepare_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str: ...
+
+    async def release_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str: ...
+
 
 ReceiptReader = Callable[[str], Awaitable[Mapping[str, Any] | None]]
 
@@ -155,6 +183,20 @@ class ParticipantEffectApplier:
 
     async def apply(self, kind: str, key: str, payload: Mapping[str, Any], *,
                     transaction_id: str) -> None:
+        await self._dispatch("apply", kind, key, payload, transaction_id=transaction_id)
+
+    async def prepare(self, kind: str, key: str, payload: Mapping[str, Any], *,
+                      transaction_id: str) -> None:
+        """STAGE only: place the invocation-policy marker, without granting it."""
+        await self._dispatch("prepare", kind, key, payload, transaction_id=transaction_id)
+
+    async def release(self, kind: str, key: str, payload: Mapping[str, Any], *,
+                      transaction_id: str) -> None:
+        """Recorded ABORT only: release the exact policy preparation on recovery."""
+        await self._dispatch("release", kind, key, payload, transaction_id=transaction_id)
+
+    async def _dispatch(self, phase: str, kind: str, key: str, payload: Mapping[str, Any], *,
+                        transaction_id: str) -> None:
         if type(transaction_id) is not str or not _HEX.fullmatch(transaction_id):
             _refuse("card_effect_transaction_invalid")
         if type(kind) is not str or kind not in EFFECT_KINDS:
@@ -169,8 +211,9 @@ class ParticipantEffectApplier:
             raise ParticipantEffectRefused("card_effect_receipt_unavailable") from None
         if not isinstance(receipt, Mapping) or receipt.get("transaction_id") != transaction_id:
             _refuse("card_effect_receipt_binding_invalid")
-        if receipt.get("state") != "committed":
-            _refuse("card_effect_not_committed")
+        state = {"apply": "committed", "prepare": "prepared", "release": "aborted"}[phase]
+        if receipt.get("state") != state:
+            _refuse("card_effect_not_" + state)
         try:
             if any(type(receipt[field].get(name)) is not int for field in ("before", "after")
                    for name in ("card_revision", "expires_at")):
@@ -194,7 +237,7 @@ class ParticipantEffectApplier:
             _refuse("card_effect_set_invalid")
         identities = set()
         matched = False
-        requested = _payload(kind, key, payload, before.access_id)
+        requested = _payload(kind, key, payload, before.access_id, before.card_revision, receipt["subject_hash"])
         for effect in effects:
             if not isinstance(effect, Mapping) or set(effect) != {"kind", "key", "payload"}:
                 _refuse("card_effect_set_invalid")
@@ -204,7 +247,8 @@ class ParticipantEffectApplier:
                     or (effect_kind, effect_key) in identities):
                 _refuse("card_effect_set_invalid")
             identities.add((effect_kind, effect_key))
-            saved = _payload(effect_kind, effect_key, effect["payload"], before.access_id)
+            saved = _payload(effect_kind, effect_key, effect["payload"], before.access_id,
+                             before.card_revision, receipt["subject_hash"])
             if (effect_kind, effect_key) == (kind, key):
                 if saved != requested:
                     _refuse("card_effect_digest_mismatch")
@@ -212,15 +256,21 @@ class ParticipantEffectApplier:
         if not matched:
             _refuse("card_effect_not_prepared")
         _no_secret_fields(receipt)
-        receipt_json = _canonical(dict(receipt))
+        receipt_json = _canonical({field: value for field, value in receipt.items()
+                                   if field not in {"state", "reason"}})
         effect_json = _canonical({"kind": kind, "key": key, "payload": json.loads(requested)})
         binding = EffectBinding(transaction_id, kind, key, _digest(effect_json),
                                 _digest(receipt_json), receipt_json)
+        if phase != "apply" and kind != "invocation_policy":
+            return  # these kinds prepare/release no target state; payload still validated
         target = self._targets.get(kind)
         if target is None:
             _refuse("card_effect_adapter_unavailable")
         try:
-            applied_digest = await target.apply_once(binding, json.loads(requested))
+            operation = getattr(target, phase + "_once", None)
+            if not callable(operation):
+                _refuse("card_effect_adapter_unavailable")
+            applied_digest = await operation(binding, json.loads(requested))
         except ParticipantEffectRefused:
             raise
         except Exception:
