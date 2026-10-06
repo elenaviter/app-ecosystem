@@ -269,3 +269,27 @@ async def test_expired_marker_refilled_with_before_does_not_strand_a_refused_int
     assert current[1] == original
     # The diagnostic intent is retired; a normal writer may now progress.
     await store.advance_current(subject_hash=query.target.subject_hash, pointer=current[0])
+
+
+@pytest.mark.asyncio
+async def test_identical_terminal_recovery_retries_active_retirement_without_overwriting_later_revision(tmp_path, monkeypatch):
+    _, query, store, _, persistence, cache, _ = await fixture(tmp_path)
+    reg, calls = registry()
+    retire = update_store.retire
+
+    async def interrupted_retirement(*args):
+        pass  # models a crash after terminal receipt rename, before unlink
+
+    monkeypatch.setattr(update_store, "retire", interrupted_retirement)
+    original_result = await apply(persistence, reg)
+    assert original_result["ok"] and update_store.active_path(store, query.transaction_id(ACTOR)).exists()
+    monkeypatch.setattr(update_store, "retire", retire)
+    current = await store.read_current_authority(subject_hash=query.target.subject_hash, access_id=query.target.access_id)
+    later = dataclasses.replace(current[1], card_revision=3, label="later legitimate revision")
+    pointer = await store.write_revision(subject_hash=query.target.subject_hash, authority=later,
+        updated_at=datetime.now(timezone.utc))
+    await store.advance_current(subject_hash=query.target.subject_hash, pointer=pointer)
+    assert await apply(persistence, reg) == original_result
+    assert not update_store.active_path(store, query.transaction_id(ACTOR)).exists()
+    assert len(calls) == 2 and cache.claim_transition.await_count == 1 and cache.commit_projection.await_count == 1
+    assert (await store.read_current_authority(subject_hash=query.target.subject_hash, access_id=query.target.access_id))[1] == later

@@ -474,6 +474,10 @@ class DelegatedCardService:
         from ..durable_io import cancellation_safe_await
 
         if receipt["serving_state"] != "pending":
+            # A crash or unlink error after the terminal receipt rename may
+            # leave the bounded active queue populated. Identical recovery
+            # retries only retirement, never a mutation or serving rewrite.
+            await updates.retire(self._store, receipt)
             return receipt
         query = IssuerUpdateQuery.from_mapping(receipt["binding"]["request"])
         target = query.target

@@ -130,3 +130,20 @@ async def test_actual_publication_deadline_cannot_outlive_the_original_card():
         persistence=persistence, host_is_current=lambda: True)
     assert result["error"] == "fixture_no_publish" and len(calls) == 2
     persistence.read_issuer_update_authority.assert_not_called()
+
+
+def test_unrelated_field_change_is_refused_by_the_preservation_invariant(monkeypatch):
+    from connection_hub.delegated_credentials import issuer_update
+
+    original = card()
+    query = IssuerUpdateQuery.from_mapping(wire(original))
+    replace = issuer_update.dataclasses.replace
+
+    def injected_change(obj, **changes):
+        if obj is original and "card_revision" in changes:
+            changes["label"] = "unexpected extra-field change"
+        return replace(obj, **changes)
+
+    monkeypatch.setattr(issuer_update.dataclasses, "replace", injected_change)
+    with pytest.raises(IssuerUpdateRefused, match="issuer_update_preservation_failed"):
+        build_candidate(original, query)
