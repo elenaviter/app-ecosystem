@@ -126,6 +126,8 @@ class OAuthAuthorityStore(Protocol):
         ttl_seconds: int,
         expected_generation: Any = None,
         refresh_request_fingerprint: str = "",
+        expires_at_cap: int | None = None,
+        card_incarnation: int | None = None,
     ) -> str | None: ...
 
     async def rollback_refresh_token_rotation(
@@ -176,7 +178,7 @@ class OAuthAuthorityStore(Protocol):
     ) -> bool: ...
 
     async def set_card_credentials_expiry(
-        self, registry_access_id: str, expires_at: int
+        self, registry_access_id: str, expires_at: int, *, card_revision: int = 0
     ) -> str: ...
 
     async def card_credentials_live(self, registry_access_id: str) -> bool: ...
@@ -432,7 +434,14 @@ class PostgresOAuthAuthorityStore:
         record: Mapping[str, Any],
         *,
         ttl_seconds: int,
+        cap_expires_at: int | None = None,
+        card_revision: int = 0,
     ) -> str:
+        """Issue a refresh family; W585: an issued family carries the Card's cap from the start."""
+        if cap_expires_at is not None and (type(cap_expires_at) is not int or cap_expires_at <= 0):
+            raise ValueError("refresh_cap_invalid")
+        if type(card_revision) is not int or card_revision < 0:
+            raise ValueError("refresh_card_revision_invalid")
         token = secrets.token_urlsafe(40)
         family_id = f"ofam_{uuid.uuid4().hex}"
         generation_id = f"ogen_{uuid.uuid4().hex}"
@@ -444,11 +453,15 @@ class PostgresOAuthAuthorityStore:
                     INSERT INTO {self.schema}.{TABLE_FAMILIES} (
                         family_id, tenant, project, registry_access_id,
                         card_kind, client_id, subject, identity_scope,
-                        current_generation_id, state, expires_at
+                        current_generation_id, state, expires_at,
+                        cap_expires_at, card_revision
                     ) VALUES (
                         $1, $2, $3, $4,
                         $5, $6, $7, $8,
-                        $9, 'active', now() + ($10 * interval '1 second')
+                        $9, 'active',
+                        LEAST(now() + ($10 * interval '1 second'),
+                              COALESCE(to_timestamp($11::bigint), 'infinity'::timestamptz)),
+                        to_timestamp($11::bigint), $12
                     )
                     """,
                     family_id,
@@ -461,6 +474,8 @@ class PostgresOAuthAuthorityStore:
                     str(payload.get("identity_scope") or "").strip(),
                     generation_id,
                     max(1, int(ttl_seconds)),
+                    cap_expires_at,
+                    card_revision,
                 )
                 await connection.execute(
                     f"""
@@ -469,7 +484,9 @@ class PostgresOAuthAuthorityStore:
                         state, expires_at
                     ) VALUES (
                         $1, $2, $3, ($4::text)::jsonb,
-                        'active', now() + ($5 * interval '1 second')
+                        'active',
+                        LEAST(now() + ($5 * interval '1 second'),
+                              COALESCE(to_timestamp($6::bigint), 'infinity'::timestamptz))
                     )
                     """,
                     generation_id,
@@ -477,6 +494,7 @@ class PostgresOAuthAuthorityStore:
                     bearer_sha256(token),
                     json.dumps(payload, sort_keys=True, separators=(",", ":")),
                     max(1, int(ttl_seconds)),
+                    cap_expires_at,
                 )
         return token
 
@@ -561,10 +579,25 @@ class PostgresOAuthAuthorityStore:
         ttl_seconds: int,
         expected_generation: Any = None,
         refresh_request_fingerprint: str = "",
+        expires_at_cap: int | None = None,
+        card_incarnation: int | None = None,
     ) -> str | None:
+        """Rotate one refresh generation.
+
+        W585: the successor never outlives the Card. Its expiry is LEAST of
+        now()+ttl, the family's stored cap (written by the committed Card
+        lifetime) and the caller's cap, computed in the statement that inserts
+        it, under the family lock. A passed cap, or a caller that read an older
+        Card revision than the family's, is refused before anything changes;
+        the refusal is the ordinary ``None`` (no successor) with a named log.
+        """
         token = str(refresh_token or "").strip()
         if not token:
             return None
+        if expires_at_cap is not None and (type(expires_at_cap) is not int or expires_at_cap <= 0):
+            raise ValueError("refresh_cap_invalid")
+        if card_incarnation is not None and (type(card_incarnation) is not int or card_incarnation < 0):
+            raise ValueError("refresh_card_incarnation_invalid")
         fingerprint = str(refresh_request_fingerprint or "")
         new_token = secrets.token_urlsafe(40)
         generation_id = f"ogen_{uuid.uuid4().hex}"
@@ -580,7 +613,11 @@ class PostgresOAuthAuthorityStore:
                            generation.state AS generation_state,
                            generation.expires_at > now() AS generation_live,
                            family.state AS family_state,
-                           family.expires_at > now() AS family_live
+                           family.expires_at > now() AS family_live,
+                           family.card_revision AS card_revision,
+                           LEAST(COALESCE(family.cap_expires_at, 'infinity'::timestamptz),
+                                 COALESCE(to_timestamp($2::bigint), 'infinity'::timestamptz))
+                               <= now() AS cap_passed
                     FROM {self.schema}.{TABLE_REFRESH_GENERATIONS} AS generation
                     JOIN {self.schema}.{TABLE_FAMILIES} AS family
                       ON family.family_id = generation.family_id
@@ -588,10 +625,21 @@ class PostgresOAuthAuthorityStore:
                     FOR UPDATE OF generation, family
                     """,
                     bearer_sha256(token),
+                    expires_at_cap,
                 )
                 if row is None:
                     return None
                 current = dict(row)
+                # W585: refused before any generation is consumed, so a caller
+                # that re-reads the Card can retry with the same token.
+                if bool(current.get("cap_passed")):
+                    LOGGER.info("[connection-hub.oauth-authority] refresh_cap_passed family=%s",
+                                current.get("family_id"))
+                    return None
+                if card_incarnation is not None and int(current.get("card_revision") or 0) > card_incarnation:
+                    LOGGER.info("[connection-hub.oauth-authority] refresh_card_incarnation_moved family=%s",
+                                current.get("family_id"))
+                    return None
                 current_generation = str(
                     current.get("generation_id") or ""
                 ).strip()
@@ -657,10 +705,13 @@ class PostgresOAuthAuthorityStore:
                         INSERT INTO {self.schema}.{TABLE_REFRESH_GENERATIONS} (
                             generation_id, family_id, token_sha256, record,
                             state, expires_at
-                        ) VALUES (
-                            $1, $2, $3, ($4::text)::jsonb,
-                            'active', now() + ($5 * interval '1 second')
                         )
+                        SELECT $1, $2, $3, ($4::text)::jsonb, 'active',
+                               LEAST(now() + ($5 * interval '1 second'),
+                                     COALESCE(family.cap_expires_at, 'infinity'::timestamptz),
+                                     COALESCE(to_timestamp($6::bigint), 'infinity'::timestamptz))
+                        FROM {self.schema}.{TABLE_FAMILIES} AS family
+                        WHERE family.family_id = $2
                         """,
                         generation_id,
                         family_id,
@@ -681,6 +732,7 @@ class PostgresOAuthAuthorityStore:
                             separators=(",", ":"),
                         ),
                         max(1, int(ttl_seconds)),
+                        expires_at_cap,
                     )
                     await connection.execute(
                         f"""
@@ -688,12 +740,15 @@ class PostgresOAuthAuthorityStore:
                         SET current_generation_id = $2,
                             revision = revision + 1,
                             updated_at = now(),
-                            expires_at = now() + ($3 * interval '1 second')
+                            expires_at = LEAST(now() + ($3 * interval '1 second'),
+                                               COALESCE(cap_expires_at, 'infinity'::timestamptz),
+                                               COALESCE(to_timestamp($4::bigint), 'infinity'::timestamptz))
                         WHERE family_id = $1 AND state = 'active'
                         """,
                         family_id,
                         generation_id,
                         max(1, int(ttl_seconds)),
+                        expires_at_cap,
                     )
                     rotated = True
         if reuse_detected:
@@ -1239,7 +1294,8 @@ class PostgresOAuthAuthorityStore:
                 )
         return True
 
-    async def set_card_credentials_expiry(self, registry_access_id: str, expires_at: int) -> str:
+    async def set_card_credentials_expiry(self, registry_access_id: str, expires_at: int, *,
+                                          card_revision: int = 0) -> str:
         """W582: set every live OAuth credential of one Card to ONE absolute deadline.
 
         Replay-safe: rows already at that deadline are not written (no
@@ -1253,6 +1309,8 @@ class PostgresOAuthAuthorityStore:
         access_id = str(registry_access_id or "").strip()
         if not access_id or type(expires_at) is not int or expires_at <= 0:
             raise ValueError("card_credentials_expiry_invalid")
+        if type(card_revision) is not int or card_revision < 0:
+            raise ValueError("card_credentials_revision_invalid")
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 await self._lock_card_families(connection, access_id)
@@ -1269,11 +1327,15 @@ class PostgresOAuthAuthorityStore:
                       AND family.expires_at > now()
                       AND generation.state = 'active'
                       AND generation.expires_at > now()
+                      AND family.card_revision <= $2
                     ORDER BY family.family_id
                     FOR UPDATE OF family, generation
                     """,
                     access_id,
+                    card_revision,
                 )
+                # W585: a family already capped by a NEWER Card revision is left
+                # as it is; the cap and its revision never move backward.
                 family_ids = [str(dict(row).get("family_id") or "") for row in rows]
                 family_ids = [value for value in family_ids if value]
                 bindings = await connection.fetchval(
@@ -1300,13 +1362,18 @@ class PostgresOAuthAuthorityStore:
                 await connection.execute(
                     f"""
                     UPDATE {self.schema}.{TABLE_FAMILIES}
-                    SET expires_at = to_timestamp($2), revision = revision + 1, updated_at = now()
+                    SET expires_at = to_timestamp($2), cap_expires_at = to_timestamp($2),
+                        card_revision = $3, revision = revision + 1, updated_at = now()
                     WHERE family_id = ANY($1::text[])
                       AND state = 'active'
-                      AND expires_at IS DISTINCT FROM to_timestamp($2)
+                      AND card_revision <= $3
+                      AND (expires_at IS DISTINCT FROM to_timestamp($2)
+                           OR cap_expires_at IS DISTINCT FROM to_timestamp($2)
+                           OR card_revision IS DISTINCT FROM $3)
                     """,
                     family_ids,
                     expires_at,
+                    card_revision,
                 )
                 await connection.execute(
                     f"""

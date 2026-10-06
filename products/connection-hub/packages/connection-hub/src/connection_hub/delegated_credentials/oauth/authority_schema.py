@@ -74,6 +74,14 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_FAMILIES} (
     expires_at                   TIMESTAMPTZ NOT NULL
 );
 
+-- W585: the Card's committed absolute deadline and the Card revision that set
+-- it. Rotation never extends a family past this cap (LEAST in the successor
+-- statement), and a lifetime effect from an older Card revision never moves it.
+ALTER TABLE {schema}.{TABLE_FAMILIES}
+    ADD COLUMN IF NOT EXISTS cap_expires_at TIMESTAMPTZ NULL;
+ALTER TABLE {schema}.{TABLE_FAMILIES}
+    ADD COLUMN IF NOT EXISTS card_revision BIGINT NOT NULL DEFAULT 0;
+
 CREATE INDEX IF NOT EXISTS connection_hub_oauth_families_card_idx
     ON {schema}.{TABLE_FAMILIES} (registry_access_id, state);
 
