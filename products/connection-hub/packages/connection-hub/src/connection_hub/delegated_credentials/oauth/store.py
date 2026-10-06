@@ -1042,6 +1042,16 @@ class GrantStore:
             )
         )
 
+    async def card_credentials_live(self, registry_access_id: str) -> bool:
+        """Read-only: does one Card still hold a live OAuth credential (SQL authority only)."""
+        return bool(
+            await self._authority_call(
+                "card_credentials.live",
+                "card_credentials_live",
+                str(registry_access_id or "").strip(),
+            )
+        )
+
     async def revoke_access_grant(self, access_token: str) -> bool:
         token = str(access_token or "").strip()
         if not token:

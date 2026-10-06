@@ -1309,3 +1309,76 @@ async def test_w260_a_live_call_composes_with_the_holders_control_card_and_only_
     _put_card(redis, dataclasses.replace(bound, control_card=dataclasses.replace(bound.control_card, holder_subject="")))
     with pytest.raises(LiveGrantCardError):
         await resolve_live_grant_composition(redis, tenant="tenant", project="project", access_id=caller.access_id)
+
+
+
+def _legacy_control_with_recorded_writes(*, refuse_unnamed: bool):
+    """A legacy Control whose writes are recorded at the _persist_record seam.
+
+    A credentialless Control carries no control_card (the model refuses a
+    chain), so binding_of never selects a caller-writer policy for it today;
+    ``refuse_unnamed`` stands in for a governed binding refusing an unnamed write.
+    """
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+    legacy = dataclasses.replace(
+        _regular_control(revision=4), properties={}, resource_grants={RESOURCE: ("*",)},
+        resource_operations={RESOURCE: ("*",)}, named_service_operations=NamedServiceSelection.all(),
+        account_scope={"*": {"*": ("*",)}})
+    persistence = _Persistence(legacy)
+    persistence.initial = dataclasses.replace(legacy, access_id="other-control")  # no trusted history
+    service = AutomationAccessService(redis=_Redis(), tenant="tenant", project="project", config=None,
+                                      grant_store=object(), card_persistence=persistence)
+    writes = []
+    real_persist = service._persist_record
+
+    async def persist(record, *, expected_revision, caller_write=None, **kwargs):
+        writes.append(caller_write)
+        if caller_write is None and refuse_unnamed:
+            raise CallerWriteRefused("caller_writer_not_enlisted")
+        return await real_persist(record, expected_revision=expected_revision, caller_write=caller_write, **kwargs)
+
+    service._persist_record = persist
+    return legacy, persistence, service, writes
+
+
+@pytest.mark.asyncio
+async def test_a_control_migration_with_an_actor_names_its_action_and_actor() -> None:
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWrite
+    legacy, persistence, service, writes = _legacy_control_with_recorded_writes(refuse_unnamed=True)
+    migrated = await service._ensure_control_snapshot(record_from_card(legacy), actor_subject=OWNER)
+    assert writes == [CallerWrite("control_snapshot", OWNER)]
+    assert persistence.persist_calls == 1 and migrated.card_revision == legacy.card_revision + 1
+
+
+@pytest.mark.asyncio
+async def test_a_governed_control_read_without_an_actor_migrates_in_memory_only() -> None:
+    # W580/B: an actor-less read path never writes a governed Card; it reads the fail-closed snapshot.
+    legacy, persistence, service, writes = _legacy_control_with_recorded_writes(refuse_unnamed=True)
+    migrated = await service._ensure_control_snapshot(record_from_card(legacy))
+    assert writes == [None] and persistence.persist_calls == 0 and persistence.authority == legacy
+    assert migrated.card_revision == legacy.card_revision  # nothing new was committed
+    assert migrated.resource_grants == {} and migrated.account_scope == {}
+    assert control_snapshot_metadata(migrated.properties)["review_required"] == ["historical_boundary_unavailable"]
+
+
+@pytest.mark.asyncio
+async def test_an_ungoverned_control_read_without_an_actor_still_persists_its_migration() -> None:
+    legacy, persistence, service, writes = _legacy_control_with_recorded_writes(refuse_unnamed=False)
+    migrated = await service._ensure_control_snapshot(record_from_card(legacy))
+    assert writes == [None] and persistence.persist_calls == 1
+    assert migrated.card_revision == legacy.card_revision + 1
+
+
+@pytest.mark.asyncio
+async def test_a_refused_control_migration_with_an_actor_is_not_swallowed() -> None:
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+
+    legacy, persistence, service, writes = _legacy_control_with_recorded_writes(refuse_unnamed=True)
+
+    async def refuse(record, *, expected_revision, caller_write=None, **kwargs):
+        raise CallerWriteRefused("pb_refused")
+
+    service._persist_record = refuse
+    with pytest.raises(CallerWriteRefused, match="pb_refused"):
+        await service._ensure_control_snapshot(record_from_card(legacy), actor_subject=OWNER)
+    assert persistence.persist_calls == 0 and persistence.authority == legacy

@@ -943,6 +943,7 @@ async def test_card_credentials_absolute_expiry_is_replay_safe_against_real_post
         await store.bind_access_grant("access-bearer", {"registry_access_id": "aut_card", "operations": ["search"]},
                                       ttl_seconds=600)
         deadline = int(time.time()) + 7200
+        assert await store.card_credentials_live("aut_card") is True
         assert await store.set_card_credentials_expiry("aut_card", deadline) == "applied"
         first = await revisions()
         assert first[2] == deadline
@@ -952,6 +953,11 @@ async def test_card_credentials_absolute_expiry_is_replay_safe_against_real_post
         assert await store.set_card_credentials_expiry("aut_card", past) == "applied"
         assert (await revisions())[2] == past
         assert await store.get_access_grant_record("access-bearer") is None  # really expired
+        # Ops 13:19: an ended credential is never revived by a later deadline.
+        assert await store.card_credentials_live("aut_card") is False
+        ended = await revisions()
+        assert await store.set_card_credentials_expiry("aut_card", deadline) == "no_active_credentials"
+        assert await revisions() == ended
         assert await store.set_card_credentials_expiry("aut_none", deadline) == "no_active_credentials"
     finally:
         async with pool.acquire() as connection:

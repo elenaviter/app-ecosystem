@@ -1857,6 +1857,8 @@ class AutomationAccessService:
     async def _ensure_control_snapshot(
         self,
         record: AutomationAccessRecord,
+        *,
+        actor_subject: str = "",
     ) -> AutomationAccessRecord:
         """Migrate one legacy Control Card from its first durable revision.
 
@@ -1940,7 +1942,17 @@ class AutomationAccessService:
             await self._persist_record(
                 record_from_card(migrated),
                 expected_revision=current.card_revision,
+                caller_write=CallerWrite("control_snapshot", actor_subject) if actor_subject else None,
             )
+        except CallerWriteRefused as exc:
+            if exc.reason != "caller_writer_not_enlisted" or actor_subject:
+                raise
+            # W580/B: a governed Control read on a path with no authenticated
+            # actor is not migrated durably here. The migrated snapshot (the
+            # historical or fail-closed boundary) is used in memory for this
+            # read; the next actor-bearing write persists it under the gate.
+            # It keeps the CURRENT revision: nothing new was committed.
+            return record_from_card(dataclasses.replace(migrated, card_revision=current.card_revision))
         except CardConflict:
             reloaded = await self._load_record(
                 current.access_id,
@@ -5273,7 +5285,7 @@ class AutomationAccessService:
             return IssuerWriteRefused("issuer_snapshot_requires_explicit_migration").to_dict()
         if _record_is_credentialless(existing) and not self._issuer_managed(existing):
             try:
-                existing = await self._ensure_control_snapshot(existing)
+                existing = await self._ensure_control_snapshot(existing, actor_subject=self._caller_actor_subject(user))
             except CardUnavailable as exc:
                 return {
                     "ok": False,
@@ -6493,7 +6505,7 @@ class AutomationAccessService:
         state = loaded[1]
         if state == CARD_STATE_ACTIVE:
             try:
-                record = await self._ensure_control_snapshot(record)
+                record = await self._ensure_control_snapshot(record, actor_subject=self._caller_actor_subject(user))
             except CardUnavailable as exc:
                 return {
                     "ok": False,
@@ -6624,7 +6636,7 @@ class AutomationAccessService:
             if profile_name and _control_card_unstarted(record):
                 return await self._start_control_card(user, record, profile_name)
             try:
-                record = await self._ensure_control_snapshot(record)
+                record = await self._ensure_control_snapshot(record, actor_subject=self._caller_actor_subject(user))
             except CardUnavailable as exc:
                 return {
                     "ok": False,
@@ -9796,6 +9808,20 @@ class AutomationAccessService:
         lifetime = [{"kind": "credential_lifetime", "key": "card",
                      "payload": {"access_id": record.access_id, "expires_at": int(new_expires_at),
                                  "base_card_revision": int(committed_revision)}}] if coordinated else []
+        if coordinated:
+            # Ops 13:19: a credential that has already ended is refused, Card
+            # unchanged, exactly as before routing. The check is read-only
+            # and runs before the stage; the effect itself moves only live
+            # credentials, so a credential that ends in between is not revived.
+            credentials_live = getattr(store, "card_credentials_live", None)
+            if credentials_live is None:
+                return expired("Reconnect from the client.")
+            try:
+                if not await credentials_live(record.access_id):
+                    return expired("Reconnect from the client.")
+            except GrantStoreUnavailable as exc:
+                return {"ok": False, "error": "delegated_credential_store_unavailable",
+                        "reason": exc.operation, "retryable": True, "status": 503}
         if not coordinated and record.refresh_token:
             extend_refresh = getattr(store, "extend_refresh_token", None)
             if extend_refresh is None:

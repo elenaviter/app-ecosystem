@@ -179,6 +179,8 @@ class OAuthAuthorityStore(Protocol):
         self, registry_access_id: str, expires_at: int
     ) -> str: ...
 
+    async def card_credentials_live(self, registry_access_id: str) -> bool: ...
+
     async def revoke_card_credentials(self, registry_access_id: str) -> bool: ...
 
     async def card_continuity_proven(
@@ -1254,14 +1256,21 @@ class PostgresOAuthAuthorityStore:
         async with self._pool.acquire() as connection:
             async with connection.transaction():
                 await self._lock_card_families(connection, access_id)
+                # Only LIVE credentials move: a credential that has already
+                # ended is never revived by a later deadline (Ops 13:19).
                 rows = await connection.fetch(
                     f"""
                     SELECT family.family_id
                     FROM {self.schema}.{TABLE_FAMILIES} AS family
+                    JOIN {self.schema}.{TABLE_REFRESH_GENERATIONS} AS generation
+                      ON generation.generation_id = family.current_generation_id
                     WHERE family.registry_access_id = $1
                       AND family.state = 'active'
+                      AND family.expires_at > now()
+                      AND generation.state = 'active'
+                      AND generation.expires_at > now()
                     ORDER BY family.family_id
-                    FOR UPDATE OF family
+                    FOR UPDATE OF family, generation
                     """,
                     access_id,
                 )
@@ -1270,7 +1279,7 @@ class PostgresOAuthAuthorityStore:
                 bindings = await connection.fetchval(
                     f"""
                     SELECT count(*) FROM {self.schema}.{TABLE_ACCESS_BINDINGS}
-                    WHERE registry_access_id = $1 AND state = 'active'
+                    WHERE registry_access_id = $1 AND state = 'active' AND expires_at > now()
                     """,
                     access_id,
                 )
@@ -1282,6 +1291,7 @@ class PostgresOAuthAuthorityStore:
                     SET expires_at = to_timestamp($2), revision = revision + 1
                     WHERE family_id = ANY($1::text[])
                       AND state = 'active'
+                      AND expires_at > now()
                       AND expires_at IS DISTINCT FROM to_timestamp($2)
                     """,
                     family_ids,
@@ -1304,12 +1314,40 @@ class PostgresOAuthAuthorityStore:
                     SET expires_at = to_timestamp($2), revision = revision + 1, updated_at = now()
                     WHERE registry_access_id = $1
                       AND state = 'active'
+                      AND expires_at > now()
                       AND expires_at IS DISTINCT FROM to_timestamp($2)
                     """,
                     access_id,
                     expires_at,
                 )
         return "applied"
+
+    async def card_credentials_live(self, registry_access_id: str) -> bool:
+        """Read-only: does one Card still hold a live OAuth credential? Writes nothing."""
+
+        access_id = str(registry_access_id or "").strip()
+        if not access_id:
+            return False
+        async with self._pool.acquire() as connection:
+            return bool(await connection.fetchval(
+                f"""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM {self.schema}.{TABLE_FAMILIES} AS family
+                    JOIN {self.schema}.{TABLE_REFRESH_GENERATIONS} AS generation
+                      ON generation.generation_id = family.current_generation_id
+                    WHERE family.registry_access_id = $1
+                      AND family.state = 'active'
+                      AND family.expires_at > now()
+                      AND generation.state = 'active'
+                      AND generation.expires_at > now()
+                ) OR EXISTS (
+                    SELECT 1 FROM {self.schema}.{TABLE_ACCESS_BINDINGS}
+                    WHERE registry_access_id = $1 AND state = 'active' AND expires_at > now()
+                )
+                """,
+                access_id,
+            ))
 
     async def revoke_card_credentials(self, registry_access_id: str) -> bool:
         """Revoke every OAuth credential owned by one stable Card id."""

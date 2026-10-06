@@ -515,3 +515,60 @@ async def test_a_refused_bound_prolong_extends_no_credential(tmp_path):
     refused = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
     assert refused["ok"] is False and refused["error"] == "pb_refused"
     assert store.extended_refresh == [] and store.extended_grants == []
+
+
+class _LiveCheckingGrantStore(_ProlongingGrantStore):
+    """Adds the SQL authority's read-only live check (Ops 13:19)."""
+
+    def __init__(self, *, live: bool) -> None:
+        super().__init__()
+        self.live = live
+        self.live_checks: list[str] = []
+
+    async def card_credentials_live(self, access_id):
+        self.live_checks.append(access_id)
+        return self.live
+
+
+async def _coordinated_prolong(tmp_path, *, live: bool):
+    harness = _Harness(tmp_path)
+    store = _LiveCheckingGrantStore(live=live)
+    harness.service._store = store
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _as_connected_app(harness, access_id, refresh_token="rt-1", access_token="at-1")
+    before = harness.persistence.cards[access_id][0]
+    persisted: list[tuple] = []
+
+    async def persist(record, *, expected_revision, effects=(), **kwargs):
+        persisted.append((record, expected_revision, list(effects)))
+
+    harness.service._card_coordinator = object()  # bound: the lifetime is a decision-bound effect
+    harness.service._persist_record = persist
+    result = await harness.service.renew_access(USER, access_id=access_id, mode="prolong")
+    return harness, store, access_id, before, persisted, result
+
+
+@pytest.mark.asyncio
+async def test_a_coordinated_prolong_of_an_ended_credential_is_refused_and_stages_nothing(tmp_path):
+    # Ops 13:19: today's refusal is kept; the live check is read-only and runs before the stage.
+    harness, store, access_id, before, persisted, result = await _coordinated_prolong(tmp_path, live=False)
+    assert result["ok"] is False and result["error"] == "delegated_access_credential_expired", result
+    assert store.live_checks == [access_id]
+    assert persisted == []  # nothing staged, so no Card revision
+    assert harness.persistence.cards[access_id][0] == before
+    assert (store.extended_refresh, store.extended_grants, store.extended_cards) == ([], [], [])
+
+
+@pytest.mark.asyncio
+async def test_a_coordinated_prolong_of_a_live_credential_stages_only_its_lifetime_effect(tmp_path):
+    harness, store, access_id, before, persisted, result = await _coordinated_prolong(tmp_path, live=True)
+    assert result["ok"] is True, result
+    assert store.live_checks == [access_id]
+    [(record, expected_revision, effects)] = persisted
+    assert expected_revision == before.card_revision and record.card_revision == before.card_revision + 1
+    assert effects == [{"kind": "credential_lifetime", "key": "card",
+                        "payload": {"access_id": access_id, "expires_at": record.expires_at,
+                                    "base_card_revision": before.card_revision}}]
+    # Under the coordinator nothing is extended directly; the effect applies at FINISH(committed).
+    assert (store.extended_refresh, store.extended_grants, store.extended_cards) == ([], [], [])
