@@ -231,6 +231,7 @@ def _peer_that_commits_then_loses_the_reply(client, effects, *, ledger=False, re
     rows: dict = {}
 
     async def uncertain_action(**arguments):
+        arguments.setdefault("payload", {})
         client.calls.append(arguments)
         if arguments["action"] == "operation.receipt.get":
             if not ledger:
@@ -248,7 +249,7 @@ def _peer_that_commits_then_loses_the_reply(client, effects, *, ledger=False, re
         transport_id = arguments["transport_request_id"]
         if transport_id not in effects:
             effects[transport_id] = {"ok": True, "object": {"saved": True}}
-            rows[arguments["payload"]["idempotency_key"]] = effects[transport_id]
+            rows[arguments["payload"].get("idempotency_key", "")] = effects[transport_id]
             raise DomainError("data_bus_outcome_unknown", "Synthetic: reply lost after commit.", status=504)
         return effects[transport_id]
 
@@ -259,7 +260,7 @@ def _mutation_sends(client):
     return [call for call in client.calls if call["action"] != "operation.receipt.get"]
 
 
-def _serve_twice(supervisor, queue, channel, monkeypatch):
+def _serve_twice(supervisor, queue, channel, monkeypatch, *, action="plan.item.update", payload=None):
     import asyncio
     from datetime import datetime, timedelta, timezone
 
@@ -268,8 +269,10 @@ def _serve_twice(supervisor, queue, channel, monkeypatch):
 
     async def scenario():
         request = submit_request(
-            queue, channel, action="plan.item.update",
-            payload={"idempotency_key": "c4-transport-key", "changes": {"title": "Synthetic"}},
+            queue, channel, action=action,
+            payload=payload if payload is not None else {
+                "idempotency_key": "c4-transport-key", "changes": {"title": "Synthetic"},
+            },
         )
         supervisor.serve_coordinate_once()
         await asyncio.gather(*supervisor._coordinate_draining.values())
@@ -491,3 +494,60 @@ def test_an_unsettled_receipt_is_reported_unknown_with_its_evidence_at_expiry(
     reads = [call for call in client.calls if call["action"] == "operation.receipt.get"]
     assert len(reads) == 2, "read again on the bounded schedule, then stopped at expiry"
     assert len({call["transport_request_id"] for call in reads}) == 2, "each read is its own transport request"
+
+
+def test_a_keyless_mutation_is_never_resent_after_an_unknown_outcome(tmp_path, monkeypatch):
+    # Ops, 07:20 UTC: 72 contract operations declare no idempotency_key, some
+    # of them mutations. A keyless mutation cannot be looked up, so it stays
+    # unknown and is never sent again.
+    from test_connected_degraded_admission import _fixture
+
+    host, _identity, channel, supervisor, _session, client = _fixture(tmp_path)
+    queue = CoordinateQueue(host.field_root)
+    effects: dict = {}
+    _peer_that_commits_then_loses_the_reply(client, effects, ledger=True)
+
+    request, first, second = _serve_twice(
+        supervisor, queue, channel, monkeypatch,
+        action="project.control.update", payload={"changes": {"banner": "Synthetic"}},
+    )
+
+    assert first is None and second is None
+    assert len(effects) == 1
+    assert len(client.calls) == 1, "no resend and no receipt read for a keyless mutation"
+    assert queue.holds(worker_name=channel.worker_name, request_id=request["request_id"])
+
+
+def test_every_contract_operation_is_either_a_declared_read_or_never_resent():
+    # Enumerates the whole contract: only READ_OPERATIONS may be sent again
+    # after an unknown outcome. Every other operation, keyed or not, gets no
+    # automatic resend, so a new operation is a mutation until declared a read.
+    import asyncio
+
+    from project_board.client.relay import ReceiptPending, _settle_unknown_by_receipt
+    from project_board.contract.worker_operation_contract import (
+        PROBLEM_BOARD_OPERATIONS, READ_OPERATIONS,
+    )
+
+    async def board_without_the_read(**arguments):
+        sent.append(arguments["action"])
+        raise DomainError(
+            "work_worker_stream_operation_denied", "Not governed here.",
+            status=403, details={"operation": arguments["action"]},
+        )
+
+    for operation in sorted(PROBLEM_BOARD_OPERATIONS):
+        for payload in ({}, {"idempotency_key": "k"}):
+            sent: list = []
+            request = {
+                "request_id": "coordinate_x", "transport_attempts": 1,
+                "last_transport_error": {"code": "data_bus_outcome_unknown"},
+            }
+            arguments = {"object_ref": "work:project:x", "action": operation, "payload": payload}
+            if operation in READ_OPERATIONS:
+                assert asyncio.run(_settle_unknown_by_receipt(board_without_the_read, request, arguments)) is None
+                assert sent == []
+                continue
+            with pytest.raises(ReceiptPending):
+                asyncio.run(_settle_unknown_by_receipt(board_without_the_read, request, arguments))
+            assert operation not in sent, f"{operation} was sent again"

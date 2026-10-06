@@ -38,3 +38,17 @@ def test_the_receipt_read_is_a_published_operation():
     assert "operation.receipt.get" in PROBLEM_BOARD_OPERATIONS
     contract = operation_contract("operation.receipt.get")
     assert set(contract["payload"]) == {"operation", "idempotency_key", "request_hash"}
+
+
+def test_the_declared_reads_are_contract_operations_named_as_reads():
+    from project_board.contract.worker_operation_contract import (
+        PROBLEM_BOARD_OPERATIONS, READ_OPERATIONS, operation_is_read,
+    )
+
+    assert READ_OPERATIONS <= PROBLEM_BOARD_OPERATIONS
+    read_suffixes = (".get", ".list", ".read", ".index", ".item", ".search", ".history", ".resolve", ".embedding_status")
+    assert all(operation.endswith(read_suffixes) for operation in READ_OPERATIONS)
+    # In the board's mutation table (W502), so never a declared read.
+    assert not operation_is_read("project.references.preview")
+    assert not operation_is_read("project.control.update")
+    assert not operation_is_read("")

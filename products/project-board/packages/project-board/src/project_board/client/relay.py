@@ -47,6 +47,7 @@ from .worktree_files import (
 )
 from ..contract.errors import PERMANENT_CREDENTIAL_CODES, DomainError
 from ..contract.operation_identity import transport_request_hash
+from ..contract.worker_operation_contract import operation_is_read
 from ..contract.mail_attachments import MAX_MAIL_ATTACHMENT_BYTES, validate_mail_attachment
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
@@ -433,9 +434,10 @@ async def _settle_unknown_by_receipt(
 
     Returns the response to complete the request with, raises the stored
     refusal or ``ReceiptPending``, or returns None when the request was never
-    sent with an unknown outcome or carries no idempotency key. A board
-    without the read, or a failed read, is ``ReceiptPending`` too: nothing is
-    ever resent automatically. ``in_progress`` and ``no_record`` ("not admitted at the time of
+    sent with an unknown outcome or is a declared read (``READ_OPERATIONS``),
+    which alone may be sent again. A mutation without a key, a board without
+    the read, or a failed read is ``ReceiptPending`` too: no mutation is ever
+    resent automatically. ``in_progress`` and ``no_record`` ("not admitted at the time of
     this read", never "no effect") are read again until the request expires,
     then reported as an unknown outcome with the last read as evidence.
     Resending is the caller's explicit decision, never automatic.
@@ -447,8 +449,19 @@ async def _settle_unknown_by_receipt(
     payload = arguments.get("payload") if isinstance(arguments.get("payload"), Mapping) else {}
     key = str(payload.get("idempotency_key") or "").strip()
     action = str(arguments.get("action") or "")
-    if not key or action == RECEIPT_READ_OPERATION:
+    if operation_is_read(action):
+        # A declared read has no effect; sending it again is safe.
         return None
+    if not key:
+        # A mutation without a key cannot be looked up, so its outcome stays
+        # unknown; it is never sent again automatically (Ops, 07:20 UTC).
+        raise ReceiptPending(
+            "data_bus_outcome_unknown",
+            "This request carries no idempotency key, so its outcome cannot be read back. "
+            "It was not sent again.",
+            status=504,
+            details={"receipt_read": "not_covered"},
+        )
     object_ref = str(arguments.get("object_ref") or "")
     attempt = int(request.get("transport_attempts") or 1)
     try:
