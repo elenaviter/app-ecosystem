@@ -53,13 +53,13 @@ def worker_watch_events(
     coalesce = max(0.0, min(float(coalesce_seconds), 5.0))
     last_signature: tuple[str, ...] = ()
     # W563: whether a pending message is quiet changes only with the backlog
-    # mark, so each one is classified once per mark, reading only its own
+    # mark or a wake deferral, so each one is classified once per mark, reading only its own
     # file (review of PR 535).
     classified: dict[str, bool] = {}
     classified_mark = [""]
 
     def quiet_now(result: dict[str, Any]) -> frozenset[str]:
-        mark = str(field.backlog_mark(worker_name).get("mark_id") or "")
+        mark = field.quiet_token(worker_name)
         if mark != classified_mark[0]:
             classified.clear()
             classified_mark[0] = mark

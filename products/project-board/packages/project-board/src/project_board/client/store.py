@@ -52,6 +52,8 @@ BACKLOG_MARK_HISTORY = 20
 # Kinds that can carry an open question for the receiver: counted apart in
 # the backlog line so they stay visible on every receive.
 BACKLOG_UNRESOLVED_KINDS = frozenset({"request", "decision", "question"})
+# Message refs a wake-ack defers at most; older ones simply wake again.
+WAKE_DEFERRED_MAXIMUM = 1000
 
 # A local plan is a shard until a complete server generation is mirrored
 # here. These name the two states so no reader has to guess which it has.
@@ -3665,6 +3667,27 @@ class SharedFieldStore:
                         for value in list(control_refs)[-20:]
                     ],
                 )
+            # W563 (window w563-client-46543807-0335, 03:14 and 03:20 UTC):
+            # a held session that acknowledged a wake was woken again every
+            # 20 to 30 seconds for the same unread mail, because wake-ack
+            # leaves it pending. The mail the wake named is deferred: it wakes
+            # no session until the next ordinary receive, which clears the
+            # deferral. Mail that arrives later still wakes the session, and
+            # operator mail is never deferred (quiet_mail_refs).
+            if inbox_checked:
+                row.pop("wake_deferred", None)
+            elif acknowledge_wake and wake_id:
+                current_subscription = listener.get("subscription")
+                named = (
+                    current_subscription.get("last_wake_message_refs") or []
+                    if isinstance(current_subscription, Mapping)
+                    else []
+                )
+                previous = row.get("wake_deferred")
+                earlier = previous.get("refs") or [] if isinstance(previous, Mapping) else []
+                refs = sorted({str(ref) for ref in [*earlier, *named] if ref})[-WAKE_DEFERRED_MAXIMUM:]
+                if refs:
+                    row["wake_deferred"] = {"refs": refs, "at": now, "token": new_id("deferral")}
             # W563: a session held for a window acknowledges a native wake
             # without an ordinary receive (pb worker wake-ack), so its backlog
             # is not delivered while it may only do window control.
@@ -5800,6 +5823,24 @@ class SharedFieldStore:
             return frozenset()
         return frozenset(str(item) for item in row.get("message_ids") or [] if item)
 
+    def wake_deferred_refs(self, worker_name: str) -> frozenset[str]:
+        """Mail a wake-ack deferred until the next ordinary receive (W563)."""
+
+        deferred = self.read_worker(worker_name).get("wake_deferred")
+        refs = deferred.get("refs") if isinstance(deferred, Mapping) else None
+        return frozenset(str(ref) for ref in refs or [] if ref)
+
+    def quiet_token(self, worker_name: str) -> str:
+        """Changes whenever which pending mail is quiet can change: the backlog mark or a wake deferral."""
+
+        worker = self.read_worker(worker_name)
+        mark = worker.get("backlog_mark")
+        deferred = worker.get("wake_deferred")
+        return "{}|{}".format(
+            str(mark.get("mark_id") or "") if isinstance(mark, Mapping) else "",
+            str(deferred.get("token") or "") if isinstance(deferred, Mapping) else "",
+        )
+
     def backlog_mark(self, worker_name: str) -> dict[str, Any]:
         """The current backlog mark's summary, or empty when none is set."""
 
@@ -6036,12 +6077,15 @@ class SharedFieldStore:
         PR 535).
         """
 
+        deferred = self.wake_deferred_refs(worker_name)
         if refs is None:
             return {
                 header["message_ref"]
                 for header in self.pending_mail_headers(worker_name)
                 if header.get("backlog")
-                or (header.get("expected_reaction") == "acknowledge_only" and not header.get("operator"))
+                or (not header.get("operator") and (
+                    header.get("expected_reaction") == "acknowledge_only" or header["message_ref"] in deferred
+                ))
             }
         worker = self.read_worker(worker_name)
         clean_name = str(worker.get("worker_name") or "")
@@ -6068,7 +6112,9 @@ class SharedFieldStore:
                     continue
                 payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
                 if not self._is_admitted_operator_mail(row) and (
-                    message_id in backlog or payload.get("expected_reaction") == "acknowledge_only"
+                    message_id in backlog
+                    or ref in deferred
+                    or payload.get("expected_reaction") == "acknowledge_only"
                 ):
                     quiet.add(ref)
                 break

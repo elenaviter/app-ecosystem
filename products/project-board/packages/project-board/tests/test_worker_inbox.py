@@ -191,3 +191,46 @@ def test_a_codex_wake_tells_a_held_session_to_acknowledge_it_without_receiving(m
     # The queue still finds the receive command's wake id, not the wake-ack one.
     assert codex_queue._WAKE_COMMAND.search(message).group("wake_id") == "wake_held_1"
     assert codex_queue._WAKE_COMMAND.search(message).start() < message.index("wake-ack")
+
+
+def test_mail_a_wake_ack_named_wakes_no_one_again_until_an_ordinary_receive(field):
+    # W563, window w563-client-46543807-0335 (codex-app 03:14, Root 03:20 UTC):
+    # a held session that answered each wake with wake-ack was woken again
+    # every 20 to 30 seconds for the same unread mail, because wake-ack leaves
+    # it pending. The acknowledged wake's mail is deferred; new mail still
+    # wakes the session, and the next ordinary receive ends the deferral.
+    old = _send(field, 1, kind="update", subject="Preserved ordinary mail", body="b")
+    field.prepare_worker_session_wake(WORKER, message_refs=[old["message_ref"]], wake_id="wake_held_1")
+    before = field.quiet_token(WORKER)
+
+    field.acknowledge_worker_wake(WORKER, wake_id="wake_held_1")
+
+    assert field.quiet_mail_refs(WORKER, refs=[old["message_ref"]]) == {old["message_ref"]}
+    assert field.quiet_mail_refs(WORKER) == {old["message_ref"]}
+    assert field.quiet_token(WORKER) != before, "the relay and watch caches classify again"
+    assert _inbox(field, limit=10)["pending"] == 1, "deferred, not received or settled"
+
+    window = _send(field, 2, kind="request", subject="START: window w-3", body="b")
+    assert field.quiet_mail_refs(WORKER, refs=[window["message_ref"]]) == set(), "new mail still wakes"
+
+    pull_worker_input(field, worker_name=WORKER, limit=5)
+    assert field.wake_deferred_refs(WORKER) == frozenset()
+    assert field.quiet_mail_refs(WORKER, refs=[old["message_ref"]]) == set()
+
+
+def test_a_wake_ack_never_defers_operator_mail(field):
+    from project_board.client.io import content_hash
+
+    payload = {"body": "Approved.", "correlation_id": "approval"}
+    operator = field.materialize_control({
+        "ref": "work:control:20261006T041500Z:command_deferral:w563-deferral",
+        "project_ref": f"work:project:{PROJECT}", "recipient": WORKER, "kind": "reply",
+        "subject": "Operator approval", "payload": payload, "payload_hash": content_hash(payload),
+        "sender_identity": {"kind": "user", "label": "Operator"},
+    })
+    field.prepare_worker_session_wake(WORKER, message_refs=[operator["message_ref"]], wake_id="wake_held_2")
+
+    field.acknowledge_worker_wake(WORKER, wake_id="wake_held_2")
+
+    assert operator["message_ref"] in field.wake_deferred_refs(WORKER)
+    assert field.quiet_mail_refs(WORKER, refs=[operator["message_ref"]]) == set()
