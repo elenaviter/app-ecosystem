@@ -822,15 +822,12 @@ async def test_a_bound_prolong_with_a_valid_decision_extends_forward(tmp_path, r
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="W580 finding 5: _prolong_access extends the credential before the shape "
-    "check and the binding policy decide, so every refused bound prolong still moves it",
-)
 @pytest.mark.parametrize("mode,ttl", [
     ("missing", None), ("refuse", None), ("expired", None), ("mismatch", None), ("allow", 60),
 ])
 async def test_a_refused_bound_prolong_extends_no_credential(tmp_path, redis_client, mode, ttl):
+    """W580 finding 5, fixed in W578 91eaa0d1: the policy decides before any extension."""
+
     f = await _bound(tmp_path, redis_client, source="oauth")
     _bind_answer(f, mode)
     result = await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong", ttl_seconds=ttl)
