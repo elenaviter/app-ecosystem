@@ -851,3 +851,101 @@ def test_a_prune_may_only_narrow_account_bindings(scope, refusal):
     # Anything other than the account scope is outside a prune.
     widened = dict(candidate, label="renamed")
     assert candidate_shape_refusal("prune", before, widened) == "caller_writer_prune_shape_invalid"
+
+
+# T4 (Ops, W578 eb522266): with the generic coordinator bound, a bound prolong
+# never calls extend_*; its lifetime is a recorded effect of the one decision.
+
+
+def _coordinate(f):
+    # The generic coordinator is W581's (service_foundation.coordination); W578's
+    # coordinated path imports it too, so without it there is nothing to drive.
+    pytest.importorskip("service_foundation.coordination", reason="W581 coordinator not on the path")
+    from service_foundation.coordination.durable_decision_log import Coordinator
+    from connection_hub.delegated_credentials.cards.card_participant import (
+        PARTICIPANT, DecisionStorePort, HubCardParticipant, LocalCardIntentSource,
+    )
+    from test_card_participant import _Store, _Verifier
+
+    decisions = _Store()
+    tx.bind_transaction_decisions(f.store, DecisionStorePort(decisions))
+    intents = LocalCardIntentSource(f.store)
+    hub = HubCardParticipant(service=f.cards, store=f.store, intents=intents, decisions=decisions)
+    f.service.bind_card_coordinator(Coordinator(decisions, {PARTICIPANT: hub}, _Verifier()),
+                                    intents=intents, decisions=decisions)
+    return decisions
+
+
+class _Extends(_Grants):
+    """Every lifetime call the grant store offers, each recorded."""
+
+    async def extend_refresh_token(self, token, ttl):
+        self.calls.append(("extend_refresh_token", ttl))
+        return True
+
+    async def extend_access_grant(self, token, ttl):
+        self.calls.append(("extend_access_grant", ttl))
+        return True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["allow", "refuse"])
+async def test_a_coordinated_bound_prolong_calls_no_extend_before_or_after_its_decision(
+    tmp_path, redis_client, mode
+):
+    f = await _bound(tmp_path, redis_client, source="oauth")
+    f.grants = f.service._store = _Extends()
+    decisions = _coordinate(f)
+    policy = _bind_answer(f, mode)
+    applied = []
+
+    async def apply(kind, key, payload, *, transaction_id):
+        applied.append((kind, key, dict(payload)))
+
+    f.cards.bind_effect_applier(apply)
+    result = await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong", ttl_seconds=7200)
+    assert f.grants.calls == [], "the coordinated prolong called extend_* directly"
+    if mode == "allow":
+        assert result["ok"] is True, result
+        assert decisions.decisions == ["committed"]
+        assert ("finalize", "committed") in policy.calls
+        current = await _current(f)
+        assert current.card_revision == f.card.card_revision + 1 and current.expires_at > f.card.expires_at
+        # The lifetime moves only as the decision's effect, to the Card's absolute expiry.
+        assert [(kind, payload["expires_at"]) for kind, _key, payload in applied] == [
+            ("credential_lifetime", current.expires_at)
+        ]
+    else:
+        assert result["ok"] is False and result["error"] == "pb_refused", result
+        assert decisions.decisions in ([], ["aborted"])
+        assert await _current(f) == f.card
+        assert applied == []
+    assert await tx.list_in_doubt(f.store) == []
+
+
+@pytest.mark.asyncio
+async def test_a_coordinated_prolong_staged_after_its_load_extends_nothing(tmp_path, redis_client):
+    """F1/N1 on the coordinated path: another transaction stages the Card after
+    the prolong loaded it; the prolong's own prepare is refused, nothing moves."""
+
+    f = await _bound(tmp_path, redis_client, source="oauth")
+    f.grants = f.service._store = _Extends()
+    _coordinate(f)
+    _bind_answer(f, "allow")
+    applied = []
+
+    async def apply(kind, key, payload, *, transaction_id):
+        applied.append(kind)
+
+    f.cards.bind_effect_applier(apply)
+    coordinated_write = f.service._coordinated_write
+
+    async def staged_then_write(*args, **kwargs):
+        await _stage(f)
+        return await coordinated_write(*args, **kwargs)
+
+    f.service._coordinated_write = staged_then_write
+    result = await f.service.renew_access(f.user, access_id=f.card.access_id, mode="prolong", ttl_seconds=7200)
+    assert result["ok"] is False and result["retryable"] is True, result
+    assert f.grants.calls == [] and applied == []
+    assert await f.handles.read(f.card) == f.held
