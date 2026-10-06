@@ -30,7 +30,7 @@ from connection_hub.delegated_credentials.cards.card_participant import (
 )
 from connection_hub.delegated_credentials.cards.participant_operation import (
     ANSWER_SCHEMA, OPERATION, REQUEST_SCHEMA, CardTransactionParticipantOperation, ParticipantCaller,
-    RoutedDecisionPort, answer_signature, request_digest,
+    RoutedDecisionPort, ScopeBinding, answer_signature, request_digest,
 )
 from connection_hub.delegated_credentials.cards.transaction_authority_v2 import (
     PROTOCOL, TransactionAuthorityRefused, card_authority_signature,
@@ -66,61 +66,88 @@ class _NoLocal:
 
 
 class _World:
-    """One PB-initiated transaction: the authority's recorded decision is ``self.decision``."""
+    """PB-initiated transactions, looked up as PB does: by (project_ref, transaction_id)."""
 
-    def __init__(self, store, service, record):
-        self.store, self.service, self.record = store, service, record
-        self.decision = "undecided"
-        clock = lambda: NOW  # noqa: E731
-        self.decisions = AuthorityDecisionReader(fetch=self.fetch, authority=AUTHORITY, clock=clock)
-        intents = AuthorityCardIntentSource(store=store, fetch=self.fetch, authority=AUTHORITY, clock=clock,
-                                            authority_id=PEER, scope_field="project_ref")
+    def __init__(self, store, service, records):
+        self.store, self.service = store, service
+        self.records = dict(records)   # {(project, txid): DecisionRecord}
+        self.decided = {}              # {txid: "committed" | "aborted"}
+        self.nonces = _Nonces()
         tx.bind_transaction_decisions(store, RoutedDecisionPort(local=_NoLocal(), card_store=store,
-                                                                authorities={PEER: self.decisions}))
-        self.hub = HubCardParticipant(service=service, store=store, intents=intents, decisions=self.decisions)
+                                                                authorities={PEER: self.reader}))
         self.caller = ParticipantCaller(
             service_id=PEER, request_secret=REQUEST_SECRET, receipt_secret=RECEIPT_SECRET,
             receipt_signer_id="connection-hub@1-0", audience="problem-board@1-0",
-            hub_resource="connection-hub@1-0", participant=self.hub, decisions=self.decisions,
-            scope_field="project_ref")
-        self.nonces = _Nonces()
+            hub_resource="connection-hub@1-0", bind=self.bind, scope_field="project_ref")
+
+    @property
+    def record(self):
+        return self.records[(PROJECT, TX)]
+
+    @property
+    def decision(self):
+        return self.decided.get(TX, "undecided")
+
+    @decision.setter
+    def decision(self, value):
+        self.decided[TX] = value
+
+    def reader(self, scope):
+        return AuthorityDecisionReader(fetch=self.fetch_for(scope), authority=AUTHORITY, clock=lambda: NOW)
+
+    def bind(self, scope):
+        fetch = self.fetch_for(scope)
+        decisions = AuthorityDecisionReader(fetch=fetch, authority=AUTHORITY, clock=lambda: NOW)
+        intents = AuthorityCardIntentSource(store=self.store, fetch=fetch, authority=AUTHORITY, clock=lambda: NOW,
+                                            authority_id=PEER, scope_field="project_ref")
+        return ScopeBinding(participant=HubCardParticipant(service=self.service, store=self.store, intents=intents,
+                                                           decisions=decisions),
+                            decisions=decisions)
 
     def operation(self, *, enabled=True):
         return CardTransactionParticipantOperation(callers={PEER: self.caller}, card_store=self.store,
                                                    nonces=self.nonces, enabled=enabled, clock=lambda: NOW)
 
-    async def fetch(self, transaction_id, phase, request_echo):
-        if transaction_id != self.record.transaction_id:
-            raise TransactionAuthorityRefused("authority_transaction_unknown")
-        if phase == "decision" and self.decision == "undecided":
-            raise TransactionAuthorityRefused("authority_decision_pending")
-        if phase == "stage" and self.decision != "undecided":  # PB's stage window closes at the decision
-            raise TransactionAuthorityRefused("authority_late_stage")
-        intent = self.record.intent
-        unsigned = {
-            "schema": PROTOCOL, "phase": phase, "request_echo": request_echo, "audience": AUTHORITY.audience,
-            "participant": PARTICIPANT, "global_intent_bytes": intent.canonical_bytes.decode("utf-8"),
-            "global_intent_digest": intent.digest, "projection": participant_projection(intent, PARTICIPANT),
-            "candidate": intent.as_mapping()["payload"]["participant_candidates"][PARTICIPANT],
-            "decision": self.decision if phase == "decision" else "undecided",
-            "decided_at": NOW if phase == "decision" else None,
-        }
-        return {**unsigned, "authority_proof": {
-            "service_id": AUTHORITY.service_id, "timestamp": str(NOW),
-            "signature": card_authority_signature(unsigned, secret=AUTHORITY_SECRET,
-                                                  service_id=AUTHORITY.service_id, timestamp=str(NOW))}}
+    def fetch_for(self, scope):
+        async def fetch(transaction_id, phase, request_echo):
+            record = self.records.get((scope, transaction_id))
+            if record is None:
+                raise TransactionAuthorityRefused("authority_transaction_unknown")
+            decision = self.decided.get(transaction_id, "undecided")
+            if phase == "decision" and decision == "undecided":
+                raise TransactionAuthorityRefused("authority_decision_pending")
+            if phase == "stage" and decision != "undecided":  # PB's stage window closes at the decision
+                raise TransactionAuthorityRefused("authority_late_stage")
+            intent = record.intent
+            unsigned = {
+                "schema": PROTOCOL, "phase": phase, "request_echo": request_echo, "audience": AUTHORITY.audience,
+                "participant": PARTICIPANT, "global_intent_bytes": intent.canonical_bytes.decode("utf-8"),
+                "global_intent_digest": intent.digest, "projection": participant_projection(intent, PARTICIPANT),
+                "candidate": intent.as_mapping()["payload"]["participant_candidates"][PARTICIPANT],
+                "decision": decision if phase == "decision" else "undecided",
+                "decided_at": NOW if phase == "decision" else None,
+            }
+            return {**unsigned, "authority_proof": {
+                "service_id": AUTHORITY.service_id, "timestamp": str(NOW),
+                "signature": card_authority_signature(unsigned, secret=AUTHORITY_SECRET,
+                                                      service_id=AUTHORITY.service_id, timestamp=str(NOW))}}
+        return fetch
 
 
-async def _world(tmp_path, *, participant_input=None, project=PROJECT):
+def _record(project, txid, participant_input, candidate_value, *, request_id="pb-op"):
+    draft = IntentDraft(replay_scope="pb:" + project, request_id=request_id, expires_at=NOW + 600,
+                        participants=(PARTICIPANT,),
+                        payload={"project_ref": project, "participant_inputs": {PARTICIPANT: participant_input},
+                                 "participant_candidates": {PARTICIPANT: candidate_value}})
+    return DecisionRecord(draft.bind(txid, 1), "preparing", {}, {})
+
+
+async def _world(tmp_path):
     store, service, before, after = await _setup(tmp_path)
     service.bind_effect_applier(_Applier())
     accepted = VECTORS["accepted"]
-    draft = IntentDraft(replay_scope="pb:" + project, request_id="pb-op", expires_at=NOW + 600,
-                        participants=(PARTICIPANT,),
-                        payload={"project_ref": project,
-                                 "participant_inputs": {PARTICIPANT: participant_input or accepted["participant_input"]},
-                                 "participant_candidates": {PARTICIPANT: accepted["candidate_value"]}})
-    return _World(store, service, DecisionRecord(draft.bind(TX, 1), "preparing", {}, {})), before, after
+    record = _record(PROJECT, TX, accepted["participant_input"], accepted["candidate_value"])
+    return _World(store, service, {(PROJECT, TX): record}), before, after
 
 
 def _request(action, *, transaction_id=TX, decision=None, limit=None, cursor=None, scope=PROJECT,
@@ -198,11 +225,53 @@ async def test_finish_never_applies_the_callers_claimed_decision(tmp_path, recor
 
 @pytest.mark.asyncio
 async def test_another_scope_for_a_known_transaction_is_refused_before_staging(tmp_path):
+    # The scope reaches the authority fetch: another project's lookup does not know TX.
     world, before, after = await _world(tmp_path)
     request = _request("prepare", scope="work:project:other")
     assert _verified(await world.operation().answer(request), request) == {
-        "kind": "refused", "code": "card_intent_not_bound", "status": 409}
+        "kind": "refused", "code": "transaction_unknown", "status": 404}
     assert await tx.state(world.store, transaction_id=TX) is None
+
+
+@pytest.mark.asyncio
+async def test_an_authority_answer_naming_another_project_is_refused(tmp_path):
+    # Defence in depth: even if the authority returns TX under "other", its signed
+    # intent names PROJECT, so the verified payload check refuses it.
+    world, before, after = await _world(tmp_path)
+    world.records[("work:project:other", TX)] = world.record
+    request = _request("prepare", scope="work:project:other")
+    assert _verified(await world.operation().answer(request), request)["code"] == "card_intent_not_bound"
+    assert await tx.state(world.store, transaction_id=TX) is None
+
+
+@pytest.mark.asyncio
+async def test_one_caller_serves_two_projects(tmp_path):
+    # EMain #605: per-scope binding, so one PB caller stages and finishes in each of its projects.
+    from connection_hub.delegated_credentials.cards.card_participant import candidate_value, hub_participant_input
+
+    world, before, after = await _world(tmp_path)
+    scope = VECTORS["accepted"]["participant_input"]["target_scope"]
+    second = replace(before, access_id="aut_second", label="second project's Card")
+    await world.service.commit(second, subject_hash=scope, expected_revision=0, now=NOW)
+    edited = replace(second, card_revision=second.card_revision + 1, label="edited in project two")
+    other_tx, project_two = "e" * 64, "work:project:two"
+    world.records[(project_two, other_tx)] = _record(
+        project_two, other_tx,
+        hub_participant_input(original=second, candidate=edited, subject_hash=scope, action="update",
+                              actor_subject="user:project-admin", actor_kind="caller"),
+        candidate_value(original=second, candidate=edited, effects=()), request_id="pb-two")
+    operation = world.operation()
+    for project, txid in ((PROJECT, TX), (project_two, other_tx)):
+        request = _request("prepare", transaction_id=txid, scope=project)
+        assert _verified(await operation.answer(request), request)["kind"] == "receipt", project
+    request = _request("finish", transaction_id=other_tx, scope=PROJECT, decision="aborted")
+    world.decided[other_tx] = "aborted"
+    assert _verified(await operation.answer(request), request)["code"] == "transaction_unknown"
+    for project, txid in ((PROJECT, TX), (project_two, other_tx)):
+        world.decided[txid] = "aborted"
+        request = _request("finish", transaction_id=txid, scope=project, decision="aborted")
+        assert _verified(await operation.answer(request), request)["kind"] == "receipt", project
+        assert (await tx.state(world.store, transaction_id=txid))["state"] == "aborted"
 
 
 @pytest.mark.asyncio
@@ -245,7 +314,7 @@ async def test_list_prepared_pages_this_callers_scope_and_recovers_after_a_resta
     world, before, after = await _world(tmp_path)
     await world.operation().answer(_request("prepare"))
     # A restart: a fresh world (participant, reader, operation) over the same Card store.
-    fresh = _World(world.store, world.service, world.record)
+    fresh = _World(world.store, world.service, world.records)
     operation = fresh.operation()
     request = _request("list_prepared", transaction_id=None, limit=1)
     page = _verified(await operation.answer(request), request)
@@ -325,11 +394,13 @@ async def test_a_transaction_staged_for_one_scope_is_not_readable_under_another(
     await operation.answer(_request("prepare"))
     # The authority's intent names PROJECT; a request naming another scope never reads it.
     request = _request("read_pending", scope="work:project:other")
+    assert _verified(await operation.answer(request), request)["code"] == "transaction_unknown"
+    world.records[("work:project:other", TX)] = world.record  # an authority answering under another scope
+    request = _request("read_pending", scope="work:project:other")
     assert _verified(await operation.answer(request), request)["code"] == "card_intent_not_bound"
 
 
 def test_short_caller_keys_are_refused_at_configuration():
     with pytest.raises(ValueError, match="secret_too_short"):
         ParticipantCaller(service_id=PEER, request_secret="short", receipt_secret=RECEIPT_SECRET,
-                          receipt_signer_id="hub", audience="pb", hub_resource="hub", participant=None,
-                          decisions=None)
+                          receipt_signer_id="hub", audience="pb", hub_resource="hub", bind=None)

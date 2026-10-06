@@ -72,6 +72,14 @@ _STATUS = {"transaction_unknown": 404, "authority_transaction_unknown": 404, "ca
 
 
 @dataclass(frozen=True)
+class ScopeBinding:
+    """The Hub participant and authority reader for ONE verified request scope of one caller."""
+
+    participant: Any                # a HubCardParticipant over this scope's authority
+    decisions: Any                  # this scope's AuthorityDecisionReader
+
+
+@dataclass(frozen=True)
 class ParticipantCaller:
     """One configured application allowed to drive the Hub participant (from the trusted descriptor)."""
 
@@ -81,8 +89,11 @@ class ParticipantCaller:
     receipt_signer_id: str          # the Hub's signer id in receipt_proof
     audience: str                   # the caller's bundle, bound into every answer
     hub_resource: str               # the Hub bundle the caller's AdmissionRequest names
-    participant: Any                # a HubCardParticipant over this caller's authority
-    decisions: Any                  # this caller's AuthorityDecisionReader
+    # bind(scope) -> ScopeBinding: the reader and participant whose authority fetch
+    # carries this scope (for Problem Board, its project_ref request field), so one
+    # caller serves every scope it owns (EMain #605). The scope is a request value,
+    # never a credential selector: keys, audience and authority stay the caller's.
+    bind: Callable[[str], ScopeBinding]
     scope_field: str = ""           # the verified intent payload key the request scope must equal
 
     def __post_init__(self) -> None:
@@ -180,6 +191,9 @@ class CardTransactionParticipantOperation:
         if not fresh:
             return _unsigned_refusal("card_participant_unauthenticated", 401)
         try:
+            # A budget overrun cancels the participant mid-call. Stage and finish
+            # are crash-safe by design (every step resumes on replay), so a
+            # cancel is a kill-and-replay: the caller retries or recovers.
             result = await asyncio.wait_for(self._dispatch(caller, data), timeout=self._budget)
         except asyncio.TimeoutError:
             result = self._refusal("card_participant_timeout")
@@ -219,9 +233,9 @@ class CardTransactionParticipantOperation:
                 raise
             return None
 
-    async def _bound(self, caller: ParticipantCaller, transaction_id: str, scope: str):
+    async def _bound(self, caller: ParticipantCaller, binding: ScopeBinding, transaction_id: str, scope: str):
         """The authority-verified record, refused unless its scope and any local intent belong to this caller."""
-        record = await caller.decisions.read(transaction_id)
+        record = await binding.decisions.read(transaction_id)
         if record is None:
             raise _Refused("transaction_unknown")
         if caller.scope_field and intent_scope(record.intent, caller.scope_field) != scope:
@@ -232,7 +246,7 @@ class CardTransactionParticipantOperation:
             raise _Refused("card_intent_not_bound")
         return record
 
-    async def _list_prepared(self, caller: ParticipantCaller, scope: str, limit: int,
+    async def _list_prepared(self, caller: ParticipantCaller, binding: ScopeBinding, scope: str, limit: int,
                              cursor: str | None) -> dict[str, Any]:
         """This caller's and scope's prepared receipts, in transaction-id order after ``cursor``.
 
@@ -240,7 +254,8 @@ class CardTransactionParticipantOperation:
         verified scope at prepare, so it survives a restart. The underlying
         in-doubt list is complete or fails closed (never truncated), so a page
         is never a filtered partial list passed off as complete. A cursor must
-        name a transaction of this same partition.
+        name a transaction of this same partition. Each call reads every
+        in-doubt intent: O(in-doubt Cards), bounded by MAX_ACTIVE_TRANSACTIONS.
         """
         from .transaction_store import list_in_doubt
 
@@ -259,7 +274,7 @@ class CardTransactionParticipantOperation:
                 continue
             if not owned(await self._local_intent(transaction_id)):
                 continue
-            pending = await caller.participant.read_pending(transaction_id)
+            pending = await binding.participant.read_pending(transaction_id)
             if pending is None:
                 continue
             if len(receipts) == limit:
@@ -270,22 +285,23 @@ class CardTransactionParticipantOperation:
 
     async def _dispatch(self, caller: ParticipantCaller, data: Mapping[str, Any]) -> dict[str, Any]:
         action, txid, scope = data["action"], data["transaction_id"], data["scope"]
+        binding = caller.bind(scope)
         if action == "list_prepared":
-            return await self._list_prepared(caller, scope, data["limit"], data["cursor"])
+            return await self._list_prepared(caller, binding, scope, data["limit"], data["cursor"])
         if action == "prepare":
             if not self._enabled:
                 raise _Refused("card_transactions_unavailable")
-            await self._bound(caller, txid, scope)
-            return {"kind": "receipt", "receipt": asdict(await caller.participant.prepare(txid))}
+            await self._bound(caller, binding, txid, scope)
+            return {"kind": "receipt", "receipt": asdict(await binding.participant.prepare(txid))}
         if action == "read_pending":
-            await self._bound(caller, txid, scope)
-            pending = await caller.participant.read_pending(txid)
+            await self._bound(caller, binding, txid, scope)
+            pending = await binding.participant.read_pending(txid)
             return {"kind": "pending", "receipt": asdict(pending) if pending is not None else None}
-        record = await self._bound(caller, txid, scope)
+        record = await self._bound(caller, binding, txid, scope)
         if not record.terminal or record.state != data["decision"]:
             # Only the decision the authority verified is ever applied (EMain 18:46 #3).
             raise _Refused("card_decision_mismatch")
-        return {"kind": "receipt", "receipt": asdict(await caller.participant.finish(txid, record.state))}
+        return {"kind": "receipt", "receipt": asdict(await binding.participant.finish(txid, record.state))}
 
 
 class RoutedDecisionPort:
@@ -293,12 +309,13 @@ class RoutedDecisionPort:
 
     An intent recorded with ``authority == ""`` was staged by the Hub's own
     coordinator and reads the Hub's decision store; one recorded by a
-    configured caller reads that caller's verified authority. An unknown
-    authority decides nothing (``undecided``), so the Card stays unreadable
-    rather than guessing.
+    configured caller reads that caller's verified authority for the scope
+    recorded with it (``authorities[caller](scope)``). An unknown authority
+    decides nothing (``undecided``), so the Card stays unreadable rather than
+    guessing.
     """
 
-    def __init__(self, *, local: Any, card_store: Any, authorities: Mapping[str, Any]) -> None:
+    def __init__(self, *, local: Any, card_store: Any, authorities: Mapping[str, Callable[[str], Any]]) -> None:
         self._local = local
         self._intents = LocalCardIntentSource(card_store)
         self._authorities = dict(authorities)
@@ -306,10 +323,14 @@ class RoutedDecisionPort:
     async def decision(self, receipt: Mapping[str, Any]) -> str:
         try:
             intent = await self._intents.load(receipt["transaction_id"])
-            authority = intent.authority
+            authority, scope = intent.authority, intent.scope
         except DecisionRefused:
-            authority = ""
-        reader = self._local if not authority else self._authorities.get(authority)
+            authority, scope = "", ""
+        if not authority:
+            reader = self._local
+        else:
+            reader_for = self._authorities.get(authority)
+            reader = reader_for(scope) if reader_for is not None else None
         if reader is None:
             return "undecided"
         record = await reader.read(receipt["transaction_id"])
@@ -319,5 +340,5 @@ class RoutedDecisionPort:
 
 
 __all__ = ["ANSWER_SCHEMA", "CardTransactionParticipantOperation", "DIRECTION", "HUB_REFUSALS", "OPERATION",
-           "ParticipantCaller", "REQUEST_FIELDS", "REQUEST_SCHEMA", "RoutedDecisionPort", "answer_signature",
-           "request_digest"]
+           "ParticipantCaller", "REQUEST_FIELDS", "REQUEST_SCHEMA", "RoutedDecisionPort", "ScopeBinding",
+           "answer_signature", "request_digest"]
