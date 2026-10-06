@@ -163,10 +163,10 @@ async def test_recovery_finishes_a_commit_a_crash_left_unfinished(tmp_path):
         fresh, _ = composition.card_transaction_coordinator(persistence=persistence, decisions=decisions,
                                                             grant_store=None, policies=None)
         report = await composition.recover_card_transactions(fresh)
-        assert report == {"ok": True, "finished": 1, "pending": 0, "failed": 0}
+        assert report == {"ok": True, "finished": 1, "pending": 0, "failed": 0, "pages": 1, "next_after": ""}
         assert await _visible(store, before) == after
         assert await composition.recover_card_transactions(fresh) == {"ok": True, "finished": 0, "pending": 0,
-                                                                       "failed": 0}
+                                                                       "failed": 0, "pages": 1, "next_after": ""}
     finally:
         await drop()
 
@@ -182,7 +182,7 @@ async def test_recovery_presumes_abort_for_an_expired_undecided_transaction(tmp_
         assert (await composition.recover_card_transactions(coordinator))["pending"] == 1  # not expired: kept
         await asyncio.sleep(3)
         report = await composition.recover_card_transactions(coordinator)
-        assert report == {"ok": True, "finished": 1, "pending": 0, "failed": 0}
+        assert report == {"ok": True, "finished": 1, "pending": 0, "failed": 0, "pages": 1, "next_after": ""}
         assert (await decisions.read(txid)).state == "aborted"
         assert await _visible(store, before) == before and await tx.list_in_doubt(store) == []
     finally:
@@ -203,8 +203,8 @@ async def test_a_failing_participant_is_reported_and_retried_not_hidden(tmp_path
             raise RuntimeError("participant unavailable")
 
         hub.finish = failing
-        assert await composition.recover_card_transactions(coordinator) == {"ok": False, "finished": 0,
-                                                                             "pending": 0, "failed": 1}
+        assert await composition.recover_card_transactions(coordinator) == {
+            "ok": False, "finished": 0, "pending": 0, "failed": 1, "pages": 1, "next_after": ""}
         hub.finish = real_finish
         assert (await composition.recover_card_transactions(coordinator))["finished"] == 1
     finally:
@@ -234,23 +234,61 @@ async def test_first_creation_works_with_a_pool_of_one_connection():
 
 
 @pytest.mark.asyncio
-async def test_a_backlog_over_the_limit_is_a_named_result_not_an_exception(tmp_path, caplog):
-    # EMain #601: until the kernel offers a paged read, a pass over the limit reports it by name.
+async def test_a_backlog_larger_than_one_pass_drains_over_passes_each_row_once(tmp_path):
+    # EMain 18:42: limit 2, 2 pages per pass, 5 expired rows: two passes abort every row once.
+    import asyncio
+
+    composition, decisions, persistence, store, before, after, drop = await _recovery_setup(tmp_path)
+    try:
+        ids = sorted([(await decisions.begin(_hub_draft(before, after, request_id=f"backlog-{index}",
+                                                         expires_in=1))).transaction_id for index in range(5)])
+        await asyncio.sleep(2)
+        coordinator, _ = composition.card_transaction_coordinator(persistence=persistence, decisions=decisions,
+                                                                  grant_store=None, policies=None)
+        first = await composition.recover_card_transactions(coordinator, limit=2, max_pages=2)
+        assert first == {"ok": True, "finished": 4, "pending": 0, "failed": 0, "pages": 2, "next_after": ids[3]}
+        assert [(await decisions.read(txid)).state for txid in ids] == ["aborted"] * 4 + ["preparing"]
+        # A fresh coordinator (a restart) resumes from the stored cursor.
+        fresh, _ = composition.card_transaction_coordinator(persistence=persistence, decisions=decisions,
+                                                            grant_store=None, policies=None)
+        second = await composition.recover_card_transactions(fresh, limit=2, after=first["next_after"],
+                                                             max_pages=2)
+        assert second == {"ok": True, "finished": 1, "pending": 0, "failed": 0, "pages": 1, "next_after": ""}
+        assert {(await decisions.read(txid)).state for txid in ids} == {"aborted"}
+        assert (await composition.recover_card_transactions(fresh, limit=2))["finished"] == 0
+    finally:
+        await drop()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_row_never_blocks_the_rows_after_it(tmp_path, caplog):
     import asyncio
     import logging
 
     composition, decisions, persistence, store, before, after, drop = await _recovery_setup(tmp_path)
     try:
-        from connection_hub.delegated_credentials.cards.card_participant import hub_participant_input  # noqa: F401
-        for index in range(3):
-            await decisions.begin(_hub_draft(before, after, request_id=f"backlog-{index}", expires_in=1))
-        await asyncio.sleep(2)
-        coordinator, _ = composition.card_transaction_coordinator(persistence=persistence, decisions=decisions,
-                                                                  grant_store=None, policies=None)
+        coordinator, txid = await _staged(composition, decisions, persistence, store, before, after,
+                                          request_id="always-fails")
+        await coordinator.decide(txid, "committed", witness_digest="c" * 64)
+        others = [(await decisions.begin(_hub_draft(before, after, request_id=f"other-{index}",
+                                                     expires_in=1))).transaction_id for index in range(3)]
+        await asyncio.sleep(2)  # expired: recovery presumes ABORT for each, whatever its order around txid
+        hub = coordinator.participants[PARTICIPANT]
+        real_finish = hub.finish
+
+        async def failing(transaction_id, decision):
+            if transaction_id == txid:
+                raise RuntimeError("participant unavailable")
+            return await real_finish(transaction_id, decision)
+
+        hub.finish = failing
         with caplog.at_level(logging.WARNING, logger="kdcube.connection_hub.card_transactions"):
-            report = await composition.recover_card_transactions(coordinator, limit=2)
-        assert report == {"ok": False, "reason": "recovery_unbounded", "finished": 0, "pending": 0, "failed": 0}
-        assert any("recovery backlog exceeds limit=2" in record.getMessage() for record in caplog.records)
+            report = await composition.recover_card_transactions(coordinator, limit=1, max_pages=10)
+        assert report["failed"] == 1 and report["next_after"] == "" and report["pages"] == 4
+        assert {(await decisions.read(other)).state for other in others} == {"aborted"}
+        assert any(f"transaction={txid} reason=RuntimeError" in r.getMessage() for r in caplog.records)
+        hub.finish = real_finish
+        assert (await composition.recover_card_transactions(coordinator, limit=1, max_pages=10))["failed"] == 0
     finally:
         await drop()
 
