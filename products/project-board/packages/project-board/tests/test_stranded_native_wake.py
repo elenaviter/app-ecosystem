@@ -19,6 +19,7 @@ from project_board.client.render import render_envelope
 from project_board.client.store import SharedFieldStore
 from project_board.client.wake_recovery import recover_worker_wake
 from project_board.contract.errors import DomainError
+from procedure_reference import reference_text
 
 SESSION = "00000000-0000-4000-8000-00000000a390"
 WORKER = f"codex-{SESSION}"
@@ -260,9 +261,9 @@ def test_the_cli_offers_wake_recover_with_the_exact_worker_and_wake():
 
 def test_the_coordinator_procedure_owns_detect_diagnose_recover_and_recheck():
     root = Path(__file__).resolve().parents[1] / "src" / "project_board" / "procedures" / "problem-board-worker" / "references"
-    coordinator = " ".join((root / "coordinator.md").read_text(encoding="utf-8").split())
+    coordinator = " ".join(reference_text(root / "coordinator.md").split())
     delivery = " ".join((root / "delivery-and-recovery.md").read_text(encoding="utf-8").split())
-    assert "## Recover a stalled Codex delivery" in (root / "coordinator.md").read_text(encoding="utf-8")
+    assert "## Recover a stalled Codex delivery" in reference_text(root / "coordinator.md")
     assert "A running relay and an active Card prove transport, not that a model received its mail" in coordinator
     assert "`pb worker wake-recover --worker <stable name> --wake-id <id>`" in coordinator
     assert "A second call for the same wake is refused and shows the recorded attempt" in coordinator

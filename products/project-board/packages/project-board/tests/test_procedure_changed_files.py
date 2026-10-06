@@ -54,3 +54,26 @@ def test_a_newer_revision_names_exactly_the_edited_reference_and_the_replaced_re
     assert verified["installed_revision"] == "2099.01.01.1"
     assert verified["changed_since_revision"] == replaced
     assert verified["changed_files"] == ["references/brief-output.md"]
+
+
+def test_a_one_rule_change_names_only_that_rule_s_module(tmp_path, monkeypatch):
+    # W563, coordinator 2026-10-05 22:51 UTC: the .8 -> .9 change made a
+    # coordinator reread collaboration.md and coordinator.md whole, 183,315
+    # bytes, for two new paragraphs. The references are split into modules,
+    # so a one-rule change names one module and its size is the reload cost.
+    home = tmp_path / "home"
+    install_agent_procedure(["claude-code"], home=home)
+    rule = "references/collaboration/rule-6-your-visible-state-says-where-you-are-and-what-you-ar.md"
+    newer = _stand_in_package(tmp_path, "2099.01.01.2", edit=rule)
+    monkeypatch.setattr(procedures, "source_package_path", lambda: newer)
+
+    install_agent_procedure(["claude-code"], home=home)
+    verified = verify_agent_procedure(["claude-code"], home=home)[0]
+
+    assert verified["changed_files"] == [rule]
+    module_bytes = len((newer / rule).read_bytes())
+    whole_bytes = sum(
+        len(path.read_bytes())
+        for path in [newer / "references" / "collaboration.md", *(newer / "references" / "collaboration").glob("*.md")]
+    )
+    assert module_bytes < whole_bytes / 3

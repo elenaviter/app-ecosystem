@@ -315,7 +315,7 @@ once that limit's reset passes, or a newer account-bound native reading
 proves early redemption, the relay may push the eligible wake once more,
 and a recovery is refused while the relay still holds the session for its
 limit. The steps are in the coordinator procedure,
-[Recover a stalled Codex delivery](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md#recover-a-stalled-codex-delivery).
+[Recover a stalled Codex delivery](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator/recover-a-stalled-codex-delivery.md).
 
 Queue admission and model handling are separate states. `submitted` means
 the native queue accepted the prompt, and says nothing about whether the

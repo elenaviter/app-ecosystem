@@ -7,7 +7,7 @@ import re
 import shutil
 import uuid
 from contextlib import ExitStack
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
 from ..contract.errors import DomainError
@@ -325,6 +325,20 @@ def _managed_identity(text: str) -> dict[str, str] | None:
     return {key: str(value) for key, value in match.groupdict().items()}
 
 
+def _linked_from_a_reference(package: Mapping[str, Any], relative: str) -> bool:
+    """True when another declared reference links this one by its relative path."""
+
+    target = PurePosixPath(relative)
+    for other in package["references"]:
+        if other == relative:
+            continue
+        link = PurePosixPath(os.path.relpath(target, PurePosixPath(other).parent)).as_posix()
+        text = str(package["contents"].get(other) or "")
+        if f"]({link})" in text or f"]({link}#" in text:
+            return True
+    return False
+
+
 def _render_entrypoint(package: Mapping[str, Any], release: str) -> str:
     source = str(package["contents"][package["entrypoint"]])
     if PROCEDURE_MARKER in source:
@@ -337,9 +351,15 @@ def _render_entrypoint(package: Mapping[str, Any], release: str) -> str:
     for relative in package["references"]:
         source_link = f"]({relative})"
         if source_link not in rendered:
+            # W563: a module of a split reference is linked from its index
+            # (references/coordinator.md links coordinator/<module>.md), so a
+            # one-rule change reloads one module, not the whole reference.
+            if _linked_from_a_reference(package, relative):
+                continue
             raise DomainError(
                 "work_agent_procedure_entrypoint_invalid",
-                "Every declared worker procedure reference must be linked from SKILL.md.",
+                "Every declared worker procedure reference must be linked from SKILL.md "
+                "or from another declared reference.",
                 details={"reference": relative},
             )
         installed_relative = Path(relative).relative_to("references").as_posix()
@@ -804,8 +824,16 @@ def _verify_destination(
                 and source_entrypoint == "SKILL.md"
                 and len(clean_references) == len(source_references)
             ):
+                contents = {source_entrypoint: source_text}
+                # A module of a split reference is linked from its index, so the
+                # reproduction reads the installed references as well (W563).
+                for name, path in clean_references:
+                    try:
+                        contents[name] = (release_root / path).read_text(encoding="utf-8")
+                    except (OSError, UnicodeError):
+                        contents[name] = ""
                 installed_package = {
-                    "contents": {source_entrypoint: source_text},
+                    "contents": contents,
                     "entrypoint": source_entrypoint,
                     "references": clean_reference_names,
                     "revision": identity["revision"],

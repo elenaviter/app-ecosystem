@@ -18,6 +18,7 @@ import pytest
 from project_board.client import cli, relay
 from project_board.contract.errors import DomainError
 from test_attendance_materializes_project import PROJECT_REF, Board, _fresh_host
+from procedure_reference import reference_text
 
 LINE = "Operator: reviews only until 2026-09-30, do not route builds to me."
 
@@ -163,7 +164,7 @@ def test_the_procedure_says_what_the_line_is_for_and_when_to_read_a_teammates():
     import project_board
 
     reference = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker" / "references" / "collaboration.md"
-    text = " ".join(reference.read_text(encoding="utf-8").split())
+    text = " ".join(reference_text(reference).split())
     assert "The info line says what the team needs to plan around you, and nothing else" in text
     assert "Findings, checkpoint results and analysis go to mail, item notes and reports, not to this line." in text
     assert "clear it when nothing on it would help anyone plan" in text
@@ -181,8 +182,8 @@ def test_the_procedure_names_the_verbs():
     import project_board
 
     root = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker"
-    collaboration = (root / "references" / "collaboration.md").read_text(encoding="utf-8")
-    coordinator = (root / "references" / "coordinator.md").read_text(encoding="utf-8")
+    collaboration = reference_text(root / "references" / "collaboration.md")
+    coordinator = reference_text(root / "references" / "coordinator.md")
     for verb in ("pb worker info show", 'pb worker info write "', "pb worker info clear"):
         assert verb in collaboration
     for text in (collaboration, coordinator, (root / "SKILL.md").read_text(encoding="utf-8")):
@@ -199,14 +200,14 @@ def test_the_worker_rereads_its_assignments_periodically():
 
     root = Path(project_board.__file__).resolve().parent / "procedures" / "problem-board-worker"
     skill = " ".join((root / "SKILL.md").read_text(encoding="utf-8").split())
-    collaboration = " ".join((root / "references" / "collaboration.md").read_text(encoding="utf-8").split())
+    collaboration = " ".join(reference_text(root / "references" / "collaboration.md").split())
     # Operator correction, 2026-10-01: periodic, never per step, wake or guard prompt.
     # Ownership 6: once per native wake batch, plus about every 30 minutes; never per command, message or guard.
     assert "Read it again once per native wake batch and, while you work, about every 30 minutes at the next safe boundary, never per command, per leased message or per guard prompt" in skill
     assert "Read them again once per native wake batch (the addressed mail one wake delivers, received together)" in collaboration
     assert "once about 30 minutes of active work have passed since the last full read, at the next safe boundary" in collaboration
     assert "a command, a leased message within a batch, a guard prompt or a work boundary is not a reason for a full read" in collaboration
-    assert "[brief-output](brief-output.md)), which the brief view does not show" in collaboration
+    assert "[brief-output](../brief-output.md)), which the brief view does not show" in collaboration
     assert "An addressed change to one assignment or its ownership, or a doubt about one item, reads only that item, including the assignment's own task" in collaboration
     for text in (skill, collaboration):
         assert "at every work boundary and on each guard prompt or wake" not in text
@@ -232,7 +233,7 @@ def test_the_wake_lifecycle_scenarios_name_rules_that_exist():
     for scenario in data["scenarios"]:
         assert scenario["expected"] and scenario["forbidden"], scenario["id"]
         for name, quote in scenario["governing"]:
-            text = " ".join((root / name).read_text(encoding="utf-8").split())
+            text = " ".join(reference_text(root / name).split())
             assert quote in text, (scenario["id"], name, quote)
     skill = " ".join((root / "SKILL.md").read_text(encoding="utf-8").split())
     # The lifecycle sits at the entrypoint, before step 1 of Start Or Resume.

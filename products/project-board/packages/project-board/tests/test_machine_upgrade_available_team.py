@@ -10,6 +10,7 @@ machine to inform (operator, 2026-10-04).
 from __future__ import annotations
 
 from pathlib import Path
+from procedure_reference import reference_text
 
 REFERENCES = (
     Path(__file__).resolve().parents[1]
@@ -18,7 +19,7 @@ REFERENCES = (
 
 
 def _words(name: str) -> str:
-    return " ".join((REFERENCES / name).read_text(encoding="utf-8").split())
+    return " ".join(reference_text(REFERENCES / name).split())
 
 
 def test_the_window_waits_for_available_team_agents_only():

@@ -28,6 +28,7 @@ from project_board.client.store import SharedFieldStore
 from project_board.contract.errors import DomainError
 from test_commit_identity import IdentityBoard, _host
 from test_workspace_report import _cli, _git, _remote
+from procedure_reference import reference_text
 
 PROJECT_ID = "demo-project-0a1b2c3d"
 PROJECT_REF = "work:project:" + PROJECT_ID
@@ -280,7 +281,7 @@ def test_the_procedures_explain_project_files_in_the_operators_words():
     root = source_package_path()
 
     def text(relative: str) -> str:
-        return " ".join((root / relative).read_text(encoding="utf-8").split())
+        return " ".join(reference_text(root / relative).split())
 
     skill = text("SKILL.md")
     workspace = text("references/project-workspace.md")

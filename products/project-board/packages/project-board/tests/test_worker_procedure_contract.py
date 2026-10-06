@@ -23,6 +23,7 @@ from project_board.client.procedures import (
     source_package_path,
     source_revision_ledger_path,
 )
+from procedure_reference import reference_text
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -43,7 +44,7 @@ OPERATIONAL_PROCEDURES = {
 
 
 def _read(relative: str) -> str:
-    return (PROCEDURE_ROOT / relative).read_text(encoding="utf-8")
+    return reference_text(PROCEDURE_ROOT / relative)
 
 
 def _words(text: str) -> str:
@@ -148,6 +149,15 @@ def test_package_manifest_ships_every_reference_the_skill_opens() -> None:
     assert package["revision"] == "2026.10.05.12"
     assert package["entrypoint"] == "SKILL.md"
     references = set(package["references"])
+    # W563: coordinator.md and collaboration.md are indexes over one module
+    # per section; each module is declared and linked from its index.
+    modules = {reference for reference in references if reference.count("/") == 2}
+    for module in modules:
+        index = module.rsplit("/", 1)[0] + ".md"
+        assert index in references, module
+        assert f"]({module.split('/', 1)[1]})" in _read(index), f"{index} links {module}"
+    references -= modules
+    assert {module.split("/")[1] for module in modules} == {"coordinator", "collaboration"}
     assert references == {
         "references/identity-and-authorization.md",
         "references/delivery-and-recovery.md",
@@ -1188,7 +1198,7 @@ def test_every_activation_is_addressed_to_the_approved_commit_and_its_receipt_is
     staging, so the activation names a commit and the coordinator compares the
     receipt with the approved candidate before it verifies anything else."""
 
-    coordinator = (PROCEDURE_ROOT / "references" / "coordinator.md").read_text(encoding="utf-8")
+    coordinator = reference_text(PROCEDURE_ROOT / "references" / "coordinator.md")
     actions = (PROCEDURE_ROOT / "references" / "runtime-actions.md").read_text(encoding="utf-8")
 
     assert "Every activation is addressed to a commit" in coordinator
@@ -1400,10 +1410,13 @@ def test_the_coordinator_reference_opens_with_what_the_coordinator_is_for() -> N
     # coordinator after reading coordinator.md, did every act correctly and
     # never spoke to the operator. The job lived only in the outgoing
     # coordinator's private memory, so it is written here, first.
-    raw = _read("references/coordinator.md")
-    body = raw.split("\n---\n", 1)[1]
-    headings = [line for line in body.splitlines() if line.startswith("## ")]
-    assert headings[0] == "## What the coordinator is for"
+    # W563: the index lists it first, and its module opens with it.
+    index = _read("references/coordinator.md")
+    modules = re.findall(r"\]\((coordinator/[^)]+\.md)\)", index)
+    assert modules[0] == "coordinator/what-the-coordinator-is-for.md"
+    first = _read("references/coordinator/what-the-coordinator-is-for.md")
+    assert [line for line in first.splitlines() if line.startswith("## ")][0] == "## What the coordinator is for"
+    raw = reference_text(PROCEDURE_ROOT / "references/coordinator.md")
     coordinator = _words(raw)
     for phrase in (
         "The coordinator works for the operator.",
@@ -1423,13 +1436,13 @@ def test_the_coordinator_reference_opens_with_what_the_coordinator_is_for() -> N
         "The runtime is the operator's; the mechanics are yours.",
         "No runtime window (reload, refresh, client switch) without the operator's go.",
         "Do not ask the operator about the mechanics.",
-        "[Worker budgets](#worker-budgets)",
+        "[Worker budgets](worker-budgets.md)",
     ):
         assert phrase in coordinator, phrase
     # The successor reads it before anything else it inherits.
     assert (
-        "0. Read [What the coordinator is for](#what-the-coordinator-is-for) at the "
-        "top of this file. From now on you speak to the operator."
+        "0. Read [What the coordinator is for](what-the-coordinator-is-for.md), the "
+        "first module of the coordinator reference. From now on you speak to the operator."
     ) in coordinator
     # And the skill sends a role holder there first.
     skill = _words(_read("SKILL.md"))
@@ -2006,7 +2019,7 @@ def test_a_worker_searches_before_filing():
     assert "mail the coordinator the new item's key and title" not in rule
     assert "Routing finds new items in the plan; mail the coordinator about one only when it needs a routing decision now" in rule
     skill = " ".join(_read("SKILL.md").split())
-    assert "Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14" in skill
+    assert "Before filing a plan item, follow [collaboration Rule 14](references/collaboration/rule-14-search-before-you-file-an-item.md)" in skill
 
 
 def test_a_shared_name_is_settled_in_one_exchange() -> None:
@@ -2426,7 +2439,7 @@ def test_the_consolidated_procedure_carries_the_w455_rules() -> None:
     assert "Listing them is not the act." in collaboration
     assert "A remembered approval is not proof until you have checked the head again." in collaboration
     assert "name the next gate, the actor who clears it and the next decision time" in collaboration
-    assert 'Rule 6, "Reconcile your assignments"' in skill
+    assert '[collaboration Rule 6](references/collaboration/rule-6-your-visible-state-says-where-you-are-and-what-you-ar.md), "Reconcile your assignments"' in skill
     assert "Read the same list again periodically while you work" not in skill
     # The operator-evidence sentences sit on the reviewer bullet, not on the reconcile rule.
     assert "state (W446, W449). The operator is named only once the work is integrated" in collaboration
@@ -2623,7 +2636,7 @@ def test_every_wait_names_its_actor_and_the_inbox_is_received_before_repeating_i
     for field in ("**Who acts.**", "**What exactly.**", "**The request.**", "**Since when.**"):
         assert field in coordinator
     assert "The role `project operator`, unless the decision needs one named person" in coordinator
-    assert "and the item it waits on ([collaboration](collaboration.md) Rule 11)" in coordinator
+    assert "and the item it waits on ([collaboration Rule 11](../collaboration/rule-11-the-operator-is-asked-on-the-board-and-on-telegram-w.md))" in coordinator
     assert "record who actually made it and when" in coordinator
     assert "**Receive before you declare or repeat an awaiting-operator blocker.**" in coordinator
     assert "run `pb worker receive`, look for the reply correlated to the request" in coordinator
@@ -2648,8 +2661,8 @@ def test_the_full_json_fallback_never_prints_an_attachment_capability() -> None:
     assert "do not write a JSON parser" in brief
     # Every other place that names the fallback points at that rule.
     assert "but never for an item or message with attachments, whose full envelope can hold a working download link" in _words(_read("SKILL.md"))
-    assert "read the full envelope directly, unless it carries attachments ([brief-output](brief-output.md))" in _words(_read("references/coordinator.md"))
-    assert "never for an item with attachments: [brief-output](brief-output.md))" in _words(_read("references/collaboration.md"))
+    assert "read the full envelope directly, unless it carries attachments ([brief-output](../brief-output.md))" in _words(_read("references/coordinator.md"))
+    assert "never for an item with attachments: [brief-output](../brief-output.md))" in _words(_read("references/collaboration.md"))
 
 
 def test_asking_the_next_actor_is_handing_the_item_on() -> None:
