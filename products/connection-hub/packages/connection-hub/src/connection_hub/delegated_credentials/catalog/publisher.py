@@ -137,9 +137,11 @@ async def ensure_delegated_catalog(
             # W502: never publish over a Card transaction that reserved the
             # active version (catalog/reservations.py has the ordering).
             reservations = CatalogReservations(store)
-            await reservations.begin_publication(document)
+            marker = await reservations.begin_publication(document)
             try:
                 await reservations.assert_publishable(document)
+                if await reservations.reassert_publication(marker):
+                    await reservations.assert_publishable(document)
                 await store.write_version(document)
                 await store.publish_active(document)
             except CatalogReservationRefused as exc:
