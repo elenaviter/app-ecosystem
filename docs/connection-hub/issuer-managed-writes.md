@@ -413,6 +413,12 @@ and the publication deadline cannot outlive the original Card's lifetime.
 The actual file publication thread checks that deadline after writing its
 temporary file and directly before the visibility rename.
 
+Issuer calls occur while the receipt and Card fences are held. Each remote
+issuer call is bounded to five seconds; the 30-second forward-progress
+deadline covers acquisition and orchestration, not forced cancellation of a
+started storage operation. A slow or hung backend must drain before unlock
+and remains an explicit host qualification limit.
+
 The durable replay key is `(actual actor, context_ref, request_id)`. Its receipt
 binds the **entire** query. Reusing the key with a changed target, fingerprint
 or delta refuses; an identical retry recovers the original outcome and never
@@ -438,6 +444,12 @@ original Card before a no-write refusal finishes. Recovery recognizes that
 exact original revision and complete fingerprint as a finished removal,
 retires the refused intent and permits later writers. A foreign, malformed or
 unavailable cache entry remains unresolved; recovery never deletes it blindly.
+
+Identical terminal replay also retries removal of its exact active-intent file.
+A kill or unlink failure between the completed receipt rename and retirement
+must not permanently populate the bounded active queue. Retrying retirement
+does not rewrite serving state or the original outcome, reauthorize a mutation,
+or overwrite a later legitimate Card revision.
 
 A committed update whose cache/index completion or issuer finalization remains
 pending returns `202`, its committed state and a retryable outcome—not a
