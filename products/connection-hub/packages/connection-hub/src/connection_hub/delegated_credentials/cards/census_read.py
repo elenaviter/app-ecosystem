@@ -57,8 +57,9 @@ from ..controls.project_person import (
 )
 from ..controls.hierarchy import compose_control_hierarchy
 from ..controls.effective import ControlCardMismatch
+from ..card_property_classes import PERSONAL, authorization_properties
 from ..project_identity_lifecycle import (
-    MY_CARD_COMMIT_EMAIL_PROPERTY, MY_CARD_GITHUB_PROPERTY, PROJECT_IDENTITY_EDGE_PROVENANCE, ProjectIdentityLifecycleError, ProjectPersonCardIdentity,
+    PROJECT_IDENTITY_EDGE_PROVENANCE, ProjectIdentityLifecycleError, ProjectPersonCardIdentity,
 )
 from .participant_operation import MAX_SKEW_SECONDS, ParticipantCaller
 from .store import CardStorageError, subject_hash_for
@@ -79,12 +80,10 @@ CAPABILITY_FIELDS = (
     "expires_at", "composition_mode", "account_scope", "identity_scope", "operations", "resource_grants",
     "resource_operations", "resource_acceptance", "named_service_operations", "named_services", "control_card",
 )
-# Every authorization property travels (CodeApp 20:38): the evaluator reads
-# identity markers, the exact-snapshot marker, composition modes, explicit
-# application-operation policy and agent-capability metadata, and an allowlist
-# silently drops the next one. Only person-owned settings that no
-# authorization reads are withheld; the size refusal still bounds the answer.
-PERSONAL_PROPERTIES = (MY_CARD_GITHUB_PROPERTY, MY_CARD_COMMIT_EMAIL_PROPERTY)
+# Every CLASSIFIED authorization property travels (CodeApp 20:38, EMain #618):
+# card_property_classes decides each key; personal settings and any key not
+# yet classified are withheld (fail closed). The size refusal bounds the answer.
+PERSONAL_PROPERTIES = tuple(sorted(PERSONAL))
 _ECHO = re.compile(r"[0-9a-f]{32,128}\Z")
 _BOUNDED = 256
 
@@ -280,7 +279,7 @@ def _present(authority: Any, *, my_card: bool = False) -> dict[str, Any]:
     raw = authority.to_dict()
     fields = {name: raw[name] for name in CAPABILITY_FIELDS if name in raw}
     properties = dict(authority.properties or {})
-    fields["properties"] = {name: value for name, value in properties.items() if name not in PERSONAL_PROPERTIES}
+    fields["properties"] = authorization_properties(properties)
     edge = dict(authority.provenance or {}).get(PROJECT_IDENTITY_EDGE_PROVENANCE)
     fields["provenance"] = {PROJECT_IDENTITY_EDGE_PROVENANCE: edge} if edge is not None else {}
     return {"subject_hash": subject_hash_for(authority.grantor_subject), "access_id": authority.access_id,
