@@ -47,8 +47,10 @@ from connection_hub.delegated_credentials.cards.cache import DelegatedCardRuntim
 from connection_hub.delegated_credentials.cards.composition import (
     CardTransactionsUnavailable,
     bind_card_transactions,
+    card_transaction_coordinator,
     card_transactions_enabled,
     postgres_decision_store,
+    recover_card_transactions,
 )
 from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
 
@@ -1551,6 +1553,20 @@ async def _automation_access_service_for(
     return service
 
 
+async def _card_decision_store(entrypoint: Any, pg_pool: Any) -> Any:
+    """The entrypoint's one Hub decision store; concurrent first callers wait for one creation."""
+    decisions = getattr(entrypoint, "_card_decision_store", None)
+    if decisions is None:
+        lock = entrypoint.__dict__.setdefault("_card_decision_store_lock", asyncio.Lock())
+        async with lock:
+            decisions = getattr(entrypoint, "_card_decision_store", None)
+            if decisions is None:
+                tenant, project = _runtime_tenant_project(entrypoint)
+                decisions = await postgres_decision_store(pg_pool, tenant=tenant, project=project)
+                entrypoint._card_decision_store = decisions
+    return decisions
+
+
 async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence: Any, grant_store: Any) -> None:
     """W502: Hub-initiated Card writes through the ONE protocol (W581 v2), only when enabled.
 
@@ -1561,16 +1577,7 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
     pg_pool = getattr(entrypoint, "pg_pool", None)
     if not config.uses_postgresql or pg_pool is None:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
-    decisions = getattr(entrypoint, "_card_decision_store", None)
-    if decisions is None:
-        # One creation per entrypoint: concurrent first requests wait for it.
-        lock = entrypoint.__dict__.setdefault("_card_decision_store_lock", asyncio.Lock())
-        async with lock:
-            decisions = getattr(entrypoint, "_card_decision_store", None)
-            if decisions is None:
-                tenant, project = _runtime_tenant_project(entrypoint)
-                decisions = await postgres_decision_store(pg_pool, tenant=tenant, project=project)
-                entrypoint._card_decision_store = decisions
+    decisions = await _card_decision_store(entrypoint, pg_pool)
     bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
                            policies=_invocation_policy_service(entrypoint))
 
@@ -3487,6 +3494,34 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             "repaired": report.repaired,
             "failed": report.failed,
         }
+
+    @cron(
+        alias="card-transaction-recover",
+        cron_expression="* * * * *",
+        timezone="UTC",
+        span="system",
+    )
+    async def recover_card_transactions_cron(self) -> Dict[str, Any]:
+        """W502: finish or presume-abort Card transactions a crash left in doubt.
+
+        Why: after a crash between prepare and finish the Card reads
+        card_transaction_undecided until its transaction is finished or its
+        expiry passes and recovery records the ABORT; nothing else drives
+        that (EMain #599). A no-op unless connections.card_transactions.enabled.
+        """
+        if not card_transactions_enabled(_connections_config(self)):
+            return {"ok": True, "enabled": False}
+        config = _delegated_authority_config(self)
+        pg_pool = getattr(self, "pg_pool", None)
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if not config.uses_postgresql or pg_pool is None or persistence is None:
+            return {"ok": False, "enabled": True, "reason": "card_transactions_unavailable"}
+        decisions = await _card_decision_store(self, pg_pool)
+        coordinator, _ = card_transaction_coordinator(
+            persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
+            policies=_invocation_policy_service(self))
+        return {"enabled": True, **await recover_card_transactions(coordinator, limit=100)}
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 

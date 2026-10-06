@@ -67,9 +67,9 @@ async def postgres_decision_store(pg_pool: Any, *, tenant: str, project: str) ->
     return store
 
 
-def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
-                           policies: Any) -> Coordinator:
-    """Bind one coordinator, participant, verifier and effect applier to this service's Card store."""
+def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_store: Any,
+                                 policies: Any) -> tuple[Coordinator, LocalCardIntentSource]:
+    """One coordinator, participant, verifier and effect applier over this persistence's Card store."""
     if persistence is None or decisions is None:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
     card_store = getattr(persistence, "card_store", None)
@@ -81,10 +81,37 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
                          policies=policies)
     intents = LocalCardIntentSource(card_store)
     participant = HubCardParticipant(service=card_service, store=card_store, intents=intents, decisions=decisions)
-    coordinator = Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store))
+    return Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store)), intents
+
+
+def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
+                           policies: Any) -> Coordinator:
+    """Bind one coordinator, participant, verifier and effect applier to this service's Card store."""
+    coordinator, intents = card_transaction_coordinator(persistence=persistence, decisions=decisions,
+                                                        grant_store=grant_store, policies=policies)
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions)
     return coordinator
 
 
-__all__ = ["CardTransactionsUnavailable", "DECISION_SCHEMA", "bind_card_transactions", "card_transactions_enabled",
-           "decision_namespace", "postgres_decision_store"]
+async def recover_card_transactions(coordinator: Coordinator, *, limit: int = 100) -> dict[str, Any]:
+    """One bounded recovery pass (EMain #599: the activation gate).
+
+    Finishes every decided transaction on every participant, presumes ABORT
+    for an undecided one past its expiry (the store's own CAS), and leaves an
+    unexpired undecided one. A participant failure does not stop the pass; it
+    is reported by transaction id count only, and the next pass retries it.
+    """
+    from service_foundation.coordination.durable_decision_log import RecoveryIncomplete
+
+    try:
+        records = await coordinator.recover(limit=limit)
+    except RecoveryIncomplete as exc:
+        records, failed = list(exc.completed), exc.failures
+    else:
+        failed = {}
+    finished = sum(1 for record in records if record.terminal and set(record.finished) == set(record.intent.participants))
+    return {"ok": not failed, "finished": finished, "pending": len(records) - finished, "failed": len(failed)}
+
+
+__all__ = ["CardTransactionsUnavailable", "DECISION_SCHEMA", "bind_card_transactions", "card_transaction_coordinator",
+           "card_transactions_enabled", "decision_namespace", "postgres_decision_store", "recover_card_transactions"]
