@@ -29,15 +29,13 @@ name (``project_ref`` for Problem Board) comes from the caller's descriptor.
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
-import hmac
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
-from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
+from service_foundation.coordination.participant_answer import request_digest as shared_request_digest
+from service_foundation.coordination.participant_answer import sign_participant_answer
 
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
 from .authority_intent_source import intent_scope
@@ -107,15 +105,14 @@ class ParticipantCaller:
 
 
 def answer_signature(unsigned: Mapping[str, Any], *, secret: str | bytes, service_id: str, timestamp: str) -> str:
-    """HMAC-SHA256 over the newline join (CodeApp 18:53), base64url without padding."""
-    key = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
-    message = "\n".join((ANSWER_SCHEMA, service_id, timestamp, unsigned["request_echo"],
-                         sha256_hex(canonical_json_bytes(dict(unsigned))))).encode("utf-8")
-    return base64.urlsafe_b64encode(hmac.new(key, message, hashlib.sha256).digest()).rstrip(b"=").decode("ascii")
+    """The shared helper's signature over one answer (service_foundation participant_answer, AE #608)."""
+    return sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=secret, signer_id=service_id,
+                                   timestamp=timestamp)["signature"]
 
 
 def request_digest(request: Mapping[str, Any]) -> str:
-    return sha256_hex(canonical_json_bytes({name: request[name] for name in REQUEST_FIELDS}))
+    """The shared helper's digest of exactly the eight unsigned request fields."""
+    return shared_request_digest({name: request[name] for name in REQUEST_FIELDS})
 
 
 def _bounded(value: Any) -> bool:
@@ -221,10 +218,8 @@ class CardTransactionParticipantOperation:
                     **{name: data[name] for name in ("action", "scope", "transaction_id", "decision", "limit",
                                                      "cursor")},
                     "result": dict(result)}
-        timestamp = str(int(self._clock()))
-        proof = {"service_id": caller.receipt_signer_id, "timestamp": timestamp,
-                 "signature": answer_signature(unsigned, secret=caller.receipt_secret,
-                                               service_id=caller.receipt_signer_id, timestamp=timestamp)}
+        proof = sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=caller.receipt_secret,
+                                        signer_id=caller.receipt_signer_id, timestamp=str(int(self._clock())))
         return {"ok": result.get("kind") != "refused", "participant_answer": {**unsigned, "receipt_proof": proof}}
 
     async def _local_intent(self, transaction_id: str):
