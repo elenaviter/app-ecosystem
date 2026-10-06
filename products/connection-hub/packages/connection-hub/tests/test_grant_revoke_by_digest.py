@@ -24,7 +24,7 @@ class _Authority:
 
     async def revoke_access_grant_by_digest(self, digest):
         self.digests.append(digest)
-        return True
+        return "revoked"
 
 
 TOKEN = "a-bearer-value-never-stored"
@@ -35,15 +35,16 @@ DIGEST = hashlib.sha256(TOKEN.encode("utf-8")).hexdigest()
 async def test_the_redis_path_deletes_the_same_key_a_raw_token_binding_uses():
     redis = _Redis()
     store = GrantStore(redis, "tenant-a", "project-a")
-    assert await store.revoke_access_grant_by_digest(DIGEST) is True
-    assert redis.deleted == [store._agrant_key(TOKEN)]
+    assert await store.revoke_access_grant_by_digest(DIGEST) == "unbound"
+    assert await store.revoke_access_grant_by_digest(DIGEST) == "unbound"  # replay-stable
+    assert redis.deleted == [store._agrant_key(TOKEN)] * 2
 
 
 @pytest.mark.asyncio
 async def test_the_sql_authority_receives_only_the_pinned_digest():
     authority = _Authority()
     store = GrantStore(object(), "tenant-a", "project-a", authority_store=authority)
-    assert await store.revoke_access_grant_by_digest(DIGEST.upper()) is True
+    assert await store.revoke_access_grant_by_digest(DIGEST.upper()) == "revoked"
     assert authority.digests == [DIGEST]
 
 

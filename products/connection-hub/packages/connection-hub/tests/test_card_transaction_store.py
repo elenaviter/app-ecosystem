@@ -1033,13 +1033,29 @@ async def test_an_oversized_effect_key_is_refused_by_name_at_stage(tmp_path):
     from datetime import datetime, timezone
     store, service, before, after = await _setup(tmp_path)
     when = datetime.fromtimestamp(NOW, timezone.utc)
-    oversized = [{"kind": "invocation_policy", "key": "r" * (tx.MAX_EFFECT_KEY_BYTES + 1), "payload": {}}]
+    assert tx.MAX_EFFECT_KEY_BYTES == 191  # Ops N-K1: "<64 hex>:" + 191 = 256 bytes
+    oversized = [{"kind": "invocation_policy", "key": "r" * 192, "payload": {}}]
     with pytest.raises(tx.CardTransactionRefused, match="card_transaction_effects_invalid"):
         await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                         subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
                                         effects=oversized)
     assert await tx.state(store, transaction_id=TX) is None and await _visible(store, before) == before
-    fits = [{"kind": "invocation_policy", "key": "r" * tx.MAX_EFFECT_KEY_BYTES, "payload": {}}]
+    fits = [{"kind": "invocation_policy", "key": "r" * 191, "payload": {}}]
     await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                     subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
                                     effects=fits)
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["caf\u00e9", "two words", "tab\there", "x\x7f"])
+async def test_a_non_printable_ascii_effect_key_is_refused_by_name_at_stage(tmp_path, key):
+    # Ops N-K2: refused before any receipt, not by a later hook leaving the Card fenced.
+    from datetime import datetime, timezone
+    store, service, before, after = await _setup(tmp_path)
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_effects_invalid"):
+        await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                        subject_hash=SUBJECT_HASH, original=before, candidate=after,
+                                        now=datetime.fromtimestamp(NOW, timezone.utc),
+                                        effects=[{"kind": "invocation_policy", "key": key, "payload": {}}])
+    assert await tx.state(store, transaction_id=TX) is None

@@ -169,7 +169,7 @@ class OAuthAuthorityStore(Protocol):
 
     async def revoke_access_grant(self, access_token: str) -> bool: ...
 
-    async def revoke_access_grant_by_digest(self, token_sha256: str) -> bool: ...
+    async def revoke_access_grant_by_digest(self, token_sha256: str) -> str: ...
 
     async def extend_card_credentials(
         self, registry_access_id: str, ttl_seconds: int
@@ -1135,12 +1135,13 @@ class PostgresOAuthAuthorityStore:
             )
         return status != "UPDATE 0"
 
-    async def revoke_access_grant_by_digest(self, token_sha256: str) -> bool:
+    async def revoke_access_grant_by_digest(self, token_sha256: str) -> str:
         """W582: revoke exactly one pinned binding by its token digest; no raw bearer needed.
 
-        Idempotent: an already revoked or absent binding returns False. The
-        digest is pinned at STAGE from the old handle, so a late retry can
-        never reach a replacement bearer.
+        Replay-stable outcome (Ops N-O): ``revoked`` whenever the pinned row
+        is revoked after the call, whoever revoked it, and ``absent`` when no
+        such binding exists. The digest is pinned at STAGE from the old
+        handle, so a late retry can never reach a replacement bearer.
         """
         digest = str(token_sha256 or "").strip().lower()
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
@@ -1157,7 +1158,11 @@ class PostgresOAuthAuthorityStore:
                 """,
                 digest,
             )
-        return status != "UPDATE 0"
+            if status != "UPDATE 0":
+                return "revoked"
+            state = await connection.fetchval(
+                f"SELECT state FROM {self.schema}.{TABLE_ACCESS_BINDINGS} WHERE token_sha256 = $1", digest)
+        return "absent" if state is None else ("revoked" if state == "revoked" else str(state))
 
     async def extend_card_credentials(
         self,

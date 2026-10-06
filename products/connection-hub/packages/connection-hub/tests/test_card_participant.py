@@ -346,3 +346,18 @@ async def test_recovery_finishes_an_abort_whose_hub_intent_was_never_recorded(tm
     await coordinator.recover(limit=10)
     assert (await decisions.read(row.transaction_id)).finished.keys() == {PARTICIPANT}
     assert await tx.list_in_doubt(store) == [] and await _visible(store, before) == before
+
+
+
+@pytest.mark.asyncio
+async def test_the_no_intent_fallback_never_tombstones_an_undecided_transaction(tmp_path):
+    # Ops 13:12: the record.state == aborted check of the R1 fallback, pinned.
+    store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path)
+    other = Intent(actor="person", request_id="r-undecided", context="connection-hub.card:update",
+                   payload_digest="f" * 64, participants=(PARTICIPANT,),
+                   expires_at=datetime.now(timezone.utc) + timedelta(minutes=5))
+    orphan = "d" * 64
+    decisions.rows[other.request_id] = DecisionRecord(orphan, other, "preparing", {}, {})
+    with pytest.raises(DecisionRefused, match="card_intent_unknown"):
+        await coordinator.participants[PARTICIPANT].finish(orphan, "aborted")
+    assert not (store.root / "card-transactions" / "aborted" / f"{orphan}.json").exists()

@@ -74,6 +74,9 @@ def _effects_valid(effects: Any) -> bool:
                 or not isinstance(effect["kind"], str) or not effect["kind"]
                 or not isinstance(effect["key"], str) or not effect["key"]
                 or len(effect["key"].encode("utf-8")) > MAX_EFFECT_KEY_BYTES
+                # Keys become part of an invocation id: printable ASCII only,
+                # refused here by name rather than failing a later hook.
+                or any(not 33 <= ord(char) <= 126 for char in effect["key"])
                 or not isinstance(effect["payload"], Mapping) or (effect["kind"], effect["key"]) in seen):
             return False
         seen.add((effect["kind"], effect["key"]))

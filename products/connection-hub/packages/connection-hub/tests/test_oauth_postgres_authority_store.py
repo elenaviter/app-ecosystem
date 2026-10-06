@@ -977,8 +977,9 @@ async def test_a_binding_is_revoked_by_its_pinned_digest_against_real_postgres()
         await store.bind_access_grant("new-bearer", {"registry_access_id": "aut_card", "operations": ["s"]},
                                       ttl_seconds=600)
         old = hashlib.sha256(b"old-bearer").hexdigest()
-        assert await store.revoke_access_grant_by_digest(old) is True
-        assert await store.revoke_access_grant_by_digest(old) is False  # idempotent
+        assert await store.revoke_access_grant_by_digest(old) == "revoked"
+        assert await store.revoke_access_grant_by_digest(old) == "revoked"  # replay-stable (Ops N-O)
+        assert await store.revoke_access_grant_by_digest("0" * 64) == "absent"
         assert await store.get_access_grant_record("old-bearer") is None
         assert await store.get_access_grant_record("new-bearer") is not None  # the replacement is untouched
     finally:
