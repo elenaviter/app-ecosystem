@@ -45,7 +45,7 @@ from .worktree_files import (
     observations_signature,
     observe_assignments,
 )
-from ..contract.errors import DomainError
+from ..contract.errors import PERMANENT_CREDENTIAL_CODES, DomainError
 from ..contract.mail_attachments import MAX_MAIL_ATTACHMENT_BYTES, validate_mail_attachment
 from ..contract.delivery_failures import resolve_delivery_failure_target
 from ..contract.plan_nodes import parse_plan_node_ref
@@ -5185,19 +5185,7 @@ TRANSIENT_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 # running. `work_worker_stream_grant_required` is exactly that per-operation
 # case and deliberately does not appear below, because a worker missing the
 # journal capability must not be treated as a worker with no card.
-PERMANENT_ERROR_CODES = frozenset(
-    {
-        "delegated_capability_not_granted",
-        "delegated_card_revoked",
-        "delegated_card_not_found",
-        # The Data Bus refused the bearer and the token endpoint refused to
-        # mint another: the card's own answer, after one refresh
-        # (relay_admission). A refused bearer alone is not here, because a
-        # session lost server-side comes back with that refresh.
-        "delegated_card_refresh_refused",
-        "work_worker_card_required",
-    }
-)
+PERMANENT_ERROR_CODES = PERMANENT_CREDENTIAL_CODES
 TRANSIENT_ERROR_CODES = frozenset(
     {
         "data_bus_outcome_unknown",

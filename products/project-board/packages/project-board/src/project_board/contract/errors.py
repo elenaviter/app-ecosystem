@@ -3,6 +3,26 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 
+# Codes that mean the worker's credential itself is refused for good: retrying
+# the same Card cannot succeed. The relay parks a channel on them and the
+# connection-state classifier reports them terminal; both read this one set
+# (W461 C4, Ops design verdict 2026-10-06 05:38 UTC: the two hand-kept lists
+# disagreed, and a revoked Card was retried on the backoff).
+PERMANENT_CREDENTIAL_CODES = frozenset(
+    {
+        "delegated_capability_not_granted",
+        "delegated_card_revoked",
+        "delegated_card_not_found",
+        # The Data Bus refused the bearer and the token endpoint refused to
+        # mint another: the card's own answer, after one refresh
+        # (relay_admission). A refused bearer alone is not here, because a
+        # session lost server-side comes back with that refresh.
+        "delegated_card_refresh_refused",
+        "work_worker_card_required",
+    }
+)
+
+
 class DomainError(RuntimeError):
     def __init__(
         self,
