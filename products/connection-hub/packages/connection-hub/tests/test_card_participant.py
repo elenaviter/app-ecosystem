@@ -8,13 +8,14 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from service_foundation.coordination.durable_decision_log import (
-    Coordinator, DecisionRecord, DecisionRefused, Intent, Receipt,
+    Coordinator, DecisionRecord, DecisionRefused, IntentDraft, Receipt,
 )
+from service_foundation.coordination.durable_wire import participant_projection, projection_digest
 
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.card_participant import (
-    PARTICIPANT, CardIntent, DecisionStorePort, HubCardParticipant, LocalCardIntentSource,
-    card_intent_payload_digest,
+    PARTICIPANT, CardIntent, DecisionStorePort, HubCardParticipant, HubLocalReceiptVerifier,
+    LocalCardIntentSource, card_intent_payload_digest, hub_participant_input,
 )
 from connection_hub.delegated_credentials.cards.store import CardStorageError
 from connection_hub.delegated_credentials.issuer_gate import change_digest
@@ -31,11 +32,12 @@ class _Store:
     def __init__(self):
         self.rows, self.decisions = {}, []
 
-    async def begin(self, intent):
-        row = self.rows.get(intent.request_id)
+    async def begin(self, draft, *, transaction_id=None, epoch=None, connection=None):
+        intent = draft.bind(transaction_id or TXID, epoch or 1)
+        row = self.rows.get(draft.request_id)
         if row is None:
-            row = self.rows[intent.request_id] = DecisionRecord(TXID, intent, "preparing", {}, {})
-        elif row.intent != intent:
+            row = self.rows[draft.request_id] = DecisionRecord(intent, "preparing", {}, {})
+        elif row.intent.digest != intent.digest:
             raise DecisionRefused("intent_conflict")
         return row
 
@@ -59,7 +61,7 @@ class _Store:
         self.decisions.append(decision)
         return await self._put(replace(row, state=decision, witness_digest=witness_digest))
 
-    async def abort_expired(self, transaction_id):
+    async def abort_expired(self, transaction_id, *, connection=None):
         return await self.decide(transaction_id, "aborted")
 
     async def record_finished(self, receipt):
@@ -83,16 +85,22 @@ class _Other:
 
     name = "problem-board.policy"
 
-    def __init__(self, intent_digest):
-        self.digest, self.calls = intent_digest, []
+    def __init__(self, decisions):
+        self.decisions, self.calls = decisions, []
+
+    async def _receipt(self, transaction_id):
+        intent = (await self.decisions.read(transaction_id)).intent
+        selected = participant_projection(intent, self.name)
+        return Receipt(transaction_id, intent.epoch, intent.digest, self.name,
+                       projection_digest(intent, self.name), selected["candidate_digest"], "f" * 64)
 
     async def prepare(self, transaction_id):
         self.calls.append("prepare")
-        return Receipt(transaction_id, self.digest, self.name, "f" * 64)
+        return await self._receipt(transaction_id)
 
     async def finish(self, transaction_id, decision):
         self.calls.append(("finish", decision))
-        return Receipt(transaction_id, self.digest, self.name, "f" * 64)
+        return await self._receipt(transaction_id)
 
     async def read_pending(self, transaction_id):
         return None
@@ -101,24 +109,41 @@ class _Other:
         return []
 
 
-async def _edit(tmp_path, *, participants=(PARTICIPANT,), effects=EFFECTS, hub_candidate=None, hub_effects=None):
+def _other_input(name):
+    return {"participant": name, "binding_kind": "problem-board.project", "binding_ref": "work:project:one",
+            "target_scope": "project", "target_incarnation": 1, "action": "update", "before_revision": 3,
+            "candidate_revision": 4, "candidate_digest": "a" * 64, "dependency_revisions": {},
+            "actor_subject": "person", "actor_kind": "caller", "provisioning": {}}
+
+
+def _draft(before, after, *, effects=EFFECTS, participants=(PARTICIPANT,), request_id="r-1", hub_input=None):
+    inputs = {name: _other_input(name) for name in participants if name != PARTICIPANT}
+    inputs[PARTICIPANT] = hub_input or hub_participant_input(
+        original=before, candidate=after, subject_hash=SUBJECT_HASH, action="update",
+        actor_subject="person", actor_kind="caller", effects=effects)
+    return IntentDraft(replay_scope=f"test:{request_id}", request_id=request_id,
+                       expires_at=int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp()),
+                       participants=participants, payload={"participant_inputs": inputs})
+
+
+async def _edit(tmp_path, *, participants=(PARTICIPANT,), effects=EFFECTS, hub_candidate=None, hub_effects=None,
+                hub_input=None):
     store, service, before, after = await _setup(tmp_path)
     applier = _Applier()
     service.bind_effect_applier(applier)
     decisions = _Store()
     tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
-    intent = Intent(actor="person", request_id="r-1", context="connection-hub.card:update",
-                    payload_digest=card_intent_payload_digest(original=before, candidate=after, effects=effects),
-                    participants=participants,
-                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=5))
+    intent = _draft(before, after, effects=effects, participants=participants,
+                    hub_input=hub_input(before, after) if hub_input else None)
     row = await decisions.begin(intent)
     intents = LocalCardIntentSource(store)
-    await intents.record(CardIntent(transaction_id=row.transaction_id, intent_digest=intent.digest,
+    await intents.record(CardIntent(transaction_id=row.transaction_id, intent_digest=row.intent.digest,
                                     subject_hash=SUBJECT_HASH, original=before,
                                     candidate=hub_candidate or after,
-                                    effects=tuple(effects if hub_effects is None else hub_effects)))
+                                    effects=tuple(effects if hub_effects is None else hub_effects),
+                                    action="update", actor_subject="person", actor_kind="caller"))
     hub = HubCardParticipant(service=service, store=store, intents=intents, decisions=decisions)
-    others = {name: _Other(intent.digest) for name in participants if name != PARTICIPANT}
+    others = {name: _Other(decisions) for name in participants if name != PARTICIPANT}
     coordinator = Coordinator(decisions, {PARTICIPANT: hub, **others}, _Verifier())
     return store, coordinator, decisions, intent, before, after, applier, others
 
@@ -335,12 +360,10 @@ async def test_the_hub_never_applies_an_effect_the_coordinator_intent_does_not_n
 async def test_recovery_finishes_an_abort_whose_hub_intent_was_never_recorded(tmp_path):
     # Ops R1: a crash between begin and intents.record must not strand recovery.
     store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path)
-    other = Intent(actor="person", request_id="r-orphan", context="connection-hub.card:update",
-                   payload_digest="f" * 64, participants=(PARTICIPANT,),
-                   expires_at=datetime.now(timezone.utc) + timedelta(minutes=5))
+    other = _draft(before, after, request_id="r-orphan")
     decisions.rows.clear()
     orphan = "d" * 64
-    decisions.rows[other.request_id] = DecisionRecord(orphan, other, "preparing", {}, {})  # no Hub intent for it
+    await decisions.begin(other, transaction_id=orphan)  # no Hub intent for it
     row = await decisions.read(orphan)
     await decisions.decide(row.transaction_id, "aborted")
     await coordinator.recover(limit=10)
@@ -353,11 +376,61 @@ async def test_recovery_finishes_an_abort_whose_hub_intent_was_never_recorded(tm
 async def test_the_no_intent_fallback_never_tombstones_an_undecided_transaction(tmp_path):
     # Ops 13:12: the record.state == aborted check of the R1 fallback, pinned.
     store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path)
-    other = Intent(actor="person", request_id="r-undecided", context="connection-hub.card:update",
-                   payload_digest="f" * 64, participants=(PARTICIPANT,),
-                   expires_at=datetime.now(timezone.utc) + timedelta(minutes=5))
+    other = _draft(before, after, request_id="r-undecided")
     orphan = "d" * 64
-    decisions.rows[other.request_id] = DecisionRecord(orphan, other, "preparing", {}, {})
+    await decisions.begin(other, transaction_id=orphan)
     with pytest.raises(DecisionRefused, match="card_intent_unknown"):
         await coordinator.participants[PARTICIPANT].finish(orphan, "aborted")
     assert not (store.root / "card-transactions" / "aborted" / f"{orphan}.json").exists()
+
+
+# ── Ops 16:55 (v2): every projection field the Hub acts on is compared ──
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("field", "value"), [
+    ("binding_kind", "problem-board.project"), ("binding_ref", "aut_other"), ("target_scope", "f" * 64),
+    ("before_revision", 99), ("candidate_revision", 99), ("target_incarnation", 99),
+    ("dependency_revisions", {"other": 1}), ("action", ""), ("actor_subject", ""), ("actor_kind", "unknown"),
+    # CodeApp 17:25: exact values, not only non-empty ones.
+    ("action", "revoke"), ("actor_subject", "someone-else"), ("actor_kind", "grantor"),
+])
+async def test_a_projection_that_differs_in_any_acted_on_field_never_stages(tmp_path, field, value):
+    def tampered(before, after):
+        good = hub_participant_input(original=before, candidate=after, subject_hash=SUBJECT_HASH, action="update",
+                                     actor_subject="person", actor_kind="caller", effects=EFFECTS)
+        return {**good, field: value}
+
+    try:
+        store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path, hub_input=tampered)
+    except Exception as exc:  # the kernel's own projection rules may refuse first
+        assert "invalid" in str(exc) or "revision" in str(exc)
+        return
+    with pytest.raises(DecisionRefused):
+        await coordinator.prepare(intent)
+    assert await tx.state(store, transaction_id=TXID) is None and applier.applied == []
+
+
+@pytest.mark.asyncio
+async def test_the_receipt_is_the_exact_v2_receipt_bound_to_the_persisted_intent(tmp_path):
+    store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path)
+    record = await coordinator.prepare(intent)
+    receipt = record.prepared[PARTICIPANT]
+    persisted = (await decisions.read(TXID)).intent
+    assert (receipt.epoch, receipt.global_intent_digest) == (persisted.epoch, persisted.digest)
+    assert receipt.projection_digest == projection_digest(persisted, PARTICIPANT)
+    assert receipt.candidate_digest == card_intent_payload_digest(original=before, candidate=after, effects=EFFECTS)
+
+
+@pytest.mark.asyncio
+async def test_the_local_verifier_authenticates_only_the_hubs_own_durable_receipt(tmp_path):
+    from dataclasses import replace as dc_replace
+    store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path)
+    record = await coordinator.prepare(intent)
+    verifier = HubLocalReceiptVerifier(store)
+    receipt = record.prepared[PARTICIPANT]
+    await verifier.prepared(record, receipt)
+    with pytest.raises(DecisionRefused, match="receipt_unauthenticated"):
+        await verifier.prepared(record, dc_replace(receipt, receipt_digest="0" * 64))
+    with pytest.raises(DecisionRefused, match="receipt_participant_unknown"):
+        await verifier.prepared(record, dc_replace(receipt, participant="problem-board.policy"))

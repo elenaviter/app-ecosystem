@@ -226,3 +226,91 @@ async def test_t4_a_bound_prolong_through_the_coordinator_extends_nothing_direct
     visible = await _visible(store, bound)
     assert visible.card_revision == bound.card_revision + 1 and visible.expires_at == result["access"]["expires_at"]
     assert [call[0] for call in policy.calls] == ["decide", "revalidate", "finalize"]
+
+
+async def _pg_host(tmp_path):
+    import os
+    import uuid
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+    import asyncpg
+    from service_foundation.coordination.durable_decision_log import PostgresDecisionStore
+
+    from connection_hub.delegated_credentials.cards.card_participant import HubLocalReceiptVerifier
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
+    schema = f"hub_w502_{uuid.uuid4().hex[:10]}"
+    async with pool.acquire() as connection:
+        await connection.execute(f"CREATE SCHEMA {schema}")  # the host owns its schema
+    decisions = PostgresDecisionStore(pool, schema=schema, namespace="connection-hub-test")
+    await decisions.ensure_schema()
+    store, service, before, after = await _setup(tmp_path)
+    tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
+    intents = LocalCardIntentSource(store)
+    hub = HubCardParticipant(service=service, store=store, intents=intents, decisions=decisions)
+    host = object.__new__(AutomationAccessService)
+    host._persistence = _Persistence(store)
+    host._caller_writers = None
+    host.bind_card_coordinator(Coordinator(decisions, {PARTICIPANT: hub}, HubLocalReceiptVerifier(store)),
+                               intents=intents, decisions=decisions)
+
+    async def drop():
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
+        await pool.close()
+
+    return host, store, decisions, before, after, drop
+
+
+@pytest.mark.asyncio
+async def test_v2_an_existing_card_edit_commits_through_the_real_postgres_decision_store(tmp_path):
+    host, store, decisions, before, after, drop = await _pg_host(tmp_path)
+    try:
+        await host._persist_record(record_from_card(after), expected_revision=before.card_revision)
+        assert await _visible(store, before) == after and host._persistence.direct == []
+        rows = await decisions.list_in_doubt(limit=10)
+        assert rows == []  # committed and finished: nothing in doubt
+        assert await tx.list_in_doubt(store) == []
+    finally:
+        await drop()
+
+
+@pytest.mark.asyncio
+async def test_v2_a_refusing_gate_aborts_through_the_real_postgres_decision_store(tmp_path):
+    host, store, decisions, before, after, drop = await _pg_host(tmp_path)
+    try:
+        async def refusing_gate():
+            raise CallerWriteRefused("pb_refused")
+
+        with pytest.raises(CallerWriteRefused):
+            await host._coordinated_write(record_from_card(after), after, expected_revision=before.card_revision,
+                                          caller_write=None, gate=refusing_gate, witness="")
+        assert await _visible(store, before) == before and await tx.list_in_doubt(store) == []
+        assert await decisions.list_in_doubt(limit=10) == []
+    finally:
+        await drop()
+
+
+@pytest.mark.asyncio
+async def test_card_credential_limits_reads_the_live_active_card_only(tmp_path):
+    # W585 (Infra 17:35): the SDK's only trusted source of a family's cap and revision.
+    host, store, decisions, before, after = await _host(tmp_path)
+    limits = await host.card_credential_limits(before.access_id, grantor_subject=before.grantor_subject)
+    assert limits == ((before.expires_at or None), before.card_revision)
+    assert await host.card_credential_limits(before.access_id, grantor_subject="someone-else") is None
+    assert await host.card_credential_limits("aut_missing", grantor_subject=before.grantor_subject) is None
+    assert await host.card_credential_limits("", grantor_subject=before.grantor_subject) is None
+    service = next(iter(host._card_coordinator[0].participants.values()))._service
+    ended = replace(before, card_revision=before.card_revision + 1, state="revoked")
+    await service.commit(ended, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=1_780_000_000)
+    assert await host.card_credential_limits(before.access_id, grantor_subject=before.grantor_subject) is None
+
+
+@pytest.mark.asyncio
+async def test_card_credential_limits_carries_the_committed_deadline(tmp_path):
+    host, store, decisions, before, after = await _host(tmp_path)
+    service = next(iter(host._card_coordinator[0].participants.values()))._service
+    capped = replace(before, card_revision=before.card_revision + 1, expires_at=1_900_000_000)
+    await service.commit(capped, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=1_780_000_000)
+    assert await host.card_credential_limits(before.access_id, grantor_subject=before.grantor_subject) == (
+        1_900_000_000, capped.card_revision)

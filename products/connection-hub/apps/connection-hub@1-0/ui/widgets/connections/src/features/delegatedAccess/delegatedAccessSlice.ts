@@ -1,6 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
+import { withNewerCard } from './cardFreshness';
 import {
   applyDelegatedAccessRevokeResult,
   delegatedAccessRevokePayload,
@@ -51,6 +52,8 @@ export interface DelegatedAccessState {
   loading: boolean;
   loadRequestId: string;
   busy: boolean;
+  /** W587: Control reads in flight; busy clears when the last one settles. */
+  controlReads: number;
   error: string;
 }
 
@@ -65,6 +68,7 @@ const initialState: DelegatedAccessState = {
   loading: true,
   loadRequestId: '',
   busy: false,
+  controlReads: 0,
   error: '',
 };
 
@@ -514,22 +518,29 @@ const delegatedAccessSlice = createSlice({
       })
       .addCase(loadProjectAgentCard.fulfilled, (state, action) => {
         state.focusedCard = action.payload;
+        // W587: a newer read also replaces the list row, so no row shows an older copy.
+        state.items = withNewerCard(state.items, action.payload);
       })
       .addCase(loadProjectAgentCard.rejected, (state, action) => {
         state.focusedCard = undefined;
         state.error = action.payload || 'This Card could not be opened through the project';
       })
       .addCase(loadControlCard.pending, (state) => {
+        state.controlReads += 1;
         state.busy = true;
         state.error = '';
       })
       .addCase(loadControlCard.fulfilled, (state, action) => {
-        state.busy = false;
+        state.controlReads = Math.max(0, state.controlReads - 1);
+        if (state.controlReads === 0) state.busy = false;
         state.focusedCard = action.payload.access;
         state.focusedViewer = action.payload.viewer;
+        // W587: a newer read also replaces the list row, so no row shows an older copy.
+        state.items = withNewerCard(state.items, action.payload.access);
       })
       .addCase(loadControlCard.rejected, (state, action) => {
-        state.busy = false;
+        state.controlReads = Math.max(0, state.controlReads - 1);
+        if (state.controlReads === 0) state.busy = false;
         state.focusedCard = undefined;
         state.focusedViewer = undefined;
         state.error = action.payload ?? 'Failed to load the Control Card';

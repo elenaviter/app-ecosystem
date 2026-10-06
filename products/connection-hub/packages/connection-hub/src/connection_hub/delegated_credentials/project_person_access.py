@@ -55,6 +55,8 @@ from connection_hub.delegated_credentials.controls.snapshot import (
 from connection_hub.delegated_credentials.project_authorization import (
     ViewerAuthority,
     with_viewer_authority,
+    PROJECT_BOARD_RESTARTING,
+    unanswered_policy_refusal,
     PROJECT_PERSON_CONTROL_CREATE,
     PROJECT_PERSON_CONTROL_READ,
     PROJECT_PERSON_CONTROL_REVOKE,
@@ -296,6 +298,9 @@ class ProjectPersonControlLifecycle:
                 "status": 503,
             }
         if not decision.allowed:
+            unanswered = unanswered_policy_refusal(decision.reason, error="project_person_control_authorization_unavailable")
+            if unanswered is not None:
+                return unanswered
             return {
                 "ok": False,
                 "error": decision.reason,
@@ -458,6 +463,17 @@ class ProjectPersonControlLifecycle:
             operation=PROJECT_PERSON_CONTROL_UPDATE,
             request_id=f"{request_id}:viewer",
         )
+        if isinstance(admin, dict) and (admin.get("retryable") or int(admin.get("status") or 0) >= 500):
+            # W587 follow-up C (EMain 15:54): the policy port could not answer
+            # (for example the board was reloading). That is not a refusal, so
+            # the viewer is not told "a project admin decides this"; the save
+            # is still decided by the port.
+            restarting = admin.get("error") == PROJECT_BOARD_RESTARTING
+            return {
+                "can_edit": None,
+                "reason": PROJECT_BOARD_RESTARTING if restarting else "project_person_control_permission_unavailable",
+                "retryable": True,
+            }
         can_edit = not isinstance(admin, dict)
         return {
             "can_edit": can_edit,

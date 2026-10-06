@@ -25,7 +25,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol, Sequence
 
-from service_foundation.coordination.durable_decision_log import DecisionRefused, Receipt
+from service_foundation.coordination.durable_decision_log import DecisionRefused, GlobalIntent, Receipt
+from service_foundation.coordination.durable_wire import (
+    WireRefused, canonical_json_bytes, participant_projection, projection_digest, sha256_hex,
+)
 
 from ..durable_io import read_json_or_none, write_json_atomic
 from .model import CardAuthority
@@ -44,18 +47,71 @@ def receipt_digest(receipt: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical(dict(receipt))).hexdigest()
 
 
+def hub_participant_input(*, original: CardAuthority, candidate: CardAuthority, subject_hash: str,
+                          action: str, actor_subject: str, actor_kind: str,
+                          effects: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+    """The Hub's v2 ``participant_inputs[PARTICIPANT]`` for one Card change (W581 v2 kernel).
+
+    This is the ONLY shape the Hub stages (EMain C1, 2026-10-06): an initiator
+    such as Problem Board writes exactly these values; the shared vectors in
+    ``tests/fixtures/w502_hub_participant_vectors.json`` pin them for both sides.
+
+    - ``binding_kind`` is ``connection-hub.card``; ``binding_ref`` the access id;
+      ``target_scope`` the Card's storage scope, sha256(grantor_subject) hex.
+    - ``target_incarnation`` is max(1, base Card revision). A Card is never
+      recreated under the same access id (ids are minted, revisions only grow,
+      a revoked Card keeps its id), so the revision is the incarnation
+      (EMain N2); it adds no identity beyond ``before_revision``.
+    - ``dependency_revisions`` is ``{}``; ``provisioning`` is ``{}``.
+    - ``actor_kind`` is ``caller`` (an authenticated actor other than the
+      grantor, such as a project admin) or ``grantor``; the initiator's own
+      projection keeps its own vocabulary (human/agent), never normalized here.
+    - ``candidate_digest`` binds the base revision, the complete candidate and
+      every effect (Ops B1), so the one global digest decides on exactly what
+      the Hub applies. The actor is the authenticated caller's, never a payload's.
+    """
+    return {
+        "participant": PARTICIPANT, "binding_kind": "connection-hub.card", "binding_ref": original.access_id,
+        "target_scope": subject_hash, "target_incarnation": max(1, original.card_revision), "action": action,
+        "before_revision": original.card_revision, "candidate_revision": original.card_revision + 1,
+        "candidate_digest": card_intent_payload_digest(original=original, candidate=candidate, effects=effects),
+        "dependency_revisions": {}, "actor_subject": actor_subject, "actor_kind": actor_kind,
+        "provisioning": {},
+    }
+
+
+def hub_projection(intent: GlobalIntent) -> dict[str, Any]:
+    """The Hub's exact projection of a global intent, or a named refusal."""
+    try:
+        return participant_projection(intent, PARTICIPANT)
+    except WireRefused as exc:
+        raise DecisionRefused(str(exc)) from exc
+
+
 def card_intent_payload_digest(*, original: CardAuthority, candidate: CardAuthority,
                                effects: Sequence[Mapping[str, Any]] = ()) -> str:
-    """What the coordinator's Intent.payload_digest must name for this Card change (Ops B1).
+    """The Hub projection's ``candidate_digest`` for this Card change (Ops B1; W502 v2).
 
-    It binds the base revision, the complete candidate and every effect, so
-    a policy or witness that decides on the Intent decides on exactly what
-    the Hub will apply.
+    sha256 of the kernel's canonical bytes of {access_id, original_revision,
+    candidate, effects}, effect order kept: the value Apps freezes as
+    ``participant_candidates["connection-hub.card"]`` and hashes the same way
+    (CodeApp 16:58). It binds the base revision, the complete candidate and
+    every effect, so the one global decision covers exactly what the Hub applies.
     """
-    return hashlib.sha256(_canonical({
-        "access_id": original.access_id, "original_revision": original.card_revision,
-        "candidate": candidate.to_dict(), "effects": [dict(effect) for effect in effects],
-    })).hexdigest()
+    return candidate_value_digest(candidate_value(original=original, candidate=candidate, effects=effects))
+
+
+def candidate_value(*, original: CardAuthority, candidate: CardAuthority,
+                    effects: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+    return {"access_id": original.access_id, "original_revision": original.card_revision,
+            "candidate": candidate.to_dict(), "effects": [dict(effect) for effect in effects]}
+
+
+def candidate_value_digest(value: Mapping[str, Any]) -> str:
+    try:
+        return sha256_hex(canonical_json_bytes(dict(value)))
+    except WireRefused as exc:
+        raise DecisionRefused(str(exc)) from exc
 
 
 @dataclass(frozen=True)
@@ -68,12 +124,18 @@ class CardIntent:
     original: CardAuthority
     candidate: CardAuthority
     effects: tuple[Mapping[str, Any], ...] = ()
+    # The authenticated action and actor this change was staged under (CodeApp
+    # 17:25): kept with the intent and compared EXACTLY with the projection.
+    action: str = ""
+    actor_subject: str = ""
+    actor_kind: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema": INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
                 "intent_digest": self.intent_digest, "subject_hash": self.subject_hash,
                 "original": self.original.to_dict(), "candidate": self.candidate.to_dict(),
-                "effects": [dict(effect) for effect in self.effects]}
+                "effects": [dict(effect) for effect in self.effects], "action": self.action,
+                "actor_subject": self.actor_subject, "actor_kind": self.actor_kind}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CardIntent":
@@ -83,7 +145,9 @@ class CardIntent:
             return cls(transaction_id=raw["transaction_id"], intent_digest=raw["intent_digest"],
                        subject_hash=raw["subject_hash"], original=CardAuthority.from_mapping(raw["original"]),
                        candidate=CardAuthority.from_mapping(raw["candidate"]),
-                       effects=tuple(dict(effect) for effect in raw.get("effects") or ()))
+                       effects=tuple(dict(effect) for effect in raw.get("effects") or ()),
+                       action=str(raw.get("action") or ""), actor_subject=str(raw.get("actor_subject") or ""),
+                       actor_kind=str(raw.get("actor_kind") or ""))
         except (KeyError, TypeError, ValueError) as exc:
             raise DecisionRefused("card_intent_invalid") from exc
 
@@ -147,9 +211,15 @@ class HubCardParticipant:
         self._decisions = decisions
         self._now = now or (lambda: datetime.now(timezone.utc))
 
-    def _receipt(self, prepared: Mapping[str, Any]) -> Receipt:
-        return Receipt(prepared["transaction_id"], prepared["intent_digest"], PARTICIPANT,
-                       receipt_digest(prepared))
+    async def _receipt(self, local: Mapping[str, Any]) -> Receipt:
+        """The v2 receipt: the coordinator checks epoch, global, projection and candidate digests."""
+        record = await self._decisions.read(local["transaction_id"])
+        if record is None or record.intent.digest != local["intent_digest"]:
+            raise DecisionRefused("card_intent_not_bound")
+        projection = hub_projection(record.intent)
+        return Receipt(local["transaction_id"], record.intent.epoch, record.intent.digest, PARTICIPANT,
+                       projection_digest(record.intent, PARTICIPANT), projection["candidate_digest"],
+                       receipt_digest(local))
 
     async def _bound_intent(self, transaction_id: str) -> CardIntent:
         """The Hub intent, refused unless it is exactly what the coordinator's Intent names."""
@@ -157,10 +227,28 @@ class HubCardParticipant:
         record = await self._decisions.read(transaction_id)
         if record is None:
             raise DecisionRefused("transaction_unknown")
+        if record.intent.digest != intent.intent_digest or PARTICIPANT not in record.intent.participants:
+            raise DecisionRefused("card_intent_not_bound")
+        projection = hub_projection(record.intent)
         expected = card_intent_payload_digest(original=intent.original, candidate=intent.candidate,
                                               effects=intent.effects)
-        if (record.intent.digest != intent.intent_digest or record.intent.payload_digest != expected
-                or PARTICIPANT not in record.intent.participants):
+        # The global intent names exactly this Card change. Every projection
+        # field the Hub acts on is compared, not only the candidate digest
+        # (Ops, 16:55): a matching digest with another revision, target or
+        # incarnation must not stage.
+        if (projection["candidate_digest"] != expected
+                or projection["participant"] != PARTICIPANT
+                or projection["binding_kind"] != "connection-hub.card"
+                or projection["binding_ref"] != intent.original.access_id
+                or projection["target_scope"] != intent.subject_hash
+                or projection["before_revision"] != intent.original.card_revision
+                or projection["candidate_revision"] != intent.original.card_revision + 1
+                or projection["target_incarnation"] != max(1, intent.original.card_revision)
+                or projection["dependency_revisions"] != {}
+                or not intent.action or projection["action"] != intent.action
+                or not intent.actor_subject or projection["actor_subject"] != intent.actor_subject
+                or projection["actor_kind"] not in ("caller", "grantor")
+                or projection["actor_kind"] != intent.actor_kind):
             raise DecisionRefused("card_intent_not_bound")
         return intent
 
@@ -173,7 +261,7 @@ class HubCardParticipant:
                 now=self._now(), effects=intent.effects)
         except CardTransactionRefused as exc:
             raise DecisionRefused(str(exc)) from exc
-        return self._receipt(prepared)
+        return await self._receipt(prepared)
 
     async def finish(self, transaction_id: str, decision: str) -> Receipt:
         try:
@@ -190,7 +278,7 @@ class HubCardParticipant:
             if record is None or record.state != "aborted":
                 raise
             tombstone = await abort_unstaged(self._store, transaction_id)
-            return Receipt(transaction_id, record.intent.digest, PARTICIPANT, receipt_digest(tombstone))
+            return await self._tombstone_receipt(record, tombstone)
         if decision == "aborted" and await read_state(self._store, transaction_id=transaction_id) is None:
             # Never durably prepared here (a lost prepare reply, or a stage
             # that crashed first): an idempotent abort tombstone (W581 F1),
@@ -200,18 +288,28 @@ class HubCardParticipant:
                 access_id=intent.original.access_id)
             if tombstone.get("state") != "aborted":  # the stage won the section: finish its receipt
                 return await self.finish(transaction_id, decision)
-            return Receipt(transaction_id, intent.intent_digest, PARTICIPANT, receipt_digest(tombstone))
+            record = await self._decisions.read(transaction_id)
+            if record is None or record.intent.digest != intent.intent_digest:
+                raise DecisionRefused("card_intent_not_bound")
+            return await self._tombstone_receipt(record, tombstone)
         try:
             decided = await self._service.decide_transaction(
                 transaction_id=transaction_id, intent_digest=intent.intent_digest, decision=decision,
                 subject_hash=intent.subject_hash, access_id=intent.original.access_id)
         except CardTransactionRefused as exc:
             raise DecisionRefused(str(exc)) from exc
-        return self._receipt(decided)
+        return await self._receipt(decided)
+
+    @staticmethod
+    async def _tombstone_receipt(record: Any, tombstone: Mapping[str, Any]) -> Receipt:
+        projection = hub_projection(record.intent)
+        return Receipt(record.transaction_id, record.intent.epoch, record.intent.digest, PARTICIPANT,
+                       projection_digest(record.intent, PARTICIPANT), projection["candidate_digest"],
+                       receipt_digest(tombstone))
 
     async def read_pending(self, transaction_id: str) -> Receipt | None:
         receipt = await read_state(self._store, transaction_id=transaction_id)
-        return self._receipt(receipt) if receipt is not None and receipt["state"] == "prepared" else None
+        return await self._receipt(receipt) if receipt is not None and receipt["state"] == "prepared" else None
 
     async def list_prepared(self, *, limit: int) -> Sequence[Receipt]:
         listed = await list_in_doubt(self._store)
@@ -221,9 +319,39 @@ class HubCardParticipant:
         for entry in listed:
             receipt = await read_state(self._store, transaction_id=entry["transaction_id"])
             if receipt is not None and receipt["state"] == "prepared":
-                result.append(self._receipt(receipt))
+                result.append(await self._receipt(receipt))
         return result
 
 
-__all__ = ["CardIntent", "CardIntentSource", "DecisionStorePort", "HubCardParticipant",
-           "LocalCardIntentSource", "PARTICIPANT", "card_intent_payload_digest", "receipt_digest"]
+class HubLocalReceiptVerifier:
+    """The ``ReceiptVerifier`` for a transaction only the Hub takes part in.
+
+    The receipt's digest must equal the Hub's own durable receipt for that
+    transaction; the coordinator has already checked epoch, global, projection
+    and candidate digests against the stored intent.
+    """
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+
+    async def _check(self, receipt: Receipt, states: tuple[str, ...]) -> None:
+        if receipt.participant != PARTICIPANT:
+            raise DecisionRefused("receipt_participant_unknown")
+        local = await read_state(self._store, transaction_id=receipt.transaction_id)
+        if local is None:
+            from .transaction_store import read_receipt
+            local = await read_receipt(self._store, receipt.transaction_id)
+        if local is None or local.get("state") not in states or receipt_digest(local) != receipt.receipt_digest:
+            raise DecisionRefused("receipt_unauthenticated")
+
+    async def prepared(self, record: Any, receipt: Receipt) -> None:
+        await self._check(receipt, ("prepared",))
+
+    async def finished(self, record: Any, receipt: Receipt) -> None:
+        await self._check(receipt, (record.state,))
+
+
+__all__ = ["CardIntent", "CardIntentSource", "DecisionStorePort", "HubCardParticipant", "HubLocalReceiptVerifier",
+           "LocalCardIntentSource", "PARTICIPANT", "candidate_value", "candidate_value_digest",
+           "card_intent_payload_digest", "hub_participant_input",
+           "hub_projection", "receipt_digest"]

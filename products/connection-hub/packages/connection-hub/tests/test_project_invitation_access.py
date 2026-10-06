@@ -958,7 +958,43 @@ async def test_the_viewer_fails_closed_when_the_edit_question_cannot_be_answered
         request_id="request-read",
     )
     assert read["ok"] is True
+    # W587 follow-up C: still fail closed (can_edit is not true, and the widget
+    # offers no Save while it is unknown), but an unanswered check is named as
+    # unavailable, not shown as an admin's refusal.
     assert read["viewer"] == {
-        "can_edit": False,
-        "reason": "project_person_control_decided_by_admin",
+        "can_edit": None,
+        "reason": "project_person_control_permission_unavailable",
+        "retryable": True,
     }
+
+
+class _RestartingEditQuestion:
+    """W587 follow-up C, the live path: the edit question's membership call met a
+    host application still starting, and the real port answered with a DENY."""
+
+    def __init__(self, inner, reason: str = "project_membership_provider_not_ready") -> None:
+        self.inner = inner
+        self.reason = reason
+
+    async def authorize_project_person_control(self, request):
+        if request.operation == PROJECT_INVITATION_CONTROL_UPDATE:
+            return ProjectAuthorizationDecision.deny(request, reason=self.reason)
+        return await self.inner.authorize_project_person_control(request)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("reason", "viewer_reason"), [
+    ("project_membership_provider_not_ready", "project_board_restarting"),
+    ("project_membership_provider_unavailable", "project_person_control_permission_unavailable"),
+])
+async def test_an_unanswered_edit_question_deny_is_not_an_admin_refusal(reason, viewer_reason) -> None:
+    host = _Host()
+    created = await _create(_lifecycle(host, port=_policy()))
+    pending_id = created["control_card"]["access_id"]
+    lifecycle = _lifecycle(host, port=_RestartingEditQuestion(_policy(), reason))
+    read = await lifecycle.get(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, invitation_ref=INVITATION_REF,
+        control_id=pending_id, request_id="request-read",
+    )
+    assert read["ok"] is True
+    assert read["viewer"] == {"can_edit": None, "reason": viewer_reason, "retryable": True}

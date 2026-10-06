@@ -299,7 +299,23 @@ class GrantStore:
         registry_access_id: str = "",
         card_kind: str = "",
         client_metadata: Optional[Dict[str, Any]] = None,
+        cap_expires_at: Optional[int] = None,
+        card_revision: int = 0,
     ) -> str:
+        """Issue a refresh token. W585: ``cap_expires_at`` (the Card's absolute
+        deadline, epoch seconds) and ``card_revision`` are stored on the new
+        family by the SQL authority; the Redis fallback bounds the TTL by the
+        cap. A cap already passed issues nothing (``refresh_cap_passed``)."""
+        if cap_expires_at is not None and (type(cap_expires_at) is not int or cap_expires_at <= 0):
+            raise ValueError("refresh_cap_invalid")
+        if type(card_revision) is not int or card_revision < 0:
+            raise ValueError("refresh_card_revision_invalid")
+        ttl = int(self._refresh_ttl)
+        if cap_expires_at is not None:
+            remaining = cap_expires_at - int(time.time())
+            if remaining <= 0:
+                raise ValueError("refresh_cap_passed")
+            ttl = min(ttl, remaining)
         rt = secrets.token_urlsafe(40)
         operation_map = (
             normalize_resource_operations(resource_operations)
@@ -338,12 +354,14 @@ class GrantStore:
                 "create_refresh_token",
                 payload,
                 ttl_seconds=self._refresh_ttl,
+                **({"cap_expires_at": cap_expires_at} if cap_expires_at is not None else {}),
+                **({"card_revision": card_revision} if card_revision else {}),
             )
         await self._redis_call(
             "refresh_token.create",
             "setex",
             self._key("refresh", rt),
-            self._refresh_ttl,
+            ttl,
             json.dumps(payload),
         )
         return rt
