@@ -170,6 +170,10 @@ class BundleStorageDelegatedCardStore:
         from .update_store import UPDATE_POINTER_SCHEMA, resolve_pointer as resolve_update_pointer
         if payload.get("schema") == UPDATE_POINTER_SCHEMA:
             return await resolve_update_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
+        # W578: a staged cross-realm transaction resolves through its receipt too.
+        from .transaction_store import TRANSACTION_POINTER_SCHEMA, resolve_pointer as resolve_transaction_pointer
+        if payload.get("schema") == TRANSACTION_POINTER_SCHEMA:
+            return await resolve_transaction_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
         return CardCurrentPointer.from_mapping(payload)
 
     async def read_revision(

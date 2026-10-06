@@ -2607,6 +2607,10 @@ class AutomationAccessService:
                     "expected": int(expected_card_revision), "actual": int(existing.card_revision)}
         if existing.control_card is None:
             return {"ok": False, "status": 409, "error": "caller_writer_reset_requires_control"}
+        # TODO(W577): take effective_control_card from the hierarchy resolver
+        # once it lands; the raw current Control is not the effective ceiling
+        # under a parent chain (Infra, 11:06). Until then reset is not claimed
+        # complete for chained Controls.
         try:
             control, _ = await self._compose_with_control(existing)
         except (CardUnavailable, ControlCardMismatch) as exc:

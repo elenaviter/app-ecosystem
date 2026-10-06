@@ -311,7 +311,8 @@ class DelegatedCardService:
             await assert_pointer_replaceable(self._store, subject_hash=subject_hash, access_id=access_id)
         except CardStorageError as exc:
             if str(exc) in ("lifecycle_preparation_unresolved", "lifecycle_recovery_queue_unavailable",
-                            "issuer_update_preparation_unresolved", "issuer_update_recovery_queue_unavailable"):
+                            "issuer_update_preparation_unresolved", "issuer_update_recovery_queue_unavailable",
+                            "card_transaction_unresolved"):
                 raise CardConflict(str(exc)) from exc
             raise
 
