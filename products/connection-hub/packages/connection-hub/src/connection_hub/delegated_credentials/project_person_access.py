@@ -458,6 +458,16 @@ class ProjectPersonControlLifecycle:
             operation=PROJECT_PERSON_CONTROL_UPDATE,
             request_id=f"{request_id}:viewer",
         )
+        if isinstance(admin, dict) and (admin.get("retryable") or int(admin.get("status") or 0) >= 500):
+            # W587 follow-up C (EMain 15:54): the policy port could not answer
+            # (for example the board was reloading). That is not a refusal, so
+            # the viewer is not told "a project admin decides this"; the save
+            # is still decided by the port.
+            return {
+                "can_edit": None,
+                "reason": "project_person_control_permission_unavailable",
+                "retryable": True,
+            }
         can_edit = not isinstance(admin, dict)
         return {
             "can_edit": can_edit,
