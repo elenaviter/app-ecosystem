@@ -289,3 +289,28 @@ async def test_v2_a_refusing_gate_aborts_through_the_real_postgres_decision_stor
         assert await decisions.list_in_doubt(limit=10) == []
     finally:
         await drop()
+
+
+@pytest.mark.asyncio
+async def test_card_credential_limits_reads_the_live_active_card_only(tmp_path):
+    # W585 (Infra 17:35): the SDK's only trusted source of a family's cap and revision.
+    host, store, decisions, before, after = await _host(tmp_path)
+    limits = await host.card_credential_limits(before.access_id, grantor_subject=before.grantor_subject)
+    assert limits == ((before.expires_at or None), before.card_revision)
+    assert await host.card_credential_limits(before.access_id, grantor_subject="someone-else") is None
+    assert await host.card_credential_limits("aut_missing", grantor_subject=before.grantor_subject) is None
+    assert await host.card_credential_limits("", grantor_subject=before.grantor_subject) is None
+    service = next(iter(host._card_coordinator[0].participants.values()))._service
+    ended = replace(before, card_revision=before.card_revision + 1, state="revoked")
+    await service.commit(ended, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=1_780_000_000)
+    assert await host.card_credential_limits(before.access_id, grantor_subject=before.grantor_subject) is None
+
+
+@pytest.mark.asyncio
+async def test_card_credential_limits_carries_the_committed_deadline(tmp_path):
+    host, store, decisions, before, after = await _host(tmp_path)
+    service = next(iter(host._card_coordinator[0].participants.values()))._service
+    capped = replace(before, card_revision=before.card_revision + 1, expires_at=1_900_000_000)
+    await service.commit(capped, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=1_780_000_000)
+    assert await host.card_credential_limits(before.access_id, grantor_subject=before.grantor_subject) == (
+        1_900_000_000, capped.card_revision)
