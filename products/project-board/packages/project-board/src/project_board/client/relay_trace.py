@@ -1297,6 +1297,22 @@ class RelayActivityTrace:
 
         return self.accounting.begin_turn(worker)
 
+    def slowest_turn_stage(self) -> tuple[str, float]:
+        """The longest stage of the turn running in this task's context (W456).
+
+        A stage still running counts with its time so far. ``("", 0.0)``
+        outside a turn or when the turn traced no stage.
+        """
+
+        turn = _TURN.get()
+        if turn is None:
+            return "", 0.0
+        stages = self._turn_stages(turn.turn_id)
+        if not stages:
+            return "", 0.0
+        slowest = max(stages, key=lambda record: float(record.get("seconds") or 0.0))
+        return str(slowest.get("stage") or ""), float(slowest.get("seconds") or 0.0)
+
     def end_turn(self, turn: _TurnState, outcome: str, *, code: str = "") -> dict[str, Any] | None:
         """Count the turn once; queue a summary when it was slow, failed or cancelled."""
 

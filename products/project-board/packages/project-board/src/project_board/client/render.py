@@ -1698,6 +1698,28 @@ def _payload_without_body_copies(payload: Any, body: Any) -> Any:
 _PROSE_COPY_KEYS = frozenset({"instructions", "body", "text", "description", "task"})
 
 
+def _relay_turns_line(turns: Any) -> str:
+    """W456: this channel's last attendance poll, last success and backoff."""
+
+    if not isinstance(turns, Mapping) or not turns.get("recorded_at"):
+        return "relay turns: not recorded yet"
+    backoff = turns.get("backoff") if isinstance(turns.get("backoff"), Mapping) else None
+    return "relay turns: last attendance poll {} · last success {} · last outcome {}{} · backoff {} · recorded {}".format(
+        turns.get("last_attendance_poll_at") or "-",
+        turns.get("last_success_at") or "-",
+        turns.get("last_outcome") or "-",
+        f" ({turns['last_code']})" if turns.get("last_code") else "",
+        (
+            "none"
+            if backoff is None
+            else "attempt {} · next {} · {}".format(
+                backoff.get("attempts"), backoff.get("next_attempt_at") or "-", backoff.get("reason") or "-"
+            )
+        ),
+        turns.get("recorded_at"),
+    )
+
+
 def _render_inspect(result: Mapping[str, Any]) -> list[str]:
     session = result.get("session") or {}
     worker = result.get("worker") or {}
@@ -1707,6 +1729,7 @@ def _render_inspect(result: Mapping[str, Any]) -> list[str]:
     lines = [
         f"worker: {channel.get('worker_name') or worker.get('worker_name')} · alias {channel.get('alias') or '-'}",
         f"channel: {channel.get('state')} · authorization {authorization.get('state')} · worker authorization {(worker.get('authorization') or {}).get('state')}",
+        _relay_turns_line(channel.get("relay_turns")),
         f"session: {session.get('state')} · heartbeat age {session.get('heartbeat_age_seconds')} s",
         "inbox check: {} · age {} s · overdue by {} s · interval {} s".format(
             session.get("inbox_check_state"),

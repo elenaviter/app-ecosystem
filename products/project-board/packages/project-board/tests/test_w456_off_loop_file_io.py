@@ -136,6 +136,13 @@ def test_cancellation_after_acquisition_releases_the_lock(tmp_path, wait):
 
 
 def test_a_held_outbox_lock_does_not_stall_the_event_loop(field):
+    # A row to claim: with none on disk the flush now skips the claim (W456
+    # criterion 4), and this test is about waiting for a claim's lock.
+    field.enqueue_service_event(
+        PROJECT, worker_name=WORKER, kind="note.recorded", summary="note",
+        source_event_ref="local:test:held-lock",
+    )
+
     async def scenario():
         held = threading.Event()
         holder = _hold(field._outbox.lock, 2.0, held)
@@ -163,6 +170,10 @@ def test_a_flush_cancelled_while_waiting_claims_nothing_and_leaves_no_thread(fie
     )
 
     async def scenario():
+        # The flush first asks, from the loop's default pool, whether a claim
+        # would find anything (W456 criterion 4). Start that pool's worker
+        # before counting: an idle pool worker is not a claimer.
+        await asyncio.to_thread(lambda: None)
         threads_before = threading.active_count()
         held = threading.Event()
         holder = _hold(field._outbox.lock, 1.0, held)

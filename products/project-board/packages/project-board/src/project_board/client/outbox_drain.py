@@ -46,8 +46,12 @@ class RelayOutboxDrainServer:
         ],
         drain_lock: Callable[[str], asyncio.Lock],
         log: logging.Logger | None = None,
+        card_fingerprint: Callable[[HostRelayConfig, WorkerChannelConfig], str] | None = None,
     ) -> None:
         self.config_path = Path(config_path)
+        # Reads the channel's profile file; the off-loop pass calls it in its
+        # thread and hands the result to session_matches (W456 criterion 4).
+        self.card_fingerprint = card_fingerprint
         self.pacing = pacing
         self.session_for = session_for
         self.session_matches = session_matches
@@ -104,7 +108,7 @@ class RelayOutboxDrainServer:
         with RelayOutboxWakeListener(host.field_root) as wake:
             while True:
                 try:
-                    self.serve_once()
+                    await self.serve_once_off_loop()
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001 - the next pass retries
@@ -122,14 +126,10 @@ class RelayOutboxDrainServer:
                     notify_relay_outbox(host.field_root)
                     raise
 
-    def serve_once(self) -> list[str]:
-        """Start one bounded ready-row drain per eligible worker channel."""
+    def _candidates(self, host: HostRelayConfig) -> list[tuple[WorkerChannelConfig, OutboxSession]]:
+        """Channels a drain may start for now: in-memory checks only, no file access."""
 
-        host = HostRelayConfig.load(self.config_path)
-        if self.pacing.host_quiet_seconds() > 0:
-            return []
-        outbox = OutboxStore(host.field_root / ".problem-board")
-        started: list[str] = []
+        found: list[tuple[WorkerChannelConfig, OutboxSession]] = []
         for channel in host.workers:
             name = channel.worker_name
             if channel.state != "active" or name in self.draining:
@@ -144,13 +144,77 @@ class RelayOutboxDrainServer:
                 connected=bool(getattr(getattr(session.adapter, "client", None), "connected", False)),
             ):
                 continue
-            project_refs = outbox.ready_project_refs(
-                worker_name=name,
-                limit=self.PROJECT_LIMIT,
+            found.append((channel, session))
+        return found
+
+    def serve_once(self) -> list[str]:
+        """Start one bounded ready-row drain per eligible worker channel."""
+
+        host = HostRelayConfig.load(self.config_path)
+        if self.pacing.host_quiet_seconds() > 0:
+            return []
+        outbox = OutboxStore(host.field_root / ".problem-board")
+        ready = {
+            channel.worker_name: outbox.ready_project_refs(
+                worker_name=channel.worker_name, limit=self.PROJECT_LIMIT
             )
+            for channel, _session in self._candidates(host)
+        }
+        return self._start_drains(host, ready)
+
+    async def serve_once_off_loop(self) -> list[str]:
+        """The server's pass: the config load and the ready-row scans run in a thread.
+
+        W456 criterion 4 (dev-main, 2026-10-05): the scan's directory listing
+        held the event loop 3.6 s. Eligibility is decided on the loop from
+        memory, then checked again before a drain starts.
+        """
+
+        host = await asyncio.to_thread(HostRelayConfig.load, self.config_path)
+        if self.pacing.host_quiet_seconds() > 0:
+            return []
+        names = [channel.worker_name for channel, _session in self._candidates(host)]
+        if not names:
+            return []
+
+        channels = {channel.worker_name: channel for channel, _session in self._candidates(host)}
+
+        def scan() -> tuple[dict[str, list[str]], dict[str, str]]:
+            outbox = OutboxStore(host.field_root / ".problem-board")
+            ready = {
+                name: outbox.ready_project_refs(worker_name=name, limit=self.PROJECT_LIMIT)
+                for name in names
+            }
+            cards = (
+                {name: self.card_fingerprint(host, channels[name]) for name in names if ready[name] and name in channels}
+                if self.card_fingerprint is not None
+                else {}
+            )
+            return ready, cards
+
+        ready, cards = await asyncio.to_thread(scan)
+        return self._start_drains(host, ready, cards=cards if self.card_fingerprint is not None else None)
+
+    def _start_drains(
+        self,
+        host: HostRelayConfig,
+        ready: dict[str, list[str]],
+        *,
+        cards: dict[str, str] | None = None,
+    ) -> list[str]:
+        started: list[str] = []
+        for channel, session in self._candidates(host):
+            name = channel.worker_name
+            project_refs = ready.get(name) or []
             if not project_refs:
                 continue
-            if not self.session_matches(host, channel, session):
+            if cards is None:
+                matches = self.session_matches(host, channel, session)
+            elif name in cards:
+                matches = self.session_matches(host, channel, session, card=cards[name])
+            else:
+                continue  # became eligible after the scan: the next pass takes it
+            if not matches:
                 continue
             task = asyncio.create_task(
                 self._drain(
