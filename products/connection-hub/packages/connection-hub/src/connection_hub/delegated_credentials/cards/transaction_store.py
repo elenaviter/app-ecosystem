@@ -42,6 +42,9 @@ from .store import CardStorageError
 
 TRANSACTION_POINTER_SCHEMA = "connection_hub.card-current-transaction.v1"
 TRANSACTION_RECEIPT_SCHEMA = "connection_hub.card-transaction-receipt.v1"
+# W578 card groups: one aggregate receipt per transaction over its member receipts.
+GROUP_RECEIPT_SCHEMA = "connection_hub.card-transaction-group.v1"
+MAX_GROUP_MEMBERS = 8
 DECISIONS = ("committed", "aborted")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
@@ -50,6 +53,18 @@ class CardTransactionRefused(ValueError):
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
         self.reason = reason
+
+
+def member_transaction_id(transaction_id: str, index: int) -> str:
+    """A group member's storage id: derived from the group's transaction id, never asked of a coordinator."""
+    import hashlib
+    return hashlib.sha256(f"{_checked_id(transaction_id)}:member:{int(index)}".encode("ascii")).hexdigest()
+
+
+def _decision_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
+    """What a decision port is asked about: a group member answers by its GROUP's transaction id."""
+    group = receipt.get("group")
+    return {**receipt, "transaction_id": group["transaction_id"]} if isinstance(group, Mapping) else dict(receipt)
 
 
 def _checked_id(transaction_id: Any) -> str:
@@ -244,13 +259,28 @@ async def _release_reads(store: Any, receipt: Mapping[str, Any]) -> None:
                 pass  # a decided transaction's fence holds nothing
 
 
+def _group_ref_valid(group: Any, transaction_id: str) -> bool:
+    """A member receipt's group reference: its group's id, its index and the group's lead member id."""
+    return (isinstance(group, Mapping) and set(group) == {"transaction_id", "index", "lead"}
+            and type(group["transaction_id"]) is str and _HEX64.fullmatch(group["transaction_id"]) is not None
+            and type(group["index"]) is int and 0 <= group["index"] < MAX_GROUP_MEMBERS
+            and transaction_id == member_transaction_id(group["transaction_id"], group["index"])
+            and group["lead"] == member_transaction_id(group["transaction_id"], 0))
+
+
 def _validate(raw: Any, transaction_id: str) -> dict[str, Any]:
+    if isinstance(raw, Mapping) and raw.get("schema") == GROUP_RECEIPT_SCHEMA:
+        return _validate_group(raw, transaction_id)
     try:
         base = {"schema", "transaction_id", "intent_digest", "participant", "subject_hash", "access_id",
                 "state", "reason", "before", "after", "change_digest"}
         optional = set(raw) - base if isinstance(raw, Mapping) else set()
         if (not isinstance(raw, Mapping) or not base <= set(raw)
-                or not optional <= {"effects", "reads", "catalog"}
+                or not optional <= {"effects", "reads", "catalog", "group"}
+                or ("group" in raw and not _group_ref_valid(raw["group"], transaction_id))
+                # A group's reads, catalog and effects ride on its lead member only.
+                or ("group" in raw and raw["group"]["index"] != 0
+                    and any(name in raw for name in ("effects", "reads", "catalog")))
                 or ("catalog" in raw and not _HEX64.fullmatch(str(raw["catalog"])))
                 or ("effects" in raw and not _effects_valid(raw["effects"]))
                 or ("reads" in raw and not _reads_valid(raw["reads"], raw.get("subject_hash"), raw.get("access_id")))
@@ -260,14 +290,52 @@ def _validate(raw: Any, transaction_id: str) -> dict[str, Any]:
                 or type(raw["participant"]) is not str or not raw["participant"]
                 or type(raw["reason"]) is not str):
             raise ValueError()
-        before, after = (CardCurrentPointer.from_mapping(raw[name]) for name in ("before", "after"))
-        if (before.access_id != raw["access_id"] or after.access_id != raw["access_id"]
-                or before.to_dict() != raw["before"] or after.to_dict() != raw["after"]
-                or after.card_revision != before.card_revision + 1):
+        after = CardCurrentPointer.from_mapping(raw["after"])
+        if after.access_id != raw["access_id"] or after.to_dict() != raw["after"]:
             raise ValueError()
+        if raw["before"] is None:
+            # W578: an absent original, only for a group member creating a newly minted id.
+            if "group" not in raw or after.card_revision != 1:
+                raise ValueError()
+        else:
+            before = CardCurrentPointer.from_mapping(raw["before"])
+            if (before.access_id != raw["access_id"] or before.to_dict() != raw["before"]
+                    or after.card_revision != before.card_revision + 1):
+                raise ValueError()
         return dict(raw)
     except (KeyError, ValueError, TypeError) as exc:
         raise CardStorageError("card_transaction_receipt_invalid") from exc
+
+
+def _validate_group(raw: Any, transaction_id: str) -> dict[str, Any]:
+    """The aggregate receipt: proves the complete member set once ``staged`` (W578 card groups)."""
+    try:
+        if (set(raw) != {"schema", "transaction_id", "intent_digest", "participant", "state", "reason", "staged",
+                         "members"}
+                or raw["transaction_id"] != transaction_id or raw["state"] not in ("prepared", *DECISIONS)
+                or not _HEX64.fullmatch(str(raw["intent_digest"])) or type(raw["staged"]) is not bool
+                or type(raw["participant"]) is not str or not raw["participant"] or type(raw["reason"]) is not str
+                or type(raw["members"]) is not list or not 1 <= len(raw["members"]) <= MAX_GROUP_MEMBERS):
+            raise ValueError()
+        keys = []
+        for index, member in enumerate(raw["members"]):
+            if (not isinstance(member, Mapping) or set(member) != {"transaction_id", "subject_hash", "access_id"}
+                    or member["transaction_id"] != member_transaction_id(transaction_id, index)
+                    or not _HEX64.fullmatch(str(member["subject_hash"]))
+                    or type(member["access_id"]) is not str or not member["access_id"]):
+                raise ValueError()
+            keys.append((member["subject_hash"], member["access_id"]))
+        if len(set(keys)) != len(keys) or keys != sorted(keys):
+            raise ValueError()
+        if raw["state"] == "committed" and not raw["staged"]:
+            raise ValueError()  # a commit is only ever of a complete group
+        return dict(raw)
+    except (KeyError, ValueError, TypeError) as exc:
+        raise CardStorageError("card_transaction_receipt_invalid") from exc
+
+
+def is_group_receipt(receipt: Mapping[str, Any] | None) -> bool:
+    return isinstance(receipt, Mapping) and receipt.get("schema") == GROUP_RECEIPT_SCHEMA
 
 
 async def read_receipt(store: Any, transaction_id: str) -> dict[str, Any] | None:
@@ -324,7 +392,7 @@ async def _authoritative_state(store: Any, receipt: Mapping[str, Any]) -> str:
     if port is None:
         raise CardStorageError("card_transaction_undecided")
     try:
-        decision = await port.decision(dict(receipt))
+        decision = await port.decision(_decision_receipt(receipt))
     except Exception as exc:  # noqa: BLE001 - an unreachable coordinator decides nothing
         raise CardStorageError("card_transaction_undecided") from exc
     if decision not in DECISIONS:
@@ -332,14 +400,30 @@ async def _authoritative_state(store: Any, receipt: Mapping[str, Any]) -> str:
     return decision
 
 
+async def _effects_outstanding(store: Any, receipt: Mapping[str, Any]) -> bool:
+    """A committed transaction whose effects are not all applied (a group's live on its lead member)."""
+    group = receipt.get("group")
+    lead = receipt
+    if isinstance(group, Mapping) and group["index"] != 0:
+        lead = await read_receipt(store, group["lead"])
+        if lead is None:
+            raise CardStorageError("card_transaction_group_lead_missing")
+    return bool(lead.get("effects")) and (lead["state"] != "committed" or bool(await pending_effects(store, lead)))
+
+
+def _pointer_or_absent(side: Any) -> CardCurrentPointer | None:
+    return None if side is None else CardCurrentPointer.from_mapping(side)
+
+
 async def resolve_pointer(store: Any, payload: Any, *, subject_hash: str, access_id: str,
-                          consult_decision: bool = True) -> CardCurrentPointer:
+                          consult_decision: bool = True) -> CardCurrentPointer | None:
     """The pointer a reader uses, by the coordinator's recorded decision.
 
     COMMITTED reads AFTER and ABORTED reads BEFORE, even before the local
     receipt materializes it; an undecided or unreachable decision refuses,
     only for this staged Card. Internal validation passes
-    ``consult_decision=False`` and gets BEFORE while prepared.
+    ``consult_decision=False`` and gets BEFORE while prepared. A group member
+    created from an absent original reads absent (None) on that side.
     """
 
     if not isinstance(payload, Mapping) or set(payload) != {"schema", "transaction_id", "before", "after"}:
@@ -351,13 +435,12 @@ async def resolve_pointer(store: Any, payload: Any, *, subject_hash: str, access
             or any(payload[name] != receipt[name] for name in ("before", "after"))):
         raise CardStorageError("card_transaction_pointer_binding_invalid")
     if not consult_decision:
-        return CardCurrentPointer.from_mapping(receipt["after" if receipt["state"] == "committed" else "before"])
+        return _pointer_or_absent(receipt["after" if receipt["state"] == "committed" else "before"])
     state = await _authoritative_state(store, receipt)
-    if state == "committed" and receipt.get("effects") and (
-            receipt["state"] != "committed" or await pending_effects(store, receipt)):
-        # Readiness fence: AFTER is never served without its effects.
+    if state == "committed" and await _effects_outstanding(store, receipt):
+        # Readiness fence: AFTER is never served without its effects, for any member of a group.
         raise CardStorageError("card_effects_pending")
-    return CardCurrentPointer.from_mapping(receipt["after" if state == "committed" else "before"])
+    return _pointer_or_absent(receipt["after" if state == "committed" else "before"])
 
 
 def marker_path(store: Any, *, subject_hash: str, access_id: str):
@@ -408,7 +491,15 @@ async def _retire_pointer(store: Any, receipt: Mapping[str, Any]) -> None:
     if (isinstance(raw, Mapping) and raw.get("schema") == TRANSACTION_POINTER_SCHEMA
             and raw.get("transaction_id") == receipt["transaction_id"]):
         side = receipt["after"] if receipt["state"] == "committed" else receipt["before"]
-        await write_json_atomic(path, dict(side))
+        if side is None:
+            # An aborted create of a newly minted id: the slot is absent again. The
+            # staged revision keeps its marker, so it never appears in history.
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise CardStorageError("card_transaction_retire_failed") from exc
+        else:
+            await write_json_atomic(path, dict(side))
     if receipt["state"] == "committed":
         # A committed AFTER is an ordinary revision now: drop its marker so a
         # settled read never touches the receipt (Ops N1/N4). An aborted
@@ -454,6 +545,15 @@ async def list_in_doubt(store: Any) -> list[dict[str, Any]]:
         receipt = await read_receipt(store, transaction_id)
         if receipt is None:
             in_doubt.append({"transaction_id": transaction_id, "state": "unstaged"})
+        elif is_group_receipt(receipt):
+            # A card group is recovered by its own id; its members never have entries.
+            entry = {key: receipt[key] for key in ("transaction_id", "intent_digest", "participant", "state")}
+            entry["group"] = True
+            if receipt["state"] in DECISIONS:
+                entry["needs_finish"] = True
+            elif not receipt["staged"]:
+                entry["staged"] = False  # never prepared as a whole: only an ABORT can finish it
+            in_doubt.append(entry)
         else:
             # A decided receipt whose entry survived (a crash before cleanup)
             # still needs FINISH re-driven to retire its pointer (Ops N3).
@@ -484,7 +584,7 @@ async def assert_replaceable(store: Any, *, subject_hash: str, access_id: str) -
     receipt = await read_receipt(store, raw["transaction_id"])
     if receipt["state"] == "prepared":
         raise CardStorageError("card_transaction_unresolved")
-    if receipt["state"] == "committed" and await pending_effects(store, receipt):
+    if receipt["state"] == "committed" and await _effects_outstanding(store, receipt):
         raise CardStorageError("card_effects_pending")  # no writer builds on an unfinished commit
 
 
@@ -536,17 +636,45 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
                              "before": receipt["before"], "after": receipt["after"]})
 
 
+async def _slot_has_history(store: Any, *, subject_hash: str, access_id: str) -> bool:
+    """Whether an id ever had a committed revision; an aborted staged revision is not history."""
+    from ..durable_io import list_child_names
+    from .store import REVISIONS_DIRNAME
+
+    directory = store.card_path(subject_hash=subject_hash, access_id=access_id) / REVISIONS_DIRNAME
+    for name in await list_child_names(directory):
+        if name.endswith(".card-transaction.json") or name.startswith("."):
+            continue
+        if await store._revision_is_committed(subject_hash=subject_hash, access_id=access_id, revision_name=name):
+            return True
+    return False
+
+
 async def stage(store: Any, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
-                original: CardAuthority, candidate: CardAuthority, now: datetime,
-                effects: Any = (), reads: Any = (), catalog: str = "") -> dict[str, Any]:
+                original: CardAuthority | None, candidate: CardAuthority, now: datetime,
+                effects: Any = (), reads: Any = (), catalog: str = "",
+                group: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Stage ``candidate`` behind a transaction pointer; nothing becomes visible. Caller holds the fence.
 
     A replay of a prepared transaction RESUMES its missing steps, but only
     while the Card is still exactly the receipt's BEFORE; otherwise it is
     refused and the coordinator must abort (Ops F1).
+
+    W578: ``group`` stages one member of a card group under its group's
+    decision (``{transaction_id, index, lead}``, ``transaction_id`` here being
+    the member's derived id). Only a group member may have an absent
+    ``original`` (a newly minted id): it stages candidate revision 1 into a
+    slot with no current pointer and no committed history.
     """
 
     _checked_id(transaction_id)
+    if group is not None and not _group_ref_valid(group, transaction_id):
+        raise CardTransactionRefused("card_transaction_group_invalid")
+    if original is None and group is None:
+        raise CardTransactionRefused("card_transaction_candidate_invalid")
+    access_id = candidate.access_id
+    decision_key = {"transaction_id": group["transaction_id"] if group else transaction_id,
+                    "intent_digest": intent_digest}
     if not _HEX64.fullmatch(str(intent_digest or "")) or not str(participant or "").strip():
         raise CardTransactionRefused("card_transaction_intent_invalid")
     port = getattr(store, "_card_transaction_decisions", None)
@@ -558,14 +686,16 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
             raise CardTransactionRefused("card_transaction_aborted")
         if port is not None:
             try:
-                recorded = await port.decision({"transaction_id": transaction_id, "intent_digest": intent_digest})
+                recorded = await port.decision(decision_key)
             except Exception:  # noqa: BLE001 - an unknown decision does not block a first stage
                 recorded = "undecided"
             if recorded in DECISIONS:
                 raise CardTransactionRefused("card_transaction_late_stage")
+    if existing is not None and is_group_receipt(existing):
+        raise CardTransactionRefused("card_transaction_replay_changed")
     if existing is not None and existing["state"] == "prepared" and port is not None:
         try:
-            if await port.decision(dict(existing)) == "aborted":
+            if await port.decision(_decision_receipt(existing)) == "aborted":
                 raise CardTransactionRefused("card_transaction_aborted")
         except CardTransactionRefused:
             raise
@@ -576,7 +706,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
         raise CardTransactionRefused("card_transaction_effects_invalid")
     recorded_reads = [{"subject_hash": r["subject_hash"], "access_id": r["access_id"], "revision": r["revision"]}
                       for r in (reads or ())]
-    if recorded_reads and not _reads_valid(recorded_reads, subject_hash, original.access_id):
+    if recorded_reads and not _reads_valid(recorded_reads, subject_hash, access_id):
         raise CardTransactionRefused("card_transaction_reads_invalid")
     if catalog and not _HEX64.fullmatch(str(catalog)):
         raise CardTransactionRefused("card_transaction_reads_invalid")
@@ -590,16 +720,17 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
                 or existing.get("reads", []) != recorded_reads
                 or existing.get("catalog", "") != (catalog or "")
                 or existing["change_digest"] != change_digest(candidate.to_dict())
-                or existing["access_id"] != original.access_id or existing["subject_hash"] != subject_hash):
+                or existing.get("group") != (dict(group) if group else None)
+                or existing["access_id"] != access_id or existing["subject_hash"] != subject_hash):
             raise CardTransactionRefused("card_transaction_replay_changed")
         if existing["state"] != "prepared" or await _is_staged(store, existing):
             return existing
-        raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=original.access_id))
+        raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
         current = None if raw is None else (
-            await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=original.access_id,
+            await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=access_id,
                                   consult_decision=False)
             if raw.get("schema") == TRANSACTION_POINTER_SCHEMA else CardCurrentPointer.from_mapping(raw))
-        if current is None or current.to_dict() != existing["before"]:
+        if (current.to_dict() if current is not None else None) != existing["before"]:
             raise CardTransactionRefused("card_transaction_revision_moved")
         if recorded_reads:
             await _reserve_reads(store, transaction_id, recorded_reads)  # a crash may have left one unwritten
@@ -608,20 +739,31 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     # A fresh stage passes the FULL shared fence: an unresolved issuer UPDATE
     # or lifecycle intent awaiting recovery is never overwritten (Ops F2).
     from .lifecycle_store import assert_pointer_replaceable
-    await assert_pointer_replaceable(store, subject_hash=subject_hash, access_id=original.access_id)
-    current = await store.read_current_authority(subject_hash=subject_hash, access_id=original.access_id)
-    if current is None or current[1].to_dict() != original.to_dict():
-        raise CardTransactionRefused("card_transaction_revision_moved")
-    if (candidate.access_id != original.access_id or candidate.card_revision != original.card_revision + 1):
-        raise CardTransactionRefused("card_transaction_candidate_invalid")
-    before = current[0]
+    await assert_pointer_replaceable(store, subject_hash=subject_hash, access_id=access_id)
+    current = await store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+    if original is None:
+        # A newly minted id: no current Card and no committed history (never a recreate).
+        if current is not None or await _slot_has_history(store, subject_hash=subject_hash, access_id=access_id):
+            raise CardTransactionRefused("card_transaction_absent_slot_used")
+        if candidate.card_revision != 1:
+            raise CardTransactionRefused("card_transaction_candidate_invalid")
+        before = None
+    else:
+        if current is None or current[1].to_dict() != original.to_dict():
+            raise CardTransactionRefused("card_transaction_revision_moved")
+        if candidate.access_id != original.access_id or candidate.card_revision != original.card_revision + 1:
+            raise CardTransactionRefused("card_transaction_candidate_invalid")
+        before = current[0]
     digest = candidate.content_hash()
     after = CardCurrentPointer.for_revision(candidate, content_hash=digest, revision_name=card_revision_name(
         card_revision=candidate.card_revision, content_hash=digest, updated_at=now), updated_at=now)
     receipt = {"schema": TRANSACTION_RECEIPT_SCHEMA, "transaction_id": transaction_id,
                "intent_digest": intent_digest, "participant": participant.strip(), "subject_hash": subject_hash,
-               "access_id": original.access_id, "state": "prepared", "reason": "",
-               "before": before.to_dict(), "after": after.to_dict(), "change_digest": change_digest(candidate.to_dict())}
+               "access_id": access_id, "state": "prepared", "reason": "",
+               "before": before.to_dict() if before is not None else None, "after": after.to_dict(),
+               "change_digest": change_digest(candidate.to_dict())}
+    if group is not None:
+        receipt["group"] = dict(group)
     if recorded_effects:
         receipt["effects"] = recorded_effects
     if recorded_reads:
@@ -640,8 +782,11 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     #    pointer is still BEFORE, and the lifecycle can only stay blocked
     #    until this transaction is decided and then abort its own pointer
     #    (Ops 11:36, non-blocking N2).
-    # 0. The in-flight index entry first, so recovery can always find it.
-    await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
+    # 0. The in-flight index entry first, so recovery can always find it. A
+    #    group member has none: recovery finds it through its group's entry,
+    #    and a coordinator is only ever asked about the group's id.
+    if group is None:
+        await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
     if recorded_reads:
         await _reserve_reads(store, transaction_id, recorded_reads)  # fenced before the receipt makes them live
     if catalog:
@@ -649,7 +794,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
         # refusal leaves only the index entry (an unstaged stage), never a receipt.
         await _reserve_catalog(store, transaction_id, intent_digest, catalog)
     await write_json_atomic(receipt_path(store, transaction_id), receipt)
-    await write_json_atomic(marker_path(store, subject_hash=subject_hash, access_id=original.access_id),
+    await write_json_atomic(marker_path(store, subject_hash=subject_hash, access_id=access_id),
                             {"transaction_id": transaction_id})
     await _write_staged(store, receipt, candidate, now)
     return receipt
@@ -672,6 +817,8 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
     receipt = await read_receipt(store, transaction_id)
     if receipt is None:
         raise CardTransactionRefused("card_transaction_unknown")
+    if is_group_receipt(receipt):
+        raise CardTransactionRefused("card_transaction_is_group")  # finish_group materializes a group
     if receipt["intent_digest"] != intent_digest:
         raise CardTransactionRefused("card_transaction_intent_mismatch")
     if receipt["state"] in DECISIONS:
@@ -689,7 +836,7 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
     if port is None:
         raise CardTransactionRefused("card_transaction_decision_unverified")
     try:
-        recorded = await port.decision(dict(receipt))
+        recorded = await port.decision(_decision_receipt(receipt))
     except Exception as exc:  # noqa: BLE001
         raise CardTransactionRefused("card_transaction_decision_unverified") from exc
     if recorded != decision:
@@ -705,13 +852,150 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
     return decided
 
 
+# ── W578 card groups: several Cards under ONE transaction decision ──────────
+#
+# A group's aggregate receipt lives at the group's own receipt path and is
+# written BEFORE any member, with ``staged`` false; each member is then staged
+# as an ordinary Card receipt under a derived id (``member_transaction_id``)
+# carrying ``group`` (no index entry of its own, decisions asked by the
+# group's id); only after every member is staged is the aggregate marked
+# ``staged``, which is what a prepare acknowledgement reports. Finish
+# materializes every member through ``decide`` and writes the aggregate's
+# decision LAST, so a crash at any point leaves an aggregate that recovery
+# finishes again, idempotently, by the group's id. Readers of any member
+# follow the coordinator's one recorded decision for the group.
+
+
+async def begin_group(store: Any, *, transaction_id: str, intent_digest: str, participant: str,
+                      members: list[tuple[str, str]]) -> dict[str, Any]:
+    """Write (or replay) the aggregate receipt naming every member, before any member is staged."""
+    _checked_id(transaction_id)
+    if not _HEX64.fullmatch(str(intent_digest or "")) or not str(participant or "").strip():
+        raise CardTransactionRefused("card_transaction_intent_invalid")
+    keys = [(str(subject_hash), str(access_id)) for subject_hash, access_id in members]
+    if not 1 <= len(keys) <= MAX_GROUP_MEMBERS or len(set(keys)) != len(keys) or keys != sorted(keys):
+        raise CardTransactionRefused("card_transaction_group_invalid")
+    receipt = {"schema": GROUP_RECEIPT_SCHEMA, "transaction_id": transaction_id, "intent_digest": intent_digest,
+               "participant": participant.strip(), "state": "prepared", "reason": "", "staged": False,
+               "members": [{"transaction_id": member_transaction_id(transaction_id, index),
+                            "subject_hash": subject_hash, "access_id": access_id}
+                           for index, (subject_hash, access_id) in enumerate(keys)]}
+    _validate_group(receipt, transaction_id)
+    existing = await read_receipt(store, transaction_id)
+    if existing is not None:
+        if not is_group_receipt(existing) or any(
+                existing[name] != receipt[name] for name in ("intent_digest", "participant", "members")):
+            raise CardTransactionRefused("card_transaction_replay_changed")
+        if existing["state"] in DECISIONS:
+            raise CardTransactionRefused("card_transaction_aborted" if existing["state"] == "aborted"
+                                         else "card_transaction_late_stage")
+        return existing
+    if await read_json_or_none(tombstone_path(store, transaction_id)) is not None:
+        raise CardTransactionRefused("card_transaction_aborted")
+    port = getattr(store, "_card_transaction_decisions", None)
+    if port is not None:
+        try:
+            recorded = await port.decision({"transaction_id": transaction_id, "intent_digest": intent_digest})
+        except Exception:  # noqa: BLE001 - an unknown decision does not block a first stage
+            recorded = "undecided"
+        if recorded in DECISIONS:
+            raise CardTransactionRefused("card_transaction_late_stage")
+    await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
+    await write_json_atomic(receipt_path(store, transaction_id), receipt)
+    return receipt
+
+
+def group_member_ref(group: Mapping[str, Any], index: int) -> dict[str, Any]:
+    """The ``group`` reference a member receipt carries."""
+    return {"transaction_id": group["transaction_id"], "index": index,
+            "lead": member_transaction_id(group["transaction_id"], 0)}
+
+
+async def complete_group(store: Any, *, transaction_id: str, intent_digest: str) -> dict[str, Any]:
+    """Mark the aggregate staged once EVERY member's receipt is prepared and its pointer in place."""
+    receipt = await read_receipt(store, transaction_id)
+    if not is_group_receipt(receipt) or receipt["intent_digest"] != intent_digest:
+        raise CardTransactionRefused("card_transaction_group_invalid")
+    if receipt["state"] != "prepared":
+        raise CardTransactionRefused("card_transaction_aborted" if receipt["state"] == "aborted"
+                                     else "card_transaction_late_stage")
+    if receipt["staged"]:
+        return receipt
+    for index, member in enumerate(receipt["members"]):
+        local = await read_receipt(store, member["transaction_id"])
+        if (local is None or local.get("group") != group_member_ref(receipt, index)
+                or local["intent_digest"] != intent_digest or local["state"] != "prepared"
+                or (local["subject_hash"], local["access_id"]) != (member["subject_hash"], member["access_id"])
+                or not await _is_staged(store, local)):
+            raise CardTransactionRefused("card_transaction_group_incomplete")
+    staged = {**receipt, "staged": True}
+    _validate_group(staged, transaction_id)
+    await write_json_atomic(receipt_path(store, transaction_id), staged)
+    return staged
+
+
+async def finish_group(store: Any, *, transaction_id: str, intent_digest: str, decision: str,
+                       reason: str = "") -> dict[str, Any]:
+    """Record the aggregate's decision AFTER every member materialized it; idempotent.
+
+    The caller (``DelegatedCardService.decide_group_transaction``) decides each
+    member through ``decide`` first. COMMITTED requires a staged group whose
+    every member is committed; ABORTED requires every member that was ever
+    staged to be aborted (a member never reached has no receipt).
+    """
+    if decision not in DECISIONS:
+        raise CardTransactionRefused("card_transaction_decision_invalid")
+    receipt = await read_receipt(store, transaction_id)
+    if not is_group_receipt(receipt):
+        raise CardTransactionRefused("card_transaction_unknown")
+    if receipt["intent_digest"] != intent_digest:
+        raise CardTransactionRefused("card_transaction_intent_mismatch")
+    if receipt["state"] in DECISIONS:
+        if receipt["state"] != decision:
+            raise CardTransactionRefused("card_transaction_decision_conflict")
+        await _clear_group(store, receipt)
+        return receipt
+    if decision == "committed" and not receipt["staged"]:
+        raise CardTransactionRefused("card_transaction_not_staged")
+    port = getattr(store, "_card_transaction_decisions", None)
+    if port is None:
+        raise CardTransactionRefused("card_transaction_decision_unverified")
+    try:
+        recorded = await port.decision({"transaction_id": transaction_id, "intent_digest": intent_digest})
+    except Exception as exc:  # noqa: BLE001
+        raise CardTransactionRefused("card_transaction_decision_unverified") from exc
+    if recorded != decision:
+        raise CardTransactionRefused("card_transaction_decision_not_recorded")
+    for member in receipt["members"]:
+        local = await read_receipt(store, member["transaction_id"])
+        if local is None and decision == "aborted":
+            continue
+        if local is None or local["state"] != decision:
+            raise CardTransactionRefused("card_transaction_group_members_pending")
+    decided = {**receipt, "state": decision, "reason": str(reason or "")[:128]}
+    _validate_group(decided, transaction_id)
+    await write_json_atomic(receipt_path(store, transaction_id), decided)
+    await _clear_group(store, decided)
+    return decided
+
+
+async def _clear_group(store: Any, receipt: Mapping[str, Any]) -> None:
+    if receipt["state"] in DECISIONS:
+        try:
+            active_path(store, receipt["transaction_id"]).unlink(missing_ok=True)
+        except OSError:
+            pass  # a stale entry lists a decided group, which recovery re-finishes idempotently
+
+
 async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
     """The recorded state; recovery reads this and may only materialize it, never change it."""
 
     return await read_receipt(store, transaction_id)
 
 
-__all__ = ["CardTransactionRefused", "DECISIONS", "TRANSACTION_POINTER_SCHEMA", "TRANSACTION_RECEIPT_SCHEMA",
+__all__ = ["CardTransactionRefused", "DECISIONS", "GROUP_RECEIPT_SCHEMA", "TRANSACTION_POINTER_SCHEMA",
+           "TRANSACTION_RECEIPT_SCHEMA", "begin_group", "complete_group", "finish_group", "group_member_ref",
+           "is_group_receipt", "member_transaction_id",
            "TransactionDecisionPort", "abort_unstaged", "active_path", "read_fence_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
            "effect_outcomes", "effects_path", "list_in_doubt", "marker_path", "pending_effects",
            "read_receipt", "resolve_pointer", "stage", "state"]

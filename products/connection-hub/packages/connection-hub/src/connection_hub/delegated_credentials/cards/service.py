@@ -29,7 +29,7 @@ import time
 import uuid
 from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Mapping, Protocol
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
@@ -218,8 +218,8 @@ class DelegatedCardService:
 
     async def stage_transaction(
         self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
-        original: CardAuthority, candidate: CardAuthority, now: Any, effects: Any = (), reads: Any = (),
-        catalog: str = "",
+        original: CardAuthority | None, candidate: CardAuthority, now: Any, effects: Any = (), reads: Any = (),
+        catalog: str = "", group: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served.
 
@@ -241,7 +241,7 @@ class DelegatedCardService:
         from .transaction_store import CardTransactionRefused, read_receipt, stage
 
         mutation_id = transaction_mutation_id(transaction_id)
-        access_id = original.access_id
+        access_id = candidate.access_id
         try:
             # W502 read reservations: the candidate's section and every dependency
             # Card's section, taken in one sorted order so stages cannot deadlock.
@@ -260,14 +260,14 @@ class DelegatedCardService:
                     try:
                         await self._mark_transaction_updating(
                             access_id=access_id, mutation_id=mutation_id,
-                            expected_revision=int(original.card_revision))
+                            expected_revision=int(original.card_revision) if original is not None else 0)
                     except Exception as exc:
                         raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
                 try:
                     staged = await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                          participant=participant, subject_hash=subject_hash, original=original,
                                          candidate=candidate, now=now, effects=effects, reads=reads,
-                                         catalog=catalog)
+                                         catalog=catalog, group=group)
                     await self._run_effect_hook("_effect_preparer", staged, refusal="card_effect_prepare_failed")
                     return staged
                 except (CardStorageError, CardTransactionRefused):
@@ -312,7 +312,8 @@ class DelegatedCardService:
                     try:
                         await self._mark_transaction_updating(
                             access_id=access_id, mutation_id=mutation_id,
-                            expected_revision=int(receipt["before"]["card_revision"]), committing=receipt)
+                            expected_revision=int(receipt["before"]["card_revision"]) if receipt["before"] else 0,
+                            committing=receipt)
                     except Exception as exc:
                         raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
                 decided = await decide(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
@@ -363,6 +364,82 @@ class DelegatedCardService:
                 return decided
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def stage_group_transaction(
+        self, *, transaction_id: str, intent_digest: str, participant: str,
+        members: Sequence[tuple[str, CardAuthority | None, CardAuthority, str]], now: Any,
+        effects: Any = (), reads: Any = (), catalog: str = "",
+    ) -> dict[str, Any]:
+        """W578: stage a card group (several Cards) under ONE transaction decision.
+
+        ``members`` are ``(subject_hash, original or None, candidate, action)``,
+        in the group's canonical (subject_hash, access_id) order. Each member's
+        action is checked against its original exactly as the caller-writer
+        gate checks a bound write (EMain Q3): only attach binds and only detach
+        unbinds, create only for an absent original, update and reset keep
+        the protected fields, revoke publishes only an ended state. The
+        aggregate receipt is written first, every member is staged under its
+        own Card section, and the aggregate is marked staged last; the group's
+        reads, catalog and effects ride on its lead member.
+        """
+        from ..caller_writer_gate import binding_change_refusal, candidate_shape_refusal
+        from .model import CARD_STATE_ACTIVE
+        from .transaction_store import (
+            CardTransactionRefused, begin_group, complete_group, group_member_ref, member_transaction_id,
+        )
+
+        ordered = [(str(subject_hash), original, candidate, str(action))
+                   for subject_hash, original, candidate, action in members]
+        for subject_hash, original, candidate, action in ordered:
+            before = original.to_dict() if original is not None else None
+            after = candidate.to_dict()
+            if (original is None) != (action == "create"):
+                raise CardTransactionRefused("card_group_member_action_invalid")
+            if action == "revoke":
+                refusal = (binding_change_refusal(action, before, after)
+                           or (None if candidate.state != CARD_STATE_ACTIVE else "card_group_revoke_not_ended"))
+            elif action in ("attach", "detach"):
+                refusal = binding_change_refusal(action, before, after)
+            else:
+                refusal = candidate_shape_refusal(action, before, after)
+            if refusal is not None:
+                raise CardTransactionRefused(refusal)
+        group = await begin_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                  participant=participant,
+                                  members=[(subject_hash, candidate.access_id)
+                                           for subject_hash, _, candidate, _ in ordered])
+        for index, (subject_hash, original, candidate, _) in enumerate(ordered):
+            lead = index == 0
+            await self.stage_transaction(
+                transaction_id=member_transaction_id(transaction_id, index), intent_digest=intent_digest,
+                participant=participant, subject_hash=subject_hash, original=original, candidate=candidate,
+                now=now, effects=effects if lead else (), reads=reads if lead else (),
+                catalog=catalog if lead else "", group=group_member_ref(group, index))
+        return await complete_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest)
+
+    async def decide_group_transaction(
+        self, *, transaction_id: str, intent_digest: str, decision: str, reason: str = "",
+        now: int | None = None,
+    ) -> dict[str, Any]:
+        """W578: materialize the group's one recorded decision on every member, then the aggregate.
+
+        The lead member first: it carries the group's effects, applied before
+        any member is served, so no member is served AFTER without them. A
+        member never staged (an interrupted prepare) has nothing to decide.
+        """
+        from .transaction_store import CardTransactionRefused, finish_group, is_group_receipt, read_receipt
+
+        group = await read_receipt(self._store, transaction_id)
+        if not is_group_receipt(group):
+            raise CardTransactionRefused("card_transaction_unknown")
+        for member in group["members"]:
+            if await read_receipt(self._store, member["transaction_id"]) is None:
+                continue
+            await self.decide_transaction(
+                transaction_id=member["transaction_id"], intent_digest=intent_digest, decision=decision,
+                subject_hash=member["subject_hash"], access_id=member["access_id"], reason=reason, now=now)
+        return await finish_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                  decision=decision, reason=reason)
 
     async def abort_unstaged_transaction(self, *, transaction_id: str, subject_hash: str,
                                          access_id: str, intent_digest: str = "") -> dict[str, Any]:
