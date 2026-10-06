@@ -403,9 +403,12 @@ def _kill_at(root, point):
     import select
     import subprocess
     import sys
+    from connection_hub.delegated_credentials.cards import transaction_store as tx
     own_cards = Path(__file__).resolve().parents[1] / "src/connection_hub/delegated_credentials/cards"
+    core_cards = Path(tx.__file__).resolve().parent
     script = ("import connection_hub.delegated_credentials.cards as cards; "
               f"cards.__path__.append({str(own_cards)!r}); "
+              f"cards.__path__.append({str(core_cards)!r}); "
               "from test_participant_effects import _effect_crash_worker; "
               f"_effect_crash_worker({str(root)!r}, {point!r})")
     env = dict(os.environ)
