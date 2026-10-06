@@ -434,3 +434,90 @@ async def test_the_local_verifier_authenticates_only_the_hubs_own_durable_receip
         await verifier.prepared(record, dc_replace(receipt, receipt_digest="0" * 64))
     with pytest.raises(DecisionRefused, match="receipt_participant_unknown"):
         await verifier.prepared(record, dc_replace(receipt, participant="problem-board.policy"))
+
+
+# ── EMain 18:35: the REAL verifier authenticates the Hub's own abort tombstones ──
+
+
+async def _real_verifier_edit(tmp_path):
+    store, coordinator, decisions, intent, before, after, applier, others = await _edit(tmp_path)
+    coordinator = Coordinator(decisions, dict(coordinator.participants), HubLocalReceiptVerifier(store))
+    return store, coordinator, decisions, intent, before, after, applier
+
+
+@pytest.mark.asyncio
+async def test_r1_an_abort_with_no_recorded_intent_finishes_with_the_real_verifier(tmp_path):
+    store, coordinator, decisions, intent, before, after, applier = await _real_verifier_edit(tmp_path)
+    other = _draft(before, after, request_id="r-orphan-real")
+    decisions.rows.clear()
+    orphan = "d" * 64
+    await decisions.begin(other, transaction_id=orphan)  # crashed before intents.record
+    await decisions.decide(orphan, "aborted")
+    await coordinator.recover(limit=10)
+    assert (await decisions.read(orphan)).finished.keys() == {PARTICIPANT}
+    assert await coordinator.recover(limit=10) == []  # nothing left in doubt
+    assert await _visible(store, before) == before and applier.applied == []
+
+
+@pytest.mark.asyncio
+async def test_f1_an_abort_of_a_never_staged_intent_finishes_with_the_real_verifier(tmp_path):
+    store, coordinator, decisions, intent, before, after, applier = await _real_verifier_edit(tmp_path)
+    await decisions.begin(intent)  # the intent is recorded by _edit; prepare never runs
+    await coordinator.decide(TXID, "aborted")
+    record = await coordinator.finish(TXID)
+    assert record.finished.keys() == {PARTICIPANT}
+    assert await _visible(store, before) == before and applier.applied == []
+
+
+@pytest.mark.asyncio
+async def test_the_real_verifier_refuses_a_tombstone_for_another_transaction_or_a_commit(tmp_path):
+    from dataclasses import replace as dc_replace
+    from connection_hub.delegated_credentials.cards.card_participant import receipt_digest
+    store, coordinator, decisions, intent, before, after, applier = await _real_verifier_edit(tmp_path)
+    await decisions.begin(intent)
+    await coordinator.decide(TXID, "aborted")
+    record = await coordinator.finish(TXID)
+    receipt = record.finished[PARTICIPANT]
+    verifier = HubLocalReceiptVerifier(store)
+    committed = dc_replace(record, state="committed")
+    with pytest.raises(DecisionRefused, match="receipt_unauthenticated"):
+        await verifier.finished(committed, receipt)  # a tombstone never proves a COMMIT
+    with pytest.raises(DecisionRefused, match="receipt_unauthenticated"):
+        await verifier.finished(record, dc_replace(receipt, receipt_digest=receipt_digest({"forged": 1})))
+
+
+@pytest.mark.asyncio
+async def test_the_real_verifier_refuses_a_tombstone_naming_another_transaction(tmp_path):
+    import json as _json
+    from connection_hub.delegated_credentials.cards.card_participant import receipt_digest
+    store, coordinator, decisions, intent, before, after, applier = await _real_verifier_edit(tmp_path)
+    await decisions.begin(intent)
+    await coordinator.decide(TXID, "aborted")
+    path = tx.tombstone_path(store, TXID)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    forged = {"transaction_id": "f" * 64, "state": "aborted"}
+    path.write_text(_json.dumps(forged))  # a file at this id's path that names another transaction
+    record = await decisions.read(TXID)
+    receipt = Receipt(TXID, record.intent.epoch, record.intent.digest, PARTICIPANT,
+                      projection_digest(record.intent, PARTICIPANT),
+                      participant_projection(record.intent, PARTICIPANT)["candidate_digest"], receipt_digest(forged))
+    with pytest.raises(DecisionRefused, match="receipt_unauthenticated"):
+        await HubLocalReceiptVerifier(store).finished(record, receipt)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_prepare_then_abort_finishes_with_the_real_verifier(tmp_path):
+    # EMain #599 (18:2x): _coordinated_write on a refused prepare decides ABORT and
+    # finishes; the Hub never staged, so its finish is the F1 tombstone.
+    store, coordinator, decisions, intent, before, after, applier = await _real_verifier_edit(tmp_path)
+    hub = coordinator.participants[PARTICIPANT]
+    moved = replace(before, card_revision=before.card_revision + 1, label="another admin saved first")
+    await hub._service.commit(moved, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision,
+                              now=1_780_000_000)
+    with pytest.raises(DecisionRefused):
+        await coordinator.prepare(intent)
+    await coordinator.decide(TXID, "aborted")
+    record = await coordinator.finish(TXID)
+    assert record.finished.keys() == {PARTICIPANT}
+    assert await coordinator.recover(limit=10) == [] and applier.applied == []
+    assert await _visible(store, before) == moved
