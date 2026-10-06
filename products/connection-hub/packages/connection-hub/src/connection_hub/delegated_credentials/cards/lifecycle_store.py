@@ -19,7 +19,7 @@ import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Mapping
 
-from ..durable_io import read_json_or_none, write_json_atomic
+from ..durable_io import DurableStorageError, read_json_or_none, require_publish_before, write_json_atomic
 from .lifecycle import LifecycleRefused, LifecycleRequest
 from .model import CARD_STATE_REVOKED, CardCurrentPointer, card_revision_name
 from .store import CardStorageError
@@ -245,12 +245,16 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
             await write_json_atomic(store.current_path(subject_hash=entry["subject_hash"], access_id=entry["access_id"]),
                 {"schema": LIFECYCLE_POINTER_SCHEMA, "transaction_id": transaction_id,
                  "before": entry["before"], "after": entry["after"]})
-        await before_publish()
+        deadline = await before_publish()
         committed = {**receipt, "state": "committed"}
-        await write_json_atomic(receipt_path(store, transaction_id), committed)
+        if after_prepare is not None:
+            with require_publish_before(deadline):
+                await write_json_atomic(receipt_path(store, transaction_id), committed)
+        else:
+            await write_json_atomic(receipt_path(store, transaction_id), committed)
         await _retire_active_intent(store, transaction_id)
         return committed
-    except Exception:
+    except Exception as exc:
         # An IO error can occur AFTER the rename committed. Never relabel that
         # as a no-write refusal; read the actual visibility point first.
         outcome = await read_receipt(store, transaction_id)
@@ -261,6 +265,8 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
             return outcome
         await abort_prepared(store, request=request, actor_subject=actor_subject,
                              reason="lifecycle_preparation_failed")
+        if isinstance(exc, DurableStorageError) and exc.reason.startswith("issuer_decision_expir"):
+            raise LifecycleRefused(exc.reason) from exc
         raise
 
 

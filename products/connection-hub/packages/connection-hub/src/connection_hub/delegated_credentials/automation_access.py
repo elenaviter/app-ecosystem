@@ -2398,12 +2398,15 @@ class AutomationAccessService:
             async def before_commit(authorities):
                 if len(decisions) != 2:
                     raise IssuerWriteRefused("issuer_lifecycle_replay_not_mutation")
+                deadlines = []
                 for (target, _original, request, decision), current in zip(decisions, authorities):
                     target.assert_authority(current)
                     fresh = await self._issuers.revalidate(request, decision)
                     refusal = issuer_write_refusal(current, request, fresh, now=datetime.now(timezone.utc))
                     if refusal is not None:
                         raise IssuerWriteRefused(refusal["reason"])
+                    deadlines.append(fresh.valid_until)
+                return min(deadlines)
 
             receipt = await apply(lifecycle, actor_subject=actor, before_commit=before_commit)
             committed = receipt["state"] == "committed"

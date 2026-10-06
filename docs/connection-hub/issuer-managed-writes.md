@@ -182,15 +182,28 @@ after_commit)`. `before_commit` receives the two current authorities and is the
 configured issuer closure. `after_commit` receives their before authorities
 and performs idempotent credential-handle cleanup. `DurableCardPersistence`
 supplies that cleanup. This low-level service is not an authentication API.
+`before_commit` must return the earliest aware `valid_until` of its freshly
+sealed decisions, not `None`. The service clamps its final deadline to that
+original value; the commit IO thread checks it AFTER writing the temporary
+file and immediately BEFORE the visibility rename. A stalled temporary-file
+write cannot silently extend issuer approval.
 
 The service acquires a durable receipt fence, then the existing production
 `.mutation.lock` fences in `(subject_hash, access_id)` order. One 30-second
-operation bound covers acquisition, checks, staging and cleanup; flock itself
+forward-progress deadline covers acquisition, checks, staging and cleanup; flock itself
 has no TTL or steal. An explicit trusted host capability is required:
 `connections.delegated_credentials.lifecycle_storage.lock_scope` is either
 `same-host-flock` or `shared-flock-verified`. Neither is inferred from a path.
 No capability, unsupported object storage, or unverified cross-host NFS/SMB
 behavior refuses. This draft has not changed any live configuration.
+
+The 30 seconds is a forward-progress deadline, not forced cancellation of an
+already-started kernel or database operation. Lifecycle-scoped writes, Redis
+mutations and handle cleanup are shielded and drained BEFORE either Card
+fence is released. A stuck backend may extend wall-clock drain time; a host
+profile must qualify that bound, and an unverified/hung backend is not claimed
+supported. A timeout after durable commit returns committed/serving-pending,
+never no-write refusal. An interrupted preparation remains recoverable.
 
 The absolute filesystem backend publishes with a same-directory atomic
 `Path.replace`, through `write_json_atomic`. Power-loss/fsync durability is

@@ -317,9 +317,11 @@ class DelegatedCardService:
     @asynccontextmanager
     async def _lifecycle_sections(self, request: Any, actor_subject: str):
         from .lifecycle_store import receipt_path
+        from ..durable_io import drain_writes_before_release
 
-        # One bound covers the receipt wait, BOTH Card waits, issuer checks,
-        # durable staging and serving cleanup. Flocks never expire or steal.
+        # One forward-progress deadline covers receipt/BOTH Card waits, issuer
+        # checks, staging and cleanup. Started mutations drain under the fences;
+        # their safe drain can exceed this deadline. Flocks never expire or steal.
         async with asyncio.timeout(CARD_LOCK_WAIT_SECONDS):
             async with AsyncExitStack() as stack:
                 await stack.enter_async_context(self._mutation_lock(
@@ -329,10 +331,11 @@ class DelegatedCardService:
                 for target in sorted(request.targets, key=lambda item: (item.subject_hash, item.access_id)):
                     await stack.enter_async_context(self._critical_section(
                         subject_hash=target.subject_hash, access_id=target.access_id))
-                yield
+                async with drain_writes_before_release():
+                    yield
 
     async def revoke_lifecycle(self, request: Any, *, actor_subject: str,
-            before_commit: Callable[[tuple[CardAuthority, CardAuthority]], Awaitable[None]],
+            before_commit: Callable[[tuple[CardAuthority, CardAuthority]], Awaitable[datetime]],
             after_commit: Callable[[tuple[CardAuthority, CardAuthority]], Awaitable[None]]) -> dict[str, Any]:
         """Generic pair primitive, NOT an authenticated public entrypoint.
 
@@ -343,6 +346,7 @@ class DelegatedCardService:
         """
         from .lifecycle import LifecycleRefused, LifecycleRequest
         from . import lifecycle_store as lifecycle
+        from ..durable_io import cancellation_safe_await
 
         if not isinstance(request, LifecycleRequest) or not callable(before_commit) or not callable(after_commit):
             raise LifecycleRefused("issuer_lifecycle_commit_gate_unavailable")
@@ -367,19 +371,28 @@ class DelegatedCardService:
                     target.assert_authority(None if current is None else current[1])
                     authorities.append(current[1])
                 authorities = tuple(authorities)
-                await before_commit(authorities)  # fresh issuer gate BEFORE first effect
+                def valid_deadline(value):
+                    now = datetime.now(timezone.utc)
+                    if not isinstance(value, datetime) or value.utcoffset() is None:
+                        raise LifecycleRefused("issuer_decision_expiry_invalid")
+                    if value <= now or (value - now).total_seconds() > 60:
+                        raise LifecycleRefused("issuer_decision_expired")
+                    return value
+
+                initial_deadline = valid_deadline(await before_commit(authorities))
                 for authority, target in zip(authorities, request.targets):
                     current = await self._store.read_current_authority(subject_hash=target.subject_hash, access_id=target.access_id)
-                    await self._reconcile(access_id=authority.access_id, current=current, moment=int(time.time()))
+                    await cancellation_safe_await(self._reconcile(access_id=authority.access_id, current=current, moment=int(time.time())))
 
                 async def claim():
-                    if not await self._cache.claim_lifecycle(authorities, mutation_id=transaction_id):
+                    if not await cancellation_safe_await(self._cache.claim_lifecycle(authorities, mutation_id=transaction_id)):
                         raise CardConflict("card_lifecycle_transition_not_claimed")
 
                 async def publish_gate():
-                    await before_commit(authorities)  # original decision, no validity-window extension
+                    deadline = min(initial_deadline, valid_deadline(await before_commit(authorities)))
                     if not await self._cache.lifecycle_fenced(access_ids, mutation_id=transaction_id):
                         raise CardConflict("card_lifecycle_serving_fence_lost")
+                    return deadline
 
                 try:
                     receipt = await lifecycle.atomic_revoke(self._store, request=request, actor_subject=actor_subject,
@@ -400,13 +413,14 @@ class DelegatedCardService:
 
     async def _finish_lifecycle(self, receipt: dict[str, Any], *, after_commit: Any) -> dict[str, Any]:
         from . import lifecycle_store as lifecycle
+        from ..durable_io import cancellation_safe_await
 
         if receipt["serving_state"] != "pending":
             return receipt  # stable replay, including after a later legitimate revision
         mutation_id = receipt["transaction_id"]
         access_ids = tuple(entry["access_id"] for entry in receipt["targets"])
         if receipt["state"] == "refused":
-            await self._cache.release_lifecycle(access_ids, mutation_id=mutation_id)
+            await cancellation_safe_await(self._cache.release_lifecycle(access_ids, mutation_id=mutation_id))
             return await lifecycle.mark_serving_complete(self._store, receipt)
         try:
             before = []
@@ -419,11 +433,11 @@ class DelegatedCardService:
                 if authority is None:
                     return receipt
                 before.append(authority)
-            await after_commit(tuple(before))
-            if not await self._cache.finish_lifecycle(tuple(before), mutation_id=mutation_id):
+            await cancellation_safe_await(after_commit(tuple(before)))
+            if not await cancellation_safe_await(self._cache.finish_lifecycle(tuple(before), mutation_id=mutation_id)):
                 return receipt  # both persistent markers remain; no success relabelling
             for entry in receipt["targets"]:
-                await self._cache.index_remove(subject_hash=entry["subject_hash"], access_id=entry["access_id"])
+                await cancellation_safe_await(self._cache.index_remove(subject_hash=entry["subject_hash"], access_id=entry["access_id"]))
             return await lifecycle.mark_serving_complete(self._store, receipt)
         except Exception:
             _LOGGER.warning("[connection-hub.delegated-cards] lifecycle committed; serving pending transaction=%s",

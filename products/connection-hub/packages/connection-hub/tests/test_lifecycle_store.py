@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import dataclasses
+import asyncio
 import json
 import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -193,6 +196,7 @@ async def test_pair_service_holds_receipt_then_both_ordered_card_fences_through_
         assert len(held) == 3
         assert authorities == tuple(sorted(cards, key=lambda c: (c.grantor_subject, c.access_id)))
         checks.append(1)
+        return datetime.now(timezone.utc) + timedelta(seconds=30)
 
     async def cleanup(authorities):
         assert len(held) == 3
@@ -222,7 +226,7 @@ async def test_pair_service_committed_serving_limbo_blocks_both_writers_and_reco
     request = LifecycleRequest.from_mapping(_wire(cards))
     cache = _service_cache()
     service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
-    check = AsyncMock()
+    check = AsyncMock(return_value=datetime.now(timezone.utc) + timedelta(seconds=30))
     failing_cleanup = AsyncMock(side_effect=OSError("synthetic handle storage unavailable"))
     receipt = await service.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=check, after_commit=failing_cleanup)
     assert receipt["state"] == "committed" and receipt["serving_state"] == "pending"
@@ -251,7 +255,7 @@ async def test_pair_service_expiry_after_staging_aborts_both_and_does_not_remove
     await _seed(store, cards)
     request = LifecycleRequest.from_mapping(_wire(cards))
     cache = _service_cache()
-    check = AsyncMock(side_effect=[None, LifecycleRefused("issuer_decision_expired")])
+    check = AsyncMock(side_effect=[datetime.now(timezone.utc) + timedelta(seconds=30), LifecycleRefused("issuer_decision_expired")])
     cleanup = AsyncMock()
     service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
     with pytest.raises(LifecycleRefused, match="issuer_decision_expired"):
@@ -284,6 +288,91 @@ async def test_pair_service_requires_explicit_host_flock_capability_and_first_is
     cache.claim_lifecycle.assert_not_called()
     cache.reconcile_projection.assert_not_called()
     assert await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR)) is None
+
+
+@pytest.mark.asyncio
+async def test_cancellation_drains_started_intent_writer_before_releasing_either_fence(tmp_path, monkeypatch):
+    from connection_hub.delegated_credentials import durable_io
+    from connection_hub.delegated_credentials.cards import service as service_module
+
+    store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    held, started, finish = [], threading.Event(), threading.Event()
+    original = durable_io._write_text_atomic
+
+    def write(path, payload):
+        if path.parent.name == "active":
+            started.set()
+            assert finish.wait(5), "fixture writer was not released"
+        return original(path, payload)
+
+    @asynccontextmanager
+    async def locks(**kwargs):
+        held.append(kwargs["lock_path"])
+        try:
+            yield {}
+        finally:
+            held.pop()
+
+    monkeypatch.setattr(durable_io, "_write_text_atomic", write)
+    monkeypatch.setattr(service_module, "CARD_LOCK_WAIT_SECONDS", 0.03)
+    service = service_module.DelegatedCardService(store=store, cache=_service_cache(), mutation_lock=locks)
+    gate = AsyncMock(return_value=datetime.now(timezone.utc) + timedelta(seconds=30))
+    task = asyncio.create_task(service.revoke_lifecycle(request, actor_subject=ACTOR,
+                                                       before_commit=gate, after_commit=AsyncMock()))
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        await asyncio.sleep(0.08)  # past the shortened fixture progress deadline
+        assert not task.done() and len(held) == 3
+    finally:
+        finish.set()
+    with pytest.raises(service_module.CardConflict, match="card_lifecycle_timeout"):
+        await task
+    assert held == []
+    assert await _states(store, request) == [("active", 1), ("active", 1)]
+    receipt = await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR))
+    assert receipt["state"] == "prepared"
+    recovered = await service.revoke_lifecycle(request, actor_subject=ACTOR,
+                                              before_commit=gate, after_commit=AsyncMock())
+    assert recovered["state"] == "refused" and recovered["serving_state"] == "complete"
+    assert await _states(store, request) == [("active", 1), ("active", 1)]
+
+
+@pytest.mark.asyncio
+async def test_expiry_in_commit_write_thread_is_checked_after_temp_write_before_rename(tmp_path, monkeypatch):
+    from connection_hub.delegated_credentials.cards.service import DelegatedCardService
+    from pathlib import Path
+
+    store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
+    cards = _pair()
+    await _seed(store, cards)
+    request = LifecycleRequest.from_mapping(_wire(cards))
+    transaction_id = request.transaction_id(ACTOR)
+    original = Path.write_text
+    commit_writer_reached = threading.Event()
+
+    def write(path, *args, **kwargs):
+        result = original(path, *args, **kwargs)
+        if path.parent.name == "lifecycle-transactions" and path.name.startswith(f".{transaction_id}.json.tmp."):
+            commit_writer_reached.set()
+            time.sleep(1.1)  # only this fixture-owned IO thread, not platform IO
+        return result
+
+    monkeypatch.setattr(Path, "write_text", write)
+    cache = _service_cache()
+    cleanup = AsyncMock()
+    service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
+    deadline = datetime.now(timezone.utc) + timedelta(seconds=1)
+    with pytest.raises(LifecycleRefused, match="issuer_decision_expired"):
+        await service.revoke_lifecycle(request, actor_subject=ACTOR,
+            before_commit=AsyncMock(return_value=deadline), after_commit=cleanup)
+    assert commit_writer_reached.is_set()
+    assert await _states(store, request) == [("active", 1), ("active", 1)]
+    receipt = await lifecycle_store.read_receipt(store, transaction_id)
+    assert receipt["state"] == "refused" and receipt["serving_state"] == "complete"
+    cleanup.assert_not_called()
 
 
 @pytest.mark.asyncio
