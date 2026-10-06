@@ -40,7 +40,7 @@ host action because it changes both the command and relay source. When `pb statu
 Before an action, name the task or observed event that calls for it and what
 its result could change. Reassess after a wake or a returned command; a check
 that was useful once is not automatically useful again. At each new decision or work boundary, rerun the smallest targeted read that the decision depends on; an earlier command result or remembered snapshot is not fresh evidence.
-When you start work on a named subject (a host, a feature, an item), search once for what the project already knows about it, not again at every step of the same task: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return. When the project has a knowledge keeper, search its knowledge for the subject too ([knowledge keeper](references/knowledge-keeper.md)). Before filing a plan item, follow [collaboration](references/collaboration.md) Rule 14: search first and note small things on an open item; routing finds new items in the plan.
+When you start work on a named subject (a host, a feature, an item), search once for what the project already knows about it, not again at every step of the same task: `project.plan.search` for the plan and `pb worker journal-search --query <subject>` for the journal of the project you attend (add `--project-ref` to name the project explicitly), then read what they return. When the project has a knowledge keeper, search its knowledge for the subject too ([knowledge keeper](references/knowledge-keeper.md)). Before filing a plan item, follow [collaboration Rule 14](references/collaboration/rule-14-search-before-you-file-an-item.md): search first and note small things on an open item; routing finds new items in the plan.
 
 For a repeated status query or retry, name the pending operation or receipt, use
 a bounded attempt count, and stop when another repetition cannot inform the next
@@ -106,7 +106,7 @@ enrollment, a Card, a profile, project attendance, or revocation is in question.
 
 A few requirements must survive a compaction or a restart, and how they do depends on the runtime. A runtime with a persistent memory facility (Claude Code's memory directory) saves each one below as one entry, tagged `source: problem-board-worker <installed revision>`, when it loads a revision of this skill, and replaces the whole set when the installed revision changes. A runtime with none (Codex) keeps them through this skill itself, which it loads in full once per installed-revision change; it writes no substitute file and claims no memory entries. Adoption is `pb procedure verify` plus, by runtime, the tagged entries or the agent's confirmation that it loaded that revision. In every runtime, do not save your own versions of Problem Board workflow rules: a rule you find missing or wrong goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory, because a memory you wrote yourself cannot show that you follow this procedure (operator, 2026-10-03).
 
-1. Anything that waits on the operator is a work item assigned to them. Its own Result, "How to check this" and "What could not be verified" fields hold the operator's exact steps and expected result, rewritten for them when you route it. A `decision` or `question` message names it. Never leave this, or your answer to an operator's question, only in a terminal ([collaboration](references/collaboration.md) Rule 11).
+1. Anything that waits on the operator is a work item assigned to them. Its own Result, "How to check this" and "What could not be verified" fields hold the operator's exact steps and expected result, rewritten for them when you route it. A `decision` or `question` message names it. Never leave this, or your answer to an operator's question, only in a terminal ([collaboration Rule 11](references/collaboration/rule-11-the-operator-is-asked-on-the-board-and-on-telegram-w.md)).
 2. Every task's route on its item names the next actor; hand the item on yourself, and read availability before you wait on anyone and again before you read their silence (collaboration Rule 16).
 3. Work others wait on is handed off, never parked behind an owner who is out of quota, paused or unreachable: you replace your reviewer, the coordinator hands off work owners (collaboration Rules 8 and 16).
 4. A request, report or verdict names its exact head, tree and evidence.
@@ -275,7 +275,7 @@ completion included, the later mail, item revision or result event, never
 that notice again. Progress to completion needs no reissued assignment. An
 accepted terminal report is final for that ownership version.
 
-A review is begun the same way: read the item and the exact head the notice names, publish that you started (`pb worker busy-until` with the review as its note), settle, review, and decide as [collaboration](references/collaboration.md) Rule 6 says. When you cannot start either kind, say so at the first safe boundary: `blocked` (or your info line, for a review) naming the reason, the actor or event that clears it and the next decision time, and tell the coordinator. Silence is never a state.
+A review is begun the same way: read the item and the exact head the notice names, publish that you started (`pb worker busy-until` with the review as its note), settle, review, and decide as [collaboration Rule 6](references/collaboration/rule-6-your-visible-state-says-where-you-are-and-what-you-ar.md) says. When you cannot start either kind, say so at the first safe boundary: `blocked` (or your info line, for a review) naming the reason, the actor or event that clears it and the next decision time, and tell the coordinator. Silence is never a state.
 
 Do not acknowledge an assignment and stop. Do not guess an ownership version
 when several notices are open: if a notice does not name its item, ask, because
@@ -303,7 +303,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 - Before project work, run `pb worker context --project-ref <project-ref>` for
   this machine's workspace and journal coordinates. Read assignment, ownership
   version, dependencies, stop intent, and coordination policy only from
-  explicit project or message evidence; when it is absent, put it in your one consolidated clarification ([collaboration](references/collaboration.md) Rule 16).
+  explicit project or message evidence; when it is absent, put it in your one consolidated clarification ([collaboration Rule 16](references/collaboration/rule-16-every-task-has-a-living-route-and-each-actor-knows-i.md)).
 - Inline prose (`--body`, `--summary`, `--note`, `--reason`, a review statement, a prose field in
   `--payload-json`) is one line, and the command refuses more (`problem_board_inline_prose_multiline`), naming the file argument.
   Longer text goes through `--body-file`, `--summary-file` or `--payload-file`. Two things no check catches: a single line with a
@@ -320,7 +320,7 @@ move status ([ownership](references/identity-and-authorization.md)).
   detach. A relay heartbeat proves transport, a watch
   heartbeat proves availability checks, and only `pb worker receive` and
   settlement prove model handling.
-- An empty inbox is not evidence that there is no work. At session start, on resume and before `pb worker idle`, read your responsibilities once: `pb coordinate assignment.list` for your implementation work, `project.plan.index` with `{"assignee": "<your stable name>"}` for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those), and `pb worker outbox-status` for each outbox id whose outcome you do not know. You are idle only when each is done, started, or deferred with its reason, clearing actor or event and next decision time. A read that fails leaves you unknown, not idle. Read it again once per native wake batch and, while you work, about every 30 minutes at the next safe boundary, never per command, per leased message or per guard prompt, and act on each item or ask: [collaboration](references/collaboration.md) Rule 6, "Reconcile your assignments".
+- An empty inbox is not evidence that there is no work. At session start, on resume and before `pb worker idle`, read your responsibilities once: `pb coordinate assignment.list` for your implementation work, `project.plan.index` with `{"assignee": "<your stable name>"}` for every item assigned to you, reviews routed to you included (add `"status": "review"` to see only those), and `pb worker outbox-status` for each outbox id whose outcome you do not know. You are idle only when each is done, started, or deferred with its reason, clearing actor or event and next decision time. A read that fails leaves you unknown, not idle. Read it again once per native wake batch and, while you work, about every 30 minutes at the next safe boundary, never per command, per leased message or per guard prompt, and act on each item or ask: [collaboration Rule 6](references/collaboration/rule-6-your-visible-state-says-where-you-are-and-what-you-ar.md), "Reconcile your assignments".
 - A correction that must survive an unread inbox belongs in the assigned plan
   item. The coordinator updates the item and sends a short notice naming the
   same stable work ref. Mail wakes the worker; the item retains the corrected
@@ -354,7 +354,7 @@ move status ([ownership](references/identity-and-authorization.md)).
 - Your estimate is visible state. After planning, `pb worker busy-until <UTC> --note <one line>`
   says until when you expect to finish and what you are on. Set it again with the reason when it
   slips. Clear it with `pb worker busy-until --clear` when the work is done. The board shows it and
-  marks it overdue once the time has passed ([collaboration](references/collaboration.md), rule 6). What the operator told you that the team must know about you goes on your cards with `pb worker info write` (same rule, The info line), and so does a pause you choose.
+  marks it overdue once the time has passed ([collaboration Rule 6](references/collaboration/rule-6-your-visible-state-says-where-you-are-and-what-you-ar.md)). What the operator told you that the team must know about you goes on your cards with `pb worker info write` (same rule, The info line), and so does a pause you choose.
 - How the team collaborates is decided in rounds, ideas alone first, then read all, then talk, then a votes table to everyone (rule 7). Handoff is an ownership decision the coordinator takes (rule 8), what you publish is safe to publish (rule 9), a runtime window speaks one channel that survives it (rule 10), a shared name or field is settled in one exchange and crossed messages are decided by its owner with "do not reply" (rule 15), and every task has a living route on its item that names each actor's next step: you start at once with one consolidated clarification, arrange and if needed replace your reviewer, read availability before you wait on anyone and again before you read their silence, and raise an unavailable work owner to the coordinator, who hands it off (rule 16): all in [collaboration](references/collaboration.md).
 - When assigned work transitions to no work remaining, say so once with `pb worker idle`. When
   this exact session stops participating, run `pb worker detach`.
@@ -384,7 +384,7 @@ revised one rehearsal round at a time. What every worker does, from it:
   blocks nothing. Clear your dashboard entry when the change request is open.
   TTL is recovery for an abandoned entry, not the completion path. Operations:
   `workspace.shared_write.list`, `workspace.shared_write.publish`,
-  `workspace.shared_write.clear`, invoked and shaped as in [collaboration](references/collaboration.md), Rule 3.
+  `workspace.shared_write.clear`, invoked and shaped as in [collaboration Rule 3](references/collaboration/rule-3-make-your-intent-visible-before-you-edit.md).
 - **Before you ask for a review:** `git merge-base --is-ancestor origin/main
   <head>` (every integration push moves the base under every open change
   request), rebase with `--force-with-lease` on your own branch when it fails,
@@ -407,7 +407,7 @@ revised one rehearsal round at a time. What every worker does, from it:
 - **A `completed` report submits the source for review** at an exact head and
   change request, and its could-not-verify names what is still to come (merge,
   activation). Approval, merge, activation and whole-item acceptance are
-  separate milestones ([collaboration](references/collaboration.md) Rule 6). The merge milestone names the merge commit after you fetched and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor runs it on their own clone. Any
+  separate milestones ([collaboration Rule 6](references/collaboration/rule-6-your-visible-state-says-where-you-are-and-what-you-ar.md)). The merge milestone names the merge commit after you fetched and ran `git merge-base --is-ancestor <commit> origin/main`. The acceptor runs it on their own clone. Any
   claim that a change landed (a report, an item note, a journal lesson) names that merge commit after you fetched it, never the intention
   to merge. With its documentation: when behaviour a doc describes
   changes, the doc changes in the same item, because undocumented behaviour is

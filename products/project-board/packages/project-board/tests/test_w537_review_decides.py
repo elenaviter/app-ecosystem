@@ -11,6 +11,7 @@ The coordinator's reconcile looks for reviews that sit.
 from __future__ import annotations
 
 from pathlib import Path
+from procedure_reference import reference_text
 
 PACKAGE = Path(__file__).resolve().parents[1]
 PRODUCT = PACKAGE.parents[1]
@@ -18,7 +19,7 @@ PROCEDURES = PACKAGE / "src" / "project_board" / "procedures" / "problem-board-w
 
 
 def _words(path: Path) -> str:
-    return " ".join(path.read_text(encoding="utf-8").split())
+    return " ".join(reference_text(path).split())
 
 
 def test_unmet_criteria_go_back_and_a_hold_is_named_and_timed():

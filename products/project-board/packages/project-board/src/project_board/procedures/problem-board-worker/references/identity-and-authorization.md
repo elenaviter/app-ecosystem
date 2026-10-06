@@ -135,7 +135,7 @@ ceiling and keep the same identity. One product step is still open (W420): a
 refresh reapplies the profile by name, so another service on the same Card
 that declares the same profile name can be changed too, until W420's
 resource-scoped apply is live. An agent never edits a Card
-([collaboration](collaboration.md) Rule 12).
+([collaboration Rule 12](collaboration/rule-12-cards-are-edited-only-in-connection-hub.md)).
 
 The project's Control Card is that ceiling, and it is set per project. An
 operation added to the default profiles after a project's Control Card was

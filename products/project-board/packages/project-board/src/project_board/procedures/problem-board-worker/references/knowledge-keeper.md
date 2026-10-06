@@ -41,7 +41,7 @@ procedure:
   hand-overs then go to the coordinator, and nobody infers a holder from a
   repository or an alias. A
   holder who is unavailable is handled like any owner others wait on
-  ([collaboration](collaboration.md) Rule 16). The role grants no permission of
+  ([collaboration Rule 16](collaboration/rule-16-every-task-has-a-living-route-and-each-actor-knows-i.md)). The role grants no permission of
   its own;
 - where the knowledge package and its instructions are, and the repositories it
   is built from;

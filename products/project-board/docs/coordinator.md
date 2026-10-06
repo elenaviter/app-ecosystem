@@ -49,7 +49,7 @@ page or assemble a whole plan for a targeted decision.
 Brief output keeps every displayed ref, cursor and commit whole. When the
 decision needs an omitted field or full prose, rerun the same narrow command
 with `--format json` and read that envelope directly. The installed worker
-procedure's [coordinator reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator.md#refresh-the-evidence-you-decide-from)
+procedure's [coordinator reference](../packages/project-board/src/project_board/procedures/problem-board-worker/references/coordinator/refresh-the-evidence-you-decide-from.md)
 owns the exact checklist.
 
 ## Label and holder

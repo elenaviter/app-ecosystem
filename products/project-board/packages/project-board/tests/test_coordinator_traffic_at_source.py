@@ -9,12 +9,13 @@ its own next step, and tracks progress by reading, not by status mail.
 from __future__ import annotations
 
 from pathlib import Path
+from procedure_reference import reference_text
 
 PROCEDURE = Path(__file__).resolve().parents[1] / "src" / "project_board" / "procedures" / "problem-board-worker"
 
 
 def _words(relative: str) -> str:
-    return " ".join((PROCEDURE / relative).read_text(encoding="utf-8").split())
+    return " ".join(reference_text(PROCEDURE / relative).split())
 
 
 def test_the_item_is_the_status_and_mail_goes_to_whoever_acts_next():

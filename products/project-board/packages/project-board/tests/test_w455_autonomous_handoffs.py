@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 from project_board.client.procedures import source_package_path
+from procedure_reference import reference_text
 
 
 PROCEDURE_ROOT = source_package_path()
@@ -22,11 +23,11 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "w455_autonomous_handof
 
 
 def _words(relative: str) -> str:
-    return " ".join((PROCEDURE_ROOT / relative).read_text(encoding="utf-8").split())
+    return " ".join(reference_text(PROCEDURE_ROOT / relative).split())
 
 
 def _section(relative: str, heading: str) -> str:
-    text = (PROCEDURE_ROOT / relative).read_text(encoding="utf-8")
+    text = reference_text(PROCEDURE_ROOT / relative)
     start = text.index(heading)
     following = re.search(r"^## ", text[start + len(heading):], flags=re.MULTILINE)
     end = start + len(heading) + following.start() if following else len(text)
@@ -103,7 +104,7 @@ def test_availability_has_one_definition_and_is_read_at_each_deciding_point() ->
         "availability changed"
     ) in coordinator
     rule = _section("references/collaboration.md", "## Rule 16.")
-    assert '([coordinator](coordinator.md), "What the coordinator is for")' in rule
+    assert '([coordinator](../coordinator.md), "What the coordinator is for")' in rule
     for text in (coordinator, rule):
         assert "Silence is never consent, approval or READY." in text
 
@@ -185,7 +186,7 @@ def test_the_skill_points_at_the_route_rule() -> None:
     skill = _words("SKILL.md")
     assert "every task has a living route on its item that names each actor's next step" in skill
     assert "raise an unavailable work owner to the coordinator, who hands it off (rule 16)" in skill
-    assert "put it in your one consolidated clarification ([collaboration](references/collaboration.md) Rule 16)" in skill
+    assert "put it in your one consolidated clarification ([collaboration Rule 16](references/collaboration/rule-16-every-task-has-a-living-route-and-each-actor-knows-i.md))" in skill
 
 
 def test_anything_waiting_on_the_operator_is_an_item_assigned_to_them() -> None:

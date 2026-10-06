@@ -11,13 +11,14 @@ import re
 from pathlib import Path
 
 from project_board.client.procedures import source_package_path
+from procedure_reference import reference_text
 
 PROCEDURES = source_package_path().parent
 REPO = Path(__file__).resolve().parents[5]
 
 
 def _words(path: Path) -> str:
-    return " ".join(path.read_text(encoding="utf-8").split())
+    return " ".join(reference_text(path).split())
 
 
 HOST = _words(PROCEDURES / "add-a-worker-host.md")
