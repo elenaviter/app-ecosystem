@@ -2328,6 +2328,7 @@ class AutomationAccessService:
 
     async def _enlisted_gate(
         self, authority: CardAuthority, *, expected_revision: int, caller_write: CallerWrite | None,
+        candidate: Mapping[str, Any] | None = None,
     ) -> tuple[Callable[[], Awaitable[None]] | None, Any]:
         """W580/B: the bound-Card gate for a writer that did not bring its own.
 
@@ -2351,7 +2352,8 @@ class AutomationAccessService:
             raise CallerWriteRefused("caller_writer_not_enlisted")
         return await caller_writer_before_commit(
             registry, current, actor_subject=caller_write.actor_subject, action=caller_write.action,
-            candidate=authority.to_dict(), request_id=caller_write.request_id or secrets.token_urlsafe(18),
+            candidate=dict(candidate) if candidate is not None else authority.to_dict(),
+            request_id=caller_write.request_id or secrets.token_urlsafe(18),
             context_ref=caller_write.context_ref, binding=binding,
         )
 
@@ -2414,9 +2416,33 @@ class AutomationAccessService:
         *,
         revoked_record: AutomationAccessRecord | None = None,
         before_commit: Callable[[], Awaitable[None]] | None = None,
+        caller_write: CallerWrite | None = None,
     ) -> None:
         authority = card_authority_from_record(record)
         subject_hash = _subject_key(record.grantor_subject)
+        caller_request = None
+        if before_commit is None and getattr(self, "_caller_writers", None) is not None:
+            # Ops B3 (12:14): a revoke can remove the last usable admin, so a
+            # governed Card is never revoked by an unnamed writer either.
+            before_commit, caller_request = await self._enlisted_gate(
+                authority, expected_revision=authority.card_revision, caller_write=caller_write,
+                candidate={"action": "revoke", "access_id": authority.access_id,
+                           "card_revision": authority.card_revision})
+        if caller_request is not None:
+            forget = getattr(self._cards(), "forget_guarded", None)
+            if not callable(forget) or revoked_record is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=authority.card_revision)
+                raise IssuerWriteRefused("issuer_commit_gate_unavailable")
+            try:
+                await forget(authority, subject_hash=subject_hash, before_commit=before_commit)
+            except BaseException:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=authority.card_revision)
+                raise
+            await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                       state="committed", card_revision=authority.card_revision + 1)
+            return
         if before_commit is not None:
             forget = getattr(self._cards(), "forget_guarded", None)
             if not callable(forget) or revoked_record is not None:

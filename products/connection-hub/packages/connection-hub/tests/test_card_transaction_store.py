@@ -751,9 +751,20 @@ async def test_a_settled_card_is_read_with_no_coordinator_call_and_no_pending_po
     settled = after if decision == "committed" else before
     assert _raw_pointer(store, before).get("schema") != tx.TRANSACTION_POINTER_SCHEMA  # pending pointer retired
     port.calls = 0
-    for _ in range(3):
-        assert await _visible(store, before) == settled
-    assert port.calls == 0
+    receipt_reads = []
+    real_read = tx.read_receipt
+
+    async def counting_read(store_, transaction_id):
+        receipt_reads.append(transaction_id)
+        return await real_read(store_, transaction_id)
+
+    tx.read_receipt = counting_read
+    try:
+        for _ in range(3):
+            assert await _visible(store, before) == settled
+    finally:
+        tx.read_receipt = real_read
+    assert port.calls == 0 and receipt_reads == []  # Ops N1: no receipt read at all once retired
     assert (await tx.state(store, transaction_id=TX))["state"] == decision  # audit record kept
 
 
@@ -801,3 +812,37 @@ async def test_a_staged_revision_is_out_of_history_until_its_transaction_commits
                                      revision_name=staged_name)
     assert (read == after) if decision == "committed" else read is None
     assert (await store.read_initial_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id)) == before
+
+
+
+@pytest.mark.asyncio
+async def test_a_replayed_finish_of_an_old_transaction_never_retires_a_newer_pointer(tmp_path):
+    # Ops N2: retirement is bound to its own transaction id.
+    store, _, before, after = await _setup(tmp_path)
+    await _stage(store, before, after)
+    await _decide(store, "committed")
+    later = replace(after, card_revision=after.card_revision + 1, label="second transaction")
+    t2 = "d" * 64
+    await _stage(store, after, later, transaction_id=t2)
+    assert _raw_pointer(store, before)["transaction_id"] == t2
+    await _decide(store, "committed")  # replay of T1's FINISH
+    assert _raw_pointer(store, before)["transaction_id"] == t2
+
+
+@pytest.mark.asyncio
+async def test_a_decided_transaction_whose_entry_survived_is_listed_for_finish(tmp_path, monkeypatch):
+    # Ops N3: a crash between the decided receipt and its cleanup leaves work to re-drive.
+    store, _, before, after = await _setup(tmp_path)
+    await _stage(store, before, after)
+
+    async def crash(store_, receipt):
+        raise RuntimeError("killed after the decided receipt")
+
+    monkeypatch.setattr(tx, "_retire_pointer", crash)
+    with pytest.raises(RuntimeError):
+        await _decide(store, "committed")
+    monkeypatch.undo()
+    listed = await tx.list_in_doubt(store)
+    assert [(e["transaction_id"], e["state"], e.get("needs_finish")) for e in listed] == [(TX, "committed", True)]
+    await _decide(store, "committed")
+    assert await tx.list_in_doubt(store) == []

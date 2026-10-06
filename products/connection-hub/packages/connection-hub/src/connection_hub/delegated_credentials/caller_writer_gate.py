@@ -68,9 +68,41 @@ def _scope_subset(after: Any, before: Any) -> bool:
     return True
 
 
+def _binding_of_mapping(card: Mapping[str, Any] | None) -> tuple[str, str]:
+    control = card.get("control_card") if isinstance(card, Mapping) else None
+    if not isinstance(control, Mapping):
+        return "", ""
+    return str(control.get("issuer_kind") or ""), str(control.get("issuer_ref") or "")
+
+
+def binding_change_refusal(action: str, before: Mapping[str, Any] | None, candidate: Mapping[str, Any]) -> str | None:
+    """The Control binding is pinned (Ops B1, 12:14): only attach binds and only detach unbinds.
+
+    Otherwise one approved write could turn a governed Card into an ungoverned
+    one (or rebind it to another issuer), and every later write would skip
+    its gate. attach binds an unbound Card, or keeps its issuer (another
+    Control of the same issuer); it never moves a Card to another issuer.
+    detach leaves it unbound. A revoke publishes only the revoked state.
+    """
+
+    after_binding = _binding_of_mapping(candidate)
+    before_binding = _binding_of_mapping(before)
+    if action in ("create", "revoke"):
+        return None
+    if action == "attach":
+        return (None if after_binding[0] and before_binding in (("", ""), after_binding)
+                else "caller_writer_binding_change_refused")
+    if action == "detach":
+        return None if after_binding == ("", "") else "caller_writer_binding_change_refused"
+    return None if after_binding == before_binding else "caller_writer_binding_change_refused"
+
+
 def candidate_shape_refusal(action: str, before: Mapping[str, Any] | None, candidate: Mapping[str, Any]) -> str | None:
     """What this action may change, checked before the policy is asked; None when the shape holds."""
 
+    binding = binding_change_refusal(action, before, candidate)
+    if binding is not None:
+        return binding
     if action == "create":
         return None if before is None else "caller_writer_candidate_binding_mismatch"
     if before is None or candidate.get("card_revision") != before.get("card_revision", 0) + 1:
@@ -245,11 +277,11 @@ async def caller_writer_before_commit(
         revision = getattr(current, "card_revision", None)
         if type(revision) is not int or revision < 1:
             raise CallerWriteRefused("caller_writer_target_invalid")
-    if action not in ("revoke", "attach", "detach"):
-        before = (current.to_dict() if callable(getattr(current, "to_dict", None)) else {}) if current is not None else None
-        shape = candidate_shape_refusal(action, before, candidate)
-        if shape is not None:
-            raise CallerWriteRefused(shape)
+    before = (current.to_dict() if callable(getattr(current, "to_dict", None)) else {}) if current is not None else None
+    shape = (candidate_shape_refusal(action, before, candidate) if action not in ("revoke", "attach", "detach")
+             else binding_change_refusal(action, before, candidate))
+    if shape is not None:
+        raise CallerWriteRefused(shape)
     request = CallerWriteRequest(
         actor_subject=subject, request_id=str(request_id or "").strip(), action=action,
         access_id=str(getattr(current, "access_id", "") or candidate.get("access_id") or ""), card_revision=revision,
@@ -357,6 +389,6 @@ async def _finalize(policy: CallerWriterPolicy, request: CallerWriteRequest, *, 
 __all__ = [
     "CALLER_WRITE_ACTIONS", "CallerWrite", "CallerWriteDecision", "CallerWriteRefused", "CallerWriteRequest",
     "CallerWriterPolicy", "CallerWriterRegistry", "IDENTITY_FIELDS", "PROTECTED_FIELDS", "SYSTEM_WRITE_ACTIONS",
-    "binding_of", "candidate_shape_refusal",
+    "binding_change_refusal", "binding_of", "candidate_shape_refusal",
     "caller_write_outcome", "caller_write_refusal", "caller_writer_before_commit", "reset_candidate",
 ]

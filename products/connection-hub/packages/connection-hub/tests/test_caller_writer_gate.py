@@ -167,9 +167,38 @@ def test_the_actor_is_the_one_supplied_never_the_storage_owner():
 @pytest.mark.parametrize("action", ["revoke", "attach", "detach"])
 def test_non_update_actions_bind_their_exact_change(action):
     card = _card()
-    change = {"action": action, "access_id": card.access_id, "card_revision": card.card_revision}
+    if action == "revoke":
+        change = {"action": action, "access_id": card.access_id, "card_revision": card.card_revision}
+    else:  # attach and detach publish the whole next Card
+        change = _candidate(card, control_card=None) if action == "detach" else _candidate(card)
     _, request = _gate(_registry(Policy()), card, candidate=change, action=action)
     assert request.action == action and request.change_digest == gate.change_digest(change)
+
+
+# ── Ops B1 (12:14): the Control binding is pinned ──────────────────────────
+
+
+@pytest.mark.parametrize("action", ["update", "reset", "replace", "extend", "oauth_grant", "renew", "fold",
+                                    "control_snapshot", "prolong", "prune"])
+@pytest.mark.parametrize("rebind", ["dropped", "other_issuer"])
+def test_no_write_but_attach_or_detach_may_change_a_cards_binding(action, rebind):
+    card = _card()
+    other = None if rebind == "dropped" else ControlCardBinding(
+        control_id="control-x", issuer_ref="work:project:another", issuer_kind="project", control_revision=1)
+    candidate = _candidate(card, control_card=other)
+    with pytest.raises(gate.CallerWriteRefused, match="caller_writer_binding_change_refused"):
+        _gate(_registry(Policy()), card, candidate=candidate, action=action)
+
+
+def test_attach_binds_an_unbound_card_or_keeps_its_issuer_but_never_moves_it():
+    unbound, bound = _card(bound=False), _card()
+    assert gate.binding_change_refusal("attach", unbound.to_dict(), bound.to_dict()) is None
+    same_issuer = dataclasses.replace(bound, control_card=dataclasses.replace(bound.control_card, control_id="c-2"))
+    assert gate.binding_change_refusal("attach", bound.to_dict(), same_issuer.to_dict()) is None
+    moved = dataclasses.replace(bound, control_card=dataclasses.replace(bound.control_card, issuer_ref="work:project:x"))
+    assert gate.binding_change_refusal("attach", bound.to_dict(), moved.to_dict()) == "caller_writer_binding_change_refused"
+    assert gate.binding_change_refusal("detach", bound.to_dict(), bound.to_dict()) == "caller_writer_binding_change_refused"
+    assert gate.binding_change_refusal("detach", bound.to_dict(), unbound.to_dict()) is None
 
 
 def test_an_unknown_action_or_a_missing_request_id_is_refused():

@@ -439,3 +439,63 @@ async def test_prolonging_an_unbound_card_asks_no_policy(tmp_path):
     harness.service.bind_caller_writers(_registry(policy))
     assert (await harness.service.renew_access(USER, access_id=access_id, mode="prolong"))["ok"] is True
     assert policy.calls == []
+
+
+# ── Ops B2/B3 (12:14): the single write paths themselves, not a stub ──────
+
+
+async def _bound_card(tmp_path, *, allow=True):
+    harness = _Harness(tmp_path)
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    _bind(harness, access_id)
+    policy = _Policy(allow)
+    harness.service.bind_caller_writers(_registry(policy))
+    return harness, access_id, policy
+
+
+@pytest.mark.asyncio
+async def test_persist_refuses_an_unnamed_write_of_a_governed_card_before_any_effect(tmp_path):
+    from connection_hub.delegated_credentials.automation_access import record_from_card
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWrite, CallerWriteRefused
+    harness, access_id, policy = await _bound_card(tmp_path)
+    before = harness.persistence.cards[access_id][0]
+    writes = harness.persistence.persist_calls
+    candidate = record_from_card(dataclasses.replace(before, card_revision=before.card_revision + 1,
+                                                     label="unnamed edit"))
+    with pytest.raises(CallerWriteRefused, match="caller_writer_not_enlisted"):
+        await harness.service._persist_record(candidate, expected_revision=before.card_revision)
+    assert harness.persistence.persist_calls == writes and harness.persistence.cards[access_id][0] == before
+    assert policy.calls == []
+    # Named, the binding's policy decides, the write commits and its outcome is finalized.
+    await harness.service._persist_record(candidate, expected_revision=before.card_revision,
+                                          caller_write=CallerWrite("extend", "platform-user-1"))
+    assert harness.persistence.cards[access_id][0].label == "unnamed edit"
+    assert policy.calls == [("decide", "extend"), ("revalidate", "extend"), ("finalize", "committed")]
+
+
+@pytest.mark.asyncio
+async def test_forget_refuses_an_unnamed_revoke_of_a_governed_card(tmp_path):
+    from connection_hub.delegated_credentials.automation_access import record_from_card
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+    harness, access_id, policy = await _bound_card(tmp_path)
+    before = harness.persistence.cards[access_id][0]
+    with pytest.raises(CallerWriteRefused, match="caller_writer_not_enlisted"):
+        await harness.service._forget_record(record_from_card(before))
+    assert harness.persistence.cards[access_id][0] == before and policy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_card_is_written_and_revoked_as_before(tmp_path):
+    from connection_hub.delegated_credentials.automation_access import record_from_card
+    harness = _Harness(tmp_path)
+    created = await _manual_card(harness, ttl=3600)
+    access_id = created["access"]["access_id"]
+    policy = _Policy(False)
+    harness.service.bind_caller_writers(_registry(policy))
+    before = harness.persistence.cards[access_id][0]
+    await harness.service._persist_record(
+        record_from_card(dataclasses.replace(before, card_revision=before.card_revision + 1, label="x")),
+        expected_revision=before.card_revision)
+    await harness.service._forget_record(record_from_card(harness.persistence.cards[access_id][0]))
+    assert harness.persistence.cards[access_id][0].state == CARD_STATE_REVOKED and policy.calls == []

@@ -199,10 +199,22 @@ async def _retire_pointer(store: Any, receipt: Mapping[str, Any]) -> None:
             and raw.get("transaction_id") == receipt["transaction_id"]):
         side = receipt["after"] if receipt["state"] == "committed" else receipt["before"]
         await write_json_atomic(path, dict(side))
+    if receipt["state"] == "committed":
+        # A committed AFTER is an ordinary revision now: drop its marker so a
+        # settled read never touches the receipt (Ops N1/N4). An aborted
+        # revision keeps its marker and stays out of history for good.
+        marker = revision_marker_path(store, subject_hash=receipt["subject_hash"], access_id=receipt["access_id"],
+                                      revision_name=receipt["after"]["revision_name"])
+        raw = await read_json_or_none(marker)
+        if isinstance(raw, Mapping) and raw.get("transaction_id") == receipt["transaction_id"]:
+            try:
+                marker.unlink(missing_ok=True)
+            except OSError:
+                pass  # it still resolves through the committed receipt
 
 
 async def list_in_doubt(store: Any) -> list[dict[str, Any]]:
-    """Every transaction this participant has begun preparing and not yet decided.
+    """Every transaction this participant has begun preparing and not yet finished.
 
     Recovery's view of the in-doubt Cards: a prepared receipt, or an index
     entry whose receipt was never written (a stage that crashed first, which
@@ -232,9 +244,14 @@ async def list_in_doubt(store: Any) -> list[dict[str, Any]]:
         receipt = await read_receipt(store, transaction_id)
         if receipt is None:
             in_doubt.append({"transaction_id": transaction_id, "state": "unstaged"})
-        elif receipt["state"] == "prepared":
-            in_doubt.append({key: receipt[key] for key in (
-                "transaction_id", "intent_digest", "participant", "subject_hash", "access_id", "state")})
+        else:
+            # A decided receipt whose entry survived (a crash before cleanup)
+            # still needs FINISH re-driven to retire its pointer (Ops N3).
+            entry = {key: receipt[key] for key in (
+                "transaction_id", "intent_digest", "participant", "subject_hash", "access_id", "state")}
+            if receipt["state"] in DECISIONS:
+                entry["needs_finish"] = True
+            in_doubt.append(entry)
     return in_doubt
 
 
