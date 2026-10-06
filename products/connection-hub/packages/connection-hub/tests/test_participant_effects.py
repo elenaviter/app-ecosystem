@@ -207,6 +207,11 @@ async def test_every_kind_dispatches_only_its_exact_bound_payload(kind):
     async def read(tx):
         return deepcopy(saved)
     applier = ParticipantEffectApplier(read_receipt=read, targets={kind: target})
+    if kind == "grant_binding":
+        with pytest.raises(ParticipantEffectRefused, match="card_effect_mint_unqualified"):
+            await applier.apply(kind, effect["key"], effect["payload"], transaction_id=TX)
+        assert target.calls == []
+        return
     result = await applier.apply(kind, effect["key"], effect["payload"], transaction_id=TX)
     assert result == target.calls[0][0].effect_digest
     assert target.calls[0][1] == effect["payload"]
@@ -240,7 +245,7 @@ async def test_unproven_target_success_is_refused(result):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["grant_binding", "invocation_policy", "grant_unbind"])
+@pytest.mark.parametrize("kind", ["invocation_policy", "grant_unbind"])
 async def test_lifetime_noop_cannot_claim_another_kind_applied(kind):
     saved = receipt()
     effect = effect_for(kind)
@@ -543,3 +548,57 @@ async def test_partial_effect_completion_does_not_release_readiness(tmp_path, tr
     assert len(_target_rows(store.root)) == 2
     assert await tx.pending_effects(store, saved) == []
     assert await tx.list_in_doubt(store) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pin", [None, "not-a-digest", "f" * 63, True])
+async def test_unbind_without_exact_old_token_digest_is_refused(pin):
+    saved = receipt()
+    effect = effect_for("grant_unbind")
+    if pin is None:
+        del effect["payload"]["token_sha256"]
+    else:
+        effect["payload"]["token_sha256"] = pin
+    saved["effects"] = [effect]
+    target = SyntheticTarget()
+    async def read(tx):
+        return saved
+    applier = ParticipantEffectApplier(read_receipt=read, targets={"grant_unbind": target})
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_(payload_binding_invalid|old_handle_invalid)"):
+        await applier("grant_unbind", effect["key"], effect["payload"], transaction_id=TX)
+    assert target.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [32, 33])
+async def test_effect_set_limit_has_a_literal_boundary(count):
+    saved = receipt()
+    saved["effects"] = [{**effect_for("grant_unbind"), "key": f"old_{index}"} for index in range(count)]
+    target = SyntheticTarget()
+    async def read(tx):
+        return saved
+    applier = ParticipantEffectApplier(read_receipt=read, targets={"grant_unbind": target})
+    effect = saved["effects"][0]
+    if count == 33:
+        with pytest.raises(ParticipantEffectRefused, match="card_effect_set_invalid"):
+            await applier("grant_unbind", effect["key"], effect["payload"], transaction_id=TX)
+        assert target.calls == []
+    else:
+        await applier("grant_unbind", effect["key"], effect["payload"], transaction_id=TX)
+        assert len(target.calls) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["id_token", "api_key", "session_token", "private_key", "refresh",
+                                   "x_api_token", "custom_access_token", "client-secret", "credential_value"])
+async def test_nested_secret_aliases_are_refused_even_during_noop_prepare(field):
+    saved = receipt()
+    saved["state"] = "prepared"
+    effect = effect_for("grant_binding")
+    effect["payload"]["named_services"] = {"https://example.test": {field: "synthetic-not-for-custody"}}
+    saved["effects"] = [effect]
+    async def read(tx):
+        return saved
+    applier = ParticipantEffectApplier(read_receipt=read, targets={})
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_secret_field"):
+        await applier.prepare("grant_binding", effect["key"], effect["payload"], transaction_id=TX)

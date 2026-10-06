@@ -18,6 +18,8 @@ not implement this contract. Raw credentials remain inside host custody.
 Expiry is absolute and is forwarded unchanged, even when already in the past.
 The target adapter must apply expiry without reviving an expired credential.
 An unavailable or unqualified adapter refuses; there is no legacy fallback.
+Grant minting is source-gated until the SDK's bound no-second-mint custody
+operation qualifies; supplying a target object does not enable it.
 """
 
 from __future__ import annotations
@@ -38,7 +40,9 @@ _HEX = re.compile(r"[0-9a-f]{64}")
 _SECRET_KEYS = frozenset({
     "token", "access_token", "refresh_token", "bearer", "password", "secret",
     "client_secret", "credential", "credentials", "authorization", "cookie",
+    "id_token", "api_key", "session_token", "private_key", "refresh", "x_api_token",
 })
+_SECRET_FIELD = re.compile(r"(?:[a-z0-9]+_)*(?:token|secret|password|bearer|credential|credentials|api_key|private_key)(?:_[a-z0-9]+)*")
 _SAFE_TARGET_REASONS = frozenset({
     "card_effect_adapter_unavailable", "card_effect_binding_mismatch",
     "card_effect_target_revision_moved", "card_effect_custody_unavailable",
@@ -74,7 +78,12 @@ def _no_secret_fields(value: Any, depth: int = 0) -> None:
         for key, item in value.items():
             if type(key) is not str:
                 _refuse("card_effect_record_invalid")
-            if key.lower().replace("-", "_") in _SECRET_KEYS:
+            normalized = key.lower().replace("-", "_")
+            if normalized == "token_sha256":
+                if type(item) is not str or not _HEX.fullmatch(item):
+                    _refuse("card_effect_old_handle_invalid")
+                continue  # exact digest metadata, never a raw credential
+            if normalized in _SECRET_KEYS or _SECRET_FIELD.fullmatch(normalized):
                 _refuse("card_effect_secret_field")
             _no_secret_fields(item, depth + 1)
     elif isinstance(value, list):
@@ -273,6 +282,9 @@ class ParticipantEffectApplier:
                                 _digest(receipt_json), receipt_json)
         if phase != "apply" and kind != "invocation_policy":
             return binding.effect_digest  # validated no-op; no target state is prepared/released
+        if kind == "grant_binding":
+            # A merely bound callback is not proof of crash-safe SDK mint/custody.
+            _refuse("card_effect_mint_unqualified")
         target = self._targets.get(kind)
         if target is None:
             _refuse("card_effect_adapter_unavailable")
