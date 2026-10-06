@@ -252,6 +252,43 @@ three states after a reload: build pending, no build because the signature
 was unchanged and the artifact is already current, and no build because it
 broke. The receipt does not tell them apart, only the verification below does.
 
+### A narrow platform rebuild: one package fix, nothing else
+
+When only one change in an App Ecosystem package must reach the image (a
+fix the operator needs now), a refresh from `main` would also stage every
+other package change since the image was built. Build the narrow candidate
+from the image's own base instead:
+
+1. **Find the commit the image was built from**, from the running artifact:
+   copy each imported package out of the container (`docker cp
+   <chat-proc>:/opt/venv/lib/python3.12/site-packages/<package> ...`), hash
+   every `.py` as a git blob, and find the App Ecosystem commit whose package
+   trees match with zero differences (`git ls-tree -r <commit> -- <package src>`
+   for each candidate commit). Check all imported packages at once; they were
+   staged from one commit.
+2. **Cherry-pick only the reviewed fix onto that commit**, push it as a
+   release branch, and show its changed lines equal the merged change's
+   (`git range-diff` or a sorted line-set diff).
+3. **Run the package suites inside a throwaway container of the current
+   image** (`docker run --rm --entrypoint sh -v <release tree>:/src:ro
+   kdcube-chat-proc:latest ...`), with the release tree's package sources
+   first on `PYTHONPATH`, so the tests see exactly the image's dependencies.
+4. **Refresh with the deployed platform commit, not a newer one:**
+   `kdcube refresh --path <git worktree of the deployed KDCube commit> --build`
+   plus `--maintainer-local-python-package` for every imported distribution,
+   each from a clean export of the release commit. `--path` must be a **git
+   worktree**: a plain export is refused before anything runs
+   (`init --path requires a local git repo`).
+5. When the same window moves an app, check its deploy worktree out before the
+   refresh (above).
+
+**After the refresh**, relay channels fail with `oauth_challenge_not_advertised`
+and 502/503 for about three minutes while chat-proc warms up, then reopen.
+That is expected; a failure that continues past that is not. `kdcube info`
+compares the *selected* with the *deployed* platform version; a mismatch that
+predates the window (the selection moved without a refresh) is reported as
+such, not as this window's failure.
+
 ## Verify in the running artifact (coordinator step 6)
 
 Verify with the platform's attestations, which compare versions and symbols,
@@ -332,5 +369,17 @@ coordinator's list.
   is the documented maintainer one, and exit 0 is not verification.
 - **2026-09-25 11:23-11:27Z, `ImportError: card_delegable_grants`:** a reload
   after a refresh kept cached submodules (Execute, above).
+- **2026-10-06 15:38-15:47Z, a narrow package rebuild.** A Connection Hub
+  package fix had to go live while `main` carried many unqualified package
+  changes. The image's base was found by matching its installed package files
+  to one commit, the fix was cherry-picked onto it, and the refresh used the
+  deployed platform commit (A narrow platform rebuild, above). The first
+  attempt passed a plain export as `--path` and was refused before any change.
+- **2026-10-06 15:47:56Z, a reload during an operator's live test.** A
+  seconds-long board reload, announced to agents, coincided with the operator
+  pressing Edit on a Card. The Hub's permission check got the board's
+  `ApplicationNotReadyError` and showed the operator as read-only. Tell the
+  operator before a reload when they are testing, and treat "the board is
+  restarting" as its own state in the UI.
 - **2026-09-26 03:32-03:36Z, W326:** a board reload alone met the image's old
   operation contract (Does This Change Move Board Operations?, above).
