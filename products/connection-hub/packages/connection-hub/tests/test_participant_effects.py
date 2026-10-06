@@ -8,6 +8,7 @@ from connection_hub.delegated_credentials.cards.model import CARD_POINTER_SCHEMA
 from connection_hub.delegated_credentials.cards.participant_effects import (
     ParticipantEffectApplier, ParticipantEffectRefused,
 )
+from connection_hub.invocation_policy.models import InvocationAuthority
 
 TX = "a" * 64
 
@@ -35,7 +36,7 @@ class SyntheticTarget:
         identity = (binding.transaction_id, binding.kind, binding.key)
         previous = self.applied.setdefault(identity, (binding.receipt_digest, binding.effect_digest))
         if previous != (binding.receipt_digest, binding.effect_digest):
-            raise ParticipantEffectRefused("synthetic_target_binding_moved")
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
         return binding.effect_digest
 
 
@@ -103,7 +104,7 @@ async def test_later_receipt_vector_cannot_reuse_target_identity():
     saved, target, applier = harness()
     await invoke(applier)
     saved["after"]["content_hash"] = "1" * 64
-    with pytest.raises(ParticipantEffectRefused, match="synthetic_target_binding_moved"):
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_binding_mismatch"):
         await invoke(applier)
     assert len(target.applied) == 1
 
@@ -155,6 +156,7 @@ async def test_policy_phase_identity_is_stable_across_decision():
     saved["effects"] = [{"kind": "invocation_policy", "key": "resource/operation", "payload": {
         "owner_subject": "synthetic-owner", "mode": "always", "expected_revision": 0,
         "authority": {"access_id": "card_1", "resource": "resource", "operation": "operation", "surface": "outer"}}}]
+    saved["effects"][0]["key"] = InvocationAuthority.from_mapping(saved["effects"][0]["payload"]["authority"]).key
     bindings = []
     class Target:
         async def prepare_once(self, binding, payload):
@@ -175,3 +177,145 @@ async def test_policy_phase_identity_is_stable_across_decision():
     await applier.release(effect["kind"], effect["key"], effect["payload"], transaction_id=TX)
     assert bindings[0] == bindings[1]
     assert "state" not in bindings[0].receipt()
+
+
+def effect_for(kind):
+    payloads = {
+        "grant_binding": {"access_id": "card_1", "operations": ["read"], "resource_grants": {},
+                          "resource_operations": {}, "named_services": {}, "expires_at": 200, "slot": "new"},
+        "credential_lifetime": {"access_id": "card_1", "expires_at": 200, "base_card_revision": 1},
+        "invocation_policy": {"owner_subject": "synthetic-owner", "mode": "always", "expected_revision": 0,
+                              "authority": {"access_id": "card_1", "resource": "resource", "operation": "read",
+                                            "surface": "outer", "account": {"provider_id": "synthetic", "account_id": "account_1"}}},
+        "grant_unbind": {"access_id": "card_1", "session_id": "synthetic-session", "token_sha256": "2" * 64},
+    }
+    payload = payloads[kind]
+    key = {"grant_binding": "new", "credential_lifetime": "card", "grant_unbind": "old"}.get(kind)
+    if key is None:
+        key = InvocationAuthority.from_mapping(payload["authority"]).key
+    return {"kind": kind, "key": key, "payload": payload}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["grant_binding", "credential_lifetime", "invocation_policy", "grant_unbind"])
+async def test_every_kind_dispatches_only_its_exact_bound_payload(kind):
+    saved = receipt()
+    effect = effect_for(kind)
+    saved["effects"] = [effect]
+    target = SyntheticTarget()
+    async def read(tx):
+        return deepcopy(saved)
+    applier = ParticipantEffectApplier(read_receipt=read, targets={kind: target})
+    result = await applier.apply(kind, effect["key"], effect["payload"], transaction_id=TX)
+    assert result == target.calls[0][0].effect_digest
+    assert target.calls[0][1] == effect["payload"]
+
+
+@pytest.mark.asyncio
+async def test_named_lifetime_noop_reaches_public_callback_unchanged():
+    saved = receipt()
+    class Target:
+        async def apply_once(self, binding, payload):
+            return "no_active_credentials"
+    async def read(tx):
+        return saved
+    applier = ParticipantEffectApplier(read_receipt=read, targets={"credential_lifetime": Target()})
+    effect = saved["effects"][0]
+    assert await applier(effect["kind"], effect["key"], effect["payload"], transaction_id=TX) == "no_active_credentials"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("result", [None, False, True, 1, "", "applied", "3" * 64])
+async def test_unproven_target_success_is_refused(result):
+    saved = receipt()
+    class Target:
+        async def apply_once(self, binding, payload):
+            return result
+    async def read(tx):
+        return saved
+    applier = ParticipantEffectApplier(read_receipt=read, targets={"credential_lifetime": Target()})
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_applied_receipt_invalid"):
+        await invoke(applier)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["grant_binding", "invocation_policy", "grant_unbind"])
+async def test_lifetime_noop_cannot_claim_another_kind_applied(kind):
+    saved = receipt()
+    effect = effect_for(kind)
+    saved["effects"] = [effect]
+    class Target:
+        async def apply_once(self, binding, payload):
+            return "no_active_credentials"
+    async def read(tx):
+        return saved
+    applier = ParticipantEffectApplier(read_receipt=read, targets={kind: Target()})
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_applied_receipt_invalid"):
+        await applier(kind, effect["key"], effect["payload"], transaction_id=TX)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["reader", "target"])
+@pytest.mark.parametrize("exception", [ValueError, ParticipantEffectRefused])
+async def test_external_exception_text_is_never_exposed(source, exception):
+    import traceback
+    sentinel = "synthetic-secret-not-for-output"
+    async def read(tx):
+        if source == "reader":
+            raise exception(sentinel)
+        return receipt()
+    class Target:
+        async def apply_once(self, binding, payload):
+            raise exception(sentinel)
+    applier = ParticipantEffectApplier(read_receipt=read, targets={"credential_lifetime": Target()})
+    with pytest.raises(ParticipantEffectRefused) as caught:
+        await invoke(applier)
+    assert sentinel not in str(caught.value)
+    assert sentinel not in "".join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deadline", [0, 1, 200])
+async def test_past_or_zero_absolute_deadlines_are_not_extended(deadline):
+    saved, target, applier = harness()
+    saved["effects"][0]["payload"]["expires_at"] = deadline
+    await invoke(applier, saved["effects"][0]["payload"])
+    assert target.calls[0][1]["expires_at"] == deadline
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change,reason", [
+    ({"owner_subject": "another-owner"}, "card_effect_owner_mismatch"),
+    ({"expected_revision": True}, "card_effect_payload_invalid"),
+    ({"authority": {"access_id": "other", "resource": "resource", "operation": "read", "surface": "outer"}}, "card_effect_policy_binding_invalid"),
+])
+async def test_policy_actor_target_and_revision_are_bound(change, reason):
+    saved = receipt()
+    saved["state"] = "prepared"
+    effect = effect_for("invocation_policy")
+    effect["payload"].update(change)
+    saved["effects"] = [effect]
+    target = SyntheticTarget()
+    async def read(tx):
+        return saved
+    applier = ParticipantEffectApplier(read_receipt=read, targets={"invocation_policy": target})
+    with pytest.raises(ParticipantEffectRefused, match=reason):
+        await applier.prepare(effect["kind"], effect["key"], effect["payload"], transaction_id=TX)
+    assert target.calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key,reason", [("x" * 192, "card_effect_key_invalid"), ("truncated-key", "card_effect_policy_binding_invalid")])
+async def test_policy_key_is_exact_and_oversized_key_is_refused_at_prepare(key, reason):
+    saved = receipt()
+    saved["state"] = "prepared"
+    effect = effect_for("invocation_policy")
+    effect["key"] = key
+    saved["effects"] = [effect]
+    target = SyntheticTarget()
+    async def read(tx):
+        return saved
+    applier = ParticipantEffectApplier(read_receipt=read, targets={"invocation_policy": target})
+    with pytest.raises(ParticipantEffectRefused, match=reason):
+        await applier.prepare(effect["kind"], key, effect["payload"], transaction_id=TX)
+    assert target.calls == []

@@ -39,6 +39,11 @@ _SECRET_KEYS = frozenset({
     "token", "access_token", "refresh_token", "bearer", "password", "secret",
     "client_secret", "credential", "credentials", "authorization", "cookie",
 })
+_SAFE_TARGET_REASONS = frozenset({
+    "card_effect_adapter_unavailable", "card_effect_binding_mismatch",
+    "card_effect_target_revision_moved", "card_effect_custody_unavailable",
+    "card_effect_policy_conflict", "card_effect_old_handle_invalid",
+})
 
 
 class ParticipantEffectRefused(ValueError):
@@ -116,11 +121,15 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
                 or type(value["expected_revision"]) is not int or value["expected_revision"] < 0):
             _refuse("card_effect_payload_invalid")
         try:
-            authority = InvocationAuthority.from_mapping(value["authority"])
-            if authority.to_dict() != value["authority"] or authority.access_id != access_id:
-                _refuse("card_effect_policy_binding_invalid")
-            # The backing policy port forms tx:key; never truncate that identity.
+            # The backing policy port forms tx:key; never shorten that identity.
             validated_invocation_id("0" * 64 + ":" + key)
+        except ValueError:
+            raise ParticipantEffectRefused("card_effect_key_invalid") from None
+        try:
+            authority = InvocationAuthority.from_mapping(value["authority"])
+            if (authority.to_dict() != value["authority"] or authority.access_id != access_id
+                    or authority.key != key):
+                _refuse("card_effect_policy_binding_invalid")
         except (ValueError, TypeError, AttributeError):
             raise ParticipantEffectRefused("card_effect_policy_binding_invalid") from None
     elif kind == "grant_unbind":
@@ -156,7 +165,9 @@ class IdempotentEffectTarget(Protocol):
     """The host's qualified, durable, revision-bound target operation.
 
     No ``None``/truthy success conversion: return the exact effect digest only
-    after application or a proven identical prior application. A target or
+    after application or a proven identical prior application. Lifetime apply
+    may instead return ``no_active_credentials``, a durable named no-op that
+    must stay identical on replay. No other named outcome is accepted. A target or
     digest conflict raises. Resolve secrets by pinned opaque custody references,
     never from receipt values or mutable current handles on a late retry.
     """
@@ -178,25 +189,26 @@ class ParticipantEffectApplier:
         self._targets = dict(targets)  # instance-local composition, not an authority cache
 
     async def __call__(self, kind: str, key: str, payload: Mapping[str, Any], *,
-                       transaction_id: str) -> None:
-        await self.apply(kind, key, payload, transaction_id=transaction_id)
+                       transaction_id: str) -> str:
+        return await self.apply(kind, key, payload, transaction_id=transaction_id)
 
     async def apply(self, kind: str, key: str, payload: Mapping[str, Any], *,
-                    transaction_id: str) -> None:
-        await self._dispatch("apply", kind, key, payload, transaction_id=transaction_id)
+                    transaction_id: str) -> str:
+        """Return the validated result for the core's durable per-effect outcome."""
+        return await self._dispatch("apply", kind, key, payload, transaction_id=transaction_id)
 
     async def prepare(self, kind: str, key: str, payload: Mapping[str, Any], *,
-                      transaction_id: str) -> None:
+                      transaction_id: str) -> str:
         """STAGE only: place the invocation-policy marker, without granting it."""
-        await self._dispatch("prepare", kind, key, payload, transaction_id=transaction_id)
+        return await self._dispatch("prepare", kind, key, payload, transaction_id=transaction_id)
 
     async def release(self, kind: str, key: str, payload: Mapping[str, Any], *,
-                      transaction_id: str) -> None:
+                      transaction_id: str) -> str:
         """Recorded ABORT only: release the exact policy preparation on recovery."""
-        await self._dispatch("release", kind, key, payload, transaction_id=transaction_id)
+        return await self._dispatch("release", kind, key, payload, transaction_id=transaction_id)
 
     async def _dispatch(self, phase: str, kind: str, key: str, payload: Mapping[str, Any], *,
-                        transaction_id: str) -> None:
+                        transaction_id: str) -> str:
         if type(transaction_id) is not str or not _HEX.fullmatch(transaction_id):
             _refuse("card_effect_transaction_invalid")
         if type(kind) is not str or kind not in EFFECT_KINDS:
@@ -205,8 +217,6 @@ class ParticipantEffectApplier:
             _refuse("card_effect_key_invalid")
         try:
             receipt = await self._read_receipt(transaction_id)
-        except ParticipantEffectRefused:
-            raise
         except Exception:
             raise ParticipantEffectRefused("card_effect_receipt_unavailable") from None
         if not isinstance(receipt, Mapping) or receipt.get("transaction_id") != transaction_id:
@@ -262,7 +272,7 @@ class ParticipantEffectApplier:
         binding = EffectBinding(transaction_id, kind, key, _digest(effect_json),
                                 _digest(receipt_json), receipt_json)
         if phase != "apply" and kind != "invocation_policy":
-            return  # these kinds prepare/release no target state; payload still validated
+            return binding.effect_digest  # validated no-op; no target state is prepared/released
         target = self._targets.get(kind)
         if target is None:
             _refuse("card_effect_adapter_unavailable")
@@ -271,12 +281,18 @@ class ParticipantEffectApplier:
             if not callable(operation):
                 _refuse("card_effect_adapter_unavailable")
             applied_digest = await operation(binding, json.loads(requested))
-        except ParticipantEffectRefused:
-            raise
+        except ParticipantEffectRefused as exc:
+            # An adapter must not put raw secrets in a reason, even by accident.
+            reason = exc.reason if type(exc.reason) is str and exc.reason in _SAFE_TARGET_REASONS else "card_effect_target_unavailable"
+            raise ParticipantEffectRefused(reason) from None
         except Exception:
             raise ParticipantEffectRefused("card_effect_target_unavailable") from None
-        if applied_digest != binding.effect_digest:
+        if (phase == "apply" and kind == "credential_lifetime"
+                and type(applied_digest) is str and applied_digest == "no_active_credentials"):
+            return applied_digest
+        if type(applied_digest) is not str or applied_digest != binding.effect_digest:
             _refuse("card_effect_applied_receipt_invalid")
+        return applied_digest
 
 
 __all__ = ["EFFECT_KINDS", "EffectBinding", "IdempotentEffectTarget",
