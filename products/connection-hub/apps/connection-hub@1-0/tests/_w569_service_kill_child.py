@@ -17,6 +17,7 @@ import json
 import os
 import signal
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 import redis.asyncio as redis_asyncio
@@ -91,6 +92,49 @@ async def _snapshot(store, client, cache, cards) -> dict:
     return {"durable": durable, "served": served}
 
 
+def race_card(index: int):
+    """Synthetic Card ``index`` of a race: the pair helper's shape, any number of them."""
+
+    from connection_hub.delegated_credentials.cards.model import CardAuthority, NamedServiceSelection
+
+    return CardAuthority(
+        access_id=f"race-{index}", grantor_subject=f"race-owner-{index}", source="control",
+        client_id="", delegate_subject="", card_kind="control", card_revision=1, state="active",
+        issuer_kind=f"opaque-{index}", issuer_ref="opaque-lineage", resource_grants={}, resource_operations={},
+        named_service_operations=NamedServiceSelection.none(), properties={"opaque.race": {"index": index}})
+
+
+async def _race_step(request: dict, store, persistence) -> dict:
+    """One racer. With ``hold``, it signals ``inside`` while holding every fence, then waits."""
+
+    hold = float(request.get("hold") or 0)
+    inside = request.get("inside") or ""
+
+    async def decision(_authorities):
+        if inside and not os.path.exists(inside):
+            with open(inside, "w", encoding="utf-8") as marker:
+                marker.write(str(os.getpid()))
+            await asyncio.sleep(hold)
+        return datetime.now(timezone.utc) + timedelta(seconds=30)
+
+    started = time.monotonic()
+    try:
+        if request["action"] == "pair":
+            cards = [race_card(index) for index in request["cards"]]
+            receipt = await persistence.revoke_lifecycle(_request(cards, request_id=request["request_id"]),
+                                                         actor_subject=ACTOR, before_commit=decision)
+            outcome = {"state": receipt["state"], "reason": receipt.get("reason", "")}
+        else:
+            card = race_card(request["cards"][0])
+            scope = subject_hash_for(card.grantor_subject)
+            await persistence._cards.commit(dataclasses.replace(card, card_revision=2, properties={"opaque.race": {"index": request["cards"][0], "edited": True}}),
+                                            subject_hash=scope, expected_revision=1)
+            outcome = {"state": "committed", "reason": ""}
+    except Exception as exc:  # the refusal reason is the evidence
+        outcome = {"state": "raised", "reason": getattr(exc, "reason", "") or type(exc).__name__}
+    return {**outcome, "seconds": round(time.monotonic() - started, 2)}
+
+
 async def main(request: dict) -> dict:
     client = redis_asyncio.from_url(request["redis_url"])
     store = BundleStorageDelegatedCardStore(request["storage_root"], lifecycle_lock_scope="same-host-flock")
@@ -123,6 +167,8 @@ async def main(request: dict) -> dict:
             return {"single": outcomes}
         if action == "snapshot":
             return await _snapshot(store, client, cache, cards)
+        if action in ("pair", "single_card"):
+            return await _race_step(request, store, persistence)
         raise ValueError("child_action_unknown")
     finally:
         await client.aclose()
