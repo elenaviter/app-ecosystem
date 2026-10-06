@@ -456,19 +456,30 @@ class LifecyclePlanAuthorization:
     decisions: tuple[tuple[str, "ProjectAuthorizationDecision"], ...]
     schema: str = LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA
 
-    def validate_for(self, request: LifecyclePlanAuthorizationRequest) -> None:
-        """Refuse an envelope for another request, a missing, extra or repeated step, or a mismatched decision."""
-        if self.schema != LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA or self.request != request:
+    def __post_init__(self) -> None:
+        # Fail closed by construction (EMain F1 on #632): an empty, partial or
+        # mismatched envelope never exists, so allowed/decision_for can only be
+        # read on one that covers every step of its own request exactly.
+        if self.schema != LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA or not isinstance(
+                self.request, LifecyclePlanAuthorizationRequest):
             raise ProjectAuthorizationError("lifecycle_plan_authorization_request_mismatch")
+        if not isinstance(self.decisions, tuple) or any(
+                not isinstance(item, tuple) or len(item) != 2 for item in self.decisions):
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_steps_mismatch")
         refs = [ref for ref, _ in self.decisions]
-        if sorted(refs) != sorted(step.ref for step in request.steps) or len(set(refs)) != len(refs):
+        if not refs or sorted(refs) != sorted(step.ref for step in self.request.steps) or len(set(refs)) != len(refs):
             raise ProjectAuthorizationError("lifecycle_plan_authorization_steps_mismatch")
         by_ref = dict(self.decisions)
-        for step in request.steps:
+        for step in self.request.steps:
             decision = by_ref[step.ref]
             if not isinstance(decision, ProjectAuthorizationDecision):
                 raise ProjectAuthorizationError("lifecycle_plan_authorization_decision_invalid")
-            decision.validate_for(request.step_request(step))
+            decision.validate_for(self.request.step_request(step))
+
+    def validate_for(self, request: LifecyclePlanAuthorizationRequest) -> None:
+        """Refuse an envelope for another request (its own steps were checked at construction)."""
+        if self.request != request:
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_request_mismatch")
 
     @property
     def allowed(self) -> bool:

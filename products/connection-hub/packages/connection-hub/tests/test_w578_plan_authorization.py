@@ -106,3 +106,22 @@ def test_a_denied_step_denies_the_plan_by_its_own_reason():
 def test_a_malformed_plan_request_is_refused(changes, reason):
     with pytest.raises(ProjectAuthorizationError, match=reason):
         _request(**changes)
+
+
+@pytest.mark.parametrize("decisions", ["empty", "partial"])
+def test_an_empty_or_partial_envelope_cannot_exist_so_it_is_never_allowed(decisions):
+    """EMain F1 on #632: fail closed by construction, not only when a caller remembers validate_for."""
+    request = _request()
+    chosen = [] if decisions == "empty" else [(STEPS[0].ref, _allow(request, STEPS[0]))]
+    with pytest.raises(ProjectAuthorizationError, match="lifecycle_plan_authorization_steps_mismatch"):
+        LifecyclePlanAuthorization(request=request, decisions=tuple(chosen))
+
+
+def test_a_decision_for_the_wrong_step_cannot_be_wrapped():
+    import dataclasses
+
+    request = _request()
+    decisions = [(step.ref, _allow(request, step)) for step in STEPS]
+    decisions[0] = ("p", dataclasses.replace(decisions[0][1], operation=PROJECT_PERSON_CONTROL_CREATE))
+    with pytest.raises(ProjectAuthorizationError, match="project_authorization_operation_mismatch"):
+        LifecyclePlanAuthorization(request=request, decisions=tuple(decisions))
