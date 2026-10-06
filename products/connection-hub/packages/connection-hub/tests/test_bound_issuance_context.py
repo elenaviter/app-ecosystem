@@ -228,16 +228,19 @@ async def test_production_requires_the_exact_sdk_wrapper_type(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("backend", ["secrets-service", "secrets-file", "in-memory", None, ""])
-async def test_production_refuses_a_backend_not_declared_durable(monkeypatch, backend) -> None:
+@pytest.mark.parametrize("backend", ["secrets-file", "host-vault", "aws-sm", "secrets-service", None])
+async def test_the_hub_never_decides_by_backend_name(monkeypatch, backend) -> None:
+    # Operator, 17:44: clients of the secrets service do not care how it is
+    # implemented; the secrets layer's qualify() decides for any mode.
     class _Wrapper(_Custody):
         pass
 
     monkeypatch.setattr(bound_issuance, "_issuance_custody_type", lambda: _Wrapper)
     custody = _Wrapper(declared_backend=backend)
+    assert await require_production_custody(custody, production=True) is custody and custody.qualified == 1
+    refused = _Wrapper(declared_backend=backend, running_ok=False)
     with pytest.raises(BoundIssuanceRefused, match="issuance_custody_not_durable"):
-        await require_production_custody(custody, production=True)
-    assert custody.qualified == 0
+        await require_production_custody(refused, production=True)
 
 
 @pytest.mark.asyncio

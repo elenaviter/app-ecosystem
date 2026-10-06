@@ -21,8 +21,14 @@ supplies that authority." This module is that host validation:
 Custody (W585 gates, Ops and Infra 2026-10-06 16:29 to 17:18): one namespace,
 ``connection-hub-issuance-custody``, only through Infra's exact
 ``KDCubeIssuanceSecretCustody`` wrapper (never the bare store, never a default
-or a caller-supplied backend label), on a declared durable backend, and only
-after ``await custody.qualify()`` confirms the running backend. Nothing here is module state; the composition root passes
+namespace), and only after ``await custody.qualify()`` confirms the configured
+secrets backend meets the custody guarantees. The Hub never chooses or
+refuses by backend name: the operator, 2026-10-06 17:44, verbatim: "secrets
+service abstraction must work for all \"modes\". we have: secrets file, host
+vault and also we have aws secrets manager for cloud deployment. therefore,
+all 3 must be supported, based on what is configured." and "this is the
+setting of the secrets service itself and the clients of secrets service
+should not care how it is implemented." Nothing here is module state; the composition root passes
 the decision store, the custody and its backend name.
 """
 
@@ -38,12 +44,6 @@ from .participant_effects import EffectBinding, _canonical, _digest
 # The exact namespace and policy selector (Infra 16:41, Ops 16:42): the SDK
 # parser is ^[a-z0-9][a-z0-9-]{0,63}$, so no dots.
 CUSTODY_NAMESPACE = "connection-hub-issuance-custody"
-# The wrapper's ``declared_backend`` values that may hold custody until
-# expires_at: secrets-service declared on host-vault, or aws-sm (Infra
-# 12464964). The wrapper validates the declaration; qualify() checks the
-# running backend. In-memory and the temporary sidecar never qualify.
-DURABLE_CUSTODY_BACKENDS = frozenset({"aws-sm", "host-vault"})
-
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -141,12 +141,13 @@ def _issuance_custody_type() -> type | None:
 async def require_production_custody(custody: Any, *, production: bool) -> Any:
     """Refuse custody that cannot hold a credential until its deadline (W585 gates 2, 3).
 
-    Defence in depth beside the SDK's durability-required wrapper (Ops CP1
-    F2, F5): in production only Infra's exact ``KDCubeIssuanceSecretCustody``,
-    whose own construction qualifies the declared backend, in the one
-    namespace (no default), with a declared durable backend, and only after
-    ``await custody.qualify()`` confirms the RUNNING backend. ``production``
-    has no default; the composition root names where it comes from.
+    In production only Infra's exact ``KDCubeIssuanceSecretCustody`` (Ops CP1
+    F2), in the one namespace (no default), and only after the secrets
+    layer's own ``await custody.qualify()`` passes. Whether a backend meets the
+    custody guarantees is the secrets layer's decision for whatever mode is
+    configured (secrets file, host vault or AWS); the Hub has no backend
+    allow-list (operator, 17:44). ``production`` has no default; the
+    composition root names where it comes from.
     """
 
     if type(production) is not bool:
@@ -160,8 +161,6 @@ async def require_production_custody(custody: Any, *, production: bool) -> Any:
     wrapper = _issuance_custody_type()
     if wrapper is None or type(custody) is not wrapper:
         raise BoundIssuanceRefused("issuance_custody_unqualified")
-    if getattr(custody, "declared_backend", None) not in DURABLE_CUSTODY_BACKENDS:
-        raise BoundIssuanceRefused("issuance_custody_not_durable")
     try:
         await custody.qualify()
     except Exception:  # noqa: BLE001 - the wrapper's own named refusal; never its text
@@ -170,6 +169,6 @@ async def require_production_custody(custody: Any, *, production: bool) -> Any:
 
 
 __all__ = [
-    "BoundIssuanceRefused", "CUSTODY_NAMESPACE", "DURABLE_CUSTODY_BACKENDS", "HubIssuanceContext",
+    "BoundIssuanceRefused", "CUSTODY_NAMESPACE", "HubIssuanceContext",
     "build_issuance_context", "integration_user_id", "require_production_custody",
 ]
