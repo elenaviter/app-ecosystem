@@ -22,19 +22,19 @@ revision (W449).
 
 | You are about to | Read |
 |---|---|
-| plan a batch, dispatch or reroute | [Plan every batch with a roles table](#plan-every-batch-with-a-roles-table-and-dispatch-from-it), [Route](#route) |
-| decide on a submission | [Accept, return, cancel](#accept-return-cancel) |
-| merge or ship a batch | [Merge](#merge) |
-| run a reload, refresh or client switch | [Reload, refresh, restart](#reload-refresh-restart) |
+| plan a batch, dispatch or reroute | [Plan every batch with a roles table](coordinator/plan-every-batch-with-a-roles-table-and-dispatch-from-it.md), [Route](coordinator/route.md) |
+| decide on a submission | [Accept, return, cancel](coordinator/accept-return-cancel.md) |
+| merge or ship a batch | [Merge](coordinator/accept-return-cancel.md#merge) |
+| run a reload, refresh or client switch | [Reload, refresh, restart](coordinator/reload-refresh-restart.md) |
 | restart a machine | [A machine restart freezes every agent on it](runtime-actions.md#a-machine-restart-freezes-every-agent-on-it) |
-| handle a failing channel, relay or delivery | [What the coordinator is for](#what-the-coordinator-is-for), its "Communication comes first" block |
-| take stock of the team (a relevant wake, or the cadence while a batch is active) | [Reconcile the work, not the inbox](#reconcile-the-work-not-the-inbox) |
-| wait on a silent worker | [Confirm that work started](#confirm-that-work-started), [Check a silent worker](#check-a-silent-worker-do-not-wait-for-it) |
-| tell the operator and the team where things stand | [Keep the project announcement current](#keep-the-project-announcement-current) |
-| hand the role over | [Hand the coordinator role over](#hand-the-coordinator-role-over-and-take-it-back) |
-| resume after a compaction, or hand a session's state on | [Write the recovery handoff](#write-the-recovery-handoff) |
+| handle a failing channel, relay or delivery | [What the coordinator is for](coordinator/what-the-coordinator-is-for.md), its "Communication comes first" block |
+| take stock of the team (a relevant wake, or the cadence while a batch is active) | [Reconcile the work, not the inbox](coordinator/reconcile-the-work-not-the-inbox.md) |
+| wait on a silent worker | [Confirm that work started](coordinator/confirm-that-work-started.md), [Check a silent worker](coordinator/check-a-silent-worker-do-not-wait-for-it.md) |
+| tell the operator and the team where things stand | [Keep the project announcement current](coordinator/keep-the-project-announcement-current.md) |
+| hand the role over | [Hand the coordinator role over](coordinator/hand-the-coordinator-role-over-and-take-it-back.md) |
+| resume after a compaction, or hand a session's state on | [Write the recovery handoff](coordinator/write-the-recovery-handoff.md) |
 
-Read [What the coordinator is for](#what-the-coordinator-is-for) once when
+Read [What the coordinator is for](coordinator/what-the-coordinator-is-for.md) once when
 you take the role; the rest only for the act at hand.
 
 ## Modules
