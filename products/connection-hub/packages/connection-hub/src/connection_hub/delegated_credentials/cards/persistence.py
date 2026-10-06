@@ -21,7 +21,7 @@ policy code receives this contract instead of building the pieces itself.
 from __future__ import annotations
 
 import time
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
@@ -41,6 +41,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
     CardAuthority,
     CardCredentialHandles,
+    CardCurrentPointer,
     authority_is_credential_free,
 )
 from connection_hub.delegated_credentials.cards.resolver import (
@@ -55,6 +56,7 @@ from connection_hub.delegated_credentials.cards.service import (
     DelegatedCardService,
 )
 from connection_hub.delegated_credentials.cards.store import (
+    CardStorageError,
     subject_hash_for,
 )
 
@@ -220,6 +222,23 @@ class DurableCardPersistence:
     async def read_lifecycle_identities(self, request: Any) -> tuple[CardAuthority, CardAuthority]:
         # Deliberately bypass load_current/resolver, which may restore caches.
         return await self._cards.read_lifecycle_identities(request)
+
+    async def update_issuer(self, query: Any, *, actor_subject: str, before_commit: Any) -> dict[str, Any]:
+        # Preserve credential handles exactly; this path only widens durable
+        # non-secret selections and never calls the handle store.
+        return await self._cards.update_issuer(query, actor_subject=actor_subject, before_commit=before_commit)
+
+    async def read_issuer_update_authority(self, receipt: Mapping[str, Any]) -> CardAuthority | None:
+        from ..issuer_update import IssuerUpdateQuery
+        if receipt.get("state") != "committed":
+            return None
+        query = IssuerUpdateQuery.from_mapping(receipt["binding"]["request"])
+        pointer = CardCurrentPointer.from_mapping(receipt["after"])
+        authority = await self._store.read_revision(subject_hash=query.target.subject_hash,
+            access_id=query.target.access_id, revision_name=pointer.revision_name)
+        if authority is None or authority.content_hash() != pointer.content_hash:
+            raise CardStorageError("issuer_update_result_binding_invalid")
+        return authority
 
     async def revoke_lifecycle(self, request: Any, *, actor_subject: str, before_commit: Any) -> dict[str, Any]:
         async def cleanup(authorities):

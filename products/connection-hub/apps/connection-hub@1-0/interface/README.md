@@ -226,6 +226,27 @@ not a widget/Team listing API. The
 [full-snapshot contract](../../../../../docs/connection-hub/issuer-full-snapshot.md)
 owns the wire, credential-refusal and qualification boundaries.
 
+### Protected exact issuer update
+
+`issuer_managed_card_update` is POST on the operations route, with CSRF and
+actual registered/privileged human/runtime context. The trusted server must
+wrap its existing request-bound SDK call with the public
+`bind_issuer_update_orchestration()` scope; direct HTTP calls refuse. Raw
+updated authority stays inside that server.
+
+The body is `{data: {context_ref, request_id, target, delta}}`. `target` binds
+owner, Card ID, issuer coordinates, exact revision and full original
+fingerprint. `delta` binds one resource's final sorted unique `operations` and
+`grants`; only widening is supported. Every other Card field and all live
+credential handles remain unchanged. The configured write issuer authorizes
+the complete server-built candidate; caller-supplied context is not approval.
+
+Identical mutation-key retry recovers the original durable outcome, never a
+second revision. Changed replay refuses. `202` may mean committed with serving
+or issuer-finalization work pending, not no write. The
+[portable issuer contract](../../../../../docs/connection-hub/issuer-managed-writes.md)
+owns storage visibility, deadline, recovery and qualification boundaries.
+
 ### Public OAuth routes
 
 A browser redirect target, not a JSON op — reached by the external provider after

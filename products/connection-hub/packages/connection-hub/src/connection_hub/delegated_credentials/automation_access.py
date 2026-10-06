@@ -1815,6 +1815,12 @@ class AutomationAccessService:
         self._issuer_snapshots = registry
         self._issuer_snapshot_host = (actor_subject, actor_classification, tenant, project)
 
+    def bind_issuer_update_host(self, *, actor_subject: str, actor_classification: str,
+                                tenant: str, project: str, host_is_current: Any) -> None:
+        """Bind actual request context and its live, trusted confinement check."""
+        self._issuer_update_host = (actor_subject, actor_classification, tenant, project)
+        self._issuer_update_host_is_current = host_is_current
+
     def bind_project_authorization_port(
         self,
         authorization_port: ProjectAuthorizationPort | None,
@@ -2506,6 +2512,16 @@ class AutomationAccessService:
         except Exception:
             _LOGGER.exception("[connection-hub] issuer lifecycle unavailable")
             return {"ok": False, "error": "issuer_lifecycle_unavailable", "status": 503, "retryable": True}
+
+    async def issuer_managed_card_update(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        from .issuer_update import issuer_managed_card_update
+        host = getattr(self, "_issuer_update_host", ())
+        if (len(host) != 4 or host[1] not in ("registered", "privileged")
+                or not all(type(v) is str and v.strip() for v in host)):
+            return {"ok": False, "status": 403, "error": "issuer_update_host_unavailable"}
+        return await issuer_managed_card_update(body, actor_subject=host[0],
+            registry=getattr(self, "_issuers", None), persistence=self._persistence,
+            host_is_current=getattr(self, "_issuer_update_host_is_current", None))
 
     def _issuer_managed(self, record: AutomationAccessRecord) -> bool:
         return _record_is_credentialless(record) and self._issuers.is_managed(record.issuer_kind)
