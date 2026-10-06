@@ -2423,7 +2423,8 @@ class AutomationAccessService:
             transaction_id = row.transaction_id
             await intents.record(CardIntent(transaction_id=transaction_id, intent_digest=row.intent.digest,
                                             subject_hash=subject_hash, original=current, candidate=authority,
-                                            effects=tuple(dict(effect) for effect in effects)))
+                                            effects=tuple(dict(effect) for effect in effects),
+                                            action=action, actor_subject=actor, actor_kind=actor_kind))
         except DecisionRefused as exc:
             raise CardConflict(str(exc)) from exc
         try:

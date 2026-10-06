@@ -140,7 +140,8 @@ async def _edit(tmp_path, *, participants=(PARTICIPANT,), effects=EFFECTS, hub_c
     await intents.record(CardIntent(transaction_id=row.transaction_id, intent_digest=row.intent.digest,
                                     subject_hash=SUBJECT_HASH, original=before,
                                     candidate=hub_candidate or after,
-                                    effects=tuple(effects if hub_effects is None else hub_effects)))
+                                    effects=tuple(effects if hub_effects is None else hub_effects),
+                                    action="update", actor_subject="person", actor_kind="caller"))
     hub = HubCardParticipant(service=service, store=store, intents=intents, decisions=decisions)
     others = {name: _Other(decisions) for name in participants if name != PARTICIPANT}
     coordinator = Coordinator(decisions, {PARTICIPANT: hub, **others}, _Verifier())
@@ -391,6 +392,8 @@ async def test_the_no_intent_fallback_never_tombstones_an_undecided_transaction(
     ("binding_kind", "problem-board.project"), ("binding_ref", "aut_other"), ("target_scope", "f" * 64),
     ("before_revision", 99), ("candidate_revision", 99), ("target_incarnation", 99),
     ("dependency_revisions", {"other": 1}), ("action", ""), ("actor_subject", ""), ("actor_kind", "unknown"),
+    # CodeApp 17:25: exact values, not only non-empty ones.
+    ("action", "revoke"), ("actor_subject", "someone-else"), ("actor_kind", "grantor"),
 ])
 async def test_a_projection_that_differs_in_any_acted_on_field_never_stages(tmp_path, field, value):
     def tampered(before, after):

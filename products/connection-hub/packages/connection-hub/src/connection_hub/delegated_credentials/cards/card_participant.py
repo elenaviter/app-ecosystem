@@ -110,12 +110,18 @@ class CardIntent:
     original: CardAuthority
     candidate: CardAuthority
     effects: tuple[Mapping[str, Any], ...] = ()
+    # The authenticated action and actor this change was staged under (CodeApp
+    # 17:25): kept with the intent and compared EXACTLY with the projection.
+    action: str = ""
+    actor_subject: str = ""
+    actor_kind: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema": INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
                 "intent_digest": self.intent_digest, "subject_hash": self.subject_hash,
                 "original": self.original.to_dict(), "candidate": self.candidate.to_dict(),
-                "effects": [dict(effect) for effect in self.effects]}
+                "effects": [dict(effect) for effect in self.effects], "action": self.action,
+                "actor_subject": self.actor_subject, "actor_kind": self.actor_kind}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CardIntent":
@@ -125,7 +131,9 @@ class CardIntent:
             return cls(transaction_id=raw["transaction_id"], intent_digest=raw["intent_digest"],
                        subject_hash=raw["subject_hash"], original=CardAuthority.from_mapping(raw["original"]),
                        candidate=CardAuthority.from_mapping(raw["candidate"]),
-                       effects=tuple(dict(effect) for effect in raw.get("effects") or ()))
+                       effects=tuple(dict(effect) for effect in raw.get("effects") or ()),
+                       action=str(raw.get("action") or ""), actor_subject=str(raw.get("actor_subject") or ""),
+                       actor_kind=str(raw.get("actor_kind") or ""))
         except (KeyError, TypeError, ValueError) as exc:
             raise DecisionRefused("card_intent_invalid") from exc
 
@@ -223,9 +231,10 @@ class HubCardParticipant:
                 or projection["candidate_revision"] != intent.original.card_revision + 1
                 or projection["target_incarnation"] != max(1, intent.original.card_revision)
                 or projection["dependency_revisions"] != {}
-                or type(projection["action"]) is not str or not projection["action"]
-                or type(projection["actor_subject"]) is not str or not projection["actor_subject"]
-                or projection["actor_kind"] not in ("caller", "grantor")):
+                or not intent.action or projection["action"] != intent.action
+                or not intent.actor_subject or projection["actor_subject"] != intent.actor_subject
+                or projection["actor_kind"] not in ("caller", "grantor")
+                or projection["actor_kind"] != intent.actor_kind):
             raise DecisionRefused("card_intent_not_bound")
         return intent
 
