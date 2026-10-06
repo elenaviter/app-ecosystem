@@ -950,3 +950,66 @@ async def test_two_finishes_that_both_crash_mid_effects_keep_the_card_fenced(tmp
         assert [e.get("needs_finish") for e in await tx.list_in_doubt(store)] == [True]
     await _service_decide(store, service, before, "committed")
     assert await _visible(store, before) == after and await tx.list_in_doubt(store) == []
+
+
+# ── W582 hooks: prepare at STAGE, release at FINISH(aborted) ───────────────
+
+
+class _Hook:
+    def __init__(self, fail_times=0):
+        self.calls, self.fail_times = [], fail_times
+
+    async def __call__(self, kind, key, payload, *, transaction_id):
+        if self.fail_times:
+            self.fail_times -= 1
+            raise RuntimeError("target unavailable")
+        self.calls.append((transaction_id, kind, key))
+
+
+@pytest.mark.asyncio
+async def test_stage_prepares_every_effect_and_an_abort_releases_them(tmp_path):
+    from datetime import datetime, timezone
+    store, service, before, after = await _setup(tmp_path)
+    preparer, releaser, applier = _Hook(), _Hook(), _Applier()
+    service.bind_effect_preparer(preparer)
+    service.bind_effect_releaser(releaser)
+    service.bind_effect_applier(applier)
+    when = datetime.fromtimestamp(NOW, timezone.utc)
+    await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
+                                    effects=EFFECTS)
+    assert [k for _, k, _ in preparer.calls] == ["grant_binding", "invocation_policy"]
+    await _service_decide(store, service, before, "aborted")
+    assert [k for _, k, _ in releaser.calls] == ["grant_binding", "invocation_policy"] and applier.applied == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_release_leaves_the_abort_standing_and_the_next_finish_releases(tmp_path):
+    # Ops 12:44 condition 1: a crash between ABORTED and release, then recovery.
+    from datetime import datetime, timezone
+    from connection_hub.delegated_credentials.cards.service import CardServingUnavailable as Unavailable
+    store, service, before, after = await _setup(tmp_path)
+    releaser = _Hook(fail_times=1)
+    service.bind_effect_releaser(releaser)
+    when = datetime.fromtimestamp(NOW, timezone.utc)
+    await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
+                                    effects=EFFECTS)
+    with pytest.raises(Unavailable, match="card_effects_release_pending"):
+        await _service_decide(store, service, before, "aborted")
+    assert (await tx.state(store, transaction_id=TX))["state"] == "aborted"
+    assert await _visible(store, before) == before  # the abort stands
+    await _service_decide(store, service, before, "aborted")  # re-driven FINISH
+    assert [k for _, k, _ in releaser.calls] == ["grant_binding", "invocation_policy"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_prepare_refuses_the_stage_so_the_coordinator_aborts(tmp_path):
+    from datetime import datetime, timezone
+    store, service, before, after = await _setup(tmp_path)
+    service.bind_effect_preparer(_Hook(fail_times=1))
+    when = datetime.fromtimestamp(NOW, timezone.utc)
+    with pytest.raises(tx.CardTransactionRefused, match="card_effect_prepare_failed"):
+        await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                        subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when,
+                                        effects=EFFECTS)

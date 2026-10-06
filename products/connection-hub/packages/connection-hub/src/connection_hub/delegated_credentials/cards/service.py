@@ -254,9 +254,11 @@ class DelegatedCardService:
                     except Exception as exc:
                         raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
                 try:
-                    return await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
-                                       participant=participant, subject_hash=subject_hash, original=original,
-                                       candidate=candidate, now=now, effects=effects)
+                    staged = await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                         participant=participant, subject_hash=subject_hash, original=original,
+                                         candidate=candidate, now=now, effects=effects)
+                    await self._run_effect_hook("_effect_preparer", staged, refusal="card_effect_prepare_failed")
+                    return staged
                 except (CardStorageError, CardTransactionRefused):
                     if existing is None and await read_receipt(self._store, transaction_id) is None:
                         # Nothing was staged: release the marker rather than
@@ -288,7 +290,7 @@ class DelegatedCardService:
         decision stands. ABORTED serves nothing new and releases this
         transaction's marker, if one was left.
         """
-        from .transaction_store import decide, read_receipt
+        from .transaction_store import CardTransactionRefused, decide, read_receipt
 
         moment = int(now if now is not None else time.time())
         mutation_id = transaction_mutation_id(transaction_id)
@@ -315,6 +317,13 @@ class DelegatedCardService:
                     except Exception as exc:
                         raise CardServingUnavailable("card_effects_pending", access_id=access_id) from exc
                 if decided["state"] != "committed":
+                    # An ABORT releases what STAGE prepared (an invocation-policy
+                    # marker); a failure leaves the decision standing and the
+                    # re-driven FINISH releases again.
+                    try:
+                        await self._run_effect_hook("_effect_releaser", decided, refusal="card_effects_release_pending")
+                    except CardTransactionRefused as exc:
+                        raise CardServingUnavailable(str(exc), access_id=access_id) from exc
                     try:
                         await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
                     except Exception:  # noqa: BLE001 - an unreleased marker only expires; readers stay closed
@@ -368,6 +377,28 @@ class DelegatedCardService:
                 return tombstone
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def _run_effect_hook(self, name: str, receipt: Mapping[str, Any], *, refusal: str) -> None:
+        """Call the bound prepare/release hook once per recorded effect; every hook is idempotent."""
+        from .transaction_store import CardTransactionRefused
+
+        hook = getattr(self, name, None)
+        if hook is None or not receipt.get("effects"):
+            return
+        for effect in receipt["effects"]:
+            try:
+                await hook(effect["kind"], effect["key"], dict(effect["payload"]),
+                           transaction_id=receipt["transaction_id"])
+            except Exception as exc:
+                raise CardTransactionRefused(refusal) from exc
+
+    def bind_effect_preparer(self, preparer: Any) -> None:
+        """``prepare(kind, key, payload, *, transaction_id)`` at STAGE (e.g. a policy marker); idempotent."""
+        self._effect_preparer = preparer
+
+    def bind_effect_releaser(self, releaser: Any) -> None:
+        """``release(kind, key, payload, *, transaction_id)`` at FINISH(aborted); idempotent."""
+        self._effect_releaser = releaser
 
     def bind_effect_applier(self, applier: Any) -> None:
         """The hosting composition's idempotent ``apply(kind, key, payload, *, transaction_id)``."""
