@@ -85,6 +85,7 @@ class DecisionRecord:
     state: str
     prepared: Mapping[str, Receipt]
     finished: Mapping[str, Receipt]
+    witness_digest: str = ""
 
     @property
     def terminal(self) -> bool:
@@ -99,8 +100,11 @@ class DecisionStore(Protocol):
     ``decide`` is the one monotonic terminal CAS: commit requires every exact
     prepared receipt and a trusted application witness; an abort after expiry
     may only CAS an undecided row. Same-decision replay returns the old row.
-    ``record_finished`` persists each verified finish receipt idempotently.
-    The list is bounded and fails closed rather than silently truncating.
+    ``record_finished`` persists each verified finish receipt idempotently;
+    concurrent recovery loops may finish the same participant. ``abort_expired``
+    refuses with ``DecisionRefused('not_expired')`` while the original approval
+    remains live. ``list_in_doubt`` returns at most ``limit`` rows only after
+    fetching ``limit + 1`` internally; excess must raise, never truncate.
     """
 
     async def begin(self, intent: Intent) -> DecisionRecord: ...
@@ -120,7 +124,12 @@ class DecisionStore(Protocol):
 
 
 class Participant(Protocol):
-    """Trusted realm adapter bound by the composition root, not caller input."""
+    """Trusted realm adapter bound by the composition root, not caller input.
+
+    ``finish`` is idempotent across crash replay and concurrent recovery. On
+    ABORT it also acknowledges a transaction that never staged locally, so a
+    missing central prepare receipt cannot strand an orphaned realm fence.
+    """
 
     async def prepare(self, transaction_id: str) -> Receipt: ...
 
@@ -178,19 +187,35 @@ class Coordinator:
         record = await self.store.read(transaction_id)
         if record is None:
             raise DecisionRefused("transaction_unknown")
+        if record.terminal:
+            if record.state != decision:
+                raise DecisionRefused("decision_conflict")
+            return record
         if (decision == "committed" and
                 set(record.prepared) != set(record.intent.participants)):
             raise DecisionRefused("participants_not_prepared")
-        return await self.store.decide(transaction_id, decision,
-                                       witness_digest=witness_digest)
+        if (decision == "committed" and
+                (len(witness_digest) != 64 or
+                 any(char not in "0123456789abcdef" for char in witness_digest))):
+            raise DecisionRefused("commit_witness_missing")
+        result = await self.store.decide(transaction_id, decision,
+                                         witness_digest=witness_digest)
+        if result.state != decision or (decision == "committed" and
+                                        result.witness_digest != witness_digest):
+            raise DecisionRefused("decision_record_mismatch")
+        return result
 
     async def finish(self, transaction_id: str) -> DecisionRecord:
         record = await self.store.read(transaction_id)
         if record is None or not record.terminal:
             raise DecisionRefused("decision_unknown")
         for name in record.intent.participants:
-            if name in record.finished or name not in record.prepared:
+            if name in record.finished:
                 continue
+            # ABORT may race a stage whose realm receipt was written but not
+            # copied into the decision store before a crash. Every named
+            # participant must acknowledge the terminal decision or an exact
+            # no-stage observation; an absent central receipt is not release.
             receipt = await self._participant(name).finish(transaction_id, record.state)
             if (receipt.transaction_id != transaction_id
                     or receipt.intent_digest != record.intent.digest
@@ -214,7 +239,15 @@ class Coordinator:
                 # Only the store can compare original expiry to its durable
                 # clock and record a presumed abort. A missing answer is not
                 # permission to release a participant fence.
-                result.append(await self.store.abort_expired(row.transaction_id))
+                try:
+                    decided = await self.store.abort_expired(row.transaction_id)
+                except DecisionRefused as exc:
+                    if str(exc) != "not_expired":
+                        raise
+                    result.append(row)
+                    continue
+                result.append(await self.finish(row.transaction_id)
+                              if decided.terminal else decided)
         return result
 
 

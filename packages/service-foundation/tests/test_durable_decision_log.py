@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -23,7 +24,8 @@ class MemoryStore:
             if record.intent != intent:
                 raise DecisionRefused("intent_conflict")
             return record
-        record = DecisionRecord("a" * 64, intent, "preparing", {}, {})
+        record = DecisionRecord(hashlib.sha256(intent.request_id.encode()).hexdigest(),
+                                intent, "preparing", {}, {})
         self.rows[intent.request_id] = record
         return record
 
@@ -45,7 +47,8 @@ class MemoryStore:
                 raise DecisionRefused("decision_conflict")
             return row
         self.decisions.append(decision)
-        self.rows[row.intent.request_id] = replace(row, state=decision)
+        self.rows[row.intent.request_id] = replace(
+            row, state=decision, witness_digest=witness_digest if decision == "committed" else "")
         return self.rows[row.intent.request_id]
 
     async def abort_expired(self, transaction_id):
@@ -123,9 +126,56 @@ async def test_commit_cannot_skip_a_participant_and_recovery_cannot_abort_before
 
     with pytest.raises(DecisionRefused, match="participants_not_prepared"):
         await manager.decide(row.transaction_id, "committed")
-    with pytest.raises(DecisionRefused, match="not_expired"):
-        await manager.recover()
+    assert (await manager.recover())[0].state == "preparing"
     assert store.decisions == []
+
+
+@pytest.mark.asyncio
+async def test_abort_requires_every_realm_ack_even_when_stage_receipt_was_lost():
+    frozen = intent(("business", "card"))
+    store = MemoryStore()
+    realms = {name: Realm(name, frozen) for name in frozen.participants}
+    manager = Coordinator(store, realms, Verifier())
+    row = await store.begin(frozen)
+    await store.record_prepared(Receipt(row.transaction_id, frozen.digest, "business", "b" * 64))
+    await manager.decide(row.transaction_id, "aborted")
+
+    finished = await manager.finish(row.transaction_id)
+    assert set(finished.finished) == {"business", "card"}
+    assert realms["card"].calls == ["finish:aborted"]
+
+
+@pytest.mark.asyncio
+async def test_forged_prepared_receipt_is_rejected_before_storage():
+    frozen = intent(("card",))
+    store = MemoryStore()
+    realm = Realm("card", frozen)
+
+    async def forged_prepare(transaction_id):
+        return Receipt(transaction_id, frozen.digest, "card", "0" * 64)
+
+    realm.prepare = forged_prepare
+    with pytest.raises(DecisionRefused, match="receipt_untrusted"):
+        await Coordinator(store, {"card": realm}, Verifier()).prepare(frozen)
+    assert (await store.read(store.rows[frozen.request_id].transaction_id)).prepared == {}
+
+
+@pytest.mark.asyncio
+async def test_recovery_continues_past_an_unexpired_row_to_expired_work():
+    valid = intent(("card",))
+    expired = replace(valid, request_id="expired",
+                      expires_at=datetime.now(timezone.utc) - timedelta(seconds=1))
+    store = MemoryStore()
+    valid_row = await store.begin(valid)
+    expired_row = await store.begin(expired)
+    realms = {"card": Realm("card", expired)}
+    manager = Coordinator(store, realms, Verifier())
+
+    result = await manager.recover()
+    assert len(result) == 2
+    assert (await store.read(valid_row.transaction_id)).state == "preparing"
+    assert (await store.read(expired_row.transaction_id)).state == "aborted"
+    assert "card" in (await store.read(expired_row.transaction_id)).finished
 
 
 def test_canonical_intent_preserves_participant_order_and_fixes_identity():
