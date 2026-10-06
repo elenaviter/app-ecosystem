@@ -50,6 +50,9 @@ import re
 from typing import Any, Callable, Mapping
 
 from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
+from service_foundation.coordination.participant_answer import AnswerContract
+from service_foundation.coordination.participant_answer import request_digest as shared_request_digest
+from service_foundation.coordination.participant_answer import sign_participant_answer
 
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
 from ..controls.project_person import (
@@ -89,7 +92,8 @@ _BOUNDED = 256
 
 
 def census_request_digest(request: Mapping[str, Any]) -> str:
-    return sha256_hex(canonical_json_bytes({name: request[name] for name in REQUEST_FIELDS}))
+    """The shared helper's digest under the closed census contract (AE #619)."""
+    return shared_request_digest({name: request[name] for name in REQUEST_FIELDS}, contract=AnswerContract.CENSUS)
 
 
 def answer_frame_signature(unsigned: Mapping[str, Any], *, schema: str, secret: str | bytes, signer_id: str,
@@ -107,8 +111,9 @@ def answer_frame_signature(unsigned: Mapping[str, Any], *, schema: str, secret: 
 
 def census_answer_signature(unsigned: Mapping[str, Any], *, secret: str | bytes, signer_id: str,
                             timestamp: str) -> str:
-    return answer_frame_signature(unsigned, schema=ANSWER_SCHEMA, secret=secret, signer_id=signer_id,
-                                  timestamp=timestamp)
+    """The shared helper's signature under the closed census contract (AE #619)."""
+    return sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=secret, signer_id=signer_id,
+                                   timestamp=timestamp, contract=AnswerContract.CENSUS)["signature"]
 
 
 def _bounded(value: Any) -> bool:
@@ -265,10 +270,9 @@ class CardCensusReadOperation:
         unsigned = unsigned_for(result)
         if len(canonical_json_bytes(unsigned)) > MAX_ANSWER_BYTES:
             unsigned = unsigned_for({"kind": "refused", "code": "card_census_too_large", "status": 413})
-        timestamp = str(int(self._clock()))
-        proof = {"service_id": caller.receipt_signer_id, "timestamp": timestamp,
-                 "signature": census_answer_signature(unsigned, secret=caller.receipt_secret,
-                                                      signer_id=caller.receipt_signer_id, timestamp=timestamp)}
+        proof = sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=caller.receipt_secret,
+                                        signer_id=caller.receipt_signer_id, timestamp=str(int(self._clock())),
+                                        contract=AnswerContract.CENSUS)
         return {"ok": unsigned["result"].get("kind") != "refused",
                 "census_answer": {**unsigned, "receipt_proof": proof}}
 

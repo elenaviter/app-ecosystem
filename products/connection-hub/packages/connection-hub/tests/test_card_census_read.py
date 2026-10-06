@@ -76,6 +76,16 @@ def _request(persons=(ADMIN, OTHER), *, scope=PROJECT, include_catalog=True, sec
     return {**data, "service_proof": proof}
 
 
+def _signature_or_refused(answer, **kwargs):
+    """A tampered answer either signs differently or is refused outright by the shared helper's shape checks."""
+    from service_foundation.coordination.participant_answer import ParticipantAnswerRefused
+
+    try:
+        return census_answer_signature(answer, **kwargs)
+    except ParticipantAnswerRefused:
+        return None
+
+
 def _verified(response, request):
     answer = dict(response["census_answer"])
     proof = answer.pop("receipt_proof")
@@ -176,8 +186,8 @@ async def test_every_signed_answer_field_is_tamper_evident(tmp_path, field):
     answer = dict((await operation.answer(_request()))["census_answer"])
     proof = answer.pop("receipt_proof")
     answer[field] = "f" * 32 if isinstance(answer[field], str) else {"tampered": True}
-    assert census_answer_signature(answer, secret=RECEIPT_SECRET, signer_id=proof["service_id"],
-                                   timestamp=proof["timestamp"]) != proof["signature"]
+    assert _signature_or_refused(answer, secret=RECEIPT_SECRET, signer_id=proof["service_id"],
+                                 timestamp=proof["timestamp"]) != proof["signature"]
 
 
 @pytest.mark.asyncio
@@ -365,8 +375,8 @@ def test_the_hub_reproduces_each_shared_census_vector(vector):
                                    timestamp=proof["timestamp"]) == proof["signature"]
     for field in CENSUS_VECTORS["signed_fields"]:
         tampered = {**answer, field: "f" * 32 if isinstance(answer[field], str) else {"tampered": True}}
-        assert census_answer_signature(tampered, secret=config["secret"], signer_id=proof["service_id"],
-                                       timestamp=proof["timestamp"]) != proof["signature"], field
+        assert _signature_or_refused(tampered, secret=config["secret"], signer_id=proof["service_id"],
+                                     timestamp=proof["timestamp"]) != proof["signature"], field
 
 
 @pytest.mark.asyncio
@@ -411,3 +421,25 @@ async def test_person_owned_settings_are_withheld_and_authorization_properties_k
     sent = _present(card)["authority"]["properties"]
     assert set(sent) == {"connection_hub.control_snapshot", "kdcube.application_operations",
                          "service_composition_modes"}
+
+
+def test_the_hub_reproduces_the_foundations_shared_census_vectors():
+    # AE #619: the closed AnswerContract.CENSUS vectors in service-foundation, byte for byte.
+    import json as _json
+    from pathlib import Path
+
+    from service_foundation.coordination.participant_answer import AnswerContract, verify_participant_answer
+
+    shared = _json.loads((Path(__file__).resolve().parents[5] / "packages" / "service-foundation" / "tests"
+                          / "fixtures" / "census_answer_vectors.json").read_text())
+    config = shared["config"]
+    for vector in shared["vectors"]:
+        assert census_request_digest(vector["request"]) == vector["request_digest"]
+        answer = dict(vector["answer"])
+        proof = answer.pop("receipt_proof")
+        assert census_answer_signature(answer, secret=config["secret"], signer_id=proof["service_id"],
+                                       timestamp=proof["timestamp"]) == proof["signature"]
+        assert verify_participant_answer(
+            vector["answer"], schema=config["schema"], secret=config["secret"], signer_id=config["signer_id"],
+            audience=config["audience"], direction=config["direction"], request=vector["request"],
+            now=config["now"], contract=AnswerContract.CENSUS) == vector["answer"]["result"]
