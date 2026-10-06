@@ -267,12 +267,10 @@ def _scoped_card(h):
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    reason="W580 finding 2: prune skips a staged Card silently (pruned=0); the "
-    "disconnected account stays bound after the transaction commits",
-)
-async def test_a_disconnect_never_leaves_its_account_on_a_staged_card(tmp_path, redis_client):
+async def test_a_prune_of_a_staged_card_is_refused_loudly_for_a_retry(tmp_path, redis_client):
+    """W580 finding 2, package half. The disconnect route must honour this
+    refusal; that end-to-end order is an app hunk outside this package."""
+
     from test_resident_profile_cards import GRANTOR
 
     h = await _hub(tmp_path, redis_client)
@@ -282,9 +280,13 @@ async def test_a_disconnect_never_leaves_its_account_on_a_staged_card(tmp_path, 
     result = await h.service.prune_account_from_grants(
         grantor_subject=GRANTOR, provider_id="google", account_id="acct-1"
     )
-    await _decide(h, "committed")
-    # Either the prune is refused loudly for a retry, or the account is gone.
-    assert result.get("ok") is False or "acct-1" not in (await _read(h, card)).account_scope.get("google", {})
+    assert result["ok"] is False and result["retryable"] is True and result["pruned"] == 0
+    # A staged Card makes the listing itself unreadable; a per-Card refusal names it.
+    assert result["reason"] in {"grants_unreadable", "account_binding_not_pruned"}
+    if result["reason"] == "account_binding_not_pruned":
+        assert result["not_pruned"] == [card.access_id]
+    await _decide(h, "aborted")
+    assert await _read(h, card) == card
 
 
 @pytest.mark.asyncio
@@ -297,7 +299,8 @@ async def test_prune_of_a_card_without_a_transaction_still_clears_the_account(tm
     result = await h.service.prune_account_from_grants(
         grantor_subject=GRANTOR, provider_id="google", account_id="acct-1"
     )
-    assert result == {"pruned": 1, "grants": [card.access_id]}
+    assert result["ok"] is True and result["not_pruned"] == []
+    assert result["pruned"] == 1 and result["grants"] == [card.access_id]
     current = await _read(h, card)
     assert "google" not in current.account_scope
     assert current.card_revision == card.card_revision + 1
