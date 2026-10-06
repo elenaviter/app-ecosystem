@@ -45,6 +45,13 @@ from ..contract.scoped_collection import CollectionError, ScopedKeysetCursor
 
 # Selective receives allowed between two ordinary receives (W563, Q11).
 SELECTIVE_RECEIVE_BUDGET = 3
+# W563 (coordinator, 2026-10-06 00:35Z): a backlog mark sets at most this
+# many pending messages aside, and keeps this many earlier marks as history.
+BACKLOG_MARK_MAXIMUM = 5000
+BACKLOG_MARK_HISTORY = 20
+# Kinds that can carry an open question for the receiver: counted apart in
+# the backlog line so they stay visible on every receive.
+BACKLOG_UNRESOLVED_KINDS = frozenset({"request", "decision", "question"})
 
 # A local plan is a shard until a complete server generation is mirrored
 # here. These name the two states so no reader has to guess which it has.
@@ -5757,6 +5764,7 @@ class SharedFieldStore:
                 continue
             if parsed.kind == "project":
                 scopes.append((parsed.object_id, str(project_ref)))
+        backlog = self.backlog_message_ids(clean_name)
         headers: list[dict[str, Any]] = []
         for project_id, project_ref in scopes:
             for path in sorted((self._mail_root(project_id, clean_name) / "inbox").glob("*.json")):
@@ -5765,6 +5773,7 @@ class SharedFieldStore:
                 if not message_ref:
                     continue
                 payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
+                operator = self._is_admitted_operator_mail(row)
                 headers.append({
                     "message_ref": message_ref,
                     "project_ref": project_ref,
@@ -5774,10 +5783,105 @@ class SharedFieldStore:
                     "created_at": str(row.get("created_at") or ""),
                     "correlation_id": str(row.get("correlation_id") or ""),
                     "work_ref": str(row.get("work_ref") or ""),
-                    "operator": self._is_admitted_operator_mail(row),
+                    "operator": operator,
                     "expected_reaction": str(payload.get("expected_reaction") or ""),
+                    "backlog": path.stem in backlog and not operator,
                 })
         return headers
+
+    def _backlog_path(self, clean_name: str) -> Path:
+        return self.control / "backlog" / f"{component(clean_name, field='worker_name')}.json"
+
+    def backlog_message_ids(self, worker_name: str) -> frozenset[str]:
+        """The message ids this worker's current backlog mark set aside, or none (W563)."""
+
+        row = read_json(self._backlog_path(str(worker_name).lower()), required=False) or {}
+        if not row.get("mark_id"):
+            return frozenset()
+        return frozenset(str(item) for item in row.get("message_ids") or [] if item)
+
+    def backlog_mark(self, worker_name: str) -> dict[str, Any]:
+        """The current backlog mark's summary, or empty when none is set."""
+
+        mark = self.read_worker(worker_name).get("backlog_mark")
+        return dict(mark) if isinstance(mark, Mapping) and mark.get("mark_id") else {}
+
+    def mark_backlog(self, worker_name: str, *, reason: str) -> dict[str, Any]:
+        """Set this worker's pending mail aside as its backlog (W563).
+
+        Coordinator, 2026-10-06 00:35Z: native wakes leased the five oldest
+        bodies of a long backlog while the current window control waited
+        behind them. The mark names the exact messages pending now, so mail
+        that arrives later is never backlog, whatever its timestamp. Operator
+        mail is never backlog. Backlog mail stays pending, unread and counted:
+        nothing is settled, retired or deleted here. The ordinary receive and
+        native wakes then deliver current mail; ``receive --backlog`` delivers
+        the backlog. A new mark replaces the previous one, which is kept as
+        history.
+        """
+
+        reason = bounded_text(reason, field="reason", maximum=500, required=True)
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        headers = [header for header in self.pending_mail_headers(clean_name) if not header["operator"]]
+        ids: list[str] = []
+        for header in headers:
+            try:
+                ids.append(parse_ref(header["message_ref"]).object_id)
+            except DomainError:
+                continue
+        if len(ids) > BACKLOG_MARK_MAXIMUM:
+            raise DomainError(
+                "field_mail_backlog_too_large",
+                f"A backlog mark covers at most {BACKLOG_MARK_MAXIMUM} messages.",
+                status=409,
+                details={"pending_count": len(ids), "maximum": BACKLOG_MARK_MAXIMUM},
+            )
+        created = sorted(str(header["created_at"]) for header in headers if header["created_at"])
+        mark = {
+            "mark_id": new_id("backlog"),
+            "marked_at": utc_now(),
+            "reason": reason,
+            "count": len(ids),
+            "unresolved_count": sum(1 for header in headers if header["kind"] in BACKLOG_UNRESOLVED_KINDS),
+            "oldest_at": created[0] if created else "",
+            "newest_at": created[-1] if created else "",
+        }
+        self._write_backlog_mark(clean_name, mark, sorted(set(ids)))
+        _LOGGER.info(
+            "[problem-board.backlog] marked worker=%s mark=%s count=%s unresolved=%s reason=%s",
+            clean_name, mark["mark_id"], mark["count"], mark["unresolved_count"], reason,
+        )
+        return mark
+
+    def clear_backlog_mark(self, worker_name: str) -> dict[str, Any]:
+        """End the backlog mark: its mail is ordinary pending mail again. Returns the ended mark."""
+
+        clean_name = str(self.read_worker(worker_name).get("worker_name") or "")
+        ended = self.backlog_mark(clean_name)
+        if ended:
+            self._write_backlog_mark(clean_name, {}, [])
+            _LOGGER.info("[problem-board.backlog] cleared worker=%s mark=%s", clean_name, ended["mark_id"])
+        return ended
+
+    def _write_backlog_mark(self, clean_name: str, mark: Mapping[str, Any], ids: Sequence[str]) -> None:
+        path = self._backlog_path(clean_name)
+        with exclusive_lock(self.control / "locks" / f"worker-{clean_name}.lock"):
+            previous = read_json(path, required=False) or {}
+            history = list(previous.get("history") or [])
+            if previous.get("mark_id"):
+                history.append(
+                    {key: previous.get(key) for key in (
+                        "mark_id", "marked_at", "reason", "count", "unresolved_count", "oldest_at", "newest_at",
+                    )} | {"ended_at": utc_now()}
+                )
+            atomic_write_json(path, {**dict(mark), "message_ids": list(ids), "history": history[-BACKLOG_MARK_HISTORY:]})
+            worker_path = self._worker_path(clean_name)
+            row = read_json(worker_path)
+            if mark:
+                row["backlog_mark"] = dict(mark)
+            else:
+                row.pop("backlog_mark", None)
+            atomic_write_json(worker_path, row)
 
     def _own_mail_scopes(self, worker_name: str) -> tuple[str, list[tuple[str, str]]]:
         """This worker's stable name and mailboxes: direct, then each attended project."""
@@ -5919,7 +6023,7 @@ class SharedFieldStore:
         return results
 
     def quiet_mail_refs(self, worker_name: str, refs: Sequence[str] | None = None) -> set[str]:
-        """Pending notices that need no action and wake no session (W563, Q2).
+        """Pending mail that wakes no session (W563, Q2): quiet notices and backlog.
 
         Only mail its producer marked `expected_reaction: acknowledge_only`
         (a Done or Cancelled assignment notice, terminal assignee information)
@@ -5936,10 +6040,12 @@ class SharedFieldStore:
             return {
                 header["message_ref"]
                 for header in self.pending_mail_headers(worker_name)
-                if header.get("expected_reaction") == "acknowledge_only" and not header.get("operator")
+                if header.get("backlog")
+                or (header.get("expected_reaction") == "acknowledge_only" and not header.get("operator"))
             }
         worker = self.read_worker(worker_name)
         clean_name = str(worker.get("worker_name") or "")
+        backlog = self.backlog_message_ids(clean_name)
         wanted: dict[str, str] = {}
         for ref in refs:
             try:
@@ -5961,7 +6067,9 @@ class SharedFieldStore:
                 if not row:
                     continue
                 payload = row.get("payload") if isinstance(row.get("payload"), Mapping) else {}
-                if payload.get("expected_reaction") == "acknowledge_only" and not self._is_admitted_operator_mail(row):
+                if not self._is_admitted_operator_mail(row) and (
+                    message_id in backlog or payload.get("expected_reaction") == "acknowledge_only"
+                ):
                     quiet.add(ref)
                 break
         return quiet
@@ -7828,6 +7936,32 @@ class SharedFieldStore:
             path.name,
         )
 
+    @classmethod
+    def _backlog_candidates(
+        cls,
+        candidates: Iterable[tuple[Path, dict[str, Any] | None, Exception | None]],
+        backlog_ids: frozenset[str],
+        *,
+        backlog: bool,
+        tally: dict[str, Any] | None,
+    ) -> Iterable[tuple[Path, dict[str, Any] | None, Exception | None]]:
+        """Current or backlog candidates, counting the backlog ones (W563)."""
+
+        for candidate in candidates:
+            path, row = candidate[0], candidate[1]
+            marked = path.stem in backlog_ids and not (row is not None and cls._is_admitted_operator_mail(row))
+            if marked and tally is not None:
+                tally["count"] = int(tally.get("count") or 0) + 1
+                kind = str((row or {}).get("kind") or "")
+                if kind in BACKLOG_UNRESOLVED_KINDS:
+                    tally["unresolved_count"] = int(tally.get("unresolved_count") or 0) + 1
+                created = str((row or {}).get("created_at") or "")
+                if created and (not tally.get("oldest_at") or created < str(tally["oldest_at"])):
+                    tally["oldest_at"] = created
+                    tally["oldest_ref"] = str((row or {}).get("message_ref") or "")
+            if marked == backlog:
+                yield candidate
+
     @staticmethod
     def _mail_receive_candidate(
         path: Path,
@@ -7962,8 +8096,15 @@ class SharedFieldStore:
         selected_paths: Sequence[Path] | None = None,
         lock_held: bool = False,
         priority_only: bool = False,
+        backlog_ids: frozenset[str] | None = None,
+        backlog: bool = False,
+        backlog_tally: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Lease one bounded mailbox batch.
+
+        With ``backlog_ids`` (a backlog mark, W563) the batch is current mail
+        only, or with ``backlog`` the marked mail only; operator mail is never
+        backlog. ``backlog_tally`` counts the marked mail this shard holds.
 
         ``priority_only`` leases admitted operator mail only: the receive runs
         that pass over every mailbox before its ordinary pass, so operator mail
@@ -8017,6 +8158,11 @@ class SharedFieldStore:
                 candidates = (
                     candidate for candidate in candidates
                     if candidate[1] is not None and self._is_admitted_operator_mail(candidate[1])
+                )
+            shard_tally: dict[str, Any] = {"count": 0}
+            if not priority_only and backlog_ids is not None:
+                candidates = self._backlog_candidates(
+                    candidates, backlog_ids, backlog=backlog, tally=shard_tally
                 )
             sources = heapq.nsmallest(
                 take,
@@ -8186,16 +8332,31 @@ class SharedFieldStore:
                 if limited_by == "response_byte_limit":
                     byte_budget.record_mailbox(remaining=0, limited_by=limited_by)
             elif byte_budget is not None:
+                # With a backlog mark, only this receive's side of it remains
+                # for this receive; the other side is counted in its own line.
+                eligible = len(paths)
+                if backlog_ids is not None:
+                    marked = int(shard_tally.get("count") or 0)
+                    eligible = marked if backlog else len(paths) - marked
                 remaining_count = max(
                     0,
-                    len(paths) - len(claimed_paths),
+                    eligible - len(claimed_paths),
                 )
-                if not limited_by and remaining_count and take < len(paths):
+                if not limited_by and remaining_count and take < eligible:
                     limited_by = "item_limit"
                 byte_budget.record_mailbox(
                     remaining=remaining_count,
                     limited_by=limited_by,
                 )
+        if backlog_tally is not None and not priority_only:
+            backlog_tally["count"] = int(backlog_tally.get("count") or 0) + int(shard_tally.get("count") or 0)
+            backlog_tally["unresolved_count"] = (
+                int(backlog_tally.get("unresolved_count") or 0) + int(shard_tally.get("unresolved_count") or 0)
+            )
+            oldest = str(shard_tally.get("oldest_at") or "")
+            if oldest and (not backlog_tally.get("oldest_at") or oldest < str(backlog_tally["oldest_at"])):
+                backlog_tally["oldest_at"] = oldest
+                backlog_tally["oldest_ref"] = str(shard_tally.get("oldest_ref") or "")
         return claimed
 
     def record_stub_notice(
