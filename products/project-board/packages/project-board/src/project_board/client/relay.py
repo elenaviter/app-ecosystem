@@ -7949,7 +7949,12 @@ class ProblemBoardRelaySupervisor:
         is skipped until it finishes. One-shot callers and tests wait.
         """
 
-        host = await self._load_host_config()
+        # Its own thread, as before W456: the pass's config read never queues
+        # behind the cycle's or the wake wait's host reads (Ops' review of #577).
+        host = await run_off_loop(
+            HostRelayConfig.load, self.config_path,
+            executor=self._store_executors.for_channel("coordinate-server"),
+        )
         launched = []
         for name, session in self._coordinate_candidates(host):
             if name in self._coordinate_checking:
@@ -7960,13 +7965,26 @@ class ProblemBoardRelaySupervisor:
             )
             self._coordinate_checking[name] = task
             task.add_done_callback(
-                lambda done, name=name: self._coordinate_checking.pop(name, None)
-                if self._coordinate_checking.get(name) is done else None
+                lambda done, name=name: self._coordinate_check_finished(name, done)
             )
             launched.append(task)
         if not wait or not launched:
             return []
         return [name for name in await asyncio.gather(*launched) if name]
+
+    def _coordinate_check_finished(self, name: str, done: asyncio.Task) -> None:
+        """Forget a finished check; a failed one is logged, as the shared pass was."""
+
+        if self._coordinate_checking.get(name) is done:
+            self._coordinate_checking.pop(name, None)
+        if done.cancelled():
+            return
+        failure = done.exception()
+        if failure is not None:
+            logger.warning(
+                "Problem Board coordinate check failed worker=%s; the next pass retries",
+                name, exc_info=failure,
+            )
 
     async def _check_coordinate_candidate(
         self, host: HostRelayConfig, name: str, session: "_ChannelSession"

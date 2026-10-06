@@ -218,3 +218,170 @@ def test_a_card_replaced_between_two_checks_of_one_pass_is_never_dispatched(tmp_
         assert queue.take_response(worker_name=target.worker_name, request_id=request["request_id"]) is None
 
     asyncio.run(scenario())
+
+
+def _full_shared_pool(loop, blocker):
+    """Occupy every thread of the loop's shared default pool until ``blocker`` is set."""
+
+    workers = loop._default_executor._max_workers if loop._default_executor else 64
+    return [loop.run_in_executor(None, blocker.wait, 10) for _ in range(max(workers, 64))]
+
+
+def test_the_wake_waits_fault_file_read_never_runs_on_the_event_loop(tmp_path, monkeypatch):
+    host, _channels = _host_with_channels(tmp_path, 2)
+    reads = []
+    real_pending = relay.pending_relay_faults
+
+    def pending(*args, **kwargs):
+        reads.append(threading.current_thread() is threading.main_thread())
+        return real_pending(*args, **kwargs)
+
+    async def scenario():
+        attendance = Attendance(slow_name="-none-")
+        attendance.gate.set()
+        supervisor, _opened = supervisor_with_fake_channels(host, attendance)
+        monkeypatch.setattr(relay, "pending_relay_faults", pending)
+        try:
+            await asyncio.wait_for(supervisor.wait_for_wakeup(0.05), timeout=10)
+        finally:
+            await supervisor.aclose()
+        assert reads and not any(reads), "the wake wait read the fault file on the event loop's thread"
+
+    asyncio.run(scenario())
+
+
+def test_the_card_read_after_a_session_opens_never_waits_for_the_shared_pool(tmp_path):
+    host, channels = _host_with_channels(tmp_path, 2)
+
+    async def scenario():
+        attendance = Attendance(slow_name="-none-")
+        attendance.gate.set()
+        supervisor, _opened = supervisor_with_fake_channels(host, attendance)
+        fake_open = supervisor._open_session
+
+        loop = asyncio.get_running_loop()
+        blocker = threading.Event()
+        try:
+            # Open every session first, so the helper's own read is not in the way.
+            await asyncio.wait_for(supervisor.poll_once(), timeout=10)
+            for channel in channels:
+                await supervisor._drop_session(channel.worker_name)
+            ready = {c.worker_name: await fake_open(host, c) for c in channels}
+
+            async def reopen(host_, channel):
+                return ready[channel.worker_name]
+
+            supervisor._open_session = reopen
+            held = _full_shared_pool(loop, blocker)
+            await asyncio.sleep(0.05)
+            before = dict(attendance.polls)
+            started = time.monotonic()
+            await asyncio.wait_for(supervisor.poll_once(), timeout=3)
+            # A turn is not awaited by the cycle; its attendance poll comes only
+            # after the post-open Card check, so wait for that poll itself.
+            while (any(attendance.polls.get(c.worker_name, 0) <= before.get(c.worker_name, 0) for c in channels)
+                   and time.monotonic() - started < 3):
+                await asyncio.sleep(0.01)
+            took = time.monotonic() - started
+            kept = all(supervisor._sessions.get(c.worker_name) is ready[c.worker_name] for c in channels)
+        finally:
+            blocker.set()
+            await asyncio.gather(*held, return_exceptions=True) if "held" in locals() else None
+            await supervisor.aclose()
+        assert took < 1.0, f"the poll's post-open Card read waited {took:.2f}s for the shared pool"
+        assert kept, "each reopened session passed its Card check and was kept"
+
+    asyncio.run(scenario())
+
+
+def test_the_production_session_open_reads_the_card_without_the_shared_pool(tmp_path):
+    from relay_helpers import make_supervisor
+
+    host, channels = _host_with_channels(tmp_path, 1)
+
+    class Reached(Exception):
+        pass
+
+    async def scenario():
+        supervisor = make_supervisor(host)
+
+        def connector(_host, _channel, *, replacement_epoch):
+            raise Reached()
+
+        supervisor.connector = connector
+        loop = asyncio.get_running_loop()
+        blocker = threading.Event()
+        held = _full_shared_pool(loop, blocker)
+        try:
+            await asyncio.sleep(0.05)
+            started = time.monotonic()
+            try:
+                await asyncio.wait_for(supervisor._open_session(host, channels[0]), timeout=3)
+            except Reached:
+                pass
+            took = time.monotonic() - started
+        finally:
+            blocker.set()
+            await asyncio.gather(*held)
+            await supervisor.aclose()
+        assert took < 1.0, f"the open's Card read waited {took:.2f}s for the shared pool"
+
+    asyncio.run(scenario())
+
+
+def test_a_hung_host_config_thread_never_holds_the_coordinate_pass(tmp_path):
+    host, channels = _host_with_channels(tmp_path, 2)
+    queue = coordinate_queue.CoordinateQueue(host.field_root)
+
+    async def scenario():
+        attendance = Attendance(slow_name="-none-")
+        attendance.gate.set()
+        supervisor, _opened = supervisor_with_fake_channels(host, attendance)
+        blocker = threading.Event()
+        try:
+            await asyncio.wait_for(supervisor.poll_once(), timeout=10)
+            # A cycle's or wake wait's host read is stuck in the host-config thread.
+            stuck = supervisor._store_executors.for_channel("host-config").submit(blocker.wait, 10)
+            request = submit_request(queue, channels[0])
+            started = await asyncio.wait_for(supervisor.serve_coordinate_pass(), timeout=2)
+            await asyncio.sleep(0.2)
+            response = queue.take_response(worker_name=channels[0].worker_name,
+                                           request_id=request["request_id"])
+        finally:
+            blocker.set()
+            await asyncio.wrap_future(stuck) if "stuck" in locals() else None
+            await supervisor.stop_coordinate_server()
+            await supervisor.aclose()
+        assert channels[0].worker_name in started
+        assert response is not None and response["ok"] is True
+
+    asyncio.run(scenario())
+
+
+def test_a_failed_background_coordinate_check_is_logged(tmp_path, monkeypatch, caplog):
+    host, channels = _host_with_channels(tmp_path, 2)
+    queue = coordinate_queue.CoordinateQueue(host.field_root)
+
+    def broken_ready(self, host_, candidates):
+        raise RuntimeError("synthetic check failure")
+
+    async def scenario():
+        attendance = Attendance(slow_name="-none-")
+        attendance.gate.set()
+        supervisor, _opened = supervisor_with_fake_channels(host, attendance)
+        try:
+            await asyncio.wait_for(supervisor.poll_once(), timeout=10)
+            submit_request(queue, channels[0])
+            monkeypatch.setattr(relay.ProblemBoardRelaySupervisor, "_coordinate_ready", broken_ready)
+            with caplog.at_level("WARNING", logger="project_board.client.relay"):
+                await supervisor.serve_coordinate_pass(wait=False)
+                for _ in range(50):
+                    if not supervisor._coordinate_checking:
+                        break
+                    await asyncio.sleep(0.02)
+        finally:
+            await supervisor.stop_coordinate_server()
+            await supervisor.aclose()
+        assert any("coordinate check failed" in record.getMessage() for record in caplog.records)
+
+    asyncio.run(scenario())
