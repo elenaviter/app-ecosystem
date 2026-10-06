@@ -30,6 +30,7 @@ ledger and the reader pinning across realms are the callers'.
 
 from __future__ import annotations
 
+import itertools
 import re
 from datetime import datetime
 from typing import Any, Mapping, Protocol
@@ -59,6 +60,14 @@ def _checked_id(transaction_id: Any) -> str:
 
 def receipt_path(store: Any, transaction_id: str):
     return store.root / "card-transactions" / f"{_checked_id(transaction_id)}.json"
+
+
+MAX_ACTIVE_TRANSACTIONS = 1024
+
+
+def active_path(store: Any, transaction_id: str):
+    """An in-flight transaction's index entry: written before its receipt, removed once decided."""
+    return store.root / "card-transactions" / "active" / f"{_checked_id(transaction_id)}.json"
 
 
 def _validate(raw: Any, transaction_id: str) -> dict[str, Any]:
@@ -169,6 +178,48 @@ async def _clear_marker(store: Any, receipt: Mapping[str, Any]) -> None:
             path.unlink(missing_ok=True)
         except OSError:
             pass  # the decided receipt already releases the fence
+    if receipt["state"] in DECISIONS:
+        try:
+            active_path(store, receipt["transaction_id"]).unlink(missing_ok=True)
+        except OSError:
+            pass  # a stale entry only lists a decided transaction, which recovery skips
+
+
+async def list_in_doubt(store: Any) -> list[dict[str, Any]]:
+    """Every transaction this participant has begun preparing and not yet decided.
+
+    Recovery's view of the in-doubt Cards: a prepared receipt, or an index
+    entry whose receipt was never written (a stage that crashed first, which
+    is reported as ``unstaged`` and holds no fence). Bounded: more in-flight
+    transactions than MAX_ACTIVE_TRANSACTIONS fails closed rather than
+    returning a partial list.
+    """
+
+    import asyncio
+
+    directory = store.root / "card-transactions" / "active"
+
+    def names():
+        try:
+            return [path.stem for path in itertools.islice(directory.iterdir(), MAX_ACTIVE_TRANSACTIONS + 1)
+                    if path.is_file() and path.suffix == ".json"]
+        except FileNotFoundError:
+            return []
+
+    found = await asyncio.to_thread(names)
+    if len(found) > MAX_ACTIVE_TRANSACTIONS:
+        raise CardStorageError("card_transaction_recovery_queue_unavailable")
+    in_doubt = []
+    for transaction_id in sorted(found):
+        if not _HEX64.fullmatch(transaction_id):
+            continue  # an atomic-write temporary, not an entry
+        receipt = await read_receipt(store, transaction_id)
+        if receipt is None:
+            in_doubt.append({"transaction_id": transaction_id, "state": "unstaged"})
+        elif receipt["state"] == "prepared":
+            in_doubt.append({key: receipt[key] for key in (
+                "transaction_id", "intent_digest", "participant", "subject_hash", "access_id", "state")})
+    return in_doubt
 
 
 async def assert_replaceable(store: Any, *, subject_hash: str, access_id: str) -> None:
@@ -273,6 +324,8 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     #    pointer is still BEFORE, and the lifecycle can only stay blocked
     #    until this transaction is decided and then abort its own pointer
     #    (Ops 11:36, non-blocking N2).
+    # 0. The in-flight index entry first, so recovery can always find it.
+    await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
     await write_json_atomic(receipt_path(store, transaction_id), receipt)
     await write_json_atomic(marker_path(store, subject_hash=subject_hash, access_id=original.access_id),
                             {"transaction_id": transaction_id})
@@ -332,5 +385,6 @@ async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
 
 
 __all__ = ["CardTransactionRefused", "DECISIONS", "TRANSACTION_POINTER_SCHEMA", "TRANSACTION_RECEIPT_SCHEMA",
-           "TransactionDecisionPort", "assert_replaceable", "bind_transaction_decisions", "decide", "marker_path",
+           "TransactionDecisionPort", "active_path", "assert_replaceable", "bind_transaction_decisions", "decide",
+           "list_in_doubt", "marker_path",
            "read_receipt", "resolve_pointer", "stage", "state"]

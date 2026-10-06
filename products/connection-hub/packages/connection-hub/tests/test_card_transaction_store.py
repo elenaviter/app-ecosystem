@@ -676,3 +676,46 @@ async def test_a_staged_revoke_completes_over_its_own_restored_tombstone(tmp_pat
     cache.value = {"kind": "revoked", "card_revision": revoked.card_revision}  # served once the marker expired
     decided = await _service_decide(store, service, before, "committed")
     assert decided["state"] == "committed" and cache.value["kind"] == "revoked"
+
+
+# ── H-R1: recovery can enumerate every in-doubt transaction ────────────────
+
+
+@pytest.mark.asyncio
+async def test_recovery_lists_a_prepared_transaction_until_it_is_decided(tmp_path):
+    store, _, before, after = await _setup(tmp_path)
+    assert await tx.list_in_doubt(store) == []
+    await _stage(store, before, after)
+    listed = await tx.list_in_doubt(store)
+    assert [(e["transaction_id"], e["state"], e["access_id"]) for e in listed] == [(TX, "prepared", before.access_id)]
+    await _decide(store, "aborted")
+    assert await tx.list_in_doubt(store) == []
+
+
+@pytest.mark.asyncio
+async def test_a_stage_that_crashed_before_its_receipt_is_still_listed(tmp_path, monkeypatch):
+    store, service, before, after = await _setup(tmp_path)
+    original = tx.write_json_atomic
+
+    async def crash_on_receipt(path, payload):
+        if payload.get("schema") == tx.TRANSACTION_RECEIPT_SCHEMA:
+            raise RuntimeError("killed before the receipt")
+        return await original(path, payload)
+
+    monkeypatch.setattr(tx, "write_json_atomic", crash_on_receipt)
+    with pytest.raises(RuntimeError):
+        await _stage(store, before, after)
+    monkeypatch.undo()
+    assert await tx.list_in_doubt(store) == [{"transaction_id": TX, "state": "unstaged"}]
+    # It holds no fence: an ordinary write proceeds.
+    nxt = replace(before, card_revision=before.card_revision + 1, label="ordinary edit")
+    await service.commit(nxt, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=NOW)
+
+
+@pytest.mark.asyncio
+async def test_too_many_in_flight_transactions_fail_closed(tmp_path, monkeypatch):
+    store, _, before, after = await _setup(tmp_path)
+    await _stage(store, before, after)
+    monkeypatch.setattr(tx, "MAX_ACTIVE_TRANSACTIONS", 0)
+    with pytest.raises(CardStorageError, match="card_transaction_recovery_queue_unavailable"):
+        await tx.list_in_doubt(store)
