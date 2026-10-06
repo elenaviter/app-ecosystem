@@ -173,6 +173,14 @@ _ADAPTER_EXECUTORS = ChannelExecutors(thread_name_prefix="problem-board-adapter"
 # held per path by WorkspaceSizes, which the per-poll adapters share).
 DISK_USAGE_REMEASURE_SECONDS = REMEASURE_SECONDS
 
+def _sweep_summary_of(workspace: str) -> dict[str, Any] | None:
+    """The agent's latest sweep counts (W547): one small file read, never a walk."""
+
+    from .sweep_plan import read_summary
+
+    return read_summary(workspace)
+
+
 def _disk_usage_of(workspace: str) -> tuple[Any, str] | None:
     """``shutil.disk_usage`` and the resolved path of an existing workspace, else None.
 
@@ -4672,6 +4680,14 @@ class ProblemBoardHostRelayAdapter:
         measured = self._workspace_sizes.last(real_path)
         if measured is not None:
             report["workspace_bytes"] = int(measured)
+        # W547: the latest sweep's counts, so the coordinator sees unregistered
+        # and kept folders without anyone logging into the host. No sweep yet
+        # leaves the field out: unknown, never zero.
+        sweep = await run_off_loop(
+            _sweep_summary_of, workspace, executor=getattr(self, "_store_executor", None)
+        )
+        if sweep is not None:
+            report["sweep"] = sweep
         payload["disk_usage"] = report
 
     def _add_workspace_report(self, payload: dict[str, Any], project_ref: str, entry: Mapping[str, Any]) -> None:

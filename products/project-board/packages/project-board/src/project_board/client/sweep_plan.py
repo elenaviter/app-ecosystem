@@ -22,6 +22,10 @@ from .io import atomic_write_json, exclusive_lock, read_json
 
 STATE_FOLDER = Path(".problem-board")
 PLAN_NAME = "sweep-plan.json"
+# W547: the counts of the latest sweep, for the agent's heartbeat to publish.
+SUMMARY_NAME = "sweep-summary.json"
+SUMMARY_SCHEMA = "problem-board.sweep-summary.v1"
+SUMMARY_COUNTS = ("trees", "unregistered", "orphan", "ended_but_kept", "would_remove", "scratch_kept")
 PINS_NAME = "tree-pins.json"
 GENERATED_NAME = "tree-generated.json"
 
@@ -53,6 +57,61 @@ def read_plan(workspace: Path | str) -> dict[str, dict[str, str]]:
         "trees": {str(k): str(v) for k, v in (value.get("trees") or {}).items()},
         "runs": {str(k): str(v) for k, v in (value.get("runs") or {}).items()},
     }
+
+
+def summary_path(workspace: Path | str) -> Path:
+    return Path(workspace).expanduser() / STATE_FOLDER / SUMMARY_NAME
+
+
+def sweep_counts(trees: Any, runs: Any) -> dict[str, int]:
+    """Counts only (W547): never a path, a name or a file list leaves the workspace.
+
+    ``trees`` must be the full inventory, before an automatic sweep narrows it
+    to ended jobs, or the unregistered folders it exists to report would vanish.
+    """
+
+    worktrees = [tree for tree in trees if tree.kind != "clone"]
+    return {
+        "trees": len(worktrees),
+        "unregistered": sum(1 for tree in worktrees if tree.kind == "unregistered"),
+        "orphan": sum(1 for tree in worktrees if tree.kind == "orphan"),
+        "ended_but_kept": sum(1 for tree in worktrees if tree.ended and not tree.removable),
+        "would_remove": sum(1 for tree in worktrees if tree.removable),
+        "scratch_kept": sum(1 for run in runs if not run.removable),
+    }
+
+
+def write_summary(workspace: Path | str, counts: Mapping[str, int]) -> Path:
+    """Record the latest sweep's counts with the time it judged them."""
+
+    path = summary_path(workspace)
+    atomic_write_json(path, {
+        "schema": SUMMARY_SCHEMA,
+        "observed_at": _now_iso(),
+        **{name: max(0, int(counts.get(name) or 0)) for name in SUMMARY_COUNTS},
+    })
+    return path
+
+
+def read_summary(workspace: Path | str) -> dict[str, Any] | None:
+    """The latest sweep's counts, or None when there is none or it cannot be read.
+
+    No summary means no sweep yet, which is reported as unknown, never as zero.
+    """
+
+    try:
+        value = read_json(summary_path(workspace), required=False)
+    except DomainError:
+        return None
+    if not isinstance(value, Mapping) or value.get("schema") != SUMMARY_SCHEMA:
+        return None
+    observed = value.get("observed_at")
+    counts = {name: value.get(name) for name in SUMMARY_COUNTS}
+    if not isinstance(observed, str) or not observed or not all(
+        type(count) is int and count >= 0 for count in counts.values()
+    ):
+        return None
+    return {"observed_at": observed, **counts}
 
 
 def _pins_path(workspace: Path | str) -> Path:

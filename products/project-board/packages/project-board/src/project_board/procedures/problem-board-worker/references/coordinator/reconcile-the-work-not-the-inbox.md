@@ -49,6 +49,25 @@ team from it. For each item, beside the batch's roles table, answer:
    An author nobody has named for a returned item is your route to give
    (W537).
 
+**The team's disk (W547).** With the same read, look at each teammate's
+`disk` line in `pb worker context`. It shows the host's free disk, the
+workspace size, and the counts from that agent's latest sweep, each with the
+time it was observed:
+
+- **Unregistered or orphan folders above 0:** name the agent and ask it
+  directly to run `pb worker workspace --sweep`. It then either records each
+  finished tree with `pb worker workspace --end --path <tree>` (or registers a
+  live one), or moves evidence it keeps into a scratch run.
+- **A host below its free-disk threshold** (`disk_alert_free_percent`): ask
+  every agent on that host to sweep, starting with the largest workspace.
+- **"sweep not reported", or a sweep time older than a day:** ask that agent
+  for a fresh `--sweep`. A missing count is unknown, never zero.
+
+Never sweep, end or delete another agent's trees yourself, and never turn on
+`--workspace-sweep-auto-apply`: that is the operator's decision for each host.
+Why: on 2026-10-04, 32 of 71 folders on one host were unregistered, and nobody
+saw it until they were cleaned by hand (2.69 GB, W547).
+
 **What to do.** Turn every finding into one owned next action in the same
 turn: take the decision you owe, reassign with the missing binding, route the
 review, or name the owner and checkpoint. Write it where the next reader

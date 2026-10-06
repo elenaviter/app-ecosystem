@@ -7480,6 +7480,9 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
         workspace, registrations, protected=protected, measure=not only_ended, pins=pins,
         generated=generated, consumers=consumers, only_ended=only_ended,
     )
+    # W547: the published counts come from the whole inventory, before an
+    # automatic sweep narrows the trees to ended jobs.
+    inventory = trees
     if only_ended:
         trees = [tree for tree in trees if tree.ended or tree.kind == "clone"]
     verify = scratch.publication_verifier(workspace, read_notes=_sweep_item_notes(field, identity, args))
@@ -7513,6 +7516,7 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
         trees = workspace_sweep.inspect_workspace(workspace, field.workspaces(identity.worker_name),
                                                   protected=protected, measure=False, pins=pins,
                                                   generated=generated, consumers=consumers)
+        inventory = trees
     else:
         result.update(workspace_sweep.sweep_report(trees))
     runs = scratch.inspect_runs(workspace, worker_name=identity.worker_name, verify=verify,
@@ -7530,6 +7534,7 @@ def _workspace_sweep(field: Any, identity: Any, args: argparse.Namespace, *, app
         trees={str(tree.path): tree.fingerprint for tree in trees if tree.removable},
         runs={str(run.path): run.fingerprint for run in runs if run.removable},
     )
+    sweep_plan.write_summary(workspace, sweep_plan.sweep_counts(inventory, runs))
     return result
 
 

@@ -2154,7 +2154,47 @@ def _team_row(member: Mapping[str, Any], shared: Mapping[str, int], project_ref:
         )
     lines = ["--- " + " · ".join(facts)]
     lines.extend(_team_wake_lines(member))
+    disk = _team_disk_line(member)
+    if disk:
+        lines.append(disk)
     return lines
+
+
+def _gigabytes(value: Any) -> str:
+    return f"{int(value) / 1_000_000_000:.1f} GB"
+
+
+def _team_disk_line(member: Mapping[str, Any]) -> str:
+    """One teammate's disk and workspace state (W547), for the coordinator's team status.
+
+    The host's free disk, the workspace size and the latest sweep's counts,
+    each with the time it was observed. Not a routing line: the routing view
+    drops it, which keeps W563's routing budget unchanged.
+    """
+
+    usage = member.get("disk_usage")
+    if not isinstance(usage, Mapping) or not usage.get("host_total_bytes"):
+        return ""
+    alias = str(member.get("worker_alias") or member.get("worker_name") or "-")
+    free, total = int(usage.get("host_free_bytes") or 0), int(usage["host_total_bytes"])
+    facts = [f"host free {100 * free / total:.0f}% ({_gigabytes(free)})"]
+    if usage.get("workspace_bytes") is not None:
+        facts.append(f"workspace {_gigabytes(usage['workspace_bytes'])}")
+    reported = str(usage.get("reported_at") or "")
+    if len(reported) >= 16:
+        facts.append(f"reported {reported[5:10]} {reported[11:16]}Z")
+    sweep = usage.get("sweep")
+    if isinstance(sweep, Mapping) and sweep.get("observed_at"):
+        observed = str(sweep["observed_at"])
+        facts.append(
+            f"unregistered {int(sweep.get('unregistered') or 0)} · orphan {int(sweep.get('orphan') or 0)}"
+            f" · ended but kept {int(sweep.get('ended_but_kept') or 0)}"
+            + (f" · swept {observed[5:10]} {observed[11:16]}Z" if len(observed) >= 16 else "")
+        )
+    else:
+        # No sweep reported yet is unknown, never zero.
+        facts.append("sweep not reported")
+    return f"disk {alias}: " + " · ".join(facts)
 
 
 def _team_wake_lines(member: Mapping[str, Any]) -> list[str]:
