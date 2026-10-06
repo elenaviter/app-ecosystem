@@ -101,7 +101,7 @@ class _Other:
         return []
 
 
-async def _edit(tmp_path, *, participants=(PARTICIPANT,), effects=EFFECTS, hub_candidate=None):
+async def _edit(tmp_path, *, participants=(PARTICIPANT,), effects=EFFECTS, hub_candidate=None, hub_effects=None):
     store, service, before, after = await _setup(tmp_path)
     applier = _Applier()
     service.bind_effect_applier(applier)
@@ -115,7 +115,8 @@ async def _edit(tmp_path, *, participants=(PARTICIPANT,), effects=EFFECTS, hub_c
     intents = LocalCardIntentSource(store)
     await intents.record(CardIntent(transaction_id=row.transaction_id, intent_digest=intent.digest,
                                     subject_hash=SUBJECT_HASH, original=before,
-                                    candidate=hub_candidate or after, effects=tuple(effects)))
+                                    candidate=hub_candidate or after,
+                                    effects=tuple(effects if hub_effects is None else hub_effects)))
     hub = HubCardParticipant(service=service, store=store, intents=intents, decisions=decisions)
     others = {name: _Other(intent.digest) for name in participants if name != PARTICIPANT}
     coordinator = Coordinator(decisions, {PARTICIPANT: hub, **others}, _Verifier())
@@ -312,3 +313,19 @@ async def test_with_a_real_lock_an_abort_cannot_race_an_in_flight_stage(tmp_path
     assert await tx.list_in_doubt(store) == []
     await hub._service.commit(replace(before, card_revision=before.card_revision + 1, label="next"),
                               subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=1_780_000_000)
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["payload", "dropped", "added"])
+async def test_the_hub_never_applies_an_effect_the_coordinator_intent_does_not_name(tmp_path, change):
+    # Ops T2: the effects are part of the bound payload, not only the candidate.
+    hub_effects = {
+        "payload": [EFFECTS[0], {**EFFECTS[1], "payload": {"mode": "never"}}],
+        "dropped": EFFECTS[:1],
+        "added": [*EFFECTS, {"kind": "grant_unbind", "key": "old", "payload": {"token_sha256": "a" * 64}}],
+    }[change]
+    store, coordinator, decisions, intent, before, after, applier, _ = await _edit(tmp_path, hub_effects=hub_effects)
+    with pytest.raises(DecisionRefused, match="card_intent_not_bound"):
+        await coordinator.prepare(intent)
+    assert await tx.state(store, transaction_id=TXID) is None and applier.applied == []
