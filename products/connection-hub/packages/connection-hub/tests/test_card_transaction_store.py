@@ -15,6 +15,28 @@ TX = "a" * 64
 INTENT = "b" * 64
 
 
+class Decisions:
+    """PB's recorded decision, per transaction: undecided until the coordinator records one."""
+
+    def __init__(self):
+        self.recorded = {}
+        self.fail = False
+
+    async def decision(self, receipt):
+        if self.fail:
+            raise RuntimeError("coordinator unreachable")
+        return self.recorded.get(receipt["transaction_id"], "undecided")
+
+
+def _record(store, decision, transaction_id=TX):
+    store._card_transaction_decisions.recorded[transaction_id] = decision
+
+
+async def _decide(store, decision, transaction_id=TX, **kwargs):
+    _record(store, decision, transaction_id)
+    return await tx.decide(store, transaction_id=transaction_id, intent_digest=INTENT, decision=decision, **kwargs)
+
+
 async def _setup(tmp_path):
     from contextlib import asynccontextmanager
 
@@ -23,6 +45,7 @@ async def _setup(tmp_path):
         yield
 
     store = BundleStorageDelegatedCardStore(tmp_path)
+    tx.bind_transaction_decisions(store, Decisions())
     service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
     before = _authority()
     await service.commit(before, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
@@ -32,6 +55,11 @@ async def _setup(tmp_path):
 
 async def _visible(store, card):
     return (await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=card.access_id))[1]
+
+
+async def _undecided(store, card):
+    with pytest.raises(CardStorageError, match="card_transaction_undecided"):
+        await _visible(store, card)
 
 
 async def _stage(store, before, after, **changes):
@@ -48,8 +76,8 @@ async def test_a_staged_change_is_invisible_until_the_recorded_decision_commits_
     store, _, before, after = await _setup(tmp_path)
     receipt = await _stage(store, before, after)
     assert receipt["state"] == "prepared"
-    assert await _visible(store, before) == before  # readers still get BEFORE
-    decided = await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="committed")
+    await _undecided(store, before)  # readers refuse while PB has recorded no decision
+    decided = await _decide(store, "committed")
     assert decided["state"] == "committed"
     assert await _visible(store, before) == after  # the one rename made AFTER visible
 
@@ -58,7 +86,7 @@ async def test_a_staged_change_is_invisible_until_the_recorded_decision_commits_
 async def test_an_aborted_transaction_leaves_before_and_releases_the_card(tmp_path):
     store, service, before, after = await _setup(tmp_path)
     await _stage(store, before, after)
-    await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="aborted", reason="last_admin")
+    await _decide(store, "aborted", reason="last_admin")
     assert await _visible(store, before) == before
     # An ordinary write proceeds again once the transaction is decided.
     nxt = replace(before, card_revision=before.card_revision + 1, label="ordinary edit")
@@ -78,7 +106,7 @@ async def test_no_ordinary_writer_publishes_around_an_undecided_staged_card(tmp_
         else:
             await service.revoke(subject_hash=SUBJECT_HASH, access_id=before.access_id,
                                  expected_revision=before.card_revision)
-    assert await _visible(store, before) == before
+    await _undecided(store, before)
 
 
 @pytest.mark.asyncio
@@ -87,13 +115,13 @@ async def test_the_decision_is_exactly_once_and_bound_to_the_intent(tmp_path):
     await _stage(store, before, after)
     with pytest.raises(tx.CardTransactionRefused, match="card_transaction_intent_mismatch"):
         await tx.decide(store, transaction_id=TX, intent_digest="c" * 64, decision="committed")
-    await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="committed")
-    again = await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="committed")
+    await _decide(store, "committed")
+    again = await _decide(store, "committed")
     assert again["state"] == "committed"  # idempotent
     with pytest.raises(tx.CardTransactionRefused, match="card_transaction_decision_conflict"):
-        await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="aborted")
+        await _decide(store, "aborted")
     with pytest.raises(tx.CardTransactionRefused, match="card_transaction_decision_invalid"):
-        await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="maybe")
+        await _decide(store, "maybe")
 
 
 @pytest.mark.asyncio
@@ -132,7 +160,7 @@ async def test_a_crash_after_the_prepared_receipt_leaves_the_card_readable_as_be
 async def test_an_unknown_transaction_or_a_bad_id_is_refused(tmp_path):
     store, _, _, _ = await _setup(tmp_path)
     with pytest.raises(tx.CardTransactionRefused, match="card_transaction_unknown"):
-        await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="committed")
+        await _decide(store, "committed")
     with pytest.raises(CardStorageError, match="card_transaction_id_invalid"):
         await tx.state(store, transaction_id="not-hex")
 
@@ -151,7 +179,9 @@ async def test_the_service_stages_under_the_fence_and_serves_only_the_committed_
     when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
     receipt = await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                               subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
-    assert receipt["state"] == "prepared" and await _visible(store, before) == before
+    assert receipt["state"] == "prepared"
+    await _undecided(store, before)
+    _record(store, "committed")
     decided = await service.decide_transaction(transaction_id=TX, intent_digest=INTENT, decision="committed",
                                                subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
     assert decided["state"] == "committed" and await _visible(store, before) == after
@@ -172,6 +202,7 @@ async def test_the_service_abort_serves_nothing_new(tmp_path):
     when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
     await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                     subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
+    _record(store, "aborted")
     decided = await service.decide_transaction(transaction_id=TX, intent_digest=INTENT, decision="aborted",
                                                subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
     assert decided["state"] == "aborted" and await _visible(store, before) == before
@@ -196,7 +227,8 @@ async def test_a_staged_revoke_takes_effect_only_on_commit_and_serves_its_tombst
     when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
     await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                     subject_hash=SUBJECT_HASH, original=before, candidate=revoked, now=when)
-    assert (await _visible(store, before)).state != CARD_STATE_REVOKED  # still live while undecided
+    await _undecided(store, before)  # never served as revoked (nor as current) while undecided
+    _record(store, decision)
     await service.decide_transaction(transaction_id=TX, intent_digest=INTENT, decision=decision,
                                      subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
     visible = await _visible(store, before)
@@ -238,11 +270,11 @@ async def test_a_crash_mid_stage_is_fenced_and_a_replay_resumes_it(tmp_path, mon
                              subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=NOW)
     # A commit decision before the pointer is in place is refused, not reported.
     with pytest.raises(tx.CardTransactionRefused, match="card_transaction_not_staged"):
-        await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="committed")
+        await _decide(store, "committed")
     monkeypatch.undo()
     # The replay resumes the missing steps; then the commit really publishes AFTER.
     await _stage(store, before, after)
-    await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="committed")
+    await _decide(store, "committed")
     assert await _visible(store, before) == after
 
 
@@ -257,7 +289,7 @@ async def test_an_aborted_crash_mid_stage_releases_the_card(tmp_path, monkeypatc
     with pytest.raises(RuntimeError):
         await _stage(store, before, after)
     monkeypatch.undo()
-    await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="aborted")
+    await _decide(store, "aborted")
     nxt = replace(before, card_revision=before.card_revision + 1, label="ordinary edit")
     await service.commit(nxt, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision, now=NOW)
     assert await _visible(store, before) == nxt
@@ -306,6 +338,57 @@ async def test_the_serving_projection_is_marked_updating_before_the_commit_renam
     when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
     await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
                                     subject_hash=SUBJECT_HASH, original=before, candidate=after, now=when)
+    _record(store, "committed")
     await service.decide_transaction(transaction_id=TX, intent_digest=INTENT, decision="committed",
                                      subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
     assert order == [("mark", "prepared"), ("projection", after.card_revision)]
+
+
+# ── One decision source: PB's recorded decision (CodeApp 11:14, Root 11:17) ──
+
+
+@pytest.mark.asyncio
+async def test_a_reader_follows_the_recorded_commit_before_local_materialization(tmp_path):
+    store, _, before, after = await _setup(tmp_path)
+    await _stage(store, before, after)
+    _record(store, "committed")  # PB decided; the local receipt is still prepared
+    assert (await tx.state(store, transaction_id=TX))["state"] == "prepared"
+    assert await _visible(store, before) == after
+
+
+@pytest.mark.asyncio
+async def test_a_reader_follows_the_recorded_abort_and_a_replay_cannot_restage_it(tmp_path):
+    store, _, before, after = await _setup(tmp_path)
+    await _stage(store, before, after)
+    _record(store, "aborted")
+    assert await _visible(store, before) == before
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_aborted"):
+        await _stage(store, before, after)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("port", ["unbound", "unreachable"])
+async def test_without_a_reachable_decision_readers_and_decide_fail_closed(tmp_path, port):
+    store, _, before, after = await _setup(tmp_path)
+    await _stage(store, before, after)
+    if port == "unbound":
+        tx.bind_transaction_decisions(store, None)
+    else:
+        store._card_transaction_decisions.recorded[TX] = "committed"
+        store._card_transaction_decisions.fail = True
+    await _undecided(store, before)
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_decision_unverified"):
+        await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision="committed")
+    assert (await tx.state(store, transaction_id=TX))["state"] == "prepared"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recorded,attempted", [("undecided", "committed"), ("aborted", "committed"),
+                                                ("committed", "aborted")])
+async def test_local_decide_never_makes_an_independent_decision(tmp_path, recorded, attempted):
+    store, _, before, after = await _setup(tmp_path)
+    await _stage(store, before, after)
+    _record(store, recorded)
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_decision_not_recorded"):
+        await tx.decide(store, transaction_id=TX, intent_digest=INTENT, decision=attempted)
+    assert (await tx.state(store, transaction_id=TX))["state"] == "prepared"

@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import Any, Mapping
+from typing import Any, Mapping, Protocol
 
 from ..durable_io import read_json_or_none, write_json_atomic
 from ..issuer_gate import change_digest
@@ -87,8 +87,48 @@ async def read_receipt(store: Any, transaction_id: str) -> dict[str, Any] | None
     return None if raw is None else _validate(raw, transaction_id)
 
 
-async def resolve_pointer(store: Any, payload: Any, *, subject_hash: str, access_id: str) -> CardCurrentPointer:
-    """The pointer a reader uses: AFTER only once the receipt records COMMITTED, else BEFORE."""
+class TransactionDecisionPort(Protocol):
+    """The coordinator's authoritative decision for one staged transaction (CodeApp, 11:14).
+
+    Bound on the store INSTANCE by the hosting composition, never a module
+    global. Returns "committed", "aborted" or "undecided" for the exact
+    receipt (transaction id, intent digest, participant); it verifies the
+    coordinator's durable record, never an asserted string.
+    """
+
+    async def decision(self, receipt: Mapping[str, Any]) -> str: ...
+
+
+def bind_transaction_decisions(store: Any, port: TransactionDecisionPort | None) -> None:
+    store._card_transaction_decisions = port
+
+
+async def _authoritative_state(store: Any, receipt: Mapping[str, Any]) -> str:
+    """The decision a reader must follow: the local receipt once decided, else the coordinator's."""
+
+    if receipt["state"] in DECISIONS:
+        return receipt["state"]
+    port = getattr(store, "_card_transaction_decisions", None)
+    if port is None:
+        raise CardStorageError("card_transaction_undecided")
+    try:
+        decision = await port.decision(dict(receipt))
+    except Exception as exc:  # noqa: BLE001 - an unreachable coordinator decides nothing
+        raise CardStorageError("card_transaction_undecided") from exc
+    if decision not in DECISIONS:
+        raise CardStorageError("card_transaction_undecided")
+    return decision
+
+
+async def resolve_pointer(store: Any, payload: Any, *, subject_hash: str, access_id: str,
+                          consult_decision: bool = True) -> CardCurrentPointer:
+    """The pointer a reader uses, by the coordinator's recorded decision.
+
+    COMMITTED reads AFTER and ABORTED reads BEFORE, even before the local
+    receipt materializes it; an undecided or unreachable decision refuses,
+    only for this staged Card. Internal validation passes
+    ``consult_decision=False`` and gets BEFORE while prepared.
+    """
 
     if not isinstance(payload, Mapping) or set(payload) != {"schema", "transaction_id", "before", "after"}:
         raise CardStorageError("card_transaction_pointer_invalid")
@@ -98,7 +138,10 @@ async def resolve_pointer(store: Any, payload: Any, *, subject_hash: str, access
     if ((receipt["subject_hash"], receipt["access_id"]) != (subject_hash, access_id)
             or any(payload[name] != receipt[name] for name in ("before", "after"))):
         raise CardStorageError("card_transaction_pointer_binding_invalid")
-    return CardCurrentPointer.from_mapping(receipt["after" if receipt["state"] == "committed" else "before"])
+    if not consult_decision:
+        return CardCurrentPointer.from_mapping(receipt["after" if receipt["state"] == "committed" else "before"])
+    state = await _authoritative_state(store, receipt)
+    return CardCurrentPointer.from_mapping(receipt["after" if state == "committed" else "before"])
 
 
 def marker_path(store: Any, *, subject_hash: str, access_id: str):
@@ -141,7 +184,7 @@ async def assert_replaceable(store: Any, *, subject_hash: str, access_id: str) -
     raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
     if raw is None or raw.get("schema") != TRANSACTION_POINTER_SCHEMA:
         return
-    await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=access_id)
+    await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=access_id, consult_decision=False)
     receipt = await read_receipt(store, raw["transaction_id"])
     if receipt["state"] == "prepared":
         raise CardStorageError("card_transaction_unresolved")
@@ -175,7 +218,16 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     _checked_id(transaction_id)
     if not _HEX64.fullmatch(str(intent_digest or "")) or not str(participant or "").strip():
         raise CardTransactionRefused("card_transaction_intent_invalid")
+    port = getattr(store, "_card_transaction_decisions", None)
     existing = await read_receipt(store, transaction_id)
+    if existing is not None and existing["state"] == "prepared" and port is not None:
+        try:
+            if await port.decision(dict(existing)) == "aborted":
+                raise CardTransactionRefused("card_transaction_aborted")
+        except CardTransactionRefused:
+            raise
+        except Exception:  # noqa: BLE001 - an unknown decision does not block resuming its own staging
+            pass
     if existing is not None:
         if (existing["intent_digest"] != intent_digest
                 or existing["change_digest"] != change_digest(candidate.to_dict())
@@ -183,7 +235,11 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
             raise CardTransactionRefused("card_transaction_replay_changed")
         if existing["state"] != "prepared" or await _is_staged(store, existing):
             return existing
-        current = await store.read_current(subject_hash=subject_hash, access_id=original.access_id)
+        raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=original.access_id))
+        current = None if raw is None else (
+            await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=original.access_id,
+                                  consult_decision=False)
+            if raw.get("schema") == TRANSACTION_POINTER_SCHEMA else CardCurrentPointer.from_mapping(raw))
         if current is None or current.to_dict() != existing["before"]:
             raise CardTransactionRefused("card_transaction_revision_moved")
         await _write_staged(store, existing, candidate, now)
@@ -241,6 +297,17 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
         return receipt
     if decision == "committed" and not await _is_staged(store, receipt):
         raise CardTransactionRefused("card_transaction_not_staged")
+    # Local decide only MATERIALIZES the coordinator's recorded decision; it is
+    # never a second, independent business decision (CodeApp, 11:14).
+    port = getattr(store, "_card_transaction_decisions", None)
+    if port is None:
+        raise CardTransactionRefused("card_transaction_decision_unverified")
+    try:
+        recorded = await port.decision(dict(receipt))
+    except Exception as exc:  # noqa: BLE001
+        raise CardTransactionRefused("card_transaction_decision_unverified") from exc
+    if recorded != decision:
+        raise CardTransactionRefused("card_transaction_decision_not_recorded")
     decided = {**receipt, "state": decision, "reason": str(reason or "")[:128]}
     _validate(decided, transaction_id)
     # The one visibility point: the receipt rename. COMMITTED readers get AFTER.
@@ -256,4 +323,5 @@ async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
 
 
 __all__ = ["CardTransactionRefused", "DECISIONS", "TRANSACTION_POINTER_SCHEMA", "TRANSACTION_RECEIPT_SCHEMA",
-           "assert_replaceable", "decide", "marker_path", "read_receipt", "resolve_pointer", "stage", "state"]
+           "TransactionDecisionPort", "assert_replaceable", "bind_transaction_decisions", "decide", "marker_path",
+           "read_receipt", "resolve_pointer", "stage", "state"]
