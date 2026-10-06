@@ -238,11 +238,19 @@ class DelegatedCardService:
                 try:
                     await self._mark_updating(access_id=access_id, mutation_id=mutation_id,
                                               expected_revision=authority.card_revision - 1)
-                    await self._cache.commit_projection(
-                        authority, mutation_id=mutation_id,
-                        ttl_seconds=authority_projection_ttl(authority, moment),
-                    )
-                    await self._index(authority=authority, subject_hash=subject_hash, moment=moment)
+                    if authority.state == CARD_STATE_REVOKED:
+                        # A staged revoke: serve its tombstone, exactly as revoke() does.
+                        await self._cache.commit_tombstone(
+                            access_id, card_revision=authority.card_revision, mutation_id=mutation_id,
+                            ttl_seconds=self._settings.revoked_tombstone_seconds,
+                        )
+                        await self._cache.index_remove(subject_hash=subject_hash, access_id=access_id)
+                    else:
+                        await self._cache.commit_projection(
+                            authority, mutation_id=mutation_id,
+                            ttl_seconds=authority_projection_ttl(authority, moment),
+                        )
+                        await self._index(authority=authority, subject_hash=subject_hash, moment=moment)
                 except Exception as exc:
                     raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
                 return decided

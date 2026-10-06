@@ -176,3 +176,31 @@ async def test_the_service_abort_serves_nothing_new(tmp_path):
                                                subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
     assert decided["state"] == "aborted" and await _visible(store, before) == before
     assert served == []  # an abort serves nothing new
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["committed", "aborted"])
+async def test_a_staged_revoke_takes_effect_only_on_commit_and_serves_its_tombstone(tmp_path, decision):
+    from datetime import datetime, timezone
+    from connection_hub.delegated_credentials.cards.model import CARD_STATE_REVOKED
+    from connection_hub.delegated_credentials.cards.service import replace_state
+    store, service, before, _ = await _setup(tmp_path)
+    tombstones = []
+
+    async def tombstone(access_id, **kwargs):
+        tombstones.append(kwargs["card_revision"])
+        return True
+
+    service._cache.commit_tombstone = tombstone
+    revoked = replace_state(before, CARD_STATE_REVOKED)
+    when = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+    await service.stage_transaction(transaction_id=TX, intent_digest=INTENT, participant="project",
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=revoked, now=when)
+    assert (await _visible(store, before)).state != CARD_STATE_REVOKED  # still live while undecided
+    await service.decide_transaction(transaction_id=TX, intent_digest=INTENT, decision=decision,
+                                     subject_hash=SUBJECT_HASH, access_id=before.access_id, now=NOW)
+    visible = await _visible(store, before)
+    if decision == "committed":
+        assert visible.state == CARD_STATE_REVOKED and tombstones == [revoked.card_revision]
+    else:
+        assert visible == before and tombstones == []
