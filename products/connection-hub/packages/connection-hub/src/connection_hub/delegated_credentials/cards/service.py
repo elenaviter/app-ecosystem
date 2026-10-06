@@ -344,6 +344,31 @@ class DelegatedCardService:
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
 
+    async def abort_unstaged_transaction(self, *, transaction_id: str, subject_hash: str,
+                                         access_id: str) -> dict[str, Any]:
+        """W581 F1 under the Card's section (Ops B2): tombstone a transaction never prepared here.
+
+        Inside the same section every stage of this Card takes, so an in-flight
+        stage either finished first (its receipt exists: returned as is, and
+        the caller finishes it through decide) or will see the tombstone and
+        refuse. The stage's serving marker, if a crash left it, is released.
+        """
+        from .transaction_store import abort_unstaged, read_receipt
+
+        try:
+            async with self._critical_section(subject_hash=subject_hash, access_id=access_id):
+                existing = await read_receipt(self._store, transaction_id)
+                if existing is not None:
+                    return existing
+                tombstone = await abort_unstaged(self._store, transaction_id)
+                try:
+                    await self._cache.finalize_removal(access_id, mutation_id=transaction_mutation_id(transaction_id))
+                except Exception:  # noqa: BLE001 - it only expires; readers stay closed meanwhile
+                    pass
+                return tombstone
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
     def bind_effect_applier(self, applier: Any) -> None:
         """The hosting composition's idempotent ``apply(kind, key, payload, *, transaction_id)``."""
         self._effect_applier = applier

@@ -447,6 +447,10 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     recorded_effects = [{"kind": e["kind"], "key": e["key"], "payload": dict(e["payload"])} for e in (effects or ())]
     if recorded_effects and not _effects_valid(recorded_effects):
         raise CardTransactionRefused("card_transaction_effects_invalid")
+    if existing is not None and existing["state"] in DECISIONS:
+        # A decided transaction is never staged again (Ops N2).
+        raise CardTransactionRefused("card_transaction_aborted" if existing["state"] == "aborted"
+                                     else "card_transaction_late_stage")
     if existing is not None:
         if (existing["intent_digest"] != intent_digest
                 or existing.get("effects", []) != recorded_effects

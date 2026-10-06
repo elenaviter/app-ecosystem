@@ -44,6 +44,20 @@ def receipt_digest(receipt: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical(dict(receipt))).hexdigest()
 
 
+def card_intent_payload_digest(*, original: CardAuthority, candidate: CardAuthority,
+                               effects: Sequence[Mapping[str, Any]] = ()) -> str:
+    """What the coordinator's Intent.payload_digest must name for this Card change (Ops B1).
+
+    It binds the base revision, the complete candidate and every effect, so
+    a policy or witness that decides on the Intent decides on exactly what
+    the Hub will apply.
+    """
+    return hashlib.sha256(_canonical({
+        "access_id": original.access_id, "original_revision": original.card_revision,
+        "candidate": candidate.to_dict(), "effects": [dict(effect) for effect in effects],
+    })).hexdigest()
+
+
 @dataclass(frozen=True)
 class CardIntent:
     """What one transaction may do to one Card; immutable once recorded."""
@@ -125,19 +139,33 @@ class HubCardParticipant:
 
     name = PARTICIPANT
 
-    def __init__(self, *, service: Any, store: Any, intents: CardIntentSource,
+    def __init__(self, *, service: Any, store: Any, intents: CardIntentSource, decisions: Any,
                  now: Any = None) -> None:
         self._service = service
         self._store = store
         self._intents = intents
+        self._decisions = decisions
         self._now = now or (lambda: datetime.now(timezone.utc))
 
     def _receipt(self, prepared: Mapping[str, Any]) -> Receipt:
         return Receipt(prepared["transaction_id"], prepared["intent_digest"], PARTICIPANT,
                        receipt_digest(prepared))
 
-    async def prepare(self, transaction_id: str) -> Receipt:
+    async def _bound_intent(self, transaction_id: str) -> CardIntent:
+        """The Hub intent, refused unless it is exactly what the coordinator's Intent names."""
         intent = await self._intents.load(transaction_id)
+        record = await self._decisions.read(transaction_id)
+        if record is None:
+            raise DecisionRefused("transaction_unknown")
+        expected = card_intent_payload_digest(original=intent.original, candidate=intent.candidate,
+                                              effects=intent.effects)
+        if (record.intent.digest != intent.intent_digest or record.intent.payload_digest != expected
+                or PARTICIPANT not in record.intent.participants):
+            raise DecisionRefused("card_intent_not_bound")
+        return intent
+
+    async def prepare(self, transaction_id: str) -> Receipt:
+        intent = await self._bound_intent(transaction_id)
         try:
             prepared = await self._service.stage_transaction(
                 transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
@@ -151,9 +179,13 @@ class HubCardParticipant:
         intent = await self._intents.load(transaction_id)
         if decision == "aborted" and await read_state(self._store, transaction_id=transaction_id) is None:
             # Never durably prepared here (a lost prepare reply, or a stage
-            # that crashed first): an idempotent abort tombstone (W581 F1).
-            from .transaction_store import abort_unstaged
-            tombstone = await abort_unstaged(self._store, transaction_id)
+            # that crashed first): an idempotent abort tombstone (W581 F1),
+            # written under the Card's own section so it cannot race a stage.
+            tombstone = await self._service.abort_unstaged_transaction(
+                transaction_id=transaction_id, subject_hash=intent.subject_hash,
+                access_id=intent.original.access_id)
+            if tombstone.get("state") != "aborted":  # the stage won the section: finish its receipt
+                return await self.finish(transaction_id, decision)
             return Receipt(transaction_id, intent.intent_digest, PARTICIPANT, receipt_digest(tombstone))
         try:
             decided = await self._service.decide_transaction(
@@ -180,4 +212,4 @@ class HubCardParticipant:
 
 
 __all__ = ["CardIntent", "CardIntentSource", "DecisionStorePort", "HubCardParticipant",
-           "LocalCardIntentSource", "PARTICIPANT", "receipt_digest"]
+           "LocalCardIntentSource", "PARTICIPANT", "card_intent_payload_digest", "receipt_digest"]
