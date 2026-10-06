@@ -218,7 +218,7 @@ class DelegatedCardService:
 
     async def stage_transaction(
         self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
-        original: CardAuthority, candidate: CardAuthority, now: Any, effects: Any = (),
+        original: CardAuthority, candidate: CardAuthority, now: Any, effects: Any = (), reads: Any = (),
     ) -> dict[str, Any]:
         """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served.
 
@@ -242,7 +242,13 @@ class DelegatedCardService:
         mutation_id = transaction_mutation_id(transaction_id)
         access_id = original.access_id
         try:
-            async with self._critical_section(subject_hash=subject_hash, access_id=access_id):
+            # W502 read reservations: the candidate's section and every dependency
+            # Card's section, taken in one sorted order so stages cannot deadlock.
+            async with AsyncExitStack() as sections:
+                keys = sorted({(subject_hash, access_id), *((r["subject_hash"], r["access_id"]) for r in reads or ())})
+                for section_subject, section_access in keys:
+                    await sections.enter_async_context(self._critical_section(
+                        subject_hash=section_subject, access_id=section_access))
                 existing = await read_receipt(self._store, transaction_id)
                 if existing is None:
                     # A fresh stage passes the full shared fence (Ops F2); a
@@ -259,7 +265,7 @@ class DelegatedCardService:
                 try:
                     staged = await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                          participant=participant, subject_hash=subject_hash, original=original,
-                                         candidate=candidate, now=now, effects=effects)
+                                         candidate=candidate, now=now, effects=effects, reads=reads)
                     await self._run_effect_hook("_effect_preparer", staged, refusal="card_effect_prepare_failed")
                     return staged
                 except (CardStorageError, CardTransactionRefused):

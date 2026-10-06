@@ -47,9 +47,43 @@ def receipt_digest(receipt: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical(dict(receipt))).hexdigest()
 
 
+def dependency_revisions(reads: Sequence[Mapping[str, Any]] = ()) -> dict[str, int]:
+    """The projection's ``dependency_revisions`` for read reservations (W502; kernel: values int >= 1).
+
+    ``card:<subject_hash>:<access_id>`` -> the unchanged Card's exact revision;
+    ``card-absent:<subject_hash>:<access_id>`` -> 1, meaning that Card must not exist.
+    """
+    result: dict[str, int] = {}
+    for read in reads:
+        if read["revision"] == 0:
+            result[f"card-absent:{read['subject_hash']}:{read['access_id']}"] = 1
+        else:
+            result[f"card:{read['subject_hash']}:{read['access_id']}"] = int(read["revision"])
+    return result
+
+
+def reads_from_dependencies(dependencies: Any) -> list[dict[str, Any]]:
+    """The read reservations a projection names, or a named refusal for any other key."""
+    if not isinstance(dependencies, Mapping):
+        raise DecisionRefused("card_dependency_invalid")
+    reads = []
+    for key, value in dependencies.items():
+        parts = key.split(":", 2) if type(key) is str else []
+        if len(parts) != 3 or not parts[1] or not parts[2] or type(value) is not int:
+            raise DecisionRefused("card_dependency_invalid")
+        if parts[0] == "card" and value >= 1:
+            reads.append({"subject_hash": parts[1], "access_id": parts[2], "revision": value})
+        elif parts[0] == "card-absent" and value == 1:
+            reads.append({"subject_hash": parts[1], "access_id": parts[2], "revision": 0})
+        else:
+            raise DecisionRefused("card_dependency_invalid")
+    return sorted(reads, key=lambda read: (read["subject_hash"], read["access_id"]))
+
+
 def hub_participant_input(*, original: CardAuthority, candidate: CardAuthority, subject_hash: str,
                           action: str, actor_subject: str, actor_kind: str,
-                          effects: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+                          effects: Sequence[Mapping[str, Any]] = (),
+                          reads: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     """The Hub's v2 ``participant_inputs[PARTICIPANT]`` for one Card change (W581 v2 kernel).
 
     This is the ONLY shape the Hub stages (EMain C1, 2026-10-06): an initiator
@@ -75,7 +109,7 @@ def hub_participant_input(*, original: CardAuthority, candidate: CardAuthority, 
         "target_scope": subject_hash, "target_incarnation": max(1, original.card_revision), "action": action,
         "before_revision": original.card_revision, "candidate_revision": original.card_revision + 1,
         "candidate_digest": card_intent_payload_digest(original=original, candidate=candidate, effects=effects),
-        "dependency_revisions": {}, "actor_subject": actor_subject, "actor_kind": actor_kind,
+        "dependency_revisions": dependency_revisions(reads), "actor_subject": actor_subject, "actor_kind": actor_kind,
         "provisioning": {},
     }
 
@@ -129,13 +163,16 @@ class CardIntent:
     action: str = ""
     actor_subject: str = ""
     actor_kind: str = ""
+    # W502 read reservations: unchanged dependency Cards held through finish.
+    reads: tuple[Mapping[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {"schema": INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
                 "intent_digest": self.intent_digest, "subject_hash": self.subject_hash,
                 "original": self.original.to_dict(), "candidate": self.candidate.to_dict(),
                 "effects": [dict(effect) for effect in self.effects], "action": self.action,
-                "actor_subject": self.actor_subject, "actor_kind": self.actor_kind}
+                "actor_subject": self.actor_subject, "actor_kind": self.actor_kind,
+                "reads": [dict(read) for read in self.reads]}
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CardIntent":
@@ -147,7 +184,8 @@ class CardIntent:
                        candidate=CardAuthority.from_mapping(raw["candidate"]),
                        effects=tuple(dict(effect) for effect in raw.get("effects") or ()),
                        action=str(raw.get("action") or ""), actor_subject=str(raw.get("actor_subject") or ""),
-                       actor_kind=str(raw.get("actor_kind") or ""))
+                       actor_kind=str(raw.get("actor_kind") or ""),
+                       reads=tuple(dict(read) for read in raw.get("reads") or ()))
         except (KeyError, TypeError, ValueError) as exc:
             raise DecisionRefused("card_intent_invalid") from exc
 
@@ -244,7 +282,8 @@ class HubCardParticipant:
                 or projection["before_revision"] != intent.original.card_revision
                 or projection["candidate_revision"] != intent.original.card_revision + 1
                 or projection["target_incarnation"] != max(1, intent.original.card_revision)
-                or projection["dependency_revisions"] != {}
+                or reads_from_dependencies(projection["dependency_revisions"]) != sorted(
+                    (dict(read) for read in intent.reads), key=lambda read: (read["subject_hash"], read["access_id"]))
                 or not intent.action or projection["action"] != intent.action
                 or not intent.actor_subject or projection["actor_subject"] != intent.actor_subject
                 or projection["actor_kind"] not in ("caller", "grantor")
@@ -258,7 +297,7 @@ class HubCardParticipant:
             prepared = await self._service.stage_transaction(
                 transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
                 subject_hash=intent.subject_hash, original=intent.original, candidate=intent.candidate,
-                now=self._now(), effects=intent.effects)
+                now=self._now(), effects=intent.effects, reads=intent.reads)
         except CardTransactionRefused as exc:
             raise DecisionRefused(str(exc)) from exc
         return await self._receipt(prepared)
@@ -359,6 +398,7 @@ class HubLocalReceiptVerifier:
 
 
 __all__ = ["CardIntent", "CardIntentSource", "DecisionStorePort", "HubCardParticipant", "HubLocalReceiptVerifier",
-           "LocalCardIntentSource", "PARTICIPANT", "candidate_value", "candidate_value_digest",
+           "LocalCardIntentSource", "PARTICIPANT", "candidate_value", "candidate_value_digest", "dependency_revisions",
+           "reads_from_dependencies",
            "card_intent_payload_digest", "hub_participant_input",
            "hub_projection", "receipt_digest"]

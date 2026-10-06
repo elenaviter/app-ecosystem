@@ -521,3 +521,139 @@ async def test_a_refused_prepare_then_abort_finishes_with_the_real_verifier(tmp_
     assert record.finished.keys() == {PARTICIPANT}
     assert await coordinator.recover(limit=10) == [] and applier.applied == []
     assert await _visible(store, before) == moved
+
+
+# ── W502 read reservations: unchanged dependency Cards held from prepare to finish ──
+
+
+async def _with_reads(tmp_path, *, dependency_revision=None, absent=False, recorded_reads=None):
+    store, service, before, after = await _setup(tmp_path)
+    applier = _Applier()
+    service.bind_effect_applier(applier)
+    dependency = replace(before, access_id="aut_dependency", label="unchanged person Control")
+    if not absent:
+        await service.commit(dependency, subject_hash=SUBJECT_HASH, expected_revision=0, now=1_780_000_000)
+    read = {"subject_hash": SUBJECT_HASH, "access_id": dependency.access_id,
+            "revision": 0 if absent else (dependency_revision or dependency.card_revision)}
+    decisions = _Store()
+    tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
+    hub_input = hub_participant_input(original=before, candidate=after, subject_hash=SUBJECT_HASH, action="update",
+                                      actor_subject="person", actor_kind="caller", effects=EFFECTS, reads=[read])
+    draft = _draft(before, after, hub_input=hub_input)
+    row = await decisions.begin(draft)
+    intents = LocalCardIntentSource(store)
+    await intents.record(CardIntent(transaction_id=row.transaction_id, intent_digest=row.intent.digest,
+                                    subject_hash=SUBJECT_HASH, original=before, candidate=after, effects=tuple(EFFECTS),
+                                    action="update", actor_subject="person", actor_kind="caller",
+                                    reads=tuple(recorded_reads if recorded_reads is not None else [read])))
+    hub = HubCardParticipant(service=service, store=store, intents=intents, decisions=decisions)
+    coordinator = Coordinator(decisions, {PARTICIPANT: hub}, HubLocalReceiptVerifier(store))
+    return store, service, coordinator, decisions, draft, before, after, dependency, applier
+
+
+@pytest.mark.asyncio
+async def test_a_dependency_is_held_through_finish_and_released_after(tmp_path):
+    store, service, coordinator, decisions, draft, before, after, dependency, applier = await _with_reads(tmp_path)
+    await coordinator.prepare(draft)
+    moved = replace(dependency, card_revision=dependency.card_revision + 1, label="another admin's edit")
+    with pytest.raises(Exception, match="unresolved"):
+        await service.commit(moved, subject_hash=SUBJECT_HASH, expected_revision=dependency.card_revision,
+                             now=1_780_000_000)  # refused while this transaction depends on it
+    await coordinator.decide(TXID, "committed", witness_digest=WITNESS)
+    await coordinator.finish(TXID)
+    assert await _visible(store, before) == after
+    assert (await tx.state(store, transaction_id=TXID))["reads"][0]["access_id"] == dependency.access_id
+    await service.commit(moved, subject_hash=SUBJECT_HASH, expected_revision=dependency.card_revision,
+                         now=1_780_000_000)  # released after finish
+    assert await _visible(store, dependency) == moved
+
+
+@pytest.mark.asyncio
+async def test_an_aborted_transaction_releases_its_dependency(tmp_path):
+    store, service, coordinator, decisions, draft, before, after, dependency, applier = await _with_reads(tmp_path)
+    await coordinator.prepare(draft)
+    await coordinator.decide(TXID, "aborted")
+    await coordinator.finish(TXID)
+    moved = replace(dependency, card_revision=dependency.card_revision + 1, label="after the abort")
+    await service.commit(moved, subject_hash=SUBJECT_HASH, expected_revision=dependency.card_revision,
+                         now=1_780_000_000)
+    assert await _visible(store, before) == before and applier.applied == []
+
+
+@pytest.mark.asyncio
+async def test_a_moved_dependency_refuses_prepare(tmp_path):
+    store, service, coordinator, decisions, draft, before, after, dependency, applier = await _with_reads(
+        tmp_path, dependency_revision=99)
+    with pytest.raises(DecisionRefused, match="card_dependency_moved"):
+        await coordinator.prepare(draft)
+    assert await tx.state(store, transaction_id=TXID) is None
+
+
+@pytest.mark.asyncio
+async def test_an_absent_card_stays_absent_until_finish(tmp_path):
+    store, service, coordinator, decisions, draft, before, after, dependency, applier = await _with_reads(
+        tmp_path, absent=True)
+    await coordinator.prepare(draft)
+    with pytest.raises(Exception, match="unresolved"):
+        await service.commit(dependency, subject_hash=SUBJECT_HASH, expected_revision=0, now=1_780_000_000)
+    await coordinator.decide(TXID, "committed", witness_digest=WITNESS)
+    await coordinator.finish(TXID)
+    await service.commit(dependency, subject_hash=SUBJECT_HASH, expected_revision=0, now=1_780_000_000)
+
+
+@pytest.mark.asyncio
+async def test_an_absent_reservation_refuses_when_the_card_exists(tmp_path):
+    store, service, coordinator, decisions, draft, before, after, dependency, applier = await _with_reads(
+        tmp_path, absent=True)
+    await service.commit(dependency, subject_hash=SUBJECT_HASH, expected_revision=0, now=1_780_000_000)
+    with pytest.raises(DecisionRefused, match="card_dependency_moved"):
+        await coordinator.prepare(draft)
+
+
+@pytest.mark.asyncio
+async def test_a_dependency_another_transaction_holds_is_refused(tmp_path):
+    import json as _json
+    store, service, coordinator, decisions, draft, before, after, dependency, applier = await _with_reads(tmp_path)
+    other = "9" * 64
+    receipt_dir = tx.receipt_path(store, other)
+    receipt_dir.parent.mkdir(parents=True, exist_ok=True)
+    held = dict(await _foreign_prepared_receipt(store, other, dependency))
+    receipt_dir.write_text(_json.dumps(held))
+    path = tx.read_fence_path(store, subject_hash=SUBJECT_HASH, access_id=dependency.access_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_json.dumps({"transaction_id": other}))
+    with pytest.raises(DecisionRefused, match="card_dependency_reserved"):
+        await coordinator.prepare(draft)
+
+
+async def _foreign_prepared_receipt(store, transaction_id, dependency):
+    """A prepared receipt of another transaction that reads ``dependency`` (built from a real one)."""
+    import json as _json
+    other_dir = store.root.parent / "other-store"
+    from test_card_transaction_store import _setup as other_setup
+    other_store, other_service, other_before, other_after = await other_setup(other_dir)
+    staged = await tx.stage(other_store, transaction_id=transaction_id, intent_digest="e" * 64, participant=PARTICIPANT,
+                            subject_hash=SUBJECT_HASH, original=other_before, candidate=other_after,
+                            now=datetime.now(timezone.utc))
+    receipt = dict(staged)
+    receipt["reads"] = [{"subject_hash": SUBJECT_HASH, "access_id": dependency.access_id,
+                         "revision": dependency.card_revision}]
+    return _json.loads(_json.dumps(receipt))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recorded", [[], [{"subject_hash": "f" * 64, "access_id": "aut_other", "revision": 1}]])
+async def test_the_recorded_reads_must_equal_the_decided_dependencies(tmp_path, recorded):
+    store, service, coordinator, decisions, draft, before, after, dependency, applier = await _with_reads(
+        tmp_path, recorded_reads=recorded)
+    with pytest.raises(DecisionRefused, match="card_intent_not_bound"):
+        await coordinator.prepare(draft)
+
+
+@pytest.mark.parametrize("dependencies", [
+    {"catalog:v1": 1}, {"card:abc": 3}, {"card:sh:id": 0}, {"card-absent:sh:id": 2}, {"other:sh:id": 1},
+])
+def test_unknown_or_malformed_dependency_keys_are_refused(dependencies):
+    from connection_hub.delegated_credentials.cards.card_participant import reads_from_dependencies
+    with pytest.raises(DecisionRefused, match="card_dependency_invalid"):
+        reads_from_dependencies(dependencies)
