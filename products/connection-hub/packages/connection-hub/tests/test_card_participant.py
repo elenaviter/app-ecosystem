@@ -503,3 +503,21 @@ async def test_the_real_verifier_refuses_a_tombstone_naming_another_transaction(
                       participant_projection(record.intent, PARTICIPANT)["candidate_digest"], receipt_digest(forged))
     with pytest.raises(DecisionRefused, match="receipt_unauthenticated"):
         await HubLocalReceiptVerifier(store).finished(record, receipt)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_prepare_then_abort_finishes_with_the_real_verifier(tmp_path):
+    # EMain #599 (18:2x): _coordinated_write on a refused prepare decides ABORT and
+    # finishes; the Hub never staged, so its finish is the F1 tombstone.
+    store, coordinator, decisions, intent, before, after, applier = await _real_verifier_edit(tmp_path)
+    hub = coordinator.participants[PARTICIPANT]
+    moved = replace(before, card_revision=before.card_revision + 1, label="another admin saved first")
+    await hub._service.commit(moved, subject_hash=SUBJECT_HASH, expected_revision=before.card_revision,
+                              now=1_780_000_000)
+    with pytest.raises(DecisionRefused):
+        await coordinator.prepare(intent)
+    await coordinator.decide(TXID, "aborted")
+    record = await coordinator.finish(TXID)
+    assert record.finished.keys() == {PARTICIPANT}
+    assert await coordinator.recover(limit=10) == [] and applier.applied == []
+    assert await _visible(store, before) == moved
