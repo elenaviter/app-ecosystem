@@ -185,6 +185,22 @@ async def _clear_marker(store: Any, receipt: Mapping[str, Any]) -> None:
             pass  # a stale entry only lists a decided transaction, which recovery skips
 
 
+async def _retire_pointer(store: Any, receipt: Mapping[str, Any]) -> None:
+    """Replace this decided transaction's pointer by the plain pointer of its decided side.
+
+    The decided receipt stays as the audit and idempotency record, but a
+    settled Card is then read like any other: one pointer read, no receipt
+    read and no coordinator call (Root and Ops hot-path rule, 11:57).
+    """
+
+    path = store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"])
+    raw = await read_json_or_none(path)
+    if (isinstance(raw, Mapping) and raw.get("schema") == TRANSACTION_POINTER_SCHEMA
+            and raw.get("transaction_id") == receipt["transaction_id"]):
+        side = receipt["after"] if receipt["state"] == "committed" else receipt["before"]
+        await write_json_atomic(path, dict(side))
+
+
 async def list_in_doubt(store: Any) -> list[dict[str, Any]]:
     """Every transaction this participant has begun preparing and not yet decided.
 
@@ -355,6 +371,7 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
     if receipt["state"] in DECISIONS:
         if receipt["state"] != decision:
             raise CardTransactionRefused("card_transaction_decision_conflict")
+        await _retire_pointer(store, receipt)
         await _clear_marker(store, receipt)
         return receipt
     if decision == "committed" and not await _is_staged(store, receipt):
@@ -374,6 +391,7 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
     _validate(decided, transaction_id)
     # The one visibility point: the receipt rename. COMMITTED readers get AFTER.
     await write_json_atomic(receipt_path(store, transaction_id), decided)
+    await _retire_pointer(store, decided)
     await _clear_marker(store, decided)
     return decided
 

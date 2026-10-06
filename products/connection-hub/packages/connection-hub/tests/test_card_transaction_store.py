@@ -719,3 +719,57 @@ async def test_too_many_in_flight_transactions_fail_closed(tmp_path, monkeypatch
     monkeypatch.setattr(tx, "MAX_ACTIVE_TRANSACTIONS", 0)
     with pytest.raises(CardStorageError, match="card_transaction_recovery_queue_unavailable"):
         await tx.list_in_doubt(store)
+
+
+# ── Hot path (Root and Ops, 11:57): a settled Card costs no coordinator call ──
+
+
+class _CountingDecisions(Decisions):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    async def decision(self, receipt):
+        self.calls += 1
+        return await super().decision(receipt)
+
+
+def _raw_pointer(store, card):
+    import json
+    return json.loads(store.current_path(subject_hash=SUBJECT_HASH, access_id=card.access_id).read_text())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["committed", "aborted"])
+async def test_a_settled_card_is_read_with_no_coordinator_call_and_no_pending_pointer(tmp_path, decision):
+    store, _, before, after = await _setup(tmp_path)
+    port = _CountingDecisions()
+    tx.bind_transaction_decisions(store, port)
+    await _stage(store, before, after)
+    assert _raw_pointer(store, before)["schema"] == tx.TRANSACTION_POINTER_SCHEMA
+    await _decide(store, decision)
+    settled = after if decision == "committed" else before
+    assert _raw_pointer(store, before).get("schema") != tx.TRANSACTION_POINTER_SCHEMA  # pending pointer retired
+    port.calls = 0
+    for _ in range(3):
+        assert await _visible(store, before) == settled
+    assert port.calls == 0
+    assert (await tx.state(store, transaction_id=TX))["state"] == decision  # audit record kept
+
+
+@pytest.mark.asyncio
+async def test_a_decision_replay_retires_a_pointer_a_crash_left_pending(tmp_path, monkeypatch):
+    store, _, before, after = await _setup(tmp_path)
+    await _stage(store, before, after)
+
+    async def crash(store_, receipt):
+        raise RuntimeError("killed after the decided receipt")
+
+    monkeypatch.setattr(tx, "_retire_pointer", crash)
+    with pytest.raises(RuntimeError):
+        await _decide(store, "committed")
+    monkeypatch.undo()
+    assert _raw_pointer(store, before)["schema"] == tx.TRANSACTION_POINTER_SCHEMA
+    assert await _visible(store, before) == after  # still correct through the decided receipt
+    await _decide(store, "committed")
+    assert _raw_pointer(store, before).get("schema") != tx.TRANSACTION_POINTER_SCHEMA
