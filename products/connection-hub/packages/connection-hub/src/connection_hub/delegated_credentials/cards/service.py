@@ -365,7 +365,7 @@ class DelegatedCardService:
             raise CardConflict("card_mutation_lock_timeout") from exc
 
     async def abort_unstaged_transaction(self, *, transaction_id: str, subject_hash: str,
-                                         access_id: str) -> dict[str, Any]:
+                                         access_id: str, intent_digest: str = "") -> dict[str, Any]:
         """W581 F1 under the Card's section (Ops B2): tombstone a transaction never prepared here.
 
         Inside the same section every stage of this Card takes, so an in-flight
@@ -380,7 +380,7 @@ class DelegatedCardService:
                 existing = await read_receipt(self._store, transaction_id)
                 if existing is not None:
                     return existing
-                tombstone = await abort_unstaged(self._store, transaction_id)
+                tombstone = await abort_unstaged(self._store, transaction_id, intent_digest=intent_digest)
                 try:
                     await self._cache.finalize_removal(access_id, mutation_id=transaction_mutation_id(transaction_id))
                 except Exception:  # noqa: BLE001 - it only expires; readers stay closed meanwhile

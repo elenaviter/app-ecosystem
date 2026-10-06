@@ -3558,6 +3558,16 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # The cron runs on one process per tick, not always the same one, so the
         # page cursor is shared in Redis; a missing or unreadable one restarts at "".
         tenant, project = _runtime_tenant_project(self)
+        catalog_store = _delegated_catalog_store(self)
+        stale_marker_age = None
+        if catalog_store is not None:
+            # A crashed publisher's marker would block every catalog reservation
+            # until the next publication run (EMain #609): clear it past the bound.
+            from connection_hub.delegated_credentials.catalog.reservations import CatalogReservations
+            stale_marker_age = await CatalogReservations(catalog_store).clear_stale_publication()
+            if stale_marker_age is not None:
+                LOGGER.warning("[connection-hub.card-transactions] cleared a stale catalog publication marker "
+                               "age_seconds=%s", stale_marker_age)
         cursor_key = f"connection-hub:card-transactions:recovery-cursor:{tenant}:{project}"
         try:
             stored = await redis.get(cursor_key)
@@ -3569,7 +3579,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             await redis.set(cursor_key, report["next_after"])
         except Exception:  # noqa: BLE001
             LOGGER.warning("[connection-hub.card-transactions] recovery cursor not saved")
-        return {"enabled": True, **report}
+        return {"enabled": True, **report, "stale_catalog_marker_cleared": stale_marker_age is not None}
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 

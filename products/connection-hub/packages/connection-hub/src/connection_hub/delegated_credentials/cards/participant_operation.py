@@ -64,6 +64,7 @@ HUB_REFUSALS = frozenset({
     "card_participant_unavailable", "authority_decision_pending", "authority_late_stage",
     "authority_intent_expired", "authority_transaction_unknown", "authority_unavailable",
     "authority_intent_mismatch", "authority_refused",
+    "catalog_version_moved", "catalog_publication_pending", "card_catalog_reservation_unavailable",
 })
 _STATUS = {"transaction_unknown": 404, "authority_transaction_unknown": 404, "card_intent_unknown": 404,
            "card_transactions_unavailable": 503,

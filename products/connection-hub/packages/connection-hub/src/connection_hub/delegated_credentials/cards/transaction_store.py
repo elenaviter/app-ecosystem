@@ -144,7 +144,7 @@ def tombstone_path(store: Any, transaction_id: str):
     return store.root / "card-transactions" / "aborted" / f"{_checked_id(transaction_id)}.json"
 
 
-async def abort_unstaged(store: Any, transaction_id: str) -> dict[str, Any]:
+async def abort_unstaged(store: Any, transaction_id: str, *, intent_digest: str = "") -> dict[str, Any]:
     """FINISH(aborted) of a transaction with no prepared receipt: an idempotent abort tombstone.
 
     The coordinator finishes an ABORT on every intent participant, including
@@ -157,7 +157,9 @@ async def abort_unstaged(store: Any, transaction_id: str) -> dict[str, Any]:
         raise CardTransactionRefused("card_transaction_prepared")  # finish it through decide
     tombstone = {"transaction_id": transaction_id, "state": "aborted"}
     await write_json_atomic(tombstone_path(store, transaction_id), tombstone)
-    await _release_catalog(store, transaction_id)  # a stage that crashed after its catalog fence
+    # A stage that crashed after its catalog fence: the ABORT is the authenticated
+    # terminal decision, so this exact intent's fence is released (CodeApp 19:29).
+    await _release_catalog(store, transaction_id, intent_digest)
     try:
         active_path(store, transaction_id).unlink(missing_ok=True)
     except OSError:
@@ -306,10 +308,11 @@ async def _reserve_catalog(store: Any, transaction_id: str, intent_digest: str, 
         raise CardTransactionRefused(exc.reason) from None
 
 
-async def _release_catalog(store: Any, transaction_id: str) -> None:
+async def _release_catalog(store: Any, transaction_id: str, intent_digest: str) -> None:
+    """Only on an authenticated terminal decision, and only this exact intent's fence."""
     reservations = getattr(store, "_catalog_reservations", None)
-    if reservations is not None:
-        await reservations.release(transaction_id)
+    if reservations is not None and intent_digest:
+        await reservations.release(transaction_id, intent_digest=intent_digest)
 
 
 async def _authoritative_state(store: Any, receipt: Mapping[str, Any]) -> str:
@@ -385,7 +388,7 @@ async def _clear_marker(store: Any, receipt: Mapping[str, Any]) -> None:
     if receipt["state"] in DECISIONS:
         await _release_reads(store, receipt)
         if receipt.get("catalog"):
-            await _release_catalog(store, receipt["transaction_id"])
+            await _release_catalog(store, receipt["transaction_id"], receipt["intent_digest"])
         try:
             active_path(store, receipt["transaction_id"]).unlink(missing_ok=True)
         except OSError:
