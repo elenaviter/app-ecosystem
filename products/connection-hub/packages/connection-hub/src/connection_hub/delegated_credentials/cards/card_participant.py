@@ -341,6 +341,13 @@ class HubLocalReceiptVerifier:
         if local is None:
             from .transaction_store import read_receipt
             local = await read_receipt(self._store, receipt.transaction_id)
+        if local is None and "aborted" in states:
+            # The Hub's own abort tombstone (R1: no intent recorded; F1: never
+            # staged) is its durable receipt for an ABORT finish (EMain 18:35).
+            from .transaction_store import tombstone_path
+            tombstone = await read_json_or_none(tombstone_path(self._store, receipt.transaction_id))
+            if isinstance(tombstone, Mapping) and tombstone.get("transaction_id") == receipt.transaction_id:
+                local = tombstone
         if local is None or local.get("state") not in states or receipt_digest(local) != receipt.receipt_digest:
             raise DecisionRefused("receipt_unauthenticated")
 
