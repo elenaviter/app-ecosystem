@@ -80,6 +80,9 @@ async def test_a_killed_hosted_pair_revoke_blocks_both_writers_and_recovers_once
     else:
         assert recovered["state"] == "refused", recovered
         assert recovered["durable"] == [["active", 1], ["active", 1]], recovered
+        # "served" is a direct read of both Card keys, where the pair marker lives
+        # (kind "updating"): no key still carries an unresolved marker.
+        assert not any(value and value[0] == "updating" for value in recovered["served"]), recovered
         assert all(value is None or value[0] == "card" for value in recovered["served"]), recovered
 
     again = _child({**base, "action": "recover"})

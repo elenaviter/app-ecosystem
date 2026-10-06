@@ -98,7 +98,7 @@ async def test_two_pairs_on_the_same_cards_never_deadlock_and_exactly_one_revoke
                           {"action": "pair", "cards": second_order, "request_id": "pair-b"})
 
     assert first["state"] == "committed", first
-    assert second["state"] != "committed", second
+    assert (second["state"], second["reason"]) == ("raised", "issuer_lifecycle_revision_moved"), second
     # The competitor waited for the held fences instead of interleaving.
     assert second["seconds"] >= HOLD * 0.5, second
     assert await _durable(store, [0, 1]) == [["revoked", 2], ["revoked", 2]]
@@ -112,7 +112,7 @@ async def test_overlapping_pairs_sharing_one_card_never_deadlock_and_never_half_
                           {"action": "pair", "cards": [2, 1], "request_id": "pair-b"})
 
     assert first["state"] == "committed", first
-    assert second["state"] != "committed", second
+    assert (second["state"], second["reason"]) == ("raised", "issuer_lifecycle_revision_moved"), second
     # The losing pair touched neither of its Cards, including the unshared one.
     assert await _durable(store, [0, 1, 2]) == [["revoked", 2], ["revoked", 2], ["active", 1]]
 
@@ -125,12 +125,12 @@ async def test_a_single_card_writer_never_interleaves_with_a_held_pair(tmp_path)
                           {"action": "single_card", "cards": [0]})
 
     assert first["state"] == "committed", first
-    assert second["state"] == "raised", second
+    assert (second["state"], second["reason"]) == ("raised", "card_revision_moved"), second
     assert await _durable(store, [0, 1]) == [["revoked", 2], ["revoked", 2]]
 
 
 @pytest.mark.asyncio
-async def test_a_held_single_card_writer_makes_the_pair_refuse_its_moved_target_whole(tmp_path):
+async def test_a_pair_after_a_committed_single_card_write_refuses_its_moved_target_whole(tmp_path):
     store = await _seed(tmp_path / "storage", [0, 1])
     base = {"storage_root": str(tmp_path / "storage"), "redis_url": os.environ["REDIS_URL"],
             "tenant": f"t-{uuid.uuid4().hex[:8]}", "project": f"p-{uuid.uuid4().hex[:8]}"}
@@ -139,6 +139,6 @@ async def test_a_held_single_card_writer_makes_the_pair_refuse_its_moved_target_
     pair = _result(_start({**base, "action": "pair", "cards": [0, 1], "request_id": "pair-after"}))
 
     assert single["state"] == "committed", single
-    assert pair["state"] != "committed", pair
+    assert (pair["state"], pair["reason"]) == ("raised", "issuer_lifecycle_revision_moved"), pair
     # The pair recorded card 0 at revision 1; its fingerprint no longer matches, so neither Card changes.
     assert await _durable(store, [0, 1]) == [["active", 2], ["active", 1]]

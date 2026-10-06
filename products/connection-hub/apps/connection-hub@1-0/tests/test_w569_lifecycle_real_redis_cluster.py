@@ -129,3 +129,71 @@ async def test_the_identical_retry_resolves_a_refused_cluster_pair_and_frees_bot
     for card in cards:
         await persistence._cards.commit(dataclasses.replace(card, card_revision=2),
                                         subject_hash=subject_hash_for(card.grantor_subject), expected_revision=1)
+
+
+async def _legacy_stuck_refusal(store, request):
+    """The state a pre-fix Cluster attempt left behind: intent published, claim
+    failed cross-slot, refusal recorded with serving still pending."""
+
+    from redis.exceptions import RedisClusterException
+
+    from connection_hub.delegated_credentials.cards import lifecycle_store
+
+    async def allow():
+        return datetime.now(timezone.utc) + timedelta(seconds=30)
+
+    async def cross_slot_claim():
+        raise RedisClusterException("EVAL - all keys must map to the same key slot")
+
+    with pytest.raises(Exception):
+        await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR,
+            now=datetime.now(timezone.utc), before_publish=allow, after_prepare=cross_slot_claim)
+    recorded = await lifecycle_store.read_receipt(store, request.transaction_id(ACTOR))
+    assert (recorded["state"], recorded["serving_state"]) == ("refused", "pending"), recorded
+
+
+@pytest.mark.asyncio
+async def test_an_old_stuck_cluster_refusal_with_no_owned_marker_recovers_on_identical_retry(tmp_path, cluster, namespace):
+    store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
+    persistence = DurableCardPersistence(redis=cluster, tenant=namespace[0], project=namespace[1], card_store=store)
+    cards = _pair()
+    await _seed(store, cards)
+    request = _request(cards)
+    await _legacy_stuck_refusal(store, request)
+
+    retried = await persistence.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=_decision)
+
+    assert (retried["state"], retried["serving_state"]) == ("refused", "complete"), retried
+    assert await _durable(store, cards) == [("active", 1), ("active", 1)]
+    for card in cards:
+        await persistence._cards.commit(dataclasses.replace(card, card_revision=2),
+                                        subject_hash=subject_hash_for(card.grantor_subject), expected_revision=1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("marker", ["owned", "damaged"])
+async def test_an_old_stuck_cluster_refusal_with_an_owned_or_damaged_marker_stays_blocked_and_untouched(
+        tmp_path, cluster, namespace, marker):
+    import json
+
+    store = BundleStorageDelegatedCardStore(tmp_path, lifecycle_lock_scope="same-host-flock")
+    persistence = DurableCardPersistence(redis=cluster, tenant=namespace[0], project=namespace[1], card_store=store)
+    cache = DelegatedCardRuntimeCache(cluster, tenant=namespace[0], project=namespace[1])
+    cards = _pair()
+    await _seed(store, cards)
+    request = _request(cards)
+    await _legacy_stuck_refusal(store, request)
+    key = cache.card_key(cards[1].access_id)
+    value = (json.dumps({"kind": "updating", "mutation_id": request.transaction_id(ACTOR), "card_revision": 1})
+             if marker == "owned" else "{damaged")
+    await cluster.set(key, value)
+
+    with pytest.raises(Exception):
+        await persistence.revoke_lifecycle(request, actor_subject=ACTOR, before_commit=_decision)
+
+    assert await cluster.get(key) == value.encode(), "the marker is never deleted or relabelled"
+    assert await _durable(store, cards) == [("active", 1), ("active", 1)]
+    for card in cards:
+        with pytest.raises(Exception, match="lifecycle_preparation_unresolved"):
+            await persistence._cards.commit(dataclasses.replace(card, card_revision=2),
+                                            subject_hash=subject_hash_for(card.grantor_subject), expected_revision=1)
