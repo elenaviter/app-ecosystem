@@ -773,3 +773,31 @@ async def test_a_decision_replay_retires_a_pointer_a_crash_left_pending(tmp_path
     assert await _visible(store, before) == after  # still correct through the decided receipt
     await _decide(store, "committed")
     assert _raw_pointer(store, before).get("schema") != tx.TRANSACTION_POINTER_SCHEMA
+
+
+# ── Reader inventory: history and by-name revision reads ───────────────────
+
+
+async def _history(store, card):
+    return await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=card.access_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["committed", "aborted"])
+async def test_a_staged_revision_is_out_of_history_until_its_transaction_commits(tmp_path, decision):
+    store, _, before, after = await _setup(tmp_path)
+    receipt = await _stage(store, before, after)
+    staged_name = receipt["after"]["revision_name"]
+    assert staged_name not in await _history(store, before)
+    assert await store.read_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id,
+                                     revision_name=staged_name) is None
+    _record(store, decision)
+    # History follows the recorded decision, like current reads, even before FINISH.
+    assert (staged_name in await _history(store, before)) is (decision == "committed")
+    await _decide(store, decision)
+    visible = staged_name in await _history(store, before)
+    assert visible is (decision == "committed")
+    read = await store.read_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id,
+                                     revision_name=staged_name)
+    assert (read == after) if decision == "committed" else read is None
+    assert (await store.read_initial_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id)) == before

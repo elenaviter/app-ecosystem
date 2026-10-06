@@ -264,7 +264,39 @@ async def _is_staged(store: Any, receipt: Mapping[str, Any]) -> bool:
             and raw.get("before") == receipt["before"] and raw.get("after") == receipt["after"])
 
 
+def revision_marker_path(store: Any, *, subject_hash: str, access_id: str, revision_name: str):
+    """Binds a staged revision to its transaction: history shows it only once committed."""
+    return store.revision_path(subject_hash=subject_hash, access_id=access_id,
+                               revision_name=revision_name).with_suffix(".card-transaction.json")
+
+
+async def revision_is_committed(store: Any, marker: Any, *, subject_hash: str, access_id: str,
+                                revision_name: str) -> bool:
+    if not isinstance(marker, Mapping) or set(marker) != {"transaction_id"}:
+        raise CardStorageError("card_transaction_revision_binding_invalid")
+    receipt = await read_receipt(store, marker["transaction_id"])
+    if receipt is None:
+        return False  # a stage that crashed before its receipt: never committed
+    if ((receipt["subject_hash"], receipt["access_id"], receipt["after"].get("revision_name"))
+            != (subject_hash, access_id, revision_name)):
+        raise CardStorageError("card_transaction_revision_binding_invalid")
+    # The same decision current readers follow: COMMITTED (recorded by the
+    # coordinator, even before local FINISH) shows it; ABORTED or undecided
+    # hides it, so history fails closed while pending.
+    try:
+        return await _authoritative_state(store, receipt) == "committed"
+    except CardStorageError:
+        return False
+
+
 async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardAuthority, now: datetime) -> None:
+    # The revision marker first: a staged AFTER never appears in history or a
+    # by-name revision read before its transaction commits, and an aborted one
+    # never appears at all.
+    await write_json_atomic(revision_marker_path(store, subject_hash=receipt["subject_hash"],
+                                                 access_id=receipt["access_id"],
+                                                 revision_name=receipt["after"]["revision_name"]),
+                            {"transaction_id": receipt["transaction_id"]})
     pointer = await store.write_revision(subject_hash=receipt["subject_hash"], authority=candidate, updated_at=now)
     if pointer.to_dict() != receipt["after"]:
         raise CardStorageError("card_transaction_staged_revision_mismatch")
