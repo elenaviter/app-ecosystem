@@ -427,3 +427,32 @@ async def test_the_authenticated_request_is_frozen_before_any_await(tmp_path):
     result = _verified(answer, frozen)
     assert result["kind"] == "receipt" and answer["participant_answer"]["scope"] == PROJECT
     assert (await tx.state(world.store, transaction_id=TX))["state"] == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_composition_runs_only_after_a_request_authenticates(tmp_path):
+    # EMain #607 N1: an unauthenticated call never reaches the decision store's first creation.
+    world, before, after = await _world(tmp_path)
+    composed = []
+
+    async def compose():
+        composed.append(True)
+
+    operation = CardTransactionParticipantOperation(callers={PEER: world.caller}, card_store=world.store,
+                                                    nonces=world.nonces, enabled=True, clock=lambda: NOW,
+                                                    after_authentication=compose)
+    assert (await operation.answer(_request("prepare", secret="x" * 40)))["ok"] is False
+    assert (await operation.answer({"schema": "nope"}))["ok"] is False
+    assert composed == []
+    request = _request("prepare")
+    assert _verified(await operation.answer(request), request)["kind"] == "receipt"
+    assert composed == [True]
+
+    async def broken():
+        raise RuntimeError("database down")
+
+    failing = CardTransactionParticipantOperation(callers={PEER: world.caller}, card_store=world.store,
+                                                  nonces=world.nonces, enabled=True, clock=lambda: NOW,
+                                                  after_authentication=broken)
+    assert await failing.answer(_request("read_pending")) == {
+        "ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
