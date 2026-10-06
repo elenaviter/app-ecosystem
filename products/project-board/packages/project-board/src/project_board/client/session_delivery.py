@@ -128,6 +128,14 @@ def notify_agent_session(
         f"Run `{receive_command}` now, handle each returned item, and settle every "
         "lease exactly once. This instruction contains no task body; read it only "
         "from your machine-local worker inbox."
+        # W563, coordinator 2026-10-05 23:52 UTC: a session held for a host
+        # window was still told to receive, so each wake delivered old mail.
+        + (
+            f" If you are held for a host window, run `pb worker wake-ack --wake-id {wake_id}` "
+            "instead and find the window's mail with `pb worker inbox`."
+            if wake_id
+            else ""
+        )
     )
     try:
         completed = subprocess.run(
