@@ -3,13 +3,12 @@
 A fake Problem Board authority signs real ``card-transaction-authority.v2``
 responses for one GlobalIntent; the Hub side is the real participant, Card
 store, authority reader and intent source. Requests carry the real admission
-proof. Every authenticated answer must verify with ``answer_signature``.
+proof. Every authenticated answer must pass the shared verify_participant_answer.
 """
 
 from __future__ import annotations
 
 import copy
-import hmac
 import json
 import os
 from dataclasses import replace
@@ -29,8 +28,8 @@ from connection_hub.delegated_credentials.cards.card_participant import (
     PARTICIPANT, HubCardParticipant, LocalCardIntentSource,
 )
 from connection_hub.delegated_credentials.cards.participant_operation import (
-    ANSWER_SCHEMA, OPERATION, REQUEST_SCHEMA, CardTransactionParticipantOperation, ParticipantCaller,
-    RoutedDecisionPort, ScopeBinding, answer_signature, request_digest,
+    ANSWER_SCHEMA, OPERATION, REQUEST_FIELDS, REQUEST_SCHEMA, CardTransactionParticipantOperation, ParticipantCaller,
+    RoutedDecisionPort, ScopeBinding, request_digest,
 )
 from connection_hub.delegated_credentials.cards.transaction_authority_v2 import (
     PROTOCOL, TransactionAuthorityRefused, card_authority_signature,
@@ -165,19 +164,17 @@ def _request(action, *, transaction_id=TX, decision=None, limit=None, cursor=Non
 
 
 def _verified(response, request):
-    """PB's verifier, as the contract states it: every request field echoed, the proof exact."""
-    answer = dict(response["participant_answer"])
-    proof = answer.pop("receipt_proof")
-    assert set(proof) == {"service_id", "timestamp", "signature"}
-    assert answer["schema"] == ANSWER_SCHEMA and answer["direction"] == "hub-to-authority"
-    assert answer["audience"] == "problem-board@1-0" and answer["request_digest"] == request_digest(request)
-    for name in ("request_echo", "action", "scope", "transaction_id", "decision", "limit", "cursor"):
-        assert answer[name] == request[name]
-    expected = answer_signature(answer, secret=RECEIPT_SECRET, service_id=proof["service_id"],
-                                timestamp=proof["timestamp"])
-    assert hmac.compare_digest(expected, proof["signature"])
-    assert response["ok"] is (answer["result"]["kind"] != "refused")
-    return answer["result"]
+    """PB's verifier, as the shared helper does it: every request field echoed, the proof exact and fresh."""
+    from service_foundation.coordination.participant_answer import verify_participant_answer
+
+    unsigned_request = {name: request[name] for name in REQUEST_FIELDS}
+    result = verify_participant_answer(response["participant_answer"], schema=ANSWER_SCHEMA,
+                                       secret=RECEIPT_SECRET, signer_id="connection-hub@1-0",
+                                       audience="problem-board@1-0", direction="hub-to-authority",
+                                       request=unsigned_request, now=NOW)
+    assert response["participant_answer"]["request_digest"] == request_digest(request)
+    assert response["ok"] is (result["kind"] != "refused")
+    return result
 
 
 @pytest.mark.asyncio
@@ -341,11 +338,17 @@ async def test_list_prepared_pages_this_callers_scope_and_recovers_after_a_resta
 async def test_every_signed_answer_field_is_tamper_evident(tmp_path, field):
     world, before, after = await _world(tmp_path)
     request = _request("prepare")
+    from service_foundation.coordination.participant_answer import (
+        ParticipantAnswerRefused, verify_participant_answer,
+    )
+
     answer = dict((await world.operation().answer(request))["participant_answer"])
-    proof = answer.pop("receipt_proof")
     answer[field] = "f" * 32 if isinstance(answer[field], str) else {"tampered": True}
-    assert answer_signature(answer, secret=RECEIPT_SECRET, service_id=proof["service_id"],
-                            timestamp=proof["timestamp"]) != proof["signature"]
+    with pytest.raises(ParticipantAnswerRefused):
+        verify_participant_answer(answer, schema=ANSWER_SCHEMA, secret=RECEIPT_SECRET,
+                                  signer_id="connection-hub@1-0", audience="problem-board@1-0",
+                                  direction="hub-to-authority",
+                                  request={name: request[name] for name in REQUEST_FIELDS}, now=NOW)
 
 
 @pytest.mark.asyncio
