@@ -24,15 +24,6 @@ export function controlFocusRead(focus: AccessCardFocus | null | undefined): Con
   };
 }
 
-/** What returning to the tab reads again: the owner list, and the open Control. */
-export function tabReturnReads(
-  visibility: string,
-  focus: AccessCardFocus | null | undefined,
-): { list: boolean; control: ControlReadTarget | null } {
-  if (visibility !== 'visible') return { list: false, control: null };
-  return { list: true, control: controlFocusRead(focus) };
-}
-
 /** The pin an edit starts with: the revision of the Card it was seeded from. */
 export function pinAtStart(record: { card_revision?: number }): number | null {
   return record.card_revision ?? null;
@@ -52,15 +43,17 @@ export function pinAfterSave(pin: number | null, saved: { card_revision?: number
 /** A Card read replaces the owner list's copy when it is newer, so the rows
  *  and a row's Edit never start from an older copy than the tab has read. */
 export function withNewerCard<T extends { access_id: string; card_revision?: number }>(
-  items: readonly T[],
+  items: T[],
   record: T | null | undefined,
 ): T[] {
-  if (!record) return [...items];
-  return items.map((item) => (
-    item.access_id === record.access_id && (record.card_revision ?? 0) > (item.card_revision ?? 0)
-      ? record
-      : item
-  ));
+  // The SAME array when nothing is newer: a read must never change the list's
+  // identity for nothing, or anything keyed on the list fires again (W587 loop).
+  if (!record) return items;
+  const index = items.findIndex((item) => item.access_id === record.access_id);
+  if (index < 0 || (record.card_revision ?? 0) <= (items[index].card_revision ?? 0)) return items;
+  const next = items.slice();
+  next[index] = record;
+  return next;
 }
 
 /** The catalog an edit starts on, pinned with the revision: a catalog change
