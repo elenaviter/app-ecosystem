@@ -36,6 +36,27 @@ intent digest `1192d0b514933591e4b1c35e5de427697f4e781ab4d525e52138af8d8b5b6d51`
 and Card projection digest
 `436fef32e30b23c40ea6eae2329a6d4843ed00b59f409290cb50e2b46d62c663`.
 
-The initial coordinator and store source checkpoint predates these wire rules.
-Until its DTO and SQL record are migrated, the source is a reusable protocol
-draft and is not an application integration contract or installed runtime.
+The v2 source increment is in `service_foundation.coordination.durable_decision_v2`.
+Its `IntentDraft` captures the full payload before awaiting storage, and
+`PostgresDecisionStore.begin(draft, transaction_id=None, epoch=None,
+connection=None)` binds both coordinates before computing the global digest.
+Coordinates must be supplied together or both omitted. Standalone calls
+allocate an ID and epoch; a caller may reserve them in its own outer SQL
+transaction. When passed a connection already in a transaction, the store
+uses a nested savepoint and never commits or closes the caller's connection.
+Receipt writes and terminal decisions offer the same optional connection.
+The coordinator's `prepare_existing(transaction_id)` starts remote stages
+only after the caller's reservation transaction has committed.
+
+The generic table is `service_foundation_decisions`, keyed by
+`(namespace, transaction_id)` and unique on
+`(namespace, replay_scope, request_id)`. `replay_scope` is an opaque
+application-computed identity boundary outside the seven-key wire intent.
+The table holds exact canonical intent bytes, the bound epoch, database-time
+expiry and decision timestamp, prepared and finished receipts and their
+counts, and the witness digest. Application tables may reference the one
+generic decision row; the generic table contains no application policy.
+
+The original `durable_decision_log` checkpoint still exists while the v2
+module is being independently qualified. The v2 source is not yet an
+installed application integration contract or verified live runtime.

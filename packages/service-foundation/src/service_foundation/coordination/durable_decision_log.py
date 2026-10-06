@@ -190,7 +190,8 @@ class Coordinator:
         if record is None:
             raise DecisionRefused("transaction_unknown")
         if record.terminal:
-            if record.state != decision:
+            if record.state != decision or (decision == "committed" and
+                                            record.witness_digest != witness_digest):
                 raise DecisionRefused("decision_conflict")
             return record
         if (decision == "committed" and

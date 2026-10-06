@@ -97,6 +97,39 @@ def _nonempty(value: Any) -> bool:
 
 
 @dataclass(frozen=True)
+class IntentDraft:
+    """Application-owned request frozen before a store may await I/O.
+
+    ``replay_scope`` is an opaque database uniqueness key, not a wire field.
+    It can distinguish two actors using the same request ID in one namespace.
+    """
+
+    replay_scope: str
+    request_id: str
+    expires_at: int
+    participants: tuple[str, ...]
+    payload: dict[str, Any]
+    _payload_bytes: bytes = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if (not _nonempty(self.replay_scope) or not _nonempty(self.request_id)
+                or type(self.expires_at) is not int or self.expires_at < 0
+                or type(self.participants) not in (tuple, list)
+                or not self.participants
+                or any(not _nonempty(name) for name in self.participants)
+                or len(set(self.participants)) != len(self.participants)
+                or type(self.payload) is not dict):
+            raise WireRefused("intent_draft_invalid")
+        object.__setattr__(self, "participants", tuple(self.participants))
+        object.__setattr__(self, "_payload_bytes", canonical_json_bytes(self.payload))
+
+    def bind(self, transaction_id: str, epoch: int) -> GlobalIntent:
+        return GlobalIntent(transaction_id, epoch, self.request_id, self.expires_at,
+                            self.participants,
+                            parse_canonical_json_bytes(self._payload_bytes))
+
+
+@dataclass(frozen=True)
 class GlobalIntent:
     """The exact seven-key v1 global intent; coordinates are bound before hash."""
 
@@ -177,6 +210,6 @@ def projection_digest(intent: GlobalIntent, participant: str) -> str:
     return sha256_hex(canonical_json_bytes(participant_projection(intent, participant)))
 
 
-__all__ = ["GlobalIntent", "INTENT_SCHEMA", "PROJECTION_FIELDS", "WireRefused",
+__all__ = ["GlobalIntent", "IntentDraft", "INTENT_SCHEMA", "PROJECTION_FIELDS", "WireRefused",
            "canonical_json_bytes", "parse_canonical_json_bytes", "participant_projection",
            "projection_digest", "sha256_hex"]

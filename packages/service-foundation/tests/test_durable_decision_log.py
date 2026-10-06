@@ -156,6 +156,19 @@ async def test_commit_requires_exact_nonempty_lowercase_witness_before_store_cal
 
 
 @pytest.mark.asyncio
+async def test_committed_replay_cannot_change_witness():
+    frozen = intent(("card",))
+    store = MemoryStore()
+    manager = Coordinator(store, {}, Verifier())
+    row = await store.begin(frozen)
+    await store.record_prepared(
+        Receipt(row.transaction_id, frozen.digest, "card", "b" * 64))
+    await manager.decide(row.transaction_id, "committed", witness_digest="e" * 64)
+    with pytest.raises(DecisionRefused, match="decision_conflict"):
+        await manager.decide(row.transaction_id, "committed", witness_digest="f" * 64)
+
+
+@pytest.mark.asyncio
 async def test_abort_requires_every_realm_ack_even_when_stage_receipt_was_lost():
     frozen = intent(("business", "card"))
     store = MemoryStore()

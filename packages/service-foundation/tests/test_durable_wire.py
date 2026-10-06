@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from service_foundation.coordination.durable_wire import (
-    GlobalIntent, WireRefused, canonical_json_bytes, parse_canonical_json_bytes,
+    GlobalIntent, IntentDraft, WireRefused, canonical_json_bytes, parse_canonical_json_bytes,
     participant_projection, projection_digest,
 )
 
@@ -77,3 +77,15 @@ def test_global_intent_bytes_freeze_caller_payload():
     payload["participant_inputs"]["card"]["candidate_digest"] = "b" * 64
     assert intent.digest == digest
     assert participant_projection(intent, "card")["candidate_digest"] == "a" * 64
+
+
+def test_draft_freezes_payload_and_binds_coordinates_before_hash():
+    payload = {"participant_inputs": {"card": selected_input()}}
+    draft = IntentDraft("project-a:user-a", "request-a", 1800000000,
+                        ("card",), payload)
+    payload["participant_inputs"]["card"]["candidate_digest"] = "b" * 64
+    first = draft.bind("tx-a", 7)
+    second = draft.bind("tx-b", 8)
+    assert first.digest != second.digest
+    assert participant_projection(first, "card")["candidate_digest"] == "a" * 64
+    assert "replay_scope" not in first.as_mapping()
