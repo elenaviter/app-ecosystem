@@ -23,6 +23,8 @@ TERMINAL = frozenset({"committed", "aborted"})
 STATES = frozenset({"preparing", "prepared", *TERMINAL})
 _NAME = re.compile(r"[a-z_][a-z0-9_]*\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_ROW_COLUMNS = ("*, prepared::text AS prepared_json_text, "
+                "finished::text AS finished_json_text")
 
 
 class DecisionRefused(ValueError):
@@ -330,8 +332,13 @@ class PostgresDecisionStore:
             raise DecisionRefused("stored_intent_invalid")
         def receipts(column: str) -> dict[str, Receipt]:
             # asyncpg's default JSONB decoder returns text; application pools
-            # can instead install a decoder that returns a dict.
-            value = row[column]
+            # can instead install a decoder that returns a dict. Select the
+            # database's raw JSONB text when available: parsing it exactly
+            # once also distinguishes an object from a legacy JSONB string.
+            try:
+                value = row[f"{column}_json_text"]
+            except (KeyError, IndexError):
+                value = row[column]
             try:
                 if isinstance(value, str):
                     value = json.loads(value)
@@ -359,7 +366,7 @@ class PostgresDecisionStore:
 
     async def _row(self, connection: Any, transaction_id: str, *, lock: bool = False):
         return await connection.fetchrow(
-            f"SELECT * FROM {self.table} WHERE namespace=$1 AND transaction_id=$2"
+            f"SELECT {_ROW_COLUMNS} FROM {self.table} WHERE namespace=$1 AND transaction_id=$2"
             f" {'FOR UPDATE' if lock else ''}", self.namespace, transaction_id)
 
     async def begin(self, draft: IntentDraft, *, transaction_id: str | None = None,
@@ -374,7 +381,7 @@ class PostgresDecisionStore:
         # The draft captured payload bytes at construction, before this await.
         async with self._transaction(connection) as conn:
             previous = await conn.fetchrow(
-                f"""SELECT * FROM {self.table} WHERE namespace=$1 AND
+                f"""SELECT {_ROW_COLUMNS} FROM {self.table} WHERE namespace=$1 AND
                     replay_scope=$2 AND request_id=$3 FOR UPDATE""",
                 self.namespace, draft.replay_scope, draft.request_id)
             if previous is not None:
@@ -395,14 +402,14 @@ class PostgresDecisionStore:
                      intent_digest,expires_at_epoch,participant_count,state)
                     SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,'preparing'
                     WHERE $8>floor(extract(epoch from clock_timestamp()))::bigint
-                    ON CONFLICT DO NOTHING RETURNING *""",
+                    ON CONFLICT DO NOTHING RETURNING {_ROW_COLUMNS}""",
                 self.namespace, chosen_id, chosen_epoch, draft.replay_scope,
                 draft.request_id, intent.canonical_bytes, intent.digest,
                 intent.expires_at, len(intent.participants))
             if row is not None:
                 return self._decode(row)
             previous = await conn.fetchrow(
-                f"""SELECT * FROM {self.table} WHERE namespace=$1 AND
+                f"""SELECT {_ROW_COLUMNS} FROM {self.table} WHERE namespace=$1 AND
                     replay_scope=$2 AND request_id=$3""",
                 self.namespace, draft.replay_scope, draft.request_id)
             if previous is None:
@@ -441,7 +448,7 @@ class PostgresDecisionStore:
                     WHERE namespace=$1 AND transaction_id=$2 AND state='preparing'
                       AND NOT (prepared ? $3::text)
                       AND expires_at_epoch>floor(extract(epoch from clock_timestamp()))::bigint
-                    RETURNING *""", self.namespace, receipt.transaction_id,
+                    RETURNING {_ROW_COLUMNS}""", self.namespace, receipt.transaction_id,
                 receipt.participant, json.dumps(asdict(receipt)))
             if updated is not None:
                 return self._decode(updated)
@@ -482,7 +489,7 @@ class PostgresDecisionStore:
                       AND ($3 <> 'committed' OR
                            (state='prepared' AND prepared_count=participant_count AND
                             expires_at_epoch>floor(extract(epoch from clock_timestamp()))::bigint))
-                    RETURNING *""", self.namespace, transaction_id, decision,
+                    RETURNING {_ROW_COLUMNS}""", self.namespace, transaction_id, decision,
                 witness_digest if decision == "committed" else "")
             if updated is None:
                 if decision == "committed":
@@ -511,7 +518,7 @@ class PostgresDecisionStore:
                     WHERE namespace=$1 AND transaction_id=$2
                       AND state IN ('preparing','prepared')
                       AND expires_at_epoch<=floor(extract(epoch from clock_timestamp()))::bigint
-                    RETURNING *""", self.namespace, transaction_id)
+                    RETURNING {_ROW_COLUMNS}""", self.namespace, transaction_id)
             if updated is None:
                 raise DecisionRefused("not_expired")
             return self._decode(updated)
@@ -529,7 +536,7 @@ class PostgresDecisionStore:
                         finished_count=finished_count+1
                     WHERE namespace=$1 AND transaction_id=$2
                       AND state IN ('committed','aborted')
-                      AND NOT (finished ? $3::text) RETURNING *""",
+                      AND NOT (finished ? $3::text) RETURNING {_ROW_COLUMNS}""",
                 self.namespace, receipt.transaction_id,
                 receipt.participant, json.dumps(asdict(receipt)))
             if updated is not None:
@@ -547,7 +554,7 @@ class PostgresDecisionStore:
             raise DecisionRefused("recovery_limit_invalid")
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                f"""SELECT * FROM {self.table} WHERE namespace=$1 AND
+                f"""SELECT {_ROW_COLUMNS} FROM {self.table} WHERE namespace=$1 AND
                     (state IN ('preparing','prepared') OR finished_count<participant_count)
                     ORDER BY transaction_id LIMIT $2""", self.namespace, limit + 1)
         if len(rows) > limit:
