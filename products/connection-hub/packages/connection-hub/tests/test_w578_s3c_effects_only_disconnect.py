@@ -280,3 +280,16 @@ async def test_an_old_replay_never_deletes_a_new_connection_or_touches_a_newer_f
     await host._card_coordinator[0].finish(old)  # an old replay
     assert (await accounts.get_account(FREE)).incarnation == later.incarnation
     assert await fence.fence_holder(store, PROVIDER, FREE) == newer
+
+
+@pytest.mark.asyncio
+async def test_the_production_routed_decision_port_reads_an_effects_only_decision(tmp_path):
+    """Found by the real-PostgreSQL kill test: the composition's RoutedDecisionPort reads intent.authority/scope."""
+    from connection_hub.delegated_credentials.cards.participant_operation import RoutedDecisionPort
+
+    host, store, decisions, accounts, card, connected, grantor = await _free_world(tmp_path)
+    tx.bind_transaction_decisions(store, RoutedDecisionPort(local=decisions, card_store=store, authorities={}))
+    result = await _disconnect(host, grantor)
+    assert result["removed"] is True and decisions.decisions == ["committed"]
+    receipt = await tx.read_receipt(store, _transaction_id(decisions))
+    assert await RoutedDecisionPort(local=decisions, card_store=store, authorities={}).decision(receipt) == "committed"

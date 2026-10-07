@@ -22,13 +22,15 @@ account, its index entry and its credential are gone, the Card no longer binds
 it, and nothing stays fenced, held or in doubt. Both the Card group path and
 the effects-only path (no Card binds the account) run every cut.
 
-Skipped unless ``CONNECTION_HUB_TEST_POSTGRES_DSN`` names a disposable
-database.
+Skipped unless ``CONNECTION_HUB_TEST_POSTGRES_DSN_FILE`` (a file holding the
+DSN, preferred, so it never reaches the environment or a command line) or
+``CONNECTION_HUB_TEST_POSTGRES_DSN`` names a disposable database.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import pathlib
@@ -37,16 +39,27 @@ import subprocess
 import sys
 import uuid
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 DSN_ENV = "CONNECTION_HUB_TEST_POSTGRES_DSN"
+DSN_FILE_ENV = "CONNECTION_HUB_TEST_POSTGRES_DSN_FILE"  # preferred: the DSN never appears in env or argv
 PROVIDER, BOUND, FREE = "google", "acct-bound", "acct-free"
 CUTS = ("before_stage", "after_stage", "after_commit_before_delete", "during_delete", "after_delete_before_finish")
 UNDECIDED_CUTS = ("before_stage", "after_stage")
 INTENT_TTL = 3  # seconds: long enough for a committed cut to decide, short enough for recovery to wait
 
-pytestmark = pytest.mark.skipif(not os.environ.get(DSN_ENV), reason=f"needs a disposable PostgreSQL ({DSN_ENV})")
+def _dsn() -> str:
+    """The disposable database's DSN: read from the file the fixture owner names, else the environment."""
+    path = os.environ.get(DSN_FILE_ENV, "")
+    if path:
+        return pathlib.Path(path).read_text().strip()
+    return os.environ.get(DSN_ENV, "")
+
+
+pytestmark = pytest.mark.skipif(not (os.environ.get(DSN_FILE_ENV) or os.environ.get(DSN_ENV)),
+                                reason=f"needs a disposable PostgreSQL ({DSN_FILE_ENV} or {DSN_ENV})")
 
 
 class _FileUserConfiguration:
@@ -56,7 +69,7 @@ class _FileUserConfiguration:
         self.root = root
 
     def _path(self, kind: str, key: str, kwargs) -> pathlib.Path:
-        name = json.dumps([kwargs["user_id"], kwargs["bundle_id"], key]).encode("utf-8").hex()
+        name = hashlib.sha256(json.dumps([kwargs["user_id"], kwargs["bundle_id"], key]).encode("utf-8")).hexdigest()
         return self.root / kind / f"{name}.json"
 
     def _read(self, path: pathlib.Path, default=None):
@@ -125,7 +138,8 @@ async def _compose(root: pathlib.Path, pool, *, tenant: str):
     host._persistence = _Persistence(store, service)
     host._caller_writers = None
     coordinator = composition.bind_card_transactions(
-        host, persistence=host._persistence, decisions=decisions, grant_store=_Grants(), policies=None,
+        host, persistence=SimpleNamespace(card_store=store, card_service=service), decisions=decisions,
+        grant_store=_Grants(), policies=None,
         accounts_for=lambda subject: accounts if subject == grantor else None)
     bound, intents, decisions_, _ = host._card_coordinator
     host._card_coordinator = (bound, intents, decisions_, INTENT_TTL)  # recovery presumes ABORT soon after
@@ -156,10 +170,10 @@ def _die() -> None:
     os.kill(os.getpid(), signal.SIGKILL)
 
 
-async def _child_disconnect(root: pathlib.Path, dsn: str, tenant: str, account_id: str, cut: str) -> None:
+async def _child_disconnect(root: pathlib.Path, tenant: str, account_id: str, cut: str) -> None:
     import asyncpg
 
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
+    pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=4)
     host, store, service, accounts, decisions, coordinator, grantor = await _compose(root, pool, tenant=tenant)
 
     def dying(target, name, *, when=lambda *a, **k: True):
@@ -189,12 +203,12 @@ async def _child_disconnect(root: pathlib.Path, dsn: str, tenant: str, account_i
     raise SystemExit(3)  # the cut was never reached
 
 
-async def _child_recover(root: pathlib.Path, dsn: str, tenant: str) -> None:
+async def _child_recover(root: pathlib.Path, tenant: str) -> None:
     import asyncpg
 
     from connection_hub.delegated_credentials.cards.composition import recover_card_transactions
 
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
+    pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=4)
     *_, coordinator, _ = await _compose(root, pool, tenant=tenant)
     await asyncio.sleep(INTENT_TTL + 0.5)  # past the intent, so an undecided transaction is presumed aborted
     result = await recover_card_transactions(coordinator, limit=10)
@@ -214,11 +228,10 @@ async def database():
 
     from connection_hub.delegated_credentials.cards import composition
 
-    dsn = os.environ[DSN_ENV]
-    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=4)
+    pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=4)
     tenant = f"t{uuid.uuid4().hex[:10]}"
     try:
-        yield dsn, pool, tenant
+        yield pool, tenant
     finally:
         async with pool.acquire() as connection:
             await connection.execute(
@@ -235,12 +248,12 @@ async def test_a_disconnect_killed_at_the_cut_is_recovered_by_a_fresh_process(tm
     from connection_hub.delegated_credentials.cards import transaction_store as tx
     from test_card_service import SUBJECT_HASH
 
-    dsn, pool, tenant = database
+    pool, tenant = database
     binding, connected = await _setup(tmp_path, pool, tenant=tenant)
 
-    killed = _run_child("disconnect", str(tmp_path), dsn, tenant, account_id, cut)
+    killed = _run_child("disconnect", str(tmp_path), tenant, account_id, cut)
     assert killed.returncode == -signal.SIGKILL, (killed.returncode, killed.stdout, killed.stderr)
-    recovered = _run_child("recover", str(tmp_path), dsn, tenant)
+    recovered = _run_child("recover", str(tmp_path), tenant)
     assert recovered.returncode == 0, (recovered.stdout, recovered.stderr)
 
     _, store, _, accounts, decisions, _, _ = await _compose(tmp_path, pool, tenant=tenant)
@@ -271,11 +284,11 @@ async def test_a_disconnect_killed_at_the_cut_is_recovered_by_a_fresh_process(tm
 
 
 if __name__ == "__main__":
-    mode, root, dsn, tenant, *rest = sys.argv[1:]
+    mode, root, tenant, *rest = sys.argv[1:]
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
     if mode == "disconnect":
-        asyncio.run(_child_disconnect(pathlib.Path(root), dsn, tenant, *rest))
+        asyncio.run(_child_disconnect(pathlib.Path(root), tenant, *rest))
     elif mode == "recover":
-        asyncio.run(_child_recover(pathlib.Path(root), dsn, tenant))
+        asyncio.run(_child_recover(pathlib.Path(root), tenant))
     else:
         raise SystemExit(f"unknown mode {mode}")
