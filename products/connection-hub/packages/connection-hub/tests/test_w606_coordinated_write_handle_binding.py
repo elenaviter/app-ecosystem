@@ -404,3 +404,58 @@ async def test_a_disconnect_group_keeps_every_member_credential_readable(tmp_pat
             row = await w.metadata.read_current(card.access_id)
             assert (row.card_revision, row.expires_at) == (committed.card_revision, committed.expires_at)
             assert (await w.persistence.load(card.access_id, subject_hash=w.subject_hash))[0] == committed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrong", ["member", "revision", "expiry"])
+async def test_a_group_member_binding_with_a_wrong_payload_refuses_and_moves_nothing(tmp_path, wrong):
+    """A handle_binding naming another Card, revision or expiry than its member's committed AFTER is refused."""
+    from test_account_store import _MemoryUserConfiguration
+    from test_w578_account_incarnation import _AccountLocks
+
+    from connection_hub.delegated_credentials.cards.effect_targets import compose_card_effects
+    from connection_hub.delegated_credentials.cards.handle_metadata import CardHandleMetadata
+    from connection_hub.delegated_to_kdcube.models import ConnectedAccount
+    from connection_hub.delegated_to_kdcube.store import DelegatedToKdcubeStore
+
+    async with _world(tmp_path) as w:
+        grantor = w.card.grantor_subject
+        accounts = DelegatedToKdcubeStore(user_id=grantor, backend=_MemoryUserConfiguration(),
+                                          account_lock=_AccountLocks())
+        compose_card_effects(card_service=w.cards, card_store=w.store, grant_store=_NoGrants(), policies=None,
+                             credential_handles=w.handles,
+                             accounts_for=lambda subject: accounts if subject == grantor else None)
+        w.host.bind_account_stores(lambda subject: accounts if subject == grantor else None)
+        bound = dataclasses.replace(w.card, card_revision=2, account_scope={"google": {"acct-1": ("mail.read",)}})
+        await w.cards.commit(bound, subject_hash=w.subject_hash, expected_revision=1)
+        current = await w.metadata.read_current(w.card.access_id)
+        await w.metadata.put(CardHandleMetadata(access_id=bound.access_id, card_revision=2, expires_at=bound.expires_at),
+                             expected_revision=current.revision)
+        second = dataclasses.replace(bound, access_id="my-person-2", card_revision=1)
+        await w.cards.commit(second, subject_hash=w.subject_hash, expected_revision=0)
+        await w.handles.write(second, CardCredentialHandles(access_id=second.access_id))
+        await accounts.upsert_account(ConnectedAccount(account_id="acct-1", provider_id="google",
+                                                       claims=("mail.read",)))
+        rows_before = {card.access_id: await w.metadata.read_current(card.access_id) for card in (bound, second)}
+        real_effects = w.host._handle_binding_effects
+
+        async def tampered(pairs):
+            effects = await real_effects(pairs)
+            target = next(effect for effect in effects if effect["payload"]["access_id"] == second.access_id)
+            payload = target["payload"]
+            if wrong == "member":
+                payload["access_id"] = "not-a-member"
+                target["key"] = "handle:not-a-member"
+            elif wrong == "revision":
+                payload["card_revision"] += 1
+                payload["from_revision"] += 1
+            else:
+                payload["expires_at"] += 1
+            return effects
+
+        w.host._handle_binding_effects = tampered
+        result = await w.host.disconnect_account_in_transaction(grantor_subject=grantor, provider_id="google",
+                                                                account_id="acct-1")
+        assert result["removed"] is False, result  # refused before COMMIT, or never applied after it
+        for card in (bound, second):
+            assert await w.metadata.read_current(card.access_id) == rows_before[card.access_id]

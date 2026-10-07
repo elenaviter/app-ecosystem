@@ -349,6 +349,9 @@ class HandleBindingTarget:
     async def _committed_is_live(self, binding: EffectBinding, payload: Mapping[str, Any]) -> bool:
         member_id, receipt = await self._member_receipt(binding, payload["access_id"])
         committed = CardCurrentPointer.from_mapping(receipt["after"])
+        if (committed.card_revision, committed.expires_at) != (payload["card_revision"], payload["expires_at"]):
+            # A second guard beside the applier's: the payload names exactly this member's committed AFTER.
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
         if committed.state != CARD_STATE_ACTIVE:
             return False  # an ending Card never re-points an active binding
         subject_hash, access_id = receipt["subject_hash"], receipt["access_id"]

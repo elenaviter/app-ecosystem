@@ -225,3 +225,50 @@ async def test_an_aborted_edit_discards_the_prepared_envelope_and_keeps_the_old_
         assert await w.resident.resolve(w.card.access_id) == w.bearer
         prepared_ref = w.resident.rewrap_secret_ref(_lead_transaction(w), w.card.access_id)
         assert prepared_ref not in w.secret_store.values  # STAGE's envelope was discarded by the ABORT
+
+
+@pytest.mark.asyncio
+async def test_a_bearer_that_does_not_match_the_pinned_fingerprint_refuses_at_stage(tmp_path):
+    """The re-wrap reads the bearer through resolve and must hash to the row's fingerprint, or STAGE refuses."""
+    from connection_hub.delegated_credentials.cards.service import CardConflict
+
+    async with _world(tmp_path) as w:
+        real_resolve, real_prepare = w.resident.resolve, w.resident.prepare_rewrap
+
+        async def prepare_with_another_bearer(prepared):
+            async def other_bearer(access_id, **kwargs):
+                return "kst1." + secrets.token_urlsafe(32)  # custody now returns a different value
+
+            w.resident.resolve = other_bearer
+            try:
+                return await real_prepare(prepared)
+            finally:
+                w.resident.resolve = real_resolve
+
+        w.resident.prepare_rewrap = prepare_with_another_bearer
+        before = await w.metadata.read_current(w.card.access_id)
+        with pytest.raises(CardConflict):
+            await _edit(w, label="edited")
+        assert (await w.store.read_current_authority(subject_hash=w.subject_hash,
+                                                     access_id=w.card.access_id))[1] == w.card
+        assert await w.metadata.read_current(w.card.access_id) == before
+
+
+@pytest.mark.asyncio
+async def test_a_row_that_moved_at_the_compare_and_set_is_superseded_and_the_prepared_envelope_goes(tmp_path):
+    """COMMIT's compare-and-set meets a moved row: superseded, the prepared ref deleted, the row's own ref kept."""
+    from connection_hub.delegated_credentials.cards.handle_metadata import CardHandleMetadataConflict
+
+    async with _world(tmp_path) as w:
+        before = await w.metadata.read_current(w.card.access_id)
+
+        async def moved(*_args, **_kwargs):
+            raise CardHandleMetadataConflict("card_handle_revision_conflict", expected_revision=before.revision,
+                                             current_revision=before.revision + 1)
+
+        w.metadata.install_prepared_resident_secret = moved
+        await _edit(w, label="edited")  # COMMIT recorded; the effect resolves to superseded
+        assert await w.metadata.read_current(w.card.access_id) == before
+        assert before.resident_access_secret_ref in w.secret_store.values  # the row's ref still serves
+        prepared_ref = w.resident.rewrap_secret_ref(_lead_transaction(w), w.card.access_id)
+        assert prepared_ref not in w.secret_store.values  # the newly prepared ref is the one deleted
