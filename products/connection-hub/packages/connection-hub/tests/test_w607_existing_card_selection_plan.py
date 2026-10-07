@@ -392,6 +392,30 @@ def test_undisplayed_change_ignores_only_the_displayed_selection_and_hub_written
 
     before = {"resource_grants": {}, "label": "a", "properties": {"p": 1}, "card_revision": 1}
     assert undisplayed_change(before, {**before, "resource_grants": {"x": ["y"]}, "card_revision": 2}) is None
-    assert undisplayed_change(before, {**before, "properties": {"p": 1, PROJECT_PERSON_CONTROL_PROPERTY: {}}}) is None
+    hub_key = {**before, "properties": {"p": 1, PROJECT_PERSON_CONTROL_PROPERTY: {}}}
+    assert undisplayed_change(before, hub_key, hub_written=True) is None  # a person Control's own keys
+    assert undisplayed_change(before, hub_key) == "properties"  # any other kind: not even a Hub key moves
     assert undisplayed_change(before, {**before, "label": "b"}) == "label"
     assert undisplayed_change(before, {**before, "properties": {"p": 2}}) == "properties"
+
+
+def test_a_my_card_selection_cannot_move_a_hub_written_key() -> None:
+    from connection_hub.delegated_credentials.controls.snapshot import CONTROL_SNAPSHOT_PROPERTY
+
+    original = _full_metadata_my_card()
+    with pytest.raises(DecisionRefused, match="card_plan_undisplayed_change"):
+        asyncio.run(_propose(_Host(), original, {
+            "resource_grants": {"service-a": ["work:admin"]},
+            "properties": {**dict(original.properties or {}), CONTROL_SNAPSHOT_PROPERTY: {"forged": True}},
+        }))
+
+
+def test_a_person_control_reselect_recomputes_exactly_its_own_snapshot_and_audit() -> None:
+    from connection_hub.delegated_credentials.controls.snapshot import CONTROL_SNAPSHOT_PROPERTY
+
+    _, control, _ = _cards()
+    candidate = CardAuthority.from_mapping(asyncio.run(_propose(_Host(), control))["member"]["candidate"])
+    assert candidate.properties[CONTROL_SNAPSHOT_PROPERTY]["basis_catalog_version"] == "catalog-v2"
+    assert candidate.properties[CONTROL_SNAPSHOT_PROPERTY]["origin"] == "reviewed"
+    audit = candidate.provenance[PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE]
+    assert (audit["request_id"], audit["after_revision"]) == (REQUEST, control.card_revision + 1)

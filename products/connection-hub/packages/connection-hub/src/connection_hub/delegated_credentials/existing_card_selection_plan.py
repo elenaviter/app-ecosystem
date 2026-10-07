@@ -184,7 +184,8 @@ async def build_existing_card_selection_update(
     shape_refusal = candidate_shape_refusal("update", original.to_dict(), candidate.to_dict())
     if shape_refusal is not None:
         raise _refuse(shape_refusal)
-    if undisplayed_change(original.to_dict(), candidate.to_dict()) is not None:
+    if undisplayed_change(original.to_dict(), candidate.to_dict(),
+                          hub_written=kind == "person_control") is not None:
         raise _refuse("card_plan_undisplayed_change")
     return {"member": group_member(original=original, candidate=candidate, action="update")}
 
@@ -207,13 +208,20 @@ _HUB_WRITTEN_KEYS = {
 }
 
 
-def undisplayed_change(before: Mapping[str, Any], after: Mapping[str, Any]) -> str | None:
-    """The first Card field a reselect changed outside its displayed selection, or None."""
+def undisplayed_change(before: Mapping[str, Any], after: Mapping[str, Any], *,
+                       hub_written: bool = False) -> str | None:
+    """The first Card field a reselect changed outside its displayed selection, or None.
+
+    ``hub_written`` is true only for a person Control, the one kind whose
+    snapshot, identity and audit keys this builder itself recomputes (the
+    identity key is also refused above when it would move). Every other
+    kind keeps those keys unchanged too.
+    """
     for name in sorted(set(before) | set(after)):
         if name in _RESELECT_CHANGEABLE:
             continue
         old, new = before.get(name), after.get(name)
-        if name in _HUB_WRITTEN_KEYS:
+        if hub_written and name in _HUB_WRITTEN_KEYS:
             hub = _HUB_WRITTEN_KEYS[name]
             old = {key: value for key, value in dict(old or {}).items() if key not in hub}
             new = {key: value for key, value in dict(new or {}).items() if key not in hub}
