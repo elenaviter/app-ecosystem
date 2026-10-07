@@ -172,6 +172,14 @@ async def test_original_presence_must_agree_with_the_authenticated_base_revision
 
 
 @pytest.mark.asyncio
+async def test_original_revision_must_match_the_authenticated_plan_base(host):
+    scene = _scene(host)
+    scene.row["plan"]["intent"]["original"]["card_revision"] = scene.plan.base_revision + 1
+    with pytest.raises(host.OriginalExchangeHostingUnavailable, match="candidate_mismatch"):
+        await scene.target.candidate(scene.plan)
+
+
+@pytest.mark.asyncio
 async def test_inactive_candidate_is_refused_even_when_its_hash_and_revisions_match(host):
     scene = _scene(host)
     inactive = replace(scene.candidate, state="revoked")
