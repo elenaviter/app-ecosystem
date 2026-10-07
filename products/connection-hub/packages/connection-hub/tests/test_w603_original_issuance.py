@@ -565,3 +565,30 @@ async def test_reading_an_issuance_never_decides_it(tmp_path):
         assert await w.service.read_oauth_issuance(transaction_id=plan.transaction_id) == committed
         with pytest.raises(IssuanceRefused, match="issuance_plan_unknown"):
             await w.service.read_oauth_issuance(transaction_id="0" * 64)
+
+
+@pytest.mark.asyncio
+async def test_w571_a_revoked_oauth_card_reconsented_continues_its_revision_chain(tmp_path):
+    """W571 condition 1, OAuth kind: the id is deterministic, so a re-consent after a revoke reuses it,
+    but its revisions only move forward; the id never restarts at revision 1."""
+    from dataclasses import replace
+    from connection_hub.delegated_credentials.cards.service import CardConflict
+
+    async with _world(tmp_path) as w:
+        first = await _begin(w)
+        await _reserve(w, first)
+        await w.service.complete_oauth_issuance(transaction_id=first.transaction_id)
+        issued = await _card(w, first.access_id)
+        user = {"user_id": GRANTOR, "roles": ["kdcube:role:registered"], "permissions": []}
+        assert (await w.service.revoke_access(user, access_id=first.access_id)).get("ok"), "revoke"
+        revoked = await _card(w, first.access_id)
+        assert revoked.state == "revoked" and revoked.card_revision > issued.card_revision
+        plan = await _begin(w, request="exchange-after-revoke")
+        assert plan.access_id == first.access_id  # the deterministic id is reused...
+        assert plan.base_revision == revoked.card_revision and plan.candidate_revision > revoked.card_revision
+        await _reserve(w, plan)
+        result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
+        assert result.state == "committed" and result.card_revision > revoked.card_revision  # ...the chain continues
+        with pytest.raises(CardConflict):  # and the id can never start over at revision 1
+            await w.cards.commit(replace(issued, label="a replaced Card"), subject_hash=w.subject_hash,
+                                 expected_revision=0, now=0)

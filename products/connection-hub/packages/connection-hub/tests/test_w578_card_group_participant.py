@@ -226,3 +226,63 @@ async def test_a_group_whose_chain_does_not_compose_never_writes(tmp_path):
         await hub.prepare(TX)
     group = await tx.state(store, transaction_id=TX)
     assert group is None
+
+
+@pytest.mark.asyncio
+async def test_w571_a_removed_and_readded_card_never_returns_to_a_planned_revision(tmp_path):
+    """W571 condition 1: ids are deterministic, but (access_id, revision) is committed once.
+
+    A person removed and re-added reuses the Card id; its revisions continue
+    the same chain, so a PLAN pinned before the removal can never match again.
+    """
+    from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE, CardAuthority
+    from connection_hub.delegated_credentials.cards.service import CardConflict, replace_state
+
+    hub, store, _authority = await _hub(tmp_path, plain=True)
+    member = next(m for m in hub.plain_members if not m["original_absent"])
+    planned = member["original_revision"]
+    current = await _read(store, member)
+    assert current.card_revision == planned
+    service, subject = hub._service, member["subject_hash"]
+    await service.revoke(subject_hash=subject, access_id=current.access_id, expected_revision=planned)
+    revoked = await _read(store, member)
+    readded = replace_state(revoked, CARD_STATE_ACTIVE)  # the re-add continues the chain
+    await service.commit(readded, subject_hash=subject, expected_revision=revoked.card_revision, now=NOW)
+    assert (await _read(store, member)).card_revision == planned + 2
+    # The id cannot start over, and the planned revision cannot be written again.
+    with pytest.raises(CardConflict):
+        await service.commit(replace(current, card_revision=1), subject_hash=subject, expected_revision=0, now=NOW)
+    with pytest.raises(CardConflict):
+        await service.commit(replace(current, label="a replaced Card at the planned revision"),
+                             subject_hash=subject, expected_revision=planned - 1, now=NOW)
+    assert (await _read(store, member)).card_revision == planned + 2
+    with pytest.raises(DecisionRefused, match="card_intent_base_moved"):
+        await hub.prepare(TX)
+    assert await tx.state(store, transaction_id=TX) is None
+
+
+@pytest.mark.asyncio
+async def test_w571_a_removed_and_readded_my_card_continues_its_chain(tmp_path):
+    """W571 condition 1, project-person My kind: re-adding the person reuses the My Card id at a later revision."""
+    from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE
+    from connection_hub.delegated_credentials.cards.service import CardConflict, replace_state
+    from test_w578_hub_card_group_vectors import PERSON
+
+    hub, store, _authority = await _hub(tmp_path)
+    my_card = next(m for m in _members() if m["candidate"]["issuer_kind"] == "project_person_my_card")
+    from connection_hub.delegated_credentials.cards.model import CardAuthority
+    original = CardAuthority.from_mapping(my_card["candidate"])
+    subject = subject_hash_for(PERSON)
+    service = hub._service
+    await service.commit(original, subject_hash=subject, expected_revision=0, now=NOW)
+    await service.revoke(subject_hash=subject, access_id=original.access_id, expected_revision=1)
+    revoked = (await store.read_current_authority(subject_hash=subject, access_id=original.access_id))[1]
+    await service.commit(replace_state(revoked, CARD_STATE_ACTIVE), subject_hash=subject,
+                         expected_revision=revoked.card_revision, now=NOW)
+    current = (await store.read_current_authority(subject_hash=subject, access_id=original.access_id))[1]
+    assert current.access_id == original.access_id and current.card_revision == 3
+    with pytest.raises(CardConflict):
+        await service.commit(original, subject_hash=subject, expected_revision=0, now=NOW)
+    with pytest.raises(CardConflict):
+        await service.commit(replace(original, label="replaced at revision 1"), subject_hash=subject,
+                             expected_revision=1, now=NOW)
