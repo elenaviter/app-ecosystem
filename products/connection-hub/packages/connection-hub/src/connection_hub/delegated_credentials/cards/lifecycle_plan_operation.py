@@ -40,7 +40,7 @@ from service_foundation.coordination.participant_answer import sign_participant_
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
 from ..project_authorization import (
     PROJECT_CONTROL_CREATE, PROJECT_INVITATION_CONTROL_REVOKE, PROJECT_PERSON_CONTROL_BIND_PROJECT,
-    PROJECT_PERSON_CONTROL_CREATE, LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest,
+    PROJECT_PERSON_CONTROL_CREATE, PROJECT_PERSON_CONTROL_UPDATE, LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest,
     LifecyclePlanStep, ProjectAuthorizationError,
 )
 from .participant_operation import MAX_SKEW_SECONDS, ParticipantCaller
@@ -65,7 +65,9 @@ CREATION_STEPS = {
     "project_person_control": (PROJECT_PERSON_CONTROL_CREATE, "target_subject"),
     "project_person_my_card": (PROJECT_PERSON_CONTROL_CREATE, "person_subject"),
 }
-UPDATE_STEPS = {"revoke": PROJECT_INVITATION_CONTROL_REVOKE, "attach": PROJECT_PERSON_CONTROL_BIND_PROJECT}
+UPDATE_STEPS = {"revoke": PROJECT_INVITATION_CONTROL_REVOKE, "attach": PROJECT_PERSON_CONTROL_BIND_PROJECT,
+                # W607: an existing person Control or My Card takes a PB-supplied selection.
+                "reselect": PROJECT_PERSON_CONTROL_UPDATE}
 
 # planner(host, *, project_ref, creations, updates, actor_subject, actor_kind, request_id, authorization)
 #   -> {"ok": True, "plan": {...}} or {"ok": False, "error": <code>}
