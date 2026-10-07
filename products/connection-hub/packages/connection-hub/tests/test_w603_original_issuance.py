@@ -602,6 +602,31 @@ async def test_a_caller_that_lost_begins_answer_reads_the_plan_by_its_decision_r
 
 
 @pytest.mark.asyncio
+async def test_a_request_row_naming_another_requests_decision_never_returns_that_plan(tmp_path):
+    """Main 15:20: the trusted plan must be this request's own; another bound decision answers unknown.
+
+    The table's unique transaction index keeps two rows from naming one
+    decision, so the stored request row is substituted at the store read.
+    """
+    async with _world(tmp_path) as w:
+        first, second = await _begin(w, "exchange-1"), await _begin(w, "exchange-2")
+        _c, _i, _d, _ttl, store = w.service._issuance_parts()
+        original = store.read_issuance_plan_request
+
+        async def crossed(decision_request_id):
+            row = await original(decision_request_id)
+            if decision_request_id == first.decision_request_id:
+                row = {**row, "transaction_id": second.transaction_id}
+            return row
+
+        store.read_issuance_plan_request = crossed
+        with pytest.raises(IssuanceRefused, match="issuance_plan_unknown"):
+            await w.service.read_oauth_issuance_plan_by_request(decision_request_id=first.decision_request_id)
+        assert await w.service.read_oauth_issuance_plan_by_request(
+            decision_request_id=second.decision_request_id) == second
+
+
+@pytest.mark.asyncio
 async def test_w571_a_revoked_oauth_card_reconsented_continues_its_revision_chain(tmp_path):
     """W571 condition 1, OAuth kind: the id is deterministic, so a re-consent after a revoke reuses it,
     but its revisions only move forward; the id never restarts at revision 1."""
