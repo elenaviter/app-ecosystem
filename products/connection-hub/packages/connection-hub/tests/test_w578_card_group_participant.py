@@ -226,3 +226,36 @@ async def test_a_group_whose_chain_does_not_compose_never_writes(tmp_path):
         await hub.prepare(TX)
     group = await tx.state(store, transaction_id=TX)
     assert group is None
+
+
+@pytest.mark.asyncio
+async def test_w571_a_removed_and_readded_card_never_returns_to_a_planned_revision(tmp_path):
+    """W571 condition 1: ids are deterministic, but (access_id, revision) is committed once.
+
+    A person removed and re-added reuses the Card id; its revisions continue
+    the same chain, so a PLAN pinned before the removal can never match again.
+    """
+    from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE, CardAuthority
+    from connection_hub.delegated_credentials.cards.service import CardConflict, replace_state
+
+    hub, store, _authority = await _hub(tmp_path, plain=True)
+    member = next(m for m in hub.plain_members if not m["original_absent"])
+    planned = member["original_revision"]
+    current = await _read(store, member)
+    assert current.card_revision == planned
+    service, subject = hub._service, member["subject_hash"]
+    await service.revoke(subject_hash=subject, access_id=current.access_id, expected_revision=planned)
+    revoked = await _read(store, member)
+    readded = replace_state(revoked, CARD_STATE_ACTIVE)  # the re-add continues the chain
+    await service.commit(readded, subject_hash=subject, expected_revision=revoked.card_revision, now=NOW)
+    assert (await _read(store, member)).card_revision == planned + 2
+    # The id cannot start over, and the planned revision cannot be written again.
+    with pytest.raises(CardConflict):
+        await service.commit(replace(current, card_revision=1), subject_hash=subject, expected_revision=0, now=NOW)
+    with pytest.raises(CardConflict):
+        await service.commit(replace(current, label="a replaced Card at the planned revision"),
+                             subject_hash=subject, expected_revision=planned - 1, now=NOW)
+    assert (await _read(store, member)).card_revision == planned + 2
+    with pytest.raises(DecisionRefused, match="card_intent_base_moved"):
+        await hub.prepare(TX)
+    assert await tx.state(store, transaction_id=TX) is None
