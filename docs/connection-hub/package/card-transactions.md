@@ -220,6 +220,15 @@ outcome (and the plan) as they stand. They are read only: they never prepare,
 decide, finish or claim, so a caller recovering an uncertain response can read
 before every slot is reserved without aborting the issuance.
 
+**`read_oauth_issuance_plan_by_request`** (W585) returns the same plan for a
+caller that lost `begin`'s answer before it kept the transaction id. It takes
+only the plan's `decision_request_id`, the field-tagged hash of
+`(scope, grantor_subject, client_id, original_request_id)` that the caller
+keeps before `begin`. It never takes candidate inputs and is equally read only.
+No stored plan for that request answers `issuance_plan_unknown`. A plan whose
+decision `begin` never bound answers `issuance_plan_unbound`, and nothing can
+be reserved or completed for it.
+
 `delivery_deadline` bounds only the recovery of the original response to a
 consumed exchange. The authorization code itself lives 60 seconds and is
 validated on the first exchange. Keeping the raw bearers in encrypted custody
