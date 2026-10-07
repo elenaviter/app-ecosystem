@@ -52,7 +52,7 @@ SCOPES = ["memories:read"]
 
 
 @asynccontextmanager
-async def _world(tmp_path):
+async def _world(tmp_path, *, postgres_handles: bool = False):
     dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
     if not dsn or not os.environ.get("REDIS_URL"):
         pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN and REDIS_URL are required")
@@ -79,9 +79,21 @@ async def _world(tmp_path):
     store = BundleStorageDelegatedCardStore(tmp_path)
     tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
     cards = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
-    handles = RedisCardCredentialHandleStore(redis_client, tenant=authority.tenant, project=authority.project)
-    persistence = DurableCardPersistence(redis=redis_client, tenant=authority.tenant, project=authority.project,
-                                         card_store=store, mutation_lock=mutation_lock, credential_handles=handles)
+    metadata = None
+    if postgres_handles:  # W606: the PostgreSQL handle store, whose rows bind the Card revision
+        from connection_hub.delegated_credentials.authority_config import AUTHORITY_BACKEND_POSTGRESQL
+        from connection_hub.delegated_credentials.cards.credential_handles import PostgresCardCredentialHandleStore
+        from connection_hub.delegated_credentials.cards.handle_authority import PostgresCardHandleMetadataStore
+        metadata = PostgresCardHandleMetadataStore(pg_pool=pool, tenant=authority.tenant, project=authority.project)
+        await metadata.ensure_schema()
+        handles = PostgresCardCredentialHandleStore(metadata_store=metadata, resident_secrets=object())
+        persistence = DurableCardPersistence(redis=redis_client, tenant=authority.tenant, project=authority.project,
+                                             card_store=store, mutation_lock=mutation_lock,
+                                             credential_handles=handles, authority_backend=AUTHORITY_BACKEND_POSTGRESQL)
+    else:
+        handles = RedisCardCredentialHandleStore(redis_client, tenant=authority.tenant, project=authority.project)
+        persistence = DurableCardPersistence(redis=redis_client, tenant=authority.tenant, project=authority.project,
+                                             card_store=store, mutation_lock=mutation_lock, credential_handles=handles)
     persistence._cards = cards  # only the serving projection is fake
     compose_card_effects(card_service=cards, card_store=store, grant_store=grants, policies=None,
                          issuance_store=authority, credential_handles=handles)
@@ -96,13 +108,16 @@ async def _world(tmp_path):
     service.bind_card_coordinator(Coordinator(decisions, {PARTICIPANT: hub}, HubLocalReceiptVerifier(store)),
                                   intents=intents, decisions=decisions, intent_ttl_seconds=60)
     service.bind_oauth_issuance_store(authority)
+    service.bind_card_credential_handles(handles)
     try:
         yield SimpleNamespace(service=service, store=store, cards=cards, authority=authority, decisions=decisions,
-                              pool=pool, schema=schema, subject_hash=subject_hash_for(GRANTOR))
+                              pool=pool, schema=schema, subject_hash=subject_hash_for(GRANTOR), metadata=metadata)
     finally:
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")
             await connection.execute(f"DROP SCHEMA IF EXISTS {authority.schema} CASCADE")
+            if metadata is not None:
+                await connection.execute(f"DROP SCHEMA IF EXISTS {metadata.schema} CASCADE")
         await pool.close()
         await redis_client.aclose()
 
@@ -492,3 +507,40 @@ async def test_a_completion_whose_claim_lapsed_to_another_decides_nothing(tmp_pa
                 f"SET completing_owner = '', completing_until = NULL WHERE transaction_id = $1", plan.transaction_id)
         final = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
         assert final.state == "committed" and await _usable(w, tokens) == {"access": True, "refresh": True}
+
+
+
+@pytest.mark.asyncio
+async def test_a_reconsent_on_postgres_handles_moves_the_row_once_and_stays_readable(tmp_path):
+    """W606 one writer: a create's credential_issue writes the row; a re-consent's handle_binding only moves it."""
+    async with _world(tmp_path, postgres_handles=True) as w:
+        first = await _begin(w)
+        await _reserve(w, first)
+        await w.service.complete_oauth_issuance(transaction_id=first.transaction_id)
+        created = await w.metadata.read_current(first.access_id)
+        assert (created.card_revision, created.revision) == (1, 1)  # written once, by the create
+        plan = await _begin(w, request="exchange-2", scopes=["memories:read", "memories:write"],
+                            resource_grants={RESOURCE: ["memories:read", "memories:write"]})
+        assert [key for key in plan.effect_digests if key.startswith("handle:")] == [f"handle:{plan.access_id}"]
+        await _reserve(w, plan)
+        handles = w.service._cards()._handles
+        real_write, writes = handles.write, []
+
+        async def counted_write(*args, **kwargs):
+            writes.append(args[0].card_revision)
+            return await real_write(*args, **kwargs)
+
+        handles.write = counted_write  # the issuance target's metadata write
+        result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
+        handles.write = real_write
+        assert result.state == "committed"
+        assert writes == []  # a re-consent never rewrites the row through credential_issue
+        moved = await w.metadata.read_current(plan.access_id)
+        assert (moved.card_revision, moved.expires_at, moved.revision) == (2, plan.expires_at, 2)  # one more write
+        assert moved.session_id == created.session_id
+        # The strict reader accepts the committed Card with its moved row (this world's serving
+        # projection is fake, so the check reads the committed Card directly).
+        committed = (await w.store.read_current_authority(subject_hash=w.subject_hash,
+                                                          access_id=plan.access_id))[1]
+        held = await w.service._cards()._handles.read(committed)
+        assert committed.card_revision == 2 and held.access_id == plan.access_id

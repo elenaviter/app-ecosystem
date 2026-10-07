@@ -80,6 +80,8 @@ class PostgresCardHandleMetadataStore:
         self._lifecycle = PostgresCardHandleLifecycleAuthority(
             records=self._records,
         )
+        from connection_hub.delegated_credentials.cards.handle_binding import PostgresCardHandleBindingAuthority
+        self._bindings = PostgresCardHandleBindingAuthority(records=self._records)
 
     async def ensure_schema(self) -> None:
         async with self._pool.acquire() as connection, connection.transaction():
@@ -87,6 +89,13 @@ class PostgresCardHandleMetadataStore:
 
     async def read_current(self, access_id: str) -> CardHandleMetadata | None:
         return await self._records.read_current(access_id)
+
+    async def advance_binding(self, access_id: str, *, from_identity: str, from_revision: int,
+                              from_expires_at: int, to_revision: int, to_expires_at: int) -> str:
+        """W606: move the active row's Card revision and expiry to a committed edit (compare-and-set)."""
+        return await self._bindings.advance(access_id, from_identity=from_identity, from_revision=from_revision,
+                                            from_expires_at=from_expires_at, to_revision=to_revision,
+                                            to_expires_at=to_expires_at)
 
     async def read_active(
         self,

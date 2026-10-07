@@ -86,6 +86,10 @@ class RedisCardCredentialHandleStore:
     async def remove(self, authority: CardAuthority) -> None:
         await self._store.remove(authority.access_id)
 
+    async def binding_identity(self, access_id: str) -> None:
+        """W606: Redis records are read by Card id alone and bind no revision, so nothing can go stale."""
+        return None
+
 
 class PostgresCardCredentialHandleStore:
     """Minimized PostgreSQL metadata plus host-owned resident bearer custody.
@@ -105,6 +109,30 @@ class PostgresCardCredentialHandleStore:
     ) -> None:
         self._metadata = metadata_store
         self._resident_secrets = resident_secrets
+
+    async def binding_identity(self, access_id: str) -> dict[str, Any] | None:
+        """W606: the active row's pinned identity for a coordinated edit, or None (no row, or not active).
+
+        Read when the edit's intent is built, so the identity is fixed in the
+        decision before STAGE; the bearer itself is never read here.
+        """
+        from connection_hub.delegated_credentials.cards.handle_binding import binding_identity_digest
+
+        current = await self._metadata.read_current(access_id)
+        if current is None or current.state != HANDLE_STATE_ACTIVE:
+            return None
+        return {"from_identity": binding_identity_digest(current), "from_revision": current.card_revision,
+                "from_expires_at": current.expires_at,
+                # A resident secret's envelope is itself bound to the Card revision (resident_secrets.resolve);
+                # moving only this row would break that bearer, so the writer never moves such a row.
+                "resident_secret": bool(current.resident_access_secret_ref)}
+
+    async def advance_binding(self, access_id: str, **binding: Any) -> str:
+        """W606: the compare-and-set the ``handle_binding`` effect applies at COMMIT."""
+        advance = getattr(self._metadata, "advance_binding", None)
+        if advance is None:
+            raise CardCredentialHandleUnavailable("card_handle_binding_unavailable", access_id=access_id)
+        return await advance(access_id, **binding)
 
     async def ensure_schema(self) -> None:
         ensure = getattr(self._metadata, "ensure_schema", None)

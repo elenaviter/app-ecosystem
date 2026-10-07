@@ -153,6 +153,9 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
         service.bind_account_stores(accounts_for)
     if issuance_store is not None and callable(getattr(service, "bind_oauth_issuance_store", None)):
         service.bind_oauth_issuance_store(issuance_store)
+    if credential_handles is not None and callable(getattr(service, "bind_card_credential_handles", None)):
+        # W606: the writer pins each edited Card's handle row so its COMMIT moves the binding.
+        service.bind_card_credential_handles(credential_handles)
     return coordinator
 
 

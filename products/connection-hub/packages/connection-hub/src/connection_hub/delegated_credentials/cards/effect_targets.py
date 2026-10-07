@@ -289,7 +289,11 @@ class CredentialIssueTarget:
             transaction_id=self._decision_id(binding), slot=payload["slot"], effect_digest=binding.effect_digest,
             card_live=live is not None))
         if outcome == "applied":
-            if payload["slot"] == "access" and self._credential_handles is not None and live is not None:
+            # W606: only a CREATE writes the new Card's handle metadata here; every later Card change
+            # moves an existing row through its own ``handle_binding`` effect (one writer per row).
+            created = binding.receipt().get("before") is None
+            if (created and payload["slot"] == "access" and self._credential_handles is not None
+                    and live is not None):
                 from .model import CardCredentialHandles
                 try:
                     await self._credential_handles.write(live, CardCredentialHandles(access_id=live.access_id))
@@ -304,6 +308,81 @@ class CredentialIssueTarget:
         await self._store(self._call("release_issued_credential")(
             transaction_id=self._decision_id(binding), slot=payload["slot"]))
         return binding.effect_digest
+
+
+class HandleBindingTarget:
+    """W606: move one member Card's handle row to the committed AFTER; the credential itself never changes.
+
+    The effect's payload pinned the row's whole identity when the edit's
+    intent was built. STAGE refuses unless the active row is still exactly
+    that identity (the edit then ABORTs and the Card keeps its readable
+    revision). COMMIT applies the compare-and-set only while the member Card
+    is still exactly its committed AFTER (content hash, active), the same
+    fence as ``CredentialIssueTarget``; otherwise, or when the row moved, it
+    pins ``superseded`` and writes nothing. A replay returns the same answer.
+    """
+
+    def __init__(self, credential_handles: Any, card_store: Any) -> None:
+        self._handles = credential_handles
+        self._card_store = card_store
+
+    def _operation(self, name: str) -> Any:
+        operation = getattr(self._handles, name, None)
+        if operation is None:
+            raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+        return operation
+
+    async def _member_receipt(self, binding: EffectBinding, access_id: str) -> tuple[str, Mapping[str, Any]]:
+        """(member transaction id, its receipt) of the Card this effect names, in a single Card or a group."""
+        receipt = binding.receipt()
+        group = receipt.get("group")
+        if not isinstance(group, Mapping):
+            return binding.transaction_id, receipt
+        aggregate = await tx.read_receipt(self._card_store, group["transaction_id"])
+        for member in (aggregate or {}).get("members") or ():
+            if member.get("access_id") == access_id:
+                found = await tx.read_receipt(self._card_store, member["transaction_id"])
+                if found is not None:
+                    return member["transaction_id"], found
+        raise ParticipantEffectRefused("card_effect_binding_mismatch")
+
+    async def _committed_is_live(self, binding: EffectBinding, payload: Mapping[str, Any]) -> bool:
+        member_id, receipt = await self._member_receipt(binding, payload["access_id"])
+        committed = CardCurrentPointer.from_mapping(receipt["after"])
+        if committed.state != CARD_STATE_ACTIVE:
+            return False  # an ending Card never re-points an active binding
+        subject_hash, access_id = receipt["subject_hash"], receipt["access_id"]
+        raw = await read_json_or_none(self._card_store.current_path(subject_hash=subject_hash, access_id=access_id))
+        if (isinstance(raw, Mapping) and raw.get("schema") == tx.TRANSACTION_POINTER_SCHEMA
+                and raw.get("transaction_id") == member_id):
+            return True  # this transaction's own pointer: the Card is exactly its AFTER
+        current = await self._card_store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+        return (current is not None and current[1].content_hash() == committed.content_hash
+                and current[1].card_revision == committed.card_revision and current[1].state == CARD_STATE_ACTIVE)
+
+    async def prepare_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        identity = await self._operation("binding_identity")(payload["access_id"])
+        if not isinstance(identity, Mapping) or (identity.get("from_identity"), identity.get("from_revision"),
+                                                 identity.get("from_expires_at")) != (
+                payload["from_identity"], payload["from_revision"], payload["from_expires_at"]):
+            raise ParticipantEffectRefused("card_effect_target_revision_moved")
+        return binding.effect_digest
+
+    async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        if not await self._committed_is_live(binding, payload):
+            return CREDENTIAL_ISSUE_SUPERSEDED
+        outcome = await self._operation("advance_binding")(
+            payload["access_id"], from_identity=payload["from_identity"], from_revision=payload["from_revision"],
+            from_expires_at=payload["from_expires_at"], to_revision=payload["card_revision"],
+            to_expires_at=payload["expires_at"])
+        if outcome == "applied":
+            return binding.effect_digest
+        if outcome == CREDENTIAL_ISSUE_SUPERSEDED:
+            return CREDENTIAL_ISSUE_SUPERSEDED
+        raise ParticipantEffectRefused("card_effect_binding_mismatch")
+
+    async def release_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        return binding.effect_digest  # STAGE held nothing: the row moves only at COMMIT
 
 
 def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any,
@@ -326,6 +405,7 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
         "grant_unbind": GrantUnbindTarget(grant_store),
         "account_delete": AccountDeleteTarget(accounts_for),
         "credential_issue": CredentialIssueTarget(issuance_store, card_store, credential_handles),
+        "handle_binding": HandleBindingTarget(credential_handles, card_store),
     })
     card_service.bind_effect_applier(applier.apply)
     card_service.bind_effect_preparer(applier.prepare)
@@ -333,5 +413,5 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
     return applier
 
 
-__all__ = ["AccountDeleteTarget", "CredentialIssueTarget", "CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
+__all__ = ["AccountDeleteTarget", "CredentialIssueTarget", "HandleBindingTarget", "CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
            "NO_ACTIVE_CREDENTIALS", "compose_card_effects"]
