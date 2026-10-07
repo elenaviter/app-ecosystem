@@ -253,3 +253,35 @@ async def test_a_store_without_the_shared_lock_is_an_unavailable_adapter_not_a_c
     for phase in (target.prepare_once, target.apply_once, target.release_once):
         with pytest.raises(ParticipantEffectRefused, match="card_effect_adapter_unavailable"):
             await phase(_binding(), _effect_payload())
+
+
+@pytest.mark.asyncio
+async def test_a_crash_inside_the_deletion_resumes_and_finishes_the_index_and_credential_cleanup():
+    """CodeApp: record gone, index and credential not yet; the resume completes exactly that cleanup."""
+    store = _store()
+    first = await store.upsert_account(_account())
+    await store.set_credential(first.credential_id, {"access_token_ref": "synthetic"})
+    await store._set_prop(store.account_delete_pin_key("p-1"),
+                          {"state": "deleting", "account_id": "account-1", "incarnation": first.incarnation,
+                           "credential_id": first.credential_id})
+    await store._delete_prop(store.account_prop_key("account-1"))  # the crash: only the record went
+    assert "account-1" in await store._index() and await store.get_credential(first.credential_id)
+    assert await store.disconnect_incarnation("account-1", first.incarnation, pin="p-1") == "disconnected"
+    assert "account-1" not in await store._index()
+    assert not await store.get_credential(first.credential_id)
+
+
+@pytest.mark.asyncio
+async def test_a_resume_after_a_reconnect_never_touches_the_reconnections_credential():
+    store = _store()
+    first = await store.upsert_account(_account())
+    await store._set_prop(store.account_delete_pin_key("p-1"),
+                          {"state": "deleting", "account_id": "account-1", "incarnation": first.incarnation,
+                           "credential_id": first.credential_id})
+    await store._delete_prop(store.account_prop_key("account-1"))
+    later = await store.upsert_account(_account())  # same deterministic credential id
+    await store.set_credential(later.credential_id, {"access_token_ref": "synthetic-new"})
+    assert await store.disconnect_incarnation("account-1", first.incarnation, pin="p-1") == "disconnected"
+    assert (await store.get_account("account-1")).incarnation == later.incarnation
+    assert await store.get_credential(later.credential_id)
+    assert "account-1" in await store._index()
