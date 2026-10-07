@@ -1123,6 +1123,11 @@ async def _bind_delegated_client_request_config(
 ) -> Dict[str, Any]:
     cfg = _oauth_adapter_config(entrypoint, request)
     if request is not None:
+        original_exchange_enabled = card_transactions_enabled(_connections_config(entrypoint))
+        if original_exchange_enabled:
+            # Present before any asynchronous composition: a missing host
+            # capability must not select the legacy consume/mint workflow.
+            request.state.oauth_original_exchange_factory = None
         request.state.oauth_delegated_config = cfg
         request.state.oauth_delegated_issuer = str(cfg.get("issuer") or "").rstrip("/")
         request.state.oauth_grant_store_required = True
@@ -1150,6 +1155,35 @@ async def _bind_delegated_client_request_config(
             parsed = oauth_delegated_config(request)
             access_service = await _automation_access_service_for(entrypoint, parsed)
             request.state.automation_access_factory = lambda: access_service
+            if original_exchange_enabled:
+                from .surfaces.oauth_original_exchange_host import bind_original_exchange
+                connections = _connections_config(entrypoint)
+                delegated = connections.get("delegated_credentials") or {}
+                oauth = delegated.get("oauth") or {}
+                original = oauth.get("original_exchange") or {}
+
+                async def original_signing_secret(reference: str):
+                    return await _bundle_secret_value(entrypoint, secret_path=reference,
+                        trace_scope="oauth-original-refresh", warn_missing=False)
+
+                # All providers come from this configured host. No browser
+                # selector, new decision coordinator or implicit schema install.
+                try:
+                    if not authority_config.uses_postgresql:
+                        raise RuntimeError("original_exchange_postgresql_not_selected")
+                    persistence = await _delegated_card_persistence(entrypoint, entrypoint.redis)
+                    await bind_original_exchange(request, tenant=parsed.tenant, project=parsed.project,
+                        pg_pool=getattr(entrypoint, "pg_pool", None),
+                        configured_public_issuer=oauth.get("issuer"), hub=access_service,
+                        grant_store=request.state.oauth_grant_store,
+                        issuance_store=_durable_authority(entrypoint).oauth,
+                        cards=persistence.card_store, settings=get_settings(),
+                        refresh_signing_secret_ref=original.get("refresh_signing_secret_ref"),
+                        resolve_secret=original_signing_secret)
+                except Exception:
+                    # Exception text may contain a provider value. The SDK
+                    # returns a finite 503 from the present closed binding.
+                    request.state.oauth_original_exchange_factory = None
     return cfg
 
 
@@ -3167,6 +3201,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 )
             durable_authority = _durable_authority(self)
             await durable_authority.prepare()
+            if card_transactions_enabled(_connections_config(self)):
+                from .surfaces.oauth_original_exchange_host import prepare_original_exchange_metadata
+                tenant, project = _runtime_tenant_project(self)
+                await prepare_original_exchange_metadata(pg_pool=pg_pool, tenant=tenant, project=project)
             LOGGER.info(
                 "[connection-hub] durable authority activated generation_id=%s",
                 authority_config.generation_id,
