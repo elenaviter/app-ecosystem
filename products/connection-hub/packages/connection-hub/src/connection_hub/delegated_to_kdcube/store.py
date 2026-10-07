@@ -481,6 +481,13 @@ class DelegatedToKdcubeStore:
             metadata=metadata,
             incarnation=existing.incarnation,
         )
+        # W578 (claude-main, S3b P1): a status write never recreates a record.
+        # It writes only while the same incarnation is still stored, so a
+        # writer that read before a disconnect deleted the account cannot put
+        # it back (the shared account lock closes the remaining gap).
+        current = await self.get_account(account_id)
+        if current is None or current.incarnation != existing.incarnation:
+            return None
         await self._set_prop(self.account_prop_key(account_id), updated.to_dict())
         return updated
 
@@ -512,6 +519,21 @@ class DelegatedToKdcubeStore:
             bool(credential.get("access_token")),
             bool(credential.get("refresh_token")),
         )
+
+    async def set_account_credential(self, account_id: str, credential_id: str,
+                                     credential: dict[str, Any]) -> bool:
+        """W578: write a refreshed credential only while its account record still owns it.
+
+        Under the account lock. A refresh that finishes after a disconnect
+        deleted the account writes nothing (False), so no secret outlives the
+        disconnect under its deterministic id.
+        """
+        async with self._account_section(account_id):
+            existing = await self.get_account(account_id)
+            if existing is None or existing.credential_id != credential_id:
+                return False
+            await self.set_credential(credential_id, credential)
+            return True
 
     async def get_credential(self, credential_id: str) -> dict[str, Any]:
         if not credential_id:

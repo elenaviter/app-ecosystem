@@ -629,26 +629,18 @@ def _contains_authenticator_secret_value(payload: Mapping[str, Any]) -> bool:
 
 
 def _account_lock(entrypoint: Any) -> Any:
-    """W578: the shared lock of one connected-account record, across every process of this deployment.
+    """W578: the shared lock of one connected-account record, across every process and host (Redis).
 
-    KDCube's ``observed_file_lock_async`` (the Card store's own production
-    lock) on a file per (user, account) in the bundle storage, so every
-    process that writes account records serializes on it. ``None`` without
-    bundle storage: the incarnation operations then refuse as unavailable.
+    The same key prefix as the SDK client's (``account_lock_prefix``), so the
+    Hub app and every bundle writing account records serialize on one key per
+    (user, account). Status writers (the GitHub key and agent token paths
+    included) wait at most ``ACCOUNT_LOCK_WAIT_SECONDS``.
     """
-    root = entrypoint.bundle_storage_root() if callable(getattr(entrypoint, "bundle_storage_root", None)) else None
-    if root is None:
-        return None
-    from kdcube_ai_app.storage.observed_file_locks import observed_file_lock_async
+    from connection_hub.delegated_to_kdcube.account_lock import RedisAccountLock, account_lock_prefix
 
-    base = pathlib.Path(root) / "connection-hub" / "account-locks"
-
-    def lock(user_id: str, account_id: str):
-        key = hashlib.sha256(f"{user_id}\0{account_id}".encode("utf-8")).hexdigest()
-        return observed_file_lock_async(lock_path=base / f"{key}.lock", resource_id=f"connected-account:{key}",
-                                        operation="connected-account-record", wait_seconds=30.0)
-
-    return lock
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    tenant, project = _runtime_tenant_project(entrypoint)
+    return RedisAccountLock(redis, prefix=account_lock_prefix(tenant, project))
 
 
 def _delegated_to_kdcube_store(entrypoint: Any, user_id: str) -> Any:

@@ -484,7 +484,13 @@ class DelegatedToKdcubeBroker:
                 "account_id": account_id,
             }
         )
-        await self.store.set_credential(credential_id, refreshed)
+        write = getattr(self.store, "set_account_credential", None)
+        if callable(write):
+            # W578: never recreate the credential of an account disconnected meanwhile.
+            if not await write(account_id, credential_id, refreshed):
+                return refreshed
+        else:
+            await self.store.set_credential(credential_id, refreshed)
         # A successful refresh supersedes any persisted rejection: Connection
         # Hub must stop telling the user to reconnect a working account.
         await self.store.set_account_status(

@@ -210,12 +210,12 @@ async def test_w578_a_failing_group_transaction_refuses_without_the_ordered_path
     operations.disconnect.assert_not_awaited()
 
 
-def test_w578_every_account_store_the_app_builds_carries_the_shared_account_lock(tmp_path):
+def test_w578_every_account_store_the_app_builds_carries_the_shared_redis_account_lock(monkeypatch):
+    from connection_hub.delegated_to_kdcube.account_lock import RedisAccountLock
+
     m = module()
-    entrypoint = SimpleNamespace(bundle_storage_root=lambda: tmp_path)
+    monkeypatch.setattr(m, "_runtime_tenant_project", lambda _e: ("tenant-a", "project-b"))
+    entrypoint = SimpleNamespace(redis=object())
     store = m._delegated_to_kdcube_store(entrypoint, "user-1")
-    assert store._account_lock is not None
-    lock = store._account_lock("user-1", "account-1")
-    assert hasattr(lock, "__aenter__")  # the production observed file lock
-    without_storage = m._delegated_to_kdcube_store(SimpleNamespace(bundle_storage_root=lambda: None), "user-1")
-    assert without_storage._account_lock is None
+    assert isinstance(store._account_lock, RedisAccountLock)
+    assert store._account_lock.prefix == "connection-hub:tenant-a:project-b:account-lock:"
