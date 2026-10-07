@@ -87,6 +87,15 @@ read every card.
   service catalog before the editor appears, so descriptor changes and drift
   review match the standalone page. A refused save stays in the editor and its
   reason appears beside the pinned actions.
+- **A change the project must make is refused, not conflicted.** While Card
+  transactions are on, a save or revoke of a Card that only its project's
+  transaction may change (a project Control Card, a Card bound under a
+  Control) answers `card_transactions_direct_write_refused` (409, not
+  retryable; see [Card transactions](../../package/card-transactions.md),
+  activation condition 9). The editor shows the server's message, or a
+  readable fallback, and keeps the Card, its focus, the credential banner and
+  the unsaved draft. It clears the busy state and never treats the answer as a
+  revision conflict to reconcile, nor retries the write.
 - **A selection route owns its service hierarchy.** The `remote_mcp_proxy`
   transport route appears as **My MCP connectors**. Selecting it exposes the
   owner's configured MCP servers directly beneath it, and each server row
@@ -234,3 +243,7 @@ Still open:
   closed by default, All / None per namespace, door tokens as tooltip.
 - `src/styles.css`, the block "Folded chip rows, claim groups, compact
   operations".
+- `src/features/delegatedAccess/delegatedAccessSlice.ts`: the update and
+  revoke thunks reject `card_transactions_direct_write_refused` before the
+  generic 409 reconciliation, with tests in
+  `tests/card-transaction-refusal.test.mjs`.
