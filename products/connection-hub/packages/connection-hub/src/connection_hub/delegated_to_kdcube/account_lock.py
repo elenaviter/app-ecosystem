@@ -14,18 +14,25 @@ it never yields without holding: a wait that times out raises
 
 The expiry bounds a holder that dies; a section that runs longer than the
 expiry minus a margin is interrupted (TimeoutError), never left running unlocked.
+
+Neither is silent (claude-main, #649): a wait that times out and a section
+that overruns each log one WARNING naming the lock's key (a digest; never the
+user or the account), its wait or budget, so contention shows in the logs.
 """
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import secrets
 import time
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
 from .store import AccountLockUnavailable
+
+LOGGER = logging.getLogger("connection_hub.delegated_to_kdcube.account_lock")
 
 ACCOUNT_LOCK_TTL_SECONDS = 30
 ACCOUNT_LOCK_WAIT_SECONDS = 10.0
@@ -60,11 +67,17 @@ class RedisAccountLock:
         deadline = time.monotonic() + self.wait_seconds
         while not await self.redis.set(name, token, nx=True, px=self.ttl_ms):
             if time.monotonic() >= deadline:
+                LOGGER.warning("[connection-hub.account-lock] wait timed out after %.1fs; the write is refused "
+                               "(account_lock_timeout) key=%s", self.wait_seconds, name)
                 raise AccountLockUnavailable("account_lock_timeout")
             await asyncio.sleep(self.poll_seconds)
         try:
             async with asyncio.timeout(self.section_seconds):
                 yield
+        except TimeoutError:
+            LOGGER.warning("[connection-hub.account-lock] section overran its %.1fs budget and was interrupted "
+                           "key=%s", self.section_seconds, name)
+            raise
         finally:
             await self.redis.eval(_RELEASE_SCRIPT, 1, name, token)
 

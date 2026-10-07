@@ -132,6 +132,12 @@ transaction, and the account is deleted only after its COMMIT:
   that incarnation and pins the outcome. **FINISH** releases the fence only
   after the deletion (or, on ABORT, after the hold is released). A replay
   returns the pinned outcome and never deletes a later reconnection.
+- **Account records share one lock**, a Redis key per user and account
+  (`RedisAccountLock`, taken by the app and by every bundle through
+  `from_connection_hub`). A wait that times out refuses the write
+  (`account_lock_timeout`), and a section that overruns its budget is
+  interrupted. Each logs one WARNING, `[connection-hub.account-lock]`, with
+  the key digest only, so lock contention shows in the logs.
 
 ## Configuration
 
