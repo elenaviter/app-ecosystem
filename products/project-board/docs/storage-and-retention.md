@@ -510,9 +510,12 @@ Rows move whole. Each agent's latest notice of a kind stays past the window
 operator, 2026-10-08: "(B) expire it, tell the sender, and move it." The same
 nightly job marks a control still pending, or leased with a lapsed lease,
 older than the window `expired`; it is never delivered afterwards. Its sender
-is told which message expired and why (an agent by a control from Problem
-Board, a person in their Inbox); each notice has a fixed id, so a rerun sends
-nothing twice. Once the notice is recorded, the expired control moves like
+is told, once per run, in ONE summary per project listing every message of
+theirs that expired (subject, reference and recipient; the first 20 and how
+many more) and why (the operator, 2026-10-08: "(B) the same summary, but
+without waking the agent"). An agent gets it as a quiet notice, read at its
+next receive without a wake; a person gets one Inbox message. Each summary has
+a fixed id, so a rerun sends nothing twice. Once the notice is recorded, the expired control moves like
 any other row on a later run. A settled control moves even when an active
 assignment or a retirement still names it: both read its index row (its ref,
 routing, sender and payload hash; its payload was erased at settlement).
