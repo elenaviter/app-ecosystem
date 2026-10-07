@@ -9746,6 +9746,27 @@ class AutomationAccessService:
         *_parts, store = self._issuance_parts()
         return await store.expire_issuance_reservations(limit=limit)
 
+    async def read_oauth_issuance(self, *, transaction_id: str) -> Any:
+        """W603: the issuance's outcome as it stands now, READ ONLY; returns the ``OAuthIssuanceResult``.
+
+        For a caller recovering an uncertain original response: it never
+        prepares, decides, finishes or claims anything, so a read before both
+        reservations exist cannot ABORT the issuance. ``state`` is
+        ``committed`` only once the decision committed and every slot applied;
+        ``aborted`` once it aborted; otherwise ``pending``, with each slot's
+        reservation outcome (``pending`` until it is reserved and applied).
+        Refuses ``issuance_plan_unknown`` for a transaction with no plan.
+        """
+        _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
+        plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
+        return await self._issuance_result(plan, trusted, decisions=decisions, store=store)
+
+    async def read_oauth_issuance_plan(self, *, transaction_id: str) -> Any:
+        """W603: the stored ``OAuthIssuancePlan`` of a transaction, READ ONLY (the plan ``begin`` returned)."""
+        _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
+        _plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
+        return trusted
+
     async def complete_oauth_issuance(self, *, transaction_id: str, expect: Mapping[str, str] | None = None) -> Any:
         """W603: prepare, commit and finish the issuance's decision; returns the ``OAuthIssuanceResult``.
 
