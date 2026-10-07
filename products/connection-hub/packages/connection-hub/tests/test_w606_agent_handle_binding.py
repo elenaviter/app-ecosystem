@@ -152,12 +152,12 @@ async def test_an_interrupted_rewrap_recovers_with_the_same_bearer(tmp_path):
 async def test_a_reissued_agent_secret_before_apply_is_superseded(tmp_path):
     """The agent's secret was re-issued after COMMIT and before apply: the late re-wrap writes nothing."""
     async with _world(tmp_path) as w:
-        real_rebind = w.handles.rebind_resident
+        real_commit = w.handles.commit_rewrap
 
         async def lost(*_args, **_kwargs):
             raise ConnectionError("database connection lost")
 
-        w.handles.rebind_resident = lost
+        w.handles.commit_rewrap = lost
         with pytest.raises(CardServingUnavailable):
             await _edit(w, label="edited")
         current = await w.metadata.read_current(w.card.access_id)
@@ -166,7 +166,62 @@ async def test_a_reissued_agent_secret_before_apply_is_superseded(tmp_path):
                                  session_id="session-2", expires_at=current.expires_at,
                                  expected_revision=current.revision)
         before = await w.metadata.read_current(w.card.access_id)
-        w.handles.rebind_resident = real_rebind
+        w.handles.commit_rewrap = real_commit
         await w.host._card_coordinator[0].recover(limit=10)
         assert await w.metadata.read_current(w.card.access_id) == before
         assert await w.resident.resolve(w.card.access_id) == reissued  # never overwritten with the old bearer
+        # The envelope STAGE prepared for the superseded edit is discarded, not left serving anything.
+        prepared_ref = w.resident.rewrap_secret_ref(_lead_transaction(w), w.card.access_id)
+        assert prepared_ref not in w.secret_store.values
+
+
+
+def _lead_transaction(w) -> str:
+    """The transaction id the edit's effect was bound under (its single-Card receipt)."""
+    import json
+    import pathlib
+
+    receipts = sorted(pathlib.Path(w.store.root / "card-transactions").glob("*.json"))
+    return json.loads(receipts[-1].read_text())["transaction_id"]
+
+
+@pytest.mark.asyncio
+async def test_a_rewrap_that_cannot_succeed_refuses_at_stage_and_nothing_commits(tmp_path):
+    """The bearer no longer resolves: STAGE refuses, the edit ABORTs, the Card stays at its revision."""
+    from connection_hub.delegated_credentials.cards.service import CardConflict
+
+    async with _world(tmp_path) as w:
+        current = await w.metadata.read_current(w.card.access_id)
+        from connection_hub.delegated_credentials.cards.resident_secrets.model import ResidentSecretError
+
+        async def cannot_prepare(_prepared):
+            raise ResidentSecretError("resident_secret_store_unavailable", access_id=w.card.access_id)
+
+        w.resident.prepare_rewrap = cannot_prepare  # the custody write the re-wrap needs fails at STAGE
+        with pytest.raises(CardConflict):
+            await _edit(w, label="edited")
+        committed = (await w.store.read_current_authority(subject_hash=w.subject_hash,
+                                                          access_id=w.card.access_id))[1]
+        assert committed == w.card  # never committed into a Card whose bearer would stop serving
+        assert await w.metadata.read_current(w.card.access_id) == current
+
+
+@pytest.mark.asyncio
+async def test_an_aborted_edit_discards_the_prepared_envelope_and_keeps_the_old_one(tmp_path):
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+
+    async with _world(tmp_path) as w:
+        before = await w.metadata.read_current(w.card.access_id)
+        edited = dataclasses.replace(w.card, card_revision=2, label="edited")
+        held = CardCredentialHandles(access_id=w.card.access_id, access_token=w.bearer, session_id="session-1")
+
+        async def refusing_gate():
+            raise CallerWriteRefused("pb_refused")
+
+        with pytest.raises(CallerWriteRefused):
+            await w.host._coordinated_write(record_from_card(edited, held), edited, expected_revision=1,
+                                            caller_write=None, gate=refusing_gate, witness="")
+        assert await w.metadata.read_current(w.card.access_id) == before
+        assert await w.resident.resolve(w.card.access_id) == w.bearer
+        prepared_ref = w.resident.rewrap_secret_ref(_lead_transaction(w), w.card.access_id)
+        assert prepared_ref not in w.secret_store.values  # STAGE's envelope was discarded by the ABORT

@@ -150,8 +150,8 @@ async def _child_edit(root: pathlib.Path, tenant: str, kind: str) -> None:
     async def die(*_args, **_kwargs):
         os.kill(os.getpid(), signal.SIGKILL)
 
-    w.handles.advance_binding = die
-    w.handles.rebind_resident = die
+    w.handles.advance_binding = die  # a connector row moves at COMMIT
+    w.handles.commit_rewrap = die    # an agent row's prepared envelope is installed at COMMIT
     card = _card(kind)
     edited = dataclasses.replace(card, card_revision=2, label="edited", expires_at=card.expires_at + 600)
     await w.host._persist_record(record_from_card(edited, _held(card)), expected_revision=1)

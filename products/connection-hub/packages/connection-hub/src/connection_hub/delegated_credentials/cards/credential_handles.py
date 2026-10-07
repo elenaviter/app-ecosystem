@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from connection_hub.delegated_credentials.cards.handle_metadata import (
     HANDLE_STATE_ACTIVE,
@@ -127,47 +127,50 @@ class PostgresCardCredentialHandleStore:
                 # (resident_secrets.resolve), so such a row moves by re-wrapping the same bearer.
                 "from_fingerprint": current.resident_access_sha256 if current.resident_access_secret_ref else ""}
 
-    async def rebind_resident(self, access_id: str, *, from_identity: str, from_fingerprint: str,
-                              from_revision: int, from_expires_at: int, to_revision: int, to_expires_at: int) -> str:
-        """W606: move an agent row by re-wrapping the SAME bearer under a fresh ref bound to the AFTER Card.
+    def _rewrap_record(self, transaction_id: str, access_id: str, binding: Mapping[str, Any]) -> Any:
+        resident = self._resident_secrets
+        return resident.rewrap_record(
+            access_id=access_id, secret_ref=resident.rewrap_secret_ref(transaction_id, access_id),
+            fingerprint=binding["from_fingerprint"], card_revision=binding["card_revision"],
+            created_at=binding["prepared_at"], expires_at=binding["expires_at"])
 
-        The existing sanctioned transition (a new revision requires a new
-        secret ref): the bearer is read only through ``resolve`` at the BEFORE
-        revision and must hash to the row's fingerprint; ``install`` writes the
-        new envelope first, then moves the row by compare-and-set on its row
-        version, and retires the old ref only after. The bearer, its
-        fingerprint and the session id stay identical. ``applied`` (now, or a
-        replay that finds the row already at AFTER with the same fingerprint)
-        or ``superseded``. The bearer never leaves this method.
+    async def stage_rewrap(self, transaction_id: str, access_id: str, binding: Mapping[str, Any]) -> None:
+        """W606 STAGE for an agent row: prepare the same bearer's envelope at the AFTER Card under its fixed ref.
+
+        A resident secret's envelope is bound to the Card revision and expiry
+        (``resident_secrets.resolve``), so the row can only move to a fresh
+        ref. Preparing it here means a Card edit whose re-wrap cannot succeed
+        (a bearer that no longer resolves or matches) refuses at STAGE and is
+        never committed. The active row is untouched until COMMIT.
         """
+        await self._resident_secrets.prepare_rewrap(self._rewrap_record(transaction_id, access_id, binding))
+
+    async def commit_rewrap(self, transaction_id: str, access_id: str, binding: Mapping[str, Any]) -> str:
+        """W606 COMMIT: install the prepared envelope on the row still pinned at STAGE; ``applied`` or ``superseded``."""
         from connection_hub.delegated_credentials.cards.handle_binding import binding_identity_digest
         from connection_hub.delegated_credentials.cards.handle_metadata import CardHandleMetadataConflict
 
+        prepared = self._rewrap_record(transaction_id, access_id, binding)
         current = await self._metadata.read_current(access_id)
-        if current is None or current.state != HANDLE_STATE_ACTIVE or not current.resident_access_secret_ref:
+        if (current is not None and current.state == HANDLE_STATE_ACTIVE
+                and current.resident_access_secret_ref == prepared.secret_ref
+                and (current.card_revision, current.expires_at) == (prepared.card_revision, prepared.expires_at)):
+            return "applied"  # a replay: this effect already installed its prepared envelope
+        if (current is None or current.state != HANDLE_STATE_ACTIVE
+                or binding_identity_digest(current) != binding["from_identity"]):
+            await self._resident_secrets.discard_rewrap(prepared)
             return "superseded"
-        if (current.card_revision, current.expires_at) == (to_revision, to_expires_at):
-            return "applied" if current.resident_access_sha256 == from_fingerprint else "superseded"
-        if binding_identity_digest(current) != from_identity:
-            return "superseded"
-        bearer = await self._resident_secrets.resolve(access_id)
-        from connection_hub.delegated_credentials.cards.resident_secrets.model import resident_bearer_fingerprint
-
-        if resident_bearer_fingerprint(bearer) != from_fingerprint:
-            raise CardCredentialHandleUnavailable("resident_card_secret_fingerprint_mismatch", access_id=access_id)
         try:
-            await self._resident_secrets.install(
-                access_id=access_id, card_revision=to_revision, bearer=bearer, session_id=current.session_id,
-                expires_at=to_expires_at, expected_revision=current.revision)
+            await self._resident_secrets.install_rewrap(prepared, session_id=current.session_id,
+                                                        expected_revision=current.revision)
         except CardHandleMetadataConflict:
-            # Someone moved the row meanwhile: applied only if it is now exactly this effect's AFTER.
-            moved = await self._metadata.read_current(access_id)
-            if (moved is not None and moved.state == HANDLE_STATE_ACTIVE
-                    and (moved.card_revision, moved.expires_at, moved.resident_access_sha256)
-                    == (to_revision, to_expires_at, from_fingerprint)):
-                return "applied"
+            await self._resident_secrets.discard_rewrap(prepared)
             return "superseded"
         return "applied"
+
+    async def discard_rewrap(self, transaction_id: str, access_id: str, binding: Mapping[str, Any]) -> None:
+        """W606 ABORT, or a superseded COMMIT: the prepared envelope goes; the active row keeps its old ref."""
+        await self._resident_secrets.discard_rewrap(self._rewrap_record(transaction_id, access_id, binding))
 
     async def advance_binding(self, access_id: str, **binding: Any) -> str:
         """W606: the compare-and-set the ``handle_binding`` effect applies at COMMIT."""

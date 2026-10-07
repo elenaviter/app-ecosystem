@@ -128,7 +128,7 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
         "credential_issue": {"access_id", "slot", "expires_at", "card_revision"},
         # W606: move one member Card's handle row to the committed AFTER, from its pinned identity.
         "handle_binding": {"access_id", "from_identity", "from_fingerprint", "from_revision", "from_expires_at",
-                           "card_revision", "expires_at"},
+                           "card_revision", "expires_at", "prepared_at"},
     }[kind]
     bound_elsewhere = kind in ("invocation_policy", "handle_binding")
     if set(value) != keys or (not bound_elsewhere and value.get("access_id") != access_id):
@@ -188,7 +188,11 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
                 for name in ("from_revision", "from_expires_at", "card_revision", "expires_at"))
                 or type(value["from_identity"]) is not str or not _HEX.fullmatch(value["from_identity"])
                 or type(value["from_fingerprint"]) is not str
-                or (value["from_fingerprint"] and not _HEX.fullmatch(value["from_fingerprint"]))):
+                or (value["from_fingerprint"] and not _HEX.fullmatch(value["from_fingerprint"]))
+                or type(value["prepared_at"]) is not int or isinstance(value["prepared_at"], bool)
+                # An agent row's re-wrap is prepared at a fixed instant (its envelope's created_at).
+                or (value["from_fingerprint"] and not 1 <= value["prepared_at"] < value["expires_at"])
+                or (not value["from_fingerprint"] and value["prepared_at"] != 0)):
             _refuse("card_effect_payload_invalid")
         if member is None:
             # STAGE of a group's lead: this member is listed but not staged yet. Only the payload's own

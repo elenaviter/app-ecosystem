@@ -2479,6 +2479,8 @@ class AutomationAccessService:
             effects.append({"kind": "handle_binding", "key": f"handle:{candidate.access_id}", "payload": {
                 "access_id": candidate.access_id, "from_identity": identity["from_identity"],
                 "from_fingerprint": identity["from_fingerprint"],
+                # An agent row's re-wrap envelope is prepared at this fixed instant (0 when there is none).
+                "prepared_at": int(time.time()) if identity["from_fingerprint"] else 0,
                 "from_revision": identity["from_revision"], "from_expires_at": identity["from_expires_at"],
                 "card_revision": candidate.card_revision, "expires_at": candidate.expires_at}})
         return effects
