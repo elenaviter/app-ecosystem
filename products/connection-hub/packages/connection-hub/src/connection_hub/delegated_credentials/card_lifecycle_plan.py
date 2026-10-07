@@ -676,9 +676,10 @@ async def plan_card_lifecycle(
                 existing = await cards.load_current(base.access_id, subject_hash=key[0])
                 original = None
                 if existing is not None:
-                    # W502 (operator, 7 Oct: rejoin gets fresh Cards): a person's C or My
-                    # revoked by an earlier removal is created again, freshly built, at its
-                    # next revision. Nothing of the revoked Card is carried over.
+                    # W502 (operator, 7 Oct: a removed person is simply "newly invited" and
+                    # gets fresh Cards): a person's C or My revoked by an earlier removal is
+                    # created again, freshly built, at its next revision. Nothing of the
+                    # revoked Card is carried over.
                     original = existing[0]
                     if (raw["kind"] not in ("project_person_control", "project_person_my_card")
                             or original.state != CARD_STATE_REVOKED):

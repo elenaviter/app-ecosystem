@@ -500,7 +500,7 @@ class DelegatedCardService:
                 refusal = (binding_change_refusal(action, before, after)
                            or (None if candidate.state != CARD_STATE_ACTIVE else "card_group_revoke_not_ended"))
             elif action == "recreate":
-                # W502: a fresh Card in place of a revoked one (rejoin): same id and
+                # W502: a fresh Card in place of a revoked one (newly invited): same id and
                 # grantor, the next revision, and only from a revoked original.
                 refusal = (None if (original.state == CARD_STATE_REVOKED and candidate.state == CARD_STATE_ACTIVE
                                     and candidate.access_id == original.access_id

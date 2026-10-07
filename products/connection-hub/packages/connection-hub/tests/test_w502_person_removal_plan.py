@@ -384,3 +384,29 @@ async def test_staging_refuses_a_recreate_that_is_not_over_a_revoked_card(tmp_pa
     assert "card_group_recreate_invalid" in str(caught.value)
     stored = await store.read_current_authority(subject_hash=subject_hash_for(c.grantor_subject), access_id=c.access_id)
     assert stored[1].to_dict() == c.to_dict()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revision_step", [0, 2])
+async def test_staging_refuses_a_recreate_not_at_the_revoked_cards_next_revision(tmp_path, revision_step):
+    """Main 16:07: the stored revoked original admits only its exact next revision."""
+    p, c, my = _person()
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    decisions = Decisions()
+    tx.bind_transaction_decisions(store, decisions)
+    tx.bind_catalog_reservations(store, _Reservations())
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=_mutation_lock)
+    revoked = replace_state(c, CARD_STATE_REVOKED)
+    await service.commit(p, subject_hash=subject_hash_for(p.grantor_subject), expected_revision=0, now=100)
+    await service.commit(c, subject_hash=subject_hash_for(c.grantor_subject), expected_revision=0, now=100)
+    await service.commit(revoked, subject_hash=subject_hash_for(c.grantor_subject),
+                         expected_revision=c.card_revision, now=100)
+    stored = await store.read_current_authority(subject_hash=subject_hash_for(c.grantor_subject), access_id=c.access_id)
+    assert stored[1].state == CARD_STATE_REVOKED
+    fresh = dataclasses.replace(c, card_revision=revoked.card_revision + revision_step)
+    with pytest.raises(Exception) as caught:
+        await service.stage_group_transaction(
+            transaction_id="8" * 64, intent_digest="f" * 64, participant="project",
+            members=[(subject_hash_for(c.grantor_subject), stored[1], fresh, "recreate")],
+            now=datetime.fromtimestamp(100, timezone.utc), reads=[], catalog="")
+    assert "card_group_recreate_invalid" in str(caught.value)
