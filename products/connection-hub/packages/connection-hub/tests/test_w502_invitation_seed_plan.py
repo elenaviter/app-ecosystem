@@ -251,3 +251,50 @@ async def test_one_decision_creates_the_persons_cards_and_ends_the_invitation_ca
     assert states[pending.access_id] == CARD_STATE_REVOKED
     assert states[person.control_id] == CARD_STATE_ACTIVE
     assert sorted(states.values()).count(CARD_STATE_ACTIVE) == 2
+
+
+def test_a_pending_card_of_another_project_is_never_a_seed_here():
+    """Main 16:39: the helper refuses another project's ACTIVE pending Card even with matching claim values.
+
+    Through the planner such a Card is not even found (it is keyed under its own
+    project's subject); this pins the helper's own project check directly.
+    """
+    from connection_hub.delegated_credentials.card_lifecycle_plan import (
+        CardLifecyclePlanRefused, invitation_seeded_person_control,
+    )
+    other = ProjectInvitationControlIdentity.build(
+        project_ref="work:project:elsewhere", invitation_ref="invite-1", target_email=EMAIL)
+    pending = bind_project_invitation_control(new_credentialless_card(
+        grantor_subject=other.project_subject, catalog_version="catalog-v1", control_id=other.control_id,
+        issuer_ref=other.invitation_ref, issuer_kind=PROJECT_INVITATION_CONTROL_ISSUER_KIND, now=100,
+    ), identity=other)
+    decision = dict(_authorization(*_requests(_p(), pending, other), evidence=_evidence(other)).decisions)["c"]
+    with pytest.raises(CardLifecyclePlanRefused) as caught:
+        invitation_seeded_person_control(pending, invitation_ref="invite-1", project_ref=PROJECT,
+                                         target_subject=TARGET, decision=decision, actor_subject=TARGET,
+                                         request_id=REQUEST, parent=_p(), now=100)
+    assert str(caught.value) == "card_plan_update_scope_invalid"
+
+
+@pytest.mark.asyncio
+async def test_a_host_decision_for_another_person_refuses_the_seed():
+    p = _p()
+    invitation, pending = _pending()
+    creations, updates = _requests(p, pending, invitation)
+    authorization = _authorization(creations, updates, evidence=_evidence(invitation))
+    request = authorization.request
+    steps = tuple(dataclasses.replace(step, target_subject="person-2") if step.ref == "c" else step
+                  for step in request.steps)
+    forged_request = dataclasses.replace(request, steps=steps)
+    forged = LifecyclePlanAuthorization(request=forged_request, decisions=tuple(
+        (step.ref, ProjectAuthorizationDecision.allow(forged_request.step_request(step), delegable_grants=(),
+                                                      platform_admin=False, project_control=dict(
+                                                          authorization.decisions)[step.ref].project_control,
+                                                      evidence=_evidence(invitation) if step.ref == "c" else None))
+        for step in steps))
+    host = _Host(p, pending)
+    result = await plan_card_lifecycle(host, project_ref=PROJECT, creations=creations, updates=updates,
+                                       actor_subject=TARGET, actor_kind="caller", request_id=REQUEST,
+                                       authorization=forged)
+    assert result["ok"] is False and result["status"] == 403, result
+    assert host.writes == 0
