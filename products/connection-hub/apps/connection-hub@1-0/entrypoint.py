@@ -351,6 +351,8 @@ CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
     "identity_resolve",
     "opex",
     "project_operation_authorize",
+    # W502 join: read-only, asked by the project host under the invitee's session.
+    "project_invitation_pending_revision",
     "react_context_preview",
 })
 # These public POSTs use their own protocol authentication/anti-forgery contract
@@ -3287,6 +3289,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_person_control_update": {"visibility": {"user_types": []}},
                             "project_person_control_revoke": {"visibility": {"user_types": []}},
                             "project_person_control_bind_invitation": {"visibility": {"user_types": []}},
+                            "project_invitation_pending_revision": {"visibility": {"user_types": []}},
                             "project_person_control_bind_project": {"visibility": {"user_types": []}},
                             "project_person_my_card_seed": {"visibility": {"user_types": []}},
                             "project_person_github_key_link": {"visibility": {"user_types": []}},
@@ -5618,6 +5621,37 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             project_ref=str(payload.get("project_ref") or "").strip(),
             target_subject=str(payload.get("target_subject") or "").strip(),
             request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_invitation_pending_revision",
+        route="operations",
+        csrf=False,
+        **_api_visibility("project_invitation_pending_revision"),
+    )
+    async def project_invitation_pending_revision(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """W502 join: the signed-in invitee's pending invitation Card revision and state."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_invitation_pending_revision(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            invitation_ref=str(payload.get("invitation_ref") or "").strip(),
+            control_id=str(payload.get("control_id") or "").strip(),
         )
 
     @api(
