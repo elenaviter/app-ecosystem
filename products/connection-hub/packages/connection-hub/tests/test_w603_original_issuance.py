@@ -544,3 +544,24 @@ async def test_a_reconsent_on_postgres_handles_moves_the_row_once_and_stays_read
                                                           access_id=plan.access_id))[1]
         held = await w.service._cards()._handles.read(committed)
         assert committed.card_revision == 2 and held.access_id == plan.access_id
+
+
+@pytest.mark.asyncio
+async def test_reading_an_issuance_never_decides_it(tmp_path):
+    """W585 recovery reads the original outcome without preparing, deciding or aborting anything."""
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)
+        assert await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id) == plan
+        before = await w.service.read_oauth_issuance(transaction_id=plan.transaction_id)
+        assert before.state == "pending" and before.receipt_digest == ""
+        assert {slot: o.outcome for slot, o in before.per_slot.items()} == {"access": "pending", "refresh": "pending"}
+        row = await w.decisions.read(plan.transaction_id)
+        assert not row.terminal and row.prepared == {}  # reading prepared and decided nothing
+        tokens = await _reserve(w, plan, slots=("access",))  # only one slot so far: a read still decides nothing
+        assert (await w.service.read_oauth_issuance(transaction_id=plan.transaction_id)).state == "pending"
+        assert not (await w.decisions.read(plan.transaction_id)).terminal
+        tokens.update(await _reserve(w, plan, slots=("refresh",)))
+        committed = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
+        assert await w.service.read_oauth_issuance(transaction_id=plan.transaction_id) == committed
+        with pytest.raises(IssuanceRefused, match="issuance_plan_unknown"):
+            await w.service.read_oauth_issuance(transaction_id="0" * 64)

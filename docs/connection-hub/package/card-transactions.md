@@ -215,6 +215,11 @@ bearer, an authorization code or a PKCE verifier.
      every slot has applied, `aborted`, or `pending`. On `pending` the caller
      calls again; it never mints again.
 
+**`read_oauth_issuance`** (and `read_oauth_issuance_plan`) return the
+outcome (and the plan) as they stand. They are read only: they never prepare,
+decide, finish or claim, so a caller recovering an uncertain response can read
+before every slot is reserved without aborting the issuance.
+
 `delivery_deadline` bounds only the recovery of the original response to a
 consumed exchange. The authorization code itself lives 60 seconds and is
 validated on the first exchange. Keeping the raw bearers in encrypted custody
