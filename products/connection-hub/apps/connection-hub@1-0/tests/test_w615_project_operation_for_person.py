@@ -189,3 +189,13 @@ def test_the_signature_is_domain_separated_from_the_w609_lookup(world):
                                                       nonce="n", platform_user_id=PERSON, provider="telegram")
     assert ours != lookup and len(ours) == 64
     assert module.PERSON_OPERATION_AUTHORIZE in module.CSRF_EXEMPT_POST_OPERATION_ALIASES
+
+
+def test_the_contract_vector_is_pinned(world):
+    """The same value Problem Board's signer gives (PB tests/test_w615_telegram_reply_sender.py)."""
+    module, *_ = world
+    request = module.person_operation_request({"project_ref": "work:project:quickstart", "person_subject": PERSON,
+        "provider": "telegram", "provider_subject": TELEGRAM, "resource": RESOURCE, "operation": "control.enqueue",
+        "required_grants": ["work:operate"], "request_resource": "", "surface": "application"})
+    assert module.person_operation_signature(secret=SECRET, service_id=SERVICE, timestamp="1800000000",
+        nonce="vector-nonce", request=request) == "11a0b62222e9a9417b0d3c69bb5c44a17b11b68faa91d5533890bf387df45e0f"
