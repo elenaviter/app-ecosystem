@@ -140,6 +140,7 @@ generated page [Operations and rules](operations-and-rules.md).
 | `role_holder_decides_handovers` | The agent holding an optional project role, such as the knowledge keeper, decides the hand-overs mailed to that role; holding the role is a condition, never authority by itself. | `project.role.handover.decide` (W517). | The agent holding the role, with the operation on its Card. |
 | `coordinator_publishes_reports` | A project report is published, or failed, by the project's coordinator. | Named as the gates move (W260). | The acting coordinator. |
 | `attachment_upload_people_only` | Attachments are staged by a signed-in person. | Named as the gates move (W260). | A person on the project. |
+| `project_file_edits_people_only` | A listed project-file edit on the board is requested by a signed-in person on the project; the coordinator writes the file through its own relay. The person still needs the applicable role AND current effective Card hierarchy for each requested operation (operator, 2026-09-27, W370). | `work_user_identity_required` | A person on the project; the coordinator writes the file. |
 
 Some operations carry **business rules of their own**, which hold whatever the
 Card says: no one accepts their own work (`work_review_self_forbidden`), and an
