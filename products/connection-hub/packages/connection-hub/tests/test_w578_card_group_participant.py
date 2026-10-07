@@ -259,3 +259,30 @@ async def test_w571_a_removed_and_readded_card_never_returns_to_a_planned_revisi
     with pytest.raises(DecisionRefused, match="card_intent_base_moved"):
         await hub.prepare(TX)
     assert await tx.state(store, transaction_id=TX) is None
+
+
+@pytest.mark.asyncio
+async def test_w571_a_removed_and_readded_my_card_continues_its_chain(tmp_path):
+    """W571 condition 1, project-person My kind: re-adding the person reuses the My Card id at a later revision."""
+    from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE
+    from connection_hub.delegated_credentials.cards.service import CardConflict, replace_state
+    from test_w578_hub_card_group_vectors import PERSON
+
+    hub, store, _authority = await _hub(tmp_path)
+    my_card = next(m for m in _members() if m["candidate"]["issuer_kind"] == "project_person_my_card")
+    from connection_hub.delegated_credentials.cards.model import CardAuthority
+    original = CardAuthority.from_mapping(my_card["candidate"])
+    subject = subject_hash_for(PERSON)
+    service = hub._service
+    await service.commit(original, subject_hash=subject, expected_revision=0, now=NOW)
+    await service.revoke(subject_hash=subject, access_id=original.access_id, expected_revision=1)
+    revoked = (await store.read_current_authority(subject_hash=subject, access_id=original.access_id))[1]
+    await service.commit(replace_state(revoked, CARD_STATE_ACTIVE), subject_hash=subject,
+                         expected_revision=revoked.card_revision, now=NOW)
+    current = (await store.read_current_authority(subject_hash=subject, access_id=original.access_id))[1]
+    assert current.access_id == original.access_id and current.card_revision == 3
+    with pytest.raises(CardConflict):
+        await service.commit(original, subject_hash=subject, expected_revision=0, now=NOW)
+    with pytest.raises(CardConflict):
+        await service.commit(replace(original, label="replaced at revision 1"), subject_hash=subject,
+                             expected_revision=1, now=NOW)
