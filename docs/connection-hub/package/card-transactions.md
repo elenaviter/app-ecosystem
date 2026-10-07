@@ -105,6 +105,34 @@ catalog and builds each candidate under only its own step's grants, platform
 flag and P locator. The caller binds the signed proposal to its transaction.
 A successful plan is input to prepare, not permission to commit.
 
+## Disconnecting a connected account
+
+While enabled, a person's disconnect of a connected account is one durable
+transaction, and the account is deleted only after its COMMIT:
+
+- **The account is fenced first.** The Hub reads the account's incarnation,
+  fences the account for this transaction, and lists the Cards that bind it
+  again. A Card that gained the binding meanwhile aborts the disconnect
+  (`card_account_binding_changed`, retryable). While the fence stands, a write
+  that would add this account to any Card refuses `card_account_reserved`.
+- **When Cards bind the account**, each unbound Card is a member of a
+  `connection-hub.card-group` with its candidate minus that account, and the
+  group carries the `account_delete` effect. A Card bound under a Control
+  refuses the whole disconnect: its owner's transaction must change it.
+- **When no Card binds it**, the same decision carries the effect alone, as
+  the versioned `connection-hub.card-effects` input
+  (`cards/card_effects.py`). Its candidate is
+  `{"schema": "connection-hub.card-effects.v1", "subject_hash", "effects"}`:
+  one owner and 1 to 4 `account_delete` effects, sorted by key, each with an
+  empty `access_id`. The projection has `action` `effect`, both revisions 1,
+  and no dependencies. An empty input or any other effect kind is refused,
+  and a peer's authority can never send it.
+- **STAGE** holds the exact incarnation, so a reconnection refuses
+  `account_disconnect_pending` until the decision. **COMMIT** deletes only
+  that incarnation and pins the outcome. **FINISH** releases the fence only
+  after the deletion (or, on ABORT, after the hold is released). A replay
+  returns the pinned outcome and never deletes a later reconnection.
+
 ## Configuration
 
 All of it lives in the Hub's bundle props under `connections.card_transactions`.
