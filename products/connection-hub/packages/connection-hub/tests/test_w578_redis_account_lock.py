@@ -61,3 +61,20 @@ async def test_a_wait_that_times_out_refuses_and_never_runs_the_section():
         assert ran == []
     finally:
         await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_section_running_past_its_budget_is_interrupted_before_the_key_could_expire():
+    redis = _client()
+    try:
+        prefix = account_lock_prefix("t", f"p-{uuid.uuid4().hex}")
+        lock = RedisAccountLock(redis, prefix=prefix, ttl_seconds=5.3)  # section budget 0.3 s
+        finished = []
+        with pytest.raises(TimeoutError):
+            async with lock("user-1", "account-1"):
+                await asyncio.sleep(2)
+                finished.append(True)
+        assert finished == []
+        assert await redis.get(lock.key("user-1", "account-1")) is None  # released by its holder
+    finally:
+        await redis.aclose()

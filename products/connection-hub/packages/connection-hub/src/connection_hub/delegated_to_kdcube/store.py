@@ -521,16 +521,20 @@ class DelegatedToKdcubeStore:
         )
 
     async def set_account_credential(self, account_id: str, credential_id: str,
-                                     credential: dict[str, Any]) -> bool:
-        """W578: write a refreshed credential only while its account record still owns it.
+                                     credential: dict[str, Any], *, incarnation: str = "") -> bool:
+        """W578: write a refreshed credential only while the connection it was refreshed for is stored.
 
-        Under the account lock. A refresh that finishes after a disconnect
-        deleted the account writes nothing (False), so no secret outlives the
-        disconnect under its deterministic id.
+        Under the account lock. ``incarnation`` is the connection the refresh
+        read before its token: a refresh that finishes after a disconnect
+        (record gone) or after a reconnection (another incarnation, which owns
+        the same deterministic credential id) writes nothing (False), so no old
+        secret outlives the disconnect or overwrites the fresh consent. Without
+        an incarnation nothing proves which connection it is for: no write.
         """
         async with self._account_section(account_id):
             existing = await self.get_account(account_id)
-            if existing is None or existing.credential_id != credential_id:
+            if (existing is None or not incarnation or existing.incarnation != incarnation
+                    or existing.credential_id != credential_id):
                 return False
             await self.set_credential(credential_id, credential)
             return True
