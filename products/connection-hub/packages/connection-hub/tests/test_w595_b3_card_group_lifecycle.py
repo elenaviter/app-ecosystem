@@ -93,6 +93,7 @@ class _World:
             callers={PEER: caller}, card_store=self.store, catalog_store=None,
             nonces=_Nonces(), clock=lambda: NOW)
         self.groups = 0
+        self.host = self  # the planner's host; a real AutomationAccessService may replace it
 
     # host surface the planner uses
     def _cards(self):
@@ -105,11 +106,11 @@ class _World:
     def _version_of(active):
         return active.version
 
-    async def plan(self, creations, updates=()):
+    async def plan(self, creations, updates=(), *, grants=None):
         return await plan_card_lifecycle(
-            self, project_ref=PROJECT, creations=creations, updates=updates,
+            self.host, project_ref=PROJECT, creations=creations, updates=updates,
             actor_subject=CREATOR, actor_kind="caller", request_id="b3-request",
-            authorization=_b3_authorization(creations, updates))
+            authorization=_b3_authorization(creations, updates, grants=grants))
 
     async def card(self, authority: CardAuthority) -> CardAuthority | None:
         loaded = await self.store.read_current_authority(
@@ -148,7 +149,7 @@ class _World:
         return {path: path.read_bytes() for path in self.store.root.rglob("*") if path.is_file()}
 
 
-def _b3_authorization(creations, updates):
+def _b3_authorization(creations, updates, *, grants=None):
     authorization = _authorization(creations, updates)
     # The shared helper names its own actor and project; bind this world's.
     request = replace(authorization.request, actor_subject=CREATOR, project_ref=PROJECT, request_id="b3-request")
@@ -156,7 +157,9 @@ def _b3_authorization(creations, updates):
         LifecyclePlanAuthorization, ProjectAuthorizationDecision,
     )
     decisions = tuple((step.ref, ProjectAuthorizationDecision.allow(
-        request.step_request(step), delegable_grants=("work:admin",), platform_admin=True,
+        request.step_request(step),
+        delegable_grants=(grants or {}).get(step.ref, ("work:admin",)),
+        platform_admin=grants is None,
         project_control=dict(authorization.decisions)[step.ref].project_control,
     )) for step in request.steps)
     return LifecyclePlanAuthorization(request=request, decisions=decisions)
@@ -320,3 +323,64 @@ async def test_b3_repair_attaches_an_unbound_c_to_p_and_leaves_my_untouched(tmp_
     assert repaired.card_revision == c.card_revision + 1 and repaired.control_card.control_id == p.access_id
     assert (await world.card(my)).to_dict() == my.to_dict(), "My is never rewritten"
     _assert_complete((await world.census(dave))[dave], control=repaired, ancestors=[p])
+
+
+# --- slice 2: catalog selections resolved by the production AutomationAccessService ---
+
+def _real_service_world(tmp_path):
+    """The planner host is a real AutomationAccessService over the real Card store."""
+    from test_resident_profile_cards import _Harness
+    world = _World(tmp_path)
+    harness = _Harness(tmp_path / "service")
+    harness.service._persistence = world.persistence
+    world.host = harness.service
+    return world, harness
+
+
+MEMORIES_READ = {"resource_grants": {"https://host/api/mcp/memories*": ["memories:read"]},
+                 "resource_operations": {"https://host/api/mcp/memories*": ["search"]}}
+MEMORIES_ALL = {"resource_grants": {"https://host/api/mcp/memories*": ["memories:read", "memories:write"]},
+                "resource_operations": {"https://host/api/mcp/memories*": ["search", "write"]}}
+DELEGABLE = ("memories:read", "memories:write")
+
+
+@pytest.mark.asyncio
+async def test_b3_genesis_selections_are_resolved_by_the_real_service_and_stored_exactly(tmp_path):
+    from connection_hub.delegated_credentials.controls.snapshot import control_snapshot_is_exact
+
+    world, harness = _real_service_world(tmp_path)
+    alice = PEOPLE["alice"]
+    resource = "https://host/api/mcp/memories*"
+    p_request = {**_p_request(), "selection": MEMORIES_ALL}
+    c_request = {**_c_request(alice, {"ref": "p"}), "selection": MEMORIES_READ}
+    plan = await world.plan([_my_request(alice), c_request, p_request],
+                            grants={"p": DELEGABLE, "c": DELEGABLE, "my": DELEGABLE})
+    assert plan["ok"] is True, plan
+    assert plan["plan"]["catalog_digest"], "the plan names the active catalog it resolved against"
+    assert (await world.commit_plan(plan["plan"]))["state"] == "committed"
+    identity = ProjectPersonControlIdentity.build(project_ref=PROJECT, target_subject=alice)
+    p = next(CardAuthority.from_mapping(m["candidate"]) for m in plan["plan"]["candidate_value"]["cards"]
+             if m["candidate"]["issuer_kind"] == "application")
+    stored_p = await world.card(p)
+    stored_c = await world.card(replace(p, access_id=identity.control_id, grantor_subject=identity.project_subject))
+    assert stored_p.resource_operations == {resource: ("search", "write")}
+    assert stored_c.resource_operations == {resource: ("search",)}
+    assert stored_c.resource_grants == {resource: ("memories:read",)}
+    assert stored_c.catalog_version == harness.catalog.active.version
+    assert control_snapshot_is_exact(stored_c) and control_snapshot_is_exact(stored_p)
+    _assert_complete((await world.census(alice))[alice], control=stored_c, ancestors=[stored_p])
+
+
+@pytest.mark.asyncio
+async def test_b3_a_step_cannot_select_beyond_its_own_delegable_grants(tmp_path):
+    world, _harness = _real_service_world(tmp_path)
+    alice = PEOPLE["alice"]
+    p_request = {**_p_request(), "selection": MEMORIES_ALL}
+    c_request = {**_c_request(alice, {"ref": "p"}), "selection": MEMORIES_ALL}
+    before = world.files()
+    # P may delegate both grants; C's own step only memories:read.
+    plan = await world.plan([_my_request(alice), c_request, p_request],
+                            grants={"p": DELEGABLE, "c": ("memories:read",), "my": DELEGABLE})
+    assert plan["ok"] is False, plan
+    assert plan["error"] == "delegated_access_grants_not_delegable", plan
+    assert world.files() == before, "a refused plan writes nothing"
