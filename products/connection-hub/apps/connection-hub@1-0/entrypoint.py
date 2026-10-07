@@ -7,6 +7,7 @@ import hashlib
 import html
 import inspect
 import hashlib
+import hmac
 import json
 import pathlib
 import time
@@ -99,12 +100,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentia
 from connection_hub.delegated_credentials.access_map import (
     build_delegated_access_map,
 )
-from connection_hub.delegated_credentials.admission import (
-    AdmissionConfig,
-    AdmissionRequest,
-    ServiceProof,
-    verify_admission_request,
-)
+from connection_hub.delegated_credentials.admission import AdmissionConfig
 from connection_hub.delegated_credentials.authority_config import (
     AUTHORITY_BACKEND_POSTGRESQL,
     AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE,
@@ -2708,7 +2704,21 @@ def _edge_subject(edge: Mapping[str, Any] | None, challenge: Mapping[str, Any] |
 # registered admission service whose resources name that provider, verified by
 # its HMAC peer proof; the request's user session is never consulted.
 IDENTITY_SUBJECT_LOOKUP_OPERATION = "identity_provider_subject_resolve"
-IDENTITY_SUBJECT_LOOKUP_TOKEN = "connection-hub.identity-provider-subject.v1"
+# A token-less, domain-separated signature of its own (no delegated token is
+# presented): it cannot be confused with a delegated-admission proof.
+IDENTITY_SUBJECT_LOOKUP_DOMAIN = "connection-hub.identity-provider-subject.v1"
+IDENTITY_SUBJECT_LOOKUP_MIN_SECRET_BYTES = 32
+
+
+def identity_subject_lookup_signature(*, secret: str, service_id: str, timestamp: str, nonce: str,
+                                      platform_user_id: str, provider: str) -> str:
+    """HMAC-SHA256 over the domain, service, time, nonce, operation, resource and request digest."""
+    message = "\n".join([
+        IDENTITY_SUBJECT_LOOKUP_DOMAIN, str(service_id), str(timestamp), str(nonce),
+        IDENTITY_SUBJECT_LOOKUP_OPERATION, identity_subject_lookup_resource(provider),
+        identity_subject_lookup_digest(platform_user_id=platform_user_id, provider=provider),
+    ]).encode("utf-8")
+    return hmac.new(str(secret).encode("utf-8"), message, hashlib.sha256).hexdigest()
 
 
 def identity_subject_lookup_resource(provider: str) -> str:
@@ -2735,16 +2745,16 @@ async def _identity_provider_subject_resolve(entrypoint: Any, payload: Mapping[s
     platform_user = str(payload.get("platform_user_id") or "").strip()
     provider = str(payload.get("provider") or "").strip().lower()
     raw_proof = payload.get("service_proof")
-    proof = ServiceProof(**{key: str((raw_proof or {}).get(key) or "") for key in
-                            ("service_id", "timestamp", "nonce", "signature")}) if isinstance(raw_proof, Mapping) \
-        else ServiceProof("", "", "", "")
+    proof = {key: str((raw_proof or {}).get(key) or "") for key in ("service_id", "timestamp", "nonce", "signature")} \
+        if isinstance(raw_proof, Mapping) else {"service_id": "", "timestamp": "", "nonce": "", "signature": ""}
+    service_id = proof["service_id"]
     if not platform_user or not provider:
         return {"ok": False, "error": "identity_provider_subject_resolve_requires_user_and_provider", "status": 400}
-    if not proof.service_id or not proof.signature:
-        _identity_subject_audit(proof.service_id, platform_user, provider, "no_service_proof")
+    if not service_id or not proof["signature"] or not proof["nonce"]:
+        _identity_subject_audit(service_id, platform_user, provider, "no_service_proof")
         return {"ok": False, "error": "identity_lookup_requires_service_proof", "status": 403}
     config = AdmissionConfig.from_connections(_connections_config(entrypoint))
-    service = config.service(proof.service_id) if config.enabled else None
+    service = config.service(service_id) if config.enabled else None
     resource = identity_subject_lookup_resource(provider)
     authenticators = [
         row for row in matching_authenticator_rows(
@@ -2752,26 +2762,36 @@ async def _identity_provider_subject_resolve(entrypoint: Any, payload: Mapping[s
         if row.get("enabled") is not False
     ]
     if service is None or not service.allows_resource(resource) or not authenticators:
-        _identity_subject_audit(proof.service_id, platform_user, provider, "not_permitted")
+        _identity_subject_audit(service_id, platform_user, provider, "not_permitted")
         return {"ok": False, "error": "identity_lookup_not_permitted", "status": 403}
+    # The key that verifies this service is that service's own row secret.
     secret = await _bundle_secret_value(
         entrypoint, secret_path=service.secret_ref,
         trace_scope=f"identity_provider_subject.service.{service.service_id}", warn_missing=True)
-    decision = verify_admission_request(
-        secret=secret, proof=proof, delegated_token=IDENTITY_SUBJECT_LOOKUP_TOKEN,
-        request=AdmissionRequest(resource=resource, operation=IDENTITY_SUBJECT_LOOKUP_OPERATION,
-                                 invocation_id=proof.nonce,
-                                 request_digest=identity_subject_lookup_digest(
-                                     platform_user_id=platform_user, provider=provider)),
-        max_clock_skew_seconds=config.max_clock_skew_seconds, now=now)
-    if not decision.allowed:
-        _identity_subject_audit(proof.service_id, platform_user, provider, f"proof_refused:{decision.reason}")
-        return {"ok": False, "error": "identity_lookup_proof_invalid", "reason": decision.reason, "status": 403}
+    reason = ""
+    try:
+        issued_at = int(proof["timestamp"])
+    except ValueError:
+        issued_at, reason = 0, "timestamp_invalid"
+    current = int(time.time()) if now is None else int(now)
+    if len(secret.encode("utf-8")) < IDENTITY_SUBJECT_LOOKUP_MIN_SECRET_BYTES:
+        reason = "service_secret_unavailable"
+    elif not reason and abs(current - issued_at) > max(1, config.max_clock_skew_seconds):
+        reason = "timestamp_outside_window"
+    elif not reason:
+        expected = identity_subject_lookup_signature(
+            secret=secret, service_id=service_id, timestamp=proof["timestamp"], nonce=proof["nonce"],
+            platform_user_id=platform_user, provider=provider)
+        if not hmac.compare_digest(expected, proof["signature"]):
+            reason = "signature_invalid"
+    if reason:
+        _identity_subject_audit(service_id, platform_user, provider, f"proof_refused:{reason}")
+        return {"ok": False, "error": "identity_lookup_proof_invalid", "reason": reason, "status": 403}
     # One use per proof, across every process (no in-process state).
     redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
-    if not await redis.set(f"connection_hub:identity_subject_nonce:{proof.service_id}:{proof.nonce}", "1",
+    if not await redis.set(f"connection_hub:identity_subject_nonce:{service_id}:{proof['nonce']}", "1",
                            nx=True, ex=config.nonce_ttl_seconds):
-        _identity_subject_audit(proof.service_id, platform_user, provider, "proof_replayed")
+        _identity_subject_audit(service_id, platform_user, provider, "proof_replayed")
         return {"ok": False, "error": "identity_lookup_proof_replayed", "status": 403}
     # Typed platform id: matched exactly, never parsed as an actor id. Read every time.
     subjects = sorted({
@@ -2779,12 +2799,12 @@ async def _identity_provider_subject_resolve(entrypoint: Any, payload: Mapping[s
         for edge in _edge_store(entrypoint).list_edges(target_user_id=platform_user, source_provider=provider)
     } - {""})
     if not subjects:
-        _identity_subject_audit(proof.service_id, platform_user, provider, "not_linked")
+        _identity_subject_audit(service_id, platform_user, provider, "not_linked")
         return {"ok": False, "error": "identity_not_linked", "provider": provider}
     if len(subjects) > 1:
-        _identity_subject_audit(proof.service_id, platform_user, provider, "ambiguous")
+        _identity_subject_audit(service_id, platform_user, provider, "ambiguous")
         return {"ok": False, "error": "identity_lookup_ambiguous", "provider": provider}
-    _identity_subject_audit(proof.service_id, platform_user, provider, "resolved")
+    _identity_subject_audit(service_id, platform_user, provider, "resolved")
     return {"ok": True, "provider": provider, "provider_subject": subjects[0]}
 
 
