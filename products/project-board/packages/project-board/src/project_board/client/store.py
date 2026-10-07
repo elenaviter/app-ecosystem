@@ -12704,7 +12704,7 @@ class SharedFieldStore:
             proof = row.get("remote_result")
             # W616: whom a project mail reached; owner_default names a reply that missed its writer.
             routed = str(proof.get("routed_to") or "") if isinstance(proof, Mapping) else ""
-            if routed in {"originating_operator", "thread_writer", "owner_default"}:
+            if routed in {"originating_operator", "thread_writer", "owner_default", "owner_explicit"}:
                 result["routed_to"] = routed
             notification = proof.get("notification") if isinstance(proof, Mapping) else None
             if isinstance(notification, Mapping):

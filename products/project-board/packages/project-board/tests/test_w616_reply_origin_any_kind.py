@@ -70,7 +70,7 @@ def test_a_reply_on_another_thread_is_still_refused(field):
     assert refused.value.code == "field_operator_origin_mismatch"
 
 
-@pytest.mark.parametrize("routed", ["thread_writer", "owner_default", "something-else"])
+@pytest.mark.parametrize("routed", ["thread_writer", "owner_default", "owner_explicit", "something-else"])
 def test_the_outbox_status_shows_whom_the_board_routed_it_to(field, routed):
     from project_board.client.render import render_envelope
 
