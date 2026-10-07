@@ -24,6 +24,9 @@ def _snapshot(host):
     return {key: (record.card_revision, record.content_hash(), state) for key, (record, state) in host.records.items()}
 
 
+REFUSED = {"ok": False, "error": "project_invitation_pending_unavailable", "status": 403}
+
+
 async def _read(lifecycle, *, actor=PERSON, project_ref=PROJECT_REF, invitation_ref=INVITATION_REF, control_id):
     return await lifecycle.pending_revision(actor_subject=actor, project_ref=project_ref,
                                             invitation_ref=invitation_ref, control_id=control_id)
@@ -52,16 +55,15 @@ async def test_an_admins_edit_moves_the_revision_the_invitee_reads() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("resolver", "actor", "error"), [
-    (_BindingResolver(person=PERSON), "someone-else", "project_invitation_binding_invalid"),  # another session
-    (_BindingResolver(email="other@example.test"), PERSON, "project_invitation_binding_email_mismatch"),
+@pytest.mark.parametrize(("resolver", "actor"), [
+    (_BindingResolver(person=PERSON), "someone-else"),  # another session
+    (_BindingResolver(email="other@example.test"), PERSON),  # another email
 ])
-async def test_another_session_or_email_reads_nothing(resolver, actor, error) -> None:
+async def test_another_session_or_email_reads_nothing(resolver, actor) -> None:
     host = _Host()
     lifecycle = _lifecycle(host, resolver=resolver)
     pending_id = (await _create(lifecycle))["control_card"]["access_id"]
-    answer = await _read(lifecycle, actor=actor, control_id=pending_id)
-    assert answer["ok"] is False and answer["error"] == error and "card_revision" not in answer
+    assert await _read(lifecycle, actor=actor, control_id=pending_id) == REFUSED
 
 
 class _NoEvidence(_BindingResolver):
@@ -77,8 +79,7 @@ async def test_without_the_boards_evidence_nothing_is_read() -> None:
     host = _Host()
     lifecycle = _lifecycle(host, resolver=_NoEvidence())
     pending_id = (await _create(lifecycle))["control_card"]["access_id"]
-    assert await _read(lifecycle, control_id=pending_id) == {
-        "ok": False, "error": "project_invitation_binding_not_found", "status": 403}
+    assert await _read(lifecycle, control_id=pending_id) == REFUSED
 
 
 @pytest.mark.asyncio
@@ -88,9 +89,9 @@ async def test_another_invitations_card_or_another_project_reads_nothing() -> No
     pending_id = (await _create(lifecycle))["control_card"]["access_id"]
     other_card = ProjectInvitationControlIdentity.build(project_ref=PROJECT_REF, invitation_ref="work:invitation:x",
                                                         target_email=EMAIL).control_id
-    assert (await _read(lifecycle, control_id=other_card))["ok"] is False
-    assert (await _read(lifecycle, project_ref="work:project:other", control_id=pending_id))["ok"] is False
-    assert (await _read(lifecycle, control_id=""))["error"] == "project_invitation_control_id_mismatch"
+    assert await _read(lifecycle, control_id=other_card) == REFUSED
+    assert await _read(lifecycle, project_ref="work:project:other", control_id=pending_id) == REFUSED
+    assert await _read(lifecycle, control_id="") == REFUSED
 
 
 @pytest.mark.asyncio
@@ -120,3 +121,25 @@ async def test_without_the_binding_resolver_the_read_is_retryably_unavailable() 
                                                   record_from_authority=_Record)
     answer = await _read(lifecycle, control_id=pending_id)
     assert answer["error"] == "project_invitation_binding_unavailable" and answer["retryable"] is True
+
+
+@pytest.mark.asyncio
+async def test_every_probe_gets_the_same_answer_so_no_invitation_existence_leaks() -> None:
+    """Main/CodeApp: unknown ref, another project or Card, no evidence, another session or email: one answer."""
+    host = _Host()
+    lifecycle = _lifecycle(host)
+    pending_id = (await _create(lifecycle))["control_card"]["access_id"]
+    guessed = ProjectInvitationControlIdentity.build(project_ref=PROJECT_REF, invitation_ref="work:invitation:guessed",
+                                                     target_email=EMAIL).control_id
+    probes = [
+        # The board vouches for the session, but the Hub holds no such pending Card.
+        await _read(lifecycle, invitation_ref="work:invitation:guessed", control_id=guessed),
+        await _read(lifecycle, invitation_ref="work:invitation:guessed", control_id=pending_id),
+        await _read(lifecycle, project_ref="work:project:other", control_id=pending_id),
+        await _read(lifecycle, control_id="0" * 32),
+        await _read(lifecycle, control_id=""),
+        await _read(lifecycle, actor="someone-else", control_id=pending_id),
+        await _read(_lifecycle(host, resolver=_NoEvidence()), control_id=pending_id),
+        await _read(_lifecycle(host, resolver=_BindingResolver(email="other@example.test")), control_id=pending_id),
+    ]
+    assert probes == [REFUSED] * len(probes)
