@@ -218,8 +218,11 @@ obligations, not optional checks.
    ends at an unbound C, which the initiator's anchoring check refuses.
 9. **Managed project Card writes go through the project's transaction.**
    While enabled, the Hub's direct managed writers refuse finitely, before
-   reading or writing anything, with
-   `card_transactions_direct_write_refused` (409, not retryable):
+   writing anything, with
+   `card_transactions_direct_write_refused`, never retryable: status 409 with a
+   message from a writer's own guard, or status 403 with no message from the
+   shared persist check (`_persist_record`, which covers bound Cards and a
+   managed P). A caller keys on the error code, not the status:
    - `project_person_control_create`, `project_person_control_update` and
      `project_person_control_revoke`, for a person and for a pending
      invitation;
