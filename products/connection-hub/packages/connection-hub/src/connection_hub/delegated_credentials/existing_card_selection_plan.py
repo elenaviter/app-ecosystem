@@ -24,6 +24,7 @@ from .cards.card_group import group_member
 from .cards.model import CARD_STATE_ACTIVE, CardAuthority, authority_is_credentialless
 from .catalog.descriptors import next_resource_acceptance
 from .controls.project_person import (
+    PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE,
     PROJECT_PERSON_CONTROL_ISSUER_KIND,
     PROJECT_PERSON_CONTROL_PROPERTY,
     ProjectPersonControlAudit,
@@ -32,7 +33,11 @@ from .controls.project_person import (
     bind_project_person_control,
     project_person_control_diff,
 )
-from .controls.snapshot import control_snapshot_refusal, reviewed_control_snapshot_properties
+from .controls.snapshot import (
+    CONTROL_SNAPSHOT_PROPERTY,
+    control_snapshot_refusal,
+    reviewed_control_snapshot_properties,
+)
 from .project_authorization import PROJECT_PERSON_CONTROL_UPDATE, ProjectAuthorizationDecision
 from .project_identity_lifecycle import (
     PROJECT_PERSON_MY_CARD_ISSUER_KIND,
@@ -179,7 +184,42 @@ async def build_existing_card_selection_update(
     shape_refusal = candidate_shape_refusal("update", original.to_dict(), candidate.to_dict())
     if shape_refusal is not None:
         raise _refuse(shape_refusal)
+    if undisplayed_change(original.to_dict(), candidate.to_dict()) is not None:
+        raise _refuse("card_plan_undisplayed_change")
     return {"member": group_member(original=original, candidate=candidate, action="update")}
 
 
-__all__ = ["build_existing_card_selection_update"]
+# What a reselect may change: the selection the signed plan displays
+# (plan_display), what the catalog derives from that selection, and the
+# revision bookkeeping. Properties and provenance may change only in the keys
+# the Hub itself writes for a person Control. Anything else in the Card
+# (personal settings, client metadata, timestamps, labels, other provenance)
+# must come through unchanged, so the signed plan's display is the complete
+# change the person confirms (W571 condition 2, W600 Option A).
+_RESELECT_CHANGEABLE = frozenset({
+    "resource_grants", "resource_operations", "named_service_operations", "account_scope",
+    "operations", "named_services", "identity_scope", "resource_acceptance",
+    "catalog_version", "card_revision",
+})
+_HUB_WRITTEN_KEYS = {
+    "properties": frozenset({CONTROL_SNAPSHOT_PROPERTY, PROJECT_PERSON_CONTROL_PROPERTY}),
+    "provenance": frozenset({PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE}),
+}
+
+
+def undisplayed_change(before: Mapping[str, Any], after: Mapping[str, Any]) -> str | None:
+    """The first Card field a reselect changed outside its displayed selection, or None."""
+    for name in sorted(set(before) | set(after)):
+        if name in _RESELECT_CHANGEABLE:
+            continue
+        old, new = before.get(name), after.get(name)
+        if name in _HUB_WRITTEN_KEYS:
+            hub = _HUB_WRITTEN_KEYS[name]
+            old = {key: value for key, value in dict(old or {}).items() if key not in hub}
+            new = {key: value for key, value in dict(new or {}).items() if key not in hub}
+        if old != new:
+            return name
+    return None
+
+
+__all__ = ["build_existing_card_selection_update", "undisplayed_change"]
