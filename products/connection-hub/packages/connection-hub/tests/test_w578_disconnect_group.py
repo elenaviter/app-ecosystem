@@ -226,3 +226,20 @@ async def test_a_crash_after_the_deletion_before_the_fence_release_finishes_on_r
     await coordinator.finish(_transaction_id(decisions))  # recovery replays: pinned outcome, then release
     assert not (fence._dir(store, PROVIDER, ACCOUNT) / "fence.json").exists()
     assert (await accounts.get_account(ACCOUNT)).incarnation == later.incarnation  # the reconnection survives
+
+
+@pytest.mark.asyncio
+async def test_a_failure_recording_the_intent_aborts_with_a_finite_answer(tmp_path, monkeypatch):
+    """claude-main #645 residual: a begun transaction whose intent was not recorded is aborted, not left."""
+    host, store, decisions, accounts, card, connected, grantor = await _world(tmp_path)
+    intents = host._card_coordinator[1]
+
+    async def failing(intent):
+        raise RuntimeError("intent store unavailable")
+
+    monkeypatch.setattr(intents, "record", failing)
+    result = await host.disconnect_account_in_transaction(grantor_subject=grantor, provider_id=PROVIDER,
+                                                          account_id=ACCOUNT)
+    assert result["removed"] is False and result["retryable"] is True and result["status"] == 503
+    assert decisions.decisions == ["aborted"] and await accounts.get_account(ACCOUNT) is not None
+    assert not (fence._dir(store, PROVIDER, ACCOUNT) / "fence.json").exists()
