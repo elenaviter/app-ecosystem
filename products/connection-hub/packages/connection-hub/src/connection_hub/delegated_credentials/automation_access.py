@@ -2401,6 +2401,26 @@ class AutomationAccessService:
         """
         self._card_coordinator = (coordinator, intents, decisions, max(1, int(intent_ttl_seconds)))
 
+    def _managed_direct_write_refused(self) -> dict[str, Any] | None:
+        """W578: with Card transactions enabled, a managed project Card write never takes a direct path.
+
+        A project's P, a person's C and their My Card, their bindings and an
+        invitation's redemption change together with the project host's own
+        membership, so they are written only by a transaction the project host
+        coordinates (the Hub takes part through ``card_transaction_participant``).
+        Enabled means ``bind_card_coordinator`` was called. Disabled changes nothing.
+        """
+
+        if getattr(self, "_card_coordinator", None) is None:
+            return None
+        return {
+            "ok": False,
+            "error": "card_transactions_direct_write_refused",
+            "message": "This project Card change is made through the project's own transaction.",
+            "retryable": False,
+            "status": 409,
+        }
+
     async def _coordinated_write(
         self, record: AutomationAccessRecord, authority: CardAuthority, *, expected_revision: int,
         caller_write: CallerWrite | None, gate: Callable[[], Awaitable[None]] | None, witness: str,
@@ -7064,6 +7084,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Create a live-person or pending-invitation project Control Card."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -7133,6 +7156,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Replace one live or pending project selection under host policy."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -7188,6 +7214,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Revoke one live-person or pending-invitation project Card."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -7225,6 +7254,9 @@ class AutomationAccessService:
         the result names this person's outcome for a migration report.
         """
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -7250,6 +7282,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Bind a provider-verified pending Card to the signed-in person."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -7278,6 +7313,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Seed an existing person's untouched My Card under project policy."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {

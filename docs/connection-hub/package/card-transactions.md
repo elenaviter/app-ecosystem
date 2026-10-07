@@ -182,11 +182,21 @@ obligations, not optional checks.
    person and its per-person report shows each one `bound` or
    `already_bound`; only then is this switched on. Until then a census chain
    ends at an unbound C, which the initiator's anchoring check refuses.
-9. **Person creation is staged.** Creating C, the My Card and their
-   identity edge still takes the direct write path (creation becomes a
-   transaction participant with W582's recorded effects), so they are not yet
-   committed under one approved decision. That staging is W578 scope and must
-   land before this is switched on.
+9. **Managed project Card writes go through the project's transaction.**
+   While enabled, the Hub's direct managed writers refuse finitely, before
+   reading or writing anything, with
+   `card_transactions_direct_write_refused` (409, not retryable):
+   - `project_person_control_create`, `project_person_control_update` and
+     `project_person_control_revoke`, for a person and for a pending
+     invitation;
+   - `project_person_control_bind_project` and
+     `project_person_control_bind_invitation`;
+   - `project_person_my_card_seed`.
+
+   These writes are made only by a transaction the project host coordinates:
+   it plans with `card_lifecycle_plan`, then prepares and finishes through
+   `card_transaction_participant`. That coordinated path must be live before
+   this is switched on. Until then, enabling refuses these edits.
 10. **Removing v1 waits.** The v1 authority path is removed only after the peer's
    writer switch.
 
