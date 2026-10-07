@@ -321,6 +321,12 @@ class ProjectAuthorizationRequest:
         )
 
 
+_DECISION_REQUIRED = frozenset({"allowed", "actor_subject", "project_ref", "target_subject", "operation",
+                                "request_id"})
+_DECISION_FIELDS = _DECISION_REQUIRED | {"request_digest", "reason", "delegable_grants", "platform_admin",
+                                         "evidence", "project_control"}
+
+
 @dataclass(frozen=True)
 class ProjectAuthorizationDecision:
     """A policy answer bound to one exact project lifecycle request."""
@@ -382,6 +388,61 @@ class ProjectAuthorizationDecision:
             request_digest=request.request_digest,
             reason=_required(reason, "project_authorization_denial_reason_missing"),
             evidence=copy.deepcopy(dict(evidence or {})),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """The decision's wire mapping (W578: what a project host's plan answer carries per step)."""
+
+        out: dict[str, Any] = {
+            "allowed": self.allowed,
+            "actor_subject": self.actor_subject,
+            "project_ref": self.project_ref,
+            "target_subject": self.target_subject,
+            "operation": self.operation,
+            "request_id": self.request_id,
+            "request_digest": self.request_digest,
+            "reason": self.reason,
+            "delegable_grants": list(self.delegable_grants),
+            "platform_admin": self.platform_admin,
+            "evidence": copy.deepcopy(dict(self.evidence)),
+        }
+        if self.project_control is not None:
+            out["project_control"] = self.project_control.to_dict()
+        return out
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> ProjectAuthorizationDecision:
+        """A decision from its wire mapping, refusing unknown, missing or mistyped fields.
+
+        It is not validated against any request here: the caller binds it to
+        its own request with ``validate_for`` (a plan envelope does so per step).
+        """
+
+        if not isinstance(raw, Mapping) or set(raw) - _DECISION_FIELDS or not _DECISION_REQUIRED <= set(raw):
+            raise ProjectAuthorizationError("project_authorization_decision_invalid")
+        if type(raw["allowed"]) is not bool or type(raw.get("platform_admin", False)) is not bool:
+            raise ProjectAuthorizationError("project_authorization_decision_invalid")
+        texts = ("actor_subject", "project_ref", "target_subject", "operation", "request_id",
+                 "request_digest", "reason")
+        if any(type(raw.get(name, "")) is not str for name in texts):
+            raise ProjectAuthorizationError("project_authorization_decision_invalid")
+        grants = raw.get("delegable_grants", [])
+        evidence = raw.get("evidence", {})
+        if not isinstance(grants, list) or not isinstance(evidence, Mapping):
+            raise ProjectAuthorizationError("project_authorization_decision_invalid")
+        return cls(
+            allowed=raw["allowed"],
+            actor_subject=raw["actor_subject"],
+            project_ref=raw["project_ref"],
+            target_subject=raw["target_subject"],
+            operation=raw["operation"],
+            request_id=raw["request_id"],
+            request_digest=raw.get("request_digest", ""),
+            reason=raw.get("reason", ""),
+            delegable_grants=_grants(grants),
+            platform_admin=raw.get("platform_admin", False),
+            evidence=copy.deepcopy(dict(evidence)),
+            project_control=ProjectControlLocator.from_mapping(raw.get("project_control")),
         )
 
     def validate_for(self, request: ProjectAuthorizationRequest) -> None:

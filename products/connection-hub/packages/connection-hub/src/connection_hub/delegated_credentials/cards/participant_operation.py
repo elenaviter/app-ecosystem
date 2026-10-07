@@ -101,6 +101,9 @@ class ParticipantCaller:
     # card_lifecycle_plan entitlement (W578): the scopes this caller may plan in,
     # by prefix ("" = no planning at all). Never inferred from the request.
     plan_scope_prefix: str = ""
+    # W578: this caller's own project host, asked for the plan's authorization
+    # envelope (a LifecyclePlanAuthorizationPort; None = no planning).
+    plan_authorization: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         for secret in (self.request_secret, self.receipt_secret):
