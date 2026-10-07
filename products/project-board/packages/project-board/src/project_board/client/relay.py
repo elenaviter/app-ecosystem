@@ -5418,10 +5418,12 @@ class ProblemBoardRelaySupervisor:
         # W563: per worker, whether each pending message is a quiet notice.
         self._quiet_classified: dict[str, dict[str, bool]] = {}
         self._quiet_mark: dict[str, str] = {}
-        # The session wake's mailbox and listener store calls run in the
-        # channel's own thread (W456): a hung mailbox holds that channel only,
-        # never another channel's wake or the default pool's scans.
+        # Authority reads and writes stay serialized per channel. Read-only
+        # inbox discovery/classification has its own thread: a queued wake's
+        # large quiet/backlog scan must not hold the same channel's coordinate
+        # claim, fresh Card/session fence or completion behind it (W456).
         self._store_executors = ChannelExecutors()
+        self._mail_scan_executors = ChannelExecutors(thread_name_prefix="problem-board-mail-scan")
         # One drain per worker at a time, whichever path starts it. The
         # queue's claim is exclusive per request and released before the
         # request runs, so without this a side drain executing an earlier
@@ -5480,6 +5482,19 @@ class ProblemBoardRelaySupervisor:
 
         return await run_off_loop(
             call, *args, executor=self._store_executors.for_channel(channel.worker_name), **kwargs
+        )
+
+    async def _mail_scan_off_loop(
+        self, channel: WorkerChannelConfig, call: Callable[..., Any], /, *args: Any
+    ) -> Any:
+        """Read-only inbox discovery/classification, never authority or writes.
+
+        Reads remain uncached. The notify lock still spans this call, and
+        run_off_loop joins the thread on cancellation before releasing it.
+        """
+
+        return await run_off_loop(
+            call, *args, executor=self._mail_scan_executors.for_channel(channel.worker_name)
         )
 
     async def _notify_session(
@@ -5833,7 +5848,7 @@ class ProblemBoardRelaySupervisor:
         if queued is not None:
             # Fix 3b: mail delivered during the wait still joins the wake;
             # only the inbox files the wake does not name yet are read.
-            added = await self._channel_off_loop(
+            added = await self._mail_scan_off_loop(
                 channel, field.inbox_refs_not_in, channel.worker_name, queued
             )
             return [*queued, *added], listener, False
@@ -5889,7 +5904,7 @@ class ProblemBoardRelaySupervisor:
         known = self._quiet_classified.setdefault(channel.worker_name, {})
         new = [ref for ref in pending_refs if ref not in known]
         if new:
-            found = await self._channel_off_loop(channel, field.quiet_mail_refs, channel.worker_name, new)
+            found = await self._mail_scan_off_loop(channel, field.quiet_mail_refs, channel.worker_name, new)
             known.update({ref: ref in found for ref in new})
         current = set(pending_refs)
         for ref in [ref for ref in known if ref not in current]:
@@ -7338,6 +7353,7 @@ class ProblemBoardRelaySupervisor:
         for worker_name in list(self._beside_notifies):
             await self._cancel_notify_beside_turn(worker_name)
         self._store_executors.shutdown()
+        self._mail_scan_executors.shutdown()
         self._local_work_scanner.close()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)

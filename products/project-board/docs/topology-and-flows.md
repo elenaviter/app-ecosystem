@@ -313,6 +313,23 @@ an explicit empty list marks the prior sessions stale. The projection carries
 current presence plus at most 20 recently observed control references. Native
 wake histories remain in the machine-local field.
 
+### Relay file-read isolation
+
+Each channel has a serialized store executor for authority checks and writes,
+including coordinate claims, fresh Card/session fences and completions. A
+separate single-thread executor per channel runs only read-only queued-wake
+inbox discovery and quiet-mail classification. A slow scan of quiet or backlog
+mail therefore does not queue the channel's coordinate work behind that scan.
+Neither executor uses the event loop's shared thread pool.
+
+The scan still reads current files: this is isolation, not a mailbox or Card
+cache, and it does not reduce the number or cost of filesystem reads. New mail
+is discovered as before; quiet-token invalidation and operator-mail admission
+remain unchanged. Notification locks remain held until each thread-backed call
+finishes, including on cancellation. Recovery scans that can move files and all
+store writes remain on the serialized store path. Synthetic isolation tests
+are not a live equal-load acceptance capture or authorization to restart a host.
+
 ### Why the two runtimes wake differently
 
 The two runtimes cannot share one wake, because each admits a new model turn
