@@ -349,6 +349,9 @@ class HandleBindingTarget:
     async def _committed_is_live(self, binding: EffectBinding, payload: Mapping[str, Any]) -> bool:
         member_id, receipt = await self._member_receipt(binding, payload["access_id"])
         committed = CardCurrentPointer.from_mapping(receipt["after"])
+        if (committed.card_revision, committed.expires_at) != (payload["card_revision"], payload["expires_at"]):
+            # A second guard beside the applier's: the payload names exactly this member's committed AFTER.
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
         if committed.state != CARD_STATE_ACTIVE:
             return False  # an ending Card never re-points an active binding
         subject_hash, access_id = receipt["subject_hash"], receipt["access_id"]
@@ -366,15 +369,30 @@ class HandleBindingTarget:
                                                  identity.get("from_expires_at")) != (
                 payload["from_identity"], payload["from_revision"], payload["from_expires_at"]):
             raise ParticipantEffectRefused("card_effect_target_revision_moved")
+        if payload["from_fingerprint"]:
+            # An agent row: prepare the same bearer's AFTER envelope now, so a re-wrap that cannot
+            # succeed refuses the edit here instead of committing a Card whose bearer stops serving.
+            try:
+                await self._operation("stage_rewrap")(binding.transaction_id, payload["access_id"], payload)
+            except ParticipantEffectRefused:
+                raise
+            except Exception:
+                raise ParticipantEffectRefused("card_effect_custody_unavailable") from None
         return binding.effect_digest
 
     async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
         if not await self._committed_is_live(binding, payload):
+            if payload["from_fingerprint"]:
+                await self._operation("discard_rewrap")(binding.transaction_id, payload["access_id"], payload)
             return CREDENTIAL_ISSUE_SUPERSEDED
-        outcome = await self._operation("advance_binding")(
-            payload["access_id"], from_identity=payload["from_identity"], from_revision=payload["from_revision"],
-            from_expires_at=payload["from_expires_at"], to_revision=payload["card_revision"],
-            to_expires_at=payload["expires_at"])
+        if payload["from_fingerprint"]:
+            # An agent row: install the envelope STAGE prepared (same bearer, fresh ref, AFTER binding).
+            outcome = await self._operation("commit_rewrap")(binding.transaction_id, payload["access_id"], payload)
+        else:
+            outcome = await self._operation("advance_binding")(
+                payload["access_id"], from_identity=payload["from_identity"], from_revision=payload["from_revision"],
+                from_expires_at=payload["from_expires_at"], to_revision=payload["card_revision"],
+                to_expires_at=payload["expires_at"])
         if outcome == "applied":
             return binding.effect_digest
         if outcome == CREDENTIAL_ISSUE_SUPERSEDED:
@@ -382,7 +400,10 @@ class HandleBindingTarget:
         raise ParticipantEffectRefused("card_effect_binding_mismatch")
 
     async def release_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
-        return binding.effect_digest  # STAGE held nothing: the row moves only at COMMIT
+        # A recorded ABORT: an agent row's prepared envelope goes; the active row never moved.
+        if payload["from_fingerprint"]:
+            await self._operation("discard_rewrap")(binding.transaction_id, payload["access_id"], payload)
+        return binding.effect_digest
 
 
 def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any,

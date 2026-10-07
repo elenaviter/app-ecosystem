@@ -112,7 +112,7 @@ def _no_secret_fields(value: Any, depth: int = 0) -> None:
 
 def _payload(kind: str, key: str, value: Any, access_id: str,
              base_revision: int, subject_hash: str,
-             members: Mapping[str, tuple[int, int, int]] | None = None) -> str:
+             members: Mapping[str, tuple[int, int, int] | None] | None = None) -> str:
     if not isinstance(value, Mapping):
         _refuse("card_effect_payload_invalid")
     _no_secret_fields(value)
@@ -127,8 +127,8 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
         # W603: one reserved original credential, activated by this decision's COMMIT.
         "credential_issue": {"access_id", "slot", "expires_at", "card_revision"},
         # W606: move one member Card's handle row to the committed AFTER, from its pinned identity.
-        "handle_binding": {"access_id", "from_identity", "from_revision", "from_expires_at", "card_revision",
-                           "expires_at"},
+        "handle_binding": {"access_id", "from_identity", "from_fingerprint", "from_revision", "from_expires_at",
+                           "card_revision", "expires_at", "prepared_at"},
     }[kind]
     bound_elsewhere = kind in ("invocation_policy", "handle_binding")
     if set(value) != keys or (not bound_elsewhere and value.get("access_id") != access_id):
@@ -180,17 +180,30 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
             _refuse("card_effect_payload_invalid")
     elif kind == "handle_binding":
         # Bound to the member Card it names: its own base revision and committed AFTER (any group member).
-        member = (members or {}).get(value["access_id"]) if type(value["access_id"]) is str else None
-        if member is None or key != "handle:" + value["access_id"]:
+        listed = type(value["access_id"]) is str and value["access_id"] in (members or {})
+        member = (members or {}).get(value["access_id"]) if listed else None
+        if not listed or key != "handle:" + value["access_id"]:
             _refuse("card_effect_payload_binding_invalid")
         if (any(type(value[name]) is not int or isinstance(value[name], bool)
                 for name in ("from_revision", "from_expires_at", "card_revision", "expires_at"))
-                or type(value["from_identity"]) is not str or not _HEX.fullmatch(value["from_identity"])):
+                or type(value["from_identity"]) is not str or not _HEX.fullmatch(value["from_identity"])
+                or type(value["from_fingerprint"]) is not str
+                or (value["from_fingerprint"] and not _HEX.fullmatch(value["from_fingerprint"]))
+                or type(value["prepared_at"]) is not int or isinstance(value["prepared_at"], bool)
+                # An agent row's re-wrap is prepared at a fixed instant (its envelope's created_at).
+                or (value["from_fingerprint"] and not 1 <= value["prepared_at"] < value["expires_at"])
+                or (not value["from_fingerprint"] and value["prepared_at"] != 0)):
             _refuse("card_effect_payload_invalid")
-        base, after_revision, after_expires_at = member
-        if (value["from_revision"] != base or value["card_revision"] != after_revision
-                or value["expires_at"] != after_expires_at or base < 1):
-            _refuse("card_effect_base_revision_mismatch")
+        if member is None:
+            # STAGE of a group's lead: this member is listed but not staged yet. Only the payload's own
+            # consistency is checkable now; apply binds it exactly to the member's committed receipt.
+            if value["from_revision"] < 1 or value["card_revision"] != value["from_revision"] + 1:
+                _refuse("card_effect_base_revision_mismatch")
+        else:
+            base, after_revision, after_expires_at = member
+            if (value["from_revision"] != base or value["card_revision"] != after_revision
+                    or value["expires_at"] != after_expires_at or base < 1):
+                _refuse("card_effect_base_revision_mismatch")
     elif kind == "credential_issue":
         if key not in {"access", "refresh"} or value["slot"] != key or value["expires_at"] < 1:
             _refuse("card_effect_payload_invalid")
@@ -307,7 +320,8 @@ class ParticipantEffectApplier:
         return await self._bound(phase, kind, key, payload, transaction_id=transaction_id, receipt=receipt,
                                  bound_access_id=bound_access_id, base_revision=base_revision)
 
-    async def _binding_members(self, receipt: Mapping[str, Any]) -> dict[str, tuple[int, int, int]]:
+    async def _binding_members(self, receipt: Mapping[str, Any], *,
+                               staged_only: bool = False) -> dict[str, tuple[int, int, int] | None]:
         """W606: each Card this receipt commits -> (base revision, committed revision, committed expiry).
 
         A single Card's receipt names one; a group lead's names every member,
@@ -325,9 +339,12 @@ class ParticipantEffectApplier:
         aggregate = await self._read_receipt(str(group.get("transaction_id")))
         if not isinstance(aggregate, Mapping) or not isinstance(aggregate.get("members"), list):
             _refuse("card_effect_receipt_binding_invalid")
-        members: dict[str, tuple[int, int, int]] = {}
+        members: dict[str, tuple[int, int, int] | None] = {}
         for listed in aggregate["members"]:
             found = await self._read_receipt(str(listed.get("transaction_id")))
+            if found is None and staged_only and isinstance(listed.get("access_id"), str):
+                members[listed["access_id"]] = None  # STAGE: listed in the group, staged after the lead
+                continue
             if not isinstance(found, Mapping) or found.get("access_id") != listed.get("access_id"):
                 _refuse("card_effect_receipt_binding_invalid")
             access_id, member = entry(found)
@@ -384,7 +401,8 @@ class ParticipantEffectApplier:
         created = receipt.get("before", {}) is None
         members = None
         if any(isinstance(effect, Mapping) and effect.get("kind") == "handle_binding" for effect in effects):
-            members = await self._binding_members(receipt)
+            # Before COMMIT (STAGE, or a recorded ABORT) a group's later members may not be staged yet.
+            members = await self._binding_members(receipt, staged_only=phase != "apply")
         if kind == "handle_binding" and members is None:
             _refuse("card_effect_not_prepared")
         requested = _payload(kind, key, payload, bound_access_id, base_revision, receipt["subject_hash"], members)

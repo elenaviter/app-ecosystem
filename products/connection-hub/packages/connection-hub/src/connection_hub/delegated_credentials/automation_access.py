@@ -2474,11 +2474,13 @@ class AutomationAccessService:
             if original is None or candidate.state != CARD_STATE_ACTIVE:
                 continue
             identity = await handles.binding_identity(candidate.access_id)
-            if (not isinstance(identity, Mapping) or identity.get("from_revision") != original.card_revision
-                    or identity.get("resident_secret")):
-                continue  # no row, a row not at the base revision, or a resident agent secret (not moved here)
+            if not isinstance(identity, Mapping) or identity.get("from_revision") != original.card_revision:
+                continue  # no row, or a row not at the base revision
             effects.append({"kind": "handle_binding", "key": f"handle:{candidate.access_id}", "payload": {
                 "access_id": candidate.access_id, "from_identity": identity["from_identity"],
+                "from_fingerprint": identity["from_fingerprint"],
+                # An agent row's re-wrap envelope is prepared at this fixed instant (0 when there is none).
+                "prepared_at": int(time.time()) if identity["from_fingerprint"] else 0,
                 "from_revision": identity["from_revision"], "from_expires_at": identity["from_expires_at"],
                 "card_revision": candidate.card_revision, "expires_at": candidate.expires_at}})
         return effects
@@ -10106,11 +10108,13 @@ class AutomationAccessService:
                   "payload": {"access_id": members[0][0].access_id if members else "",
                               "grantor_subject": grantor_subject, "provider_id": provider_id,
                               "account_id": account_id, "incarnation": incarnation}}
+        # W606: each credential-bearing member Card's handle row moves with the disconnect's decision.
+        bindings = await self._handle_binding_effects(members) if members else []
         if members:
             participant_input = hub_group_participant_input(
                 members=[group_member(original=current, candidate=candidate, action="update")
                          for current, candidate in members],
-                actor_subject=grantor_subject, actor_kind="grantor", effects=[effect])
+                actor_subject=grantor_subject, actor_kind="grantor", effects=[effect, *bindings])
         else:
             participant_input = hub_effects_participant_input(
                 subject_hash=subject_hash, effects=[effect], actor_subject=grantor_subject, actor_kind="grantor")
@@ -10134,7 +10138,7 @@ class AutomationAccessService:
                 members=tuple(CardGroupMemberIntent(subject_hash=subject_hash, original=current,
                                                     candidate=candidate, action="update")
                               for current, candidate in members),
-                effects=(effect,), actor_subject=grantor_subject, actor_kind="grantor") if members else
+                effects=(effect, *bindings), actor_subject=grantor_subject, actor_kind="grantor") if members else
                 CardEffectsIntent(transaction_id=transaction_id, intent_digest=row.intent.digest,
                                   subject_hash=subject_hash, effects=(effect,), actor_subject=grantor_subject,
                                   actor_kind="grantor"))
