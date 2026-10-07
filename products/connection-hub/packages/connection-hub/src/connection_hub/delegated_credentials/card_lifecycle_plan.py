@@ -374,6 +374,8 @@ async def plan_card_lifecycle(
         now = int(time.time())
         planned: dict[str, CardAuthority] = {}
         members: list[dict[str, Any]] = []
+        # W607: each member's exact original (None for a creation), for the public before/after display.
+        originals: dict[tuple[str, str], Mapping[str, Any] | None] = {}
         reads_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         live_cache: dict[tuple[str, str], CardAuthority | None] = {}
         row_config: dict[str, Any] = {}
@@ -614,6 +616,7 @@ async def plan_card_lifecycle(
                     raise CardLifecyclePlanRefused("card_plan_target_exists")
                 planned[ref] = base
                 members.append(group_member(original=None, candidate=base, action="create"))
+                originals[(subject_hash_for(base.grantor_subject), base.access_id)] = None
                 del pending[ref]
                 progressed = True
             if not progressed:
@@ -622,7 +625,9 @@ async def plan_card_lifecycle(
         for index, raw in enumerate(updates):
             if (not isinstance(raw, Mapping)
                     or not {"kind", "target_subject", "access_id", "subject_hash", "original_revision"} <= set(raw)
-                    or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent"}):
+                    or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent",
+                                   "selection"}
+                    or ("selection" in raw) != (raw.get("kind") == "reselect")):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             decision = authorization.decision_for(f"update:{index}")
             access_id = _required_text(raw["access_id"], "card_plan_update_invalid")
@@ -646,6 +651,20 @@ async def plan_card_lifecycle(
             except ProjectInvitationControlError:
                 invitation_identity = None
             target = _required_text(raw["target_subject"], "card_plan_target_invalid")
+            if raw["kind"] == "reselect":
+                # W607: an existing person Control or My Card takes a PB-supplied selection. The helper
+                # checks its identity, project, person and the step's decision; nothing is written.
+                if "parent" in raw:
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                from connection_hub.delegated_credentials.existing_card_selection_plan import (
+                    build_existing_card_selection_update,
+                )
+                built = await build_existing_card_selection_update(
+                    host, original=original, selection=raw["selection"], active=active, decision=decision,
+                    project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now)
+                members.append(built["member"])
+                originals[(subject_hash, access_id)] = original.to_dict()
+                continue
             if (person_identity is None and invitation_identity is None
                     or person_identity is not None and person_identity.project_ref != scope
                     or invitation_identity is not None and invitation_identity.project_ref != scope
@@ -682,6 +701,7 @@ async def plan_card_lifecycle(
             else:
                 raise CardLifecyclePlanRefused("card_plan_update_action_invalid", 400)
             members.append(group_member(original=original, candidate=candidate, action=action))
+            originals[(subject_hash, access_id)] = original.to_dict()
 
         # The graph helper resolves planned parents before current live
         # parents and invokes the same hierarchy composer staging uses.
@@ -690,6 +710,9 @@ async def plan_card_lifecycle(
         await compose_group_chains(members, load_live)
         reads = [reads_by_key[key] for key in sorted(reads_by_key)]
         candidate_value = group_candidate_value(members)
+        # W607: the public before/after of every member, from the exact originals loaded above.
+        from connection_hub.delegated_credentials.plan_display import plan_display
+        display = plan_display(candidate_value, originals)
         participant_input = hub_group_participant_input(
             members=members, actor_subject=actor, actor_kind=actor_kind,
             reads=reads, catalog_version_digest=digest,
@@ -699,6 +722,7 @@ async def plan_card_lifecycle(
             "participant_input": participant_input,
             "reads": reads,
             "catalog_digest": digest,
+            "display": display,
         }}
     except CardLifecyclePlanRefused as exc:
         return {"ok": False, "error": exc.reason, "status": exc.status}
