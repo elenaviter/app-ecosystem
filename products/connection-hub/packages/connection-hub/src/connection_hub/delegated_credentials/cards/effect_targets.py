@@ -142,8 +142,41 @@ class GrantUnbindTarget:
         return binding.effect_digest
 
 
+class AccountDeleteTarget:
+    """W578: a disconnect's deletion of exactly the account incarnation its decision named.
+
+    ``accounts_for(grantor_subject)`` is that grantor's connected-account store.
+    Applied only after COMMIT. A reconnection of the same deterministic account
+    id is another incarnation and is left as it is (``account_reconnected``); an
+    account already gone is ``account_absent``. Every outcome is final, so a
+    replay after a crash before FINISH lands on the same state.
+    """
+
+    def __init__(self, accounts_for: Any) -> None:
+        self._accounts_for = accounts_for
+
+    async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        if self._accounts_for is None:
+            raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+        accounts = self._accounts_for(payload["grantor_subject"])
+        disconnect = getattr(accounts, "disconnect_incarnation", None)
+        if disconnect is None:
+            raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+        # The effect's own identity pins the first completed outcome; a replay returns it.
+        outcome = await disconnect(payload["account_id"], payload["incarnation"], pin=binding.effect_digest)
+        if outcome not in ("disconnected", "account_absent", "account_reconnected"):
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
+        return binding.effect_digest
+
+    async def prepare_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        return binding.effect_digest  # nothing to prepare: the account goes only after COMMIT
+
+    async def release_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        return binding.effect_digest
+
+
 def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any,
-                         policies: Any) -> ParticipantEffectApplier:
+                         policies: Any, accounts_for: Any = None) -> ParticipantEffectApplier:
     """Bind one validated applier to a Card service's effect hooks.
 
     The receipt reader is the Card store's own durable receipt; the targets are
@@ -157,6 +190,7 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
         "credential_lifetime": CredentialLifetimeTarget(grant_store),
         "invocation_policy": InvocationPolicyTarget(policies),
         "grant_unbind": GrantUnbindTarget(grant_store),
+        "account_delete": AccountDeleteTarget(accounts_for),
     })
     card_service.bind_effect_applier(applier.apply)
     card_service.bind_effect_preparer(applier.prepare)
@@ -164,5 +198,5 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
     return applier
 
 
-__all__ = ["CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
+__all__ = ["AccountDeleteTarget", "CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
            "NO_ACTIVE_CREDENTIALS", "compose_card_effects"]
