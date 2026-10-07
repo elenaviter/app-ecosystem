@@ -1640,15 +1640,18 @@ bundles:
                 - "kdcube.management.application.reload"
                 request_permit_ttl_seconds: 600
               # W609: Problem Board reads one Telegram subject per platform user
-              # (identity_provider_subject_resolve) to post its notifications. Its
-              # OWN signing secret (never another service's); the resource names
-              # the one provider it may read.
+              # (identity_provider_subject_resolve) to post its notifications.
+              # W615: it also asks project_operation_authorize_for_person for a
+              # Telegram reply's sender, proven through that person's Telegram
+              # edge. Its OWN signing secret (never another service's); each
+              # resource names one provider and one purpose.
               problem-board:
-                label: "Problem Board notification recipients"
+                label: "Problem Board (Telegram notifications and replies)"
                 enabled: true
                 secret_ref: "connections.delegated_credentials.admission.services.problem-board.signing_secret"
                 resources:
                 - "urn:kdcube:identity:provider-subject:telegram"
+                - "urn:kdcube:project-operation:telegram"
           # Legacy connection-provider app registry. New per-user delegated
           # external credentials live under delegated_to_kdcube below.
         providers: {}
