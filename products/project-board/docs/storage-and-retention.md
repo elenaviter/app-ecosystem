@@ -465,15 +465,18 @@ is answered as already recorded, other content is an idempotency conflict. So
 an agent's latest runtime-account change, which every heartbeat repeats, moves
 like any event.
 
-Two kinds of events are still kept past the window, each an open operator
-decision: `worker.retired` (the Archive page shows a retired agent's projects
-and former role from it) and each agent's latest tooling notice of each kind
-(its Card shows that state).
+One kind of event stays past the window: each agent's latest tooling notice
+of each kind in each project, the status its Card there shows (the operator,
+2026-10-08: "its \"lates status\" so latest status is always only one"). Every
+older notice moves. `worker.retired` moves too: the Archive page reads a
+retired agent's projects and former role back through the one cold reader,
+by agent and kind, and the retired-agent lists use the index rows.
 
 **Reading the archive: one place.** The operator, 2026-10-08: "it must be the
 single place where this is done. where data is requested for date range." Old
-events are read back only by a request with a date range, with the cold
-layout's filters: project and agent (`archived_events`). A Timeline search
+events are read back only through `archived_events`: by a date range with the
+cold layout's filters (project, agent), or, for the Archive page, one agent's
+events of one kind. A Timeline search
 whose range starts before the newest archived event reads the archived days in
 that range; a search without dates reads Postgres only. No other reader goes
 to the archive, and there is no full-text search over it. An event in two
@@ -500,12 +503,17 @@ Read or unread makes no difference: every inbox message older than the window
 moves (the operator, 2026-10-07: "what is the difference between the message
 someone read or no … it is still blowup the postgres").
 
-Rows move whole. Two kinds of messages are still kept past the window, each
-an open operator decision: a control not yet delivered (pending, leased, or
-with a discard requested) and each agent's latest notice of a kind. A settled
-control moves even when an active assignment or a retirement still names it:
-both read its index row (its ref, routing, sender and payload hash; its
-payload was erased at settlement).
+Rows move whole. Each agent's latest notice of a kind stays past the window
+(its current status). Mail an agent never received does not wait forever: the
+operator, 2026-10-08: "(B) expire it, tell the sender, and move it." The same
+nightly job marks a control still pending, or leased with a lapsed lease,
+older than the window `expired`; it is never delivered afterwards. Its sender
+is told which message expired and why (an agent by a control from Problem
+Board, a person in their Inbox); each notice has a fixed id, so a rerun sends
+nothing twice. Once the notice is recorded, the expired control moves like
+any other row on a later run. A settled control moves even when an active
+assignment or a retirement still names it: both read its index row (its ref,
+routing, sender and payload hash; its payload was erased at settlement).
 
 A message and the control that answered it move together. A row is deleted
 only while it equals its archived copy in every column; a reply or an edit
@@ -565,6 +573,12 @@ parts and index rows. So before such a rollback, the board's
   batch's ledger row.
 
 The parts stay in storage. Running it twice on the same day changes nothing.
+
+**Running it now.** The operator wants each archive run checked right after a
+deploy, not at night. The job runs on demand by setting its schedule
+(`event_archive_cron`) to a near-term UTC minute, reloading, reading back the
+scheduled job, and restoring `40 2 * * *` afterwards; the steps are in the
+board's `docs/event-archive-schedule.md`. Never call the job directly.
 
 The bundle property `enabled.cron.event-archive: false` turns the job off.
 Deleting rows makes their space reusable for new rows; it does not shrink the
