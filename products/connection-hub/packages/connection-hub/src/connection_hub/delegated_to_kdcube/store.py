@@ -130,6 +130,10 @@ class DelegatedToKdcubeStore:
         # account write takes it; the incarnation operations refuse without it.
         self._account_lock = account_lock
 
+    def bind_account_lock(self, account_lock: Any) -> None:
+        """W578: bind the composition's shared account lock to a store built without it."""
+        self._account_lock = account_lock
+
     def _account_section(self, account_id: str):
         if self._account_lock is None:
             return contextlib.nullcontext()

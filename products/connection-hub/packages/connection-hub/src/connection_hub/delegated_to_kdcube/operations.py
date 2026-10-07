@@ -335,7 +335,14 @@ class DelegatedToKdcubeOperations:
             credential_id=as_str(payload.get("credential_id")),
             metadata=as_dict(payload.get("metadata")),
         )
-        stored = await self.store.upsert_account(account)
+        from .store import AccountDisconnectPending
+
+        try:
+            stored = await self.store.upsert_account(account)
+        except AccountDisconnectPending:
+            # W578: a disconnect of this account is being decided; the person retries.
+            return {"ok": False, "error": "account_disconnect_pending", "retryable": True, "status": 409,
+                    "message": "This account is being disconnected. Try connecting it again in a moment."}
         credential_id = stored.credential_id or credential_id_for(stored.account_id)
         credential_with_metadata = {
             "provider_id": provider_id,

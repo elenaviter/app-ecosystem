@@ -3,9 +3,11 @@ from __future__ import annotations
 import logging
 import asyncio
 import copy
+import hashlib
 import html
 import inspect
 import json
+import pathlib
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -624,6 +626,38 @@ def _contains_authenticator_secret_value(payload: Mapping[str, Any]) -> bool:
         if isinstance(value, Mapping) and _contains_authenticator_secret_value(value):
             return True
     return False
+
+
+def _account_lock(entrypoint: Any) -> Any:
+    """W578: the shared lock of one connected-account record, across every process of this deployment.
+
+    KDCube's ``observed_file_lock_async`` (the Card store's own production
+    lock) on a file per (user, account) in the bundle storage, so every
+    process that writes account records serializes on it. ``None`` without
+    bundle storage: the incarnation operations then refuse as unavailable.
+    """
+    root = entrypoint.bundle_storage_root() if callable(getattr(entrypoint, "bundle_storage_root", None)) else None
+    if root is None:
+        return None
+    from kdcube_ai_app.storage.observed_file_locks import observed_file_lock_async
+
+    base = pathlib.Path(root) / "connection-hub" / "account-locks"
+
+    def lock(user_id: str, account_id: str):
+        key = hashlib.sha256(f"{user_id}\0{account_id}".encode("utf-8")).hexdigest()
+        return observed_file_lock_async(lock_path=base / f"{key}.lock", resource_id=f"connected-account:{key}",
+                                        operation="connected-account-record", wait_seconds=30.0)
+
+    return lock
+
+
+def _delegated_to_kdcube_store(entrypoint: Any, user_id: str) -> Any:
+    """A connected-account store for one user, bound to the shared account lock (W578)."""
+    store = DelegatedToKdcubeStore(user_id=user_id, bundle_id=BUNDLE_ID)
+    lock = _account_lock(entrypoint)
+    if lock is not None and callable(getattr(store, "bind_account_lock", None)):
+        store.bind_account_lock(lock)
+    return store
 
 
 def _storage_root_or_error(entrypoint: Any) -> Any:
@@ -1599,7 +1633,8 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
     bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
                            policies=_invocation_policy_service(entrypoint),
                            authorities=(await _card_participant_callers(entrypoint, persistence)).authorities,
-                           catalog_store=_delegated_catalog_store(entrypoint))
+                           catalog_store=_delegated_catalog_store(entrypoint),
+                           accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner))
 
 
 async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
@@ -1667,7 +1702,7 @@ def _delegated_to_kdcube_operations(entrypoint: Any, platform_user_id: str) -> A
         user_id=platform_user_id,
         config=delegated_to_kdcube_config(getattr(entrypoint, "bundle_props", {}) or {}),
         bundle_id=BUNDLE_ID,
-        store=DelegatedToKdcubeStore(user_id=platform_user_id, bundle_id=BUNDLE_ID),
+        store=_delegated_to_kdcube_store(entrypoint, platform_user_id),
         consent_granted_notifier=_consent_granted_notifier,
     )
 
@@ -1756,7 +1791,7 @@ async def _project_github_key(entrypoint: Any, request: Any, user: Mapping[str, 
         access=await _automation_access_service(entrypoint, request),
         user=user,
         config=delegated_to_kdcube_config(getattr(entrypoint, "bundle_props", {}) or {}),
-        store=DelegatedToKdcubeStore(user_id=platform_user_id, bundle_id=BUNDLE_ID),
+        store=_delegated_to_kdcube_store(entrypoint, platform_user_id),
         client_secret_resolver=_client_secret_resolver,
         refresh_lock=_delegated_to_kdcube_refresh_lock(entrypoint),
     )
@@ -3854,7 +3889,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         issuer = AgentGitHubTokenIssuer(
             access=access,
             config=delegated_to_kdcube_config(getattr(self, "bundle_props", {}) or {}),
-            store_for=lambda owner: DelegatedToKdcubeStore(user_id=owner, bundle_id=BUNDLE_ID),
+            store_for=lambda owner: _delegated_to_kdcube_store(self, owner),
             authorize=descriptor_github_authorizer(self, resolve_secret=_resolve_secret),
             client_secret_resolver=_client_secret_resolver,
             refresh_lock=_delegated_to_kdcube_refresh_lock(self),
@@ -7014,8 +7049,25 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if not isinstance(provider_id, str) or not provider_id.strip():
             return {**refusal, "reason": "account_provider_unavailable"}
         provider_id = provider_id.strip()
+        # W578: with Card transactions on, the bindings and the account go
+        # under ONE group decision; None keeps this ordered path (transactions
+        # off, or no Card binds the account).
         try:
-            pruned = await (await _automation_access_service(self, request)).prune_account_from_grants(
+            access = await _automation_access_service(self, request)
+            in_transaction = getattr(access, "disconnect_account_in_transaction", None)
+            transactional = (await in_transaction(grantor_subject=platform_user_id, provider_id=provider_id,
+                                                  account_id=resolved_account_id)
+                             if callable(in_transaction) else None)
+        except Exception:
+            LOGGER.warning(
+                "[connection-hub.delegated_to_kdcube] disconnect refused: account transaction unavailable "
+                "account=%s provider=%s", resolved_account_id, provider_id, exc_info=True,
+            )
+            return {**refusal, "reason": "account_transaction_unavailable", "status": 503}
+        if transactional is not None:
+            return {**transactional, "account_id": resolved_account_id}
+        try:
+            pruned = await access.prune_account_from_grants(
                 grantor_subject=platform_user_id,
                 provider_id=provider_id,
                 account_id=resolved_account_id,
