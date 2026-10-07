@@ -52,14 +52,15 @@ def _account(**changes) -> ConnectedAccount:
 
 
 @pytest.mark.asyncio
-async def test_a_connection_keeps_its_incarnation_through_updates_and_gets_a_new_one_after_a_disconnect():
+async def test_every_connection_is_a_new_incarnation_and_a_status_change_keeps_it():
     store = _store()
     first = await store.upsert_account(_account())
     assert len(first.incarnation) == 32
-    again = await store.upsert_account(_account(display_name="renamed"))  # a reconnect without disconnect
-    assert again.incarnation == first.incarnation
+    again = await store.upsert_account(_account(display_name="renamed"))  # a reconnect: fresh consent
+    assert again.incarnation and again.incarnation != first.incarnation
     status = await store.set_account_status("account-1", "revoked")
-    assert status.incarnation == first.incarnation
+    assert status.incarnation == again.incarnation
+    first = again
     assert await store.disconnect_account("account-1")
     reconnected = await store.upsert_account(_account(incarnation=first.incarnation))  # a stale carried one
     assert reconnected.credential_id == first.credential_id  # deterministic: no proof of identity
@@ -221,7 +222,7 @@ async def test_a_staged_hold_refuses_a_reconnect_until_the_decision_and_abort_re
         await store.upsert_account(_account(display_name="reconnect"))
     await target.release_once(_binding(), payload)  # ABORT
     again = await store.upsert_account(_account(display_name="reconnect"))
-    assert again.incarnation == first.incarnation and await store.get_account("account-1") is not None
+    assert again.incarnation != first.incarnation and await store.get_account("account-1") is not None
 
 
 @pytest.mark.asyncio

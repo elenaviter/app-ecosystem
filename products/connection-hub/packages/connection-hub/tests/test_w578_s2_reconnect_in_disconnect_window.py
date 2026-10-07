@@ -24,10 +24,8 @@ from test_w578_account_incarnation import GRANTOR, _account, _store
 async def test_a_reconnect_after_the_disconnect_bound_its_incarnation_survives_the_delayed_effect():
     store = _store()
     first = await store.upsert_account(_account())
-    bound = await store.ensure_incarnation("account-1")  # the disconnect's plan binds the incarnation
+    bound = await store.ensure_incarnation("account-1")  # the disconnect's prepare
     assert bound == first.incarnation
-    # claude-app: the effect's STAGE (prepare_once) holds it; a crash before STAGE leaves no hold.
-    await store.hold_incarnation_for_delete("account-1", bound, pin="e" * 64)
 
     # The person reconnects (operations.py: upsert_account, then set_credential).
     refused = None

@@ -427,9 +427,9 @@ class ConnectedAccount:
     connected_at: str = ""
     updated_at: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
-    # W578: random per connection, kept while the account record exists and
-    # minted anew after a disconnect, so a delayed cleanup of one connection
-    # never removes a later reconnection of the same deterministic account id.
+    # W578: random per connection established by consent (every upsert, a
+    # reconnect included), kept by status changes, so a delayed cleanup of one
+    # connection never removes a later reconnection of the same account id.
     incarnation: str = ""
 
     @property

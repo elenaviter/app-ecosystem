@@ -269,12 +269,12 @@ class DelegatedToKdcubeStore:
             workspace=account.workspace,
         )
         now = utc_now()
-        existing = await self.get_account(account_id)
-        # W578: a stored connection keeps its incarnation; only a stored absence mints one.
-        # A caller-carried incarnation is never used: a stale one could resurrect a
-        # disconnected connection's identity.
-        incarnation = (existing.incarnation if existing is not None and existing.incarnation
-                       else secrets.token_hex(16))
+        # W578 (claude-main, #644): every upsert is a connection established by
+        # fresh consent, so it is a NEW incarnation, a reconnect included. A
+        # disconnect planned against the previous one then refuses at STAGE
+        # (account_incarnation_moved) instead of deleting this connection. A
+        # caller-carried incarnation is never used; status changes keep it.
+        incarnation = secrets.token_hex(16)
         stored = ConnectedAccount(
             account_id=account_id,
             provider_id=account.provider_id,
