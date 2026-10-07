@@ -62,6 +62,10 @@ from connection_hub.delegated_credentials.project_invitation_pending import (
 )
 
 
+# W502 join: the one answer for every pending-revision refusal before the email binding.
+PENDING_REVISION_REFUSED = {"ok": False, "error": "project_invitation_pending_unavailable", "status": 403}
+
+
 def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
     return {
         "ok": False,
@@ -202,13 +206,17 @@ class ProjectInvitationRedemption:
         this session's person and verified email, and the Card must name that
         email, this project, invitation and control id, and still be pending
         (active). Returns nothing else: no selection, grants, audit or admin view.
+
+        No probing (Main, CodeApp): every refusal before the email binding
+        succeeds is the one ``PENDING_REVISION_REFUSED``, whatever the cause;
+        only a bound invitee learns that the Card is no longer pending. An
+        unavailable resolver or Card store stays a distinct retryable 503, since
+        it does not depend on the reference.
         """
 
         actor = str(actor_subject or "").strip()
-        if not actor:
-            return {"ok": False, "error": "project_invitation_binding_person_subject_missing", "status": 400}
-        if not str(control_id or "").strip():
-            return {"ok": False, "error": "project_invitation_control_id_mismatch", "status": 409}
+        if not actor or not str(control_id or "").strip():
+            return dict(PENDING_REVISION_REFUSED)
         evidence = await self._claims.evidence(
             actor_subject=actor,
             project_ref=project_ref,
@@ -216,17 +224,18 @@ class ProjectInvitationRedemption:
             control_id=control_id,
         )
         if isinstance(evidence, dict):
-            return evidence
+            return evidence if evidence.get("retryable") else dict(PENDING_REVISION_REFUSED)
         loaded = await self._pending_cards.load(
             project_ref=project_ref,
             invitation_ref=invitation_ref,
             control_id=control_id,
         )
         if isinstance(loaded, dict):
-            return loaded
+            return loaded if loaded.get("retryable") else dict(PENDING_REVISION_REFUSED)
         pending_record, pending_state, pending_identity = loaded
         if pending_identity.target_email_digest != evidence.email_digest:
-            return {"ok": False, "error": "project_invitation_binding_email_mismatch", "status": 403}
+            return dict(PENDING_REVISION_REFUSED)
+        # Bound: the invitee may learn that their own invitation is no longer pending.
         if pending_state != CARD_STATE_ACTIVE:
             return {"ok": False, "error": "project_invitation_control_not_active", "status": 409}
         return {
