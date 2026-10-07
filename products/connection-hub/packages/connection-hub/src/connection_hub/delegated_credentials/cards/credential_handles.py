@@ -123,9 +123,51 @@ class PostgresCardCredentialHandleStore:
             return None
         return {"from_identity": binding_identity_digest(current), "from_revision": current.card_revision,
                 "from_expires_at": current.expires_at,
-                # A resident secret's envelope is itself bound to the Card revision (resident_secrets.resolve);
-                # moving only this row would break that bearer, so the writer never moves such a row.
-                "resident_secret": bool(current.resident_access_secret_ref)}
+                # A resident agent secret's envelope is bound to the Card revision and expiry
+                # (resident_secrets.resolve), so such a row moves by re-wrapping the same bearer.
+                "from_fingerprint": current.resident_access_sha256 if current.resident_access_secret_ref else ""}
+
+    async def rebind_resident(self, access_id: str, *, from_identity: str, from_fingerprint: str,
+                              from_revision: int, from_expires_at: int, to_revision: int, to_expires_at: int) -> str:
+        """W606: move an agent row by re-wrapping the SAME bearer under a fresh ref bound to the AFTER Card.
+
+        The existing sanctioned transition (a new revision requires a new
+        secret ref): the bearer is read only through ``resolve`` at the BEFORE
+        revision and must hash to the row's fingerprint; ``install`` writes the
+        new envelope first, then moves the row by compare-and-set on its row
+        version, and retires the old ref only after. The bearer, its
+        fingerprint and the session id stay identical. ``applied`` (now, or a
+        replay that finds the row already at AFTER with the same fingerprint)
+        or ``superseded``. The bearer never leaves this method.
+        """
+        from connection_hub.delegated_credentials.cards.handle_binding import binding_identity_digest
+        from connection_hub.delegated_credentials.cards.handle_metadata import CardHandleMetadataConflict
+
+        current = await self._metadata.read_current(access_id)
+        if current is None or current.state != HANDLE_STATE_ACTIVE or not current.resident_access_secret_ref:
+            return "superseded"
+        if (current.card_revision, current.expires_at) == (to_revision, to_expires_at):
+            return "applied" if current.resident_access_sha256 == from_fingerprint else "superseded"
+        if binding_identity_digest(current) != from_identity:
+            return "superseded"
+        bearer = await self._resident_secrets.resolve(access_id)
+        from connection_hub.delegated_credentials.cards.resident_secrets.model import resident_bearer_fingerprint
+
+        if resident_bearer_fingerprint(bearer) != from_fingerprint:
+            raise CardCredentialHandleUnavailable("resident_card_secret_fingerprint_mismatch", access_id=access_id)
+        try:
+            await self._resident_secrets.install(
+                access_id=access_id, card_revision=to_revision, bearer=bearer, session_id=current.session_id,
+                expires_at=to_expires_at, expected_revision=current.revision)
+        except CardHandleMetadataConflict:
+            # Someone moved the row meanwhile: applied only if it is now exactly this effect's AFTER.
+            moved = await self._metadata.read_current(access_id)
+            if (moved is not None and moved.state == HANDLE_STATE_ACTIVE
+                    and (moved.card_revision, moved.expires_at, moved.resident_access_sha256)
+                    == (to_revision, to_expires_at, from_fingerprint)):
+                return "applied"
+            return "superseded"
+        return "applied"
 
     async def advance_binding(self, access_id: str, **binding: Any) -> str:
         """W606: the compare-and-set the ``handle_binding`` effect applies at COMMIT."""

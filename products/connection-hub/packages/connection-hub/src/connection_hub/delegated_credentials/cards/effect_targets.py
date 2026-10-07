@@ -371,10 +371,18 @@ class HandleBindingTarget:
     async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
         if not await self._committed_is_live(binding, payload):
             return CREDENTIAL_ISSUE_SUPERSEDED
-        outcome = await self._operation("advance_binding")(
-            payload["access_id"], from_identity=payload["from_identity"], from_revision=payload["from_revision"],
-            from_expires_at=payload["from_expires_at"], to_revision=payload["card_revision"],
-            to_expires_at=payload["expires_at"])
+        if payload["from_fingerprint"]:
+            # An agent row: re-wrap the same bearer under a fresh ref bound to the AFTER Card.
+            outcome = await self._operation("rebind_resident")(
+                payload["access_id"], from_identity=payload["from_identity"],
+                from_fingerprint=payload["from_fingerprint"], from_revision=payload["from_revision"],
+                from_expires_at=payload["from_expires_at"], to_revision=payload["card_revision"],
+                to_expires_at=payload["expires_at"])
+        else:
+            outcome = await self._operation("advance_binding")(
+                payload["access_id"], from_identity=payload["from_identity"], from_revision=payload["from_revision"],
+                from_expires_at=payload["from_expires_at"], to_revision=payload["card_revision"],
+                to_expires_at=payload["expires_at"])
         if outcome == "applied":
             return binding.effect_digest
         if outcome == CREDENTIAL_ISSUE_SUPERSEDED:

@@ -127,8 +127,8 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
         # W603: one reserved original credential, activated by this decision's COMMIT.
         "credential_issue": {"access_id", "slot", "expires_at", "card_revision"},
         # W606: move one member Card's handle row to the committed AFTER, from its pinned identity.
-        "handle_binding": {"access_id", "from_identity", "from_revision", "from_expires_at", "card_revision",
-                           "expires_at"},
+        "handle_binding": {"access_id", "from_identity", "from_fingerprint", "from_revision", "from_expires_at",
+                           "card_revision", "expires_at"},
     }[kind]
     bound_elsewhere = kind in ("invocation_policy", "handle_binding")
     if set(value) != keys or (not bound_elsewhere and value.get("access_id") != access_id):
@@ -185,7 +185,9 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
             _refuse("card_effect_payload_binding_invalid")
         if (any(type(value[name]) is not int or isinstance(value[name], bool)
                 for name in ("from_revision", "from_expires_at", "card_revision", "expires_at"))
-                or type(value["from_identity"]) is not str or not _HEX.fullmatch(value["from_identity"])):
+                or type(value["from_identity"]) is not str or not _HEX.fullmatch(value["from_identity"])
+                or type(value["from_fingerprint"]) is not str
+                or (value["from_fingerprint"] and not _HEX.fullmatch(value["from_fingerprint"]))):
             _refuse("card_effect_payload_invalid")
         base, after_revision, after_expires_at = member
         if (value["from_revision"] != base or value["card_revision"] != after_revision

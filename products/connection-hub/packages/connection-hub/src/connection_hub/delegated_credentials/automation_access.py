@@ -2474,11 +2474,11 @@ class AutomationAccessService:
             if original is None or candidate.state != CARD_STATE_ACTIVE:
                 continue
             identity = await handles.binding_identity(candidate.access_id)
-            if (not isinstance(identity, Mapping) or identity.get("from_revision") != original.card_revision
-                    or identity.get("resident_secret")):
-                continue  # no row, a row not at the base revision, or a resident agent secret (not moved here)
+            if not isinstance(identity, Mapping) or identity.get("from_revision") != original.card_revision:
+                continue  # no row, or a row not at the base revision
             effects.append({"kind": "handle_binding", "key": f"handle:{candidate.access_id}", "payload": {
                 "access_id": candidate.access_id, "from_identity": identity["from_identity"],
+                "from_fingerprint": identity["from_fingerprint"],
                 "from_revision": identity["from_revision"], "from_expires_at": identity["from_expires_at"],
                 "card_revision": candidate.card_revision, "expires_at": candidate.expires_at}})
         return effects
