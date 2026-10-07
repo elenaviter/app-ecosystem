@@ -118,6 +118,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-06 | Fixed census and participant contracts share authenticated response bytes | A closed trusted contract selection preserves participant vectors and binds census scope, person-list order, catalog flag, fresh attempt, peer identity and timestamp. Result policy, complete membership and write authority stay application-owned. [Public contract](../docs/service-foundation/durable-decision.md#fixed-census-contract). |
 
+| 2026-10-06 | Account disconnect refuses incomplete grant pruning | Deterministic account ids can revive surviving grant bindings after reconnect. The app now verifies complete pruning before disconnect, refuses unavailable or partial results, and retains the explicit concurrent-binding and post-prune failure limits. |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).

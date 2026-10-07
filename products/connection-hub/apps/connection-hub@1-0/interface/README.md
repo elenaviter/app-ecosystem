@@ -474,6 +474,25 @@ Example response:
 { "data": { "provider": "slack", "account_id": "<workspace_account_id>" } }
 ```
 
+The authenticated user's account store supplies the provider; the payload's
+`provider` is not authority. Before removing a connected account, the handler
+requires the grant-pruning service to confirm the complete result with
+`ok: true`, an empty `not_pruned` list and consistent `pruned` / `grants` fields.
+An unreadable account, unavailable service, partial pruning, or incomplete
+response returns `ok: false`, `removed: false`,
+`error: account_binding_not_pruned`, `status: 409` and `retryable: true` without
+calling disconnect. An already absent account returns the ordinary not-removed
+result without a destructive call. Successful removals retain
+`bindings_cleared` and `bindings_cleared_grants` when bindings were pruned.
+
+Pruning may already have narrowed some grants before a refusal. Retry only
+after the reported dependency or pending Card operation is resolved. This
+ordering does not atomically fence a concurrent new binding or account
+replacement, and a later disconnect failure does not undo completed pruning.
+Those cases require the shared prepare/decision/recovery participant boundary.
+Re-approval through **Reconnect**, without disconnecting, keeps existing
+bindings.
+
 `delegated_to_kdcube_connect_credential` (iCloud):
 
 ```json
