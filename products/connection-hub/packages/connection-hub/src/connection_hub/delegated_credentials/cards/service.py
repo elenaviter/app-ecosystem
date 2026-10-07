@@ -600,6 +600,100 @@ class DelegatedCardService:
         return await finish_read_set(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                      decision=decision, reason=reason)
 
+    async def stage_effects_transaction(
+        self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str, effects: Any,
+    ) -> dict[str, Any]:
+        """W578: an effects-only transaction (card_effects.py): no Card, one owner's bounded effects.
+
+        Inside the section of every account the effects delete (taken in one
+        sorted order, the same sections the fence's reserve and release take):
+        each account's fence must be this transaction's, so COMMIT can only
+        ever apply an effect whose account no new binding can reach; then the
+        receipt; then STAGE prepares each effect (account_delete holds the
+        exact incarnation, refusing when the stored account is another one).
+        A refused preparation leaves the receipt prepared: the initiator's
+        ABORT releases whatever was prepared, and the fence.
+        """
+        from ..durable_io import read_json_or_none
+        from .account_fence import fence_holder
+        from .card_effects import effect_accounts
+        from .transaction_store import CardTransactionRefused, prepare_effects, tombstone_path
+
+        accounts = effect_accounts(effects or ())
+        if not accounts:
+            raise CardTransactionRefused("card_transaction_effects_invalid")
+        try:
+            async with AsyncExitStack() as sections:
+                for provider_id, account_id in accounts:
+                    await sections.enter_async_context(self._account_fence_section(provider_id, account_id))
+                if await read_json_or_none(tombstone_path(self._store, transaction_id)) is not None:
+                    raise CardTransactionRefused("card_transaction_aborted")  # a late stage after its ABORT
+                for provider_id, account_id in accounts:
+                    if await fence_holder(self._store, provider_id, account_id) != transaction_id:
+                        raise CardTransactionRefused("card_account_not_reserved")
+                prepared = await prepare_effects(self._store, transaction_id=transaction_id,
+                                                 intent_digest=intent_digest, participant=participant,
+                                                 subject_hash=subject_hash, effects=effects)
+                await self._run_effect_hook("_effect_preparer", prepared, refusal="card_effect_prepare_failed")
+                return prepared
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def decide_effects_transaction(
+        self, *, transaction_id: str, intent_digest: str, decision: str, reason: str = "",
+    ) -> dict[str, Any]:
+        """W578: materialize an effects-only transaction's recorded decision; idempotent; re-driven by recovery.
+
+        COMMITTED applies every effect exactly once (account_delete deletes the
+        pinned incarnation and finishes its index and credential cleanup);
+        ABORTED releases what STAGE prepared. Only then is the account fence
+        released, so no binding can land between the decision and the
+        deletion. A failure leaves the decision standing and the fence held,
+        and the re-driven FINISH continues from the durable per-effect record.
+        """
+        from .transaction_store import apply_effects, decide_effects, retire_effects
+
+        decided = await decide_effects(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                       decision=decision, reason=reason)
+        if decided["state"] == "committed":
+            applier = getattr(self, "_effect_applier", None)
+            if applier is None:
+                raise CardServingUnavailable("card_effect_applier_unavailable", access_id="")
+            try:
+                await apply_effects(self._store, decided, applier)
+            except Exception as exc:
+                raise CardServingUnavailable("card_effects_pending", access_id="") from exc
+        else:
+            await self._run_effect_hook("_effect_releaser", decided, refusal="card_effects_release_pending")
+        await self.release_accounts(transaction_id)
+        retire_effects(self._store, transaction_id)
+        return decided
+
+    async def abort_unstaged_effects(self, *, transaction_id: str, intent_digest: str,
+                                     effects: Any) -> dict[str, Any]:
+        """W578: tombstone an effects-only transaction never prepared here, then release its fence.
+
+        Under the same account sections its STAGE takes, so a late stage either
+        finished first (its receipt is returned and finished through the
+        decision) or sees the tombstone and refuses. The fence a crashed
+        initiator left behind is released only after the tombstone exists.
+        """
+        from .card_effects import effect_accounts
+        from .transaction_store import abort_unstaged, read_receipt
+
+        try:
+            async with AsyncExitStack() as sections:
+                for provider_id, account_id in effect_accounts(effects or ()):
+                    await sections.enter_async_context(self._account_fence_section(provider_id, account_id))
+                existing = await read_receipt(self._store, transaction_id)
+                if existing is not None:
+                    return existing
+                tombstone = await abort_unstaged(self._store, transaction_id, intent_digest=intent_digest)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+        await self.release_accounts(transaction_id)
+        return tombstone
+
     async def abort_unstaged_transaction(self, *, transaction_id: str, subject_hash: str,
                                          access_id: str, intent_digest: str = "") -> dict[str, Any]:
         """W581 F1 under the Card's section (Ops B2): tombstone a transaction never prepared here.

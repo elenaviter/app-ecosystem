@@ -161,13 +161,15 @@ async def test_without_card_transactions_the_caller_keeps_its_ordered_path(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_no_binding_card_returns_none_for_the_ordered_path(tmp_path):
+async def test_no_binding_card_takes_the_effects_only_transaction_not_the_ordered_path(tmp_path):
+    """S3c: the zero-binding disconnect is the same durable decision (test_w578_s3c_effects_only_disconnect)."""
     host, store, decisions, accounts, card, connected, grantor = await _world(tmp_path)
     other = await accounts.upsert_account(ConnectedAccount(account_id="acct-2", provider_id=PROVIDER))
     assert other.incarnation
-    assert await host.disconnect_account_in_transaction(grantor_subject=grantor, provider_id=PROVIDER,
-                                                        account_id="acct-2") is None
-    assert decisions.decisions == []
+    result = await host.disconnect_account_in_transaction(grantor_subject=grantor, provider_id=PROVIDER,
+                                                          account_id="acct-2")
+    assert result["removed"] is True and result["bindings_cleared"] == 0
+    assert decisions.decisions == ["committed"] and await accounts.get_account("acct-2") is None
 
 
 def _transaction_id(decisions):

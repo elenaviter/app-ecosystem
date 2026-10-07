@@ -31,6 +31,12 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from .model import CardCurrentPointer
+
+# W578: an effects-only transaction's receipt (transaction_store.EFFECTS_RECEIPT_SCHEMA; card_effects.py).
+EFFECTS_RECEIPT_SCHEMA = "connection_hub.card-transaction-effects.v1"
+_EFFECTS_RECEIPT_FIELDS = frozenset({"schema", "transaction_id", "intent_digest", "participant", "state", "reason",
+                                     "subject_hash", "effects"})
+_EFFECTS_ONLY_KINDS = frozenset({"account_delete"})
 from connection_hub.invocation_policy.models import InvocationAuthority, validated_invocation_id
 
 EFFECT_KINDS = frozenset({
@@ -245,29 +251,52 @@ class ParticipantEffectApplier:
         if receipt.get("state") != state:
             _refuse("card_effect_not_" + state)
         try:
-            if any(type(receipt[field].get(name)) is not int for field in ("before", "after")
-                   for name in ("card_revision", "expires_at")):
-                _refuse("card_effect_receipt_binding_invalid")
-            before, after = (CardCurrentPointer.from_mapping(receipt[field]) for field in ("before", "after"))
-            if (before.to_dict() != receipt["before"] or after.to_dict() != receipt["after"]
-                    or not before.access_id or before.access_id != receipt["access_id"]
-                    or after.access_id != before.access_id or before.card_revision < 1
-                    or after.card_revision != before.card_revision + 1
-                    or not _HEX.fullmatch(receipt["subject_hash"])
-                    or not _HEX.fullmatch(receipt["intent_digest"])
-                    or not _HEX.fullmatch(receipt["change_digest"])
-                    or not _HEX.fullmatch(before.content_hash)
-                    or not _HEX.fullmatch(after.content_hash)
-                    or type(receipt["participant"]) is not str or not receipt["participant"]):
-                _refuse("card_effect_receipt_binding_invalid")
+            if receipt.get("schema") == EFFECTS_RECEIPT_SCHEMA:
+                # W578: an effects-only receipt names one owner and no Card; only
+                # account_delete is admitted on it, bound to that owner by _payload.
+                if (set(receipt) != _EFFECTS_RECEIPT_FIELDS or not _HEX.fullmatch(str(receipt["subject_hash"]))
+                        or not _HEX.fullmatch(str(receipt["intent_digest"]))
+                        or type(receipt["participant"]) is not str or not receipt["participant"]
+                        or kind not in _EFFECTS_ONLY_KINDS or type(receipt["effects"]) is not list
+                        or any(not isinstance(effect, Mapping) or effect.get("kind") not in _EFFECTS_ONLY_KINDS
+                               for effect in receipt["effects"])):
+                    _refuse("card_effect_receipt_binding_invalid")
+                bound_access_id, base_revision = "", 0
+            else:
+                bound_access_id, base_revision = self._card_receipt_binding(receipt)
         except (KeyError, TypeError, ValueError, AttributeError):
             raise ParticipantEffectRefused("card_effect_receipt_binding_invalid") from None
+        return await self._bound(phase, kind, key, payload, transaction_id=transaction_id, receipt=receipt,
+                                 bound_access_id=bound_access_id, base_revision=base_revision)
+
+    @staticmethod
+    def _card_receipt_binding(receipt: Mapping[str, Any]) -> tuple[str, int]:
+        """A Card receipt's exact before/after pointers: the Card and the revision its effects bind to."""
+        if any(type(receipt[field].get(name)) is not int for field in ("before", "after")
+               for name in ("card_revision", "expires_at")):
+            _refuse("card_effect_receipt_binding_invalid")
+        before, after = (CardCurrentPointer.from_mapping(receipt[field]) for field in ("before", "after"))
+        if (before.to_dict() != receipt["before"] or after.to_dict() != receipt["after"]
+                or not before.access_id or before.access_id != receipt["access_id"]
+                or after.access_id != before.access_id or before.card_revision < 1
+                or after.card_revision != before.card_revision + 1
+                or not _HEX.fullmatch(receipt["subject_hash"])
+                or not _HEX.fullmatch(receipt["intent_digest"])
+                or not _HEX.fullmatch(receipt["change_digest"])
+                or not _HEX.fullmatch(before.content_hash)
+                or not _HEX.fullmatch(after.content_hash)
+                or type(receipt["participant"]) is not str or not receipt["participant"]):
+            _refuse("card_effect_receipt_binding_invalid")
+        return before.access_id, before.card_revision
+
+    async def _bound(self, phase: str, kind: str, key: str, payload: Mapping[str, Any], *, transaction_id: str,
+                     receipt: Mapping[str, Any], bound_access_id: str, base_revision: int) -> str:
         effects = receipt.get("effects")
         if not isinstance(effects, list) or not 1 <= len(effects) <= 32:
             _refuse("card_effect_set_invalid")
         identities = set()
         matched = False
-        requested = _payload(kind, key, payload, before.access_id, before.card_revision, receipt["subject_hash"])
+        requested = _payload(kind, key, payload, bound_access_id, base_revision, receipt["subject_hash"])
         for effect in effects:
             if not isinstance(effect, Mapping) or set(effect) != {"kind", "key", "payload"}:
                 _refuse("card_effect_set_invalid")
@@ -277,8 +306,8 @@ class ParticipantEffectApplier:
                     or (effect_kind, effect_key) in identities):
                 _refuse("card_effect_set_invalid")
             identities.add((effect_kind, effect_key))
-            saved = _payload(effect_kind, effect_key, effect["payload"], before.access_id,
-                             before.card_revision, receipt["subject_hash"])
+            saved = _payload(effect_kind, effect_key, effect["payload"], bound_access_id,
+                             base_revision, receipt["subject_hash"])
             if (effect_kind, effect_key) == (kind, key):
                 if saved != requested:
                     _refuse("card_effect_digest_mismatch")

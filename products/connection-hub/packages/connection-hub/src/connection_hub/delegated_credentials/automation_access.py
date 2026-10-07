@@ -9436,18 +9436,21 @@ class AutomationAccessService:
     async def disconnect_account_in_transaction(
         self, *, grantor_subject: str, provider_id: str, account_id: str,
     ) -> dict[str, Any] | None:
-        """W578: an account disconnect as ONE Card group transaction, the account deleted only after COMMIT.
+        """W578: an account disconnect as ONE durable transaction, the account deleted only after COMMIT.
 
-        ``None`` when Card transactions are off or no Card binds the account
-        (the caller keeps its ordered path for those). Otherwise: the account's
-        incarnation is bound; every unbound Card binding it is a member, its
-        candidate minus that account; ``account_delete`` names that exact
-        incarnation. After ``begin`` the account is fenced for this transaction
-        and the Cards are listed again: a different set aborts, retryably. Then
-        prepare (STAGE holds the incarnation), COMMIT and FINISH, which applies
-        the deletion before the fences are released. ``removed`` is true only
-        when the deletion is applied; an undecided or unfinished transaction
-        answers retryably and recovery finishes it.
+        ``None`` only when Card transactions are off (the caller keeps its
+        ordered path). Otherwise the account's incarnation is bound and
+        ``account_delete`` names that exact incarnation. Every unbound Card
+        binding the account is a group member, its candidate minus that
+        account; when no Card binds it, the same decision carries the effect
+        alone, as a versioned effects-only input (card_effects.py; CodeApp,
+        7 October 2026 02:45 UTC), never an empty group. After ``begin`` the
+        account is fenced for this transaction and the Cards are listed again:
+        a different set (a Card that gained the binding included) aborts,
+        retryably. Then prepare (STAGE holds the incarnation), COMMIT and
+        FINISH, which applies the deletion before the fence is released.
+        ``removed`` is true only when the deletion is applied; an undecided or
+        unfinished transaction answers retryably and recovery finishes it.
         """
         bound = getattr(self, "_card_coordinator", None)
         if bound is None:
@@ -9461,8 +9464,9 @@ class AutomationAccessService:
 
         from connection_hub.delegated_to_kdcube.store import AccountLockUnavailable
 
+        from .cards.card_effects import hub_effects_participant_input
         from .cards.card_group import group_member, hub_group_participant_input
-        from .cards.card_participant import PARTICIPANT, CardGroupIntent, CardGroupMemberIntent
+        from .cards.card_participant import PARTICIPANT, CardEffectsIntent, CardGroupIntent, CardGroupMemberIntent
         from .cards.transaction_store import CardTransactionRefused
 
         coordinator, intents, decisions, ttl = bound
@@ -9481,16 +9485,19 @@ class AutomationAccessService:
             return unavailable
         if isinstance(members, dict):
             return members
-        if not members:
-            return None
         subject_hash = _subject_key(grantor_subject)
         effect = {"kind": "account_delete", "key": f"{provider_id}:{account_id}",
-                  "payload": {"access_id": members[0][0].access_id, "grantor_subject": grantor_subject,
-                              "provider_id": provider_id, "account_id": account_id, "incarnation": incarnation}}
-        participant_input = hub_group_participant_input(
-            members=[group_member(original=current, candidate=candidate, action="update")
-                     for current, candidate in members],
-            actor_subject=grantor_subject, actor_kind="grantor", effects=[effect])
+                  "payload": {"access_id": members[0][0].access_id if members else "",
+                              "grantor_subject": grantor_subject, "provider_id": provider_id,
+                              "account_id": account_id, "incarnation": incarnation}}
+        if members:
+            participant_input = hub_group_participant_input(
+                members=[group_member(original=current, candidate=candidate, action="update")
+                         for current, candidate in members],
+                actor_subject=grantor_subject, actor_kind="grantor", effects=[effect])
+        else:
+            participant_input = hub_effects_participant_input(
+                subject_hash=subject_hash, effects=[effect], actor_subject=grantor_subject, actor_kind="grantor")
         draft = IntentDraft(
             replay_scope=f"{PARTICIPANT}:{subject_hash}:{grantor_subject}:account-disconnect",
             request_id=secrets.token_urlsafe(18),
@@ -9511,7 +9518,10 @@ class AutomationAccessService:
                 members=tuple(CardGroupMemberIntent(subject_hash=subject_hash, original=current,
                                                     candidate=candidate, action="update")
                               for current, candidate in members),
-                effects=(effect,), actor_subject=grantor_subject, actor_kind="grantor"))
+                effects=(effect,), actor_subject=grantor_subject, actor_kind="grantor") if members else
+                CardEffectsIntent(transaction_id=transaction_id, intent_digest=row.intent.digest,
+                                  subject_hash=subject_hash, effects=(effect,), actor_subject=grantor_subject,
+                                  actor_kind="grantor"))
             if card_service is None:
                 raise DecisionRefused("card_transactions_unavailable")
             await card_service.reserve_accounts([(provider_id, account_id)], transaction_id=transaction_id)
