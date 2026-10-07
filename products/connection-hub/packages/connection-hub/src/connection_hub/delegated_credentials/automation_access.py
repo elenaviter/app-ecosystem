@@ -9705,10 +9705,12 @@ class AutomationAccessService:
 
         Every reservation is derived from the transaction; ``expect``
         (slot -> token_sha256) is only an equality check. Completions of one
-        transaction are serialized across processes by a row lock on its plan
-        (``issuance_completion_section``), so a lost-response retry racing the
-        first call reads that call's outcome instead of aborting it. Under the
-        section an undecided decision is prepared (STAGE binds each
+        transaction are serialized across processes by a short claim on its
+        plan (``issuance_completion_section``; no connection is held across
+        the work), so a lost-response retry racing the first call answers that
+        call's outcome (``pending`` while it runs) instead of aborting it. The
+        claim is renewed before each decision and a lost claim decides
+        nothing. Under the claim an undecided decision is prepared (STAGE binds each
         reservation), passed through the enlisted caller-writer gate exactly as
         ``record_oauth_grant``'s write, and committed. Only a KNOWN refusal
         (a named decision, transaction, gate or issuance refusal) records an
@@ -9731,11 +9733,11 @@ class AutomationAccessService:
         candidate = CardAuthority.from_mapping(plan["intent"]["candidate"])
         decided_here, abort_reason = False, ""
         try:
-            async with store.issuance_completion_section(transaction_id):
-                row = await decisions.read(transaction_id)  # read again under the section
+            async with store.issuance_completion_section(transaction_id) as renew:
+                row = await decisions.read(transaction_id)  # read again under the claim
                 if row is not None and not row.terminal:
                     decided_here, abort_reason = await self._decide_issuance(
-                        plan, trusted, candidate, coordinator=coordinator)
+                        plan, trusted, candidate, coordinator=coordinator, renew=renew)
                 try:
                     await coordinator.finish(transaction_id)
                 except Exception:  # noqa: BLE001 - undecided, or effects/serving behind: pending, finished again later
@@ -9753,7 +9755,7 @@ class AutomationAccessService:
         return result
 
     async def _decide_issuance(self, plan: Mapping[str, Any], trusted: Any, candidate: CardAuthority, *,
-                               coordinator: Any) -> tuple[bool, str]:
+                               coordinator: Any, renew: Callable[[], Awaitable[bool]]) -> tuple[bool, str]:
         """Prepare, gate and decide under the completion section: (committed here, abort reason).
 
         A known refusal records ABORT; the refused caller-write outcome is
@@ -9781,10 +9783,14 @@ class AutomationAccessService:
                 await gate()
             witness = (caller_request.change_digest if caller_request is not None
                        else plan["draft"]["payload"]["participant_inputs"][PARTICIPANT]["candidate_digest"])
+            if not await renew():
+                return False, ""  # the claim lapsed to another completion: it decides
             await coordinator.decide(transaction_id, "committed", witness_digest=witness)
         except known as exc:
             reason = str(getattr(exc, "reason", "") or exc or type(exc).__name__)[:128]
             try:
+                if not await renew():
+                    return False, ""
                 await coordinator.decide(transaction_id, "aborted")
             except DecisionRefused:
                 return False, ""  # decided already: finish reports that decision

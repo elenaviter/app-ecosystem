@@ -160,6 +160,14 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_ISSUANCE_PLANS} (
     PRIMARY KEY (tenant, project, decision_request_id)
 );
 
+-- One completion at a time per transaction, across processes: a short claim
+-- (owner, until) taken and renewed by single committed statements, so no
+-- connection is ever held across the completion's other database calls.
+ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
+    ADD COLUMN IF NOT EXISTS completing_owner TEXT NOT NULL DEFAULT '';
+ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
+    ADD COLUMN IF NOT EXISTS completing_until TIMESTAMPTZ NULL;
+
 CREATE UNIQUE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plans_transaction_idx
     ON {schema}.{TABLE_ISSUANCE_PLANS} (tenant, project, transaction_id)
     WHERE transaction_id IS NOT NULL;

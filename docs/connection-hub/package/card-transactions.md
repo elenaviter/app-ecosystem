@@ -185,9 +185,15 @@ bearer, an authorization code or a PKCE verifier.
    - It is refused once the decision is decided or `reserved_until` has
      passed, and a retry never renews either.
 3. **`complete_oauth_issuance`** prepares, commits and finishes the decision.
-   - Completions of one transaction are serialized across processes by a row
-     lock on its plan. A lost-response retry racing the first call reads that
-     call's outcome. If it waits more than 30 seconds it answers `pending`.
+   - Completions of one transaction are serialized across processes and
+     machines by a short claim on its plan row. The claim (`completing_owner`,
+     `completing_until`) is taken, renewed and released by single committed
+     statements, so no database connection is held across the completion's
+     own calls.
+     - Another live claim answers `pending` at once; a dead holder's claim
+       lapses after 60 seconds.
+     - The holder renews the claim before COMMIT and before ABORT. A lost
+       claim decides nothing.
    - Only a named refusal records ABORT. Any other failure leaves the decision
      undecided for a retry or for recovery.
    - The decision passes through the enlisted caller-writer gate exactly as

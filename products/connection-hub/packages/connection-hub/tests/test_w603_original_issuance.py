@@ -120,7 +120,7 @@ def _records(w, plan: OAuthIssuancePlan, **credential_changes):
     grants = {key: list(items) for key, items in plan.resource_grants.items()}
     operations_map = {key: list(items) for key, items in plan.resource_operations.items()}
     credential = build_delegated_client_credential(
-        grantor_subject=GRANTOR, client_id=CLIENT, scopes=SCOPES, tenant=w.authority.tenant,
+        grantor_subject=plan.grantor_subject, client_id=plan.client_id, scopes=SCOPES, tenant=w.authority.tenant,
         project=w.authority.project, expires_in=3600, resources=list(grants), resource_grants=grants,
         resource_operations=operations_map, operations=list(plan.operations)).to_dict()
     credential.update(credential_changes)
@@ -128,7 +128,8 @@ def _records(w, plan: OAuthIssuancePlan, **credential_changes):
                        "resource_operations": operations_map, "credential": credential,
                        "grantor_authority": {}, "delegation_edges": [], "named_services": {},
                        "registry_access_id": plan.access_id},
-            "refresh": {"registry_access_id": plan.access_id, "card_kind": "", "client_id": CLIENT, "sub": GRANTOR,
+            "refresh": {"registry_access_id": plan.access_id, "card_kind": "", "client_id": plan.client_id,
+                        "sub": plan.grantor_subject,
                         "scopes": SCOPES, "operations": list(plan.operations), "resource_grants": grants,
                         "resource_operations": operations_map,
                         "resource": RESOURCE, "identity_scope": "", "credential": credential}}
@@ -434,3 +435,60 @@ async def test_the_records_and_envelopes_must_carry_exactly_the_planned_card_aut
         # The exact snapshot is accepted, and the plan is unchanged on replay.
         await _reserve(w, plan)
         assert await _begin(w) == plan
+
+
+
+@pytest.mark.asyncio
+async def test_more_concurrent_completions_than_pool_connections_never_hang(tmp_path):
+    """Different Cards, n above the shared pool's max_size (6): every completion answers within a bound."""
+    import asyncio
+
+    async with _world(tmp_path) as w:
+        plans = []
+        for index in range(9):
+            plan = await _begin(w, request=f"exchange-pool-{index}", grantor_subject=f"user-w603-pool-{index}")
+            tokens = await _reserve(w, plan)
+            plans.append((plan, tokens))
+        results = await asyncio.wait_for(asyncio.gather(*(
+            w.service.complete_oauth_issuance(transaction_id=plan.transaction_id) for plan, _ in plans)), timeout=60)
+        assert {result.state for result in results} <= {"committed", "pending"}, [r.state for r in results]
+        for plan, tokens in plans:
+            final = await asyncio.wait_for(w.service.complete_oauth_issuance(transaction_id=plan.transaction_id),
+                                           timeout=30)
+            assert final.state == "committed", final
+            assert await _usable(w, tokens) == {"access": True, "refresh": True}
+        assert await w.decisions.list_in_doubt(limit=20) == [] and await tx.list_in_doubt(w.store) == []
+
+
+@pytest.mark.asyncio
+async def test_a_completion_whose_claim_lapsed_to_another_decides_nothing(tmp_path):
+    """Another completion (another machine) took the claim while this one prepared: this one must not commit."""
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)
+        tokens = await _reserve(w, plan)
+        coordinator = w.service._card_coordinator[0]
+        real_prepare = coordinator.prepare_existing
+
+        async def prepare_then_lose_the_claim(transaction_id):
+            record = await real_prepare(transaction_id)
+            async with w.pool.acquire() as connection:  # the claim lapsed and another holder took it
+                await connection.execute(
+                    f"UPDATE {w.authority.schema}.connection_hub_oauth_issuance_plans "
+                    f"SET completing_owner = 'another-machine', completing_until = clock_timestamp() + interval '60 s' "
+                    f"WHERE transaction_id = $1", transaction_id)
+            return record
+
+        coordinator.prepare_existing = prepare_then_lose_the_claim
+        first = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
+        coordinator.prepare_existing = real_prepare
+        assert first.state == "pending" and (await w.decisions.read(plan.transaction_id)).state not in (
+            "committed", "aborted")
+        assert await _usable(w, tokens) == {"access": False, "refresh": False}
+        # The other holder's claim still stands: a retry answers pending, never decides over it.
+        assert (await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)).state == "pending"
+        async with w.pool.acquire() as connection:  # that holder ends (or its claim lapses)
+            await connection.execute(
+                f"UPDATE {w.authority.schema}.connection_hub_oauth_issuance_plans "
+                f"SET completing_owner = '', completing_until = NULL WHERE transaction_id = $1", plan.transaction_id)
+        final = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
+        assert final.state == "committed" and await _usable(w, tokens) == {"access": True, "refresh": True}

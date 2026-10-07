@@ -41,8 +41,8 @@ ISSUANCE_SLOTS = ("access", "refresh")
 # The longest token lifetime a minter may ask a reservation to carry; the
 # Card's absolute expiry caps it in any case.
 MAX_ISSUANCE_TTL_SECONDS = 400 * 86400
-# How long a completion waits for another completion of the same transaction.
-COMPLETION_WAIT_SECONDS = 30
+# How long one completion's claim lasts before it must be renewed; a dead holder's claim lapses after it.
+COMPLETION_CLAIM_SECONDS = 60
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -173,35 +173,59 @@ class IssuanceReservationStore:
 
     @asynccontextmanager
     async def issuance_completion_section(self, transaction_id: str, *,
-                                          wait_seconds: int = COMPLETION_WAIT_SECONDS) -> AsyncIterator[None]:
-        """One completion of a transaction at a time, across processes: a row lock on its plan.
+                                          claim_seconds: int = COMPLETION_CLAIM_SECONDS) -> AsyncIterator[Any]:
+        """One completion of a transaction at a time, across processes: a short claim on its plan.
 
-        The lock lives in this PostgreSQL transaction, held for the section, so
-        a process that dies releases it with its connection. Waiting longer
-        than ``wait_seconds`` refuses ``issuance_completion_busy``: another
-        completion is deciding, and the caller reads its outcome instead.
+        The claim is taken, renewed and released by single committed
+        statements: no connection is held while the completion makes its own
+        database calls, so concurrent completions can never starve a shared
+        pool. Another live claim refuses ``issuance_completion_busy`` at once;
+        the caller reads the decision as it stands (pending until that
+        completion ends). A claim whose holder died lapses after
+        ``claim_seconds``. The section yields ``renew()``, which extends the
+        claim and returns False once it was lost: the holder then decides
+        nothing more. The owner token is per call, never process state.
         """
-        import asyncpg
-
         if not _HEX64.fullmatch(str(transaction_id)):
             raise IssuanceStoreRefused("issuance_plan_unknown")
-        async with self._pool.acquire() as connection:
-            async with connection.transaction():
-                await connection.execute(f"SET LOCAL lock_timeout = '{max(1, int(wait_seconds))}s'")
-                try:
-                    found = await connection.fetchval(
-                        f"""
-                        SELECT 1 FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
-                        WHERE tenant = $1 AND project = $2 AND transaction_id = $3
-                        FOR UPDATE
-                        """,
-                        self.tenant, self.project, transaction_id,
-                    )
-                except asyncpg.exceptions.LockNotAvailableError:
-                    raise IssuanceStoreRefused("issuance_completion_busy") from None
-                if found is None:
-                    raise IssuanceStoreRefused("issuance_plan_unknown")
-                yield
+        owner = uuid.uuid4().hex
+        seconds = max(1, int(claim_seconds))
+
+        async def claim(*, renewal: bool) -> bool:
+            condition = ("completing_owner = $4 AND completing_until > clock_timestamp()" if renewal else
+                         "(completing_until IS NULL OR completing_until <= clock_timestamp() OR completing_owner = $4)")
+            async with self._pool.acquire() as connection:
+                return await connection.fetchval(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_ISSUANCE_PLANS}
+                       SET completing_owner = $4,
+                           completing_until = clock_timestamp() + ($5 * interval '1 second')
+                     WHERE tenant = $1 AND project = $2 AND transaction_id = $3 AND {condition}
+                    RETURNING 1
+                    """,
+                    self.tenant, self.project, transaction_id, owner, seconds,
+                ) is not None
+
+        if not await claim(renewal=False):
+            if await self.read_issuance_plan(transaction_id) is None:
+                raise IssuanceStoreRefused("issuance_plan_unknown")
+            raise IssuanceStoreRefused("issuance_completion_busy")
+
+        async def renew() -> bool:
+            return await claim(renewal=True)
+
+        try:
+            yield renew
+        finally:
+            async with self._pool.acquire() as connection:
+                await connection.execute(
+                    f"""
+                    UPDATE {self.schema}.{TABLE_ISSUANCE_PLANS}
+                       SET completing_owner = '', completing_until = NULL
+                     WHERE tenant = $1 AND project = $2 AND transaction_id = $3 AND completing_owner = $4
+                    """,
+                    self.tenant, self.project, transaction_id, owner,
+                )
 
     async def reserve_issued_credential(self, *, transaction_id: str, slot: str, token_sha256: str,
                                         record: Mapping[str, Any], ttl_seconds: int) -> str:
@@ -496,5 +520,5 @@ class IssuanceReservationStore:
                 for row in rows}
 
 
-__all__ = ["COMPLETION_WAIT_SECONDS", "ISSUANCE_SLOTS", "IssuanceReservationStore", "IssuanceStoreRefused", "MAX_ISSUANCE_TTL_SECONDS",
+__all__ = ["COMPLETION_CLAIM_SECONDS", "ISSUANCE_SLOTS", "IssuanceReservationStore", "IssuanceStoreRefused", "MAX_ISSUANCE_TTL_SECONDS",
            "reservation_digest"]
