@@ -568,6 +568,40 @@ async def test_reading_an_issuance_never_decides_it(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_caller_that_lost_begins_answer_reads_the_plan_by_its_decision_request_id(tmp_path):
+    """W585: begin committed, the caller died before keeping the transaction id; it reads, never re-begins."""
+    from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
+    from connection_hub.delegated_credentials.oauth.authority_schema import TABLE_ISSUANCE_PLANS
+    from connection_hub.delegated_credentials.oauth_issuance import decision_request_id
+
+    def request_id(original_request_id="exchange-1", client_id=CLIENT):
+        # The caller's own copy of the Hub's field-tagged identity (the SDK keeps it before begin).
+        return decision_request_id(scope=f"{PARTICIPANT}:oauth-issuance", grantor_subject=GRANTOR,
+                                   client_id=client_id, original_request_id=original_request_id)
+
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)
+        read = w.service.read_oauth_issuance_plan_by_request
+        assert plan.decision_request_id == request_id()
+        assert await read(decision_request_id=request_id()) == plan
+        row = await w.decisions.read(plan.transaction_id)
+        assert not row.terminal and row.prepared == {}  # reading prepared and decided nothing
+        for other in (request_id("exchange-2"), request_id(client_id="another-client"), "0" * 64):
+            with pytest.raises(IssuanceRefused, match="issuance_plan_unknown"):
+                await read(decision_request_id=other)
+        for invalid in ("exchange-1", request_id().upper(), request_id()[:63], None):
+            with pytest.raises(IssuanceRefused, match="issuance_request_invalid"):
+                await read(decision_request_id=invalid)
+        # A plan stored but never bound to its decision (begin interrupted) is not a plan to complete.
+        _c, _i, _d, _ttl, store = w.service._issuance_parts()
+        async with store._pool.acquire() as connection:
+            await connection.execute(f"UPDATE {store.schema}.{TABLE_ISSUANCE_PLANS} SET transaction_id = NULL "
+                                     "WHERE tenant = $1 AND project = $2", store.tenant, store.project)
+        with pytest.raises(IssuanceRefused, match="issuance_plan_unbound"):
+            await read(decision_request_id=request_id())
+
+
+@pytest.mark.asyncio
 async def test_w571_a_revoked_oauth_card_reconsented_continues_its_revision_chain(tmp_path):
     """W571 condition 1, OAuth kind: the id is deterministic, so a re-consent after a revoke reuses it,
     but its revisions only move forward; the id never restarts at revision 1."""

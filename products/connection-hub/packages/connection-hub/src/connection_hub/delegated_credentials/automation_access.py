@@ -9767,6 +9767,36 @@ class AutomationAccessService:
         _plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
         return trusted
 
+    async def read_oauth_issuance_plan_by_request(self, *, decision_request_id: str) -> Any:
+        """W585: the ``OAuthIssuancePlan`` ``begin`` returned for one original exchange, READ ONLY.
+
+        For a caller that lost ``begin``'s answer before it kept the transaction
+        id. ``decision_request_id`` is the plan's own field-tagged request
+        identity (``oauth_issuance.decision_request_id`` over the scope, grantor,
+        client and original request id), which the caller keeps before
+        ``begin``. Only the one plan stored for it in this Hub's own
+        tenant/project answers; no candidate input is needed or accepted. It
+        never plans, begins, prepares, decides, finishes or claims. Refuses
+        ``issuance_plan_unknown`` when no plan was stored for that request, and
+        ``issuance_plan_unbound`` when the plan exists but ``begin`` did not
+        bind its decision (nothing can be reserved or completed for it).
+        """
+        from .oauth_issuance import IssuanceRefused
+
+        _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
+        if (type(decision_request_id) is not str or len(decision_request_id) != 64
+                or decision_request_id.strip("0123456789abcdef")):
+            raise IssuanceRefused("issuance_request_invalid")
+        stored = await store.read_issuance_plan_request(decision_request_id)
+        if stored is None:
+            raise IssuanceRefused("issuance_plan_unknown")
+        if not stored["transaction_id"]:
+            raise IssuanceRefused("issuance_plan_unbound")
+        _plan, trusted, _row = await self._trusted_issuance(stored["transaction_id"], decisions=decisions, store=store)
+        if trusted.decision_request_id != decision_request_id:
+            raise IssuanceRefused("issuance_plan_unknown")
+        return trusted
+
     async def complete_oauth_issuance(self, *, transaction_id: str, expect: Mapping[str, str] | None = None) -> Any:
         """W603: prepare, commit and finish the issuance's decision; returns the ``OAuthIssuanceResult``.
 
