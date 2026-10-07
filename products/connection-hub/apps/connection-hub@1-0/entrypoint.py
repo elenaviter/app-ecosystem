@@ -318,6 +318,7 @@ CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
     "identity_family_resolve",
     # W609: server-to-server, admission-proof-gated, read-only; no browser form.
     "identity_provider_subject_resolve",
+    "project_operation_authorize_for_person",
     "identity_resolve",
     "opex",
     "project_operation_authorize",
@@ -2612,6 +2613,135 @@ async def _identity_provider_subject_resolve(entrypoint: Any, payload: Mapping[s
         return {"ok": False, "error": "identity_lookup_ambiguous", "provider": provider}
     _identity_subject_audit(service_id, platform_user, provider, "resolved")
     return {"ok": True, "provider": provider, "provider_subject": subjects[0]}
+
+
+# W615: a project operation authorized for one PROVEN person, not the request's caller.
+# Problem Board's Telegram webhook runs under one bound caller, so the ordinary
+# project_operation_authorize would decide for that caller, not the member who
+# wrote. This operation is open only to a registered admission service whose
+# resources name the provider, proven by its own HMAC (token-less, domain
+# separated), single use; the sender must hold exactly that provider edge, and
+# the decision is that person's own live Control and My Cards. The request's
+# user session is never consulted and never authorizes anything here.
+PERSON_OPERATION_AUTHORIZE = "project_operation_authorize_for_person"
+PERSON_OPERATION_DOMAIN = "connection-hub.project-operation-person.v1"
+PERSON_OPERATION_FIELDS = ("project_ref", "person_subject", "provider", "provider_subject", "resource",
+                           "operation", "required_grants", "request_resource", "surface")
+
+
+def person_operation_resource(provider: str) -> str:
+    return f"urn:kdcube:project-operation:{str(provider or '').strip().lower()}"
+
+
+def person_operation_request(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """The exact signed request: every field that shapes the decision, canonical."""
+    grants = payload.get("required_grants") or []
+    return {
+        "project_ref": str(payload.get("project_ref") or "").strip(),
+        "person_subject": str(payload.get("person_subject") or "").strip(),
+        "provider": str(payload.get("provider") or "").strip().lower(),
+        "provider_subject": str(payload.get("provider_subject") or "").strip(),
+        "resource": str(payload.get("resource") or "").strip(),
+        "operation": str(payload.get("operation") or "").strip(),
+        "required_grants": [str(grant) for grant in grants] if isinstance(grants, (list, tuple)) else None,
+        "request_resource": str(payload.get("request_resource") or "").strip(),
+        "surface": str(payload.get("surface") or "application").strip(),
+    }
+
+
+def person_operation_digest(request: Mapping[str, Any]) -> str:
+    body = json.dumps({name: request.get(name) for name in PERSON_OPERATION_FIELDS},
+                      sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def person_operation_signature(*, secret: str, service_id: str, timestamp: str, nonce: str,
+                               request: Mapping[str, Any]) -> str:
+    """HMAC-SHA256 over the domain, service, time, nonce, operation, resource and request digest."""
+    message = "\n".join([
+        PERSON_OPERATION_DOMAIN, str(service_id), str(timestamp), str(nonce), PERSON_OPERATION_AUTHORIZE,
+        person_operation_resource(str(request.get("provider") or "")), person_operation_digest(request),
+    ]).encode("utf-8")
+    return hmac.new(str(secret).encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _person_operation_audit(service_id: str, request: Mapping[str, Any], outcome: str) -> None:
+    # Never the provider subject itself.
+    LOGGER.info(
+        "[connection-hub.project_operation_authorize_for_person] service=%s person=%s provider=%s project=%s "
+        "operation=%s outcome=%s", service_id, request.get("person_subject"), request.get("provider"),
+        request.get("project_ref"), request.get("operation"), outcome,
+    )
+
+
+async def _project_operation_authorize_for_person(entrypoint: Any, payload: Mapping[str, Any], *,
+                                                  request: Any = None, now: int | None = None) -> Dict[str, Any]:
+    signed = person_operation_request(payload)
+    raw_proof = payload.get("service_proof")
+    proof = {key: str((raw_proof or {}).get(key) or "") for key in ("service_id", "timestamp", "nonce", "signature")} \
+        if isinstance(raw_proof, Mapping) else {"service_id": "", "timestamp": "", "nonce": "", "signature": ""}
+    service_id = proof["service_id"]
+    if (any(not signed[name] for name in ("project_ref", "person_subject", "provider", "provider_subject",
+                                          "resource", "operation")) or signed["required_grants"] is None):
+        return {"ok": False, "error": "project_operation_for_person_request_invalid", "status": 400}
+    if not service_id or not proof["signature"] or not proof["nonce"]:
+        _person_operation_audit(service_id, signed, "no_service_proof")
+        return {"ok": False, "error": "project_operation_for_person_requires_service_proof", "status": 403}
+    config = AdmissionConfig.from_connections(_connections_config(entrypoint))
+    service = config.service(service_id) if config.enabled else None
+    authenticators = [
+        row for row in matching_authenticator_rows(
+            _identity_config(entrypoint), signed["provider"], stored_rows=await _cached_authenticator_rows(entrypoint))
+        if row.get("enabled") is not False
+    ]
+    if (service is None or not service.allows_resource(person_operation_resource(signed["provider"]))
+            or not authenticators):
+        _person_operation_audit(service_id, signed, "not_permitted")
+        return {"ok": False, "error": "project_operation_for_person_not_permitted", "status": 403}
+    secret = await _bundle_secret_value(
+        entrypoint, secret_path=service.secret_ref,
+        trace_scope=f"project_operation_for_person.service.{service.service_id}", warn_missing=True)
+    reason = ""
+    try:
+        issued_at = int(proof["timestamp"])
+    except ValueError:
+        issued_at, reason = 0, "timestamp_invalid"
+    current = int(time.time()) if now is None else int(now)
+    if len(secret.encode("utf-8")) < IDENTITY_SUBJECT_LOOKUP_MIN_SECRET_BYTES:
+        reason = "service_secret_unavailable"
+    elif not reason and abs(current - issued_at) > max(1, config.max_clock_skew_seconds):
+        reason = "timestamp_outside_window"
+    elif not reason:
+        expected = person_operation_signature(secret=secret, service_id=service_id, timestamp=proof["timestamp"],
+                                              nonce=proof["nonce"], request=signed)
+        if not hmac.compare_digest(expected, proof["signature"]):
+            reason = "signature_invalid"
+    if reason:
+        _person_operation_audit(service_id, signed, f"proof_refused:{reason}")
+        return {"ok": False, "error": "project_operation_for_person_proof_invalid", "reason": reason, "status": 403}
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    if not await redis.set(f"connection_hub:project_operation_person_nonce:{service_id}:{proof['nonce']}", "1",
+                           nx=True, ex=config.nonce_ttl_seconds):
+        _person_operation_audit(service_id, signed, "proof_replayed")
+        return {"ok": False, "error": "project_operation_for_person_proof_replayed", "status": 403}
+    # The sender is that person only through their own provider edge: exactly that subject, read every time.
+    subjects = sorted({
+        str(edge_actor(edge).get("subject") or "").strip()
+        for edge in _edge_store(entrypoint).list_edges(target_user_id=signed["person_subject"],
+                                                       source_provider=signed["provider"])
+    } - {""})
+    if subjects != [signed["provider_subject"]]:
+        _person_operation_audit(service_id, signed, "sender_not_linked" if signed["provider_subject"] not in subjects
+                                else "sender_ambiguous")
+        return {"ok": False, "error": "project_operation_sender_not_linked", "status": 403}
+    # That person's own live Cards decide; the request's caller is never used.
+    decision = await (await _automation_access_service(entrypoint, request)).project_operation_authorize(
+        {"user_id": signed["person_subject"]}, project_ref=signed["project_ref"], resource=signed["resource"],
+        operation=signed["operation"], required_grants=signed["required_grants"],
+        request_resource=signed["request_resource"], surface=signed["surface"])
+    allowed = decision.get("allowed") if isinstance(decision, Mapping) else None
+    _person_operation_audit(service_id, signed, "allowed" if allowed is True else "refused")
+    return {**dict(decision), "person_subject": signed["person_subject"], "provider": signed["provider"]}
 
 
 def _edge_platform_user_id(edge: Mapping[str, Any] | None) -> str:
@@ -7690,6 +7820,18 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         payload = _payload(data, platform_user_id=platform_user_id, provider=provider,
                            service_proof=service_proof, **kwargs)
         return await _identity_provider_subject_resolve(self, payload)
+
+    @api(method="POST", alias="project_operation_authorize_for_person", route="operations",
+         **_api_visibility("project_operation_authorize_for_person"))
+    async def project_operation_authorize_for_person(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """W615: one project operation for a person a registered service proves through their provider edge."""
+        payload = _payload(data, **kwargs)
+        return await _project_operation_authorize_for_person(self, payload, request=request)
 
     @api(method="POST", alias="identity_family_resolve", route="operations", **_api_visibility("identity_family_resolve"))
     async def identity_family_resolve(
