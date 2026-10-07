@@ -63,8 +63,8 @@ group.
 - **Post.** A post names the agent and the project and links to the message in
   the board inbox. The board records which board message each post carries, so
   a reply can be traced back to it.
-- **Recipients.** Every current owner and admin of the project gets each initial notification
-  in their own channel. The inbox row on the board says how many were reached
+- **Recipients.** Every current owner, admin and member of the project gets each initial
+  notification in their own channel; a viewer does not. The inbox row on the board says how many were reached
   and names everyone who has not linked Telegram.
 
 ## What happens to a message sent in Telegram
