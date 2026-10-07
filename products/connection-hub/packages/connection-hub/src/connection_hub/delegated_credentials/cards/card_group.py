@@ -247,6 +247,11 @@ async def compose_group_chains(members: Sequence[Mapping[str, Any]], load_live: 
 
     planned = {_member_key(member): CardAuthority.from_mapping(member["candidate"]) for member in members}
     for member in members:
+        if member.get("action") == "revoke":
+            # A revoked Card serves nothing, so it has no chain to compose. A
+            # remaining member whose parent this group revokes still composes
+            # over that planned (revoked) parent and refuses.
+            continue
         card = planned[_member_key(member)]
         chain: list[CardAuthority] = []
         current = card

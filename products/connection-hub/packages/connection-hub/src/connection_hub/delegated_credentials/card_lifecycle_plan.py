@@ -48,6 +48,7 @@ from connection_hub.delegated_credentials.project_authorization import (
     LifecyclePlanAuthorization,
     LifecyclePlanAuthorizationRequest,
     LifecyclePlanStep,
+    PROJECT_PERSON_CONTROL_REVOKE,
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
 )
@@ -56,7 +57,9 @@ from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import 
     UPDATE_STEPS,
 )
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
+    PROJECT_PERSON_MY_CARD_ISSUER_KIND,
     ProjectIdentityLifecycleError,
+    ProjectPersonCardIdentity,
     new_project_person_my_card,
 )
 from connection_hub.delegated_credentials.controls.project_invitation import (
@@ -64,6 +67,44 @@ from connection_hub.delegated_credentials.controls.project_invitation import (
     ProjectInvitationControlIdentity,
 )
 from connection_hub.delegated_credentials.controls.model import control_card_id_for_issuer
+
+
+def removed_person_card(original: CardAuthority, *, project_ref: str, target_subject: str,
+                        decision: ProjectAuthorizationDecision, actor_subject: str, request_id: str,
+                        now: int) -> tuple[str, CardAuthority]:
+    """W502: one active person Card of ``target_subject`` in ``project_ref``, revoked; nothing else changes.
+
+    Returns ``("control" | "my", candidate)``. The person Control keeps its
+    identity binding and records the same "revoked" audit the direct removal
+    writes; the My Card keeps every selection and preference, only its state
+    moves. Any other Card, project or person refuses.
+    """
+    if (not decision.allowed or decision.operation != PROJECT_PERSON_CONTROL_REVOKE
+            or decision.project_ref != project_ref or decision.target_subject != target_subject):
+        raise CardLifecyclePlanRefused("card_plan_authorization_invalid", 403)
+    if original.state != CARD_STATE_ACTIVE:
+        raise CardLifecyclePlanRefused("card_plan_revoke_not_active")
+    if original.issuer_kind == PROJECT_PERSON_CONTROL_ISSUER_KIND:
+        try:
+            identity = ProjectPersonControlIdentity.from_authority(original)
+        except ProjectPersonControlError:
+            raise CardLifecyclePlanRefused("card_plan_update_scope_invalid", 403) from None
+        if identity.project_ref != project_ref or identity.target_subject != target_subject:
+            raise CardLifecyclePlanRefused("card_plan_update_scope_invalid", 403)
+        revoked = bind_project_person_control(replace_state(original, CARD_STATE_REVOKED), identity=identity)
+        audit = ProjectPersonControlAudit.build(
+            action="revoked", actor_subject=actor_subject, identity=identity, request_id=request_id,
+            occurred_at=now, before=original, after=revoked)
+        return "control", bind_project_person_control(revoked, identity=identity, audit=audit)
+    if original.issuer_kind == PROJECT_PERSON_MY_CARD_ISSUER_KIND:
+        try:
+            identity = ProjectPersonCardIdentity.from_my_card(original)
+        except ProjectIdentityLifecycleError:
+            raise CardLifecyclePlanRefused("card_plan_update_scope_invalid", 403) from None
+        if identity.project_ref != project_ref or identity.person_subject != target_subject:
+            raise CardLifecyclePlanRefused("card_plan_update_scope_invalid", 403)
+        return "my", replace_state(original, CARD_STATE_REVOKED)
+    raise CardLifecyclePlanRefused("card_plan_update_scope_invalid", 403)
 
 
 def _with_selection(
@@ -622,6 +663,7 @@ async def plan_card_lifecycle(
             if not progressed:
                 raise CardLifecyclePlanRefused("card_plan_parent_cycle")
 
+        removals: dict[str, dict[str, CardAuthority]] = {}
         for index, raw in enumerate(updates):
             if (not isinstance(raw, Mapping)
                     or not {"kind", "target_subject", "access_id", "subject_hash", "original_revision"} <= set(raw)
@@ -665,6 +707,19 @@ async def plan_card_lifecycle(
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
+            if raw["kind"] == "remove_person":
+                if "parent" in raw:
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                card_kind, candidate = removed_person_card(
+                    original, project_ref=scope, target_subject=target, decision=decision,
+                    actor_subject=actor, request_id=request_id, now=now)
+                person = removals.setdefault(target, {})
+                if card_kind in person:
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                person[card_kind] = original
+                members.append(group_member(original=original, candidate=candidate, action="revoke"))
+                originals[(subject_hash, access_id)] = original.to_dict()
+                continue
             if (person_identity is None and invitation_identity is None
                     or person_identity is not None and person_identity.project_ref != scope
                     or invitation_identity is not None and invitation_identity.project_ref != scope
@@ -702,6 +757,31 @@ async def plan_card_lifecycle(
                 raise CardLifecyclePlanRefused("card_plan_update_action_invalid", 400)
             members.append(group_member(original=original, candidate=candidate, action=action))
             originals[(subject_hash, access_id)] = original.to_dict()
+
+        # A person leaves whole: an active Control and My end in this one
+        # decision, never one now and the other by a later write.
+        for target, removed in removals.items():
+            for card_kind, card_id in (("control", ProjectPersonControlIdentity.build(
+                    project_ref=scope, target_subject=target).control_id),
+                    ("my", ProjectPersonCardIdentity.build(project_ref=scope, person_subject=target).my_card_id)):
+                if card_kind in removed:
+                    continue
+                grantor = (ProjectPersonControlIdentity.build(project_ref=scope, target_subject=target).project_subject
+                           if card_kind == "control" else target)
+                partner = await cards.load_current(card_id, subject_hash=subject_hash_for(grantor))
+                if partner is not None and partner[0].state == CARD_STATE_ACTIVE:
+                    raise CardLifecyclePlanRefused("card_plan_remove_person_incomplete")
+            # A revoked member composes no chain, but the decision still holds
+            # the Control it was bound under: a group member, or read present.
+            member_keys = {(member["subject_hash"], member["access_id"]) for member in members}
+            for card in removed.values():
+                binding = card.control_card
+                if binding is None:
+                    continue
+                parent = (subject_hash_for(str(binding.holder_subject or "") or card.grantor_subject),
+                          binding.control_id)
+                if parent not in member_keys and await load_live(*parent) is None:
+                    raise CardLifecyclePlanRefused("card_group_control_read_missing")
 
         # The graph helper resolves planned parents before current live
         # parents and invokes the same hierarchy composer staging uses.
