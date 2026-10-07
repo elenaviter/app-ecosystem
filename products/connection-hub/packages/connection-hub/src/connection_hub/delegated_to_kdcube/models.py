@@ -427,6 +427,10 @@ class ConnectedAccount:
     connected_at: str = ""
     updated_at: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
+    # W578: random per connection, kept while the account record exists and
+    # minted anew after a disconnect, so a delayed cleanup of one connection
+    # never removes a later reconnection of the same deterministic account id.
+    incarnation: str = ""
 
     @property
     def connected(self) -> bool:
@@ -450,6 +454,7 @@ class ConnectedAccount:
             "connected_at": self.connected_at,
             "updated_at": self.updated_at,
             "metadata": dict(self.metadata or {}),
+            "incarnation": self.incarnation,
         }
 
     def public_dict(self) -> dict[str, Any]:
@@ -474,6 +479,7 @@ class ConnectedAccount:
             connected_at=as_str(data.get("connected_at")),
             updated_at=as_str(data.get("updated_at")),
             metadata=as_dict(data.get("metadata")),
+            incarnation=as_str(data.get("incarnation")),
         )
 
 
