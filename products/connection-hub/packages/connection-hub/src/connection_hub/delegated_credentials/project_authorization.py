@@ -82,6 +82,16 @@ def _required(value: Any, reason: str) -> str:
     return result
 
 
+def _is_digest(value: Any) -> bool:
+    """A plan request digest: exactly 64 lowercase hex characters."""
+
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
 def _operation(value: Any) -> str:
     operation = _required(value, "project_authorization_operation_missing")
     if operation not in PROJECT_PERSON_CONTROL_OPERATIONS:
@@ -258,6 +268,11 @@ class ProjectAuthorizationRequest:
     managed; they confer no authority by themselves. Creator bootstrap is a
     policy decision made by the port for ``PROJECT_PERSON_CONTROL_CREATE``,
     never a request flag.
+
+    ``request_digest`` is empty for an ordinary single operation. For one step
+    of a lifecycle plan it is that plan's 64-hex request digest, so a decision
+    issued for another plan under the same request id cannot answer it (W578
+    N1).
     """
 
     actor_subject: str
@@ -265,6 +280,13 @@ class ProjectAuthorizationRequest:
     target_subject: str
     operation: str
     request_id: str
+    request_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if self.request_digest != "" and not _is_digest(self.request_digest):
+            raise ProjectAuthorizationError(
+                "project_authorization_request_digest_invalid"
+            )
 
     @classmethod
     def build(
@@ -275,6 +297,7 @@ class ProjectAuthorizationRequest:
         target_subject: Any,
         operation: Any,
         request_id: Any,
+        request_digest: Any = "",
     ) -> ProjectAuthorizationRequest:
         return cls(
             actor_subject=_required(
@@ -294,6 +317,7 @@ class ProjectAuthorizationRequest:
                 request_id,
                 "project_authorization_request_id_missing",
             ),
+            request_digest=clean_text(request_digest),
         )
 
 
@@ -313,6 +337,8 @@ class ProjectAuthorizationDecision:
     evidence: Mapping[str, Any] = field(default_factory=dict)
     # W502: the host's exact project Control Card P for this project, if any.
     project_control: ProjectControlLocator | None = None
+    # W578 N1: copied from the request it answers; "" for an ordinary request.
+    request_digest: str = ""
 
     @classmethod
     def allow(
@@ -332,6 +358,7 @@ class ProjectAuthorizationDecision:
             target_subject=request.target_subject,
             operation=request.operation,
             request_id=request.request_id,
+            request_digest=request.request_digest,
             delegable_grants=_grants(delegable_grants),
             platform_admin=bool(platform_admin),
             evidence=copy.deepcopy(dict(evidence or {})),
@@ -352,6 +379,7 @@ class ProjectAuthorizationDecision:
             target_subject=request.target_subject,
             operation=request.operation,
             request_id=request.request_id,
+            request_digest=request.request_digest,
             reason=_required(reason, "project_authorization_denial_reason_missing"),
             evidence=copy.deepcopy(dict(evidence or {})),
         )
@@ -373,6 +401,10 @@ class ProjectAuthorizationDecision:
             raise ProjectAuthorizationError("project_authorization_operation_mismatch")
         if clean_text(self.request_id) != request.request_id:
             raise ProjectAuthorizationError("project_authorization_request_id_mismatch")
+        if clean_text(self.request_digest) != request.request_digest:
+            raise ProjectAuthorizationError(
+                "project_authorization_request_digest_mismatch"
+            )
         if not isinstance(self.platform_admin, bool):
             raise ProjectAuthorizationError("project_authorization_admin_flag_invalid")
         if not isinstance(self.evidence, Mapping):
@@ -425,8 +457,7 @@ class LifecyclePlanAuthorizationRequest:
     def __post_init__(self) -> None:
         for name in ("actor_subject", "project_ref", "request_id"):
             _required(getattr(self, name), f"lifecycle_plan_{name}_missing")
-        digest = str(self.request_digest or "")
-        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        if not _is_digest(self.request_digest):
             raise ProjectAuthorizationError("lifecycle_plan_request_digest_invalid")
         refs = [step.ref for step in self.steps]
         if (not 1 <= len(self.steps) <= MAX_LIFECYCLE_PLAN_STEPS or len(set(refs)) != len(refs)
@@ -439,7 +470,7 @@ class LifecyclePlanAuthorizationRequest:
         """The exact single-step request this step's decision must answer."""
         return ProjectAuthorizationRequest(actor_subject=self.actor_subject, project_ref=self.project_ref,
                                            target_subject=step.target_subject, operation=step.operation,
-                                           request_id=self.request_id)
+                                           request_id=self.request_id, request_digest=self.request_digest)
 
 
 @dataclass(frozen=True)

@@ -139,8 +139,10 @@ async def test_a_denied_step_refuses_the_plan_by_its_own_reason_and_nothing_is_p
 @pytest.mark.asyncio
 @pytest.mark.parametrize("tamper,reason", [
     (lambda e: dataclasses.replace(e, decisions=e.decisions[:-1]), "lifecycle_plan_authorization_steps_mismatch"),
+    # N1: each step decision carries the original digest, so swapping only the
+    # envelope's request digest is refused when the envelope is built.
     (lambda e: dataclasses.replace(e, request=dataclasses.replace(e.request, request_digest="0" * 64)),
-     "lifecycle_plan_authorization_request_mismatch"),
+     "project_authorization_request_digest_mismatch"),
     (lambda e: dataclasses.replace(e, decisions=tuple(
         (ref, dataclasses.replace(d, target_subject="someone-else") if ref == "c" else d) for ref, d in e.decisions)),
      "project_authorization_target_mismatch"),

@@ -12,7 +12,7 @@ import pytest
 from connection_hub.delegated_credentials.project_authorization import (
     PROJECT_CONTROL_CREATE, PROJECT_PERSON_CONTROL_CREATE, PROJECT_PERSON_CONTROL_REVOKE,
     LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest, LifecyclePlanStep, ProjectAuthorizationDecision,
-    ProjectAuthorizationError,
+    ProjectAuthorizationError, ProjectAuthorizationRequest,
 )
 
 ACTOR, PROJECT, REQUEST, DIGEST = "platform-user-1", "work:project:quickstart", "plan-1", "d" * 64
@@ -115,6 +115,63 @@ def test_an_empty_or_partial_envelope_cannot_exist_so_it_is_never_allowed(decisi
     chosen = [] if decisions == "empty" else [(STEPS[0].ref, _allow(request, STEPS[0]))]
     with pytest.raises(ProjectAuthorizationError, match="lifecycle_plan_authorization_steps_mismatch"):
         LifecyclePlanAuthorization(request=request, decisions=tuple(chosen))
+
+
+def test_a_step_decision_issued_for_another_plan_digest_is_refused():
+    """N1: same actor, project, target, operation and request id, but another plan."""
+    request = _request()
+    other = _request(request_digest="e" * 64)
+    decisions = [(step.ref, _allow(request, step)) for step in STEPS]
+    decisions[1] = ("c", _allow(other, STEPS[1]))
+    with pytest.raises(ProjectAuthorizationError, match="project_authorization_request_digest_mismatch"):
+        LifecyclePlanAuthorization(request=request, decisions=tuple(decisions))
+
+
+@pytest.mark.parametrize("decide", ["allow", "deny"])
+def test_a_plan_step_decision_without_the_digest_is_refused(decide):
+    import dataclasses
+
+    request = _request()
+    decisions = [(step.ref, _allow(request, step)) for step in STEPS]
+    if decide == "deny":
+        decisions[2] = ("claim", ProjectAuthorizationDecision.deny(request.step_request(STEPS[2]),
+                                                                   reason="project_last_admin"))
+    index = 0 if decide == "allow" else 2
+    decisions[index] = (decisions[index][0], dataclasses.replace(decisions[index][1], request_digest=""))
+    with pytest.raises(ProjectAuthorizationError, match="project_authorization_request_digest_mismatch"):
+        LifecyclePlanAuthorization(request=request, decisions=tuple(decisions))
+
+
+def test_allow_and_deny_both_carry_the_step_digest():
+    request = _request()
+    step = request.step_request(STEPS[0])
+    assert step.request_digest == DIGEST
+    allowed = ProjectAuthorizationDecision.allow(step)
+    denied = ProjectAuthorizationDecision.deny(step, reason="project_last_admin")
+    assert allowed.request_digest == denied.request_digest == DIGEST
+    allowed.validate_for(step)
+    denied.validate_for(step)
+
+
+def test_an_ordinary_single_operation_request_is_unchanged():
+    import dataclasses
+
+    request = ProjectAuthorizationRequest.build(actor_subject=ACTOR, project_ref=PROJECT, target_subject=ACTOR,
+                                                operation=PROJECT_PERSON_CONTROL_CREATE, request_id="op-1")
+    assert request.request_digest == ""
+    decision = ProjectAuthorizationDecision.allow(request)
+    assert decision.request_digest == ""
+    decision.validate_for(request)
+    with pytest.raises(ProjectAuthorizationError, match="project_authorization_request_digest_mismatch"):
+        dataclasses.replace(decision, request_digest=DIGEST).validate_for(request)
+
+
+@pytest.mark.parametrize("digest", ["x", "D" * 64, "d" * 63])
+def test_a_malformed_request_digest_is_refused(digest):
+    with pytest.raises(ProjectAuthorizationError, match="project_authorization_request_digest_invalid"):
+        ProjectAuthorizationRequest.build(actor_subject=ACTOR, project_ref=PROJECT, target_subject=ACTOR,
+                                          operation=PROJECT_PERSON_CONTROL_CREATE, request_id="op-1",
+                                          request_digest=digest)
 
 
 def test_a_decision_for_the_wrong_step_cannot_be_wrapped():

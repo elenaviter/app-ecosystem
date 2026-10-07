@@ -187,6 +187,8 @@ def test_request_has_no_role_or_creator_authority_input() -> None:
         "target_subject",
         "operation",
         "request_id",
+        # W578 N1: binds a plan step's decision to its plan; it grants nothing.
+        "request_digest",
     }
 
 
