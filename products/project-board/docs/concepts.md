@@ -75,7 +75,8 @@ How a person becomes a project admin:
    provider has verified it.
 3. A project admin can make any person on the project an admin. A role is a
    minimum, not a Card preset: each request needs the role AND the operation
-   on the person's current Cards, which only their editors change in
+   through the person's current effective Cards, composed by each upstream
+   Control's own AND/OR rule; only the Cards' editors change them, in
    Connection Hub. A promotion establishes the admin minimum on both of the
    person's current Cards; a demotion takes effect at once; the person's other
    Card selections are not rewritten.

@@ -14,15 +14,17 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     "project.set_goal": {
         "description": (
             "Set the project's goal; empty clears it. Needs the owner or admin "
-            "role AND this operation on both of the person's current Cards."
+            "role AND this operation through the person's current effective "
+            "Cards, composed by each upstream Control's own AND/OR rule."
         ),
         "grants": ("work:coordinate",),
     },
     "project.cards.manage": {
         "description": (
             "Check that the person may manage the project's Cards in Connection "
-            "Hub: the owner or admin role AND this operation on both current "
-            "Cards. It writes no Card in Problem Board."
+            "Hub: the owner or admin role, the required administrative Control "
+            "minimum, AND this operation through the current effective Cards. "
+            "It writes no Card in Problem Board."
         ),
         "grants": ("work:admin",),
     },
@@ -181,7 +183,8 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     },
     # People on a project (W260 phase 2). A role is an independent minimum,
     # not a permission a grant confers: each mutation needs the actor's role
-    # AND the exact operation on both of the actor's current Cards.
+    # AND the exact operation through the actor's current effective Cards,
+    # composed by each upstream Control's own AND/OR rule.
     "project.people.invite": {
         "description": (
             "Invite an existing KDCube user to the project by email and decide "

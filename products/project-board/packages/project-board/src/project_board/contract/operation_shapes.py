@@ -69,7 +69,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                            'project_artifact_ref': 'repo:<alias>/<relative-path> '
                                                                    '(optional)'}},
     'project.set_goal': {
-        'description': "Set the project's goal under the owner/admin role and both current Cards.",
+        'description': "Set the project's goal under the owner/admin role and the current effective Cards.",
         'object_ref': 'work:project:<project_id>',
         'payload': {'goal': 'string; empty clears the goal'},
     },

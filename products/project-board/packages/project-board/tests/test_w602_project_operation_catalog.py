@@ -6,7 +6,7 @@ never hold them and every caller of them was refused as an unknown operation.
 Each is published with the exact service grant the current Problem Board route
 needs, as an ordinary (not composite) operation of the project kind, with its
 request shape. The grant is the service permission only: the owner/admin role
-AND the operation on both current Cards are checked by Problem Board itself,
+AND the operation through the current effective Cards are checked by Problem Board itself,
 so nothing here confers a role or bypasses a Card.
 """
 
@@ -36,7 +36,7 @@ def test_each_operation_is_published_with_its_exact_grant_and_shape(operation):
     assert set(policy) == {"description", "grants"}  # no composite, no role or writer flag
     assert policy["grants"] == EXPECTED[operation]["grants"]
     assert required_grants_for_operation(operation) == frozenset(EXPECTED[operation]["grants"])
-    assert authorization_operations(operation, {}) == (operation,)  # checked as itself on both Cards
+    assert authorization_operations(operation, {}) == (operation,)  # checked as itself, not a composite
     contract = operation_contract(operation)
     assert contract["object_ref"] == ["work:project:<project_id>"]
     assert contract["payload"] == EXPECTED[operation]["payload"]
@@ -59,7 +59,9 @@ def test_descriptions_state_the_role_and_card_rule_and_no_problem_board_card_wri
     goal = PROBLEM_BOARD_OPERATION_POLICIES["project.set_goal"]["description"]
     manage = PROBLEM_BOARD_OPERATION_POLICIES["project.cards.manage"]["description"]
     for text in (goal, manage):
-        assert "owner or admin role AND this operation on both" in text
+        assert "owner or admin role" in text and "current effective Cards" in text
+        assert "on both" not in text  # the upstream AND/OR rule decides, never a blanket both-Cards tick
+    assert "administrative Control minimum" in manage
     assert "writes no Card in Problem Board" in manage
 
 
