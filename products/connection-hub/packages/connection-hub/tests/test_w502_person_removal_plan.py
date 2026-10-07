@@ -247,3 +247,140 @@ async def test_one_decision_ends_both_cards_together_or_neither(tmp_path, decisi
         states.add(stored[1].state)
     assert states == ({CARD_STATE_REVOKED} if decision == "committed" else {CARD_STATE_ACTIVE})
     assert not reservations.held
+
+
+# W502, operator 7 Oct 2026: a removed person invited again is "newly invited" like anyone, with
+# fresh Cards. Their C and My ids are fixed, so the new Cards are created over the revoked ones,
+# freshly built, at the next revision; nothing of the revoked Cards is carried over.
+
+def _join_creations(p):
+    from test_w578_card_lifecycle_plan import _c_request, _my_request
+    return [_c_request({"access_id": p.access_id, "holder_subject": CREATOR}), _my_request()]
+
+
+async def _rejoin(host, p):
+    return await plan_card_lifecycle(host, project_ref=PROJECT, creations=_join_creations(p),
+                                     actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST)
+
+
+@pytest.mark.asyncio
+async def test_a_removed_person_newly_invited_gets_fresh_cards_at_the_next_revision():
+    p, c, my = _person()
+    revoked_c, revoked_my = replace_state(c, CARD_STATE_REVOKED), replace_state(my, CARD_STATE_REVOKED)
+    result = await _rejoin(_Host(p, revoked_c, revoked_my), p)
+    assert result["ok"] is True, result
+    members = {member["access_id"]: member for member in result["plan"]["candidate_value"]["cards"]}
+    assert set(members) == {c.access_id, my.access_id}
+    first_join = await _rejoin(_Host(p), p)  # what a first join builds, for comparison
+    fresh = {member["access_id"]: member["candidate"] for member in first_join["plan"]["candidate_value"]["cards"]}
+    for revoked in (revoked_c, revoked_my):
+        member = members[revoked.access_id]
+        assert member["action"] == "recreate" and member["original_absent"] is False
+        assert member["original_revision"] == revoked.card_revision
+        after = CardAuthority.from_mapping(member["candidate"])
+        assert after.state == CARD_STATE_ACTIVE and after.card_revision == revoked.card_revision + 1
+    # Nothing of the person's earlier choices comes back: My is the first-join My.
+    my_after = members[my.access_id]["candidate"]
+    assert my_after["account_scope"] == fresh[my.access_id]["account_scope"] != my.to_dict()["account_scope"]
+    assert my_after["resource_grants"] == fresh[my.access_id]["resource_grants"]
+    # My binds the recreated Control at its new revision.
+    assert my_after["control_card"]["control_revision"] == revoked_c.card_revision + 1
+    audit = members[c.access_id]["candidate"]["provenance"][PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE]
+    assert audit["action"] == "created" and audit["after_revision"] == revoked_c.card_revision + 1
+    validate_group_candidate(result["plan"]["candidate_value"], reads=result["plan"]["reads"])
+
+
+@pytest.mark.asyncio
+async def test_an_active_or_non_person_existing_card_still_refuses_creation():
+    p, c, my = _person()
+    assert (await _rejoin(_Host(p, c, my), p))["error"] == "card_plan_target_exists"
+    revoked_p = replace_state(p, CARD_STATE_REVOKED)
+    from test_w578_card_lifecycle_plan import _p_request
+    result = await plan_card_lifecycle(_Host(revoked_p), project_ref=PROJECT, creations=[_p_request()],
+                                       actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST)
+    assert result["ok"] is False and result["error"] == "card_plan_target_exists", result
+
+
+@pytest.mark.asyncio
+async def test_remove_invite_again_remove_again_continues_one_revision_chain(tmp_path):
+    p, c, my = _person()
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    decisions = Decisions()
+    tx.bind_transaction_decisions(store, decisions)
+    reservations = _Reservations()
+    tx.bind_catalog_reservations(store, reservations)
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=_mutation_lock)
+    for card in (p, c, my):
+        await service.commit(card, subject_hash=subject_hash_for(card.grantor_subject), expected_revision=0, now=100)
+
+    class _StoreHost(_Host):
+        def __init__(self):
+            super().__init__()
+            self.cards.load_current = self._load
+
+        async def _load(self, access_id, *, subject_hash):
+            stored = await store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+            return (stored[1], object()) if stored is not None else None
+
+    async def run(plan, group_id):
+        current = {}
+        for member in plan["candidate_value"]["cards"]:
+            stored = await store.read_current_authority(subject_hash=member["subject_hash"],
+                                                        access_id=member["access_id"])
+            current[member["access_id"]] = stored[1]
+        members = [(m["subject_hash"], current[m["access_id"]], CardAuthority.from_mapping(m["candidate"]), m["action"])
+                   for m in plan["candidate_value"]["cards"]]
+        staged = await service.stage_group_transaction(
+            transaction_id=group_id, intent_digest="f" * 64, participant="project", members=members,
+            now=datetime.fromtimestamp(100, timezone.utc), reads=plan["reads"], catalog=plan["catalog_digest"])
+        assert staged["staged"] is True, staged
+        decisions.recorded[group_id] = "committed"
+        await service.decide_group_transaction(transaction_id=group_id, intent_digest="f" * 64,
+                                               decision="committed", now=100)
+
+    seen = {c.access_id: [], my.access_id: []}
+
+    async def record():
+        for card in (c, my):
+            stored = await store.read_current_authority(subject_hash=subject_hash_for(card.grantor_subject),
+                                                        access_id=card.access_id)
+            seen[card.access_id].append(stored[1].card_revision)
+            yield stored[1]
+
+    for step, group_id in (("remove", "1" * 64), ("rejoin", "2" * 64), ("remove", "3" * 64)):
+        host = _StoreHost()
+        if step == "remove":
+            current = [card async for card in record()]
+            result = await _plan(host, [_remove(card) for card in current])
+        else:
+            [card async for card in record()]
+            result = await _rejoin(host, p)
+        assert result["ok"] is True, (step, result)
+        await run(result["plan"], group_id)
+    states = [card async for card in record()]
+    assert all(card.state == CARD_STATE_REVOKED for card in states)
+    for revisions in seen.values():
+        assert revisions == sorted(set(revisions))  # strictly increasing: (access_id, revision) never repeats
+        assert revisions[-1] == revisions[0] + 3
+
+
+@pytest.mark.asyncio
+async def test_staging_refuses_a_recreate_that_is_not_over_a_revoked_card(tmp_path):
+    """A stored ACTIVE Card is never replaced by a 'recreate' member, whatever the plan says."""
+    p, c, my = _person()
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    decisions = Decisions()
+    tx.bind_transaction_decisions(store, decisions)
+    tx.bind_catalog_reservations(store, _Reservations())
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=_mutation_lock)
+    for card in (p, c):
+        await service.commit(card, subject_hash=subject_hash_for(card.grantor_subject), expected_revision=0, now=100)
+    fresh = dataclasses.replace(c, card_revision=c.card_revision + 1)
+    with pytest.raises(Exception) as caught:
+        await service.stage_group_transaction(
+            transaction_id="9" * 64, intent_digest="f" * 64, participant="project",
+            members=[(subject_hash_for(c.grantor_subject), c, fresh, "recreate")],
+            now=datetime.fromtimestamp(100, timezone.utc), reads=[], catalog="")
+    assert "card_group_recreate_invalid" in str(caught.value)
+    stored = await store.read_current_authority(subject_hash=subject_hash_for(c.grantor_subject), access_id=c.access_id)
+    assert stored[1].to_dict() == c.to_dict()

@@ -69,6 +69,27 @@ from connection_hub.delegated_credentials.controls.project_invitation import (
 from connection_hub.delegated_credentials.controls.model import control_card_id_for_issuer
 
 
+def fresh_card_over_revoked(fresh: CardAuthority, revoked: CardAuthority, *, actor_subject: str,
+                            request_id: str, now: int) -> CardAuthority:
+    """W502: the freshly built ``fresh`` Card, placed at ``revoked``'s next revision.
+
+    Only the revision moves onto the revoked Card's chain, so (access_id,
+    revision) never repeats; every other field is the fresh Card's own. A
+    person Control's "created" audit is rebuilt for that revision.
+    """
+    if (fresh.access_id != revoked.access_id or fresh.grantor_subject != revoked.grantor_subject
+            or revoked.state != CARD_STATE_REVOKED):
+        raise CardLifecyclePlanRefused("card_plan_target_exists")
+    candidate = dataclasses.replace(fresh, card_revision=revoked.card_revision + 1)
+    if candidate.issuer_kind == PROJECT_PERSON_CONTROL_ISSUER_KIND:
+        identity = ProjectPersonControlIdentity.from_authority(candidate)
+        audit = ProjectPersonControlAudit.build(
+            action="created", actor_subject=actor_subject, identity=identity, request_id=request_id,
+            occurred_at=now, before=None, after=candidate)
+        candidate = bind_project_person_control(candidate, identity=identity, audit=audit)
+    return candidate
+
+
 def removed_person_card(original: CardAuthority, *, project_ref: str, target_subject: str,
                         decision: ProjectAuthorizationDecision, actor_subject: str, request_id: str,
                         now: int) -> tuple[str, CardAuthority]:
@@ -653,11 +674,22 @@ async def plan_card_lifecycle(
                 if key in {(member["subject_hash"], member["access_id"]) for member in members}:
                     raise CardLifecyclePlanRefused("card_group_member_duplicate")
                 existing = await cards.load_current(base.access_id, subject_hash=key[0])
+                original = None
                 if existing is not None:
-                    raise CardLifecyclePlanRefused("card_plan_target_exists")
+                    # W502 (operator, 7 Oct: rejoin gets fresh Cards): a person's C or My
+                    # revoked by an earlier removal is created again, freshly built, at its
+                    # next revision. Nothing of the revoked Card is carried over.
+                    original = existing[0]
+                    if (raw["kind"] not in ("project_person_control", "project_person_my_card")
+                            or original.state != CARD_STATE_REVOKED):
+                        raise CardLifecyclePlanRefused("card_plan_target_exists")
+                    base = fresh_card_over_revoked(base, original, actor_subject=actor, request_id=request_id,
+                                                   now=now)
                 planned[ref] = base
-                members.append(group_member(original=None, candidate=base, action="create"))
-                originals[(subject_hash_for(base.grantor_subject), base.access_id)] = None
+                members.append(group_member(original=original, candidate=base,
+                                            action="create" if original is None else "recreate"))
+                originals[(subject_hash_for(base.grantor_subject), base.access_id)] = (
+                    None if original is None else original.to_dict())
                 del pending[ref]
                 progressed = True
             if not progressed:
