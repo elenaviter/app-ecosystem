@@ -34,7 +34,7 @@ from .model import CardCurrentPointer
 from connection_hub.invocation_policy.models import InvocationAuthority, validated_invocation_id
 
 EFFECT_KINDS = frozenset({
-    "grant_binding", "credential_lifetime", "invocation_policy", "grant_unbind",
+    "grant_binding", "credential_lifetime", "invocation_policy", "grant_unbind", "account_delete",
 })
 _HEX = re.compile(r"[0-9a-f]{64}")
 _SECRET_KEYS = frozenset({
@@ -102,6 +102,8 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
         "credential_lifetime": {"access_id", "expires_at", "base_card_revision"},
         "invocation_policy": {"owner_subject", "authority", "mode", "expected_revision"},
         "grant_unbind": {"access_id", "session_id", "token_sha256"},
+        # W578: a disconnect's deletion of exactly one connection of the grantor's account.
+        "account_delete": {"access_id", "grantor_subject", "provider_id", "account_id", "incarnation"},
     }[kind]
     if set(value) != keys or (kind != "invocation_policy" and value.get("access_id") != access_id):
         _refuse("card_effect_payload_binding_invalid")
@@ -141,6 +143,15 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
                 _refuse("card_effect_policy_binding_invalid")
         except (ValueError, TypeError, AttributeError):
             raise ParticipantEffectRefused("card_effect_policy_binding_invalid") from None
+    elif kind == "account_delete":
+        grantor = value["grantor_subject"]
+        if (type(grantor) is not str or not grantor or grantor != grantor.strip()
+                or hashlib.sha256(grantor.encode("utf-8")).hexdigest() != subject_hash):
+            _refuse("card_effect_owner_mismatch")
+        if key != f"{value.get('provider_id')}:{value.get('account_id')}" or any(
+                type(value[name]) is not str or not value[name] or len(value[name]) > 256
+                for name in ("provider_id", "account_id", "incarnation")):
+            _refuse("card_effect_payload_invalid")
     elif kind == "grant_unbind":
         if (type(value["session_id"]) is not str or not value["session_id"]
                 or len(value["session_id"]) > 256 or type(value["token_sha256"]) is not str
@@ -280,7 +291,7 @@ class ParticipantEffectApplier:
         effect_json = _canonical({"kind": kind, "key": key, "payload": json.loads(requested)})
         binding = EffectBinding(transaction_id, kind, key, _digest(effect_json),
                                 _digest(receipt_json), receipt_json)
-        if phase != "apply" and kind != "invocation_policy":
+        if phase != "apply" and kind not in ("invocation_policy", "account_delete"):
             return binding.effect_digest  # validated no-op; no target state is prepared/released
         if kind == "grant_binding":
             # A merely bound callback is not proof of crash-safe SDK mint/custody.

@@ -142,8 +142,61 @@ class GrantUnbindTarget:
         return binding.effect_digest
 
 
+class AccountDeleteTarget:
+    """W578: a disconnect's deletion of exactly the account incarnation its decision named.
+
+    ``accounts_for(grantor_subject)`` is that grantor's connected-account store,
+    composed with the shared account lock. STAGE holds the incarnation (a
+    reconnect is refused meanwhile, and a stored account that is not that
+    incarnation refuses the stage); COMMIT deletes exactly it and pins the
+    outcome; ABORT releases the hold. A reconnection after the decision is
+    another incarnation and is never deleted.
+    """
+
+    def __init__(self, accounts_for: Any) -> None:
+        self._accounts_for = accounts_for
+
+    def _accounts(self, payload: Mapping[str, Any]) -> Any:
+        if self._accounts_for is None:
+            raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+        accounts = self._accounts_for(payload["grantor_subject"])
+        if accounts is None:
+            raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+        return accounts
+
+    async def _call(self, operation: Any) -> Any:
+        from connection_hub.delegated_to_kdcube.store import AccountDisconnectPending, AccountLockUnavailable
+
+        try:
+            return await operation
+        except AccountLockUnavailable:
+            raise ParticipantEffectRefused("card_effect_adapter_unavailable") from None
+        except AccountDisconnectPending:
+            raise ParticipantEffectRefused("card_effect_binding_mismatch") from None
+
+    async def prepare_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        accounts = self._accounts(payload)
+        await self._call(accounts.hold_incarnation_for_delete(payload["account_id"], payload["incarnation"],
+                                                              pin=binding.effect_digest))
+        return binding.effect_digest
+
+    async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        accounts = self._accounts(payload)
+        # The effect's own identity pins the first completed outcome; a replay returns it.
+        outcome = await self._call(accounts.disconnect_incarnation(payload["account_id"], payload["incarnation"],
+                                                                   pin=binding.effect_digest))
+        if outcome not in ("disconnected", "account_absent", "account_reconnected"):
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
+        return binding.effect_digest
+
+    async def release_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        accounts = self._accounts(payload)
+        await self._call(accounts.release_incarnation_hold(payload["account_id"], pin=binding.effect_digest))
+        return binding.effect_digest
+
+
 def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any,
-                         policies: Any) -> ParticipantEffectApplier:
+                         policies: Any, accounts_for: Any = None) -> ParticipantEffectApplier:
     """Bind one validated applier to a Card service's effect hooks.
 
     The receipt reader is the Card store's own durable receipt; the targets are
@@ -157,6 +210,7 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
         "credential_lifetime": CredentialLifetimeTarget(grant_store),
         "invocation_policy": InvocationPolicyTarget(policies),
         "grant_unbind": GrantUnbindTarget(grant_store),
+        "account_delete": AccountDeleteTarget(accounts_for),
     })
     card_service.bind_effect_applier(applier.apply)
     card_service.bind_effect_preparer(applier.prepare)
@@ -164,5 +218,5 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
     return applier
 
 
-__all__ = ["CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
+__all__ = ["AccountDeleteTarget", "CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
            "NO_ACTIVE_CREDENTIALS", "compose_card_effects"]
