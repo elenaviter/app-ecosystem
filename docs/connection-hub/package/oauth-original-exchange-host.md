@@ -20,6 +20,12 @@ This is a reference, never inline signing material. Existing provider selection
 and activation are unchanged; configuring or qualifying them is a separate
 deployment action.
 
+An enabled original-exchange deployment with a missing or invalid configured
+issuer closes the entire GET/POST OAuth mount with the finite
+`oauth_original_exchange_unavailable` response (503), before discovery, client
+registration, consent or code creation. Disabled OAuth retains its existing 404;
+the non-Card-transaction adapter retains its existing local/development behavior.
+
 The consumed server record supplies the complete Card candidate input. The host
 authenticates the original plan through the Hub's public decision reader, then
 checks the complete candidate in the same scoped durable issuance row. Card kind

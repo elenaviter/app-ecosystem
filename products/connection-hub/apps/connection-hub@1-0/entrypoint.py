@@ -1131,6 +1131,24 @@ async def _bind_delegated_client_request_config(
         request.state.oauth_delegated_config = cfg
         request.state.oauth_delegated_issuer = str(cfg.get("issuer") or "").rstrip("/")
         request.state.oauth_grant_store_required = True
+        if original_exchange_enabled and _bool(cfg.get("enabled"), default=False):
+            from .surfaces.oauth_original_exchange_host import (
+                OriginalExchangeHostingUnavailable, configured_issuer,
+            )
+            delegated = _connections_config(entrypoint).get("delegated_credentials") or {}
+            oauth = delegated.get("oauth") or {}
+            try:
+                issuer = configured_issuer(oauth.get("issuer"))
+            except OriginalExchangeHostingUnavailable:
+                # The productive authorization mount must close too, before
+                # discovery, consent or code creation. The older request-Host
+                # fallback is not a configured original-exchange issuer.
+                cfg["issuer"] = ""
+                cfg["original_exchange_unavailable"] = True
+                request.state.oauth_delegated_issuer = ""
+                return cfg
+            cfg["issuer"] = issuer
+            request.state.oauth_delegated_issuer = issuer
         authority_config = _delegated_authority_config(entrypoint)
         request.state.oauth_authority_backend = authority_config.backend
         request.state.oauth_authority_generation_id = authority_config.generation_id
@@ -3967,6 +3985,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 status_code=404,
                 content={"error": "delegated_credentials_oauth_disabled"},
             )
+        if cfg.get("original_exchange_unavailable"):
+            return JSONResponse(status_code=503, content={"error": "oauth_original_exchange_unavailable"})
 
         path = str(path_tail or "").strip("/")
         public_base = _oauth_public_base_url(request)
@@ -4079,6 +4099,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 status_code=404,
                 content={"error": "delegated_credentials_oauth_disabled"},
             )
+        if cfg.get("original_exchange_unavailable"):
+            return JSONResponse(status_code=503, content={"error": "oauth_original_exchange_unavailable"})
 
         path = str(path_tail or "").strip("/")
         LOGGER.info(

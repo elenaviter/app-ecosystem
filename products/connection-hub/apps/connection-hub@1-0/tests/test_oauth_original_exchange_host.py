@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import importlib
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from starlette.requests import Request
 
 from connection_hub.delegated_credentials.cards.model import CardAuthority
 from connection_hub.delegated_credentials.oauth_issuance import OAuthIssuancePlan
@@ -284,3 +286,68 @@ async def test_real_entrypoint_selects_only_its_host_binding(host, monkeypatch, 
     assert actual["hub"] is hub and actual["cards"] is cards
     assert actual["grant_store"] is grant_store and actual["issuance_store"] is issuance_store
     assert actual["refresh_signing_secret_ref"] == "protected.ref"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,path", [
+    ("oauth_get", "metadata"), ("oauth_get", "authorize"),
+    ("oauth_get", "authorize/consent/draft"), ("oauth_post", "register"),
+    ("oauth_post", "authorize/consent"), ("oauth_post", "authorize/consent/decision"),
+    ("oauth_post", "token"), ("oauth_post", "device_authorization"),
+])
+@pytest.mark.parametrize("issuer", [None, "", "https://hub.test/oauth?wrong=issuer"])
+async def test_actual_productive_oauth_mount_closes_before_handler_or_host_fallback(
+    host, monkeypatch, method, path, issuer,
+):
+    entrypoint = _load_entrypoint_module()
+    connections = {"card_transactions": {"enabled": True},
+                   "delegated_credentials": {"oauth": {"enabled": True, "issuer": issuer}}}
+    monkeypatch.setattr(entrypoint, "_connections_config", lambda *args: connections)
+    monkeypatch.setattr(entrypoint, "_runtime_tenant_project", lambda *args: ("tenant", "project"))
+    service = AsyncMock(side_effect=AssertionError("closed mount must not compose a service"))
+    monkeypatch.setattr(entrypoint, "_automation_access_service_for", service)
+    handlers = []
+    for name in ("oauth_authorize", "oauth_authorize_consent_draft", "oauth_register_client",
+                 "oauth_authorize_consent", "oauth_authorize_consent_decision", "oauth_token",
+                 "oauth_device_authorization", "authorization_server_metadata"):
+        handler = AsyncMock(side_effect=AssertionError("unconfigured mount reached a handler"))
+        monkeypatch.setattr(entrypoint, name, handler)
+        handlers.append(handler)
+    request = Request({"type": "http", "scheme": "https", "server": ("foreign.test", 443),
+        "path": "/public/oauth/" + path, "headers": [(b"host", b"foreign.test")], "query_string": b""})
+    request.state.oauth_original_exchange_factory = "caller-selected"
+    response = await getattr(entrypoint.ConnectionHubEntrypoint, method)(
+        SimpleNamespace(redis=object()), request=request, path_tail=path,
+    )
+    assert response.status_code == 503
+    assert json.loads(response.body) == {"error": "oauth_original_exchange_unavailable"}
+    assert request.state.oauth_original_exchange_factory is None
+    assert request.state.oauth_delegated_issuer == ""
+    assert request.state.oauth_delegated_config["issuer"] == ""
+    service.assert_not_awaited()
+    for handler in handlers:
+        handler.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled,transactions,expected", [(False, True, 404), (True, False, 200)])
+async def test_existing_disabled_and_nontransaction_local_mount_behavior_is_preserved(
+    host, monkeypatch, enabled, transactions, expected,
+):
+    entrypoint = _load_entrypoint_module()
+    connections = {"card_transactions": {"enabled": transactions},
+                   "delegated_credentials": {"oauth": {"enabled": enabled}}}
+    monkeypatch.setattr(entrypoint, "_connections_config", lambda *args: connections)
+    monkeypatch.setattr(entrypoint, "_runtime_tenant_project", lambda *args: ("tenant", "project"))
+    monkeypatch.setattr(entrypoint, "_delegated_authority_config", lambda *args:
+        SimpleNamespace(backend="postgresql", generation_id="generation", uses_postgresql=True))
+    monkeypatch.setattr(entrypoint, "_authority_registry_config", lambda *args: {})
+    request = Request({"type": "http", "scheme": "http", "server": ("localhost", 3000),
+        "path": "/public/oauth/jwks", "headers": [(b"host", b"localhost:3000")], "query_string": b""})
+    response = await entrypoint.ConnectionHubEntrypoint.oauth_get(
+        SimpleNamespace(redis=None, bundle_props={}), request=request, path_tail="jwks",
+    )
+    assert response.status_code == expected
+    if enabled:
+        assert request.state.oauth_delegated_issuer == "http://localhost:3000/public/oauth"
+        assert json.loads(response.body) == {"keys": []}
