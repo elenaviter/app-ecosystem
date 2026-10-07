@@ -147,6 +147,79 @@ class DelegatedCardService:
             / CARD_LOCK_FILENAME
         )
 
+    @asynccontextmanager
+    async def _account_binding_mark(self, current: Any, candidate: CardAuthority, *, subject_hash: str):
+        """W578: hold this direct write's mark on every account it adds; refuse a disconnect's fence."""
+        from .account_fence import AccountFenceRefused, binding_mark
+
+        try:
+            async with binding_mark(self._store, current[1] if current is not None else None, candidate,
+                                    subject_hash=subject_hash):
+                yield
+        except AccountFenceRefused as exc:
+            raise CardConflict(exc.reason) from None
+
+    async def card_section_held(self, subject_hash: str, access_id: str) -> bool:
+        """W578: whether that Card's mutation section is held right now, by the bound production lock."""
+        try:
+            async with self._mutation_lock(
+                lock_path=self._lock_path(subject_hash=subject_hash, access_id=access_id),
+                resource_id=f"delegated-card:{access_id}", operation="delegated-card-account-fence-probe",
+                wait_seconds=0.5,
+            ):
+                return False
+        except CardMutationLockTimeout:
+            return True
+
+    async def reserve_accounts(self, accounts: Any, *, transaction_id: str) -> None:
+        """W578: fence these connected accounts for a disconnect transaction (see ``account_fence``)."""
+        from .account_fence import AccountFenceRefused, reserve_accounts
+        from .transaction_store import CardTransactionRefused
+
+        try:
+            await reserve_accounts(self._store, accounts, transaction_id=transaction_id,
+                                   probe=self.card_section_held)
+        except AccountFenceRefused as exc:
+            raise CardTransactionRefused(exc.reason) from None
+
+    async def release_accounts(self, transaction_id: str) -> None:
+        from .account_fence import release_transaction
+
+        await release_transaction(self._store, transaction_id)
+
+    async def _mark_staged_binding(self, transaction_id: str, subject_hash: str, original: CardAuthority | None,
+                                   candidate: CardAuthority) -> None:
+        from .account_fence import AccountFenceRefused, added_accounts, mark_binding
+
+        accounts = added_accounts(original, candidate)
+        if not accounts:
+            return
+        try:
+            await mark_binding(self._store, accounts, mark_id=transaction_mutation_id(transaction_id), kind="staged",
+                               subject_hash=subject_hash, access_id=candidate.access_id,
+                               transaction_id=transaction_id)
+        except AccountFenceRefused as exc:
+            from .transaction_store import CardTransactionRefused
+            raise CardTransactionRefused(exc.reason) from None
+
+    def _clear_staged_binding(self, transaction_id: str, original: CardAuthority | None,
+                              candidate: CardAuthority) -> None:
+        from .account_fence import added_accounts, clear_binding
+
+        clear_binding(self._store, added_accounts(original, candidate),
+                      mark_id=transaction_mutation_id(transaction_id))
+
+    def _clear_staged_binding_from_receipt(self, transaction_id: str, receipt: Mapping[str, Any]) -> None:
+        before, after = receipt.get("before"), receipt.get("after")
+        if not isinstance(after, Mapping):
+            return
+        try:
+            original = CardAuthority.from_mapping(before) if isinstance(before, Mapping) else None
+            candidate = CardAuthority.from_mapping(after)
+        except Exception:  # noqa: BLE001 - an unreadable receipt leaves a mark that only goes stale
+            return
+        self._clear_staged_binding(transaction_id, original, candidate)
+
     def _critical_section(self, *, subject_hash: str, access_id: str):
         return self._mutation_lock(
             lock_path=self._lock_path(subject_hash=subject_hash, access_id=access_id),
@@ -185,14 +258,18 @@ class DelegatedCardService:
                 await self._reconcile(
                     access_id=authority.access_id, current=current, moment=moment
                 )
-                await self._mark_updating(
-                    access_id=authority.access_id,
-                    mutation_id=mutation_id,
-                    expected_revision=expected_revision,
-                )
-                pointer = await self._commit_durable(
-                    authority=authority, subject_hash=subject_hash, mutation_id=mutation_id
-                )
+                # W578: a write that ADDS a connected account marks it before
+                # the durable commit, so a disconnect fencing that account sees
+                # it (and this write sees the disconnect's fence).
+                async with self._account_binding_mark(current, authority, subject_hash=subject_hash):
+                    await self._mark_updating(
+                        access_id=authority.access_id,
+                        mutation_id=mutation_id,
+                        expected_revision=expected_revision,
+                    )
+                    pointer = await self._commit_durable(
+                        authority=authority, subject_hash=subject_hash, mutation_id=mutation_id
+                    )
                 try:
                     installed = await self._cache.commit_projection(
                         authority,
@@ -263,6 +340,9 @@ class DelegatedCardService:
                             expected_revision=int(original.card_revision) if original is not None else 0)
                     except Exception as exc:
                         raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
+                # W578: a staged write that ADDS a connected account holds its mark
+                # until its own decision, when the binding becomes live.
+                await self._mark_staged_binding(transaction_id, subject_hash, original, candidate)
                 try:
                     staged = await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                          participant=participant, subject_hash=subject_hash, original=original,
@@ -272,6 +352,7 @@ class DelegatedCardService:
                     return staged
                 except (CardStorageError, CardTransactionRefused):
                     if existing is None and await read_receipt(self._store, transaction_id) is None:
+                        self._clear_staged_binding(transaction_id, original, candidate)
                         # Nothing was staged: release the marker rather than
                         # hold readers closed until it expires.
                         try:
@@ -318,6 +399,8 @@ class DelegatedCardService:
                         raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
                 decided = await decide(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                        decision=decision, reason=reason)
+                # W578: decided either way, a staged binding is now live or gone; its mark goes.
+                self._clear_staged_binding_from_receipt(transaction_id, decided)
                 if decided["state"] == "committed" and decided.get("effects"):
                     # Effects before serving: readers refuse until they are applied.
                     from .transaction_store import apply_effects
@@ -465,8 +548,10 @@ class DelegatedCardService:
             await self.decide_transaction(
                 transaction_id=member["transaction_id"], intent_digest=intent_digest, decision=decision,
                 subject_hash=member["subject_hash"], access_id=member["access_id"], reason=reason, now=now)
-        return await finish_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
-                                  decision=decision, reason=reason)
+        finished = await finish_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                      decision=decision, reason=reason)
+        await self.release_accounts(transaction_id)  # W578: a disconnect's fences end with its decision
+        return finished
 
     async def stage_read_set_transaction(
         self, *, transaction_id: str, intent_digest: str, participant: str, reads: Any = (), catalog: str = "",
@@ -516,6 +601,7 @@ class DelegatedCardService:
                 if existing is not None:
                     return existing
                 tombstone = await abort_unstaged(self._store, transaction_id, intent_digest=intent_digest)
+                await self.release_accounts(transaction_id)  # W578: presumed abort releases a crashed fence
                 try:
                     await self._cache.finalize_removal(access_id, mutation_id=transaction_mutation_id(transaction_id))
                 except Exception:  # noqa: BLE001 - it only expires; readers stay closed meanwhile
