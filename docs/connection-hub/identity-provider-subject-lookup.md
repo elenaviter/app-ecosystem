@@ -81,7 +81,8 @@ service key.
 | `identity_not_linked` | no active link (a revoked edge counts as none) |
 | `identity_lookup_ambiguous` | more than one active link for that provider; nothing is returned |
 | `identity_lookup_not_permitted` (403) | not a registered service, the resource is not listed, or the provider has no enabled authenticator |
-| `identity_lookup_requires_service_proof` (403) | no proof |
+| `identity_provider_subject_resolve_requires_user_and_provider` (400) | `platform_user_id` or `provider` is missing |
+| `identity_lookup_requires_service_proof` (403) | no proof, or its `service_id`, `nonce` or `signature` is missing |
 | `identity_lookup_proof_invalid` (403), `reason` | `service_secret_unavailable`, `timestamp_invalid`, `timestamp_outside_window` or `signature_invalid` |
 | `identity_lookup_proof_replayed` (403) | the nonce was already used |
 
