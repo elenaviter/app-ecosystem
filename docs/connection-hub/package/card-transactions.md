@@ -180,6 +180,11 @@ bearer, an authorization code or a PKCE verifier.
    - It is refused once the decision is decided or `reserved_until` has
      passed, and a retry never renews either.
 3. **`complete_oauth_issuance`** prepares, commits and finishes the decision.
+   - Completions of one transaction are serialized across processes by a row
+     lock on its plan. A lost-response retry racing the first call reads that
+     call's outcome. If it waits more than 30 seconds it answers `pending`.
+   - Only a named refusal records ABORT. Any other failure leaves the decision
+     undecided for a retry or for recovery.
    - The decision passes through the enlisted caller-writer gate exactly as
      `record_oauth_grant`'s write does.
    - **STAGE** binds each reservation to its effect; a missing one refuses, and

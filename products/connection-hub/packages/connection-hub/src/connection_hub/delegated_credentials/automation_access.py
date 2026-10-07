@@ -9668,73 +9668,108 @@ class AutomationAccessService:
         """W603: prepare, commit and finish the issuance's decision; returns the ``OAuthIssuanceResult``.
 
         Every reservation is derived from the transaction; ``expect``
-        (slot -> token_sha256) is only an equality check. An undecided
-        decision is prepared (STAGE binds each reservation), passed through the
-        enlisted caller-writer gate exactly as ``record_oauth_grant``'s write,
-        and committed; any refusal before COMMIT is an ABORT. A decided one is
-        finished again. ``state`` is ``committed`` only once every slot's
-        effect has applied (``applied`` or ``superseded``); otherwise
-        ``pending``, and the caller calls again without minting.
+        (slot -> token_sha256) is only an equality check. Completions of one
+        transaction are serialized across processes by a row lock on its plan
+        (``issuance_completion_section``), so a lost-response retry racing the
+        first call reads that call's outcome instead of aborting it. Under the
+        section an undecided decision is prepared (STAGE binds each
+        reservation), passed through the enlisted caller-writer gate exactly as
+        ``record_oauth_grant``'s write, and committed. Only a KNOWN refusal
+        (a named decision, transaction, gate or issuance refusal) records an
+        ABORT; any other failure leaves the decision undecided for a retry or
+        for recovery, which presumes ABORT once it expires. ``state`` is
+        ``committed`` only once every slot's effect has applied (``applied`` or
+        ``superseded``); otherwise ``aborted`` or ``pending``, and on
+        ``pending`` the caller calls again without minting.
         """
-        from service_foundation.coordination.durable_decision_log import DecisionRefused
-
-        from .cards.card_participant import PARTICIPANT
+        from .oauth.issuance_store import IssuanceStoreRefused
         from .oauth_issuance import IssuanceRefused
 
         coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
-        plan, trusted, row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
-        reservations = await store.issuance_reservations(transaction_id)
+        plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
         if expect is not None:
+            reservations = await store.issuance_reservations(transaction_id)
             if not isinstance(expect, Mapping) or any(
                     reservations.get(slot, {}).get("token_sha256") != digest for slot, digest in expect.items()):
                 raise IssuanceRefused("issuance_expect_mismatch")
         candidate = CardAuthority.from_mapping(plan["intent"]["candidate"])
         decided_here, abort_reason = False, ""
-        if not row.terminal:
-            caller_request = None
-            try:
-                gate, caller_request = await self._enlisted_gate(
-                    candidate, expected_revision=trusted.base_revision,
-                    caller_write=CallerWrite("oauth_grant", trusted.grantor_subject,
-                                             request_id=trusted.decision_request_id))
-                await coordinator.prepare_existing(transaction_id)
-                if gate is not None:
-                    await gate()
-                witness = (caller_request.change_digest if caller_request is not None
-                           else plan["draft"]["payload"]["participant_inputs"][PARTICIPANT]["candidate_digest"])
-                await coordinator.decide(transaction_id, "committed", witness_digest=witness)
-                decided_here = True
-            except BaseException as exc:
-                try:
-                    await coordinator.decide(transaction_id, "aborted")
-                except DecisionRefused:
-                    pass  # decided already (committed by a racing call, or aborted): finish that decision
-                except Exception:  # noqa: BLE001 - recovery presumes the abort
-                    _LOGGER.warning("[connection_hub.oauth_issuance] abort not recorded: transaction=%s",
-                                    transaction_id, exc_info=True)
-                if caller_request is not None:
-                    await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
-                                               state="refused", card_revision=trusted.base_revision)
-                if not isinstance(exc, Exception):
-                    raise
-                abort_reason = str(getattr(exc, "reason", "") or exc or type(exc).__name__)[:128]
-                _LOGGER.info("[connection_hub.oauth_issuance] issuance aborted: transaction=%s reason=%s",
-                             transaction_id, getattr(exc, "reason", None) or type(exc).__name__)
-            else:
-                if caller_request is not None:
-                    await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
-                                               state="committed", card_revision=candidate.card_revision)
         try:
-            await coordinator.finish(transaction_id)
-        except Exception:  # noqa: BLE001 - effects or serving behind: pending, finished again on retry or recovery
-            _LOGGER.warning("[connection_hub.oauth_issuance] issuance not finished: transaction=%s", transaction_id,
-                            exc_info=True)
+            async with store.issuance_completion_section(transaction_id):
+                row = await decisions.read(transaction_id)  # read again under the section
+                if row is not None and not row.terminal:
+                    decided_here, abort_reason = await self._decide_issuance(
+                        plan, trusted, candidate, coordinator=coordinator)
+                try:
+                    await coordinator.finish(transaction_id)
+                except Exception:  # noqa: BLE001 - undecided, or effects/serving behind: pending, finished again later
+                    _LOGGER.warning("[connection_hub.oauth_issuance] issuance not finished: transaction=%s",
+                                    transaction_id, exc_info=True)
+        except IssuanceStoreRefused as exc:
+            if exc.reason != "issuance_completion_busy":
+                raise IssuanceRefused(exc.reason) from None
+            # Another completion holds the section: report the decision as it stands (pending until it ends).
         result = await self._issuance_result(plan, trusted, decisions=decisions, store=store,
                                              reason=abort_reason)
         if decided_here and result.state == "committed":
             await self.notify_change(trusted.grantor_subject, action="granted",
                                      access=record_from_card(candidate).to_public_dict())
         return result
+
+    async def _decide_issuance(self, plan: Mapping[str, Any], trusted: Any, candidate: CardAuthority, *,
+                               coordinator: Any) -> tuple[bool, str]:
+        """Prepare, gate and decide under the completion section: (committed here, abort reason).
+
+        A known refusal records ABORT; the refused caller-write outcome is
+        recorded only when THIS call's ABORT is the recorded decision. Any
+        other failure (an outage, a lost connection, cancellation) decides
+        nothing and returns (False, "").
+        """
+        from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+        from .cards.card_participant import PARTICIPANT
+        from .cards.transaction_store import CardTransactionRefused
+        from .oauth_issuance import IssuanceRefused
+
+        known = (DecisionRefused, CardTransactionRefused, CallerWriteRefused, IssuerWriteRefused, CardConflict,
+                 IssuanceRefused)
+        transaction_id = trusted.transaction_id
+        caller_request = None
+        try:
+            gate, caller_request = await self._enlisted_gate(
+                candidate, expected_revision=trusted.base_revision,
+                caller_write=CallerWrite("oauth_grant", trusted.grantor_subject,
+                                         request_id=trusted.decision_request_id))
+            await coordinator.prepare_existing(transaction_id)
+            if gate is not None:
+                await gate()
+            witness = (caller_request.change_digest if caller_request is not None
+                       else plan["draft"]["payload"]["participant_inputs"][PARTICIPANT]["candidate_digest"])
+            await coordinator.decide(transaction_id, "committed", witness_digest=witness)
+        except known as exc:
+            reason = str(getattr(exc, "reason", "") or exc or type(exc).__name__)[:128]
+            try:
+                await coordinator.decide(transaction_id, "aborted")
+            except DecisionRefused:
+                return False, ""  # decided already: finish reports that decision
+            except Exception:  # noqa: BLE001 - nothing recorded: recovery presumes the abort on expiry
+                _LOGGER.warning("[connection_hub.oauth_issuance] abort not recorded: transaction=%s",
+                                transaction_id, exc_info=True)
+                return False, ""
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=trusted.base_revision)
+            _LOGGER.info("[connection_hub.oauth_issuance] issuance aborted: transaction=%s reason=%s",
+                         transaction_id, reason)
+            return False, reason
+        except Exception:  # noqa: BLE001 - unknown: left undecided for a retry or recovery
+            _LOGGER.warning("[connection_hub.oauth_issuance] issuance not decided: transaction=%s", transaction_id,
+                            exc_info=True)
+            return False, ""
+        if caller_request is not None:
+            await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                       state="committed", card_revision=candidate.card_revision)
+        return True, ""
 
     async def _issuance_result(self, plan: Mapping[str, Any], trusted: Any, *, decisions: Any, store: Any,
                                reason: str = "") -> Any:

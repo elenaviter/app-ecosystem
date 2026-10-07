@@ -26,7 +26,8 @@ import hashlib
 import json
 import re
 import uuid
-from typing import Any, Mapping
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Mapping
 
 from connection_hub.delegated_credentials.oauth.authority_schema import (
     TABLE_ACCESS_BINDINGS,
@@ -40,6 +41,8 @@ ISSUANCE_SLOTS = ("access", "refresh")
 # The longest token lifetime a minter may ask a reservation to carry; the
 # Card's absolute expiry caps it in any case.
 MAX_ISSUANCE_TTL_SECONDS = 400 * 86400
+# How long a completion waits for another completion of the same transaction.
+COMPLETION_WAIT_SECONDS = 30
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
@@ -167,6 +170,38 @@ class IssuanceReservationStore:
                 self.tenant, self.project, transaction_id,
             )
         return None if row is None else self._plan_row(row)
+
+    @asynccontextmanager
+    async def issuance_completion_section(self, transaction_id: str, *,
+                                          wait_seconds: int = COMPLETION_WAIT_SECONDS) -> AsyncIterator[None]:
+        """One completion of a transaction at a time, across processes: a row lock on its plan.
+
+        The lock lives in this PostgreSQL transaction, held for the section, so
+        a process that dies releases it with its connection. Waiting longer
+        than ``wait_seconds`` refuses ``issuance_completion_busy``: another
+        completion is deciding, and the caller reads its outcome instead.
+        """
+        import asyncpg
+
+        if not _HEX64.fullmatch(str(transaction_id)):
+            raise IssuanceStoreRefused("issuance_plan_unknown")
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.execute(f"SET LOCAL lock_timeout = '{max(1, int(wait_seconds))}s'")
+                try:
+                    found = await connection.fetchval(
+                        f"""
+                        SELECT 1 FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
+                        WHERE tenant = $1 AND project = $2 AND transaction_id = $3
+                        FOR UPDATE
+                        """,
+                        self.tenant, self.project, transaction_id,
+                    )
+                except asyncpg.exceptions.LockNotAvailableError:
+                    raise IssuanceStoreRefused("issuance_completion_busy") from None
+                if found is None:
+                    raise IssuanceStoreRefused("issuance_plan_unknown")
+                yield
 
     async def reserve_issued_credential(self, *, transaction_id: str, slot: str, token_sha256: str,
                                         record: Mapping[str, Any], ttl_seconds: int) -> str:
@@ -461,5 +496,5 @@ class IssuanceReservationStore:
                 for row in rows}
 
 
-__all__ = ["ISSUANCE_SLOTS", "IssuanceReservationStore", "IssuanceStoreRefused", "MAX_ISSUANCE_TTL_SECONDS",
+__all__ = ["COMPLETION_WAIT_SECONDS", "ISSUANCE_SLOTS", "IssuanceReservationStore", "IssuanceStoreRefused", "MAX_ISSUANCE_TTL_SECONDS",
            "reservation_digest"]

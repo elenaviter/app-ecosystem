@@ -329,3 +329,64 @@ async def test_without_transactions_or_the_issuance_store_nothing_begins(tmp_pat
         w.service._oauth_issuance_store = None
         with pytest.raises(IssuanceRefused, match="card_transactions_unavailable"):
             await _begin(w)
+
+
+@pytest.mark.asyncio
+async def test_concurrent_completions_converge_on_one_committed_outcome(tmp_path):
+    """A lost-response retry racing the first call (another SDK process) reads that call's outcome."""
+    import asyncio
+
+    async with _world(tmp_path) as w:
+        for attempt in range(8):
+            plan = await _begin(w, request=f"exchange-race-{attempt}")
+            tokens = await _reserve(w, plan)
+            results = await asyncio.gather(*(w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
+                                             for _ in range(3)))
+            states = [result.state for result in results]
+            assert "aborted" not in states and states.count("committed") >= 1, (attempt, states)
+            final = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
+            assert final.state == "committed", (attempt, final)
+            assert {slot: o.outcome for slot, o in final.per_slot.items()} == {"access": "applied",
+                                                                               "refresh": "applied"}
+            assert await _usable(w, tokens) == {"access": True, "refresh": True}
+        async with w.pool.acquire() as connection:
+            families = await connection.fetchval(
+                f"SELECT count(*) FROM {w.authority.schema}.connection_hub_oauth_credential_families")
+        assert families == 8  # one family per issuance: never activated twice
+        assert await w.decisions.list_in_doubt(limit=20) == [] and await tx.list_in_doubt(w.store) == []
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_card_at_the_same_revision_supersedes_the_old_reservation(tmp_path):
+    """The incarnation fence: same id, revision and expiry, different content -> superseded, nothing usable."""
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)
+        tokens = await _reserve(w, plan)
+        real = w.authority.activate_issued_credential
+
+        async def lost(**_kwargs):
+            raise ConnectionError("database connection lost")
+
+        w.authority.activate_issued_credential = lost
+        assert (await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)).state == "pending"
+        from datetime import datetime, timezone
+
+        from connection_hub.delegated_credentials.cards.model import CardCurrentPointer
+        from connection_hub.delegated_credentials.durable_io import write_json_atomic
+        receipt = await tx.read_receipt(w.store, tx.member_transaction_id(plan.transaction_id, 0))
+        committed = await w.store.read_revision(
+            subject_hash=w.subject_hash, access_id=plan.access_id,
+            revision_name=CardCurrentPointer.from_mapping(receipt["after"]).revision_name)
+        replacement = dataclasses.replace(committed, label="re-created elsewhere")
+        assert (replacement.card_revision, replacement.expires_at, replacement.state) \
+            == (committed.card_revision, committed.expires_at, committed.state)
+        assert replacement.content_hash() != committed.content_hash()
+        pointer = await w.store.write_revision(subject_hash=w.subject_hash, authority=replacement,
+                                               updated_at=datetime.now(timezone.utc))
+        await write_json_atomic(w.store.current_path(subject_hash=w.subject_hash, access_id=plan.access_id),
+                                pointer.to_dict())  # forced past the store's own fence, as an out-of-band writer
+        w.authority.activate_issued_credential = real
+        result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
+        assert {slot: o.outcome for slot, o in result.per_slot.items()} == {"access": "superseded",
+                                                                           "refresh": "superseded"}
+        assert await _usable(w, tokens) == {"access": False, "refresh": False}
