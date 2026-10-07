@@ -12,6 +12,11 @@ from service_foundation.coordination.durable_decision_log import DecisionRefused
 
 from .cards.model import CardAuthority, CardRecordError
 from .cards.store import subject_hash_for
+from .controls.project_invitation import (
+    PROJECT_INVITATION_CONTROL_ISSUER_KIND,
+    ProjectInvitationControlError,
+    ProjectInvitationControlIdentity,
+)
 from .controls.project_person import PROJECT_PERSON_CONTROL_ISSUER_KIND
 from .project_identity_lifecycle import PROJECT_PERSON_MY_CARD_ISSUER_KIND
 
@@ -19,6 +24,7 @@ _DISPLAY_KINDS = {
     "application": "project_control",
     PROJECT_PERSON_CONTROL_ISSUER_KIND: "person_control",
     PROJECT_PERSON_MY_CARD_ISSUER_KIND: "my_card",
+    PROJECT_INVITATION_CONTROL_ISSUER_KIND: "invitation_control",
 }
 
 
@@ -40,6 +46,7 @@ def _selection_value(card: Mapping[str, Any]) -> dict[str, Any]:
         "named_service_operations": copy.deepcopy(card.get("named_service_operations")),
         "account_scope": copy.deepcopy(card["account_scope"]),
         "parent": copy.deepcopy(card.get("control_card")),
+        "state": card["state"],
     }
 
 
@@ -84,6 +91,11 @@ def plan_display(
         kind = _DISPLAY_KINDS.get(candidate.issuer_kind)
         if kind is None:
             raise _refuse("card_plan_display_kind_invalid")
+        if kind == "invitation_control":
+            try:
+                ProjectInvitationControlIdentity.from_authority(candidate)
+            except ProjectInvitationControlError as exc:
+                raise _refuse("card_plan_display_kind_invalid") from exc
         original_raw = originals[key]
         if original_raw is None:
             if before_revision != 0 or member.get("original_absent") is not True:
