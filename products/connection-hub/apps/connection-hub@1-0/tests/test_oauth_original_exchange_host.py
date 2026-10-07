@@ -132,6 +132,58 @@ async def test_pending_fence_checks_exact_original_or_authoritative_absence(host
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["access_id", "grantor_subject", "client_id", "delegate_subject"])
+async def test_candidate_identity_must_match_the_authenticated_plan_even_with_a_matching_hash(host, field):
+    scene = _scene(host)
+    foreign = replace(scene.candidate, **{field: "foreign-identity"})
+    # Keep every other predicate valid, including the content hash. A generic
+    # hash-corruption test cannot independently pin the identity-tuple fence.
+    plan = replace(scene.plan, card_content_hash=foreign.content_hash())
+    scene.hub.read_oauth_issuance_plan.return_value = plan
+    scene.row["plan"] = {**plan.to_dict(), "intent": {
+        "candidate": foreign.to_dict(), "original": scene.original.to_dict()}}
+    with pytest.raises(host.OriginalExchangeHostingUnavailable, match="candidate_mismatch"):
+        await scene.target.candidate(plan)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("clock", [1700, 1701, 1999])
+async def test_committed_delivery_fence_closes_at_the_original_delivery_deadline(host, clock):
+    scene = _scene(host)
+    scene.cards.read_current_authority.return_value = (object(), scene.candidate)
+    committed = SimpleNamespace(state="committed")
+    # A pending reservation would already have expired here and mask a broken
+    # delivery fence. Committed delivery isolates that fence before expiry.
+    scene.store.issuance_clock.return_value = scene.plan.delivery_deadline - 1
+    assert await scene.target.fence(plan=scene.plan, result=committed) is True
+    scene.store.issuance_clock.return_value = clock
+    assert scene.plan.delivery_deadline <= clock < scene.plan.expires_at
+    assert await scene.target.fence(plan=scene.plan, result=committed) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("create", [False, True])
+async def test_original_presence_must_agree_with_the_authenticated_base_revision(host, create):
+    scene = _scene(host, create=create)
+    scene.row["plan"]["intent"]["original"] = (
+        scene.candidate.to_dict() if create else None)
+    with pytest.raises(host.OriginalExchangeHostingUnavailable, match="candidate_mismatch"):
+        await scene.target.candidate(scene.plan)
+
+
+@pytest.mark.asyncio
+async def test_inactive_candidate_is_refused_even_when_its_hash_and_revisions_match(host):
+    scene = _scene(host)
+    inactive = replace(scene.candidate, state="revoked")
+    plan = replace(scene.plan, card_content_hash=inactive.content_hash())
+    scene.hub.read_oauth_issuance_plan.return_value = plan
+    scene.row["plan"] = {**plan.to_dict(), "intent": {
+        "candidate": inactive.to_dict(), "original": scene.original.to_dict()}}
+    with pytest.raises(host.OriginalExchangeHostingUnavailable, match="candidate_mismatch"):
+        await scene.target.candidate(plan)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", ["label", "revision", "owner", "client", "kind", "state", "missing"])
 async def test_committed_fence_requires_the_complete_exact_candidate(host, change):
     scene = _scene(host)
