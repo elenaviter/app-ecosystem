@@ -7646,18 +7646,22 @@ class SharedFieldStore:
         # The normal reply command keeps its local reply-to (and settlement
         # receipt). Resolve the origin from that exact addressed mail rather
         # than asking the worker to invent or copy private routing data.
-        if clean_recipient in {"operator", "owner"} and clean_kind == "reply" and reply_to:
+        # W616: any operator-mail kind answering a person's message carries its
+        # origin, so the board returns it to that person, not the project owner.
+        if clean_recipient in {"operator", "owner"} and reply_to:
             with exclusive_lock(self._mail_lock(clean_project, clean_sender)):
                 incoming = self._mail_record_unlocked(clean_project, clean_sender, reply_to)
             origin = dict((incoming.get("payload") or {}).get("operator_origin") or {})
             if origin.get("ref"):
-                if str(incoming.get("correlation_id") or "") != mail["correlation_id"]:
+                same_thread = str(incoming.get("correlation_id") or "") == mail["correlation_id"]
+                if clean_kind == "reply" and not same_thread:
                     raise DomainError(
                         "field_operator_origin_mismatch",
                         "Reply correlation does not match the addressed operator message.",
                         status=409,
                     )
-                mail["payload"]["operator_origin_ref"] = str(origin["ref"])
+                if same_thread:
+                    mail["payload"]["operator_origin_ref"] = str(origin["ref"])
         if not clean_project:
             if mail["work_ref"]:
                 raise DomainError(
@@ -12698,6 +12702,10 @@ class SharedFieldStore:
                 }
         if str(row.get("kind") or "") == "mail.route":
             proof = row.get("remote_result")
+            # W616: whom a project mail reached; owner_default names a reply that missed its writer.
+            routed = str(proof.get("routed_to") or "") if isinstance(proof, Mapping) else ""
+            if routed in {"originating_operator", "thread_writer", "owner_default"}:
+                result["routed_to"] = routed
             notification = proof.get("notification") if isinstance(proof, Mapping) else None
             if isinstance(notification, Mapping):
                 # Keep Board acceptance distinct from channel outcome, without
