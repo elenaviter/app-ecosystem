@@ -139,6 +139,88 @@ transaction, and the account is deleted only after its COMMIT:
   interrupted. Each logs one WARNING, `[connection-hub.account-lock]`, with
   the key digest only, so lock contention shows in the logs.
 
+## Issuing an OAuth client's original credentials
+
+While enabled, an authorization-code exchange grants its Card (or changes it)
+and issues that Card's credentials under one decision. No credential is usable
+before that decision commits and its effects apply. The Hub never receives a
+bearer, an authorization code or a PKCE verifier.
+
+1. **`begin_oauth_issuance`** plans the Card that `record_oauth_grant` would
+   write, using the same code and the same consent inputs. It stores the plan
+   once and begins the decision from it.
+   - The plan is in `connection_hub_oauth_issuance_plans`. The first writer wins,
+     and every deadline is read from PostgreSQL's clock.
+   - A first consent is a one-member `connection-hub.card-group` with action
+     `create`. A later consent is the single-Card transaction with action
+     `oauth_grant`.
+   - The plan carries two `credential_issue` effects, `access` and `refresh`,
+     each `{access_id, slot, expires_at, card_revision}`.
+   - It returns an `OAuthIssuancePlan`:
+     - the transaction and intent digest;
+     - the Card, grantor, client, credential issuer and credential subject;
+     - the base and planned revisions, the planned revision's expiry and
+       content hash;
+     - each slot's effect digest;
+     - two deadlines: `delivery_deadline`, the earlier of the Card's expiry and
+       600 seconds after `begin` (`ISSUANCE_DELIVERY_SECONDS`), and
+       `reserved_until`, never later than the decision's own expiry.
+
+   The same original request with the same inputs returns the same plan,
+   deadlines included. Other inputs refuse `issuance_replay_changed`.
+2. **`reserve_oauth_issuance`** stores one minted credential's SHA-256 digest
+   and its non-secret record in `connection_hub_oauth_issuance_reservations`,
+   one row per `(transaction, slot)`.
+   - Only the plan's `transaction_id` selects. Any other differing field
+     refuses `issuance_plan_mismatch`, and every trusted value is copied from
+     the stored plan.
+   - The record must name the planned Card, issuer, credential subject, grantor
+     and client, and carry no secret field.
+   - Readers take authority from the record and its credential envelope, so
+     both must carry exactly the plan's `operations`, `resource_grants` and
+     `resource_operations`. That is the candidate Card's own declared-key
+     snapshot, fixed at `begin`. A missing, malformed, wider or concrete-URL
+     value refuses `issuance_record_authority_mismatch`.
+   - A reservation is in no table a reader looks at.
+   - It is refused once the decision is decided or `reserved_until` has
+     passed, and a retry never renews either.
+3. **`complete_oauth_issuance`** prepares, commits and finishes the decision.
+   - Completions of one transaction are serialized across processes and
+     machines by a short claim on its plan row. The claim (`completing_owner`,
+     `completing_until`) is taken, renewed and released by single committed
+     statements, so no database connection is held across the completion's
+     own calls.
+     - Another live claim answers `pending` at once; a dead holder's claim
+       lapses after 60 seconds.
+     - The holder renews the claim before COMMIT and before ABORT. A lost
+       claim decides nothing.
+   - Only a named refusal records ABORT. Any other failure leaves the decision
+     undecided for a retry or for recovery.
+   - The decision passes through the enlisted caller-writer gate exactly as
+     `record_oauth_grant`'s write does.
+   - **STAGE** binds each reservation to its effect; a missing one refuses, and
+     the decision aborts.
+   - **COMMIT** activates each reservation: it inserts the real family and
+     generation, or the access binding, under the Card's family lock. It does
+     this only while the authoritative Card is exactly the committed revision
+     (its content hash), active and unexpired. Otherwise the slot ends
+     `superseded` and nothing is created, even when the Card has no family.
+   - A token's expiry is its reservation instant plus the minter's lifetime,
+     capped by the Card's expiry, so a late activation never extends it.
+   - **ABORT** releases every reservation, and a reservation STAGE never bound
+     expires at its deadline (`expire_oauth_issuance_reservations`, a
+     scheduled sweep).
+   - It returns an `OAuthIssuanceResult` naming the same transaction and intent
+     digest: `committed` (with the Hub's committed receipt digest) only once
+     every slot has applied, `aborted`, or `pending`. On `pending` the caller
+     calls again; it never mints again.
+
+`delivery_deadline` bounds only the recovery of the original response to a
+consumed exchange. The authorization code itself lives 60 seconds and is
+validated on the first exchange. Keeping the raw bearers in encrypted custody
+until that deadline is the SDK's part. So is activating the platform session
+only after a committed result.
+
 ## Configuration
 
 All of it lives in the Hub's bundle props under `connections.card_transactions`.

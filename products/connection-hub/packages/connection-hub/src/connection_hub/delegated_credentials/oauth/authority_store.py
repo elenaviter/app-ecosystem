@@ -23,6 +23,7 @@ from connection_hub.delegated_credentials.oauth.authority_schema import (
 )
 from connection_hub.delegated_credentials.oauth.bearers import bearer_sha256
 from connection_hub.delegated_credentials.oauth.device import DEVICE_GRANT_TYPE
+from connection_hub.delegated_credentials.oauth.issuance_store import IssuanceReservationStore
 
 LOGGER = logging.getLogger(__name__)
 
@@ -195,7 +196,7 @@ class OAuthAuthorityStore(Protocol):
     ) -> bool: ...
 
 
-class PostgresOAuthAuthorityStore:
+class PostgresOAuthAuthorityStore(IssuanceReservationStore):
     """Transactional PostgreSQL authority for OAuth clients and credentials.
 
     Bearers are hashed before entering a SQL argument. Rotation locks and

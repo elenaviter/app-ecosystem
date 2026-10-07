@@ -20,6 +20,14 @@ The target adapter must apply expiry without reviving an expired credential.
 An unavailable or unqualified adapter refuses; there is no legacy fallback.
 Grant minting is source-gated until the SDK's bound no-second-mint custody
 operation qualifies; supplying a target object does not enable it.
+
+W603: ``credential_issue`` activates one credential an original OAuth issuance
+reserved before this decision (``oauth/issuance_store.py``). Its payload names
+only the Card, the slot, the Card revision the decision commits and that
+revision's absolute expiry; the bearer stays in the SDK's custody and in the
+reservation as a digest. It is the one kind a group member CREATING its Card
+(no before pointer) may carry, and ``superseded`` is its named, replay-stable
+outcome when the authoritative Card is no longer that revision.
 """
 
 from __future__ import annotations
@@ -41,7 +49,10 @@ from connection_hub.invocation_policy.models import InvocationAuthority, validat
 
 EFFECT_KINDS = frozenset({
     "grant_binding", "credential_lifetime", "invocation_policy", "grant_unbind", "account_delete",
+    "credential_issue",
 })
+# W603: the named outcome of a credential_issue whose Card moved on before it applied.
+CREDENTIAL_ISSUE_SUPERSEDED = "superseded"
 _HEX = re.compile(r"[0-9a-f]{64}")
 _SECRET_KEYS = frozenset({
     "token", "access_token", "refresh_token", "bearer", "password", "secret",
@@ -110,6 +121,8 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
         "grant_unbind": {"access_id", "session_id", "token_sha256"},
         # W578: a disconnect's deletion of exactly one connection of the grantor's account.
         "account_delete": {"access_id", "grantor_subject", "provider_id", "account_id", "incarnation"},
+        # W603: one reserved original credential, activated by this decision's COMMIT.
+        "credential_issue": {"access_id", "slot", "expires_at", "card_revision"},
     }[kind]
     if set(value) != keys or (kind != "invocation_policy" and value.get("access_id") != access_id):
         _refuse("card_effect_payload_binding_invalid")
@@ -158,6 +171,11 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
                 type(value[name]) is not str or not value[name] or len(value[name]) > 256
                 for name in ("provider_id", "account_id", "incarnation")):
             _refuse("card_effect_payload_invalid")
+    elif kind == "credential_issue":
+        if key not in {"access", "refresh"} or value["slot"] != key or value["expires_at"] < 1:
+            _refuse("card_effect_payload_invalid")
+        if type(value["card_revision"]) is not int or value["card_revision"] != base_revision + 1:
+            _refuse("card_effect_base_revision_mismatch")
     elif kind == "grant_unbind":
         if (type(value["session_id"]) is not str or not value["session_id"]
                 or len(value["session_id"]) > 256 or type(value["token_sha256"]) is not str
@@ -271,7 +289,27 @@ class ParticipantEffectApplier:
 
     @staticmethod
     def _card_receipt_binding(receipt: Mapping[str, Any]) -> tuple[str, int]:
-        """A Card receipt's exact before/after pointers: the Card and the revision its effects bind to."""
+        """A Card receipt's exact before/after pointers: the Card and the revision its effects bind to.
+
+        W603: a group member creating its Card has no before pointer; it binds
+        revision 0, and only ``credential_issue`` may ride on it (``_bound``).
+        """
+        if receipt["before"] is None:
+            group = receipt["group"]
+            if any(type(receipt["after"].get(name)) is not int for name in ("card_revision", "expires_at")):
+                _refuse("card_effect_receipt_binding_invalid")
+            after = CardCurrentPointer.from_mapping(receipt["after"])
+            if (not isinstance(group, Mapping) or type(group.get("index")) is not int
+                    or not _HEX.fullmatch(str(group.get("transaction_id")))
+                    or after.to_dict() != receipt["after"] or not after.access_id
+                    or after.access_id != receipt["access_id"] or after.card_revision != 1
+                    or not _HEX.fullmatch(receipt["subject_hash"])
+                    or not _HEX.fullmatch(receipt["intent_digest"])
+                    or not _HEX.fullmatch(receipt["change_digest"])
+                    or not _HEX.fullmatch(after.content_hash)
+                    or type(receipt["participant"]) is not str or not receipt["participant"]):
+                _refuse("card_effect_receipt_binding_invalid")
+            return after.access_id, 0
         if any(type(receipt[field].get(name)) is not int for field in ("before", "after")
                for name in ("card_revision", "expires_at")):
             _refuse("card_effect_receipt_binding_invalid")
@@ -296,6 +334,7 @@ class ParticipantEffectApplier:
             _refuse("card_effect_set_invalid")
         identities = set()
         matched = False
+        created = receipt.get("before", {}) is None
         requested = _payload(kind, key, payload, bound_access_id, base_revision, receipt["subject_hash"])
         for effect in effects:
             if not isinstance(effect, Mapping) or set(effect) != {"kind", "key", "payload"}:
@@ -306,6 +345,8 @@ class ParticipantEffectApplier:
                     or (effect_kind, effect_key) in identities):
                 _refuse("card_effect_set_invalid")
             identities.add((effect_kind, effect_key))
+            if created and effect_kind != "credential_issue":
+                _refuse("card_effect_set_invalid")  # a created Card carries only its original credentials
             saved = _payload(effect_kind, effect_key, effect["payload"], bound_access_id,
                              base_revision, receipt["subject_hash"])
             if (effect_kind, effect_key) == (kind, key):
@@ -320,7 +361,7 @@ class ParticipantEffectApplier:
         effect_json = _canonical({"kind": kind, "key": key, "payload": json.loads(requested)})
         binding = EffectBinding(transaction_id, kind, key, _digest(effect_json),
                                 _digest(receipt_json), receipt_json)
-        if phase != "apply" and kind not in ("invocation_policy", "account_delete"):
+        if phase != "apply" and kind not in ("invocation_policy", "account_delete", "credential_issue"):
             return binding.effect_digest  # validated no-op; no target state is prepared/released
         if kind == "grant_binding":
             # A merely bound callback is not proof of crash-safe SDK mint/custody.
@@ -342,10 +383,13 @@ class ParticipantEffectApplier:
         if (phase == "apply" and kind == "credential_lifetime"
                 and type(applied_digest) is str and applied_digest == "no_active_credentials"):
             return applied_digest
+        if (phase == "apply" and kind == "credential_issue"
+                and type(applied_digest) is str and applied_digest == CREDENTIAL_ISSUE_SUPERSEDED):
+            return applied_digest
         if type(applied_digest) is not str or applied_digest != binding.effect_digest:
             _refuse("card_effect_applied_receipt_invalid")
         return applied_digest
 
 
-__all__ = ["EFFECT_KINDS", "EffectBinding", "IdempotentEffectTarget",
+__all__ = ["CREDENTIAL_ISSUE_SUPERSEDED", "EFFECT_KINDS", "EffectBinding", "IdempotentEffectTarget",
            "ParticipantEffectApplier", "ParticipantEffectRefused"]
