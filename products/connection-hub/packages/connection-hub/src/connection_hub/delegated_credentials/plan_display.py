@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+from types import MappingProxyType
 from typing import Any, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
@@ -20,12 +21,13 @@ from .controls.project_invitation import (
 from .controls.project_person import PROJECT_PERSON_CONTROL_ISSUER_KIND
 from .project_identity_lifecycle import PROJECT_PERSON_MY_CARD_ISSUER_KIND
 
-_DISPLAY_KINDS = {
+# The issuer kinds a plan displays, and the name each is displayed as (read-only).
+DISPLAY_KINDS: Mapping[str, str] = MappingProxyType({
     "application": "project_control",
     PROJECT_PERSON_CONTROL_ISSUER_KIND: "person_control",
     PROJECT_PERSON_MY_CARD_ISSUER_KIND: "my_card",
     PROJECT_INVITATION_CONTROL_ISSUER_KIND: "invitation_control",
-}
+})
 
 
 def _refuse(reason: str) -> DecisionRefused:
@@ -38,8 +40,13 @@ def _required(value: Any) -> str:
     return value
 
 
-def _selection_value(card: Mapping[str, Any]) -> dict[str, Any]:
-    """Only public, operator-relevant selection and its Control parent."""
+def selection_display(card: Mapping[str, Any]) -> dict[str, Any]:
+    """Only public, operator-relevant selection and its Control parent (a deep copy).
+
+    The one display of a Card's selection: ``plan_display`` shows every
+    before and after image with it, and other displays reuse it rather than
+    decoding a Card themselves (W613).
+    """
     return {
         "resource_grants": copy.deepcopy(card["resource_grants"]),
         "resource_operations": copy.deepcopy(card["resource_operations"]),
@@ -88,7 +95,7 @@ def plan_display(
                 or subject_hash_for(candidate.grantor_subject) != subject_hash
                 or candidate.card_revision != before_revision + 1):
             raise _refuse("card_plan_display_candidate_changed")
-        kind = _DISPLAY_KINDS.get(candidate.issuer_kind)
+        kind = DISPLAY_KINDS.get(candidate.issuer_kind)
         if kind is None:
             raise _refuse("card_plan_display_kind_invalid")
         if kind == "invitation_control":
@@ -112,7 +119,7 @@ def plan_display(
                     or subject_hash_for(original.grantor_subject) != subject_hash
                     or original.card_revision != before_revision):
                 raise _refuse("card_plan_display_original_revision_changed")
-            before = _selection_value(original.to_dict())
+            before = selection_display(original.to_dict())
         entries.append({
             "access_id": access_id,
             "subject_hash": subject_hash,
@@ -121,9 +128,9 @@ def plan_display(
             "original_revision": before_revision,
             "candidate_revision": candidate.card_revision,
             "before": before,
-            "after": _selection_value(candidate.to_dict()),
+            "after": selection_display(candidate.to_dict()),
         })
     return sorted(entries, key=lambda entry: (entry["subject_hash"], entry["access_id"]))
 
 
-__all__ = ["plan_display"]
+__all__ = ["DISPLAY_KINDS", "plan_display", "selection_display"]
