@@ -68,6 +68,16 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                                                '(optional)',
                                            'project_artifact_ref': 'repo:<alias>/<relative-path> '
                                                                    '(optional)'}},
+    'project.set_goal': {
+        'description': "Set the project's goal under the owner/admin role and the current effective Cards.",
+        'object_ref': 'work:project:<project_id>',
+        'payload': {'goal': 'string; empty clears the goal'},
+    },
+    'project.cards.manage': {
+        'description': 'Check the signed-in person may manage project Cards in Connection Hub. No Problem Board Card write.',
+        'object_ref': 'work:project:<project_id>',
+        'payload': {},
+    },
     'project.set_journal_home': {   'description': "Create or version-update the signed-in user's "
                                                    'portable journal-home binding. Journal files '
                                                    "and their index remain on the user's local "
