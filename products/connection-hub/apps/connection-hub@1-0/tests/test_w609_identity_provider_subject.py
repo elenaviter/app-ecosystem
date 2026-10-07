@@ -199,3 +199,19 @@ def test_the_signature_contract_vector_is_fixed():
         secret="v" * 40, service_id="problem-board", timestamp="1800000000", nonce="0" * 32,
         platform_user_id="cognito:7a1e2b3c-0000-4000-8000-00000000abcd", provider="telegram",
     ) == VECTOR
+
+
+@pytest.mark.asyncio
+async def test_a_service_secret_shorter_than_32_bytes_refuses_even_a_matching_signature(world, monkeypatch):
+    module, instance, store, _ = world
+    user = "cognito:7a1e2b3c-0000-4000-8000-00000000abcd"
+    store.upsert_edge(from_provider="telegram", from_subject="100200300", to_user_id=user)
+    short = "k" * 31
+
+    async def short_secret(_e, *, secret_path, **_kw):
+        return short
+
+    monkeypatch.setattr(module, "_bundle_secret_value", short_secret)
+    answer = await _ask(module, instance, user, proof=_proof(module, user, secret=short))  # signed with that key
+    assert answer == {"ok": False, "error": "identity_lookup_proof_invalid", "reason": "service_secret_unavailable",
+                      "status": 403}
