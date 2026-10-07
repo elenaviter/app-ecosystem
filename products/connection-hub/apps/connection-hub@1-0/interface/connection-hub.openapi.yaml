@@ -645,7 +645,9 @@ paths:
         project, invitation, pending control id and signed-in person, and the
         stored email digest. Returns only the pending Card's revision and
         state (active); never its selection, grants, audit or admin view.
-        Read-only; nothing is written.
+        Read-only; nothing is written. Every refusal before the email binding
+        succeeds is the one project_invitation_pending_unavailable (403), so the
+        read never reveals whether an invitation exists.
       operationId: project_invitation_pending_revision
       x-kdcube-result-alias: project_invitation_pending_revision
       parameters:
