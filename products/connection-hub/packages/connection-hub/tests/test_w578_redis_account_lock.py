@@ -78,3 +78,31 @@ async def test_a_section_running_past_its_budget_is_interrupted_before_the_key_c
         assert await redis.get(lock.key("user-1", "account-1")) is None  # released by its holder
     finally:
         await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_contention_is_never_silent_and_names_neither_the_user_nor_the_account(caplog):
+    """claude-main #649: a wait timeout and a section overrun each log one WARNING with the key digest only."""
+    import logging
+
+    redis = _client()
+    try:
+        prefix = account_lock_prefix("t", f"p-{uuid.uuid4().hex}")
+        holder = RedisAccountLock(redis, prefix=prefix)
+        waiter = RedisAccountLock(redis, prefix=prefix, wait_seconds=0.2)
+        slow = RedisAccountLock(redis, prefix=prefix, ttl_seconds=5.3)
+        caplog.set_level(logging.WARNING, logger="connection_hub.delegated_to_kdcube.account_lock")
+        async with holder("user-secret", "account-secret"):
+            with pytest.raises(AccountLockUnavailable):
+                async with waiter("user-secret", "account-secret"):
+                    pass
+        with pytest.raises(TimeoutError):
+            async with slow("user-secret", "account-other"):
+                await asyncio.sleep(2)
+        messages = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+        assert len(messages) == 2
+        assert "wait timed out" in messages[0] and holder.key("user-secret", "account-secret") in messages[0]
+        assert "overran" in messages[1] and slow.key("user-secret", "account-other") in messages[1]
+        assert not any("user-secret" in message or "account-secret" in message for message in messages)
+    finally:
+        await redis.aclose()
