@@ -180,3 +180,71 @@ async def test_the_production_composition_binds_issuance_only_with_its_store():
         if store is None:
             with pytest.raises(ParticipantEffectRefused, match="card_effect_adapter_unavailable"):
                 await applier.prepare("credential_issue", "access", effect["payload"], transaction_id=TX)
+
+
+def _policy(*, owner="synthetic-owner", access_id="card_1", key=None):
+    from connection_hub.invocation_policy.models import InvocationAuthority
+
+    authority = InvocationAuthority(access_id=access_id, resource="https://host/api/mcp/memories", surface="outer",
+                                    operation="search")
+    return {"kind": "invocation_policy", "key": key or authority.key,
+            "payload": {"owner_subject": owner, "authority": authority.to_dict(), "mode": "once",
+                        "expected_revision": 0}}
+
+
+@pytest.mark.asyncio
+async def test_a_created_card_may_carry_its_consents_own_policies():
+    """W585: a first consent's policies belong to the same creation as its credentials."""
+    policy = _policy()
+    receipt = _receipt(created=True, effects=[*_receipt(created=True)["effects"], policy], state="prepared")
+    target = _Target()
+    applier = ParticipantEffectApplier(read_receipt=_read(receipt), targets={"invocation_policy": target})
+    assert await applier.prepare("invocation_policy", policy["key"], policy["payload"], transaction_id=TX) \
+        == effect_digest(policy)
+    assert [call[0] for call in target.calls] == ["prepare"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("policy,reason", [
+    (_policy(owner="another-owner"), "card_effect_owner_mismatch"),
+    (_policy(access_id="card_other"), "card_effect_policy_binding_invalid"),
+    (_policy(key="f" * 64), "card_effect_policy_binding_invalid"),
+])
+async def test_a_created_cards_policy_is_bound_to_its_owner_card_and_key(policy, reason):
+    receipt = _receipt(created=True, effects=[*_receipt(created=True)["effects"], policy], state="prepared")
+    target = _Target()
+    applier = ParticipantEffectApplier(read_receipt=_read(receipt), targets={"invocation_policy": target})
+    with pytest.raises(ParticipantEffectRefused, match=reason):
+        await applier.prepare("invocation_policy", policy["key"], policy["payload"], transaction_id=TX)
+    assert target.calls == []
+
+
+def _read(receipt):
+    async def read(transaction_id):
+        assert transaction_id == TX
+        return deepcopy(receipt)
+    return read
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change,reason", [
+    ({"expected_revision": 1}, "card_effect_base_revision_mismatch"),  # a created Card starts from no policy
+    ({"mode": "once", "resource": "urn:kdcube:management:secret:*"}, "card_effect_policy_conflict"),
+])
+async def test_a_created_cards_policy_starts_from_none_and_never_allows_a_broad_secret_once(change, reason):
+    from connection_hub.invocation_policy.models import InvocationAuthority
+
+    policy = _policy()
+    if "resource" in change:
+        authority = InvocationAuthority(access_id="card_1", resource=change["resource"], surface="outer",
+                                        operation="secret.read")
+        policy = {**policy, "key": authority.key,
+                  "payload": {**policy["payload"], "authority": authority.to_dict(), "mode": change["mode"]}}
+    else:
+        policy["payload"].update(change)
+    receipt = _receipt(created=True, effects=[*_receipt(created=True)["effects"], policy], state="prepared")
+    target = _Target()
+    applier = ParticipantEffectApplier(read_receipt=_read(receipt), targets={"invocation_policy": target})
+    with pytest.raises(ParticipantEffectRefused, match=reason):
+        await applier.prepare("invocation_policy", policy["key"], policy["payload"], transaction_id=TX)
+    assert target.calls == []
