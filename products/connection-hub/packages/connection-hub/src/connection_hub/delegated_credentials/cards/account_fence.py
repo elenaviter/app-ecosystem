@@ -58,6 +58,8 @@ _BY_TRANSACTION = "by-transaction"
 
 # probe(subject_hash, access_id) -> True when that Card's mutation section is held right now
 SectionProbe = Callable[[str, str], Awaitable[bool]]
+# section(provider_id, account_id) -> the account fence's own section of the composition's mutation lock
+AccountSection = Callable[[str, str], Any]
 
 
 class AccountFenceRefused(RuntimeError):
@@ -210,9 +212,24 @@ async def _live_marks(store: Any, provider_id: str, account_id: str, *, probe: S
 
 
 async def reserve_accounts(store: Any, accounts: Iterable[tuple[str, str]], *, transaction_id: str,
-                           probe: SectionProbe) -> None:
-    """Fence every account for this transaction, then refuse any live mark of a binding in progress."""
+                           probe: SectionProbe, section: AccountSection) -> None:
+    """Fence every account for this transaction, then refuse any live mark of a binding in progress.
+
+    The check, the write and the recheck run inside each account's own section
+    (taken in one sorted order), so two disconnects of one account can never
+    both hold it: the second sees the first's fence (claude-main, #643 P1).
+    """
+    from contextlib import AsyncExitStack
+
     chosen = sorted(set(accounts))
+    async with AsyncExitStack() as sections:
+        for provider_id, account_id in chosen:
+            await sections.enter_async_context(section(provider_id, account_id))
+        await _reserve_held(store, chosen, transaction_id=transaction_id, probe=probe)
+
+
+async def _reserve_held(store: Any, chosen: list[tuple[str, str]], *, transaction_id: str,
+                        probe: SectionProbe) -> None:
     for provider_id, account_id in chosen:
         if await _blocking_fence(store, provider_id, account_id, own=transaction_id):
             raise AccountFenceRefused("card_account_reserved")
@@ -229,12 +246,30 @@ async def reserve_accounts(store: Any, accounts: Iterable[tuple[str, str]], *, t
             if await _live_marks(store, provider_id, account_id, probe=probe):
                 raise AccountFenceRefused("card_account_binding_in_progress")
     except BaseException:
-        await release_transaction(store, transaction_id)
+        await _release_held(store, transaction_id)  # this caller already holds every account's section
         raise
 
 
-async def release_transaction(store: Any, transaction_id: str) -> None:
-    """Remove only this transaction's fences and index; a fence of another transaction is never cleared."""
+async def release_transaction(store: Any, transaction_id: str, *, section: AccountSection) -> None:
+    """Remove only this transaction's fences and index, inside each account's section.
+
+    Unlocked, a release could read its own fence, lose the race to another
+    disconnect that replaced an aborted fence, and remove the other's fence.
+    """
+    from contextlib import AsyncExitStack
+
+    index = await read_json_or_none(_index_path(store, transaction_id))
+    if not isinstance(index, Mapping) or index.get("transaction_id") != transaction_id:
+        return
+    chosen = sorted({(str(item[0]), str(item[1])) for item in index.get("accounts") or ()
+                     if isinstance(item, (list, tuple)) and len(item) == 2})
+    async with AsyncExitStack() as sections:
+        for provider_id, account_id in chosen:
+            await sections.enter_async_context(section(provider_id, account_id))
+        await _release_held(store, transaction_id)
+
+
+async def _release_held(store: Any, transaction_id: str) -> None:
     index = await read_json_or_none(_index_path(store, transaction_id))
     if not isinstance(index, Mapping) or index.get("transaction_id") != transaction_id:
         return

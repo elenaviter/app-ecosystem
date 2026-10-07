@@ -178,14 +178,30 @@ class DelegatedCardService:
 
         try:
             await reserve_accounts(self._store, accounts, transaction_id=transaction_id,
-                                   probe=self.card_section_held)
+                                   probe=self.card_section_held, section=self._account_fence_section)
         except AccountFenceRefused as exc:
             raise CardTransactionRefused(exc.reason) from None
+        except CardMutationLockTimeout:
+            raise CardTransactionRefused("card_account_reserved") from None
 
     async def release_accounts(self, transaction_id: str) -> None:
         from .account_fence import release_transaction
 
-        await release_transaction(self._store, transaction_id)
+        try:
+            await release_transaction(self._store, transaction_id, section=self._account_fence_section)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    def _account_fence_section(self, provider_id: str, account_id: str):
+        """W578: one account fence's section of the bound production mutation lock."""
+        from .account_fence import FENCES_DIRNAME, account_key
+
+        key = account_key(provider_id, account_id)
+        return self._mutation_lock(
+            lock_path=self._store.root / FENCES_DIRNAME / key / ".fence.lock",
+            resource_id=f"delegated-account-fence:{key}", operation="delegated-account-fence",
+            wait_seconds=CARD_LOCK_WAIT_SECONDS,
+        )
 
     async def _mark_staged_binding(self, transaction_id: str, subject_hash: str, original: CardAuthority | None,
                                    candidate: CardAuthority) -> None:

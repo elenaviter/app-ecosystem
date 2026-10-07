@@ -22,6 +22,14 @@ from connection_hub.delegated_credentials.cards.transaction_store import CardTra
 from test_w578_account_fence import ACCOUNT, DISCONNECT, OTHER, _world
 
 
+async def _bounded(event):
+    """Force the interleaving where the code allows it; under the account section it cannot occur (fix)."""
+    try:
+        await asyncio.wait_for(event.wait(), timeout=1.0)
+    except asyncio.TimeoutError:
+        pass
+
+
 @pytest.mark.asyncio
 async def test_a_second_disconnect_racing_the_first_cannot_unfence_it(tmp_path, monkeypatch):
     store, service, _card = await _world(tmp_path)
@@ -34,12 +42,12 @@ async def test_a_second_disconnect_racing_the_first_cannot_unfence_it(tmp_path, 
         checks[own] = checks.get(own, 0) + 1
         if own == OTHER and checks[own] == 1:
             other_checked.set()
-            await first_done.wait()
+            await _bounded(first_done)
         return result
 
     async def write(path, value):
         if value.get("transaction_id") == DISCONNECT and "accounts" in value:
-            await other_checked.wait()
+            await _bounded(other_checked)
         return await real_write(path, value)
 
     monkeypatch.setattr(fence, "_blocking_fence", blocking)
