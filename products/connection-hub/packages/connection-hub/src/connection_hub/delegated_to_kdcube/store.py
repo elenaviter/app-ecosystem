@@ -33,10 +33,20 @@ ACCOUNT_KEY_PREFIX = "delegated_to_kdcube.accounts"
 CREDENTIAL_KEY_PREFIX = "delegated_to_kdcube.credentials"
 # W578: the pinned outcome of one disconnect's account deletion, by its effect identity.
 ACCOUNT_DELETE_PIN_PREFIX = "delegated_to_kdcube.account_delete."
+# W578: a staged disconnect's hold on one account incarnation, until its decision.
+ACCOUNT_DELETE_HOLD_PREFIX = "delegated_to_kdcube.account_delete_hold."
 
 
 class AccountLockUnavailable(RuntimeError):
     """An incarnation operation was asked of a store composed without the shared account lock."""
+
+
+class AccountDisconnectPending(RuntimeError):
+    """A reconnect while a staged disconnect holds this account's incarnation; retry after its decision."""
+
+    def __init__(self, reason: str = "account_disconnect_pending") -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class UserConfigurationStore(Protocol):
@@ -244,6 +254,11 @@ class DelegatedToKdcubeStore:
             workspace=account.workspace,
         )
         async with self._account_section(account_id):
+            hold = await self._prop(self.account_delete_hold_key(account_id))
+            if isinstance(hold, dict) and hold.get("incarnation"):
+                # W578 (claude-main, #644 P1): a reconnect would keep the held
+                # incarnation and be deleted by the staged disconnect's effect.
+                raise AccountDisconnectPending()
             return await self._upsert_account(account)
 
     async def _upsert_account(self, account: ConnectedAccount) -> ConnectedAccount:
@@ -328,6 +343,39 @@ class DelegatedToKdcubeStore:
     def account_delete_pin_key(self, pin: str) -> str:
         return f"{ACCOUNT_DELETE_PIN_PREFIX}{as_str(pin)}"
 
+    def account_delete_hold_key(self, account_id: str) -> str:
+        return f"{ACCOUNT_DELETE_HOLD_PREFIX}{as_str(account_id)}"
+
+    async def hold_incarnation_for_delete(self, account_id: str, incarnation: str, *, pin: str) -> None:
+        """W578: a staged disconnect holds exactly this incarnation until its decision (the effect's STAGE).
+
+        Refuses (``AccountDisconnectPending``) when the stored account is not
+        that incarnation, so a disconnect never stages against a connection it
+        did not bind; another pin's hold refuses as well. While held, a
+        reconnect of the account is refused, retryably.
+        """
+        self._require_account_lock()
+        async with self._account_section(account_id):
+            key = self.account_delete_hold_key(account_id)
+            hold = await self._prop(key)
+            if isinstance(hold, dict) and hold.get("incarnation"):
+                if hold.get("pin") == pin and hold.get("incarnation") == incarnation:
+                    return  # a replay of this stage
+                raise AccountDisconnectPending("account_disconnect_held")
+            existing = await self.get_account(account_id)
+            if existing is None or existing.incarnation != incarnation:
+                raise AccountDisconnectPending("account_incarnation_moved")
+            await self._set_prop(key, {"incarnation": incarnation, "pin": as_str(pin)})
+
+    async def release_incarnation_hold(self, account_id: str, *, pin: str) -> None:
+        """W578: an ABORT releases only this disconnect's hold."""
+        self._require_account_lock()
+        async with self._account_section(account_id):
+            key = self.account_delete_hold_key(account_id)
+            hold = await self._prop(key)
+            if isinstance(hold, dict) and hold.get("pin") == pin:
+                await self._delete_prop(key)
+
     async def disconnect_incarnation(self, account_id: str, incarnation: str, *, pin: str,
                                      delete_credential: bool = True) -> str:
         """W578: disconnect exactly this incarnation of the account; never a later reconnection.
@@ -360,6 +408,10 @@ class DelegatedToKdcubeStore:
                 await self._disconnect_account(account_id, delete_credential=delete_credential)
                 outcome = "disconnected"
             await self._set_prop(key, {"state": outcome, "account_id": account_id, "incarnation": incarnation})
+            hold_key = self.account_delete_hold_key(account_id)
+            hold = await self._prop(hold_key)
+            if isinstance(hold, dict) and hold.get("pin") == pin:
+                await self._delete_prop(hold_key)  # decided and applied: a reconnect may proceed
             return outcome
 
     async def set_account_status(

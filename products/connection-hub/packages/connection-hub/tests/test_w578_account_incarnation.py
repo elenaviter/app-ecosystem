@@ -19,7 +19,9 @@ from connection_hub.delegated_credentials.cards.participant_effects import (
     EffectBinding, ParticipantEffectRefused, _payload,
 )
 from connection_hub.delegated_to_kdcube.models import ConnectedAccount
-from connection_hub.delegated_to_kdcube.store import AccountLockUnavailable, DelegatedToKdcubeStore
+from connection_hub.delegated_to_kdcube.store import (
+    AccountDisconnectPending, AccountLockUnavailable, DelegatedToKdcubeStore,
+)
 from test_account_store import _MemoryUserConfiguration
 
 GRANTOR = "user-1"
@@ -206,3 +208,47 @@ async def test_the_target_deletes_the_named_incarnation_and_every_outcome_is_fin
 async def test_without_an_account_store_the_target_refuses_by_name():
     with pytest.raises(ParticipantEffectRefused, match="card_effect_adapter_unavailable"):
         await AccountDeleteTarget(None).apply_once(_binding(), _effect_payload())
+
+
+@pytest.mark.asyncio
+async def test_a_staged_hold_refuses_a_reconnect_until_the_decision_and_abort_releases_it():
+    store = _store()
+    first = await store.upsert_account(_account())
+    target = AccountDeleteTarget(lambda grantor: store)
+    payload = _effect_payload(incarnation=first.incarnation)
+    await target.prepare_once(_binding(), payload)  # STAGE
+    with pytest.raises(AccountDisconnectPending, match="account_disconnect_pending"):
+        await store.upsert_account(_account(display_name="reconnect"))
+    await target.release_once(_binding(), payload)  # ABORT
+    again = await store.upsert_account(_account(display_name="reconnect"))
+    assert again.incarnation == first.incarnation and await store.get_account("account-1") is not None
+
+
+@pytest.mark.asyncio
+async def test_after_commit_the_hold_is_gone_and_a_reconnect_is_a_new_incarnation():
+    store = _store()
+    first = await store.upsert_account(_account())
+    target = AccountDeleteTarget(lambda grantor: store)
+    payload = _effect_payload(incarnation=first.incarnation)
+    await target.prepare_once(_binding(), payload)
+    await target.apply_once(_binding(), payload)  # COMMIT
+    later = await store.upsert_account(_account())
+    assert later.incarnation != first.incarnation
+
+
+@pytest.mark.asyncio
+async def test_a_stage_against_a_moved_incarnation_is_refused():
+    store = _store()
+    await store.upsert_account(_account())
+    target = AccountDeleteTarget(lambda grantor: store)
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_binding_mismatch"):
+        await target.prepare_once(_binding(), _effect_payload(incarnation="0" * 32))
+
+
+@pytest.mark.asyncio
+async def test_a_store_without_the_shared_lock_is_an_unavailable_adapter_not_a_crash():
+    store = DelegatedToKdcubeStore(user_id=GRANTOR, backend=_MemoryUserConfiguration())
+    target = AccountDeleteTarget(lambda grantor: store)
+    for phase in (target.prepare_once, target.apply_once, target.release_once):
+        with pytest.raises(ParticipantEffectRefused, match="card_effect_adapter_unavailable"):
+            await phase(_binding(), _effect_payload())
