@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from connection_hub.delegated_credentials.oauth.authority_store import (
     OAuthAuthorityStore,
+    RefreshCardIncarnationMoved,
     RefreshTokenReuseDetected,
     RefreshTokenState,
 )
@@ -164,6 +165,8 @@ class GrantStore:
             method = getattr(self._authority_store, method_name)
             return await method(*args, **kwargs)
         except RefreshTokenReuseDetected:
+            raise
+        except RefreshCardIncarnationMoved:
             raise
         except GrantStoreUnavailable:
             raise

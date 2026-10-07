@@ -22,6 +22,7 @@ from connection_hub.delegated_credentials.devices.authority_schema import (
 )
 from connection_hub.delegated_credentials.oauth.authority_store import (
     PostgresOAuthAuthorityStore,
+    RefreshCardIncarnationMoved,
     RefreshTokenReuseDetected,
 )
 from connection_hub.delegated_credentials.oauth.store import GrantStore
@@ -1069,7 +1070,9 @@ async def test_w585_a_passed_cap_or_a_moved_incarnation_refuses_without_consumin
         token = await store.create_refresh_token(RECORD, ttl_seconds=3600)
         assert await store.set_card_credentials_expiry("aut_card", now + 600, card_revision=3) == "applied"
         # The caller read Card revision 2; the family is capped by revision 3.
-        assert await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, card_incarnation=2) is None
+        # W585 C2: a typed, retryable refusal, distinct from the terminal None below.
+        with pytest.raises(RefreshCardIncarnationMoved, match="refresh_card_incarnation_moved"):
+            await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, card_incarnation=2)
         _, generation = await _family(pool, store)
         assert generation["state"] == "active"  # not consumed: a re-read caller can retry
         assert await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, expires_at_cap=now - 1) is None
@@ -1200,6 +1203,29 @@ async def test_w585_issuance_through_the_public_facade_carries_the_cap_against_r
         async with pool.acquire() as connection:
             assert await connection.fetchval(
                 f"SELECT count(*) FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = 'aut_late'") == 0
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_c2_the_facade_names_a_moved_incarnation_and_keeps_the_token_against_real_postgres() -> None:
+    """W585 C2: the SDK rotates through GrantStore. A moved incarnation reaches it typed, not as
+    GrantStoreUnavailable and not as the terminal None, and the presented token stays usable."""
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        facade = GrantStore(object(), tenant=store.tenant, project=store.project, refresh_ttl=3600,
+                            authority_store=store)
+        token = await facade.create_refresh_token(
+            client_id="client-1", sub="user-1", scopes=[], registry_access_id="aut_card",
+            card_kind="automation", cap_expires_at=now + 600, card_revision=5)
+        with pytest.raises(RefreshCardIncarnationMoved):
+            await facade.rotate_refresh_token(token, card_incarnation=4)
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active"
+        assert await facade.rotate_refresh_token(token, expires_at_cap=now - 1) is None  # terminal stays None
+        rotated = await facade.rotate_refresh_token(token, card_incarnation=5)  # re-read: the same token works
+        assert rotated and rotated != token
     finally:
         await _drop(pool, store)
 
