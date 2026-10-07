@@ -463,7 +463,9 @@ ref, kind, time and a content fingerprint; no summary or metadata). With it a
 replay of an archived event stays a replay, as for a live one: the same content
 is answered as already recorded, other content is an idempotency conflict. So
 an agent's latest runtime-account change, which every heartbeat repeats, moves
-like any event.
+like any event. Events archived before this index existed get their index rows
+at the start of the next run (each batch records `keys_indexed`), before any
+replay could insert one again.
 
 One kind of event stays past the window: each agent's latest tooling notice
 of each kind in each project, the status its Card there shows (the operator,
