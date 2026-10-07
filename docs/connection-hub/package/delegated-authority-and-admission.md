@@ -331,6 +331,11 @@ guarded request-local snapshot         delegated selector           application 
 
 ## Reusing This System For Another Service
 
+The admission service registry also gates one non-delegated read, the
+service-only [identity provider-subject lookup](../identity-provider-subject-lookup.md)
+(W609). It has its own token-less signature, so a delegated-admission proof
+never verifies there.
+
 An app author can use the same delegated-authority system for a plain managed
 REST or MCP surface:
 

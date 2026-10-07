@@ -84,6 +84,7 @@ The package contracts are:
 - [Protect KDCube management on macOS with user presence](macos-user-presence-helper.md)
 - [Connection Hub architecture and semantic requirements](connection-hub-architecture.md)
 - [Delegated authority and admission](package/delegated-authority-and-admission.md)
+- [Identity provider-subject lookup, service-only](identity-provider-subject-lookup.md) (W609: which Telegram account a platform user linked)
 - [Durable PostgreSQL authority generations](package/durable-authority-generations.md)
 - [Refresh retry after a lost token response](package/refresh-retry-after-lost-response.md) (current policy, approved 2026-09-30, W408)
 - [Delegated secret administration](package/delegated-secret-administration.md)
