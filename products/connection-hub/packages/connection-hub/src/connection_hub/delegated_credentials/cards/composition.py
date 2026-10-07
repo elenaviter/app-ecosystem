@@ -93,6 +93,7 @@ class _HeldConnection:
 
 def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_store: Any, policies: Any,
                                  authorities: Mapping[str, Any] | None = None, catalog_store: Any = None,
+                                 accounts_for: Any = None,
                                  ) -> tuple[Coordinator, LocalCardIntentSource]:
     """One coordinator, participant, verifier and effect applier over this persistence's Card store.
 
@@ -114,7 +115,7 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
         from ..catalog.reservations import CatalogReservations
         tx.bind_catalog_reservations(card_store, CatalogReservations(catalog_store))
     compose_card_effects(card_service=card_service, card_store=card_store, grant_store=grant_store,
-                         policies=policies)
+                         policies=policies, accounts_for=accounts_for)
     intents = LocalCardIntentSource(card_store)
     participant = HubCardParticipant(service=card_service, store=card_store, intents=intents, decisions=decisions)
     return Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store)), intents
@@ -122,12 +123,20 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
 
 def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
                            policies: Any, authorities: Mapping[str, Any] | None = None,
-                           catalog_store: Any = None) -> Coordinator:
-    """Bind one coordinator, participant, verifier and effect applier to this service's Card store."""
+                           catalog_store: Any = None, accounts_for: Any = None) -> Coordinator:
+    """Bind one coordinator, participant, verifier and effect applier to this service's Card store.
+
+    ``accounts_for(grantor)`` (W578) is the grantor's connected-account store
+    composed with the shared account lock; without it an account disconnect
+    under Card transactions refuses as unavailable.
+    """
     coordinator, intents = card_transaction_coordinator(persistence=persistence, decisions=decisions,
                                                         grant_store=grant_store, policies=policies,
-                                                        authorities=authorities, catalog_store=catalog_store)
+                                                        authorities=authorities, catalog_store=catalog_store,
+                                                        accounts_for=accounts_for)
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions)
+    if accounts_for is not None and callable(getattr(service, "bind_account_stores", None)):
+        service.bind_account_stores(accounts_for)
     return coordinator
 
 

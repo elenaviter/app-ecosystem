@@ -9315,6 +9315,156 @@ class AutomationAccessService:
             if operations
         }
 
+    def bind_account_stores(self, accounts_for: Callable[[str], Any] | None) -> None:
+        """W578: the grantor's connected-account store, composed with the shared account lock."""
+        self._account_stores_for = accounts_for
+
+    async def _account_binding_members(
+        self, grantor_subject: str, provider_id: str, account_id: str,
+    ) -> list[tuple[CardAuthority, CardAuthority]] | dict[str, Any]:
+        """W578: every live Card of the grantor that binds the account, with its candidate minus that account.
+
+        Classified by each Card's actual binding: a Card bound under a Control
+        (a My Card, a person or project Control) or a credentialless Control
+        changes only through its owner's transaction, so while that route does
+        not exist the whole disconnect refuses. Only unbound Cards are members.
+        """
+        cards = await self._cards().list_active(subject_hash=_subject_key(grantor_subject))
+        members = []
+        for current in sorted(cards, key=lambda card: card.access_id):
+            accounts = dict((current.account_scope or {}).get(provider_id) or {})
+            if account_id not in accounts:
+                continue
+            if current.control_card is not None or authority_is_credentialless(current):
+                return {"ok": False, "error": "card_transactions_direct_write_refused", "removed": False,
+                        "message": "This account is bound by a project Card; the project must change it.",
+                        "retryable": False, "status": 409}
+            accounts.pop(account_id, None)
+            scope = {p: dict(b) for p, b in (current.account_scope or {}).items()}
+            if accounts:
+                scope[provider_id] = accounts
+            else:
+                scope.pop(provider_id, None)
+            members.append((current, replace_fields(current, account_scope=scope,
+                                                    card_revision=current.card_revision + 1)))
+        return members
+
+    async def disconnect_account_in_transaction(
+        self, *, grantor_subject: str, provider_id: str, account_id: str,
+    ) -> dict[str, Any] | None:
+        """W578: an account disconnect as ONE Card group transaction, the account deleted only after COMMIT.
+
+        ``None`` when Card transactions are off or no Card binds the account
+        (the caller keeps its ordered path for those). Otherwise: the account's
+        incarnation is bound; every unbound Card binding it is a member, its
+        candidate minus that account; ``account_delete`` names that exact
+        incarnation. After ``begin`` the account is fenced for this transaction
+        and the Cards are listed again: a different set aborts, retryably. Then
+        prepare (STAGE holds the incarnation), COMMIT and FINISH, which applies
+        the deletion before the fences are released. ``removed`` is true only
+        when the deletion is applied; an undecided or unfinished transaction
+        answers retryably and recovery finishes it.
+        """
+        bound = getattr(self, "_card_coordinator", None)
+        if bound is None:
+            return None
+        accounts_for = getattr(self, "_account_stores_for", None)
+        unavailable = {"ok": False, "error": "card_transactions_unavailable", "removed": False,
+                       "retryable": True, "status": 503}
+        if accounts_for is None:
+            return unavailable
+        from service_foundation.coordination.durable_decision_log import DecisionRefused, IntentDraft
+
+        from connection_hub.delegated_to_kdcube.store import AccountLockUnavailable
+
+        from .cards.card_group import group_member, hub_group_participant_input
+        from .cards.card_participant import PARTICIPANT, CardGroupIntent, CardGroupMemberIntent
+        from .cards.transaction_store import CardTransactionRefused
+
+        coordinator, intents, decisions, ttl = bound
+        accounts = accounts_for(grantor_subject)
+        try:
+            incarnation = await accounts.ensure_incarnation(account_id)
+        except AccountLockUnavailable:
+            return unavailable
+        if not incarnation:
+            return {"ok": True, "removed": False}
+        try:
+            members = await self._account_binding_members(grantor_subject, provider_id, account_id)
+        except Exception:  # noqa: BLE001 - Cards unreadable (CardUnavailable, a store outage): retry
+            _LOGGER.warning("[connection_hub.disconnect] binding Cards unreadable: account=%s", account_id,
+                            exc_info=True)
+            return unavailable
+        if isinstance(members, dict):
+            return members
+        if not members:
+            return None
+        subject_hash = _subject_key(grantor_subject)
+        effect = {"kind": "account_delete", "key": f"{provider_id}:{account_id}",
+                  "payload": {"access_id": members[0][0].access_id, "grantor_subject": grantor_subject,
+                              "provider_id": provider_id, "account_id": account_id, "incarnation": incarnation}}
+        participant_input = hub_group_participant_input(
+            members=[group_member(original=current, candidate=candidate, action="update")
+                     for current, candidate in members],
+            actor_subject=grantor_subject, actor_kind="grantor", effects=[effect])
+        draft = IntentDraft(
+            replay_scope=f"{PARTICIPANT}:{subject_hash}:{grantor_subject}:account-disconnect",
+            request_id=secrets.token_urlsafe(18),
+            expires_at=int(datetime.now(timezone.utc).timestamp()) + ttl, participants=(PARTICIPANT,),
+            payload={"participant_inputs": {PARTICIPANT: participant_input}})
+        row = await decisions.begin(draft)
+        transaction_id = row.transaction_id
+        await intents.record(CardGroupIntent(
+            transaction_id=transaction_id, intent_digest=row.intent.digest,
+            members=tuple(CardGroupMemberIntent(subject_hash=subject_hash, original=current, candidate=candidate,
+                                                action="update") for current, candidate in members),
+            effects=(effect,), actor_subject=grantor_subject, actor_kind="grantor"))
+        card_service = getattr(self._cards(), "card_service", None)
+        try:
+            if card_service is None:
+                raise DecisionRefused("card_transactions_unavailable")
+            await card_service.reserve_accounts([(provider_id, account_id)], transaction_id=transaction_id)
+            again = await self._account_binding_members(grantor_subject, provider_id, account_id)
+            if (not isinstance(again, list) or [(c.access_id, c.card_revision) for c, _ in again]
+                    != [(c.access_id, c.card_revision) for c, _ in members]):
+                raise DecisionRefused("card_account_binding_changed")
+            await coordinator.prepare_existing(transaction_id)
+        except BaseException as exc:
+            # claude-main #645 P2: nothing escapes undecided after begin. Every
+            # refusal or failure before COMMIT is an ABORT, finished at once so
+            # the fence is released; a failed abort is left to recovery.
+            try:
+                await coordinator.decide(transaction_id, "aborted")
+                await coordinator.finish(transaction_id)
+            except Exception:  # noqa: BLE001 - recovery presumes the abort
+                _LOGGER.warning("[connection_hub.disconnect] abort not finished: transaction=%s", transaction_id,
+                                exc_info=True)
+                if not isinstance(exc, Exception):
+                    raise
+                return {"ok": False, "error": "card_transaction_pending", "removed": False, "retryable": True,
+                        "status": 503}
+            if not isinstance(exc, Exception):
+                raise  # cancellation propagates, after its transaction was aborted
+            if isinstance(exc, (DecisionRefused, CardTransactionRefused)):
+                return {"ok": False, "error": "account_binding_not_pruned", "reason": str(exc), "removed": False,
+                        "retryable": True, "status": 409}
+            _LOGGER.warning("[connection_hub.disconnect] account transaction refused: transaction=%s",
+                            transaction_id, exc_info=True)
+            return {**unavailable, "reason": "card_transaction_aborted"}
+        try:
+            await coordinator.decide(transaction_id, "committed", witness_digest=participant_input["candidate_digest"])
+            await coordinator.finish(transaction_id)
+        except Exception:  # noqa: BLE001 - decided or not, recovery finishes it; never claimed removed
+            _LOGGER.warning("[connection_hub.disconnect] account transaction not finished: transaction=%s",
+                            transaction_id, exc_info=True)
+            return {"ok": False, "error": "card_transaction_pending", "removed": False, "retryable": True,
+                    "status": 503}
+        stored = await accounts.get_account(account_id)
+        removed = stored is None or stored.incarnation != incarnation
+        return {"ok": removed, "removed": removed, "bindings_cleared": len(members),
+                "bindings_cleared_grants": [current.access_id for current, _ in members],
+                **({} if removed else {"error": "card_transaction_pending", "retryable": True, "status": 503})}
+
     async def prune_account_from_grants(
         self, *, grantor_subject: str, provider_id: str, account_id: str
     ) -> dict[str, Any]:
