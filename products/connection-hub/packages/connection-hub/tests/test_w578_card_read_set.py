@@ -152,3 +152,35 @@ async def test_a_pb_initiated_read_set_prepares_and_finishes_through_the_partici
     assert await reservations.holders() == [] and await tx.list_in_doubt(store) == []
     await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)
     assert (await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id))[1] == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", [None, "committed", "aborted"])
+async def test_no_card_is_created_at_a_held_absence_until_the_decision_is_finished(tmp_path, decision):
+    """W502 (Root, 04:23): a new My Card between planning and commit must not change the witness."""
+    store, service, before, after = await _setup(tmp_path)
+    _bind_catalog(store, tmp_path)
+    await _prepare(service, before)
+    created = replace(after, access_id="aut_absent", card_revision=1)
+    if decision is None:
+        from connection_hub.delegated_credentials.cards.service import CardConflict
+
+        with pytest.raises(CardConflict, match="card_transaction_unresolved"):
+            await service.commit(created, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
+        assert await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id="aut_absent") is None
+        return
+    store._card_transaction_decisions.recorded[RS] = decision
+    await service.decide_read_set_transaction(transaction_id=RS, intent_digest=INTENT, decision=decision)
+    await service.commit(created, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
+    assert (await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id="aut_absent"))[1] == created
+
+
+@pytest.mark.asyncio
+async def test_an_absence_that_became_a_card_before_stage_refuses_the_read_set(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    _bind_catalog(store, tmp_path)
+    await service.commit(replace(after, access_id="aut_absent", card_revision=1), subject_hash=SUBJECT_HASH,
+                         expected_revision=0, now=NOW)
+    with pytest.raises(tx.CardTransactionRefused, match="card_dependency_moved"):
+        await _prepare(service, before)
+    assert await tx.read_receipt(store, RS) is None
