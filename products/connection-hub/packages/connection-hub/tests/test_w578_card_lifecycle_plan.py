@@ -49,8 +49,9 @@ TARGET = "person-1"
 REQUEST = "test-plan-1"
 
 
-def _authorization(creations, updates=(), *, targets=None, grants=None, locator_overrides=None):
-    targets, grants = targets or {}, grants or {}
+def _authorization(creations, updates=(), *, targets=None, grants=None,
+                   locator_overrides=None, platform_admins=None):
+    targets, grants, platform_admins = targets or {}, grants or {}, platform_admins or {}
     steps = []
     locators = {}
 
@@ -86,7 +87,7 @@ def _authorization(creations, updates=(), *, targets=None, grants=None, locator_
         decisions=tuple((step.ref, ProjectAuthorizationDecision.allow(
             request.step_request(step),
             delegable_grants=grants.get(step.ref, ("work:admin",)),
-            platform_admin=True,
+            platform_admin=platform_admins.get(step.ref, True),
             project_control=locators[step.ref],
         )) for step in steps),
     )
@@ -384,7 +385,7 @@ async def test_each_creation_is_bounded_by_its_own_step_not_another_steps_grants
         bound = kwargs["_delegable_grants"]
         seen_bounds.append(bound)
         requested = kwargs["resource_grants"]["resource:wide"]
-        if any(grant not in bound for grant in requested):
+        if not kwargs["_platform_admin"] and any(grant not in bound for grant in requested):
             return SimpleNamespace(error={"ok": False, "error": "not_delegable", "status": 403},
                                    revoke=False)
         raise AssertionError("the narrower C step must refuse")
@@ -395,9 +396,10 @@ async def test_each_creation_is_bounded_by_its_own_step_not_another_steps_grants
     result = await plan_card_lifecycle(
         host, project_ref=PROJECT, creations=[p, c],
         actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
-        authorization=_authorization([p, c], grants={
-            "p": ("work:wide",), "c": ("work:narrow",),
-        }),
+        authorization=_authorization(
+            [p, c], grants={"p": ("work:wide",), "c": ("work:narrow",)},
+            platform_admins={"p": True, "c": False},
+        ),
     )
     assert result == {"ok": False, "error": "not_delegable", "status": 403}
     assert seen_bounds == [("work:narrow",)]
