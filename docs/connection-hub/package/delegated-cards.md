@@ -1019,6 +1019,9 @@ external client completes OAuth consent
   -> token endpoint issues access/refresh material
   -> record_oauth_grant writes one card per grantor + client + resource, born
      with the submitted selection and the catalog version
+     (with Card transactions enabled, the same Card and its original
+     credentials are issued under one decision: begin_oauth_issuance,
+     reserve_oauth_issuance, complete_oauth_issuance; see card-transactions.md)
   -> refresh rotation updates token handles, expiry and last_issued_at only
   -> user edits or revokes the same visible card later
 ```
