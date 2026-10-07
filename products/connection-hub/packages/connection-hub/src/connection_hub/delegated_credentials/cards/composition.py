@@ -123,18 +123,23 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
 
 def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
                            policies: Any, authorities: Mapping[str, Any] | None = None,
-                           catalog_store: Any = None, accounts_for: Any = None) -> Coordinator:
+                           catalog_store: Any = None, accounts_for: Any = None,
+                           managed_control_scopes: Any = ()) -> Coordinator:
     """Bind one coordinator, participant, verifier and effect applier to this service's Card store.
 
     ``accounts_for(grantor)`` (W578) is the grantor's connected-account store
     composed with the shared account lock; without it an account disconnect
-    under Card transactions refuses as unavailable.
+    under Card transactions refuses as unavailable. ``managed_control_scopes``
+    are the configured callers' plan scopes: a project's Control Card there is
+    written only through that caller's transaction.
     """
     coordinator, intents = card_transaction_coordinator(persistence=persistence, decisions=decisions,
                                                         grant_store=grant_store, policies=policies,
                                                         authorities=authorities, catalog_store=catalog_store,
                                                         accounts_for=accounts_for)
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions)
+    if callable(getattr(service, "bind_managed_control_scopes", None)):
+        service.bind_managed_control_scopes(managed_control_scopes)
     if accounts_for is not None and callable(getattr(service, "bind_account_stores", None)):
         service.bind_account_stores(accounts_for)
     return coordinator

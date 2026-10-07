@@ -199,7 +199,17 @@ obligations, not optional checks.
      or changes an authority field (grants, operations, named services,
      account scope, identity scope, properties, composition, binding, state,
      identity). A prolongation and an edit of display fields still pass, and
-     a bound Control's legacy snapshot migration is used in memory only.
+     a bound Control's legacy snapshot migration is used in memory only;
+   - every direct write of a project's Control Card P: `control_card_create`
+     (including starting or repairing an existing P), `control_card_update`
+     and the `project_control_card_update` alias, `control_card_revoke`,
+     `update_access` and `revoke_access` of P, and attaching or detaching P
+     (above or below another Card, `project_control_card_attach` and
+     `project_control_card_detach` included). P is the stored application
+     Control at the id derived from its project and holder, in a scope a
+     configured caller plans (its `plan_scope_prefix`). An application
+     Control outside every such scope is unchanged, and reading P stays a
+     read.
 
    These writes are made only by a transaction the project host coordinates:
    it plans with `card_lifecycle_plan`, then prepares and finishes through

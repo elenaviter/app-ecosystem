@@ -2427,6 +2427,63 @@ class AutomationAccessService:
             "status": 409,
         }
 
+    def bind_managed_control_scopes(self, prefixes: Iterable[str]) -> None:
+        """W578: the scopes in which a configured coordinator plans a project's Control Card (P).
+
+        Each card-transaction caller's trusted ``plan_scope_prefix`` (bundle
+        props, never a request). A P of a scope inside one is created, changed,
+        attached and revoked only through that caller's lifecycle plan and
+        group transaction while Card transactions are enabled.
+        """
+        self._managed_control_scopes = tuple(sorted({
+            prefix for prefix in prefixes if isinstance(prefix, str) and prefix
+        }))
+
+    def _managed_project_control(self, *, access_id: str, issuer_kind: str, issuer_ref: str,
+                                 grantor_subject: str) -> bool:
+        """W578: is this exact Card a managed project's P while Card transactions are enabled?
+
+        The same identity the lifecycle planner requires of P: an application
+        Control whose id is derived from its issuer ref and holder, in a scope
+        a configured coordinator plans. Read from the stored Card (or, for a
+        create, the id the Card would have), never from a request label.
+        """
+        if getattr(self, "_card_coordinator", None) is None:
+            return False
+        ref = _clean(issuer_ref)
+        if _clean(issuer_kind) != "application" or not ref:
+            return False
+        if not any(ref.startswith(prefix) for prefix in getattr(self, "_managed_control_scopes", ())):
+            return False
+        try:
+            expected = control_card_id_for_issuer("application", ref, grantor_subject=_clean(grantor_subject))
+        except ControlCardError:
+            return False
+        return _clean(access_id) == expected
+
+    def _managed_project_control_refused(self, record: Any) -> dict[str, Any] | None:
+        """W578: refuse a direct write to a stored managed P (its own fields or its parent link)."""
+
+        if (record is None or _clean(getattr(record, "issuer_kind", "")) != "application"
+                or not _record_is_credentialless(record)):
+            return None
+        if not self._managed_project_control(access_id=record.access_id, issuer_kind=record.issuer_kind,
+                                             issuer_ref=record.issuer_ref, grantor_subject=record.grantor_subject):
+            return None
+        return self._managed_direct_write_refused()
+
+    def _managed_project_binding_refused(self, record: Any) -> dict[str, Any] | None:
+        """W578: refuse a direct change of a stored link to a managed P (detach, or attach replacing it)."""
+
+        binding = getattr(record, "control_card", None)
+        if binding is None:
+            return None
+        holder = _clean(getattr(binding, "holder_subject", "")) or record.grantor_subject
+        if not self._managed_project_control(access_id=binding.control_id, issuer_kind=binding.issuer_kind,
+                                             issuer_ref=binding.issuer_ref, grantor_subject=holder):
+            return None
+        return self._managed_direct_write_refused()
+
     # W578: the fields of a Control-bound Card whose change can lower (or move) its
     # authority. While Card transactions are on a direct write may change none of
     # them; ``expires_at`` may only move forward. Display and bookkeeping fields
@@ -5370,6 +5427,9 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_not_found"}
         if existing.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_owned"}
+        refused = self._managed_project_control_refused(existing)
+        if refused is not None:
+            return refused
         try:
             descriptor_marker = descriptor_control(existing.properties)
         except AgentCapabilityPolicyError as exc:
@@ -6715,6 +6775,11 @@ class AutomationAccessService:
             )
         except ControlCardError as exc:
             return {"ok": False, "error": exc.reason, "status": 400}
+        # W578: a managed project's P is created only through its lifecycle
+        # plan; an existing one is neither started nor repaired here.
+        if self._managed_project_control(access_id=control_id, issuer_kind=issuer_kind, issuer_ref=issuer_ref,
+                                         grantor_subject=grantor_subject):
+            return self._managed_direct_write_refused()
         try:
             existing = await self._load_record_any_state(
                 control_id,
@@ -7034,6 +7099,9 @@ class AutomationAccessService:
             }
         if existing is None or not _record_is_credentialless(existing):
             return {"ok": False, "error": "control_card_not_found", "status": 404}
+        refused = self._managed_project_control_refused(existing)
+        if refused is not None:
+            return refused
         updated = await self.update_access(
             user,
             access_id=existing.access_id,
@@ -7583,6 +7651,9 @@ class AutomationAccessService:
             }
         if record is None or record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_found", "status": 404}
+        refused = self._managed_project_control_refused(record)
+        if refused is not None:
+            return refused
         if expected_card_revision is not None and int(expected_card_revision) != int(
             record.card_revision
         ):
@@ -7605,7 +7676,8 @@ class AutomationAccessService:
                     "access": record.to_public_dict(),
                     "control_card": await self._effective_control_view(record),
                 }
-            refusal = _held_binding_refusal(record, caller_is_project=bool(_clean(_control_holder)))
+            refusal = self._managed_project_binding_refused(record) or _held_binding_refusal(
+                record, caller_is_project=bool(_clean(_control_holder)))
             if refusal is not None:
                 return refusal
             if record.control_card.control_id != expected_previous_control_id:
@@ -7625,6 +7697,9 @@ class AutomationAccessService:
             }
         if control.grantor_subject != control_holder:
             return {"ok": False, "error": "control_card_grantor_mismatch", "status": 403}
+        refused = self._managed_project_control_refused(control)
+        if refused is not None:
+            return refused
         binding = ControlCardBinding(
             control_id=control.access_id,
             issuer_ref=control.issuer_ref,
@@ -7729,6 +7804,9 @@ class AutomationAccessService:
         record = loaded[0] if loaded is not None else None
         if record is None or not _record_is_credentialless(record):
             return {"ok": False, "error": "control_card_not_found", "status": 404}
+        refused = self._managed_project_control_refused(record)
+        if refused is not None:
+            return refused
         result = await self.revoke_access(user, access_id=record.access_id)
         if result.get("ok") is True:
             result["control_id"] = record.access_id
@@ -7793,7 +7871,8 @@ class AutomationAccessService:
             }
         if record.control_card is None:
             return {"ok": True, "detached": False, "access": record.to_public_dict()}
-        refusal = _held_binding_refusal(record, caller_is_project=_through_project)
+        refusal = (self._managed_project_control_refused(record) or self._managed_project_binding_refused(record)
+                   or _held_binding_refusal(record, caller_is_project=_through_project))
         if refusal is not None:
             return refusal
         if record.control_card.control_id != selected_control_id:
@@ -10190,6 +10269,9 @@ class AutomationAccessService:
         record = loaded[0]
         if record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
+        refused = self._managed_project_control_refused(record)
+        if refused is not None:
+            return refused
         if record.control_card is not None:
             # W578: ending a Card bound under a Control (a person's My Card, a
             # project-bound agent Card) changes the authority its Control's
