@@ -8934,62 +8934,11 @@ class AutomationAccessService:
     ) -> list[dict[str, Any]]:
         """Apply the card editor's explicit outer-operation use policies."""
 
-        selected_operations = normalize_resource_operations(resource_operations)
-        submitted = {
-            _clean(resource): {
-                _clean(operation): _clean(mode).lower()
-                for operation, mode in dict(operations or {}).items()
-                if _clean(operation)
-            }
-            for resource, operations in dict(invocation_policies or {}).items()
-            if _clean(resource) and isinstance(operations, Mapping)
-        }
-        required_keys = {
-            (resource, operation)
-            for resource, operations in selected_operations.items()
-            for operation in operations
-        }
-        submitted_keys = {
-            (resource, operation)
-            for resource, operations in submitted.items()
-            for operation in operations
-        }
-        if submitted_keys != required_keys:
-            raise ValueError("every selected outer operation requires one invocation policy")
-        if not submitted_keys:
+        submitted = self._oauth_policy_selection(resource_operations, invocation_policies)
+        if not submitted:
             return []
-        if self._invocation_policies is None:
-            raise ValueError("invocation policy service is unavailable")
 
-        from connection_hub.invocation_policy import (
-            POLICY_ALWAYS,
-            POLICY_ONCE,
-            SURFACE_OUTER,
-            InvocationAuthority,
-        )
-
-        allowed_modes = {POLICY_ALWAYS, POLICY_ONCE}
-        invalid_modes = sorted({
-            mode
-            for operations in submitted.values()
-            for mode in operations.values()
-            if mode not in allowed_modes
-        })
-        if invalid_modes:
-            raise ValueError("invalid invocation policy mode(s): " + ", ".join(invalid_modes))
-
-        broad_secret_once = sorted(
-            resource
-            for resource, operations in submitted.items()
-            if any(mode == POLICY_ONCE for mode in operations.values())
-            and resource.startswith("urn:kdcube:management:secret:")
-            and SecretResource.parse(resource).broad
-        )
-        if broad_secret_once:
-            raise ValueError(
-                "broad secret selectors cannot use an allow-once policy: "
-                + ", ".join(broad_secret_once)
-            )
+        from connection_hub.invocation_policy import SURFACE_OUTER, InvocationAuthority
 
         current = await self._invocation_policies.list_for_card(
             owner_subject=_clean(grantor_subject),
@@ -9018,6 +8967,68 @@ class AutomationAccessService:
                 )
                 written.append(policy.to_public_dict())
         return written
+
+    def _oauth_policy_selection(
+        self, resource_operations: Mapping[str, Any], invocation_policies: Mapping[str, Any],
+    ) -> dict[str, dict[str, str]]:
+        """The consent's outer-operation policies, validated: one per selected operation (ValueError).
+
+        ``apply_oauth_invocation_policies`` and the W585 issuance plan use the
+        same rules, so the one-decision path admits exactly what the old route did.
+        """
+
+        selected_operations = normalize_resource_operations(resource_operations)
+        submitted = {
+            _clean(resource): {
+                _clean(operation): _clean(mode).lower()
+                for operation, mode in dict(operations or {}).items()
+                if _clean(operation)
+            }
+            for resource, operations in dict(invocation_policies or {}).items()
+            if _clean(resource) and isinstance(operations, Mapping)
+        }
+        required_keys = {
+            (resource, operation)
+            for resource, operations in selected_operations.items()
+            for operation in operations
+        }
+        submitted_keys = {
+            (resource, operation)
+            for resource, operations in submitted.items()
+            for operation in operations
+        }
+        if submitted_keys != required_keys:
+            raise ValueError("every selected outer operation requires one invocation policy")
+        if not submitted_keys:
+            return {}
+        if self._invocation_policies is None:
+            raise ValueError("invocation policy service is unavailable")
+
+        from connection_hub.invocation_policy import POLICY_ALWAYS, POLICY_ONCE
+
+        allowed_modes = {POLICY_ALWAYS, POLICY_ONCE}
+        invalid_modes = sorted({
+            mode
+            for operations in submitted.values()
+            for mode in operations.values()
+            if mode not in allowed_modes
+        })
+        if invalid_modes:
+            raise ValueError("invalid invocation policy mode(s): " + ", ".join(invalid_modes))
+
+        broad_secret_once = sorted(
+            resource
+            for resource, operations in submitted.items()
+            if any(mode == POLICY_ONCE for mode in operations.values())
+            and resource.startswith("urn:kdcube:management:secret:")
+            and SecretResource.parse(resource).broad
+        )
+        if broad_secret_once:
+            raise ValueError(
+                "broad secret selectors cannot use an allow-once policy: "
+                + ", ".join(broad_secret_once)
+            )
+        return submitted
 
     async def _oauth_grant_record(
         self,
@@ -9445,6 +9456,7 @@ class AutomationAccessService:
         properties: Mapping[str, Any] | None = None,
         replace_authority: bool = True,
         expected_card_revision: int | None = None,
+        invocation_policies: Mapping[str, Any] | None = None,
     ) -> Any:
         """W603: plan one authorization-code exchange's Card change and begin its ONE decision.
 
@@ -9455,6 +9467,13 @@ class AutomationAccessService:
         ``record_oauth_grant``'s consent, and the candidate is computed by the
         same code. Refuses ``card_transactions_unavailable`` (retryable) when
         Card transactions or the issuance store are not bound.
+
+        ``invocation_policies`` (W585 host gap) are the consent's outer-operation
+        policies, ``{resource: {operation: "always"|"once"}}``, validated as
+        ``apply_oauth_invocation_policies`` does. They become this decision's
+        ``invocation_policy`` effects, never a second write. ``None`` (the
+        default) is today's issuance: no policy effect, and the original digest
+        is unchanged because the field is then absent from it.
         """
         from .oauth.issuance_store import IssuanceStoreRefused
         from .oauth_issuance import IssuanceRefused, decision_request_id, original_input_digest
@@ -9477,7 +9496,12 @@ class AutomationAccessService:
         try:
             # Canonical JSON both digests and freezes the inputs (tuples become lists).
             record_inputs = json.loads(json.dumps(record_inputs, sort_keys=True, allow_nan=False))
-            input_digest = original_input_digest({"grantor_subject": grantor, "client_id": client, **record_inputs})
+            policies = None if invocation_policies is None else json.loads(
+                json.dumps(invocation_policies, sort_keys=True, allow_nan=False))
+            digest_inputs = {"grantor_subject": grantor, "client_id": client, **record_inputs}
+            if policies is not None:
+                digest_inputs["invocation_policies"] = policies
+            input_digest = original_input_digest(digest_inputs)
         except (TypeError, ValueError):
             raise IssuanceRefused("issuance_request_invalid") from None
         request = decision_request_id(scope=f"{PARTICIPANT}:oauth-issuance", grantor_subject=grantor,
@@ -9486,7 +9510,7 @@ class AutomationAccessService:
         if stored is None:
             planned = await self._plan_oauth_issuance(store=store, ttl=ttl, request=request,
                                                       input_digest=input_digest, grantor=grantor, client=client,
-                                                      record_inputs=record_inputs)
+                                                      record_inputs=record_inputs, invocation_policies=policies)
             try:
                 stored = await store.put_issuance_plan(decision_request_id=request,
                                                        original_input_digest=input_digest, plan=planned,
@@ -9498,12 +9522,14 @@ class AutomationAccessService:
         return await self._begin_planned_issuance(stored["plan"], intents=intents, decisions=decisions, store=store)
 
     async def _plan_oauth_issuance(self, *, store: Any, ttl: int, request: str, input_digest: str, grantor: str,
-                                   client: str, record_inputs: Mapping[str, Any]) -> dict[str, Any]:
+                                   client: str, record_inputs: Mapping[str, Any],
+                                   invocation_policies: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """The immutable plan: the candidate Card, the decision draft, both effects and every deadline."""
         from connection_hub.authority_registry import DELEGATED_CLIENT_AUTHORITY_ID
 
         from .cards.card_group import group_member, hub_group_participant_input
         from .cards.card_participant import PARTICIPANT, hub_participant_input
+        from .cards.participant_effects import MAX_EFFECTS
         from .oauth_issuance import (
             ISSUANCE_DELIVERY_SECONDS, ISSUANCE_PLAN_SCHEMA, ISSUANCE_SLOTS, IssuanceRefused,
             credential_issue_effect, effect_digest,
@@ -9539,6 +9565,13 @@ class AutomationAccessService:
         # W606: a re-consent moves the existing handle row through handle_binding (one writer per row);
         # credential_issue writes handle metadata only for a create.
         effects += await self._handle_binding_effects([(original, candidate)])
+        if invocation_policies is not None:
+            effects += await self._oauth_policy_effects(grantor=grantor, candidate=candidate,
+                resource_operations=record_inputs.get("resource_operations") or {},
+                invocation_policies=invocation_policies)
+        if len(effects) > MAX_EFFECTS:
+            # One decision carries at most MAX_EFFECTS; never drop, truncate or split (CodeApp, W585).
+            raise IssuanceRefused("issuance_too_many_policies")
         actor_kind = "caller"  # the same enlisted actor record_oauth_grant names (CallerWrite oauth_grant)
         if original is None:
             action = "create"
@@ -9576,6 +9609,43 @@ class AutomationAccessService:
             "delivery_deadline": delivery_deadline, "reserved_until": reserved_until, "slots": list(ISSUANCE_SLOTS),
             "effect_digests": {effect["key"]: effect_digest(effect) for effect in effects},
         }
+
+    async def _oauth_policy_effects(self, *, grantor: str, candidate: Any, resource_operations: Mapping[str, Any],
+                                    invocation_policies: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """W585: the consent's policies as this decision's existing ``invocation_policy`` effects.
+
+        Each is bound to the candidate Card's own access id and owner, and to
+        the policy's current revision, which the policy target re-checks at
+        PREPARE; a moved policy aborts the whole decision.
+        """
+        from connection_hub.invocation_policy import SURFACE_OUTER, InvocationAuthority
+
+        from .oauth_issuance import IssuanceRefused
+
+        try:
+            selection = self._oauth_policy_selection(resource_operations, invocation_policies)
+        except ValueError as exc:
+            unavailable = str(exc) == "invocation policy service is unavailable"
+            raise IssuanceRefused("issuance_invocation_policies_unavailable" if unavailable
+                                  else "issuance_invocation_policies_invalid", retryable=unavailable) from None
+        if not selection:
+            return []
+        current = await self._invocation_policies.list_for_card(owner_subject=grantor, access_id=candidate.access_id)
+        revisions = {
+            (policy.authority.resource, policy.authority.operation): policy.revision
+            for policy in current
+            if policy.authority.surface == SURFACE_OUTER
+            and not policy.authority.provider_id and not policy.authority.account_id
+        }
+        effects = []
+        for resource, operations in sorted(selection.items()):
+            for operation, mode in sorted(operations.items()):
+                authority = InvocationAuthority(access_id=candidate.access_id, resource=resource,
+                                                surface=SURFACE_OUTER, operation=operation)
+                effects.append({"kind": "invocation_policy", "key": authority.key,
+                                "payload": {"owner_subject": grantor, "authority": authority.to_dict(), "mode": mode,
+                                            "expected_revision": revisions.get((resource, operation), 0)}})
+        return effects
 
     @staticmethod
     def _issuance_intent(plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
