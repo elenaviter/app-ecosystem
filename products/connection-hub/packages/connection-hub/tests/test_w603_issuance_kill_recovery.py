@@ -113,7 +113,7 @@ def _records(w, plan):
     grants = {key: list(items) for key, items in plan.resource_grants.items()}
     operations_map = {key: list(items) for key, items in plan.resource_operations.items()}
     credential = build_delegated_client_credential(
-        grantor_subject=GRANTOR, client_id=CLIENT, scopes=SCOPES, tenant=w.authority.tenant,
+        grantor_subject=GRANTOR, client_id=CLIENT, scopes=list(plan.scopes), tenant=w.authority.tenant,
         project=w.authority.project, expires_in=3600, resources=list(grants), resource_grants=grants,
         resource_operations=operations_map, operations=list(plan.operations)).to_dict()
     return {"access": {"operations": list(plan.operations), "resource_grants": grants,
@@ -121,7 +121,7 @@ def _records(w, plan):
                        "grantor_authority": {}, "delegation_edges": [], "named_services": {},
                        "registry_access_id": plan.access_id},
             "refresh": {"registry_access_id": plan.access_id, "card_kind": "", "client_id": CLIENT, "sub": GRANTOR,
-                        "scopes": SCOPES, "operations": list(plan.operations), "resource_grants": grants,
+                        "scopes": list(plan.scopes), "operations": list(plan.operations), "resource_grants": grants,
                         "resource_operations": operations_map,
                         "resource": RESOURCE, "identity_scope": "", "credential": credential}}
 

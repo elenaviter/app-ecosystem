@@ -102,6 +102,8 @@ class OAuthIssuancePlan:
     operations: tuple[str, ...]
     resource_grants: Mapping[str, tuple[str, ...]]
     resource_operations: Mapping[str, tuple[str, ...]]
+    # The sorted union of resource_grants' values: what readers take as the token's scopes and grants.
+    scopes: tuple[str, ...]
     delivery_deadline: int
     reserved_until: int
     slots: tuple[str, ...]
@@ -112,6 +114,7 @@ class OAuthIssuancePlan:
         value["slots"] = list(self.slots)
         value["effect_digests"] = dict(self.effect_digests)
         value["operations"] = list(self.operations)
+        value["scopes"] = list(self.scopes)
         for name in ("resource_grants", "resource_operations"):
             value[name] = {key: list(items) for key, items in getattr(self, name).items()}
         return value
@@ -121,7 +124,7 @@ class OAuthIssuancePlan:
         """The plan from its stored or transmitted form; KeyError when a field is missing (an older plan)."""
         return cls(**{**{name: raw[name] for name in cls.__dataclass_fields__},
                       "slots": tuple(raw["slots"]), "effect_digests": dict(raw["effect_digests"]),
-                      "operations": tuple(raw["operations"]),
+                      "operations": tuple(raw["operations"]), "scopes": tuple(raw["scopes"]),
                       **{name: {key: tuple(items) for key, items in dict(raw[name]).items()}
                          for name in ("resource_grants", "resource_operations")}})
 

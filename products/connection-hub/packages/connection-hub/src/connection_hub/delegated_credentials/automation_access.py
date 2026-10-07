@@ -1440,7 +1440,7 @@ class AutomationAccessRecord:
 
 def _authority_snapshot(name: str, value: Any) -> Any:
     """W603: one authority field in comparable form; a missing or malformed value is never equal to any."""
-    if name == "operations":
+    if name in ("operations", "scopes"):
         if not isinstance(value, (list, tuple)) or any(type(item) is not str or not item for item in value):
             return _MALFORMED
         return tuple(sorted(set(value)))
@@ -9491,6 +9491,12 @@ class AutomationAccessService:
             if current is None or current[1].card_revision != base_revision:
                 raise IssuanceRefused("card_intent_base_moved", retryable=True)
             original = current[1]
+        # The token's scopes are exactly the Card's grants. A requested scope the Card carries under no
+        # resource would silently narrow the token below its consent, so the issuance refuses instead.
+        scopes = sorted({grant for grants in candidate.resource_grants.values() for grant in grants})
+        requested = {str(scope).strip() for scope in record_inputs.get("scopes") or () if str(scope).strip()}
+        if not requested <= set(scopes):
+            raise IssuanceRefused("issuance_scope_unrepresented")
         effects = [credential_issue_effect(access_id=candidate.access_id, slot=slot, expires_at=candidate.expires_at,
                                            card_revision=candidate.card_revision) for slot in ISSUANCE_SLOTS]
         actor_kind = "caller"  # the same enlisted actor record_oauth_grant names (CallerWrite oauth_grant)
@@ -9527,6 +9533,7 @@ class AutomationAccessService:
             "operations": list(candidate.operations),
             "resource_grants": {key: list(items) for key, items in candidate.resource_grants.items()},
             "resource_operations": {key: list(items) for key, items in candidate.resource_operations.items()},
+            "scopes": scopes,
             "delivery_deadline": delivery_deadline, "reserved_until": reserved_until, "slots": list(ISSUANCE_SLOTS),
             "effect_digests": {effect["key"]: effect_digest(effect) for effect in effects},
         }
@@ -9644,6 +9651,16 @@ class AutomationAccessService:
             for name in ("operations", "resource_grants", "resource_operations"):
                 if _authority_snapshot(name, source.get(name)) != _authority_snapshot(name, plan[name]):
                     raise IssuanceRefused("issuance_record_authority_mismatch")
+        # Scopes: verify_credential's permissions and grants come from the envelope's scopes, and a
+        # refresh rotation carries the refresh record's scopes forward. The access record carries none
+        # (GrantStore.bind_access_grant), so a copy there is refused rather than left unchecked. The
+        # envelope's ``resources``/``resource`` authorize nothing (no reader takes authority from them).
+        scope_sources = [attrs] + ([record] if slot == "refresh" else [])
+        if slot == "access" and "scopes" in record:
+            raise IssuanceRefused("issuance_record_authority_mismatch")
+        for source in scope_sources:
+            if _authority_snapshot("scopes", source.get("scopes")) != _authority_snapshot("scopes", plan["scopes"]):
+                raise IssuanceRefused("issuance_record_authority_mismatch")
         return dict(record)
 
     async def reserve_oauth_issuance(self, *, plan: Any, slot: str, token_sha256: str, record: Mapping[str, Any],

@@ -181,6 +181,14 @@ bearer, an authorization code or a PKCE verifier.
      `resource_operations`. That is the candidate Card's own declared-key
      snapshot, fixed at `begin`. A missing, malformed, wider or concrete-URL
      value refuses `issuance_record_authority_mismatch`.
+   - The plan's `scopes` are the sorted union of those grants. The envelope's
+     `scopes`, and the refresh record's, must equal them. The access record
+     carries none.
+   - A requested scope the Card would not carry refuses at `begin`
+     (`issuance_scope_unrepresented`) rather than issuing a narrower token
+     than was consented.
+   - The envelope's `resources` and `resource` authorize nothing and are not
+     compared.
    - A reservation is in no table a reader looks at.
    - It is refused once the decision is decided or `reserved_until` has
      passed, and a retry never renews either.

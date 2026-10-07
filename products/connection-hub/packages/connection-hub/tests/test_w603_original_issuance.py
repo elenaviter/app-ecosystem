@@ -120,7 +120,7 @@ def _records(w, plan: OAuthIssuancePlan, **credential_changes):
     grants = {key: list(items) for key, items in plan.resource_grants.items()}
     operations_map = {key: list(items) for key, items in plan.resource_operations.items()}
     credential = build_delegated_client_credential(
-        grantor_subject=plan.grantor_subject, client_id=plan.client_id, scopes=SCOPES, tenant=w.authority.tenant,
+        grantor_subject=plan.grantor_subject, client_id=plan.client_id, scopes=list(plan.scopes), tenant=w.authority.tenant,
         project=w.authority.project, expires_in=3600, resources=list(grants), resource_grants=grants,
         resource_operations=operations_map, operations=list(plan.operations)).to_dict()
     credential.update(credential_changes)
@@ -130,7 +130,7 @@ def _records(w, plan: OAuthIssuancePlan, **credential_changes):
                        "registry_access_id": plan.access_id},
             "refresh": {"registry_access_id": plan.access_id, "card_kind": "", "client_id": plan.client_id,
                         "sub": plan.grantor_subject,
-                        "scopes": SCOPES, "operations": list(plan.operations), "resource_grants": grants,
+                        "scopes": list(plan.scopes), "operations": list(plan.operations), "resource_grants": grants,
                         "resource_operations": operations_map,
                         "resource": RESOURCE, "identity_scope": "", "credential": credential}}
 
@@ -254,7 +254,10 @@ async def test_a_reconsent_changes_the_existing_card_through_the_single_card_tra
         first = await _begin(w)
         first_tokens = await _reserve(w, first)
         await w.service.complete_oauth_issuance(transaction_id=first.transaction_id)
-        plan = await _begin(w, request="exchange-2", scopes=["memories:read", "memories:write"])
+        # As the SDK does on every consent: the consented grant map with its scopes.
+        plan = await _begin(w, request="exchange-2", scopes=["memories:read", "memories:write"],
+                            resource_grants={RESOURCE: ["memories:read", "memories:write"]})
+        assert plan.scopes == ("memories:read", "memories:write")
         assert (plan.base_revision, plan.candidate_revision, plan.access_id) == (1, 2, first.access_id)
         tokens = await _reserve(w, plan)
         result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
@@ -492,3 +495,51 @@ async def test_a_completion_whose_claim_lapsed_to_another_decides_nothing(tmp_pa
                 f"SET completing_owner = '', completing_until = NULL WHERE transaction_id = $1", plan.transaction_id)
         final = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
         assert final.state == "committed" and await _usable(w, tokens) == {"access": True, "refresh": True}
+
+
+@pytest.mark.asyncio
+async def test_scopes_in_records_and_envelopes_are_exactly_the_cards_grants(tmp_path):
+    """verify_credential's permissions come from the envelope's scopes; rotation carries the refresh record's."""
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)
+        assert plan.scopes == tuple(sorted(SCOPES))  # the standard consent: the union equals what was requested
+
+        async def refused(slot, record):
+            with pytest.raises(IssuanceRefused, match="issuance_record_authority_mismatch"):
+                await w.service.reserve_oauth_issuance(plan=plan, slot=slot,
+                                                       token_sha256=bearer_sha256(secrets.token_urlsafe(32)),
+                                                       record=record, ttl_seconds=3600)
+
+        variants = {"missing": None, "malformed": "memories:read", "wider": ["memories:read", "memories:write"],
+                    "narrower": [], "empty string": [""]}
+        for slot in ("access", "refresh"):
+            for label, value in variants.items():
+                records = _records(w, plan)
+                envelope = dict(records[slot]["credential"])
+                attrs = dict(envelope["attrs"])
+                if value is None:
+                    attrs.pop("scopes", None)
+                else:
+                    attrs["scopes"] = value
+                envelope["attrs"] = attrs
+                await refused(slot, {**records[slot], "credential": envelope})  # the envelope
+                if slot == "refresh":
+                    record = dict(records[slot])
+                    if value is None:
+                        record.pop("scopes")
+                    else:
+                        record["scopes"] = value
+                    await refused(slot, record)  # the refresh record itself
+        # The access record never carries scopes; a copy there is refused, not left unchecked.
+        await refused("access", {**_records(w, plan)["access"], "scopes": list(plan.scopes)})
+        assert await w.authority.issuance_reservations(plan.transaction_id) == {}
+        await _reserve(w, plan)
+
+
+@pytest.mark.asyncio
+async def test_a_requested_scope_the_card_does_not_carry_refuses_at_begin(tmp_path):
+    """The union would silently narrow the token below its consent: refuse instead of issuing less."""
+    async with _world(tmp_path) as w:
+        with pytest.raises(IssuanceRefused, match="issuance_scope_unrepresented"):
+            await _begin(w, request="exchange-unrepresented",
+                         resource_grants={RESOURCE: ["memories:read"]}, scopes=["memories:read", "mail.send"])
