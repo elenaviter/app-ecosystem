@@ -46,6 +46,8 @@ TRANSACTION_RECEIPT_SCHEMA = "connection_hub.card-transaction-receipt.v1"
 GROUP_RECEIPT_SCHEMA = "connection_hub.card-transaction-group.v1"
 # W578 read sets: a transaction that writes no Card, only holds Cards, absences and the catalog.
 READ_SET_RECEIPT_SCHEMA = "connection_hub.card-transaction-read-set.v1"
+# W578: a transaction that changes no Card but applies bounded effects (card_effects.py).
+EFFECTS_RECEIPT_SCHEMA = "connection_hub.card-transaction-effects.v1"
 MAX_GROUP_MEMBERS = 8
 DECISIONS = ("committed", "aborted")
 _HEX64 = re.compile(r"[0-9a-f]{64}")
@@ -152,6 +154,8 @@ async def apply_effects(store: Any, receipt: Mapping[str, Any], apply: Any) -> N
         outcomes[str(index)] = outcome if isinstance(outcome, str) and outcome else "applied"
         await write_json_atomic(effects_path(store, receipt["transaction_id"]),
                                 {"applied": applied, "outcomes": outcomes})
+    if is_effects_receipt(receipt):
+        return  # no Card: no pointer to retire and no serving marker
     await _retire_pointer(store, receipt)
     await _clear_marker(store, receipt)
 
@@ -275,6 +279,8 @@ def _validate(raw: Any, transaction_id: str) -> dict[str, Any]:
         return _validate_group(raw, transaction_id)
     if isinstance(raw, Mapping) and raw.get("schema") == READ_SET_RECEIPT_SCHEMA:
         return _validate_read_set(raw, transaction_id)
+    if isinstance(raw, Mapping) and raw.get("schema") == EFFECTS_RECEIPT_SCHEMA:
+        return _validate_effects(raw, transaction_id)
     try:
         base = {"schema", "transaction_id", "intent_digest", "participant", "subject_hash", "access_id",
                 "state", "reason", "before", "after", "change_digest"}
@@ -353,6 +359,25 @@ def _validate_read_set(raw: Any, transaction_id: str) -> dict[str, Any]:
         return dict(raw)
     except (KeyError, ValueError, TypeError) as exc:
         raise CardStorageError("card_transaction_receipt_invalid") from exc
+
+
+def _validate_effects(raw: Any, transaction_id: str) -> dict[str, Any]:
+    """An effects-only receipt: its owner, its exact effects and its decision; it names no Card."""
+    try:
+        if (set(raw) != {"schema", "transaction_id", "intent_digest", "participant", "state", "reason",
+                         "subject_hash", "effects"}
+                or raw["transaction_id"] != transaction_id or raw["state"] not in ("prepared", *DECISIONS)
+                or not _HEX64.fullmatch(str(raw["intent_digest"])) or not _HEX64.fullmatch(str(raw["subject_hash"]))
+                or type(raw["reason"]) is not str or type(raw["participant"]) is not str or not raw["participant"]
+                or not _effects_valid(raw["effects"])):
+            raise ValueError()
+        return dict(raw)
+    except (KeyError, ValueError, TypeError) as exc:
+        raise CardStorageError("card_transaction_receipt_invalid") from exc
+
+
+def is_effects_receipt(receipt: Mapping[str, Any] | None) -> bool:
+    return isinstance(receipt, Mapping) and receipt.get("schema") == EFFECTS_RECEIPT_SCHEMA
 
 
 def is_read_set_receipt(receipt: Mapping[str, Any] | None) -> bool:
@@ -573,6 +598,12 @@ async def list_in_doubt(store: Any) -> list[dict[str, Any]]:
         elif is_read_set_receipt(receipt):
             entry = {key: receipt[key] for key in ("transaction_id", "intent_digest", "participant", "state")}
             entry["read_set"] = True
+            if receipt["state"] in DECISIONS:
+                entry["needs_finish"] = True
+            in_doubt.append(entry)
+        elif is_effects_receipt(receipt):
+            entry = {key: receipt[key] for key in ("transaction_id", "intent_digest", "participant", "state")}
+            entry["effects_only"] = True
             if receipt["state"] in DECISIONS:
                 entry["needs_finish"] = True
             in_doubt.append(entry)
@@ -1117,6 +1148,87 @@ async def _release_read_set(store: Any, receipt: Mapping[str, Any]) -> None:
         pass  # a stale entry lists a decided read set, which recovery re-finishes idempotently
 
 
+async def prepare_effects(store: Any, *, transaction_id: str, intent_digest: str, participant: str,
+                          subject_hash: str, effects: Any) -> dict[str, Any]:
+    """W578: the receipt of an effects-only transaction; idempotent replay; writes no Card.
+
+    The caller holds the section of every account the effects delete and has
+    checked this transaction holds each account's fence. The receipt is the
+    record the effect applier binds to; STAGE's preparation of each effect (the
+    incarnation hold) runs after it, and a recorded ABORT releases it.
+    """
+    _checked_id(transaction_id)
+    if (not _HEX64.fullmatch(str(intent_digest or "")) or not str(participant or "").strip()
+            or not _HEX64.fullmatch(str(subject_hash or ""))):
+        raise CardTransactionRefused("card_transaction_intent_invalid")
+    recorded = [{"kind": e["kind"], "key": e["key"], "payload": dict(e["payload"])} for e in (effects or ())]
+    if not _effects_valid(recorded):
+        raise CardTransactionRefused("card_transaction_effects_invalid")
+    receipt = {"schema": EFFECTS_RECEIPT_SCHEMA, "transaction_id": transaction_id, "intent_digest": intent_digest,
+               "participant": participant.strip(), "state": "prepared", "reason": "", "subject_hash": subject_hash,
+               "effects": recorded}
+    existing = await read_receipt(store, transaction_id)
+    if existing is not None:
+        if not is_effects_receipt(existing) or any(
+                existing[name] != receipt[name] for name in ("intent_digest", "participant", "subject_hash",
+                                                             "effects")):
+            raise CardTransactionRefused("card_transaction_replay_changed")
+        if existing["state"] in DECISIONS:
+            raise CardTransactionRefused("card_transaction_aborted" if existing["state"] == "aborted"
+                                         else "card_transaction_late_stage")
+        return existing
+    if await read_json_or_none(tombstone_path(store, transaction_id)) is not None:
+        raise CardTransactionRefused("card_transaction_aborted")
+    port = getattr(store, "_card_transaction_decisions", None)
+    if port is not None:
+        try:
+            decided = await port.decision({"transaction_id": transaction_id, "intent_digest": intent_digest})
+        except Exception:  # noqa: BLE001 - an unknown decision does not block a first prepare
+            decided = "undecided"
+        if decided in DECISIONS:
+            raise CardTransactionRefused("card_transaction_late_stage")
+    await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
+    await write_json_atomic(receipt_path(store, transaction_id), receipt)
+    return receipt
+
+
+async def decide_effects(store: Any, *, transaction_id: str, intent_digest: str, decision: str,
+                         reason: str = "") -> dict[str, Any]:
+    """Record the coordinator's decision on an effects-only receipt; idempotent; applies nothing itself."""
+    if decision not in DECISIONS:
+        raise CardTransactionRefused("card_transaction_decision_invalid")
+    receipt = await read_receipt(store, transaction_id)
+    if not is_effects_receipt(receipt):
+        raise CardTransactionRefused("card_transaction_unknown")
+    if receipt["intent_digest"] != intent_digest:
+        raise CardTransactionRefused("card_transaction_intent_mismatch")
+    if receipt["state"] in DECISIONS:
+        if receipt["state"] != decision:
+            raise CardTransactionRefused("card_transaction_decision_conflict")
+        return receipt
+    port = getattr(store, "_card_transaction_decisions", None)
+    if port is None:
+        raise CardTransactionRefused("card_transaction_decision_unverified")
+    try:
+        recorded = await port.decision({"transaction_id": transaction_id, "intent_digest": intent_digest})
+    except Exception as exc:  # noqa: BLE001
+        raise CardTransactionRefused("card_transaction_decision_unverified") from exc
+    if recorded != decision:
+        raise CardTransactionRefused("card_transaction_decision_not_recorded")
+    decided = {**receipt, "state": decision, "reason": str(reason or "")[:128]}
+    _validate_effects(decided, transaction_id)
+    await write_json_atomic(receipt_path(store, transaction_id), decided)
+    return decided
+
+
+def retire_effects(store: Any, transaction_id: str) -> None:
+    """The effects-only transaction is finished: its in-doubt entry goes (a stale one is re-finished)."""
+    try:
+        active_path(store, transaction_id).unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
     """The recorded state; recovery reads this and may only materialize it, never change it."""
 
@@ -1126,7 +1238,8 @@ async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
 __all__ = ["CardTransactionRefused", "DECISIONS", "GROUP_RECEIPT_SCHEMA", "TRANSACTION_POINTER_SCHEMA",
            "TRANSACTION_RECEIPT_SCHEMA", "begin_group", "complete_group", "finish_group", "group_member_ref",
            "is_group_receipt", "member_transaction_id", "READ_SET_RECEIPT_SCHEMA", "finish_read_set",
-           "is_read_set_receipt", "prepare_read_set",
+           "is_read_set_receipt", "prepare_read_set", "EFFECTS_RECEIPT_SCHEMA", "decide_effects",
+           "is_effects_receipt", "prepare_effects", "retire_effects",
            "TransactionDecisionPort", "abort_unstaged", "active_path", "read_fence_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
            "effect_outcomes", "effects_path", "list_in_doubt", "marker_path", "pending_effects",
            "read_receipt", "resolve_pointer", "stage", "state"]

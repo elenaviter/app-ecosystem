@@ -7052,8 +7052,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return {**refusal, "reason": "account_provider_unavailable"}
         provider_id = provider_id.strip()
         # W578: with Card transactions on, the bindings and the account go
-        # under ONE group decision; None keeps this ordered path (transactions
-        # off, or no Card binds the account).
+        # under ONE durable decision (a Card group, or the effects-only input
+        # when no Card binds the account); None keeps this ordered path, only
+        # while transactions are off.
         try:
             access = await _automation_access_service(self, request)
             in_transaction = getattr(access, "disconnect_account_in_transaction", None)

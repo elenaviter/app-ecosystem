@@ -40,6 +40,7 @@ PARTICIPANT = "connection-hub.card"
 INTENT_RECORD_SCHEMA = "connection-hub.card-intent.v1"
 GROUP_INTENT_RECORD_SCHEMA = "connection-hub.card-group-intent.v1"
 READ_SET_INTENT_RECORD_SCHEMA = "connection-hub.card-read-set-intent.v1"
+EFFECTS_INTENT_RECORD_SCHEMA = "connection-hub.card-effects-intent.v1"
 
 
 _HEX64 = re.compile(r"[0-9a-f]{64}\Z")
@@ -342,8 +343,41 @@ class CardReadSetIntent:
             raise DecisionRefused("card_intent_invalid") from exc
 
 
-def intent_from_mapping(raw: Any) -> "CardIntent | CardGroupIntent | CardReadSetIntent":
+@dataclass(frozen=True)
+class CardEffectsIntent:
+    """W578: one owner's bounded effects under one decision, changing no Card (card_effects.py)."""
+
+    transaction_id: str
+    intent_digest: str
+    subject_hash: str
+    effects: tuple[Mapping[str, Any], ...]
+    actor_subject: str = ""
+    actor_kind: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"schema": EFFECTS_INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
+                "intent_digest": self.intent_digest, "subject_hash": self.subject_hash,
+                "effects": [dict(effect) for effect in self.effects], "actor_subject": self.actor_subject,
+                "actor_kind": self.actor_kind}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "CardEffectsIntent":
+        if not isinstance(raw, Mapping) or raw.get("schema") != EFFECTS_INTENT_RECORD_SCHEMA:
+            raise DecisionRefused("card_intent_invalid")
+        try:
+            return cls(transaction_id=raw["transaction_id"], intent_digest=raw["intent_digest"],
+                       subject_hash=str(raw["subject_hash"]),
+                       effects=tuple(dict(effect) for effect in raw["effects"]),
+                       actor_subject=str(raw.get("actor_subject") or ""),
+                       actor_kind=str(raw.get("actor_kind") or ""))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DecisionRefused("card_intent_invalid") from exc
+
+
+def intent_from_mapping(raw: Any) -> "CardIntent | CardGroupIntent | CardReadSetIntent | CardEffectsIntent":
     """A recorded intent of any shape, by its schema."""
+    if isinstance(raw, Mapping) and raw.get("schema") == EFFECTS_INTENT_RECORD_SCHEMA:
+        return CardEffectsIntent.from_mapping(raw)
     if isinstance(raw, Mapping) and raw.get("schema") == GROUP_INTENT_RECORD_SCHEMA:
         return CardGroupIntent.from_mapping(raw)
     if isinstance(raw, Mapping) and raw.get("schema") == READ_SET_INTENT_RECORD_SCHEMA:
@@ -433,6 +467,8 @@ class HubCardParticipant:
             return self._bound_group(intent, projection)
         if isinstance(intent, CardReadSetIntent):
             return self._bound_read_set(intent, projection)
+        if isinstance(intent, CardEffectsIntent):
+            return self._bound_effects(intent, projection)
         expected = card_intent_payload_digest(original=intent.original, candidate=intent.candidate,
                                               effects=intent.effects)
         # The global intent names exactly this Card change. Every projection
@@ -468,6 +504,17 @@ class HubCardParticipant:
         return intent
 
     @staticmethod
+    def _bound_effects(intent: "CardEffectsIntent", projection: Mapping[str, Any]) -> "CardEffectsIntent":
+        """W578: the owner and effects the intent applies are exactly the projection's, field by field."""
+        from .card_effects import effects_candidate_value, verify_effects_projection
+        checked = verify_effects_projection(projection, effects_candidate_value(intent.subject_hash, intent.effects))
+        if (checked["effects"] != [dict(effect) for effect in intent.effects]
+                or not intent.actor_subject or projection["actor_subject"] != intent.actor_subject
+                or projection["actor_kind"] != intent.actor_kind):
+            raise DecisionRefused("card_intent_not_bound")
+        return intent
+
+    @staticmethod
     def _bound_group(intent: "CardGroupIntent", projection: Mapping[str, Any]) -> "CardGroupIntent":
         """W578: every aggregate field and member the group intent stages, compared with the projection."""
         from .card_group import verify_group_projection
@@ -484,6 +531,14 @@ class HubCardParticipant:
 
     async def prepare(self, transaction_id: str) -> Receipt:
         intent = await self._bound_intent(transaction_id)
+        if isinstance(intent, CardEffectsIntent):
+            try:
+                prepared = await self._service.stage_effects_transaction(
+                    transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
+                    subject_hash=intent.subject_hash, effects=intent.effects)
+            except CardTransactionRefused as exc:
+                raise DecisionRefused(str(exc)) from exc
+            return await self._receipt(prepared)
         if isinstance(intent, CardReadSetIntent):
             try:
                 prepared = await self._service.stage_read_set_transaction(
@@ -531,6 +586,8 @@ class HubCardParticipant:
             return await self._finish_group(intent, transaction_id, decision)
         if isinstance(intent, CardReadSetIntent):
             return await self._finish_read_set(intent, transaction_id, decision)
+        if isinstance(intent, CardEffectsIntent):
+            return await self._finish_effects(intent, transaction_id, decision)
         if decision == "aborted" and await read_state(self._store, transaction_id=transaction_id) is None:
             # Never durably prepared here (a lost prepare reply, or a stage
             # that crashed first): an idempotent abort tombstone (W581 F1),
@@ -566,6 +623,24 @@ class HubCardParticipant:
             return await self._tombstone_receipt(record, tombstone)
         try:
             decided = await self._service.decide_read_set_transaction(
+                transaction_id=transaction_id, intent_digest=intent.intent_digest, decision=decision)
+        except CardTransactionRefused as exc:
+            raise DecisionRefused(str(exc)) from exc
+        return await self._receipt(decided)
+
+    async def _finish_effects(self, intent: "CardEffectsIntent", transaction_id: str, decision: str) -> Receipt:
+        """W578: an unprepared effects-only transaction aborts by tombstone and releases its fence."""
+        if decision == "aborted" and await read_state(self._store, transaction_id=transaction_id) is None:
+            tombstone = await self._service.abort_unstaged_effects(
+                transaction_id=transaction_id, intent_digest=intent.intent_digest, effects=intent.effects)
+            if tombstone.get("state") != "aborted" or tombstone.get("schema"):  # its stage won the sections
+                return await self._finish_effects(intent, transaction_id, decision)
+            record = await self._decisions.read(transaction_id)
+            if record is None or record.intent.digest != intent.intent_digest:
+                raise DecisionRefused("card_intent_not_bound")
+            return await self._tombstone_receipt(record, tombstone)
+        try:
+            decided = await self._service.decide_effects_transaction(
                 transaction_id=transaction_id, intent_digest=intent.intent_digest, decision=decision)
         except CardTransactionRefused as exc:
             raise DecisionRefused(str(exc)) from exc
@@ -656,7 +731,8 @@ class HubLocalReceiptVerifier:
         await self._check(receipt, (record.state,))
 
 
-__all__ = ["CardGroupIntent", "CardGroupMemberIntent", "CardIntent", "CardIntentSource", "CardReadSetIntent",
+__all__ = ["CardEffectsIntent", "EFFECTS_INTENT_RECORD_SCHEMA",
+           "CardGroupIntent", "CardGroupMemberIntent", "CardIntent", "CardIntentSource", "CardReadSetIntent",
            "GROUP_INTENT_RECORD_SCHEMA", "READ_SET_INTENT_RECORD_SCHEMA", "intent_from_mapping", "DecisionStorePort", "HubCardParticipant", "HubLocalReceiptVerifier",
            "LocalCardIntentSource", "PARTICIPANT", "candidate_value", "candidate_value_digest", "dependency_revisions",
            "reads_from_dependencies", "catalog_reservation_from_dependencies",

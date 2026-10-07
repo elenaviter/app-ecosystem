@@ -137,6 +137,14 @@ async def _blocking_fence(store: Any, provider_id: str, account_id: str, *, own:
     return holder
 
 
+async def fence_holder(store: Any, provider_id: str, account_id: str) -> str:
+    """The transaction id whose fence this account carries ("" when none, "unreadable" when malformed)."""
+    raw = await read_json_or_none(_dir(store, provider_id, account_id) / "fence.json")
+    if not isinstance(raw, Mapping) or type(raw.get("transaction_id")) is not str:
+        return "unreadable" if raw is not None else ""
+    return raw["transaction_id"]
+
+
 async def mark_binding(store: Any, accounts: Iterable[tuple[str, str]], *, mark_id: str, kind: str,
                        subject_hash: str, access_id: str, transaction_id: str = "") -> None:
     """Write this writer's mark on every account it adds, then refuse any non-terminal fence of another transaction.
