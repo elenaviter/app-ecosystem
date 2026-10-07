@@ -10,6 +10,9 @@ TABLE_CLIENTS = "connection_hub_oauth_clients"
 TABLE_FAMILIES = "connection_hub_oauth_credential_families"
 TABLE_REFRESH_GENERATIONS = "connection_hub_oauth_refresh_generations"
 TABLE_ACCESS_BINDINGS = "connection_hub_oauth_access_bindings"
+# W603: an original OAuth issuance's credentials before its Card decision's COMMIT.
+TABLE_ISSUANCE_RESERVATIONS = "connection_hub_oauth_issuance_reservations"
+TABLE_ISSUANCE_PLANS = "connection_hub_oauth_issuance_plans"
 # Compatibility alias for callers that imported the original OAuth-local name.
 TABLE_CUTOVERS = TABLE_AUTHORITY_CUTOVERS
 
@@ -140,5 +143,63 @@ ALTER TABLE {schema}.{TABLE_ACCESS_BINDINGS}
 CREATE INDEX IF NOT EXISTS connection_hub_oauth_access_expiry_idx
     ON {schema}.{TABLE_ACCESS_BINDINGS} (expires_at)
     WHERE state = 'active';
+
+-- W603: the immutable plan of one original OAuth issuance, written once
+-- before its Card decision begins (first writer wins) so that every replay
+-- rebuilds the identical decision draft and returns the identical plan,
+-- deadlines included. ``transaction_id`` is the decision's, bound after begin.
+CREATE TABLE IF NOT EXISTS {schema}.{TABLE_ISSUANCE_PLANS} (
+    tenant                       TEXT NOT NULL,
+    project                      TEXT NOT NULL,
+    decision_request_id          CHAR(64) NOT NULL,
+    original_input_digest        CHAR(64) NOT NULL,
+    transaction_id               TEXT NULL,
+    plan                         JSONB NOT NULL,
+    reserved_until               TIMESTAMPTZ NOT NULL,
+    created_at                   TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    PRIMARY KEY (tenant, project, decision_request_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plans_transaction_idx
+    ON {schema}.{TABLE_ISSUANCE_PLANS} (tenant, project, transaction_id)
+    WHERE transaction_id IS NOT NULL;
+
+-- W603: the credentials of an original issuance, reserved under its ONE Card
+-- decision before that decision's COMMIT. A reservation is in no table a
+-- reader looks at: activation inserts the real family/generation or access
+-- binding from it after COMMIT, under the Card's family lock, and pins the
+-- outcome. One row per (transaction, slot); the bearer is stored only as its
+-- digest. ``reserved_until`` is fixed from the database clock at the plan and
+-- never renewed; ``bound_*`` is written at the decision's STAGE.
+CREATE TABLE IF NOT EXISTS {schema}.{TABLE_ISSUANCE_RESERVATIONS} (
+    reservation_id               TEXT PRIMARY KEY,
+    tenant                       TEXT NOT NULL,
+    project                      TEXT NOT NULL,
+    transaction_id               TEXT NOT NULL,
+    slot                         TEXT NOT NULL CHECK (slot IN ('access', 'refresh')),
+    token_sha256                 CHAR(64) NOT NULL UNIQUE,
+    record                       JSONB NOT NULL,
+    registry_access_id           TEXT NOT NULL,
+    subject                      TEXT NOT NULL,
+    client_id                    TEXT NOT NULL,
+    card_revision                BIGINT NOT NULL CHECK (card_revision >= 1),
+    cap_expires_at               TIMESTAMPTZ NOT NULL,
+    ttl_seconds                  INTEGER NOT NULL CHECK (ttl_seconds >= 1),
+    original_input_digest        CHAR(64) NOT NULL,
+    reservation_digest           CHAR(64) NOT NULL,
+    reserved_until               TIMESTAMPTZ NOT NULL,
+    state                        TEXT NOT NULL DEFAULT 'reserved'
+                                 CHECK (state IN ('reserved', 'bound', 'activated', 'released', 'expired')),
+    outcome                      TEXT NOT NULL DEFAULT ''
+                                 CHECK (outcome IN ('', 'applied', 'superseded', 'released', 'expired')),
+    pin                          TEXT NOT NULL DEFAULT '',
+    created_at                   TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    updated_at                   TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    UNIQUE (tenant, project, transaction_id, slot)
+);
+
+CREATE INDEX IF NOT EXISTS connection_hub_oauth_issuance_reservations_open_idx
+    ON {schema}.{TABLE_ISSUANCE_RESERVATIONS} (reserved_until)
+    WHERE state = 'reserved';
 
 """ + authority_cutover_schema_sql(schema)
