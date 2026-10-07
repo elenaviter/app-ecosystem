@@ -90,12 +90,15 @@ read every card.
 - **A change the project must make is refused, not conflicted.** While Card
   transactions are on, a save or revoke of a Card that only its project's
   transaction may change (a project Control Card, a Card bound under a
-  Control) answers `card_transactions_direct_write_refused` (409, not
-  retryable; see [Card transactions](../../package/card-transactions.md),
-  activation condition 9). The editor shows the server's message, or a
-  readable fallback, and keeps the Card, its focus, the credential banner and
-  the unsaved draft. It clears the busy state and never treats the answer as a
-  revision conflict to reconcile, nor retries the write.
+  Control) answers `card_transactions_direct_write_refused`, never retryable:
+  status 409 with a message from the writer's own guard, or status 403 with no
+  message from the shared persist check (see
+  [Card transactions](../../package/card-transactions.md), activation
+  condition 9). The editor keys on the error code, not the status. It shows the
+  server's message when there is one, otherwise a readable fallback, and keeps
+  the Card, its focus, the credential banner and the unsaved draft. It clears
+  the busy state and never treats the answer as a revision conflict to
+  reconcile, nor retries the write.
 - **A selection route owns its service hierarchy.** The `remote_mcp_proxy`
   transport route appears as **My MCP connectors**. Selecting it exposes the
   owner's configured MCP servers directly beneath it, and each server row
