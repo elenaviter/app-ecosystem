@@ -3049,10 +3049,16 @@ class AutomationAccessService:
             )
         except CallerWriteRefused as exc:
             return exc.to_dict()
+        # The reset service's named-service selection follows the Control too (reset_candidate set it);
+        # update_access reads an omitted selection as "keep", so the computed one must be forwarded.
+        selection = CardAuthority.from_mapping(candidate).named_service_operations
+        forwarded_named = (None if selection.is_all or selection.is_unknown
+                           else {key: dict(value) for key, value in selection.operations.items()})
         return await self.update_access(
             user, access_id=existing.access_id,
             resource_grants={key: list(value) for key, value in candidate["resource_grants"].items()},
             resource_operations={key: list(value) for key, value in candidate["resource_operations"].items()},
+            named_service_operations=forwarded_named,
             expected_card_revision=existing.card_revision,
             _issuer_request_id=request_id, _issuer_context_ref=context_ref,
             _caller_write_action="reset",
