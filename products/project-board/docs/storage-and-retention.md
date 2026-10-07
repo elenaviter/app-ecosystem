@@ -544,6 +544,11 @@ place, as for events):
   once, in its newest version, and a restore (the maintainer's way back)
   returns only that newest version.
 - A dated Timeline search reads the archived days in its range, like events.
+- A part that cannot be read, does not verify, or whose manifest no longer
+  matches the SHA-256 the ledger recorded is never shown as if the result were
+  complete: the Timeline and the Inbox's dated search return the days they
+  could not read (`cold_unavailable`) and the board says "Some archived days
+  could not be read (...); these results may be incomplete."
 - An Inbox conversation pages only its live messages; its message count still
   includes archived mail. A dated search of the conversation pages live and
   archived messages together, newest first.
