@@ -7466,6 +7466,30 @@ class AutomationAccessService:
             request_id=request_id,
         )
 
+    async def project_invitation_pending_revision(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        invitation_ref: str,
+        control_id: str,
+    ) -> dict[str, Any]:
+        """W502 join: the signed-in invitee reads their pending invitation Card's revision and state.
+
+        A read under bind's own authority (the board's binding resolver for
+        this session's verified email); no Card is written.
+        """
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await self._project_invitation_controls.pending_revision(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            invitation_ref=invitation_ref,
+            control_id=control_id,
+        )
+
     async def project_person_control_bind_invitation(
         self,
         user: Mapping[str, Any],

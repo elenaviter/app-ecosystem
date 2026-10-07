@@ -188,6 +188,53 @@ class ProjectInvitationRedemption:
             revoked_record=revoked_record,
         )
 
+    async def pending_revision(
+        self,
+        *,
+        actor_subject: str,
+        project_ref: str,
+        invitation_ref: str,
+        control_id: str,
+    ) -> dict[str, Any]:
+        """W502 join: the pending invitation Card's revision and state, for its own invitee only.
+
+        The same authority as ``bind``: the board's binding resolver answers for
+        this session's person and verified email, and the Card must name that
+        email, this project, invitation and control id, and still be pending
+        (active). Returns nothing else: no selection, grants, audit or admin view.
+        """
+
+        actor = str(actor_subject or "").strip()
+        if not actor:
+            return {"ok": False, "error": "project_invitation_binding_person_subject_missing", "status": 400}
+        if not str(control_id or "").strip():
+            return {"ok": False, "error": "project_invitation_control_id_mismatch", "status": 409}
+        evidence = await self._claims.evidence(
+            actor_subject=actor,
+            project_ref=project_ref,
+            invitation_ref=invitation_ref,
+            control_id=control_id,
+        )
+        if isinstance(evidence, dict):
+            return evidence
+        loaded = await self._pending_cards.load(
+            project_ref=project_ref,
+            invitation_ref=invitation_ref,
+            control_id=control_id,
+        )
+        if isinstance(loaded, dict):
+            return loaded
+        pending_record, pending_state, pending_identity = loaded
+        if pending_identity.target_email_digest != evidence.email_digest:
+            return {"ok": False, "error": "project_invitation_binding_email_mismatch", "status": 403}
+        if pending_state != CARD_STATE_ACTIVE:
+            return {"ok": False, "error": "project_invitation_control_not_active", "status": 409}
+        return {
+            "ok": True,
+            "card_revision": self._authority_from_record(pending_record).card_revision,
+            "state": pending_state,
+        }
+
     async def bind(
         self,
         *,

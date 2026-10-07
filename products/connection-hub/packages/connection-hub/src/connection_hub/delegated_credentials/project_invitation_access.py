@@ -67,6 +67,9 @@ class ProjectInvitationControlLifecycle:
     async def bind(self, **kwargs: Any) -> dict[str, Any]:
         return await self._redemption.bind(**kwargs)
 
+    async def pending_revision(self, **kwargs: Any) -> dict[str, Any]:
+        return await self._redemption.pending_revision(**kwargs)
+
 
 __all__ = [
     "PROJECT_INVITATION_BINDING_PROVENANCE",
