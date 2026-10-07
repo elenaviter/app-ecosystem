@@ -44,7 +44,17 @@ from connection_hub.delegated_credentials.controls.project_person import (
     bind_project_person_control,
 )
 from connection_hub.delegated_credentials.controls.snapshot import materialize_control_snapshot
-from connection_hub.delegated_credentials.project_authorization import ProjectAuthorizationDecision
+from connection_hub.delegated_credentials.project_authorization import (
+    LifecyclePlanAuthorization,
+    LifecyclePlanAuthorizationRequest,
+    LifecyclePlanStep,
+    ProjectAuthorizationDecision,
+    ProjectAuthorizationError,
+)
+from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import (
+    CREATION_STEPS,
+    UPDATE_STEPS,
+)
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
     ProjectIdentityLifecycleError,
     new_project_person_my_card,
@@ -295,7 +305,7 @@ async def plan_card_lifecycle(
     actor_subject: str,
     actor_kind: str,
     request_id: str,
-    authorization: ProjectAuthorizationDecision,
+    authorization: LifecyclePlanAuthorization,
 ) -> dict[str, Any]:
     """Propose a canonical Card group using only current reads and catalog resolution.
 
@@ -310,16 +320,46 @@ async def plan_card_lifecycle(
         _required_text(request_id, "card_plan_request_id_invalid")
         if actor_kind not in ("caller", "grantor"):
             raise CardLifecyclePlanRefused("card_plan_actor_invalid", 400)
-        if (not isinstance(authorization, ProjectAuthorizationDecision)
-                or not authorization.allowed or authorization.project_ref != scope
-                or authorization.actor_subject != actor
-                or authorization.request_id != request_id):
-            raise CardLifecyclePlanRefused("card_plan_authorization_invalid", 403)
         if (not isinstance(creations, (list, tuple)) or not isinstance(updates, (list, tuple))
                 or not creations and not updates):
             raise CardLifecyclePlanRefused("card_plan_empty", 400)
         if len(creations) + len(updates) > MAX_GROUP_MEMBERS:
             raise CardLifecyclePlanRefused("card_group_too_large", 400)
+
+        # The signed operation owns the complete request digest. Reconstruct
+        # its exact step list without inventing a weaker digest from these
+        # planner arguments, then bind the host's envelope to every step.
+        if not isinstance(authorization, LifecyclePlanAuthorization):
+            raise CardLifecyclePlanRefused("card_plan_authorization_invalid", 403)
+        steps: list[LifecyclePlanStep] = []
+        for raw in creations:
+            if not isinstance(raw, Mapping) or raw.get("kind") not in CREATION_STEPS:
+                raise CardLifecyclePlanRefused("card_plan_creation_invalid", 400)
+            identity = raw.get("identity")
+            if not isinstance(identity, Mapping):
+                raise CardLifecyclePlanRefused("card_plan_creation_identity_invalid", 400)
+            operation, target_field = CREATION_STEPS[raw["kind"]]
+            steps.append(LifecyclePlanStep(
+                ref=_required_text(raw.get("ref"), "card_plan_creation_ref_invalid"),
+                operation=operation,
+                target_subject=_required_text(identity.get(target_field), "card_plan_target_invalid"),
+            ))
+        for index, raw in enumerate(updates):
+            if not isinstance(raw, Mapping) or raw.get("kind") not in UPDATE_STEPS:
+                raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+            steps.append(LifecyclePlanStep(
+                ref=f"update:{index}", operation=UPDATE_STEPS[raw["kind"]],
+                target_subject=_required_text(raw.get("target_subject"), "card_plan_target_invalid"),
+            ))
+        try:
+            authorization.validate_for(LifecyclePlanAuthorizationRequest(
+                actor_subject=actor, project_ref=scope, request_id=request_id,
+                request_digest=authorization.request.request_digest, steps=tuple(steps),
+            ))
+        except ProjectAuthorizationError as exc:
+            raise CardLifecyclePlanRefused("card_plan_authorization_invalid", 403) from exc
+        if not authorization.allowed:
+            raise CardLifecyclePlanRefused(authorization.refusal(), 403)
 
         active = await host._active_catalog()
         catalog_version = host._version_of(active)
@@ -405,6 +445,7 @@ async def plan_card_lifecycle(
                         and parent_raw["ref"] in pending):
                     continue
                 kind = raw["kind"]
+                decision = authorization.decision_for(ref)
                 identity = raw["identity"]
                 selection = raw["selection"]
                 parent = await parent_for(parent_raw)
@@ -415,6 +456,8 @@ async def plan_card_lifecycle(
                 resolved = None
                 if kind == "application_control":
                     holder = _required_text(identity.get("holder_subject"), "card_plan_holder_invalid")
+                    if holder != decision.target_subject:
+                        raise CardLifecyclePlanRefused("card_plan_authorization_target_mismatch", 403)
                     if identity.get("issuer_ref") != scope or parent is not None:
                         raise CardLifecyclePlanRefused("card_plan_application_identity_invalid", 400)
                     if identity.get("composition_mode", "and") not in ("and", "or"):
@@ -435,8 +478,8 @@ async def plan_card_lifecycle(
                             resource_operations=selection.get("resource_operations"), operations=(),
                             named_service_operations=selection.get("named_service_operations"),
                             account_scope=selection.get("account_scope"), properties=base.properties,
-                            _delegable_grants=authorization.delegable_grants,
-                            _platform_admin=authorization.platform_admin,
+                            _delegable_grants=decision.delegable_grants,
+                            _platform_admin=decision.platform_admin,
                         )
                         if resolved.error is not None:
                             return dict(resolved.error)
@@ -455,9 +498,9 @@ async def plan_card_lifecycle(
                     if parent is None:
                         raise CardLifecyclePlanRefused("card_plan_project_control_missing")
                     target = _required_text(identity.get("target_subject"), "card_plan_target_invalid")
-                    if target != authorization.target_subject:
+                    if target != decision.target_subject:
                         raise CardLifecyclePlanRefused("card_plan_authorization_target_mismatch", 403)
-                    _require_project_parent(parent, project_ref=scope, authorization=authorization)
+                    _require_project_parent(parent, project_ref=scope, authorization=decision)
                     person = ProjectPersonControlIdentity.build(project_ref=scope, target_subject=target)
                     if identity.get("composition_mode", "and") not in ("and", "or"):
                         raise CardLifecyclePlanRefused("control_card_composition_mode_invalid", 400)
@@ -497,11 +540,11 @@ async def plan_card_lifecycle(
                             resource_operations=selection.get("resource_operations"), operations=(),
                             named_service_operations=selection.get("named_service_operations"),
                             account_scope=selection.get("account_scope"), properties=base.properties,
-                            _delegable_grants=authorization.delegable_grants,
-                            _platform_admin=authorization.platform_admin,
+                            _delegable_grants=decision.delegable_grants,
+                            _platform_admin=decision.platform_admin,
                         )
                         if resolved.error is not None:
-                            return _named_not_delegable(resolved.error, authorization)
+                            return _named_not_delegable(resolved.error, decision)
                         if resolved.revoke:
                             return {"ok": False, "error": "project_person_control_selection_empty", "status": 409,
                                     "pruned": resolved.reconciled.to_public_dict()}
@@ -520,7 +563,7 @@ async def plan_card_lifecycle(
                     )
                 elif kind == "project_person_my_card":
                     target = _required_text(identity.get("person_subject"), "card_plan_target_invalid")
-                    if target != authorization.target_subject or parent is None:
+                    if target != decision.target_subject or parent is None:
                         raise CardLifecyclePlanRefused("card_plan_my_parent_invalid")
                     base = new_project_person_my_card(
                         control_card=parent, label=str(identity.get("label") or ""),
@@ -534,8 +577,8 @@ async def plan_card_lifecycle(
                             resource_operations=selection.get("resource_operations"), operations=(),
                             named_service_operations=selection.get("named_service_operations"),
                             account_scope=selection.get("account_scope"), properties=base.properties,
-                            _delegable_grants=authorization.delegable_grants,
-                            _platform_admin=authorization.platform_admin,
+                            _delegable_grants=decision.delegable_grants,
+                            _platform_admin=decision.platform_admin,
                         )
                         if resolved.error is not None:
                             return dict(resolved.error)
@@ -563,11 +606,12 @@ async def plan_card_lifecycle(
             if not progressed:
                 raise CardLifecyclePlanRefused("card_plan_parent_cycle")
 
-        for raw in updates:
+        for index, raw in enumerate(updates):
             if (not isinstance(raw, Mapping)
-                    or not {"action", "access_id", "subject_hash", "original_revision"} <= set(raw)
-                    or set(raw) - {"action", "access_id", "subject_hash", "original_revision", "parent"}):
+                    or not {"kind", "target_subject", "access_id", "subject_hash", "original_revision"} <= set(raw)
+                    or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent"}):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+            decision = authorization.decision_for(f"update:{index}")
             access_id = _required_text(raw["access_id"], "card_plan_update_invalid")
             subject_hash = _required_text(raw["subject_hash"], "card_plan_update_invalid")
             original_revision = raw["original_revision"]
@@ -588,15 +632,19 @@ async def plan_card_lifecycle(
                 invitation_identity = ProjectInvitationControlIdentity.from_authority(original)
             except ProjectInvitationControlError:
                 invitation_identity = None
+            target = _required_text(raw["target_subject"], "card_plan_target_invalid")
             if (person_identity is None and invitation_identity is None
                     or person_identity is not None and person_identity.project_ref != scope
                     or invitation_identity is not None and invitation_identity.project_ref != scope
                     or person_identity is not None
-                    and person_identity.target_subject != authorization.target_subject):
+                    and person_identity.target_subject != target
+                    or invitation_identity is not None
+                    and invitation_identity.invitation_ref != target
+                    or decision.target_subject != target):
                 raise CardLifecyclePlanRefused("card_plan_update_scope_invalid", 403)
-            action = raw["action"]
+            action = raw["kind"]
             if action == "revoke":
-                if "parent" in raw:
+                if invitation_identity is None or "parent" in raw:
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
                 if original.state != CARD_STATE_ACTIVE:
                     raise CardLifecyclePlanRefused("card_plan_revoke_not_active")
@@ -609,7 +657,7 @@ async def plan_card_lifecycle(
                 parent = await parent_for(raw.get("parent"))
                 if parent is None:
                     raise CardLifecyclePlanRefused("card_plan_parent_invalid", 400)
-                _require_project_parent(parent, project_ref=scope, authorization=authorization)
+                _require_project_parent(parent, project_ref=scope, authorization=decision)
                 candidate = dataclasses.replace(
                     original, card_revision=original.card_revision + 1,
                     control_card=_parent_binding(parent),
@@ -637,6 +685,8 @@ async def plan_card_lifecycle(
         }}
     except CardLifecyclePlanRefused as exc:
         return {"ok": False, "error": exc.reason, "status": exc.status}
+    except ProjectAuthorizationError:
+        return {"ok": False, "error": "card_plan_authorization_invalid", "status": 403}
     except DecisionRefused as exc:
         return {"ok": False, "error": getattr(exc, "reason", str(exc)), "status": 409}
     except CatalogUnavailable as exc:

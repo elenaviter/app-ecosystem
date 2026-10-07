@@ -7,13 +7,17 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
 from connection_hub.delegated_credentials.card_lifecycle_plan import (
     build_application_control,
     build_project_person_control,
-    plan_card_lifecycle,
+    plan_card_lifecycle as _plan_card_lifecycle,
+)
+from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import (
+    CREATION_STEPS, UPDATE_STEPS,
 )
 from connection_hub.delegated_credentials.cards.card_group import validate_group_candidate
 from connection_hub.delegated_credentials.cards import transaction_store as tx
@@ -29,9 +33,10 @@ from connection_hub.delegated_credentials.controls.project_invitation import (
     bind_project_invitation_control,
 )
 from connection_hub.delegated_credentials.project_authorization import (
-    PROJECT_PERSON_CONTROL_CREATE,
+    LifecyclePlanAuthorization,
+    LifecyclePlanAuthorizationRequest,
+    LifecyclePlanStep,
     ProjectAuthorizationDecision,
-    ProjectAuthorizationRequest,
 )
 from test_card_service import _Cache
 from test_card_transaction_store import Decisions
@@ -43,11 +48,39 @@ TARGET = "person-1"
 REQUEST = "test-plan-1"
 
 
-def _decision(target: str = TARGET, operation: str = PROJECT_PERSON_CONTROL_CREATE):
-    return ProjectAuthorizationDecision.allow(ProjectAuthorizationRequest.build(
-        actor_subject=CREATOR, project_ref=PROJECT, target_subject=target,
-        operation=operation, request_id=REQUEST,
-    ), delegable_grants=("work:admin",), platform_admin=True)
+def _authorization(creations, updates=(), *, targets=None, grants=None):
+    targets, grants = targets or {}, grants or {}
+    steps = []
+    for raw in creations:
+        operation, field = CREATION_STEPS[raw["kind"]]
+        steps.append(LifecyclePlanStep(
+            ref=raw["ref"], operation=operation,
+            target_subject=targets.get(raw["ref"], raw["identity"][field]),
+        ))
+    for index, raw in enumerate(updates):
+        ref = f"update:{index}"
+        steps.append(LifecyclePlanStep(
+            ref=ref, operation=UPDATE_STEPS[raw["kind"]],
+            target_subject=targets.get(ref, raw["target_subject"]),
+        ))
+    request = LifecyclePlanAuthorizationRequest(
+        actor_subject=CREATOR, project_ref=PROJECT, request_id=REQUEST,
+        request_digest="a" * 64, steps=tuple(steps),
+    )
+    return LifecyclePlanAuthorization(
+        request=request,
+        decisions=tuple((step.ref, ProjectAuthorizationDecision.allow(
+            request.step_request(step),
+            delegable_grants=grants.get(step.ref, ("work:admin",)),
+            platform_admin=True,
+        )) for step in steps),
+    )
+
+
+async def plan_card_lifecycle(host, *, authorization=None, **kwargs):
+    if authorization is None:
+        authorization = _authorization(kwargs["creations"], kwargs.get("updates", ()))
+    return await _plan_card_lifecycle(host, authorization=authorization, **kwargs)
 
 
 class _Cards:
@@ -117,7 +150,6 @@ async def test_genesis_plans_p_c_my_without_a_live_parent_or_any_write():
         host, project_ref=PROJECT,
         creations=[_my_request(), _c_request({"ref": "p"}), _p_request()],
         actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
-        authorization=_decision(),
     )
     assert result["ok"] is True, result
     plan = result["plan"]
@@ -139,7 +171,6 @@ async def test_join_uses_a_present_live_p_at_its_exact_revision():
         host, project_ref=PROJECT,
         creations=[_c_request({"access_id": p.access_id, "holder_subject": CREATOR}), _my_request()],
         actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
-        authorization=_decision(),
     )
     assert result["ok"] is True, result
     assert len(result["plan"]["candidate_value"]["cards"]) == 2
@@ -156,11 +187,10 @@ async def test_stale_revision_refuses_without_a_write():
     host = _Host(c)
     result = await plan_card_lifecycle(
         host, project_ref=PROJECT, creations=[], updates=[{
-            "action": "revoke", "access_id": c.access_id,
+            "kind": "revoke", "target_subject": TARGET, "access_id": c.access_id,
             "subject_hash": subject_hash_for(c.grantor_subject),
             "original_revision": c.card_revision + 1,
         }], actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
-        authorization=_decision(),
     )
     assert result == {"ok": False, "error": "card_plan_original_revision_changed", "status": 409}
     assert host.writes == 0
@@ -182,11 +212,11 @@ async def test_redemption_proposes_new_c_and_my_with_pending_invitation_revoke()
     result = await plan_card_lifecycle(
         host, project_ref=PROJECT,
         creations=[_c_request({"access_id": p.access_id, "holder_subject": CREATOR}), _my_request()],
-        updates=[{"action": "revoke", "access_id": pending.access_id,
+        updates=[{"kind": "revoke", "target_subject": invitation.invitation_ref,
+                  "access_id": pending.access_id,
                   "subject_hash": subject_hash_for(pending.grantor_subject),
                   "original_revision": pending.card_revision}],
         actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
-        authorization=_decision(),
     )
     assert result["ok"] is True, result
     members = result["plan"]["candidate_value"]["cards"]
@@ -207,12 +237,11 @@ async def test_repair_attaches_existing_c_to_current_p_without_rewriting_my():
     host = _Host(p, c)
     result = await plan_card_lifecycle(
         host, project_ref=PROJECT, creations=[],
-        updates=[{"action": "attach", "access_id": c.access_id,
+        updates=[{"kind": "attach", "target_subject": TARGET, "access_id": c.access_id,
                   "subject_hash": subject_hash_for(c.grantor_subject),
                   "original_revision": c.card_revision,
                   "parent": {"access_id": p.access_id, "holder_subject": CREATOR}}],
         actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
-        authorization=_decision(),
     )
     assert result["ok"] is True, result
     members = result["plan"]["candidate_value"]["cards"]
@@ -235,7 +264,6 @@ async def test_join_candidate_is_exact_after_qualified_group_stage_and_recovery(
         host, project_ref=PROJECT,
         creations=[_c_request({"access_id": p.access_id, "holder_subject": CREATOR}), _my_request()],
         actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
-        authorization=_decision(),
     )
     assert result["ok"] is True, result
     plan = result["plan"]
@@ -317,7 +345,6 @@ async def test_foreign_parent_and_unauthorized_target_refuse_without_writes():
         host, project_ref=PROJECT,
         creations=[_c_request({"access_id": foreign.access_id, "holder_subject": CREATOR})],
         actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
-        authorization=_decision(),
     )
     assert result == {"ok": False, "error": "project_control_not_exact", "status": 409}
     assert host.writes == 0
@@ -325,6 +352,38 @@ async def test_foreign_parent_and_unauthorized_target_refuse_without_writes():
     result = await plan_card_lifecycle(
         _Host(), project_ref=PROJECT, creations=[_c_request({"ref": "p"}), _p_request()],
         actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
-        authorization=_decision(target="different-person"),
+        authorization=_authorization(
+            [_c_request({"ref": "p"}), _p_request()],
+            targets={"c": "different-person"},
+        ),
     )
-    assert result == {"ok": False, "error": "card_plan_authorization_target_mismatch", "status": 403}
+    assert result == {"ok": False, "error": "card_plan_authorization_invalid", "status": 403}
+
+
+@pytest.mark.asyncio
+async def test_each_creation_is_bounded_by_its_own_step_not_another_steps_grants():
+    host = _Host()
+    seen_bounds = []
+
+    async def resolve(**kwargs):
+        bound = kwargs["_delegable_grants"]
+        seen_bounds.append(bound)
+        requested = kwargs["resource_grants"]["resource:wide"]
+        if any(grant not in bound for grant in requested):
+            return SimpleNamespace(error={"ok": False, "error": "not_delegable", "status": 403},
+                                   revoke=False)
+        raise AssertionError("the narrower C step must refuse")
+
+    host._resolve_card_authority = resolve
+    p, c = _p_request(), _c_request({"ref": "p"})
+    c["selection"] = {"resource_grants": {"resource:wide": ["work:wide"]}}
+    result = await plan_card_lifecycle(
+        host, project_ref=PROJECT, creations=[p, c],
+        actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
+        authorization=_authorization([p, c], grants={
+            "p": ("work:wide",), "c": ("work:narrow",),
+        }),
+    )
+    assert result == {"ok": False, "error": "not_delegable", "status": 403}
+    assert seen_bounds == [("work:narrow",)]
+    assert host.writes == 0

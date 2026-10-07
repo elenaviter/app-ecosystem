@@ -71,7 +71,8 @@ initiator's provider decides whether that chain is anchored at its P.
 
 `plan_card_lifecycle` in `delegated_credentials/card_lifecycle_plan.py` builds
 the Hub's `connection-hub.card-group.v1` candidate and participant input from
-one authorized project scope. The caller supplies role-derived selections;
+one authorized project scope. The caller supplies catalog selections without
+placing project roles in the Hub;
 the Hub resolves them against its active catalog and constructs the same P
 and C authority values used by the live constructors. The request has local
 creation refs, kinds `application_control`, `project_person_control`, and
@@ -89,15 +90,18 @@ foreign, cyclic, or otherwise invalid parent refuses the proposal. Staging
 checks that graph and all read/catalog dependencies again under the Card
 transaction fences; the proposal itself reserves nothing.
 
-This lets one decision carry C and My joining a live P, P/C/My genesis with
+This lets one group carry C and My joining a live P, P/C/My genesis with
 no temporary live P, C/My creation plus pending invitation Card revoke, or a
 qualified repair attach. It does not save a Card, issue a credential, consume
 an invitation, write a project role, or rewrite a person's existing My Card.
-The caller must authorize each business action and bind the exact signed
-proposal to its own transaction; the `ProjectAuthorizationDecision` argument
-is bound to one project, target and operation, so a multi-target or mixed
-authorization request needs the caller's separate policy evidence before
-planning. A successful plan is input to prepare, not permission to commit.
+The signed plan operation binds the complete request digest to a
+`LifecyclePlanAuthorization` envelope. Each creation ref and each
+`update:<index>` has its own exact operation, target and bounded
+`ProjectAuthorizationDecision`; a P step's grants cannot enlarge C's or My's.
+The planner matches the envelope's complete step list before reading the
+catalog and builds each candidate under only its own step's grants, platform
+flag and P locator. The caller binds the signed proposal to its transaction.
+A successful plan is input to prepare, not permission to commit.
 
 ## Configuration
 
