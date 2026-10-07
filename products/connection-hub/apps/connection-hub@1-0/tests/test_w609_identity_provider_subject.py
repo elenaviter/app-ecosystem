@@ -22,6 +22,7 @@ SECRET = "s" * 40
 OTHER_SECRET = "o" * 40  # another registered service's own key
 SERVICE = "problem-board"
 NOW = 1_800_000_000
+VECTOR = "9a615d02fdfe3515291ca88fd369d82f3a7e502d1c0e51835fadcb2e86f624e2"
 
 
 class _Redis:
@@ -72,16 +73,24 @@ def world(tmp_path, monkeypatch):
     return module, instance, store, state
 
 
-def _proof(module, user, provider="telegram", *, service=SERVICE, secret=SECRET, operation=None,
-           timestamp=NOW, digest_user=None):
+def _proof(module, user, provider="telegram", *, service=SERVICE, secret=SECRET, timestamp=NOW, digest_user=None):
     nonce = secrets.token_hex(16)
-    request = AdmissionRequest(
-        resource=module.identity_subject_lookup_resource(provider),
-        operation=operation or module.IDENTITY_SUBJECT_LOOKUP_OPERATION, invocation_id=nonce,
-        request_digest=module.identity_subject_lookup_digest(platform_user_id=digest_user or user, provider=provider))
-    signature = sign_admission_request(secret=secret, service_id=service, timestamp=str(timestamp), nonce=nonce,
-                                       delegated_token=module.IDENTITY_SUBJECT_LOOKUP_TOKEN, request=request)
+    signature = module.identity_subject_lookup_signature(
+        secret=secret, service_id=service, timestamp=str(timestamp), nonce=nonce,
+        platform_user_id=digest_user or user, provider=provider)
     return {"service_id": service, "timestamp": str(timestamp), "nonce": nonce, "signature": signature}
+
+
+def _admission_proof(module, user):
+    """A genuine delegated-admission proof (another protocol) presented to this lookup."""
+    nonce = secrets.token_hex(16)
+    request = AdmissionRequest(resource=module.identity_subject_lookup_resource("telegram"),
+                               operation=module.IDENTITY_SUBJECT_LOOKUP_OPERATION, invocation_id=nonce,
+                               request_digest=module.identity_subject_lookup_digest(platform_user_id=user,
+                                                                                    provider="telegram"))
+    signature = sign_admission_request(secret=SECRET, service_id=SERVICE, timestamp=str(NOW), nonce=nonce,
+                                       delegated_token="any-delegated-token", request=request)
+    return {"service_id": SERVICE, "timestamp": str(NOW), "nonce": nonce, "signature": signature}
 
 
 async def _ask(module, instance, user, provider="telegram", proof=None):
@@ -108,7 +117,7 @@ async def test_without_a_valid_service_proof_nothing_is_read(world):
     cases = {
         "none": None,
         "wrong_secret": _proof(module, user, secret="x" * 40),
-        "other_operation": _proof(module, user, operation="project_membership_list"),
+        "delegated_admission_proof": _admission_proof(module, user),
         "stale": _proof(module, user, timestamp=NOW - 3600),
         "tampered_digest": _proof(module, user, digest_user="someone-else"),
         # (a) the key is bound to the service: another bundle's own secret cannot speak for problem-board
@@ -181,3 +190,12 @@ async def test_the_audit_line_never_contains_the_subject(world, caplog):
     lines = [r.getMessage() for r in caplog.records if "identity_provider_subject_resolve" in r.getMessage()]
     assert lines and all("100200300" not in line for line in lines)
     assert any("outcome=resolved" in line and SERVICE in line for line in lines)
+
+
+def test_the_signature_contract_vector_is_fixed():
+    """Problem Board signs with the same vector (its test pins the identical value)."""
+    module = _module()
+    assert module.identity_subject_lookup_signature(
+        secret="v" * 40, service_id="problem-board", timestamp="1800000000", nonce="0" * 32,
+        platform_user_id="cognito:7a1e2b3c-0000-4000-8000-00000000abcd", provider="telegram",
+    ) == VECTOR
