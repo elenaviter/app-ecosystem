@@ -136,6 +136,23 @@ class IssuanceReservationStore:
         if bound is None:
             raise IssuanceStoreRefused("issuance_plan_transaction_conflict")
 
+    async def read_issuance_plan_request(self, decision_request_id: str) -> dict[str, Any] | None:
+        """The stored plan of one original request (with its input digest), or None."""
+        if not _HEX64.fullmatch(str(decision_request_id)):
+            return None
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""
+                SELECT original_input_digest, transaction_id, plan
+                FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
+                WHERE tenant = $1 AND project = $2 AND decision_request_id = $3
+                """,
+                self.tenant, self.project, decision_request_id,
+            )
+        if row is None:
+            return None
+        return {**self._plan_row(row), "original_input_digest": str(row["original_input_digest"])}
+
     async def read_issuance_plan(self, transaction_id: str) -> dict[str, Any] | None:
         """The stored plan of a decision's transaction, or None."""
         if not _HEX64.fullmatch(str(transaction_id)):

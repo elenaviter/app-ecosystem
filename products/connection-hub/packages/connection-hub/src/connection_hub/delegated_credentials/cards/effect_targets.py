@@ -19,6 +19,12 @@ replay after a crash before FINISH writes its marker lands on the same state:
 - ``grant_unbind`` -> ``revoke_access_grant_by_digest``: the old bearer's
   binding is removed by its pinned SHA-256; the raw token is never held.
 
+- ``credential_issue`` -> the OAuth authority's reservation of an original
+  issuance (W603): STAGE binds the reservation to this effect, COMMIT
+  activates it only while the authoritative Card is still exactly the
+  committed revision, live and unexpired (otherwise ``superseded``, creating
+  nothing), and a recorded ABORT releases it.
+
 ``grant_binding`` has no target: the helper refuses it until the SDK's
 no-second-mint custody qualifies (Ops C1). Nothing here is module state: the
 composition root builds one applier per Card service it binds.
@@ -31,8 +37,12 @@ from typing import Any, Mapping
 from connection_hub.invocation_policy.models import InvocationAuthority
 from connection_hub.invocation_policy.service import InvocationPolicyConflict
 
+from ..durable_io import read_json_or_none
 from . import transaction_store as tx
-from .participant_effects import EffectBinding, ParticipantEffectApplier, ParticipantEffectRefused
+from .model import CARD_STATE_ACTIVE, CardCurrentPointer
+from .participant_effects import (
+    CREDENTIAL_ISSUE_SUPERSEDED, EffectBinding, ParticipantEffectApplier, ParticipantEffectRefused,
+)
 
 NO_ACTIVE_CREDENTIALS = "no_active_credentials"
 
@@ -195,12 +205,116 @@ class AccountDeleteTarget:
         return binding.effect_digest
 
 
+class CredentialIssueTarget:
+    """W603: one original OAuth credential, reserved before its decision and activated by its COMMIT.
+
+    The reservation is keyed by the DECISION's transaction id: a group
+    member's receipt carries it as ``group.transaction_id``. The Card fence is
+    read under the Card's own section (FINISH holds it while effects apply):
+    while this transaction's pointer is still the Card's current pointer the
+    Card is exactly its AFTER; once anything else is current, that is the
+    authoritative Card. Either way it must be exactly the committed revision
+    object (its content hash, so a replacement Card at any revision never
+    matches), active and unexpired by the database clock, or the reservation
+    is ``superseded``. Family rows are never the evidence: a newer Card with no
+    family at all still supersedes.
+
+    With ``credential_handles`` (the Card's handle-metadata store), the access
+    slot's activation also writes the committed revision's handle metadata,
+    exactly as the direct path's ``persist`` does after its commit, so the
+    issued Card stays readable; a replay writes the same metadata again.
+    """
+
+    def __init__(self, issuance_store: Any, card_store: Any, credential_handles: Any = None) -> None:
+        self._grant_store = issuance_store
+        self._card_store = card_store
+        self._credential_handles = credential_handles
+
+    @staticmethod
+    def _decision_id(binding: EffectBinding) -> str:
+        group = binding.receipt().get("group")
+        return group["transaction_id"] if isinstance(group, Mapping) else binding.transaction_id
+
+    def _call(self, name: str) -> Any:
+        operation = getattr(self._grant_store, name, None)
+        if operation is None:
+            raise ParticipantEffectRefused("card_effect_adapter_unavailable")
+        return operation
+
+    async def _live_card(self, binding: EffectBinding, payload: Mapping[str, Any]) -> Any:
+        """The committed revision when it is still the authoritative live Card; otherwise None."""
+        receipt = binding.receipt()
+        subject_hash, access_id = receipt["subject_hash"], receipt["access_id"]
+        raw = await read_json_or_none(self._card_store.current_path(subject_hash=subject_hash, access_id=access_id))
+        if (isinstance(raw, Mapping) and raw.get("schema") == tx.TRANSACTION_POINTER_SCHEMA
+                and raw.get("transaction_id") == binding.transaction_id):
+            pointer = CardCurrentPointer.from_mapping(receipt["after"])
+            authority = await self._card_store.read_revision(
+                subject_hash=subject_hash, access_id=access_id, revision_name=pointer.revision_name)
+        else:
+            current = await self._card_store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+            authority = None if current is None else current[1]
+        if authority is None:
+            return None
+        committed = CardCurrentPointer.from_mapping(receipt["after"])
+        now = await self._call("issuance_clock")()
+        live = (authority.access_id == payload["access_id"] == committed.access_id
+                and authority.card_revision == payload["card_revision"] == committed.card_revision
+                and authority.content_hash() == committed.content_hash
+                and authority.state == CARD_STATE_ACTIVE and authority.expires_at == payload["expires_at"]
+                and authority.expires_at > now)
+        return authority if live else None
+
+    async def _store(self, operation: Any) -> str:
+        from ..oauth.issuance_store import IssuanceStoreRefused
+
+        try:
+            return await operation
+        except IssuanceStoreRefused as exc:
+            raise ParticipantEffectRefused(
+                "card_effect_target_revision_moved" if exc.reason == "reservation_window_closed"
+                else "card_effect_binding_mismatch") from None
+
+    async def prepare_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        outcome = await self._store(self._call("bind_issued_credential")(
+            transaction_id=self._decision_id(binding), slot=payload["slot"], effect_digest=binding.effect_digest,
+            access_id=payload["access_id"], card_revision=payload["card_revision"]))
+        if outcome != "bound":
+            raise ParticipantEffectRefused("card_effect_binding_mismatch")
+        return binding.effect_digest
+
+    async def apply_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        live = await self._live_card(binding, payload)
+        outcome = await self._store(self._call("activate_issued_credential")(
+            transaction_id=self._decision_id(binding), slot=payload["slot"], effect_digest=binding.effect_digest,
+            card_live=live is not None))
+        if outcome == "applied":
+            if payload["slot"] == "access" and self._credential_handles is not None and live is not None:
+                from .model import CardCredentialHandles
+                try:
+                    await self._credential_handles.write(live, CardCredentialHandles(access_id=live.access_id))
+                except Exception:
+                    raise ParticipantEffectRefused("card_effect_target_unavailable") from None
+            return binding.effect_digest
+        if outcome == CREDENTIAL_ISSUE_SUPERSEDED:
+            return CREDENTIAL_ISSUE_SUPERSEDED
+        raise ParticipantEffectRefused("card_effect_binding_mismatch")
+
+    async def release_once(self, binding: EffectBinding, payload: Mapping[str, Any]) -> str:
+        await self._store(self._call("release_issued_credential")(
+            transaction_id=self._decision_id(binding), slot=payload["slot"]))
+        return binding.effect_digest
+
+
 def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any,
-                         policies: Any, accounts_for: Any = None) -> ParticipantEffectApplier:
+                         policies: Any, accounts_for: Any = None, issuance_store: Any = None,
+                         credential_handles: Any = None) -> ParticipantEffectApplier:
     """Bind one validated applier to a Card service's effect hooks.
 
     The receipt reader is the Card store's own durable receipt; the targets are
     the ones above. ``grant_binding`` stays refused by the applier.
+    ``issuance_store`` is the PostgreSQL OAuth authority holding W603's
+    reservations; without it ``credential_issue`` refuses (adapter unavailable).
     """
 
     async def read_receipt(transaction_id: str) -> Mapping[str, Any] | None:
@@ -211,6 +325,7 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
         "invocation_policy": InvocationPolicyTarget(policies),
         "grant_unbind": GrantUnbindTarget(grant_store),
         "account_delete": AccountDeleteTarget(accounts_for),
+        "credential_issue": CredentialIssueTarget(issuance_store, card_store, credential_handles),
     })
     card_service.bind_effect_applier(applier.apply)
     card_service.bind_effect_preparer(applier.prepare)
@@ -218,5 +333,5 @@ def compose_card_effects(*, card_service: Any, card_store: Any, grant_store: Any
     return applier
 
 
-__all__ = ["AccountDeleteTarget", "CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
+__all__ = ["AccountDeleteTarget", "CredentialIssueTarget", "CredentialLifetimeTarget", "GrantUnbindTarget", "InvocationPolicyTarget",
            "NO_ACTIVE_CREDENTIALS", "compose_card_effects"]
