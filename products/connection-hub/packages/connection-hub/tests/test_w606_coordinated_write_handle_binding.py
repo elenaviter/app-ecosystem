@@ -74,6 +74,14 @@ class _Persistence:
         await self.card_service.commit(authority, subject_hash=subject_hash, expected_revision=expected_revision)
         await self._handles.write(authority, handles)
 
+    async def list_active(self, *, subject_hash, now=None):
+        cards = []
+        for access_id in await self._store.list_card_ids(subject_hash=subject_hash):
+            current = await self._store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+            if current is not None:
+                cards.append(current[1])
+        return cards
+
     async def current_revision(self, access_id, *, subject_hash):
         current = await self._store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
         return 0 if current is None else current[1].card_revision
@@ -350,3 +358,49 @@ async def test_an_interrupted_application_recovers_and_replays_idempotently(tmp_
         await w.host._card_coordinator[0].recover(limit=10)  # a second pass changes nothing
         assert await w.metadata.read_current(w.card.access_id) == moved
         assert (await w.persistence.load(w.card.access_id, subject_hash=w.subject_hash))[0].card_revision == 2
+
+
+
+@pytest.mark.asyncio
+async def test_a_disconnect_group_keeps_every_member_credential_readable(tmp_path):
+    """Two credential-bearing Cards bind one account; the disconnect's group moves both rows in its decision."""
+    from test_account_store import _MemoryUserConfiguration
+    from test_w578_account_incarnation import _AccountLocks
+
+    from connection_hub.delegated_to_kdcube.models import ConnectedAccount
+    from connection_hub.delegated_to_kdcube.store import DelegatedToKdcubeStore
+
+    async with _world(tmp_path) as w:
+        grantor = w.card.grantor_subject
+        accounts = DelegatedToKdcubeStore(user_id=grantor, backend=_MemoryUserConfiguration(),
+                                          account_lock=_AccountLocks())
+        from connection_hub.delegated_credentials.cards.effect_targets import compose_card_effects
+
+        class _Grants(_NoGrants):
+            pass
+
+        compose_card_effects(card_service=w.cards, card_store=w.store, grant_store=_Grants(), policies=None,
+                             credential_handles=w.handles,
+                             accounts_for=lambda subject: accounts if subject == grantor else None)
+        w.host.bind_account_stores(lambda subject: accounts if subject == grantor else None)
+        bound = dataclasses.replace(w.card, card_revision=2, account_scope={"google": {"acct-1": ("mail.read",)}})
+        await w.cards.commit(bound, subject_hash=w.subject_hash, expected_revision=1)
+        current = await w.metadata.read_current(w.card.access_id)
+        from connection_hub.delegated_credentials.cards.handle_metadata import CardHandleMetadata
+        await w.metadata.put(CardHandleMetadata(access_id=bound.access_id, card_revision=2, expires_at=bound.expires_at),
+                             expected_revision=current.revision)  # the direct path's binding for revision 2
+        second = dataclasses.replace(bound, access_id="my-person-2", card_revision=1)
+        await w.cards.commit(second, subject_hash=w.subject_hash, expected_revision=0)
+        await w.handles.write(second, CardCredentialHandles(access_id=second.access_id))
+        await accounts.upsert_account(ConnectedAccount(account_id="acct-1", provider_id="google",
+                                                       claims=("mail.read",)))
+        result = await w.host.disconnect_account_in_transaction(grantor_subject=grantor, provider_id="google",
+                                                                account_id="acct-1")
+        assert result["ok"] is True and result["removed"] is True, result
+        for card in (bound, second):
+            committed = (await w.store.read_current_authority(subject_hash=w.subject_hash,
+                                                              access_id=card.access_id))[1]
+            assert committed.card_revision == card.card_revision + 1 and "google" not in committed.account_scope
+            row = await w.metadata.read_current(card.access_id)
+            assert (row.card_revision, row.expires_at) == (committed.card_revision, committed.expires_at)
+            assert (await w.persistence.load(card.access_id, subject_hash=w.subject_hash))[0] == committed
