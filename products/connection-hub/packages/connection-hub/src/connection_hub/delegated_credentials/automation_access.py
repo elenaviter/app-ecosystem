@@ -2622,6 +2622,11 @@ class AutomationAccessService:
         persist = persistence.persist
         authority = card_authority_from_record(record)
         await self._refuse_bound_direct_write(record, authority, expected_revision=expected_revision)
+        if self._managed_project_control_refused(record) is not None:
+            # W578 (claude-main, #648): every direct writer, today's and any later
+            # one, meets this; a managed P is written only through its project's
+            # transaction (the participant stages it, never through this path).
+            raise CallerWriteRefused("card_transactions_direct_write_refused")
         caller_request = None
         if before_commit is None:
             # pre_gate: a writer with side effects decided BEFORE them (W580 F5);

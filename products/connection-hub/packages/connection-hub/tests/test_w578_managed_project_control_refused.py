@@ -119,3 +119,24 @@ def test_classification_is_the_planners_p_identity_not_a_label():
     assert not service._managed_project_control(**{**managed, "access_id": "not-the-derived-id"})
     assert not service._managed_project_control(**{**managed, "issuer_kind": "project"})
     assert not service._managed_project_control(**{**managed, "grantor_subject": "someone-else"})
+
+
+@pytest.mark.asyncio
+async def test_any_direct_persist_of_a_managed_p_refuses_even_from_a_writer_without_its_own_guard(  # noqa: F811
+        tmp_path, redis_client):
+    """claude-main #648: one check in _persist_record protects writers added later, not only today's eight."""
+    from dataclasses import replace
+
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+
+    h = await _service(tmp_path, redis_client)
+    p_id = await _project_control(h)
+    _enable(h)
+    before = await _stored(h, p_id)
+    record = await h.service._load_record(p_id, grantor_subject=CREATOR)
+    for candidate, expected in ((replace(record, label="renamed", card_revision=record.card_revision + 1),
+                                 record.card_revision),
+                                (replace(record, card_revision=1), 0)):  # an edit, and a create at P's id
+        with pytest.raises(CallerWriteRefused, match=REFUSED):
+            await h.service._persist_record(candidate, expected_revision=expected)
+    assert await _stored(h, p_id) == before
