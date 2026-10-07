@@ -9977,6 +9977,14 @@ class AutomationAccessService:
         record = loaded[0]
         if record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
+        if record.control_card is not None:
+            # W578: ending a Card bound under a Control (a person's My Card, a
+            # project-bound agent Card) changes the authority its Control's
+            # owner relies on, so while Card transactions are on only that
+            # owner's transaction may end it; until it is enlisted it refuses.
+            refused = self._managed_direct_write_refused()
+            if refused is not None:
+                return refused
         if self._issuer_managed(record) and not has_expectations:
             return {"ok": False, "error": "delegated_access_revoke_precondition_required", "status": 409}
         if has_expectations and record.card_revision != expected_card_revision:

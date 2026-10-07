@@ -191,7 +191,9 @@ obligations, not optional checks.
      invitation;
    - `project_person_control_bind_project` and
      `project_person_control_bind_invitation`;
-   - `project_person_my_card_seed`.
+   - `project_person_my_card_seed`;
+   - `revoke_access` of any Card bound under a Control (a person's My Card,
+     a project-bound agent Card).
 
    These writes are made only by a transaction the project host coordinates:
    it plans with `card_lifecycle_plan`, then prepares and finishes through
