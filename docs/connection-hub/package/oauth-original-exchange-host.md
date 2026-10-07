@@ -28,9 +28,20 @@ the latest Card. The live fence compares the full current original/candidate,
 identity, revision, content and database-clock deadlines. An unavailable or
 corrupt pointer is not absence.
 
-Current integration limit: nonempty consent invocation-policy choices refuse
-until the owning issuance protocol can enlist them under the same decision.
-They are never silently dropped or applied through a separate direct write.
+Consent invocation-policy choices are frozen by the SDK's public
+`oauth_issuance_arguments` normalizer and passed unchanged into the Hub's same
+issuance decision. An absent or `None` selection is omitted; an explicit empty
+mapping remains distinct. The host performs no post-grant policy write.
+The owner-visible label uses the same public `oauth_card_label` helper as normal
+consent. Only the asserted nested client metadata is persisted on the Card,
+matching the existing registry path.
+
+This composition requires the SDK policy-normalizer/full-plan snapshot change
+`ba51436ecc75f90eeb4d4acadbc5f78c4a9086da` and the Hub single-issuance policy
+effects `af2cb8decdc24bc497910847489b347cc16e36db`, or qualified descendants.
+The effect bound remains 32 for one issuance; oversized policy selections must
+refuse, never truncate or split. Installed ACTIVE-catalog capacity measurement
+and full productive qualification remain separate gates.
 Whole normal-consent acceptance, encrypted provider qualification, installed
 mount, process/restart recovery and live activation are not established by these
 host-composition unit tests.

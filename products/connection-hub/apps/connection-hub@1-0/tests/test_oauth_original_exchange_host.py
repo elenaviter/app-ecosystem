@@ -46,22 +46,53 @@ async def test_full_consumed_candidate_choices_are_preserved_without_aliasing(ho
         "resource_operations": {"service": ["search"]}, "resource": "service", "registry_access_id": "card",
         "card_kind": "agent", "identity_scope": "project", "account_scope": {"p": {"a": ["claim"]}},
         "named_service_operations": {"mode": "none", "operations": {}}, "catalog_version": "old-basis",
-        "client_metadata": {"client_name": "App"}, "properties": {"reviewed": True},
+        "client_metadata": {"client_name": "App", "client_metadata": {"worker": "unit"}}, "properties": {"reviewed": True},
         "expected_card_revision": 5, "invocation_policies": {}}
     actual = await host.consumed_candidate_inputs(payload=payload)
     assert actual == {"grantor_subject": "human", "client_id": "client", "client_label": "Reviewed label",
         **{key: value for key, value in payload.items() if key in {
             "scopes", "operations", "resource_grants", "resource_operations", "resource", "card_kind",
-            "identity_scope", "account_scope", "named_service_operations", "catalog_version", "client_metadata",
-            "properties", "expected_card_revision"}}, "access_id": "card", "replace_authority": True}
+            "identity_scope", "account_scope", "named_service_operations", "catalog_version",
+            "properties", "expected_card_revision", "invocation_policies"}}, "client_metadata": {"worker": "unit"},
+        "access_id": "card", "replace_authority": True}
     actual["account_scope"]["p"]["a"].append("different")
     assert payload["account_scope"]["p"]["a"] == ["claim"]
 
 
 @pytest.mark.asyncio
-async def test_unenlisted_invocation_choices_are_not_silently_dropped(host):
-    with pytest.raises(host.OriginalExchangeHostingUnavailable, match="policy_inputs_unavailable"):
-        await host.consumed_candidate_inputs(payload={"invocation_policies": {"service": {"write": "once"}}})
+@pytest.mark.parametrize("choice", [None, {}, {"service": {"write": "once"}}, {"service": {"write": "always"}}])
+async def test_consumed_invocation_choices_share_the_owning_original_arguments(host, choice):
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.original_candidate_inputs import oauth_issuance_arguments
+    payload = {"sub": "human", "client_id": "client", "invocation_policies": choice}
+    actual = await host.consumed_candidate_inputs(payload=payload)
+    assert oauth_issuance_arguments(actual) == actual
+    assert ("invocation_policies" in actual) == (choice is not None)
+    if choice is not None:
+        assert actual["invocation_policies"] == choice
+        if choice:
+            choice["service"]["write"] = "changed"
+            assert actual["invocation_policies"]["service"]["write"] != "changed"
+
+
+@pytest.mark.asyncio
+async def test_host_calls_the_owning_label_helper_with_consumed_metadata(host, monkeypatch):
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth import card_labels
+    calls = []
+    def label(metadata, *, resource, explicit):
+        calls.append((metadata, resource, explicit))
+        return "Owning label"
+    monkeypatch.setattr(card_labels, "oauth_card_label", label)
+    metadata = {"client_name": "Registered product", "client_metadata": {"worker": "unit"}}
+    actual = await host.consumed_candidate_inputs(payload={"sub": "human", "client_id": "client",
+        "client_metadata": metadata, "resource": "/mcp/records", "card_label": "Chosen label"})
+    assert calls == [(metadata, "/mcp/records", "Chosen label")]
+    assert actual["client_label"] == "Owning label" and actual["client_metadata"] == {"worker": "unit"}
+
+
+@pytest.mark.asyncio
+async def test_absent_policy_selection_is_not_changed_to_empty(host):
+    actual = await host.consumed_candidate_inputs(payload={"sub": "human", "client_id": "client"})
+    assert "invocation_policies" not in actual
 
 
 def _scene(host, *, create=False):

@@ -10,7 +10,6 @@ it must never fall through to the older consume-and-mint path.
 """
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 from typing import Any, Mapping
@@ -60,14 +59,19 @@ async def consumed_candidate_inputs(*, payload: Mapping[str, Any]) -> dict[str, 
 
     The SDK validates the actual client, redirect and PKCE proof before calling
     this function. No browser plan, factory or provider selector is accepted.
-    Nonempty invocation choices are closed until the owning issuance protocol
-    can enlist them, rather than silently discarded or applied in a new write.
+    The SDK owns canonical argument normalization and Card label derivation;
+    Hub owns invocation-policy validation and effects in that same issuance.
     """
-    if payload.get("invocation_policies"):
-        raise OriginalExchangeHostingUnavailable("original_exchange_policy_inputs_unavailable")
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.card_labels import oauth_card_label
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.original_candidate_inputs import oauth_issuance_arguments
+    metadata = payload.get("client_metadata") or {}
+    if not isinstance(metadata, Mapping):
+        raise OriginalExchangeHostingUnavailable("original_exchange_metadata_invalid")
+    asserted = metadata.get("client_metadata")
     answer = {
         "grantor_subject": payload["sub"], "client_id": payload["client_id"],
-        "client_label": payload.get("card_label") or "",
+        "client_label": oauth_card_label(metadata, resource=payload.get("resource") or "",
+                                         explicit=payload.get("card_label") or ""),
         "scopes": payload.get("scopes") or [],
         "operations": payload.get("operations"),
         "resource_grants": payload.get("resource_grants"),
@@ -79,12 +83,14 @@ async def consumed_candidate_inputs(*, payload: Mapping[str, Any]) -> dict[str, 
         "account_scope": payload.get("account_scope"),
         "named_service_operations": payload.get("named_service_operations"),
         "catalog_version": payload.get("catalog_version") or "",
-        "client_metadata": payload.get("client_metadata"),
+        "client_metadata": asserted if isinstance(asserted, Mapping) else {},
         "properties": payload.get("properties"),
         "replace_authority": True,
         "expected_card_revision": payload.get("expected_card_revision"),
     }
-    return copy.deepcopy(answer)
+    if "invocation_policies" in payload:
+        answer["invocation_policies"] = payload["invocation_policies"]
+    return oauth_issuance_arguments(answer)
 
 
 class OriginalTarget:
