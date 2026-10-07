@@ -344,3 +344,78 @@ def test_display_includes_invitation_control_revoke_and_rejects_unknown_kinds() 
     malformed_member = group_member(original=pending, candidate=malformed, action="update")
     with pytest.raises(DecisionRefused, match="card_plan_display_kind_invalid"):
         plan_display(group_candidate_value([malformed_member]), {key: pending.to_dict()})
+
+
+# W571 condition 2 (W600 Option A): the signed plan's display is the complete change.
+
+def _full_metadata_my_card() -> CardAuthority:
+    _, _, my_card = _cards()
+    return dataclasses.replace(
+        my_card,
+        properties={**dict(my_card.properties or {}), "personal.theme": "dark", "personal.digest": "weekly"},
+        client_metadata={"client_name": "kept"},
+        created_at=111, last_issued_at=222, label="Personal",
+        provenance={**dict(my_card.provenance or {}), "origin": "user-edit"},
+    )
+
+
+def test_a_reselect_keeps_every_withheld_my_card_field() -> None:
+    original = _full_metadata_my_card()
+    candidate = CardAuthority.from_mapping(asyncio.run(_propose(_Host(), original))["member"]["candidate"])
+    for name in ("properties", "client_metadata", "created_at", "last_issued_at", "label", "provenance"):
+        assert getattr(candidate, name) == getattr(original, name), name
+    assert candidate.resource_grants == {"service-a": ("work:admin",)}
+
+
+def test_a_selection_that_rewrites_a_personal_setting_refuses() -> None:
+    original = _full_metadata_my_card()
+    with pytest.raises(DecisionRefused, match="card_plan_undisplayed_change"):
+        asyncio.run(_propose(_Host(), original, {
+            "resource_grants": {"service-a": ["work:admin"]},
+            "properties": {"personal.theme": "light"},  # erases personal.digest, changes theme: not displayed
+        }))
+
+
+def test_a_resolution_that_changes_an_undisplayed_field_refuses() -> None:
+    class _Drifting(_Host):
+        async def _resolve_card_authority(self, **kwargs):
+            resolved = await super()._resolve_card_authority(**kwargs)
+            return SimpleNamespace(**{**vars(resolved), "properties": {**kwargs["properties"], "personal.theme": "x"}})
+
+    with pytest.raises(DecisionRefused, match="card_plan_undisplayed_change"):
+        asyncio.run(_propose(_Drifting(), _full_metadata_my_card()))
+
+
+def test_undisplayed_change_ignores_only_the_displayed_selection_and_hub_written_keys() -> None:
+    from connection_hub.delegated_credentials.existing_card_selection_plan import undisplayed_change
+    from connection_hub.delegated_credentials.controls.project_person import PROJECT_PERSON_CONTROL_PROPERTY
+
+    before = {"resource_grants": {}, "label": "a", "properties": {"p": 1}, "card_revision": 1}
+    assert undisplayed_change(before, {**before, "resource_grants": {"x": ["y"]}, "card_revision": 2}) is None
+    hub_key = {**before, "properties": {"p": 1, PROJECT_PERSON_CONTROL_PROPERTY: {}}}
+    assert undisplayed_change(before, hub_key, hub_written=True) is None  # a person Control's own keys
+    assert undisplayed_change(before, hub_key) == "properties"  # any other kind: not even a Hub key moves
+    assert undisplayed_change(before, {**before, "label": "b"}) == "label"
+    assert undisplayed_change(before, {**before, "properties": {"p": 2}}) == "properties"
+
+
+def test_a_my_card_selection_cannot_move_a_hub_written_key() -> None:
+    from connection_hub.delegated_credentials.controls.snapshot import CONTROL_SNAPSHOT_PROPERTY
+
+    original = _full_metadata_my_card()
+    with pytest.raises(DecisionRefused, match="card_plan_undisplayed_change"):
+        asyncio.run(_propose(_Host(), original, {
+            "resource_grants": {"service-a": ["work:admin"]},
+            "properties": {**dict(original.properties or {}), CONTROL_SNAPSHOT_PROPERTY: {"forged": True}},
+        }))
+
+
+def test_a_person_control_reselect_recomputes_exactly_its_own_snapshot_and_audit() -> None:
+    from connection_hub.delegated_credentials.controls.snapshot import CONTROL_SNAPSHOT_PROPERTY
+
+    _, control, _ = _cards()
+    candidate = CardAuthority.from_mapping(asyncio.run(_propose(_Host(), control))["member"]["candidate"])
+    assert candidate.properties[CONTROL_SNAPSHOT_PROPERTY]["basis_catalog_version"] == "catalog-v2"
+    assert candidate.properties[CONTROL_SNAPSHOT_PROPERTY]["origin"] == "reviewed"
+    audit = candidate.provenance[PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE]
+    assert (audit["request_id"], audit["after_revision"]) == (REQUEST, control.card_revision + 1)
