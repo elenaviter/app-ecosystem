@@ -63,10 +63,66 @@ from connection_hub.delegated_credentials.project_identity_lifecycle import (
     new_project_person_my_card,
 )
 from connection_hub.delegated_credentials.controls.project_invitation import (
+    PROJECT_INVITATION_CONTROL_PROPERTY,
     ProjectInvitationControlError,
     ProjectInvitationControlIdentity,
 )
 from connection_hub.delegated_credentials.controls.model import control_card_id_for_issuer
+from connection_hub.delegated_credentials.project_invitation_claim import PROJECT_INVITATION_BINDING_PROVENANCE
+
+
+def invitation_seeded_person_control(
+    pending: CardAuthority, *, invitation_ref: str, project_ref: str, target_subject: str,
+    decision: ProjectAuthorizationDecision, actor_subject: str, request_id: str, parent: CardAuthority,
+    now: int,
+) -> tuple[CardAuthority, dict[str, Any]]:
+    """W502: the person's C from one ACTIVE pending invitation Card, as the direct bind builds it.
+
+    The pending Card's own selection, label and link carry over (an admin's edit
+    after inviting included). The host's decision for this step must carry the
+    verified-session email digest, and it must equal the Card's target digest.
+    Returns the C (bound under P) and the claim marker it and My carry.
+    """
+    from connection_hub.delegated_credentials.cards.model import CONTROL_COMPOSITION_AND
+    from connection_hub.delegated_credentials.project_invitation_binding import PROJECT_INVITATION_BINDING_SCHEMA
+
+    try:
+        invitation = ProjectInvitationControlIdentity.from_authority(pending)
+    except ProjectInvitationControlError:
+        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid", 403) from None
+    if (invitation.project_ref != project_ref or invitation.invitation_ref != invitation_ref
+            or invitation.control_id != pending.access_id):
+        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid", 403)
+    if pending.state != CARD_STATE_ACTIVE:
+        raise CardLifecyclePlanRefused("project_invitation_control_not_active")
+    evidence = dict(decision.evidence or {})
+    if (evidence.get("invitation_ref") != invitation_ref
+            or evidence.get("invitation_email_digest") != invitation.target_email_digest):
+        raise CardLifecyclePlanRefused("project_invitation_binding_email_mismatch", 403)
+    person = ProjectPersonControlIdentity.build(project_ref=project_ref, target_subject=target_subject)
+    public_properties = copy.deepcopy(dict(pending.properties or {}))
+    public_properties.pop(PROJECT_INVITATION_CONTROL_PROPERTY, None)
+    live = bind_project_person_control(
+        new_credentialless_card(
+            control_id=person.control_id, grantor_subject=person.project_subject,
+            catalog_version=pending.catalog_version, initial_selection=pending,
+            issuer_ref=project_ref, issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
+            issuer_label=pending.issuer_label or pending.label, manage_url=pending.manage_url,
+            properties=public_properties, composition_mode=CONTROL_COMPOSITION_AND, now=now,
+        ),
+        identity=person,
+    )
+    marker = {"schema": PROJECT_INVITATION_BINDING_SCHEMA, "project_ref": project_ref,
+              "invitation_ref": invitation_ref, "pending_control_id": pending.access_id,
+              "control_id": person.control_id, "person_subject": target_subject,
+              "target_email_digest": invitation.target_email_digest, "request_id": request_id, "bound_at": now}
+    audit = ProjectPersonControlAudit.build(
+        action="bound_from_invitation", actor_subject=actor_subject, identity=person,
+        request_id=request_id, occurred_at=now, before=None, after=live)
+    provenance = copy.deepcopy(dict(live.provenance or {}))
+    provenance[PROJECT_INVITATION_BINDING_PROVENANCE] = marker
+    live = bind_project_person_control(dataclasses.replace(live, provenance=provenance), identity=person, audit=audit)
+    return dataclasses.replace(live, control_card=_parent_binding(parent)), marker
 
 
 def fresh_card_over_revoked(fresh: CardAuthority, revoked: CardAuthority, *, actor_subject: str,
@@ -83,9 +139,13 @@ def fresh_card_over_revoked(fresh: CardAuthority, revoked: CardAuthority, *, act
     candidate = dataclasses.replace(fresh, card_revision=revoked.card_revision + 1)
     if candidate.issuer_kind == PROJECT_PERSON_CONTROL_ISSUER_KIND:
         identity = ProjectPersonControlIdentity.from_authority(candidate)
+        from connection_hub.delegated_credentials.controls.project_person import (
+            PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE,
+        )
+        fresh_audit = dict(fresh.provenance or {}).get(PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE) or {}
         audit = ProjectPersonControlAudit.build(
-            action="created", actor_subject=actor_subject, identity=identity, request_id=request_id,
-            occurred_at=now, before=None, after=candidate)
+            action=str(fresh_audit.get("action") or "created"), actor_subject=actor_subject, identity=identity,
+            request_id=request_id, occurred_at=now, before=None, after=candidate)
         candidate = bind_project_person_control(candidate, identity=identity, audit=audit)
     return candidate
 
@@ -478,6 +538,7 @@ async def plan_card_lifecycle(
         # The proposer may list children before parents; construct in a
         # topological order, then the group helper sorts by storage key.
         pending: dict[str, Mapping[str, Any]] = {}
+        invitation_seeds: dict[str, tuple[int, Mapping[str, Any]]] = {}
         for raw in creations:
             if not isinstance(raw, Mapping) or set(raw) != {
                 "ref", "kind", "identity", "selection", "parent"
@@ -497,7 +558,8 @@ async def plan_card_lifecycle(
                 raise CardLifecyclePlanRefused("card_plan_selection_invalid", 400)
             identity_fields = {
                 "application_control": {"holder_subject", "issuer_ref", "issuer_label", "manage_url", "composition_mode"},
-                "project_person_control": {"target_subject", "label", "manage_url", "composition_mode", "seed_origin"},
+                "project_person_control": {"target_subject", "label", "manage_url", "composition_mode", "seed_origin",
+                                           "invitation"},
                 "project_person_my_card": {"person_subject", "label", "manage_url"},
             }
             if raw["kind"] not in identity_fields or set(raw["identity"]) - identity_fields[raw["kind"]]:
@@ -561,6 +623,37 @@ async def plan_card_lifecycle(
                                 resource, config=row_config[owner]
                             ),
                         )
+                elif kind == "project_person_control" and identity.get("seed_origin") == "invitation":
+                    # W502: an invitation's redemption, through the one decision. The person's C is
+                    # built from the pending invitation Card exactly as the direct bind builds it.
+                    if parent is None:
+                        raise CardLifecyclePlanRefused("card_plan_project_control_missing")
+                    target = _required_text(identity.get("target_subject"), "card_plan_target_invalid")
+                    if target != decision.target_subject:
+                        raise CardLifecyclePlanRefused("card_plan_authorization_target_mismatch", 403)
+                    if set(identity) != {"target_subject", "seed_origin", "invitation"} or selection:
+                        raise CardLifecyclePlanRefused("card_plan_invitation_seed_invalid", 400)
+                    _require_project_parent(
+                        parent, project_ref=scope, authorization=decision,
+                        planned_parent=isinstance(parent_raw, Mapping) and set(parent_raw) == {"ref"},
+                    )
+                    named = identity.get("invitation")
+                    if (not isinstance(named, Mapping)
+                            or set(named) != {"invitation_ref", "control_id", "original_revision"}
+                            or type(named["original_revision"]) is not int or named["original_revision"] < 1):
+                        raise CardLifecyclePlanRefused("card_plan_invitation_seed_invalid", 400)
+                    holder = ProjectPersonControlIdentity.build(project_ref=scope, target_subject=target).project_subject
+                    loaded = await cards.load_current(
+                        _required_text(named["control_id"], "card_plan_invitation_seed_invalid"),
+                        subject_hash=subject_hash_for(holder))
+                    if loaded is None or loaded[0].card_revision != named["original_revision"]:
+                        raise CardLifecyclePlanRefused("card_plan_original_revision_changed")
+                    base, marker = invitation_seeded_person_control(
+                        loaded[0],
+                        invitation_ref=_required_text(named["invitation_ref"], "card_plan_invitation_seed_invalid"),
+                        project_ref=scope, target_subject=target, decision=decision, actor_subject=actor,
+                        request_id=request_id, parent=parent, now=now)
+                    invitation_seeds[loaded[0].access_id] = (loaded[0].card_revision, marker)
                 elif kind == "project_person_control":
                     if parent is None:
                         raise CardLifecyclePlanRefused("card_plan_project_control_missing")
@@ -642,9 +735,13 @@ async def plan_card_lifecycle(
                     if (parent_identity.project_ref != scope
                             or parent_identity.target_subject != target):
                         raise CardLifecyclePlanRefused("card_plan_my_parent_invalid")
+                    # The direct bind gives My the same claim marker as its invitation-built C.
+                    claim = dict(parent.provenance or {}).get(PROJECT_INVITATION_BINDING_PROVENANCE)
                     base = new_project_person_my_card(
                         control_card=parent, label=str(identity.get("label") or ""),
                         manage_url=str(identity.get("manage_url") or ""), now=now,
+                        initial_provenance=(None if claim is None
+                                            else {PROJECT_INVITATION_BINDING_PROVENANCE: copy.deepcopy(claim)}),
                     )
                     if selected:
                         from connection_hub.delegated_credentials.automation_access import record_from_card
@@ -790,6 +887,13 @@ async def plan_card_lifecycle(
                 raise CardLifecyclePlanRefused("card_plan_update_action_invalid", 400)
             members.append(group_member(original=original, candidate=candidate, action=action))
             originals[(subject_hash, access_id)] = original.to_dict()
+
+        # An invitation-built C consumes its pending Card in this same decision.
+        revoked_here = {(member["access_id"], member["original_revision"]) for member in members
+                        if member["action"] == "revoke"}
+        for pending_id, (revision, _marker) in invitation_seeds.items():
+            if (pending_id, revision) not in revoked_here:
+                raise CardLifecyclePlanRefused("card_plan_invitation_not_consumed")
 
         # A person leaves whole: an active Control and My end in this one
         # decision, never one now and the other by a later write.
