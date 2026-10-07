@@ -329,6 +329,9 @@ export const updateDelegatedAccess = createAsyncThunk<
           ...(properties !== undefined ? { properties } : {}),
         },
       );
+      if (res?.ok === false && res.error === 'card_transactions_direct_write_refused') {
+        return rejectWithValue(res.message || 'Coordinated Card changes are unavailable. Your draft and current Card are kept.');
+      }
       // A precondition failure is not an error to show and forget: it carries
       // the refreshed card the editor must reload.
       if (res?.ok === false && res?.status === 409) return res;
@@ -411,6 +414,9 @@ export const revokeDelegatedAccess = createAsyncThunk<
               }
           : delegatedAccessRevokePayload(accessId, expectedCardRevision),
       );
+      if (res?.ok === false && res.error === 'card_transactions_direct_write_refused') {
+        return rejectWithValue(res.message || 'Coordinated Card changes are unavailable. Your current Card and access are kept.');
+      }
       // A conflict carries a refusal, not a removal. Keep its shape for the
       // reducer and let the caller refresh reads without retrying the write.
       if (res?.ok === false && res?.status === 409) return res;
