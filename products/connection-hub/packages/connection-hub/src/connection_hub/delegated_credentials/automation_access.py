@@ -10471,17 +10471,23 @@ class AutomationAccessService:
         if resolved.error is not None:
             return resolved.error
         if resolved.revoke:
-            revoked = await self.revoke_access(
-                user,
-                access_id=selected_access_id,
-            )
-            if not revoked.get("ok"):
-                return revoked
+            # Audit A3: an edit that leaves nothing recognised is REFUSED, never
+            # revoked, exactly as update_access does since the 2026-09-12
+            # incident. The client holds tokens that point at this Card; an
+            # ordinary edit must never invalidate them (operator, 2026-10-07:
+            # "changing what this token points into should not invalidate the
+            # actual token the parties possess"). Revocation stays the explicit
+            # delegated_access_revoke command.
             return {
-                "ok": True,
-                "revoked": True,
-                "access_id": selected_access_id,
+                "ok": False,
+                "error": "delegated_access_requires_resource_grants",
                 "pruned": resolved.reconciled.to_public_dict(),
+                "message": (
+                    "This change would leave the client's card with nothing the service "
+                    "catalog still offers, so it was not applied and the card is unchanged. "
+                    "Select at least one current service, or revoke the card "
+                    "deliberately if that is what you intend."
+                ),
             }
         resource_grants = {
             res: tuple(vals) for res, vals in resolved.resource_grants.items()
