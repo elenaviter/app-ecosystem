@@ -19,6 +19,8 @@ PROJECT_PERSON_CONTROL_REVOKE = "project.person_control.revoke"
 PROJECT_PERSON_MY_CARD_SEED = "project.person_my_card.seed"
 # W502: bind an existing person's project Control under the project's Control P.
 PROJECT_PERSON_CONTROL_BIND_PROJECT = "project.person_control.bind_project"
+# W578: create the project's own application Control P (a brand-new project's genesis plan).
+PROJECT_CONTROL_CREATE = "project.control.create"
 PROJECT_INVITATION_CONTROL_CREATE = "project.invitation_control.create"
 PROJECT_INVITATION_CONTROL_READ = "project.invitation_control.read"
 PROJECT_INVITATION_CONTROL_UPDATE = "project.invitation_control.update"
@@ -59,6 +61,7 @@ PROJECT_PERSON_CONTROL_OPERATIONS = frozenset(
         PROJECT_PERSON_CONTROL_REVOKE,
         PROJECT_PERSON_MY_CARD_SEED,
         PROJECT_PERSON_CONTROL_BIND_PROJECT,
+        PROJECT_CONTROL_CREATE,
         *PROJECT_INVITATION_CONTROL_OPERATIONS,
     }
 )
@@ -390,6 +393,124 @@ class ProjectAuthorizationDecision:
             )
 
 
+LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA = "connection-hub.lifecycle-plan-authorization.v1"
+MAX_LIFECYCLE_PLAN_STEPS = 8
+
+
+@dataclass(frozen=True)
+class LifecyclePlanStep:
+    """One step of a lifecycle plan: its local ref, the exact operation and the person it is for."""
+
+    ref: str
+    operation: str
+    target_subject: str
+
+
+@dataclass(frozen=True)
+class LifecyclePlanAuthorizationRequest:
+    """W578: what the project host is asked to authorize for ONE complete plan request.
+
+    Every step belongs to the same authenticated actor, project scope,
+    request id and the digest of the complete plan request (CodeApp 23:48).
+    The host evaluates each step's exact operation and target; nothing here
+    grants anything by itself.
+    """
+
+    actor_subject: str
+    project_ref: str
+    request_id: str
+    request_digest: str
+    steps: tuple[LifecyclePlanStep, ...]
+
+    def __post_init__(self) -> None:
+        for name in ("actor_subject", "project_ref", "request_id"):
+            _required(getattr(self, name), f"lifecycle_plan_{name}_missing")
+        digest = str(self.request_digest or "")
+        if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+            raise ProjectAuthorizationError("lifecycle_plan_request_digest_invalid")
+        refs = [step.ref for step in self.steps]
+        if (not 1 <= len(self.steps) <= MAX_LIFECYCLE_PLAN_STEPS or len(set(refs)) != len(refs)
+                or any(not clean_text(step.ref) or not clean_text(step.target_subject) for step in self.steps)):
+            raise ProjectAuthorizationError("lifecycle_plan_steps_invalid")
+        for step in self.steps:
+            _operation(step.operation)
+
+    def step_request(self, step: LifecyclePlanStep) -> "ProjectAuthorizationRequest":
+        """The exact single-step request this step's decision must answer."""
+        return ProjectAuthorizationRequest(actor_subject=self.actor_subject, project_ref=self.project_ref,
+                                           target_subject=step.target_subject, operation=step.operation,
+                                           request_id=self.request_id)
+
+
+@dataclass(frozen=True)
+class LifecyclePlanAuthorization:
+    """W578: the host's answer for a complete plan: one exact decision per step, nothing more.
+
+    Not a union of grants and never a broadened singular decision: each step
+    keeps its own typed decision (its delegable grants, platform flag and P
+    locator), and the planner constructs each candidate under that step's
+    bounds only. Output never authorizes itself.
+    """
+
+    request: LifecyclePlanAuthorizationRequest
+    decisions: tuple[tuple[str, "ProjectAuthorizationDecision"], ...]
+    schema: str = LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA
+
+    def __post_init__(self) -> None:
+        # Fail closed by construction (EMain F1 on #632): an empty, partial or
+        # mismatched envelope never exists, so allowed/decision_for can only be
+        # read on one that covers every step of its own request exactly.
+        if self.schema != LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA or not isinstance(
+                self.request, LifecyclePlanAuthorizationRequest):
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_request_mismatch")
+        if not isinstance(self.decisions, tuple) or any(
+                not isinstance(item, tuple) or len(item) != 2 for item in self.decisions):
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_steps_mismatch")
+        refs = [ref for ref, _ in self.decisions]
+        if not refs or sorted(refs) != sorted(step.ref for step in self.request.steps) or len(set(refs)) != len(refs):
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_steps_mismatch")
+        by_ref = dict(self.decisions)
+        for step in self.request.steps:
+            decision = by_ref[step.ref]
+            if not isinstance(decision, ProjectAuthorizationDecision):
+                raise ProjectAuthorizationError("lifecycle_plan_authorization_decision_invalid")
+            decision.validate_for(self.request.step_request(step))
+
+    def validate_for(self, request: LifecyclePlanAuthorizationRequest) -> None:
+        """Refuse an envelope for another request (its own steps were checked at construction)."""
+        if self.request != request:
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_request_mismatch")
+
+    @property
+    def allowed(self) -> bool:
+        return all(decision.allowed for _, decision in self.decisions)
+
+    def refusal(self) -> str:
+        """The first denied step's reason ("" when every step is allowed)."""
+        for step in self.request.steps:
+            decision = dict(self.decisions)[step.ref]
+            if not decision.allowed:
+                return clean_text(decision.reason) or "project_authorization_denied"
+        return ""
+
+    def decision_for(self, ref: str) -> "ProjectAuthorizationDecision":
+        """The exact decision for one step; it must be an allow."""
+        decision = dict(self.decisions).get(ref)
+        if decision is None:
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_step_unknown")
+        if not decision.allowed:
+            raise ProjectAuthorizationError(clean_text(decision.reason) or "project_authorization_denied")
+        return decision
+
+
+class LifecyclePlanAuthorizationPort(Protocol):
+    """The project host's whole-plan policy adapter (PB owns its policy)."""
+
+    async def authorize_lifecycle_plan(
+        self, request: LifecyclePlanAuthorizationRequest,
+    ) -> LifecyclePlanAuthorization: ...
+
+
 class ProjectAuthorizationPort(Protocol):
     """Project-owned policy evaluator injected by the application host."""
 
@@ -563,6 +684,13 @@ def with_viewer_authority(
     )
 
 __all__ = [
+    "LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA",
+    "LifecyclePlanAuthorization",
+    "LifecyclePlanAuthorizationPort",
+    "LifecyclePlanAuthorizationRequest",
+    "LifecyclePlanStep",
+    "MAX_LIFECYCLE_PLAN_STEPS",
+    "PROJECT_CONTROL_CREATE",
     "ProjectControlLocator",
     "PROJECT_BOARD_RESTARTING",
     "PROJECT_MEMBERSHIP_PROVIDER_NOT_READY",
