@@ -68,7 +68,6 @@ async def _compose(root: pathlib.Path, pool, redis_client, *, tenant: str):
     from connection_hub.delegated_credentials.automation_access import AutomationAccessService
     from connection_hub.delegated_credentials.cards import composition
     from connection_hub.delegated_credentials.cards.credential_handles import RedisCardCredentialHandleStore
-    from connection_hub.delegated_credentials.cards.effect_targets import compose_card_effects
     from connection_hub.delegated_credentials.cards.persistence import DurableCardPersistence
     from connection_hub.delegated_credentials.cards.service import DelegatedCardService
     from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
@@ -99,12 +98,8 @@ async def _compose(root: pathlib.Path, pool, redis_client, *, tenant: str):
                                       card_persistence=persistence)
     decisions = await composition.postgres_decision_store(pool, tenant=tenant, project="w603-kill")
     coordinator = composition.bind_card_transactions(service, persistence=persistence, decisions=decisions,
-                                                     grant_store=grants, policies=None)
-    # composition.py does not pass the issuance store yet (a scope change W603 requests);
-    # the same applier is bound again here with it.
-    compose_card_effects(card_service=cards, card_store=store, grant_store=grants, policies=None,
-                         issuance_store=authority, credential_handles=handles)
-    service.bind_oauth_issuance_store(authority)
+                                                     grant_store=grants, policies=None, issuance_store=authority,
+                                                     credential_handles=handles)
     bound, intents, decisions_, _ = service._card_coordinator
     service._card_coordinator = (bound, intents, decisions_, INTENT_TTL)
     return SimpleNamespace(service=service, store=store, authority=authority, decisions=decisions,
@@ -114,14 +109,20 @@ async def _compose(root: pathlib.Path, pool, redis_client, *, tenant: str):
 def _records(w, plan):
     from connection_hub.delegated_credentials.oauth.authority import build_delegated_client_credential
 
+    # The SDK copies the plan's authority snapshot (declared keys) into both records and the envelope.
+    grants = {key: list(items) for key, items in plan.resource_grants.items()}
+    operations_map = {key: list(items) for key, items in plan.resource_operations.items()}
     credential = build_delegated_client_credential(
         grantor_subject=GRANTOR, client_id=CLIENT, scopes=SCOPES, tenant=w.authority.tenant,
-        project=w.authority.project, expires_in=3600, resources=[RESOURCE]).to_dict()
-    return {"access": {"operations": [], "resource_grants": {}, "resource_operations": {}, "credential": credential,
+        project=w.authority.project, expires_in=3600, resources=list(grants), resource_grants=grants,
+        resource_operations=operations_map, operations=list(plan.operations)).to_dict()
+    return {"access": {"operations": list(plan.operations), "resource_grants": grants,
+                       "resource_operations": operations_map, "credential": credential,
                        "grantor_authority": {}, "delegation_edges": [], "named_services": {},
                        "registry_access_id": plan.access_id},
             "refresh": {"registry_access_id": plan.access_id, "card_kind": "", "client_id": CLIENT, "sub": GRANTOR,
-                        "scopes": SCOPES, "operations": [], "resource_grants": {}, "resource_operations": {},
+                        "scopes": SCOPES, "operations": list(plan.operations), "resource_grants": grants,
+                        "resource_operations": operations_map,
                         "resource": RESOURCE, "identity_scope": "", "credential": credential}}
 
 

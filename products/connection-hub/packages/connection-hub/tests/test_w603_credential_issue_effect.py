@@ -134,3 +134,49 @@ async def test_an_absent_before_outside_a_group_member_is_refused():
     receipt["after"] = _pointer(2)  # a creation is always revision 1
     with pytest.raises(ParticipantEffectRefused, match="card_effect_receipt_binding_invalid"):
         await _applier(receipt, _Target()).apply("credential_issue", "access", effect["payload"], transaction_id=TX)
+
+
+@pytest.mark.asyncio
+async def test_the_production_composition_binds_issuance_only_with_its_store():
+    """Without the issuance store the composed applier refuses credential_issue by name; with it, it binds."""
+    from types import SimpleNamespace
+
+    from connection_hub.delegated_credentials.cards import composition, effect_targets
+
+    class _Service:
+        def bind_card_coordinator(self, coordinator, *, intents, decisions):
+            self.bound = coordinator
+
+        def bind_oauth_issuance_store(self, store):
+            self.issuance_store = store
+
+    class _CardService:
+        def bind_effect_applier(self, applier):
+            self.apply = applier
+
+        def bind_effect_preparer(self, preparer):
+            self.prepare = preparer
+
+        def bind_effect_releaser(self, releaser):
+            self.release = releaser
+
+    class _CardStore:
+        root = None
+
+    async def read(transaction_id):
+        return deepcopy(_receipt(created=False, state="prepared"))
+
+    for store in (None, object()):
+        service, cards = _Service(), _CardService()
+        composition.bind_card_transactions(
+            service, persistence=SimpleNamespace(card_store=_CardStore(), card_service=cards),
+            decisions=object(), grant_store=object(), policies=None, issuance_store=store)
+        assert getattr(service, "issuance_store", None) is store
+        composed = cards.prepare.__self__._targets["credential_issue"]  # the applier the composition bound
+        assert isinstance(composed, effect_targets.CredentialIssueTarget) and composed._grant_store is store
+        target = effect_targets.CredentialIssueTarget(store, _CardStore())
+        effect = _receipt(created=False)["effects"][0]
+        applier = ParticipantEffectApplier(read_receipt=read, targets={"credential_issue": target})
+        if store is None:
+            with pytest.raises(ParticipantEffectRefused, match="card_effect_adapter_unavailable"):
+                await applier.prepare("credential_issue", "access", effect["payload"], transaction_id=TX)

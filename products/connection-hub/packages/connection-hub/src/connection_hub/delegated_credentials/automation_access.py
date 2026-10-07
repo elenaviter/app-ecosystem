@@ -109,6 +109,7 @@ from connection_hub.delegated_credentials.agent_capability_policy import (
     descriptor_control,
 )
 from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_grants,
     normalize_resource_operations,
     operation_union,
     project_legacy_operations,
@@ -1435,6 +1436,28 @@ class AutomationAccessRecord:
             else "single_resource"
         )
         return public
+
+
+def _authority_snapshot(name: str, value: Any) -> Any:
+    """W603: one authority field in comparable form; a missing or malformed value is never equal to any."""
+    if name == "operations":
+        if not isinstance(value, (list, tuple)) or any(type(item) is not str or not item for item in value):
+            return _MALFORMED
+        return tuple(sorted(set(value)))
+    if not isinstance(value, Mapping) or any(
+            not isinstance(items, (list, tuple)) or any(type(item) is not str or not item for item in items)
+            for items in value.values()):
+        return _MALFORMED
+    try:
+        normalized = (normalize_resource_grants if name == "resource_grants" else normalize_resource_operations)(value)
+    except (TypeError, ValueError):
+        return _MALFORMED
+    if len(normalized) != len(value):
+        return _MALFORMED  # an empty or duplicate key after cleaning is malformed, not dropped
+    return {key: tuple(sorted(set(items))) for key, items in normalized.items()}
+
+
+_MALFORMED = object()
 
 
 def card_authority_from_record(record: AutomationAccessRecord) -> CardAuthority:
@@ -9501,6 +9524,9 @@ class AutomationAccessService:
             "credential_subject": integration_subject(grantor, client_id=client),
             "base_revision": base_revision, "candidate_revision": candidate.card_revision,
             "expires_at": candidate.expires_at, "card_content_hash": candidate.content_hash(),
+            "operations": list(candidate.operations),
+            "resource_grants": {key: list(items) for key, items in candidate.resource_grants.items()},
+            "resource_operations": {key: list(items) for key, items in candidate.resource_operations.items()},
             "delivery_deadline": delivery_deadline, "reserved_until": reserved_until, "slots": list(ISSUANCE_SLOTS),
             "effect_digests": {effect["key"]: effect_digest(effect) for effect in effects},
         }
@@ -9524,10 +9550,14 @@ class AutomationAccessService:
 
     @staticmethod
     def _issuance_plan(plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
-        from .oauth_issuance import OAuthIssuancePlan
+        from .oauth_issuance import IssuanceRefused, OAuthIssuancePlan
 
-        return OAuthIssuancePlan.from_mapping({**plan, "transaction_id": transaction_id,
-                                               "intent_digest": intent_digest})
+        try:
+            return OAuthIssuancePlan.from_mapping({**plan, "transaction_id": transaction_id,
+                                                   "intent_digest": intent_digest})
+        except (KeyError, TypeError, ValueError):
+            # A plan stored before a field existed is never completed from a newer Card.
+            raise IssuanceRefused("issuance_plan_outdated") from None
 
     async def _begin_planned_issuance(self, plan: Mapping[str, Any], *, intents: Any, decisions: Any,
                                       store: Any) -> Any:
@@ -9608,6 +9638,12 @@ class AutomationAccessService:
                 or ("client_id" in record and record.get("client_id") != plan["client_id"])
                 or (record.get("card_kind") and record.get("card_kind") != candidate_kind)):
             raise IssuanceRefused("issuance_record_mismatch")
+        # The authority a reader takes from the record or its envelope is exactly the planned Card's:
+        # every field present, well formed and equal after the shared normalization (no union, no fallback).
+        for source in (record, attrs):
+            for name in ("operations", "resource_grants", "resource_operations"):
+                if _authority_snapshot(name, source.get(name)) != _authority_snapshot(name, plan[name]):
+                    raise IssuanceRefused("issuance_record_authority_mismatch")
         return dict(record)
 
     async def reserve_oauth_issuance(self, *, plan: Any, slot: str, token_sha256: str, record: Mapping[str, Any],

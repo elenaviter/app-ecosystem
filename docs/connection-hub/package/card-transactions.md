@@ -176,6 +176,11 @@ bearer, an authorization code or a PKCE verifier.
      the stored plan.
    - The record must name the planned Card, issuer, credential subject, grantor
      and client, and carry no secret field.
+   - Readers take authority from the record and its credential envelope, so
+     both must carry exactly the plan's `operations`, `resource_grants` and
+     `resource_operations`. That is the candidate Card's own declared-key
+     snapshot, fixed at `begin`. A missing, malformed, wider or concrete-URL
+     value refuses `issuance_record_authority_mismatch`.
    - A reservation is in no table a reader looks at.
    - It is refused once the decision is decided or `reserved_until` has
      passed, and a retry never renews either.

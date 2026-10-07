@@ -93,7 +93,8 @@ class _HeldConnection:
 
 def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_store: Any, policies: Any,
                                  authorities: Mapping[str, Any] | None = None, catalog_store: Any = None,
-                                 accounts_for: Any = None,
+                                 accounts_for: Any = None, issuance_store: Any = None,
+                                 credential_handles: Any = None,
                                  ) -> tuple[Coordinator, LocalCardIntentSource]:
     """One coordinator, participant, verifier and effect applier over this persistence's Card store.
 
@@ -102,6 +103,9 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
     decision there, one the Hub staged itself reads ``decisions``.
     ``catalog_store`` lets a transaction reserve the active catalog version
     (``catalog-active:`` dependency); without it such a transaction is refused.
+    ``issuance_store`` (the PostgreSQL OAuth authority) and ``credential_handles``
+    (the Card's handle store) bind W603's ``credential_issue`` target; without
+    the store that effect refuses ``card_effect_adapter_unavailable``.
     """
     if persistence is None or decisions is None:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
@@ -115,7 +119,8 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
         from ..catalog.reservations import CatalogReservations
         tx.bind_catalog_reservations(card_store, CatalogReservations(catalog_store))
     compose_card_effects(card_service=card_service, card_store=card_store, grant_store=grant_store,
-                         policies=policies, accounts_for=accounts_for)
+                         policies=policies, accounts_for=accounts_for, issuance_store=issuance_store,
+                         credential_handles=credential_handles)
     intents = LocalCardIntentSource(card_store)
     participant = HubCardParticipant(service=card_service, store=card_store, intents=intents, decisions=decisions)
     return Coordinator(decisions, {PARTICIPANT: participant}, HubLocalReceiptVerifier(card_store)), intents
@@ -124,24 +129,30 @@ def card_transaction_coordinator(*, persistence: Any, decisions: Any, grant_stor
 def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, grant_store: Any,
                            policies: Any, authorities: Mapping[str, Any] | None = None,
                            catalog_store: Any = None, accounts_for: Any = None,
-                           managed_control_scopes: Any = ()) -> Coordinator:
+                           managed_control_scopes: Any = (), issuance_store: Any = None,
+                           credential_handles: Any = None) -> Coordinator:
     """Bind one coordinator, participant, verifier and effect applier to this service's Card store.
 
     ``accounts_for(grantor)`` (W578) is the grantor's connected-account store
     composed with the shared account lock; without it an account disconnect
     under Card transactions refuses as unavailable. ``managed_control_scopes``
     are the configured callers' plan scopes: a project's Control Card there is
-    written only through that caller's transaction.
+    written only through that caller's transaction. ``issuance_store`` (W603)
+    also binds the service's original OAuth issuance; without it
+    ``begin_oauth_issuance`` refuses ``card_transactions_unavailable``.
     """
     coordinator, intents = card_transaction_coordinator(persistence=persistence, decisions=decisions,
                                                         grant_store=grant_store, policies=policies,
                                                         authorities=authorities, catalog_store=catalog_store,
-                                                        accounts_for=accounts_for)
+                                                        accounts_for=accounts_for, issuance_store=issuance_store,
+                                                        credential_handles=credential_handles)
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions)
     if callable(getattr(service, "bind_managed_control_scopes", None)):
         service.bind_managed_control_scopes(managed_control_scopes)
     if accounts_for is not None and callable(getattr(service, "bind_account_stores", None)):
         service.bind_account_stores(accounts_for)
+    if issuance_store is not None and callable(getattr(service, "bind_oauth_issuance_store", None)):
+        service.bind_oauth_issuance_store(issuance_store)
     return coordinator
 
 

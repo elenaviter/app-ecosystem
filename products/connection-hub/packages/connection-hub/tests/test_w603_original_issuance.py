@@ -116,15 +116,21 @@ async def _begin(w, request: str = "exchange-1", **changes):
 
 def _records(w, plan: OAuthIssuancePlan, **credential_changes):
     """The non-secret records the SDK's GrantStore writes for each slot."""
+    # The SDK copies the plan's authority snapshot (declared keys) into both records and the envelope.
+    grants = {key: list(items) for key, items in plan.resource_grants.items()}
+    operations_map = {key: list(items) for key, items in plan.resource_operations.items()}
     credential = build_delegated_client_credential(
         grantor_subject=GRANTOR, client_id=CLIENT, scopes=SCOPES, tenant=w.authority.tenant,
-        project=w.authority.project, expires_in=3600, resources=[RESOURCE]).to_dict()
+        project=w.authority.project, expires_in=3600, resources=list(grants), resource_grants=grants,
+        resource_operations=operations_map, operations=list(plan.operations)).to_dict()
     credential.update(credential_changes)
-    return {"access": {"operations": [], "resource_grants": {}, "resource_operations": {}, "credential": credential,
+    return {"access": {"operations": list(plan.operations), "resource_grants": grants,
+                       "resource_operations": operations_map, "credential": credential,
                        "grantor_authority": {}, "delegation_edges": [], "named_services": {},
                        "registry_access_id": plan.access_id},
             "refresh": {"registry_access_id": plan.access_id, "card_kind": "", "client_id": CLIENT, "sub": GRANTOR,
-                        "scopes": SCOPES, "operations": [], "resource_grants": {}, "resource_operations": {},
+                        "scopes": SCOPES, "operations": list(plan.operations), "resource_grants": grants,
+                        "resource_operations": operations_map,
                         "resource": RESOURCE, "identity_scope": "", "credential": credential}}
 
 
@@ -390,3 +396,41 @@ async def test_a_replacement_card_at_the_same_revision_supersedes_the_old_reserv
         assert {slot: o.outcome for slot, o in result.per_slot.items()} == {"access": "superseded",
                                                                            "refresh": "superseded"}
         assert await _usable(w, tokens) == {"access": False, "refresh": False}
+
+
+@pytest.mark.asyncio
+async def test_the_records_and_envelopes_must_carry_exactly_the_planned_card_authority(tmp_path):
+    """Readers take operations and resource maps from these records; they are the Card's, never the SDK's own."""
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)
+        declared = next(iter(plan.resource_grants))
+        assert declared == RESOURCE + "*"  # the Card's declared key, not the concrete URL the client used
+        changes = {
+            "operations": ["memories.write"],
+            "resource_grants": {declared: ["memories:read", "memories:write"]},
+            "resource_operations": {declared: ["memories.write"]},
+        }
+
+        async def refused(slot, record):
+            with pytest.raises(IssuanceRefused, match="issuance_record_authority_mismatch"):
+                await w.service.reserve_oauth_issuance(plan=plan, slot=slot,
+                                                       token_sha256=bearer_sha256(secrets.token_urlsafe(32)),
+                                                       record=record, ttl_seconds=3600)
+
+        for slot in ("access", "refresh"):
+            for name, wider in changes.items():
+                records = _records(w, plan)
+                await refused(slot, {**records[slot], name: wider})  # the record itself
+                envelope = dict(records[slot]["credential"])
+                envelope["attrs"] = {**envelope["attrs"], name: wider}
+                await refused(slot, {**records[slot], "credential": envelope})  # its envelope
+                missing = {key: value for key, value in records[slot].items() if key != name}
+                await refused(slot, missing)
+                await refused(slot, {**records[slot], name: "memories.write"})  # malformed, not split
+            # The SDK's own concrete-URL map (what _issue_tokens builds today) is not the Card's.
+            concrete = {RESOURCE: list(plan.resource_grants[declared])}
+            await refused(slot, {**_records(w, plan)[slot], "resource_grants": concrete})
+        assert await w.authority.issuance_reservations(plan.transaction_id) == {}
+        # The exact snapshot is accepted, and the plan is unchanged on replay.
+        await _reserve(w, plan)
+        assert await _begin(w) == plan

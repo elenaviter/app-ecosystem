@@ -97,6 +97,11 @@ class OAuthIssuancePlan:
     candidate_revision: int
     expires_at: int
     card_content_hash: str  # the committed revision's content hash: the target incarnation fence
+    # The candidate Card's own authority snapshot (declared resource keys), fixed at begin. The SDK
+    # writes exactly these into both credential records and their envelopes; reserve compares them.
+    operations: tuple[str, ...]
+    resource_grants: Mapping[str, tuple[str, ...]]
+    resource_operations: Mapping[str, tuple[str, ...]]
     delivery_deadline: int
     reserved_until: int
     slots: tuple[str, ...]
@@ -106,12 +111,19 @@ class OAuthIssuancePlan:
         value = asdict(self)
         value["slots"] = list(self.slots)
         value["effect_digests"] = dict(self.effect_digests)
+        value["operations"] = list(self.operations)
+        for name in ("resource_grants", "resource_operations"):
+            value[name] = {key: list(items) for key, items in getattr(self, name).items()}
         return value
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "OAuthIssuancePlan":
+        """The plan from its stored or transmitted form; KeyError when a field is missing (an older plan)."""
         return cls(**{**{name: raw[name] for name in cls.__dataclass_fields__},
-                      "slots": tuple(raw["slots"]), "effect_digests": dict(raw["effect_digests"])})
+                      "slots": tuple(raw["slots"]), "effect_digests": dict(raw["effect_digests"]),
+                      "operations": tuple(raw["operations"]),
+                      **{name: {key: tuple(items) for key, items in dict(raw[name]).items()}
+                         for name in ("resource_grants", "resource_operations")}})
 
 
 @dataclass(frozen=True)
