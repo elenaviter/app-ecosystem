@@ -16,7 +16,14 @@ from connection_hub.delegated_credentials.card_lifecycle_plan import (
 )
 from connection_hub.delegated_credentials.cards.card_group import group_candidate_value, group_member
 from connection_hub.delegated_credentials.cards.model import CARD_STATE_REVOKED, CardAuthority, NamedServiceSelection
+from connection_hub.delegated_credentials.cards.service import replace_state
 from connection_hub.delegated_credentials.cards.store import subject_hash_for
+from connection_hub.delegated_credentials.controls.model import new_credentialless_card
+from connection_hub.delegated_credentials.controls.project_invitation import (
+    PROJECT_INVITATION_CONTROL_ISSUER_KIND,
+    ProjectInvitationControlIdentity,
+    bind_project_invitation_control,
+)
 from connection_hub.delegated_credentials.controls.project_person import (
     PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE,
     ProjectPersonControlIdentity,
@@ -52,11 +59,11 @@ def _cards() -> tuple[CardAuthority, CardAuthority, CardAuthority]:
     return project, control, my_card
 
 
-def _decision(*, allowed: bool = True, target: str = TARGET,
+def _decision(*, allowed: bool = True, target: str = TARGET, request_id: str = REQUEST,
               grants: tuple[str, ...] = ("work:admin",)) -> ProjectAuthorizationDecision:
     request = ProjectAuthorizationRequest.build(
         actor_subject=ACTOR, project_ref=PROJECT, target_subject=target,
-        operation=PROJECT_PERSON_CONTROL_UPDATE, request_id=REQUEST,
+        operation=PROJECT_PERSON_CONTROL_UPDATE, request_id=request_id,
     )
     return (ProjectAuthorizationDecision.allow(request, delegable_grants=grants, platform_admin=True)
             if allowed else ProjectAuthorizationDecision.deny(request, reason="not_allowed"))
@@ -150,6 +157,34 @@ def test_wrong_project_target_revoked_or_denied_never_proposes() -> None:
                 request_id=REQUEST, now=200,
             ))
     assert host.writes == 0
+
+
+def test_decision_for_another_request_cannot_authorize_this_proposal() -> None:
+    _, control, _ = _cards()
+    with pytest.raises(DecisionRefused, match="card_plan_authorization_invalid"):
+        asyncio.run(build_existing_card_selection_update(
+            _Host(), original=control,
+            selection={"resource_grants": {"service-a": ["work:admin"]}},
+            active=SimpleNamespace(version="catalog-v2"),
+            decision=_decision(request_id="another-business-change"),
+            project_ref=PROJECT, target_subject=TARGET, actor_subject=ACTOR,
+            request_id=REQUEST, now=200,
+        ))
+
+
+def test_other_project_control_identity_refuses_even_with_local_parent() -> None:
+    # Keep the parent local so only the Card's own project identity can reject
+    # this cross-project target. A parent-only scope check would miss it.
+    project, _, _ = _cards()
+    foreign_control = build_project_person_control(
+        identity=ProjectPersonControlIdentity.build(
+            project_ref="work:project:other", target_subject=TARGET,
+        ),
+        catalog_version="catalog-v1", actor_subject=ACTOR,
+        request_id=REQUEST, parent=project, now=100,
+    )
+    with pytest.raises(DecisionRefused, match="card_plan_update_scope_invalid"):
+        asyncio.run(_propose(_Host(), foreign_control))
 
 
 def test_empty_noop_and_malformed_selection_refuse_without_revoke() -> None:
@@ -277,3 +312,35 @@ def test_display_refuses_missing_stale_or_wrong_original() -> None:
         plan_display(value, {key: dataclasses.replace(control, card_revision=99).to_dict()})
     with pytest.raises(DecisionRefused):
         plan_display(value, {key: dataclasses.replace(control, access_id="other").to_dict()})
+
+
+def test_display_includes_invitation_control_revoke_and_rejects_unknown_kinds() -> None:
+    identity = ProjectInvitationControlIdentity.build(
+        project_ref=PROJECT, invitation_ref="invitation-1", target_email="person@example.test",
+    )
+    pending = bind_project_invitation_control(new_credentialless_card(
+        grantor_subject=identity.project_subject, catalog_version="catalog-v1",
+        control_id=identity.control_id, issuer_ref=identity.invitation_ref,
+        issuer_kind=PROJECT_INVITATION_CONTROL_ISSUER_KIND, now=100,
+    ), identity=identity)
+    member = group_member(original=pending, candidate=replace_state(pending, CARD_STATE_REVOKED),
+                          action="revoke")
+    key = (member["subject_hash"], member["access_id"])
+    display = plan_display(group_candidate_value([member]), {key: pending.to_dict()})[0]
+    assert display["kind"] == "invitation_control"
+    assert display["action"] == "revoke"
+    assert display["before"]["state"] == pending.state
+    assert display["after"]["state"] == CARD_STATE_REVOKED
+    assert display["before"]["resource_grants"] == display["after"]["resource_grants"]
+
+    unknown = dataclasses.replace(pending, issuer_kind="unrecognised",
+                                  card_revision=pending.card_revision + 1)
+    unknown_member = group_member(original=pending, candidate=unknown, action="update")
+    with pytest.raises(DecisionRefused, match="card_plan_display_kind_invalid"):
+        plan_display(group_candidate_value([unknown_member]), {key: pending.to_dict()})
+
+    malformed = dataclasses.replace(pending, properties={},
+                                    card_revision=pending.card_revision + 1)
+    malformed_member = group_member(original=pending, candidate=malformed, action="update")
+    with pytest.raises(DecisionRefused, match="card_plan_display_kind_invalid"):
+        plan_display(group_candidate_value([malformed_member]), {key: pending.to_dict()})
