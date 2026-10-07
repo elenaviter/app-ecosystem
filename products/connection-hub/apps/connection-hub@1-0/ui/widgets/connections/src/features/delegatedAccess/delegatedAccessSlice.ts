@@ -387,6 +387,9 @@ export const updateAgentCapabilitySelection = createAsyncThunk<
   },
 );
 
+export const PERSON_REMOVAL_GUIDANCE =
+  'Remove this person in Problem Board (Team). Their Control Card and access stay as they are until then.';
+
 export const revokeDelegatedAccess = createAsyncThunk<
   DelegatedAccessRevokeResult,
   {
@@ -415,6 +418,9 @@ export const revokeDelegatedAccess = createAsyncThunk<
           : delegatedAccessRevokePayload(accessId, expectedCardRevision),
       );
       if (res?.ok === false && res.error === 'card_transactions_direct_write_refused') {
+        // W502: a person leaves a project only through the project's own removal, which
+        // ends their Control and My Card together; this panel cannot do it alone.
+        if (projectPersonControl?.kind === 'person') return rejectWithValue(PERSON_REMOVAL_GUIDANCE);
         return rejectWithValue(res.message || 'Coordinated Card changes are unavailable. Your current Card and access are kept.');
       }
       // A conflict carries a refusal, not a removal. Keep its shape for the

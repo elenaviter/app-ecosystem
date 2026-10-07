@@ -80,7 +80,8 @@ for (const action of ['update', 'revoke']) {
       let finish
       const response = new Promise((resolveResponse) => { finish = resolveResponse })
       const h = harness(() => response)
-      const args = structuredClone(action === 'update' ? updateArgs : revokeArgs)
+      // The generic refusal; a person removal has its own guidance (below).
+      const args = structuredClone(action === 'update' ? updateArgs : { ...revokeArgs, projectPersonControl: invitation })
       const draft = structuredClone(args)
       const thunk = action === 'update' ? h.updateDelegatedAccess : h.revokeDelegatedAccess
       const dispatched = h.store.dispatch(thunk(args))
@@ -104,7 +105,7 @@ for (const action of ['update', 'revoke']) {
     const message = 'The project could not coordinate this Card change. Try again when it is available.'
     const h = harness({ ...refusal, message })
     const thunk = action === 'update' ? h.updateDelegatedAccess : h.revokeDelegatedAccess
-    const result = await h.store.dispatch(thunk(action === 'update' ? updateArgs : revokeArgs))
+    const result = await h.store.dispatch(thunk(action === 'update' ? updateArgs : { ...revokeArgs, projectPersonControl: invitation }))
     assert.equal(result.meta.requestStatus, 'rejected')
     assert.equal(result.payload, message)
     assert.equal(h.store.getState().error, message)
@@ -186,4 +187,20 @@ test('the existing save catch retains the draft before any success follow-up', (
   assert.match(caught, /setEditActionError\([^]*?\);\s+return;/)
   assert.doesNotMatch(caught, /clearEditState\(|grantAgentAccess\(|loadDelegatedAccess\(/)
   assert.ok(save.indexOf('clearEditState();') > save.indexOf('if (!updated || updated.ok === false)'))
+})
+
+// W502: under Card transactions, removing a person is the project's own removal (one decision for
+// their Control and My). The panel says where to do it; the invitation revoke keeps its message.
+test('a refused person removal says where to remove the person and keeps the Card', async () => {
+  const h = harness({ ...refusal, message: 'This project Card change is made through the project\'s own transaction.' })
+  const result = await h.store.dispatch(h.revokeDelegatedAccess({ ...revokeArgs, projectPersonControl: person }))
+  assert.equal(result.meta.requestStatus, 'rejected')
+  assert.equal(result.payload, h.PERSON_REMOVAL_GUIDANCE)
+  assert.match(result.payload, /Remove this person in Problem Board/)
+  assert.equal(h.store.getState().error, h.PERSON_REMOVAL_GUIDANCE)
+  assertPreserved(h.store.getState(), h.before)
+  assert.equal(h.requests.length, 1, 'the write is never retried')
+  const other = harness({ ...refusal, message: 'server reason' })
+  const withdrawn = await other.store.dispatch(other.revokeDelegatedAccess({ ...revokeArgs, projectPersonControl: invitation }))
+  assert.equal(withdrawn.payload, 'server reason')
 })
