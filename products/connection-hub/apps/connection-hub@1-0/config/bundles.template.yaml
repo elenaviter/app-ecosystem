@@ -1639,6 +1639,16 @@ bundles:
                 request_bound_operations:
                 - "kdcube.management.application.reload"
                 request_permit_ttl_seconds: 600
+              # W609: Problem Board reads one Telegram subject per platform user
+              # (identity_provider_subject_resolve) to post its notifications. Its
+              # key is the existing Problem Board <-> Hub peer secret, held by these
+              # two bundles only; the resource names the one provider it may read.
+              problem-board:
+                label: "Problem Board notification recipients"
+                enabled: true
+                secret_ref: "project_membership.peer_proof_secret"
+                resources:
+                - "urn:kdcube:identity:provider-subject:telegram"
           # Legacy connection-provider app registry. New per-user delegated
           # external credentials live under delegated_to_kdcube below.
         providers: {}

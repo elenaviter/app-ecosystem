@@ -6,6 +6,7 @@ import copy
 import hashlib
 import html
 import inspect
+import hashlib
 import json
 import pathlib
 import time
@@ -98,7 +99,12 @@ from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentia
 from connection_hub.delegated_credentials.access_map import (
     build_delegated_access_map,
 )
-from connection_hub.delegated_credentials.admission import AdmissionConfig
+from connection_hub.delegated_credentials.admission import (
+    AdmissionConfig,
+    AdmissionRequest,
+    ServiceProof,
+    verify_admission_request,
+)
 from connection_hub.delegated_credentials.authority_config import (
     AUTHORITY_BACKEND_POSTGRESQL,
     AUTHORITY_BACKEND_REDIS_MIGRATION_SOURCE,
@@ -343,6 +349,8 @@ CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
     "delegated_to_kdcube_resolve",
     "economic_usage",
     "identity_family_resolve",
+    # W609: server-to-server, admission-proof-gated, read-only; no browser form.
+    "identity_provider_subject_resolve",
     "identity_resolve",
     "opex",
     "project_operation_authorize",
@@ -2693,6 +2701,91 @@ def _edge_provider(edge: Mapping[str, Any] | None, challenge: Mapping[str, Any] 
 def _edge_subject(edge: Mapping[str, Any] | None, challenge: Mapping[str, Any] | None = None) -> str:
     source = edge_actor(edge or {})
     return str(source.get("subject") or (challenge or {}).get("provider_subject") or "").strip()
+
+
+# W609: a service-only reverse lookup (platform user -> provider subject).
+# It discloses one provider subject per platform user, so it is open only to a
+# registered admission service whose resources name that provider, verified by
+# its HMAC peer proof; the request's user session is never consulted.
+IDENTITY_SUBJECT_LOOKUP_OPERATION = "identity_provider_subject_resolve"
+IDENTITY_SUBJECT_LOOKUP_TOKEN = "connection-hub.identity-provider-subject.v1"
+
+
+def identity_subject_lookup_resource(provider: str) -> str:
+    return f"urn:kdcube:identity:provider-subject:{str(provider or '').strip().lower()}"
+
+
+def identity_subject_lookup_digest(*, platform_user_id: str, provider: str) -> str:
+    body = json.dumps({"platform_user_id": str(platform_user_id or "").strip(),
+                       "provider": str(provider or "").strip().lower()},
+                      sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _identity_subject_audit(service_id: str, platform_user_id: str, provider: str, outcome: str) -> None:
+    # Never the provider subject itself.
+    LOGGER.info(
+        "[connection-hub.identity_provider_subject_resolve] service=%s platform_user=%s provider=%s outcome=%s",
+        service_id, platform_user_id, provider, outcome,
+    )
+
+
+async def _identity_provider_subject_resolve(entrypoint: Any, payload: Mapping[str, Any],
+                                             *, now: int | None = None) -> Dict[str, Any]:
+    platform_user = str(payload.get("platform_user_id") or "").strip()
+    provider = str(payload.get("provider") or "").strip().lower()
+    raw_proof = payload.get("service_proof")
+    proof = ServiceProof(**{key: str((raw_proof or {}).get(key) or "") for key in
+                            ("service_id", "timestamp", "nonce", "signature")}) if isinstance(raw_proof, Mapping) \
+        else ServiceProof("", "", "", "")
+    if not platform_user or not provider:
+        return {"ok": False, "error": "identity_provider_subject_resolve_requires_user_and_provider", "status": 400}
+    if not proof.service_id or not proof.signature:
+        _identity_subject_audit(proof.service_id, platform_user, provider, "no_service_proof")
+        return {"ok": False, "error": "identity_lookup_requires_service_proof", "status": 403}
+    config = AdmissionConfig.from_connections(_connections_config(entrypoint))
+    service = config.service(proof.service_id) if config.enabled else None
+    resource = identity_subject_lookup_resource(provider)
+    authenticators = [
+        row for row in matching_authenticator_rows(
+            _identity_config(entrypoint), provider, stored_rows=await _cached_authenticator_rows(entrypoint))
+        if row.get("enabled") is not False
+    ]
+    if service is None or not service.allows_resource(resource) or not authenticators:
+        _identity_subject_audit(proof.service_id, platform_user, provider, "not_permitted")
+        return {"ok": False, "error": "identity_lookup_not_permitted", "status": 403}
+    secret = await _bundle_secret_value(
+        entrypoint, secret_path=service.secret_ref,
+        trace_scope=f"identity_provider_subject.service.{service.service_id}", warn_missing=True)
+    decision = verify_admission_request(
+        secret=secret, proof=proof, delegated_token=IDENTITY_SUBJECT_LOOKUP_TOKEN,
+        request=AdmissionRequest(resource=resource, operation=IDENTITY_SUBJECT_LOOKUP_OPERATION,
+                                 invocation_id=proof.nonce,
+                                 request_digest=identity_subject_lookup_digest(
+                                     platform_user_id=platform_user, provider=provider)),
+        max_clock_skew_seconds=config.max_clock_skew_seconds, now=now)
+    if not decision.allowed:
+        _identity_subject_audit(proof.service_id, platform_user, provider, f"proof_refused:{decision.reason}")
+        return {"ok": False, "error": "identity_lookup_proof_invalid", "reason": decision.reason, "status": 403}
+    # One use per proof, across every process (no in-process state).
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    if not await redis.set(f"connection_hub:identity_subject_nonce:{proof.service_id}:{proof.nonce}", "1",
+                           nx=True, ex=config.nonce_ttl_seconds):
+        _identity_subject_audit(proof.service_id, platform_user, provider, "proof_replayed")
+        return {"ok": False, "error": "identity_lookup_proof_replayed", "status": 403}
+    # Typed platform id: matched exactly, never parsed as an actor id. Read every time.
+    subjects = sorted({
+        str(edge_actor(edge).get("subject") or "").strip()
+        for edge in _edge_store(entrypoint).list_edges(target_user_id=platform_user, source_provider=provider)
+    } - {""})
+    if not subjects:
+        _identity_subject_audit(proof.service_id, platform_user, provider, "not_linked")
+        return {"ok": False, "error": "identity_not_linked", "provider": provider}
+    if len(subjects) > 1:
+        _identity_subject_audit(proof.service_id, platform_user, provider, "ambiguous")
+        return {"ok": False, "error": "identity_lookup_ambiguous", "provider": provider}
+    _identity_subject_audit(proof.service_id, platform_user, provider, "resolved")
+    return {"ok": True, "provider": provider, "provider_subject": subjects[0]}
 
 
 def _edge_platform_user_id(edge: Mapping[str, Any] | None) -> str:
@@ -8137,6 +8230,21 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             "connection_edge": edge,
             "principal": principal,
         }
+
+    @api(method="POST", alias="identity_provider_subject_resolve", route="operations",
+         **_api_visibility("identity_provider_subject_resolve"))
+    async def identity_provider_subject_resolve(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        platform_user_id: str = "",
+        provider: str = "",
+        service_proof: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """W609: one provider subject of a platform user, for a proven admission service only."""
+        payload = _payload(data, platform_user_id=platform_user_id, provider=provider,
+                           service_proof=service_proof, **kwargs)
+        return await _identity_provider_subject_resolve(self, payload)
 
     @api(method="POST", alias="identity_family_resolve", route="operations", **_api_visibility("identity_family_resolve"))
     async def identity_family_resolve(
