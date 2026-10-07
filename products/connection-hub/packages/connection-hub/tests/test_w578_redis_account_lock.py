@@ -106,3 +106,21 @@ async def test_contention_is_never_silent_and_names_neither_the_user_nor_the_acc
         assert not any("user-secret" in message or "account-secret" in message for message in messages)
     finally:
         await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_timeout_the_section_raises_itself_is_not_logged_as_an_overrun(caplog):
+    """claude-main #652 nit: only the budget's own expiry is an overrun."""
+    import logging
+
+    redis = _client()
+    try:
+        lock = RedisAccountLock(redis, prefix=account_lock_prefix("t", f"p-{uuid.uuid4().hex}"))
+        caplog.set_level(logging.WARNING, logger="connection_hub.delegated_to_kdcube.account_lock")
+        with pytest.raises(TimeoutError):
+            async with lock("user-1", "account-1"):
+                raise TimeoutError("an inner I/O timeout")
+        assert [record for record in caplog.records if record.levelno == logging.WARNING] == []
+        assert await redis.get(lock.key("user-1", "account-1")) is None  # still released
+    finally:
+        await redis.aclose()

@@ -71,12 +71,16 @@ class RedisAccountLock:
                                "(account_lock_timeout) key=%s", self.wait_seconds, name)
                 raise AccountLockUnavailable("account_lock_timeout")
             await asyncio.sleep(self.poll_seconds)
+        budget = asyncio.timeout(self.section_seconds)
         try:
-            async with asyncio.timeout(self.section_seconds):
+            async with budget:
                 yield
         except TimeoutError:
-            LOGGER.warning("[connection-hub.account-lock] section overran its %.1fs budget and was interrupted "
-                           "key=%s", self.section_seconds, name)
+            # Only the budget's own expiry is an overrun; a TimeoutError the
+            # section raised itself (an inner I/O timeout) is not (claude-main, #652).
+            if budget.expired():
+                LOGGER.warning("[connection-hub.account-lock] section overran its %.1fs budget and was interrupted "
+                               "key=%s", self.section_seconds, name)
             raise
         finally:
             await self.redis.eval(_RELEASE_SCRIPT, 1, name, token)
