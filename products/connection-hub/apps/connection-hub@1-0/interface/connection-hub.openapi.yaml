@@ -635,6 +635,33 @@ paths:
         "200":
           description: Live Control Card, full initial My Card, identity edge, and non-secret binding evidence, or a structured denial.
 
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_invitation_pending_revision:
+    post:
+      tags: [Delegated Access]
+      summary: Read the signed-in invitee's pending invitation Control Card revision and state.
+      description: >
+        W502 join. Under the same authority as binding the invitation: the
+        descriptor-named application provider's evidence must match the exact
+        project, invitation, pending control id and signed-in person, and the
+        stored email digest. Returns only the pending Card's revision and
+        state (active); never its selection, grants, audit or admin view.
+        Read-only; nothing is written.
+      operationId: project_invitation_pending_revision
+      x-kdcube-result-alias: project_invitation_pending_revision
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectInvitationControlIdentityEnvelope"
+      responses:
+        "200":
+          description: "{ok, card_revision, state} for the invitee, or a structured denial."
+
   /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_bind_project:
     post:
       tags: [Delegated Access]
