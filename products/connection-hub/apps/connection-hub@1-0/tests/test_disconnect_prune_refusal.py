@@ -22,6 +22,8 @@ def host(monkeypatch, *, account=SimpleNamespace(provider_id="slack"), prune=Non
     factory = MagicMock(return_value=operations)
     service = MagicMock()
     service.prune_account_from_grants = AsyncMock(return_value=prune)
+    # W578: with Card transactions off the transactional disconnect declines (None): the ordered path runs.
+    service.disconnect_account_in_transaction = AsyncMock(return_value=None)
     service_factory = AsyncMock(return_value=service)
     monkeypatch.setattr(m, "_delegated_to_kdcube_operations", factory)
     monkeypatch.setattr(m, "_automation_access_service", service_factory)
@@ -174,3 +176,46 @@ async def test_authentication_and_account_validation_precede_dependencies(monkey
     factory.assert_not_called()
     operations.disconnect.assert_not_awaited()
     service_factory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [
+    {"ok": True, "removed": True, "bindings_cleared": 1, "bindings_cleared_grants": ["grant-1"]},
+    {"ok": False, "error": "card_transaction_pending", "removed": False, "retryable": True, "status": 503},
+])
+async def test_w578_with_card_transactions_the_group_transaction_answers_and_the_ordered_path_never_runs(
+        monkeypatch, answer):
+    m, operations, _, service, _ = host(monkeypatch)
+    service.disconnect_account_in_transaction = AsyncMock(return_value=answer)
+    result = await m.ConnectionHubEntrypoint.delegated_to_kdcube_disconnect(
+        authenticated_entry(m), account_id="account-1",
+    )
+    assert result == {**answer, "account_id": "account-1"}
+    service.disconnect_account_in_transaction.assert_awaited_once_with(
+        grantor_subject="actual-human", provider_id="slack", account_id="account-1")
+    service.prune_account_from_grants.assert_not_awaited()
+    operations.disconnect.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_w578_a_failing_group_transaction_refuses_without_the_ordered_path(monkeypatch):
+    m, operations, _, service, _ = host(monkeypatch)
+    service.disconnect_account_in_transaction = AsyncMock(side_effect=RuntimeError("down"))
+    result = await m.ConnectionHubEntrypoint.delegated_to_kdcube_disconnect(
+        authenticated_entry(m), account_id="account-1",
+    )
+    assert result["error"] == "account_binding_not_pruned" and result["reason"] == "account_transaction_unavailable"
+    assert result["removed"] is False and result["status"] == 503
+    service.prune_account_from_grants.assert_not_awaited()
+    operations.disconnect.assert_not_awaited()
+
+
+def test_w578_every_account_store_the_app_builds_carries_the_shared_redis_account_lock(monkeypatch):
+    from connection_hub.delegated_to_kdcube.account_lock import RedisAccountLock
+
+    m = module()
+    monkeypatch.setattr(m, "_runtime_tenant_project", lambda _e: ("tenant-a", "project-b"))
+    entrypoint = SimpleNamespace(redis=object())
+    store = m._delegated_to_kdcube_store(entrypoint, "user-1")
+    assert isinstance(store._account_lock, RedisAccountLock)
+    assert store._account_lock.prefix == "connection-hub:tenant-a:project-b:account-lock:"

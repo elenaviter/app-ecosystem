@@ -426,6 +426,11 @@ class DelegatedToKdcubeBroker:
         # that rotates refresh tokens (GitHub Apps) invalidates the old one on
         # use, so a second concurrent refresh would lose the connection.
         async with self.refresh_lock.hold(f"{self.store.user_id}:{credential_id}") as held:
+            # W578: the connection this refresh is for, read BEFORE its token: a
+            # reconnection after this point is another incarnation, which the
+            # refreshed credential is then never written over.
+            account = await self.store.get_account(account_id)
+            incarnation = as_str(getattr(account, "incarnation", "")) if account is not None else ""
             current = await self.store.get_credential(credential_id) or credential
             if self._refreshed_elsewhere(adapter, seen=credential, current=current):
                 return current
@@ -455,6 +460,7 @@ class DelegatedToKdcubeBroker:
                 connector_app_id=connector_app_id,
                 account_id=account_id,
                 credential_id=credential_id,
+                incarnation=incarnation,
             )
 
     def _refreshed_elsewhere(self, adapter: Any, *, seen: dict[str, Any], current: dict[str, Any]) -> bool:
@@ -475,6 +481,7 @@ class DelegatedToKdcubeBroker:
         connector_app_id: str,
         account_id: str,
         credential_id: str,
+        incarnation: str = "",
     ) -> dict[str, Any]:
         refreshed.update(
             {
@@ -484,7 +491,13 @@ class DelegatedToKdcubeBroker:
                 "account_id": account_id,
             }
         )
-        await self.store.set_credential(credential_id, refreshed)
+        write = getattr(self.store, "set_account_credential", None)
+        if callable(write):
+            # W578: never recreate the credential of an account disconnected meanwhile.
+            if not await write(account_id, credential_id, refreshed, incarnation=incarnation):
+                return refreshed
+        else:
+            await self.store.set_credential(credential_id, refreshed)
         # A successful refresh supersedes any persisted rejection: Connection
         # Hub must stop telling the user to reconnect a working account.
         await self.store.set_account_status(

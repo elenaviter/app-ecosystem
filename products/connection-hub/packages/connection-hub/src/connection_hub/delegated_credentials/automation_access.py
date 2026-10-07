@@ -9412,15 +9412,22 @@ class AutomationAccessService:
             request_id=secrets.token_urlsafe(18),
             expires_at=int(datetime.now(timezone.utc).timestamp()) + ttl, participants=(PARTICIPANT,),
             payload={"participant_inputs": {PARTICIPANT: participant_input}})
-        row = await decisions.begin(draft)
+        try:
+            row = await decisions.begin(draft)
+        except Exception:  # noqa: BLE001 - nothing begun: a finite, retryable answer
+            _LOGGER.warning("[connection_hub.disconnect] account transaction could not begin", exc_info=True)
+            return unavailable
         transaction_id = row.transaction_id
-        await intents.record(CardGroupIntent(
-            transaction_id=transaction_id, intent_digest=row.intent.digest,
-            members=tuple(CardGroupMemberIntent(subject_hash=subject_hash, original=current, candidate=candidate,
-                                                action="update") for current, candidate in members),
-            effects=(effect,), actor_subject=grantor_subject, actor_kind="grantor"))
         card_service = getattr(self._cards(), "card_service", None)
         try:
+            # Inside the abort scope (claude-main, #645): a failure to record the
+            # intent is an ABORT too, never a begun transaction left to recovery.
+            await intents.record(CardGroupIntent(
+                transaction_id=transaction_id, intent_digest=row.intent.digest,
+                members=tuple(CardGroupMemberIntent(subject_hash=subject_hash, original=current,
+                                                    candidate=candidate, action="update")
+                              for current, candidate in members),
+                effects=(effect,), actor_subject=grantor_subject, actor_kind="grantor"))
             if card_service is None:
                 raise DecisionRefused("card_transactions_unavailable")
             await card_service.reserve_accounts([(provider_id, account_id)], transaction_id=transaction_id)

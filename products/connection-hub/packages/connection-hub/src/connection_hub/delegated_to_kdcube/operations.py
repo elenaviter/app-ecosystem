@@ -335,7 +335,14 @@ class DelegatedToKdcubeOperations:
             credential_id=as_str(payload.get("credential_id")),
             metadata=as_dict(payload.get("metadata")),
         )
-        stored = await self.store.upsert_account(account)
+        from .store import AccountDisconnectPending
+
+        try:
+            stored = await self.store.upsert_account(account)
+        except AccountDisconnectPending:
+            # W578: a disconnect of this account is being decided; the person retries.
+            return {"ok": False, "error": "account_disconnect_pending", "retryable": True, "status": 409,
+                    "message": "This account is being disconnected. Try connecting it again in a moment."}
         credential_id = stored.credential_id or credential_id_for(stored.account_id)
         credential_with_metadata = {
             "provider_id": provider_id,
@@ -362,22 +369,26 @@ class DelegatedToKdcubeOperations:
             ",".join(stored.claims),
         )
         if credential_id != stored.credential_id:
-            stored = await self.store.upsert_account(
-                ConnectedAccount(
-                    account_id=stored.account_id,
-                    provider_id=stored.provider_id,
-                    connector_app_id=stored.connector_app_id,
-                    external_subject=stored.external_subject,
-                    display_name=stored.display_name,
-                    email=stored.email,
-                    workspace=stored.workspace,
-                    claims=stored.claims,
-                    credential_id=credential_id,
-                    status=stored.status,
-                    connected_at=stored.connected_at,
-                    metadata=stored.metadata,
+            try:
+                stored = await self.store.upsert_account(
+                    ConnectedAccount(
+                        account_id=stored.account_id,
+                        provider_id=stored.provider_id,
+                        connector_app_id=stored.connector_app_id,
+                        external_subject=stored.external_subject,
+                        display_name=stored.display_name,
+                        email=stored.email,
+                        workspace=stored.workspace,
+                        claims=stored.claims,
+                        credential_id=credential_id,
+                        status=stored.status,
+                        connected_at=stored.connected_at,
+                        metadata=stored.metadata,
+                    )
                 )
-            )
+            except AccountDisconnectPending:
+                return {"ok": False, "error": "account_disconnect_pending", "retryable": True, "status": 409,
+                        "message": "This account is being disconnected. Try connecting it again in a moment."}
         # The grant is an authored conversation event: notify (best-effort)
         # so pending demands in chat conversations learn the consent landed.
         await self._notify_consent_granted(

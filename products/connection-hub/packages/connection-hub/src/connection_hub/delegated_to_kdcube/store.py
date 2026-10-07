@@ -130,6 +130,10 @@ class DelegatedToKdcubeStore:
         # account write takes it; the incarnation operations refuse without it.
         self._account_lock = account_lock
 
+    def bind_account_lock(self, account_lock: Any) -> None:
+        """W578: bind the composition's shared account lock to a store built without it."""
+        self._account_lock = account_lock
+
     def _account_section(self, account_id: str):
         if self._account_lock is None:
             return contextlib.nullcontext()
@@ -477,6 +481,13 @@ class DelegatedToKdcubeStore:
             metadata=metadata,
             incarnation=existing.incarnation,
         )
+        # W578 (claude-main, S3b P1): a status write never recreates a record.
+        # It writes only while the same incarnation is still stored, so a
+        # writer that read before a disconnect deleted the account cannot put
+        # it back (the shared account lock closes the remaining gap).
+        current = await self.get_account(account_id)
+        if current is None or current.incarnation != existing.incarnation:
+            return None
         await self._set_prop(self.account_prop_key(account_id), updated.to_dict())
         return updated
 
@@ -508,6 +519,25 @@ class DelegatedToKdcubeStore:
             bool(credential.get("access_token")),
             bool(credential.get("refresh_token")),
         )
+
+    async def set_account_credential(self, account_id: str, credential_id: str,
+                                     credential: dict[str, Any], *, incarnation: str = "") -> bool:
+        """W578: write a refreshed credential only while the connection it was refreshed for is stored.
+
+        Under the account lock. ``incarnation`` is the connection the refresh
+        read before its token: a refresh that finishes after a disconnect
+        (record gone) or after a reconnection (another incarnation, which owns
+        the same deterministic credential id) writes nothing (False), so no old
+        secret outlives the disconnect or overwrites the fresh consent. Without
+        an incarnation nothing proves which connection it is for: no write.
+        """
+        async with self._account_section(account_id):
+            existing = await self.get_account(account_id)
+            if (existing is None or not incarnation or existing.incarnation != incarnation
+                    or existing.credential_id != credential_id):
+                return False
+            await self.set_credential(credential_id, credential)
+            return True
 
     async def get_credential(self, credential_id: str) -> dict[str, Any]:
         if not credential_id:

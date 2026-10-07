@@ -174,6 +174,26 @@ class DelegatedToKdcubeClient:
                 or await secret_loader(f"b:{secret_ref}", bundle_id=bundle_id)
             )
 
+        # W578: every bundle's account writes share the Connection Hub app's
+        # account-record lock (one Redis key per user and account), so a status
+        # write or a credential refresh here serializes with the app's disconnect.
+        if redis is not None and resolved_tenant and resolved_project:
+            from .account_lock import RedisAccountLock, account_lock_prefix
+
+            shared_lock = RedisAccountLock(redis, prefix=account_lock_prefix(resolved_tenant, resolved_project))
+            base_factory = store_factory or DelegatedToKdcubeStore
+
+            def locked_factory(*args: Any, **kwargs: Any) -> Any:
+                built = base_factory(*args, **kwargs)
+                if callable(getattr(built, "bind_account_lock", None)):
+                    built.bind_account_lock(shared_lock)
+                return built
+
+            store_factory = locked_factory
+            if store is not None and getattr(store, "_account_lock", None) is None \
+                    and callable(getattr(store, "bind_account_lock", None)):
+                store.bind_account_lock(shared_lock)
+
         return cls.from_user(
             user_id=user_id,
             config=delegated_to_kdcube_config(props),
