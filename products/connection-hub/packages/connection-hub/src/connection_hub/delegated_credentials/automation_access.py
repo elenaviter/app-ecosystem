@@ -9389,7 +9389,12 @@ class AutomationAccessService:
             return unavailable
         if not incarnation:
             return {"ok": True, "removed": False}
-        members = await self._account_binding_members(grantor_subject, provider_id, account_id)
+        try:
+            members = await self._account_binding_members(grantor_subject, provider_id, account_id)
+        except Exception:  # noqa: BLE001 - Cards unreadable (CardUnavailable, a store outage): retry
+            _LOGGER.warning("[connection_hub.disconnect] binding Cards unreadable: account=%s", account_id,
+                            exc_info=True)
+            return unavailable
         if isinstance(members, dict):
             return members
         if not members:
@@ -9424,11 +9429,28 @@ class AutomationAccessService:
                     != [(c.access_id, c.card_revision) for c, _ in members]):
                 raise DecisionRefused("card_account_binding_changed")
             await coordinator.prepare_existing(transaction_id)
-        except (DecisionRefused, CardTransactionRefused) as exc:
-            await coordinator.decide(transaction_id, "aborted")
-            await coordinator.finish(transaction_id)
-            return {"ok": False, "error": "account_binding_not_pruned", "reason": str(exc), "removed": False,
-                    "retryable": True, "status": 409}
+        except BaseException as exc:
+            # claude-main #645 P2: nothing escapes undecided after begin. Every
+            # refusal or failure before COMMIT is an ABORT, finished at once so
+            # the fence is released; a failed abort is left to recovery.
+            try:
+                await coordinator.decide(transaction_id, "aborted")
+                await coordinator.finish(transaction_id)
+            except Exception:  # noqa: BLE001 - recovery presumes the abort
+                _LOGGER.warning("[connection_hub.disconnect] abort not finished: transaction=%s", transaction_id,
+                                exc_info=True)
+                if not isinstance(exc, Exception):
+                    raise
+                return {"ok": False, "error": "card_transaction_pending", "removed": False, "retryable": True,
+                        "status": 503}
+            if not isinstance(exc, Exception):
+                raise  # cancellation propagates, after its transaction was aborted
+            if isinstance(exc, (DecisionRefused, CardTransactionRefused)):
+                return {"ok": False, "error": "account_binding_not_pruned", "reason": str(exc), "removed": False,
+                        "retryable": True, "status": 409}
+            _LOGGER.warning("[connection_hub.disconnect] account transaction refused: transaction=%s",
+                            transaction_id, exc_info=True)
+            return {**unavailable, "reason": "card_transaction_aborted"}
         try:
             await coordinator.decide(transaction_id, "committed", witness_digest=participant_input["candidate_digest"])
             await coordinator.finish(transaction_id)
