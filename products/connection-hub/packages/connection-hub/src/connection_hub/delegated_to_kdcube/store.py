@@ -399,14 +399,24 @@ class DelegatedToKdcubeStore:
                 return pinned["state"]
             existing = await self.get_account(account_id)
             resuming = isinstance(pinned, dict) and pinned.get("state") == "deleting"
-            if existing is None or existing.incarnation != incarnation:
-                outcome = ("disconnected" if resuming else
-                           "account_absent" if existing is None else "account_reconnected")
-            else:
+            if existing is not None and existing.incarnation == incarnation:
                 await self._set_prop(key, {"state": "deleting", "account_id": account_id,
-                                           "incarnation": incarnation})
+                                           "incarnation": incarnation, "credential_id": existing.credential_id})
                 await self._disconnect_account(account_id, delete_credential=delete_credential)
                 outcome = "disconnected"
+            elif resuming:
+                if existing is None:
+                    # A crash inside the deletion (record gone, index or credential
+                    # not yet): finish exactly that cleanup. A reconnection would be
+                    # a stored record of another incarnation, which owns the same
+                    # deterministic credential id, so nothing is touched then.
+                    await self._write_index([item for item in await self._index() if item != account_id])
+                    credential_id = as_str(pinned.get("credential_id"))
+                    if delete_credential and credential_id:
+                        await self.delete_credential(credential_id)
+                outcome = "disconnected"
+            else:
+                outcome = "account_absent" if existing is None else "account_reconnected"
             await self._set_prop(key, {"state": outcome, "account_id": account_id, "incarnation": incarnation})
             hold_key = self.account_delete_hold_key(account_id)
             hold = await self._prop(hold_key)
