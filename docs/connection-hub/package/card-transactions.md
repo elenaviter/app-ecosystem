@@ -67,6 +67,42 @@ lower OR would allow.
 The census stays generic: a chain that ends at C is `complete` [C], and the
 initiator's provider decides whether that chain is anchored at its P.
 
+## Proposing a Card group without changing saved Cards
+
+`plan_card_lifecycle` in `delegated_credentials/card_lifecycle_plan.py` builds
+the Hub's `connection-hub.card-group.v1` candidate and participant input from
+one authorized project scope. The caller supplies catalog selections without
+placing project roles in the Hub;
+the Hub resolves them against its active catalog and constructs the same P
+and C authority values used by the live constructors. The request has local
+creation refs, kinds `application_control`, `project_person_control`, and
+`project_person_my_card`, and parents that name either an earlier planned ref
+or a live `{access_id, holder_subject}`. Updates name an exact current Card
+revision and either revoke it or attach an existing C under P.
+
+The planner returns canonical sorted members, the active catalog digest, and
+every live parent outside the group as a present read at its actual revision.
+New Card slots are group targets with absent originals; they are never
+dependency reads. An existing target carries its actual original revision.
+The Hub composes the entire proposed Control graph, including parents being
+created in the same group, before returning the plan. A missing, ended,
+foreign, cyclic, or otherwise invalid parent refuses the proposal. Staging
+checks that graph and all read/catalog dependencies again under the Card
+transaction fences; the proposal itself reserves nothing.
+
+This lets one group carry C and My joining a live P, P/C/My genesis with
+no temporary live P, C/My creation plus pending invitation Card revoke, or a
+qualified repair attach. It does not save a Card, issue a credential, consume
+an invitation, write a project role, or rewrite a person's existing My Card.
+The signed plan operation binds the complete request digest to a
+`LifecyclePlanAuthorization` envelope. Each creation ref and each
+`update:<index>` has its own exact operation, target and bounded
+`ProjectAuthorizationDecision`; a P step's grants cannot enlarge C's or My's.
+The planner matches the envelope's complete step list before reading the
+catalog and builds each candidate under only its own step's grants, platform
+flag and P locator. The caller binds the signed proposal to its transaction.
+A successful plan is input to prepare, not permission to commit.
+
 ## Configuration
 
 All of it lives in the Hub's bundle props under `connections.card_transactions`.

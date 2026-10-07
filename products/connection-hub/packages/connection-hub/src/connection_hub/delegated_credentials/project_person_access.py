@@ -70,6 +70,7 @@ from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationRequest,
 )
 from connection_hub.delegated_credentials import project_control_binding
+from connection_hub.delegated_credentials.card_lifecycle_plan import build_project_person_control
 from connection_hub.delegated_credentials.project_identity_authorization import (
     ProjectOperationAuthorizationDecision,
     ProjectOperationRequest,
@@ -578,20 +579,18 @@ class ProjectPersonControlLifecycle:
                 active,
                 owner_subject=identity.project_subject,
             )
-            authority = bind_project_person_control(
-                new_credentialless_card(
-                    control_id=identity.control_id,
-                    grantor_subject=identity.project_subject,
-                    catalog_version=catalog_version,
-                    issuer_ref=identity.project_ref,
-                    issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
-                    issuer_label=label or target_subject,
-                    manage_url=manage_url,
-                    properties=properties,
-                    composition_mode=selected_composition_mode,
-                    now=int(time.time()),
-                ),
+            created_at = int(time.time())
+            authority = build_project_person_control(
                 identity=identity,
+                catalog_version=catalog_version,
+                actor_subject=request.actor_subject,
+                request_id=request.request_id,
+                label=label,
+                manage_url=manage_url,
+                properties=properties,
+                composition_mode=selected_composition_mode,
+                now=created_at,
+                finalize=False,
             )
             record = self._record_from_authority(authority)
             pruned: dict[str, Any] = {
@@ -599,6 +598,7 @@ class ProjectPersonControlLifecycle:
                 "claims": [],
                 "named_service_operations": [],
             }
+            resolved = None
             if any(
                 selection is not None
                 for selection in (
@@ -631,64 +631,6 @@ class ProjectPersonControlLifecycle:
                         "pruned": resolved.reconciled.to_public_dict(),
                     }
                 pruned = resolved.reconciled.to_public_dict()
-                record = self._record_from_authority(
-                    dataclasses.replace(
-                        self._authority_from_record(record),
-                        operations=tuple(resolved.operations),
-                        resource_grants={
-                            key: tuple(value)
-                            for key, value in resolved.resource_grants.items()
-                        },
-                        resource_operations={
-                            key: tuple(value)
-                            for key, value in resolved.resource_operations.items()
-                        },
-                        named_service_operations=resolved.named_service_operations,
-                        named_services=copy.deepcopy(resolved.named_services),
-                        account_scope={
-                            provider: {
-                                account_id: tuple(claims)
-                                for account_id, claims in accounts.items()
-                            }
-                            for provider, accounts in resolved.account_scope.items()
-                        },
-                        identity_scope=resolved.identity_scope,
-                        properties=resolved.properties,
-                        resource_acceptance=next_resource_acceptance(
-                            resources=resolved.resource_grants,
-                            row_for=lambda resource: self._host._configured_resource(
-                                resource,
-                                config=catalog_config,
-                            ),
-                            catalog_version=catalog_version,
-                            selected_operations=resolved.resource_operations,
-                        ),
-                    )
-                )
-            authority = bind_project_person_control(
-                materialize_control_snapshot(
-                    self._authority_from_record(record),
-                    basis_catalog_version=catalog_version,
-                    origin="created",
-                ),
-                identity=identity,
-            )
-            audit = ProjectPersonControlAudit.build(
-                action="created",
-                actor_subject=request.actor_subject,
-                identity=identity,
-                request_id=request.request_id,
-                occurred_at=int(time.time()),
-                before=None,
-                after=authority,
-            )
-            record = self._record_from_authority(
-                bind_project_person_control(
-                    authority,
-                    identity=identity,
-                    audit=audit,
-                )
-            )
             seed_origin = (
                 (
                     PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE,
@@ -702,22 +644,23 @@ class ProjectPersonControlLifecycle:
                 if project_creation
                 else None
             )
-            if seed_origin is not None:
-                provenance_key, provenance_schema = seed_origin
-                origin_marker = {
-                    "schema": provenance_schema,
-                    "actor_subject": request.actor_subject,
-                    "request_id": request.request_id,
-                    "created_at": audit.occurred_at,
-                }
-                provenance = copy.deepcopy(dict(record.provenance or {}))
-                provenance[provenance_key] = origin_marker
-                record = self._record_from_authority(
-                    dataclasses.replace(
-                        self._authority_from_record(record),
-                        provenance=provenance,
+            authority = build_project_person_control(
+                identity=identity,
+                catalog_version=catalog_version,
+                actor_subject=request.actor_subject,
+                request_id=request.request_id,
+                base=self._authority_from_record(record),
+                resolved=resolved,
+                resource_row_for=(
+                    lambda resource: self._host._configured_resource(
+                        resource, config=catalog_config
                     )
-                )
+                ) if resolved is not None else None,
+                seed_origin=seed_origin,
+                now=created_at,
+                audit_at=int(time.time()),
+            )
+            record = self._record_from_authority(authority)
             # W502: with a named P, C's first revision is already bound under it.
             bound_record = await project_control_binding.bound_at_creation(
                 self._host, identity, decision.project_control, record)

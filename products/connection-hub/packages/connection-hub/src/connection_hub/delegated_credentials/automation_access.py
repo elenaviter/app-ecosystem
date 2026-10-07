@@ -147,6 +147,7 @@ from connection_hub.delegated_credentials.controls.model import (
     control_card_id_for_issuer,
     new_credentialless_card,
 )
+from connection_hub.delegated_credentials.card_lifecycle_plan import build_application_control
 from connection_hub.delegated_credentials.controls.snapshot import (
     CONTROL_SNAPSHOT_PROPERTY,
     control_snapshot_is_exact,
@@ -6736,22 +6737,26 @@ class AutomationAccessService:
                     "status": 404,
                 }
         try:
-            authority = new_credentialless_card(
-                control_id=control_id,
-                grantor_subject=grantor_subject,
+            created_at = int(time.time())
+            authority = build_application_control(
+                project_ref=issuer_ref,
+                holder_subject=grantor_subject,
                 catalog_version=catalog_version,
                 initial_selection=(
                     card_authority_from_record(initial_selection)
                     if initial_selection is not None
                     else None
                 ),
-                issuer_ref=issuer_ref,
                 issuer_kind=issuer_kind,
                 issuer_label=issuer_label,
                 manage_url=manage_url,
                 properties=properties,
                 composition_mode=composition_mode,
-                now=int(time.time()),
+                profile_marker=(
+                    {"profile": profile_name, "catalog_version": catalog_version}
+                    if profile_start is not None else None
+                ),
+                now=created_at,
             )
             record = record_from_card(authority)
             pruned: dict[str, Any] = {
@@ -6771,17 +6776,6 @@ class AutomationAccessService:
                 if initial_selection is not None
                 else profile_start
             )
-            if profile_start is not None:
-                record = dataclasses.replace(
-                    record,
-                    provenance={
-                        **dict(record.provenance or {}),
-                        "control_card_initial_selection": {
-                            "profile": profile_name,
-                            "catalog_version": catalog_version,
-                        },
-                    },
-                )
             if start is not None:
                 resolved = await self._resolve_card_authority(
                     user=user,
@@ -6809,45 +6803,18 @@ class AutomationAccessService:
                         ),
                     }
                 pruned = resolved.reconciled.to_public_dict()
-                record = dataclasses.replace(
-                    record,
-                    operations=tuple(resolved.operations),
-                    resource_grants={
-                        key: tuple(value)
-                        for key, value in resolved.resource_grants.items()
-                    },
-                    resource_operations={
-                        key: tuple(value)
-                        for key, value in resolved.resource_operations.items()
-                    },
-                    named_service_operations=resolved.named_service_operations,
-                    named_services=copy.deepcopy(resolved.named_services),
-                    account_scope={
-                        provider: {
-                            account_id: tuple(claims)
-                            for account_id, claims in accounts.items()
-                        }
-                        for provider, accounts in resolved.account_scope.items()
-                    },
-                    identity_scope=resolved.identity_scope,
-                    properties=resolved.properties,
-                    resource_acceptance=next_resource_acceptance(
-                        resources=resolved.resource_grants,
-                        row_for=lambda resource: self._configured_resource(
-                            resource,
-                            config=catalog_config,
-                        ),
-                        catalog_version=catalog_version,
-                        selected_operations=resolved.resource_operations,
+                authority = build_application_control(
+                    project_ref=issuer_ref,
+                    holder_subject=grantor_subject,
+                    catalog_version=catalog_version,
+                    issuer_kind=issuer_kind,
+                    base=card_authority_from_record(record),
+                    resolved=resolved,
+                    resource_row_for=lambda resource: self._configured_resource(
+                        resource, config=catalog_config
                     ),
                 )
-            record = record_from_card(
-                materialize_control_snapshot(
-                    card_authority_from_record(record),
-                    basis_catalog_version=catalog_version,
-                    origin="created",
-                )
-            )
+            record = record_from_card(authority)
             await self._persist_record(record, expected_revision=0,
                                        caller_write=CallerWrite("create", self._caller_actor_subject(user)))
         except CallerWriteRefused as exc:
