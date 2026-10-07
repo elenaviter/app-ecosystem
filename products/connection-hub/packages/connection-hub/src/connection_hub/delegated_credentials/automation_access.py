@@ -1947,6 +1947,12 @@ class AutomationAccessService:
                 caller_write=CallerWrite("control_snapshot", actor_subject) if actor_subject else None,
             )
         except CallerWriteRefused as exc:
+            if exc.reason == "card_transactions_direct_write_refused":
+                # W578: while Card transactions are on, a bound Control's
+                # migration is not persisted outside its owner's transaction
+                # (the fail-closed boundary could narrow it); it is used in
+                # memory, at the CURRENT revision, as below.
+                return record_from_card(dataclasses.replace(migrated, card_revision=current.card_revision))
             if exc.reason != "caller_writer_not_enlisted" or actor_subject:
                 raise
             # W580/B: a governed Control read on a path with no authenticated
@@ -2421,6 +2427,55 @@ class AutomationAccessService:
             "status": 409,
         }
 
+    # W578: the fields of a Control-bound Card whose change can lower (or move) its
+    # authority. While Card transactions are on a direct write may change none of
+    # them; ``expires_at`` may only move forward. Display and bookkeeping fields
+    # (label, manage_url, client_metadata, provenance, revision, issuance
+    # metadata) grant nothing. ``properties`` counts whole: some properties are
+    # authorization (card_property_classes).
+    _BOUND_AUTHORITY_FIELDS = frozenset({
+        "account_scope", "catalog_version", "composition_mode", "control_card", "entry_resource",
+        "identity_scope", "named_service_operations", "named_services", "operations", "properties",
+        "resource_acceptance", "resource_grants", "resource_operations", "state",
+        "access_id", "grantor_subject", "delegate_subject", "client_id", "issuer_kind", "issuer_ref", "source",
+        "card_kind",
+    })
+
+    async def _refuse_bound_direct_write(self, record: AutomationAccessRecord, authority: CardAuthority, *,
+                                         expected_revision: int) -> None:
+        """W578: with Card transactions on, a Control-bound Card changes only through its owner's transaction.
+
+        A person's My Card or a project-bound agent Card carries authority its
+        Control's owner relies on (under an AND composition a project needs the
+        My Card of its usable administrators), so creating one, replacing its
+        credentials or changing anything that can lower its authority would
+        bypass that owner's decision. Until it is enlisted such a write refuses.
+        A write passes only when it changes no authority field, moves the
+        expiry only forward and keeps the credentials (a prolongation, or a
+        governed edit of display fields).
+        """
+
+        if getattr(self, "_card_coordinator", None) is None:
+            return
+        if expected_revision <= 0:
+            if record.control_card is not None:
+                raise CallerWriteRefused("card_transactions_direct_write_refused")
+            return
+        loaded = await self._cards().load(record.access_id, subject_hash=_subject_key(record.grantor_subject))
+        if loaded is None:
+            if record.control_card is not None:
+                raise CallerWriteRefused("card_transactions_direct_write_refused")
+            return
+        current, handles = loaded
+        if record.control_card is None and current.control_card is None:
+            return  # unbound before and after: not this rule's (a detach is bound before)
+        before, after = current.to_dict(), authority.to_dict()
+        changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
+        if (changed & self._BOUND_AUTHORITY_FIELDS
+                or int(after.get("expires_at") or 0) < int(before.get("expires_at") or 0)
+                or handles != card_handles_from_record(record)):
+            raise CallerWriteRefused("card_transactions_direct_write_refused")
+
     async def _coordinated_write(
         self, record: AutomationAccessRecord, authority: CardAuthority, *, expected_revision: int,
         caller_write: CallerWrite | None, gate: Callable[[], Awaitable[None]] | None, witness: str,
@@ -2509,6 +2564,7 @@ class AutomationAccessService:
         persistence = self._cards()
         persist = persistence.persist
         authority = card_authority_from_record(record)
+        await self._refuse_bound_direct_write(record, authority, expected_revision=expected_revision)
         caller_request = None
         if before_commit is None:
             # pre_gate: a writer with side effects decided BEFORE them (W580 F5);
