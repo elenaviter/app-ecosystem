@@ -280,6 +280,7 @@ def _parent_binding(parent: CardAuthority) -> ControlCardBinding:
 
 def _require_project_parent(
     parent: CardAuthority, *, project_ref: str, authorization: ProjectAuthorizationDecision,
+    planned_parent: bool,
 ) -> None:
     """A request may name P, but cannot turn an arbitrary Control into P."""
     expected_id = control_card_id_for_issuer(
@@ -291,6 +292,8 @@ def _require_project_parent(
     if parent.control_card is not None:
         raise CardLifecyclePlanRefused("project_control_not_root")
     locator = authorization.project_control
+    if locator is None and not planned_parent:
+        raise CardLifecyclePlanRefused("project_control_locator_missing")
     if locator is not None and (locator.control_id != parent.access_id
                                 or locator.holder_subject != parent.grantor_subject):
         raise CardLifecyclePlanRefused("project_control_locator_mismatch")
@@ -500,7 +503,10 @@ async def plan_card_lifecycle(
                     target = _required_text(identity.get("target_subject"), "card_plan_target_invalid")
                     if target != decision.target_subject:
                         raise CardLifecyclePlanRefused("card_plan_authorization_target_mismatch", 403)
-                    _require_project_parent(parent, project_ref=scope, authorization=decision)
+                    _require_project_parent(
+                        parent, project_ref=scope, authorization=decision,
+                        planned_parent=isinstance(parent_raw, Mapping) and set(parent_raw) == {"ref"},
+                    )
                     person = ProjectPersonControlIdentity.build(project_ref=scope, target_subject=target)
                     if identity.get("composition_mode", "and") not in ("and", "or"):
                         raise CardLifecyclePlanRefused("control_card_composition_mode_invalid", 400)
@@ -564,6 +570,13 @@ async def plan_card_lifecycle(
                 elif kind == "project_person_my_card":
                     target = _required_text(identity.get("person_subject"), "card_plan_target_invalid")
                     if target != decision.target_subject or parent is None:
+                        raise CardLifecyclePlanRefused("card_plan_my_parent_invalid")
+                    try:
+                        parent_identity = ProjectPersonControlIdentity.from_authority(parent)
+                    except ProjectPersonControlError as exc:
+                        raise CardLifecyclePlanRefused("card_plan_my_parent_invalid") from exc
+                    if (parent_identity.project_ref != scope
+                            or parent_identity.target_subject != target):
                         raise CardLifecyclePlanRefused("card_plan_my_parent_invalid")
                     base = new_project_person_my_card(
                         control_card=parent, label=str(identity.get("label") or ""),
@@ -657,7 +670,11 @@ async def plan_card_lifecycle(
                 parent = await parent_for(raw.get("parent"))
                 if parent is None:
                     raise CardLifecyclePlanRefused("card_plan_parent_invalid", 400)
-                _require_project_parent(parent, project_ref=scope, authorization=decision)
+                parent_raw = raw["parent"]
+                _require_project_parent(
+                    parent, project_ref=scope, authorization=decision,
+                    planned_parent=isinstance(parent_raw, Mapping) and set(parent_raw) == {"ref"},
+                )
                 candidate = dataclasses.replace(
                     original, card_revision=original.card_revision + 1,
                     control_card=_parent_binding(parent),

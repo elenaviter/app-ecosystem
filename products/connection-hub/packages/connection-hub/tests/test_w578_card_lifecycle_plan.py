@@ -37,6 +37,7 @@ from connection_hub.delegated_credentials.project_authorization import (
     LifecyclePlanAuthorizationRequest,
     LifecyclePlanStep,
     ProjectAuthorizationDecision,
+    ProjectControlLocator,
 )
 from test_card_service import _Cache
 from test_card_transaction_store import Decisions
@@ -48,21 +49,34 @@ TARGET = "person-1"
 REQUEST = "test-plan-1"
 
 
-def _authorization(creations, updates=(), *, targets=None, grants=None):
+def _authorization(creations, updates=(), *, targets=None, grants=None, locator_overrides=None):
     targets, grants = targets or {}, grants or {}
     steps = []
+    locators = {}
+
+    def locator(raw):
+        parent = raw.get("parent")
+        if isinstance(parent, dict) and set(parent) == {"access_id", "holder_subject"}:
+            return ProjectControlLocator(
+                control_id=parent["access_id"], holder_subject=parent["holder_subject"],
+            )
+        return None
+
     for raw in creations:
         operation, field = CREATION_STEPS[raw["kind"]]
+        locators[raw["ref"]] = locator(raw)
         steps.append(LifecyclePlanStep(
             ref=raw["ref"], operation=operation,
             target_subject=targets.get(raw["ref"], raw["identity"][field]),
         ))
     for index, raw in enumerate(updates):
         ref = f"update:{index}"
+        locators[ref] = locator(raw)
         steps.append(LifecyclePlanStep(
             ref=ref, operation=UPDATE_STEPS[raw["kind"]],
             target_subject=targets.get(ref, raw["target_subject"]),
         ))
+    locators.update(locator_overrides or {})
     request = LifecyclePlanAuthorizationRequest(
         actor_subject=CREATOR, project_ref=PROJECT, request_id=REQUEST,
         request_digest="a" * 64, steps=tuple(steps),
@@ -73,6 +87,7 @@ def _authorization(creations, updates=(), *, targets=None, grants=None):
             request.step_request(step),
             delegable_grants=grants.get(step.ref, ("work:admin",)),
             platform_admin=True,
+            project_control=locators[step.ref],
         )) for step in steps),
     )
 
@@ -386,4 +401,54 @@ async def test_each_creation_is_bounded_by_its_own_step_not_another_steps_grants
     )
     assert result == {"ok": False, "error": "not_delegable", "status": 403}
     assert seen_bounds == [("work:narrow",)]
+    assert host.writes == 0
+
+
+@pytest.mark.asyncio
+async def test_live_p_cannot_be_selected_without_the_host_locator():
+    p = _p()
+    host = _Host(p)
+    c = _c_request({"access_id": p.access_id, "holder_subject": CREATOR})
+    result = await plan_card_lifecycle(
+        host, project_ref=PROJECT, creations=[c],
+        actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
+        authorization=_authorization([c], locator_overrides={"c": None}),
+    )
+    assert result == {"ok": False, "error": "project_control_locator_missing", "status": 409}
+    assert host.writes == 0
+
+
+@pytest.mark.asyncio
+async def test_invitation_revoke_step_cannot_revoke_a_person_control():
+    c = _c()
+    host = _Host(c)
+    update = {"kind": "revoke", "target_subject": TARGET, "access_id": c.access_id,
+              "subject_hash": subject_hash_for(c.grantor_subject),
+              "original_revision": c.card_revision}
+    result = await plan_card_lifecycle(
+        host, project_ref=PROJECT, creations=[], updates=[update],
+        actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
+    )
+    assert result == {"ok": False, "error": "card_plan_update_invalid", "status": 400}
+    assert host.writes == 0
+    assert host.cards.current[(subject_hash_for(c.grantor_subject), c.access_id)] is c
+
+
+@pytest.mark.asyncio
+async def test_my_creation_cannot_use_another_persons_control():
+    other = build_project_person_control(
+        identity=ProjectPersonControlIdentity.build(
+            project_ref=PROJECT, target_subject="other-person"),
+        catalog_version="catalog-v1", actor_subject=CREATOR, request_id=REQUEST,
+        now=100,
+    )
+    host = _Host(other)
+    my = {"ref": "my", "kind": "project_person_my_card",
+          "identity": {"person_subject": TARGET}, "selection": {},
+          "parent": {"access_id": other.access_id, "holder_subject": other.grantor_subject}}
+    result = await plan_card_lifecycle(
+        host, project_ref=PROJECT, creations=[my],
+        actor_subject=CREATOR, actor_kind="caller", request_id=REQUEST,
+    )
+    assert result == {"ok": False, "error": "card_plan_my_parent_invalid", "status": 409}
     assert host.writes == 0
