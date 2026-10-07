@@ -110,6 +110,15 @@ class RefreshTokenReuseDetected(RuntimeError):
     """A consumed refresh generation was presented again."""
 
 
+class RefreshCardIncarnationMoved(RuntimeError):
+    """W585: the caller read an older Card revision than the refresh family's.
+
+    Retryable, and distinct from every terminal refusal: nothing was consumed,
+    so the caller re-reads the Card and presents the SAME refresh token again.
+    A passed cap, an expired or revoked family stay the ordinary ``None``.
+    """
+
+
 class OAuthAuthorityStore(Protocol):
     async def create_refresh_token(
         self,
@@ -653,7 +662,9 @@ class PostgresOAuthAuthorityStore(IssuanceReservationStore):
                 if card_incarnation is not None and int(current.get("card_revision") or 0) > card_incarnation:
                     LOGGER.info("[connection-hub.oauth-authority] refresh_card_incarnation_moved family=%s",
                                 current.get("family_id"))
-                    return None
+                    # Raised inside the transaction: nothing was written, so
+                    # the rollback leaves the presented generation active.
+                    raise RefreshCardIncarnationMoved("refresh_card_incarnation_moved")
                 current_generation = str(
                     current.get("generation_id") or ""
                 ).strip()
