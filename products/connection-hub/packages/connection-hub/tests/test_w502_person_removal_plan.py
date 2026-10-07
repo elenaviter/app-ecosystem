@@ -125,6 +125,9 @@ async def test_an_already_revoked_partner_is_not_a_member():
     result = await _plan(host, [_remove(c)])
     assert result["ok"] is True, result
     assert [member["access_id"] for member in result["plan"]["candidate_value"]["cards"]] == [c.access_id]
+    # The revoked partner is held as a present read at its exact revision.
+    assert {"subject_hash": subject_hash_for(my.grantor_subject), "access_id": my.access_id,
+            "revision": my.card_revision + 1} in result["plan"]["reads"]
 
 
 @pytest.mark.asyncio
@@ -152,6 +155,32 @@ async def test_a_revoked_card_another_person_an_invitation_or_a_stale_revision_r
     for host, updates, error in cases:
         result = await _plan(host, updates)
         assert result["ok"] is False and result["error"] == error, (error, result)
+        assert host.writes == 0
+
+
+def _control_of(person: str, project: str, parent):
+    from connection_hub.delegated_credentials.controls.project_person import ProjectPersonControlIdentity
+    from connection_hub.delegated_credentials.card_lifecycle_plan import build_project_person_control
+    return build_project_person_control(
+        identity=ProjectPersonControlIdentity.build(project_ref=project, target_subject=person),
+        catalog_version="catalog-v1", actor_subject=CREATOR, request_id=REQUEST, parent=parent, now=100)
+
+
+@pytest.mark.asyncio
+async def test_a_removal_of_one_person_cannot_name_another_persons_or_projects_card_or_a_non_person_card():
+    """Main 15:46: under A's removal decision, only A's own person Cards in this project may be revoked."""
+    p, c, my = _person()
+    b_control = _control_of("person-2", PROJECT, p)
+    other_project_control = _control_of(TARGET, "work:project:elsewhere", None)
+    cases = {
+        "another person's Control": (_Host(p, c, my, b_control), [_remove(b_control), _remove(my)]),
+        "A's Control in another project": (_Host(p, c, my, other_project_control),
+                                           [_remove(other_project_control), _remove(my)]),
+        "the project Control (not a person Card)": (_Host(p, c, my), [_remove(p), _remove(c), _remove(my)]),
+    }
+    for name, (host, updates) in cases.items():
+        result = await _plan(host, updates)
+        assert result == {"ok": False, "error": "card_plan_update_scope_invalid", "status": 403}, (name, result)
         assert host.writes == 0
 
 

@@ -768,8 +768,9 @@ async def plan_card_lifecycle(
                     continue
                 grantor = (ProjectPersonControlIdentity.build(project_ref=scope, target_subject=target).project_subject
                            if card_kind == "control" else target)
-                partner = await cards.load_current(card_id, subject_hash=subject_hash_for(grantor))
-                if partner is not None and partner[0].state == CARD_STATE_ACTIVE:
+                # Held as a read: the partner may not come back between plan and decision.
+                partner = await load_live(subject_hash_for(grantor), card_id)
+                if partner is not None and partner.state == CARD_STATE_ACTIVE:
                     raise CardLifecyclePlanRefused("card_plan_remove_person_incomplete")
             # A revoked member composes no chain, but the decision still holds
             # the Control it was bound under: a group member, or read present.
