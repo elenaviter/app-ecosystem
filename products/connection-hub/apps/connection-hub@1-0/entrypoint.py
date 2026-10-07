@@ -53,6 +53,8 @@ from connection_hub.delegated_credentials.cards.composition import (
     recover_card_transactions,
 )
 from connection_hub.delegated_credentials.cards.census_read import CardCensusReadOperation
+from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import CardLifecyclePlanOperation
+from connection_hub.delegated_credentials.card_lifecycle_plan import plan_card_lifecycle
 from connection_hub.delegated_credentials.cards.participant_descriptor import build_participant_callers
 from connection_hub.delegated_credentials.cards.participant_operation import CardTransactionParticipantOperation
 from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
@@ -349,6 +351,7 @@ CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     # nonce; the browser session is discarded (``del request``) and never
     # establishes authority (test_w502_peer_endpoints_ignore_the_browser_session).
     "card_census_read",
+    "card_lifecycle_plan",
     "card_transaction_participant",
     "delegated_admission",
     "federated_data_bus_claim",
@@ -3953,6 +3956,41 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         operation = CardCensusReadOperation(
             callers=built.callers, card_store=persistence.card_store, catalog_store=_delegated_catalog_store(self),
             nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-census:nonce:")
+        return await operation.answer(payload)
+
+    @api(method="POST", alias="card_lifecycle_plan", route="public")
+    async def card_lifecycle_plan(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W578: a signed, non-writing plan of one Card lifecycle change for a peer.
+
+        Same peer authentication as card_census_read. The caller's own project
+        host authorizes every step of the plan (its descriptor's
+        project_lifecycle_plan_authorize), then the generic planner builds the
+        Card candidates; nothing is written, reserved or issued.
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] plan callers unavailable")
+            return unavailable
+        if not built.callers:
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        operation = CardLifecyclePlanOperation(
+            callers=built.callers, authorization=None, planner=plan_card_lifecycle,
+            host=await _automation_access_service(self, None), nonces=redis, clock=time.time,
+            nonce_prefix=f"connection-hub:{tenant}:{project}:card-plan:nonce:")
         return await operation.answer(payload)
 
     @api(method="POST", alias="delegated_admission", route="public")

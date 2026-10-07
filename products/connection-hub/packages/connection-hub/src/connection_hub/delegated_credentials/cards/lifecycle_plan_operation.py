@@ -197,10 +197,13 @@ class CardLifecyclePlanOperation:
                 request_digest=digest, steps=steps)
         except ProjectAuthorizationError as exc:
             raise _Refused(str(exc) or "card_plan_request_invalid", 400) from None
-        if self._authorization is None:
+        # The caller's own project host answers for its plan; an explicit port
+        # given to the operation (a test, a single-host composition) wins.
+        port = self._authorization if self._authorization is not None else caller.plan_authorization
+        if port is None:
             raise _Refused("card_plan_authorization_unavailable", 503)
         try:
-            authorization = await self._authorization.authorize_lifecycle_plan(request)
+            authorization = await port.authorize_lifecycle_plan(request)
         except ProjectAuthorizationError as exc:
             raise _Refused(str(exc) or "card_plan_authorization_unavailable", 503) from None
         if not isinstance(authorization, LifecyclePlanAuthorization):

@@ -60,6 +60,15 @@ def entrypoint(monkeypatch):
     monkeypatch.setattr(module, "_delegated_authority_config", lambda _e: SimpleNamespace(uses_postgresql=True))
     monkeypatch.setattr(module, "_delegated_catalog_store", lambda _e: None)
     monkeypatch.setattr(module, "_runtime_tenant_project", lambda _e: ("t", "p"))
+
+    async def host(_entrypoint, _request):
+        return object()
+
+    async def never_plan(*args, **kwargs):
+        raise AssertionError("an unauthenticated request reached the planner")
+
+    monkeypatch.setattr(module, "_automation_access_service", host)
+    monkeypatch.setattr(module, "plan_card_lifecycle", never_plan)
     instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
     instance.redis, instance.pg_pool, instance.bundle_props = _Nonces(), object(), {}
     return instance
@@ -90,3 +99,86 @@ async def test_w502_peer_endpoints_ignore_the_browser_session(entrypoint):
     participant = await entrypoint.card_transaction_participant(data=forged, request=_browser_request())
     assert participant["ok"] is False and participant["error"]["code"] == "card_participant_unauthenticated"
     assert "participant_answer" not in participant
+
+
+@pytest.mark.asyncio
+async def test_w578_lifecycle_plan_endpoint_ignores_the_browser_session(entrypoint):
+    """W578: card_lifecycle_plan is a peer endpoint like card_census_read."""
+    module = _module()
+    assert "card_lifecycle_plan" in module.CSRF_EXEMPT_PUBLIC_POST_ALIASES
+    plan = await entrypoint.card_lifecycle_plan(data={"scope": "work:project:one"}, request=_browser_request())
+    assert plan["ok"] is False and plan["error"]["code"] == "card_plan_request_invalid"
+    forged = _forged("card-lifecycle-plan-request.v1", {
+        "scope": "work:project:one", "actor_subject": "user:a", "actor_kind": "caller", "request_id": "r-1",
+        "creations": [{"ref": "c", "kind": "project_person_control", "identity": {"target_subject": "user:a"},
+                       "selection": {}, "parent": None}],
+        "updates": []})
+    plan = await entrypoint.card_lifecycle_plan(data=forged, request=_browser_request())
+    assert plan["ok"] is False and plan["error"]["code"] == "card_participant_unauthenticated"
+    assert "plan_answer" not in plan
+
+
+@pytest.mark.asyncio
+async def test_w578_an_authenticated_plan_reaches_the_callers_own_host_and_the_planner(monkeypatch):
+    import time
+
+    from connection_hub.delegated_credentials.admission import AdmissionRequest, sign_admission_request
+    from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import (
+        REQUEST_SCHEMA, plan_request_digest,
+    )
+    from connection_hub.delegated_credentials.project_authorization import (
+        LifecyclePlanAuthorization, ProjectAuthorizationDecision,
+    )
+
+    module = _module()
+    asked, planned, host = [], [], object()
+
+    class _Board:
+        async def authorize_lifecycle_plan(self, request):
+            asked.append(request)
+            return LifecyclePlanAuthorization(request=request, decisions=tuple(
+                (step.ref, ProjectAuthorizationDecision.allow(request.step_request(step))) for step in request.steps))
+
+    async def planner(given_host, **kwargs):
+        planned.append((given_host, kwargs))
+        return {"ok": True, "plan": {"candidate_value": {}, "participant_input": {}, "reads": [],
+                                     "catalog_digest": "0" * 64}}
+
+    async def host_for(_entrypoint, _request):
+        return host
+
+    caller = ParticipantCaller(service_id="problem-board", request_secret="r" * 40, receipt_secret="s" * 40,
+                               receipt_signer_id="connection-hub@1-0", audience="problem-board@1-0",
+                               hub_resource="connection-hub@1-0", bind=None, plan_scope_prefix="work:project:",
+                               plan_authorization=_Board())
+
+    async def persistence(_entrypoint, _redis):
+        return SimpleNamespace(card_store=object(), card_service=object())
+
+    async def callers(_entrypoint, _persistence):
+        return BuiltCallers(callers={"problem-board": caller}, authorities={})
+
+    monkeypatch.setattr(module, "_delegated_card_persistence", persistence)
+    monkeypatch.setattr(module, "_card_participant_callers", callers)
+    monkeypatch.setattr(module, "_runtime_tenant_project", lambda _e: ("t", "p"))
+    monkeypatch.setattr(module, "_automation_access_service", host_for)
+    monkeypatch.setattr(module, "plan_card_lifecycle", planner)
+    instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    instance.redis, instance.pg_pool, instance.bundle_props = _Nonces(), object(), {}
+
+    data = {"schema": REQUEST_SCHEMA, "request_echo": os.urandom(16).hex(), "scope": "work:project:one",
+            "actor_subject": "user:a", "actor_kind": "caller", "request_id": "r-1",
+            "creations": [{"ref": "c", "kind": "project_person_control", "identity": {"target_subject": "user:a"},
+                           "selection": {}, "parent": None}], "updates": []}
+    proof = {"service_id": "problem-board", "timestamp": str(int(time.time())), "nonce": os.urandom(12).hex()}
+    proof["signature"] = sign_admission_request(
+        secret="r" * 40, **proof, delegated_token=f"{REQUEST_SCHEMA}:{data['request_echo']}",
+        request=AdmissionRequest(resource="connection-hub@1-0", operation="card_lifecycle_plan",
+                                 invocation_id=data["request_echo"], request_digest=plan_request_digest(data),
+                                 approval_context={"protocol": REQUEST_SCHEMA}))
+    answer = await instance.card_lifecycle_plan(data={**data, "service_proof": proof}, request=_browser_request())
+    assert answer["ok"] is True and answer["plan_answer"]["result"]["kind"] == "plan"
+    [request] = asked
+    assert request.request_digest == plan_request_digest(data) and request.project_ref == "work:project:one"
+    [(given_host, kwargs)] = planned
+    assert given_host is host and kwargs["authorization"].request == request

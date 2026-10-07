@@ -79,14 +79,16 @@ class _Planner:
         return self.result
 
 
-def _operation(*, prefix="work:project:", port=None, planner=None):
+def _operation(*, prefix="work:project:", port=None, planner=None, caller_port=None):
     caller = ParticipantCaller(service_id=PEER, request_secret=REQUEST_SECRET, receipt_secret=RECEIPT_SECRET,
                                receipt_signer_id="connection-hub@1-0", audience="problem-board@1-0",
                                hub_resource="connection-hub@1-0", bind=None, scope_field="project_ref",
-                               plan_scope_prefix=prefix)
-    port, planner = port or _Port(), planner or _Planner()
+                               plan_scope_prefix=prefix, plan_authorization=caller_port)
+    planner = planner or _Planner()
+    if caller_port is None:
+        port = port or _Port()
     return CardLifecyclePlanOperation(callers={PEER: caller}, authorization=port, planner=planner, host=object(),
-                                      nonces=_Nonces(), clock=lambda: NOW), port, planner
+                                      nonces=_Nonces(), clock=lambda: NOW), port or caller_port, planner
 
 
 def _request(creations=GENESIS, updates=(), *, scope=PROJECT, secret=REQUEST_SECRET, nonce=None, actor=CREATOR):
@@ -124,6 +126,25 @@ async def test_a_genesis_plan_is_authorized_per_step_and_answered_signed():
     [call] = planner.calls
     assert call["authorization"].request == asked and call["project_ref"] == PROJECT
     assert call["creations"] == GENESIS and call["actor_subject"] == CREATOR
+
+
+@pytest.mark.asyncio
+async def test_without_an_explicit_port_the_calling_hosts_own_port_authorizes_the_plan():
+    operation, port, planner = _operation(caller_port=_Port())
+    request = _request()
+    response = await operation.answer(request)
+    assert response["ok"] is True and _verified(response, request) == {"kind": "plan", "plan": PLAN}
+    assert len(port.requests) == 1 and len(planner.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_caller_without_any_authorization_port_plans_nothing():
+    operation = CardLifecyclePlanOperation(
+        callers=_operation()[0]._callers, authorization=None, planner=_Planner(), host=object(), nonces=_Nonces(),
+        clock=lambda: NOW)
+    request = _request()
+    assert _verified(await operation.answer(request), request) == {
+        "kind": "refused", "code": "card_plan_authorization_unavailable", "status": 503}
 
 
 @pytest.mark.asyncio

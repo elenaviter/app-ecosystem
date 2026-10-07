@@ -40,6 +40,7 @@ from ..admission import AdmissionRequest, sign_admission_request
 from .authority_intent_source import AuthorityCardIntentSource, AuthorityDecisionReader, CardAuthorityBinding
 from .authority_transport import AuthorityBindingConfig, configured_authority_fetch
 from .card_participant import HubCardParticipant
+from .lifecycle_plan_authorization import PeerLifecyclePlanAuthorization
 from .participant_operation import MIN_SECRET_BYTES, ParticipantCaller, ScopeBinding
 from .transaction_authority_v2 import PROTOCOL, TransactionAuthorityRefused
 
@@ -182,7 +183,10 @@ async def build_participant_callers(
             service_id=service_id, request_secret=request_secret, receipt_secret=receipt_secret,
             receipt_signer_id=descriptor.receipt_signer_id, audience=descriptor.audience,
             hub_resource=descriptor.hub_resource, bind=bind, scope_field=descriptor.scope_field,
-            census_scope_prefix=descriptor.census_scope_prefix, plan_scope_prefix=descriptor.plan_scope_prefix)
+            census_scope_prefix=descriptor.census_scope_prefix, plan_scope_prefix=descriptor.plan_scope_prefix,
+            plan_authorization=PeerLifecyclePlanAuthorization(
+                call=call, bundle_id=descriptor.binding.bundle_id,
+                signer_id=descriptor.authority_request_signer_id, secret=signer_secret))
         authorities[service_id] = reader_for
     return BuiltCallers(callers=callers, authorities=authorities)
 
