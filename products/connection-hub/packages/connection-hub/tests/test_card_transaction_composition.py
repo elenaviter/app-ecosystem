@@ -314,3 +314,19 @@ async def test_each_failed_transaction_is_logged_by_id_and_reason(tmp_path, capl
         assert not any("secret detail" in line for line in lines)
     finally:
         await drop()
+
+
+@pytest.mark.asyncio
+async def test_binding_names_the_configured_plan_scopes_as_managed_control_scopes(tmp_path):
+    """W578: a project's Control Card in a scope a configured caller plans takes no direct write."""
+    store, card_service, _, _ = await _setup(tmp_path)
+    host = object.__new__(AutomationAccessService)
+    host._persistence = _Persistence(store)
+    persistence = SimpleNamespace(card_store=store, card_service=card_service)
+    bind_card_transactions(host, persistence=persistence, decisions=object(), grant_store=None, policies=None,
+                           managed_control_scopes=["work:project:", "", "work:project:"])
+    assert host._managed_control_scopes == ("work:project:",)
+    unconfigured = object.__new__(AutomationAccessService)
+    unconfigured._persistence = _Persistence(store)
+    bind_card_transactions(unconfigured, persistence=persistence, decisions=object(), grant_store=None, policies=None)
+    assert unconfigured._managed_control_scopes == ()

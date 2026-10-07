@@ -57,7 +57,10 @@ from connection_hub.delegated_credentials.cards.composition import (
 from connection_hub.delegated_credentials.cards.census_read import CardCensusReadOperation
 from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import CardLifecyclePlanOperation
 from connection_hub.delegated_credentials.card_lifecycle_plan import plan_card_lifecycle
-from connection_hub.delegated_credentials.cards.participant_descriptor import build_participant_callers
+from connection_hub.delegated_credentials.cards.participant_descriptor import (
+    build_participant_callers,
+    participant_caller_descriptors,
+)
 from connection_hub.delegated_credentials.cards.participant_operation import CardTransactionParticipantOperation
 from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
 
@@ -1622,11 +1625,18 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
     if not config.uses_postgresql or pg_pool is None:
         raise CardTransactionsUnavailable("card_transactions_unavailable")
     decisions = await _card_decision_store(entrypoint, pg_pool)
+    # W578: a project's Control Card in a scope a configured caller plans is
+    # written only through that caller's transaction (its plan_scope_prefix).
+    # From the descriptors alone, so a caller whose secrets are incomplete
+    # still protects its P (it fails closed rather than open).
+    managed_scopes = [descriptor.plan_scope_prefix
+                      for descriptor in participant_caller_descriptors(_connections_config(entrypoint)).values()]
     bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
                            policies=_invocation_policy_service(entrypoint),
                            authorities=(await _card_participant_callers(entrypoint, persistence)).authorities,
                            catalog_store=_delegated_catalog_store(entrypoint),
-                           accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner))
+                           accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
+                           managed_control_scopes=managed_scopes)
 
 
 async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
