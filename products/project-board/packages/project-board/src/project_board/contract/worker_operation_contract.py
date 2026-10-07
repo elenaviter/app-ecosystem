@@ -11,6 +11,21 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "description": "Register a project and its owner.",
         "grants": ("work:coordinate",),
     },
+    "project.set_goal": {
+        "description": (
+            "Set the project's goal; empty clears it. Needs the owner or admin "
+            "role AND this operation on both of the person's current Cards."
+        ),
+        "grants": ("work:coordinate",),
+    },
+    "project.cards.manage": {
+        "description": (
+            "Check that the person may manage the project's Cards in Connection "
+            "Hub: the owner or admin role AND this operation on both current "
+            "Cards. It writes no Card in Problem Board."
+        ),
+        "grants": ("work:admin",),
+    },
     "project.set_journal_home": {
         "description": "Set the owner's portable Git-backed journal home.",
         "grants": ("work:coordinate",),
@@ -164,8 +179,9 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:coordinate",),
     },
-    # People on a project (W260 phase 2): holding these on the caller's
-    # project Card is what makes a person, or an agent, an admin of it.
+    # People on a project (W260 phase 2). A role is an independent minimum,
+    # not a permission a grant confers: each mutation needs the actor's role
+    # AND the exact operation on both of the actor's current Cards.
     "project.people.invite": {
         "description": (
             "Invite an existing KDCube user to the project by email and decide "
@@ -175,15 +191,17 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
     },
     "project.people.set_role": {
         "description": (
-            "Apply a role preset (admin or member) to a person on the project, "
-            "which sets the operations their project Card holds."
+            "Set a person's project role (admin or member) through the "
+            "project's transaction. A promotion establishes the admin minimum "
+            "on both of the person's current Cards; a demotion takes effect at "
+            "once; the person's other Card selections are not rewritten."
         ),
         "grants": ("work:admin",),
     },
     "project.people.card.update": {
         "description": (
-            "Decide the operations one person's project Card holds; the Card "
-            "follows at that person's next request."
+            "Retired: answers work_control_card_edit_in_connection_hub, because "
+            "Cards are edited only in Connection Hub."
         ),
         "grants": ("work:admin",),
     },
@@ -530,6 +548,8 @@ PROBLEM_BOARD_OPERATIONS = frozenset(PROBLEM_BOARD_OPERATION_POLICIES)
 PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
     "work.project": (
         "project.register",
+        "project.set_goal",
+        "project.cards.manage",
         "project.set_journal_home",
         "project.set_repositories",
         "project.set_commit_identity",
