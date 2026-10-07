@@ -26,6 +26,12 @@ ANSWER_FIELDS = ECHO_FIELDS | {"schema", "direction", "audience", "request_diges
 CENSUS_REQUEST_FIELDS = frozenset({"schema", "request_echo", "scope", "persons", "include_catalog"})
 CENSUS_ECHO_FIELDS = CENSUS_REQUEST_FIELDS - {"schema"}
 CENSUS_ANSWER_FIELDS = CENSUS_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
+# W578: a Card lifecycle plan request and its signed answer (Connection Hub's card_lifecycle_plan).
+PLAN_REQUEST_FIELDS = frozenset({
+    "schema", "request_echo", "scope", "actor_subject", "actor_kind", "request_id", "creations", "updates",
+})
+PLAN_ECHO_FIELDS = PLAN_REQUEST_FIELDS - {"schema"}
+PLAN_ANSWER_FIELDS = PLAN_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
 PROOF_FIELDS = frozenset({"service_id", "timestamp", "signature"})
 _ECHO = re.compile(r"[0-9a-f]{32,128}\Z")
 _TIMESTAMP = re.compile(r"(?:0|[1-9][0-9]{0,19})\Z")
@@ -54,6 +60,7 @@ class AnswerContract(Enum):
 
     PARTICIPANT = "participant"
     CENSUS = "census"
+    PLAN = "plan"
 
 
 def _fields(contract: AnswerContract) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
@@ -61,6 +68,8 @@ def _fields(contract: AnswerContract) -> tuple[frozenset[str], frozenset[str], f
         return REQUEST_FIELDS, ECHO_FIELDS, ANSWER_FIELDS
     if contract is AnswerContract.CENSUS:
         return CENSUS_REQUEST_FIELDS, CENSUS_ECHO_FIELDS, CENSUS_ANSWER_FIELDS
+    if contract is AnswerContract.PLAN:
+        return PLAN_REQUEST_FIELDS, PLAN_ECHO_FIELDS, PLAN_ANSWER_FIELDS
     raise ParticipantAnswerRefused("answer_configuration_invalid")
 
 
@@ -196,5 +205,6 @@ def verify_participant_answer(answer: Mapping[str, Any], *, schema: str,
 
 __all__ = ["ANSWER_FIELDS", "ECHO_FIELDS", "PROOF_FIELDS", "REQUEST_FIELDS",
            "CENSUS_ANSWER_FIELDS", "CENSUS_ECHO_FIELDS", "CENSUS_REQUEST_FIELDS", "AnswerContract",
+           "PLAN_ANSWER_FIELDS", "PLAN_ECHO_FIELDS", "PLAN_REQUEST_FIELDS",
            "ParticipantAnswerRefused", "request_digest", "sign_participant_answer",
            "verify_participant_answer"]

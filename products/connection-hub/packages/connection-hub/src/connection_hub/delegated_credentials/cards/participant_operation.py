@@ -98,6 +98,9 @@ class ParticipantCaller:
     # card_census_read entitlement (EMain #616): the scopes this caller may read,
     # by prefix ("" = no census at all). Never inferred from the request.
     census_scope_prefix: str = ""
+    # card_lifecycle_plan entitlement (W578): the scopes this caller may plan in,
+    # by prefix ("" = no planning at all). Never inferred from the request.
+    plan_scope_prefix: str = ""
 
     def __post_init__(self) -> None:
         for secret in (self.request_secret, self.receipt_secret):
