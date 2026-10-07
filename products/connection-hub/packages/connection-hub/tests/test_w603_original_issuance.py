@@ -52,7 +52,7 @@ SCOPES = ["memories:read"]
 
 
 @asynccontextmanager
-async def _world(tmp_path, *, postgres_handles: bool = False):
+async def _world(tmp_path, *, postgres_handles: bool = False, with_policies: bool = False):
     dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
     if not dsn or not os.environ.get("REDIS_URL"):
         pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN and REDIS_URL are required")
@@ -95,7 +95,17 @@ async def _world(tmp_path, *, postgres_handles: bool = False):
         persistence = DurableCardPersistence(redis=redis_client, tenant=authority.tenant, project=authority.project,
                                              card_store=store, mutation_lock=mutation_lock, credential_handles=handles)
     persistence._cards = cards  # only the serving projection is fake
-    compose_card_effects(card_service=cards, card_store=store, grant_store=grants, policies=None,
+    policies = None
+    if with_policies:  # W585: the real invocation policy service, on bundle storage
+        from connection_hub.invocation_policy import BundleStorageInvocationPolicyStore, InvocationPolicyService
+
+        @asynccontextmanager
+        async def policy_lock(**_kwargs):
+            yield {}
+
+        policies = InvocationPolicyService(store=BundleStorageInvocationPolicyStore(tmp_path / "policies"),
+                                           mutation_lock=policy_lock)
+    compose_card_effects(card_service=cards, card_store=store, grant_store=grants, policies=policies,
                          issuance_store=authority, credential_handles=handles)
     intents = LocalCardIntentSource(store)
     hub = HubCardParticipant(service=cards, store=store, intents=intents, decisions=decisions)
@@ -103,7 +113,7 @@ async def _world(tmp_path, *, postgres_handles: bool = False):
     service = AutomationAccessService(redis=_Redis(), tenant=authority.tenant, project=authority.project,
                                       config=oauth_delegated_config_from_connections(connections),
                                       catalog_resolver=_Catalog(connections), grant_store=grants,
-                                      card_persistence=persistence)
+                                      card_persistence=persistence, invocation_policy_service=policies)
     service.notify_change = AsyncMock()
     service.bind_card_coordinator(Coordinator(decisions, {PARTICIPANT: hub}, HubLocalReceiptVerifier(store)),
                                   intents=intents, decisions=decisions, intent_ttl_seconds=60)
@@ -111,7 +121,8 @@ async def _world(tmp_path, *, postgres_handles: bool = False):
     service.bind_card_credential_handles(handles)
     try:
         yield SimpleNamespace(service=service, store=store, cards=cards, authority=authority, decisions=decisions,
-                              pool=pool, schema=schema, subject_hash=subject_hash_for(GRANTOR), metadata=metadata)
+                              pool=pool, schema=schema, subject_hash=subject_hash_for(GRANTOR), metadata=metadata,
+                              policies=policies)
     finally:
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {schema} CASCADE")

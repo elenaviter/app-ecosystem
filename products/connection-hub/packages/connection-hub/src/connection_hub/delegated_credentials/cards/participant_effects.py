@@ -51,6 +51,11 @@ EFFECT_KINDS = frozenset({
     "grant_binding", "credential_lifetime", "invocation_policy", "grant_unbind", "account_delete",
     "credential_issue", "handle_binding",
 })
+# W585: what a created Card's decision may carry: its original credentials and the
+# consent's own invocation policies (bound by _payload to this Card's owner, access id and key).
+_CREATED_KINDS = frozenset({"credential_issue", "invocation_policy"})
+# The most effects one Card decision carries (its receipt's bound).
+MAX_EFFECTS = 32
 # W606: kinds whose target answers this named, replay-stable outcome when its Card moved on.
 _SUPERSEDED_KINDS = frozenset({"credential_issue", "handle_binding"})
 # W603: the named outcome of a credential_issue whose Card moved on before it applied.
@@ -67,6 +72,24 @@ _SAFE_TARGET_REASONS = frozenset({
     "card_effect_target_revision_moved", "card_effect_custody_unavailable",
     "card_effect_policy_conflict", "card_effect_old_handle_invalid",
 })
+
+
+def _created_policy(payload: Any) -> None:
+    """W585: a created Card's policy starts from no policy and never allows a broad secret once (Main)."""
+    if not isinstance(payload, Mapping) or payload.get("expected_revision") != 0 \
+            or type(payload.get("expected_revision")) is not int:
+        _refuse("card_effect_base_revision_mismatch")
+    authority = payload.get("authority")
+    resource = str(authority.get("resource") or "") if isinstance(authority, Mapping) else ""
+    if payload.get("mode") == "once" and resource.startswith("urn:kdcube:management:secret:"):
+        from connection_hub.delegated_credentials.secret_resources import SecretResource, SecretResourceError
+
+        try:
+            broad = SecretResource.parse(resource).broad
+        except SecretResourceError:
+            broad = True
+        if broad:
+            _refuse("card_effect_policy_conflict")
 
 
 class ParticipantEffectRefused(ValueError):
@@ -394,7 +417,7 @@ class ParticipantEffectApplier:
     async def _bound(self, phase: str, kind: str, key: str, payload: Mapping[str, Any], *, transaction_id: str,
                      receipt: Mapping[str, Any], bound_access_id: str, base_revision: int) -> str:
         effects = receipt.get("effects")
-        if not isinstance(effects, list) or not 1 <= len(effects) <= 32:
+        if not isinstance(effects, list) or not 1 <= len(effects) <= MAX_EFFECTS:
             _refuse("card_effect_set_invalid")
         identities = set()
         matched = False
@@ -415,8 +438,10 @@ class ParticipantEffectApplier:
                     or (effect_kind, effect_key) in identities):
                 _refuse("card_effect_set_invalid")
             identities.add((effect_kind, effect_key))
-            if created and effect_kind != "credential_issue":
-                _refuse("card_effect_set_invalid")  # a created Card carries only its original credentials
+            if created and effect_kind not in _CREATED_KINDS:
+                _refuse("card_effect_set_invalid")  # a created Card carries only its original credentials and policies
+            if created and effect_kind == "invocation_policy":
+                _created_policy(effect["payload"])
             saved = _payload(effect_kind, effect_key, effect["payload"], bound_access_id,
                              base_revision, receipt["subject_hash"], members)
             if (effect_kind, effect_key) == (kind, key):
@@ -461,5 +486,5 @@ class ParticipantEffectApplier:
         return applied_digest
 
 
-__all__ = ["CREDENTIAL_ISSUE_SUPERSEDED", "EFFECT_KINDS", "EffectBinding", "IdempotentEffectTarget",
+__all__ = ["CREDENTIAL_ISSUE_SUPERSEDED", "EFFECT_KINDS", "MAX_EFFECTS", "EffectBinding", "IdempotentEffectTarget",
            "ParticipantEffectApplier", "ParticipantEffectRefused"]
