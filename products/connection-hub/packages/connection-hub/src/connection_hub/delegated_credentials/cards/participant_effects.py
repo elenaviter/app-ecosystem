@@ -49,8 +49,10 @@ from connection_hub.invocation_policy.models import InvocationAuthority, validat
 
 EFFECT_KINDS = frozenset({
     "grant_binding", "credential_lifetime", "invocation_policy", "grant_unbind", "account_delete",
-    "credential_issue",
+    "credential_issue", "handle_binding",
 })
+# W606: kinds whose target answers this named, replay-stable outcome when its Card moved on.
+_SUPERSEDED_KINDS = frozenset({"credential_issue", "handle_binding"})
 # W603: the named outcome of a credential_issue whose Card moved on before it applied.
 CREDENTIAL_ISSUE_SUPERSEDED = "superseded"
 _HEX = re.compile(r"[0-9a-f]{64}")
@@ -109,7 +111,8 @@ def _no_secret_fields(value: Any, depth: int = 0) -> None:
 
 
 def _payload(kind: str, key: str, value: Any, access_id: str,
-             base_revision: int, subject_hash: str) -> str:
+             base_revision: int, subject_hash: str,
+             members: Mapping[str, tuple[int, int, int]] | None = None) -> str:
     if not isinstance(value, Mapping):
         _refuse("card_effect_payload_invalid")
     _no_secret_fields(value)
@@ -123,8 +126,12 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
         "account_delete": {"access_id", "grantor_subject", "provider_id", "account_id", "incarnation"},
         # W603: one reserved original credential, activated by this decision's COMMIT.
         "credential_issue": {"access_id", "slot", "expires_at", "card_revision"},
+        # W606: move one member Card's handle row to the committed AFTER, from its pinned identity.
+        "handle_binding": {"access_id", "from_identity", "from_revision", "from_expires_at", "card_revision",
+                           "expires_at"},
     }[kind]
-    if set(value) != keys or (kind != "invocation_policy" and value.get("access_id") != access_id):
+    bound_elsewhere = kind in ("invocation_policy", "handle_binding")
+    if set(value) != keys or (not bound_elsewhere and value.get("access_id") != access_id):
         _refuse("card_effect_payload_binding_invalid")
     if "expires_at" in value and (
             type(value["expires_at"]) is not int or value["expires_at"] < 0):
@@ -171,6 +178,19 @@ def _payload(kind: str, key: str, value: Any, access_id: str,
                 type(value[name]) is not str or not value[name] or len(value[name]) > 256
                 for name in ("provider_id", "account_id", "incarnation")):
             _refuse("card_effect_payload_invalid")
+    elif kind == "handle_binding":
+        # Bound to the member Card it names: its own base revision and committed AFTER (any group member).
+        member = (members or {}).get(value["access_id"]) if type(value["access_id"]) is str else None
+        if member is None or key != "handle:" + value["access_id"]:
+            _refuse("card_effect_payload_binding_invalid")
+        if (any(type(value[name]) is not int or isinstance(value[name], bool)
+                for name in ("from_revision", "from_expires_at", "card_revision", "expires_at"))
+                or type(value["from_identity"]) is not str or not _HEX.fullmatch(value["from_identity"])):
+            _refuse("card_effect_payload_invalid")
+        base, after_revision, after_expires_at = member
+        if (value["from_revision"] != base or value["card_revision"] != after_revision
+                or value["expires_at"] != after_expires_at or base < 1):
+            _refuse("card_effect_base_revision_mismatch")
     elif kind == "credential_issue":
         if key not in {"access", "refresh"} or value["slot"] != key or value["expires_at"] < 1:
             _refuse("card_effect_payload_invalid")
@@ -287,6 +307,33 @@ class ParticipantEffectApplier:
         return await self._bound(phase, kind, key, payload, transaction_id=transaction_id, receipt=receipt,
                                  bound_access_id=bound_access_id, base_revision=base_revision)
 
+    async def _binding_members(self, receipt: Mapping[str, Any]) -> dict[str, tuple[int, int, int]]:
+        """W606: each Card this receipt commits -> (base revision, committed revision, committed expiry).
+
+        A single Card's receipt names one; a group lead's names every member,
+        read from the group's own aggregate and member receipts.
+        """
+        def entry(card_receipt: Mapping[str, Any]) -> tuple[str, tuple[int, int, int]]:
+            before, after = card_receipt.get("before"), card_receipt["after"]
+            base = int(before["card_revision"]) if isinstance(before, Mapping) else 0
+            return str(card_receipt["access_id"]), (base, int(after["card_revision"]), int(after["expires_at"]))
+
+        group = receipt.get("group")
+        if not isinstance(group, Mapping):
+            access_id, member = entry(receipt)
+            return {access_id: member}
+        aggregate = await self._read_receipt(str(group.get("transaction_id")))
+        if not isinstance(aggregate, Mapping) or not isinstance(aggregate.get("members"), list):
+            _refuse("card_effect_receipt_binding_invalid")
+        members: dict[str, tuple[int, int, int]] = {}
+        for listed in aggregate["members"]:
+            found = await self._read_receipt(str(listed.get("transaction_id")))
+            if not isinstance(found, Mapping) or found.get("access_id") != listed.get("access_id"):
+                _refuse("card_effect_receipt_binding_invalid")
+            access_id, member = entry(found)
+            members[access_id] = member
+        return members
+
     @staticmethod
     def _card_receipt_binding(receipt: Mapping[str, Any]) -> tuple[str, int]:
         """A Card receipt's exact before/after pointers: the Card and the revision its effects bind to.
@@ -335,7 +382,12 @@ class ParticipantEffectApplier:
         identities = set()
         matched = False
         created = receipt.get("before", {}) is None
-        requested = _payload(kind, key, payload, bound_access_id, base_revision, receipt["subject_hash"])
+        members = None
+        if any(isinstance(effect, Mapping) and effect.get("kind") == "handle_binding" for effect in effects):
+            members = await self._binding_members(receipt)
+        if kind == "handle_binding" and members is None:
+            _refuse("card_effect_not_prepared")
+        requested = _payload(kind, key, payload, bound_access_id, base_revision, receipt["subject_hash"], members)
         for effect in effects:
             if not isinstance(effect, Mapping) or set(effect) != {"kind", "key", "payload"}:
                 _refuse("card_effect_set_invalid")
@@ -348,7 +400,7 @@ class ParticipantEffectApplier:
             if created and effect_kind != "credential_issue":
                 _refuse("card_effect_set_invalid")  # a created Card carries only its original credentials
             saved = _payload(effect_kind, effect_key, effect["payload"], bound_access_id,
-                             base_revision, receipt["subject_hash"])
+                             base_revision, receipt["subject_hash"], members)
             if (effect_kind, effect_key) == (kind, key):
                 if saved != requested:
                     _refuse("card_effect_digest_mismatch")
@@ -361,7 +413,7 @@ class ParticipantEffectApplier:
         effect_json = _canonical({"kind": kind, "key": key, "payload": json.loads(requested)})
         binding = EffectBinding(transaction_id, kind, key, _digest(effect_json),
                                 _digest(receipt_json), receipt_json)
-        if phase != "apply" and kind not in ("invocation_policy", "account_delete", "credential_issue"):
+        if phase != "apply" and kind not in ("invocation_policy", "account_delete", "credential_issue", "handle_binding"):
             return binding.effect_digest  # validated no-op; no target state is prepared/released
         if kind == "grant_binding":
             # A merely bound callback is not proof of crash-safe SDK mint/custody.
@@ -383,7 +435,7 @@ class ParticipantEffectApplier:
         if (phase == "apply" and kind == "credential_lifetime"
                 and type(applied_digest) is str and applied_digest == "no_active_credentials"):
             return applied_digest
-        if (phase == "apply" and kind == "credential_issue"
+        if (phase == "apply" and kind in _SUPERSEDED_KINDS
                 and type(applied_digest) is str and applied_digest == CREDENTIAL_ISSUE_SUPERSEDED):
             return applied_digest
         if type(applied_digest) is not str or applied_digest != binding.effect_digest:

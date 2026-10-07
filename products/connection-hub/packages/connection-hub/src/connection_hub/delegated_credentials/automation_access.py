@@ -2450,6 +2450,39 @@ class AutomationAccessService:
             "status": 409,
         }
 
+    def bind_card_credential_handles(self, handles: Any) -> None:
+        """W606: the Card handle store whose rows a coordinated edit moves (composition only)."""
+        self._card_credential_handles = handles
+
+    async def _handle_binding_effects(
+        self, pairs: Sequence[tuple[CardAuthority | None, CardAuthority]],
+    ) -> list[dict[str, Any]]:
+        """W606: one ``handle_binding`` per edited credential-bearing Card, decided from its own handle row.
+
+        A Card edit never changes the credential a remote party holds (the
+        token is a pointer to the live Card); only the serving row's Card
+        revision and expiry follow the committed edit, by compare-and-set on
+        the row identity pinned here. No row (a credential-less Card, or a
+        Redis-held one that binds no revision), a row already not at the base
+        revision, a create, or an ending Card carries no effect.
+        """
+        handles = getattr(self, "_card_credential_handles", None)
+        if handles is None or not callable(getattr(handles, "binding_identity", None)):
+            return []
+        effects = []
+        for original, candidate in pairs:
+            if original is None or candidate.state != CARD_STATE_ACTIVE:
+                continue
+            identity = await handles.binding_identity(candidate.access_id)
+            if (not isinstance(identity, Mapping) or identity.get("from_revision") != original.card_revision
+                    or identity.get("resident_secret")):
+                continue  # no row, a row not at the base revision, or a resident agent secret (not moved here)
+            effects.append({"kind": "handle_binding", "key": f"handle:{candidate.access_id}", "payload": {
+                "access_id": candidate.access_id, "from_identity": identity["from_identity"],
+                "from_revision": identity["from_revision"], "from_expires_at": identity["from_expires_at"],
+                "card_revision": candidate.card_revision, "expires_at": candidate.expires_at}})
+        return effects
+
     def bind_managed_control_scopes(self, prefixes: Iterable[str]) -> None:
         """W578: the scopes in which a configured coordinator plans a project's Control Card (P).
 
@@ -2586,6 +2619,8 @@ class AutomationAccessService:
         action = caller_write.action if caller_write is not None else "update"
         actor = (caller_write.actor_subject if caller_write is not None else "") or record.grantor_subject
         actor_kind = "caller" if caller_write is not None and caller_write.actor_subject else "grantor"
+        # W606: the edited Card's handle row moves with the edit, inside the same decision.
+        effects = [*effects, *await self._handle_binding_effects([(current, authority)])]
         payload = card_intent_payload_digest(original=current, candidate=authority, effects=effects)
         request_id = (caller_write.request_id if caller_write is not None else "") or secrets.token_urlsafe(18)
         # W581 v2 (46a29992): one global intent; the Hub's input is its projection,
@@ -9493,6 +9528,9 @@ class AutomationAccessService:
             original = current[1]
         effects = [credential_issue_effect(access_id=candidate.access_id, slot=slot, expires_at=candidate.expires_at,
                                            card_revision=candidate.card_revision) for slot in ISSUANCE_SLOTS]
+        # W606: a re-consent moves the existing handle row through handle_binding (one writer per row);
+        # credential_issue writes handle metadata only for a create.
+        effects += await self._handle_binding_effects([(original, candidate)])
         actor_kind = "caller"  # the same enlisted actor record_oauth_grant names (CallerWrite oauth_grant)
         if original is None:
             action = "create"
