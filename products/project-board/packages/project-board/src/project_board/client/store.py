@@ -12713,7 +12713,7 @@ class SharedFieldStore:
                 state = str(notification.get("state") or "")
                 known = {
                     "sent", "partial", "not_connected", "not_configured",
-                    "no_notifier", "failed", "delivery_unknown",
+                    "no_notifier", "failed", "delivery_unknown", "not_requested",
                 }
                 result["notification"] = {
                     "state": state if state in known else ("not_requested" if not state else "unknown"),
