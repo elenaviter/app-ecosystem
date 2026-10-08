@@ -23,14 +23,15 @@ from relay_helpers import Attendance, submit_request, supervisor_with_fake_chann
 
 @pytest.fixture
 def queued_mail(tmp_path):
-    host, channel, _other = two_channel_host(tmp_path)
+    host, channel, other = two_channel_host(tmp_path)
     field = SharedFieldStore(host.field_root)
     field.initialize(field_id="w456-synthetic-scan")
-    field.register_worker(
-        worker_name=channel.worker_name, worker_identity=channel.worker_identity,
-        runtime_kind=channel.runtime_kind, runtime_session_id=channel.runtime_session_id,
-        capabilities=[], authority_label="connection-hub:test-profile", control_plane_state="published",
-    )
+    for target in (channel, other):
+        field.register_worker(
+            worker_name=target.worker_name, worker_identity=target.worker_identity,
+            runtime_kind=target.runtime_kind, runtime_session_id=target.runtime_session_id,
+            capabilities=[], authority_label="connection-hub:test-profile", control_plane_state="published",
+        )
     field.listen_worker(channel.worker_name, check_interval_seconds=30)
     field.create_project(project_id="scan-project", title="Synthetic scan", goal="Isolation test", owner="operator")
     field.sync_worker_attendances(channel.worker_name, ["work:project:scan-project"])
@@ -71,7 +72,7 @@ def _notification_stubs(supervisor, monkeypatch):
     })
 
 
-def _block_scan(monkeypatch, method):
+def _block_scan(monkeypatch, method, *, worker_name=None):
     """Block a real read in only the named scan, not an authority read."""
 
     blocked, release = threading.Event(), threading.Event()
@@ -81,7 +82,7 @@ def _block_scan(monkeypatch, method):
     context = threading.local()
 
     def scan(self, *args, **kwargs):
-        context.scanning = True
+        context.scanning = worker_name is None or args[0] == worker_name
         try:
             return real_scan(self, *args, **kwargs)
         finally:
@@ -97,6 +98,94 @@ def _block_scan(monkeypatch, method):
     monkeypatch.setattr(SharedFieldStore, method, scan)
     monkeypatch.setattr(store_module, "read_json", slow_inbox_read)
     return blocked, release, reads
+
+
+@pytest.mark.parametrize("method", ["inbox_refs_not_in", "quiet_mail_refs"], ids=["discovery", "classification"])
+def test_blocked_channel_scan_does_not_hold_other_channel_wake(queued_mail, monkeypatch, method):
+    host, channel, field, _quiet, _actionable = queued_mail
+    other = next(candidate for candidate in host.workers if candidate.worker_name != channel.worker_name)
+    field.listen_worker(other.worker_name, check_interval_seconds=30)
+    # This fixture's Claude channel normally owns its watch. Exercise the
+    # native-wake branch with a synthetic adapter, not a real resume/transport.
+    field.record_worker_session_delivery(
+        other.worker_name, adapter="synthetic-native-wake", state="attached",
+        event_kind="session.attached", delivered=True,
+    )
+    other_ref = field.send_mail(
+        "", sender="control-plane", recipient=other.worker_name, kind="request",
+        subject="Other channel request", body="Please act.", idempotency_key="other-action",
+    )["message_ref"]
+
+    async def scenario():
+        attendance = Attendance(slow_name="-none-")
+        attendance.gate.set()
+        supervisor, _opened = supervisor_with_fake_channels(host, attendance)
+        tasks = []
+        release = None
+        pushed = []
+        try:
+            await supervisor.poll_once()
+            _notification_stubs(supervisor, monkeypatch)
+
+            async def record_push(_host, target, **kwargs):
+                assert target.worker_name == other.worker_name, "the queued first wake stays deduplicated"
+                pushed.append((target.worker_name, kwargs["message_refs"]))
+                return {"delivered": True}
+
+            monkeypatch.setattr(supervisor, "_notify_session", record_push)
+            blocked, release, reads = _block_scan(monkeypatch, method, worker_name=channel.worker_name)
+            first = asyncio.create_task(relay.ProblemBoardRelaySupervisor._notify_available_input(
+                supervisor, host, channel))
+            tasks.append(first)
+            assert await asyncio.to_thread(blocked.wait, 3), "channel A reached its real inbox read"
+            second = asyncio.create_task(relay.ProblemBoardRelaySupervisor._notify_available_input(
+                supervisor, host, other))
+            tasks.append(second)
+            done, _pending = await asyncio.wait({second}, timeout=2)
+            assert second in done, "channel B's wake waited behind channel A's scan executor"
+            assert second.result()["delivered"] is True
+            assert pushed == [(other.worker_name, [other_ref])]
+            assert reads and not first.done() and not release.is_set(), "A remains blocked when B completes"
+        finally:
+            if release is not None:
+                release.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await supervisor.aclose()
+
+    asyncio.run(scenario())
+
+
+def test_aclose_stops_own_scan_threads(queued_mail):
+    host, channel, field, _quiet, _actionable = queued_mail
+
+    async def scenario():
+        attendance = Attendance(slow_name="-none-")
+        attendance.gate.set()
+        supervisor, _opened = supervisor_with_fake_channels(host, attendance)
+        scan_executors = supervisor._mail_scan_executors
+        threads = []
+        try:
+            await supervisor.poll_once()
+            await supervisor._pending_for_wake(field, channel)
+            for target in host.workers:
+                await supervisor._mail_scan_off_loop(target, field.quiet_mail_refs, target.worker_name, [])
+                threads.append(await supervisor._mail_scan_off_loop(target, threading.current_thread))
+            assert len(set(threads)) == 2 and all(thread.is_alive() for thread in threads)
+            await supervisor.aclose()
+            # Production shutdown is deliberately wait=False. Observe the actual
+            # threads exiting, rather than asserting only a shutdown method call.
+            for thread in threads:
+                await asyncio.to_thread(thread.join, 2)
+            assert not any(thread.is_alive() for thread in threads), "aclose left scan threads running"
+        finally:
+            await supervisor.aclose()
+            # A shutdown-removal mutant must fail without leaking its threads
+            # into the remaining tests or the pytest process's own shutdown.
+            scan_executors.shutdown()
+            for thread in threads:
+                await asyncio.to_thread(thread.join, 2)
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("warm", [False, True], ids=["cold", "repeated"])
@@ -216,6 +305,7 @@ def test_card_replacement_during_scan_still_fences_coordinate_dispatch(queued_ma
         attendance.gate.set()
         supervisor, _opened = supervisor_with_fake_channels(host, attendance)
         scan = None
+        coordinate = None
         release = None
         try:
             await supervisor.poll_once()
@@ -231,7 +321,13 @@ def test_card_replacement_during_scan_still_fences_coordinate_dispatch(queued_ma
             profiles_path.write_text(json.dumps(profiles), encoding="utf-8")
             queue = coordinate_queue.CoordinateQueue(host.field_root)
             request = submit_request(queue, channel)
-            started = await asyncio.wait_for(supervisor.serve_coordinate_pass(), 2)
+            coordinate = asyncio.create_task(supervisor.serve_coordinate_pass())
+            # wait_for cancels and then joins the off-loop call, so it can wait
+            # behind the blocked scan on the old executor. Detect the deadline
+            # without cancelling; finally releases the read before joining tasks.
+            done, _pending = await asyncio.wait({coordinate}, timeout=2)
+            assert coordinate in done, "Card fencing waited behind the blocked mailbox scan"
+            started = coordinate.result()
             assert channel.worker_name not in started
             assert session.client.calls == [], "scan concurrency must not authorize a stale session"
             assert queue.take_response(worker_name=channel.worker_name, request_id=request["request_id"]) is None
@@ -240,6 +336,8 @@ def test_card_replacement_during_scan_still_fences_coordinate_dispatch(queued_ma
                 release.set()
             if scan is not None:
                 await scan
+            if coordinate is not None:
+                await asyncio.gather(coordinate, return_exceptions=True)
             await supervisor.aclose()
 
     asyncio.run(scenario())
