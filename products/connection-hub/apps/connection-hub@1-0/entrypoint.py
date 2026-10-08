@@ -57,6 +57,7 @@ from connection_hub.delegated_credentials.cards.composition import (
     recover_card_transactions,
 )
 from connection_hub.delegated_credentials.cards.census_read import CardCensusReadOperation
+from connection_hub.delegated_credentials.cards.card_read_collection_operation import CardReadCollectionOperation
 from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import CardLifecyclePlanOperation
 from connection_hub.delegated_credentials.card_lifecycle_plan import plan_card_lifecycle
 from connection_hub.delegated_credentials.cards.participant_descriptor import (
@@ -364,6 +365,7 @@ CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     # establishes authority (test_w502_peer_endpoints_ignore_the_browser_session).
     "card_census_read",
     "card_lifecycle_plan",
+    "card_read_collection_register",
     "card_transaction_participant",
     "delegated_admission",
     "federated_data_bus_claim",
@@ -4328,6 +4330,40 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         operation = CardCensusReadOperation(
             callers=built.callers, card_store=persistence.card_store, catalog_store=_delegated_catalog_store(self),
             nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-census:nonce:")
+        return await operation.answer(payload)
+
+    @api(method="POST", alias="card_read_collection_register", route="public")
+    async def card_read_collection_register(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W502 lane D: seal a project-wide Card read collection; answer its bounded reference.
+
+        Same peer authentication and scope entitlement as card_census_read. The
+        caller names the persons and owns completeness; the Hub derives their
+        Cards itself and seals them once, so the caller's decision intent holds
+        only the reference (card_read_collection_operation.py).
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] collection callers unavailable")
+            return unavailable
+        if not built.callers:
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        operation = CardReadCollectionOperation(
+            callers=built.callers, card_store=persistence.card_store, catalog_store=_delegated_catalog_store(self),
+            nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-collection:nonce:")
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_lifecycle_plan", route="public")

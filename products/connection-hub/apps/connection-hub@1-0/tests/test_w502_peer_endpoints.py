@@ -119,6 +119,22 @@ async def test_w578_lifecycle_plan_endpoint_ignores_the_browser_session(entrypoi
 
 
 @pytest.mark.asyncio
+async def test_w502_read_collection_registration_ignores_the_browser_session(entrypoint):
+    """Lane D: card_read_collection_register is a peer endpoint like card_census_read."""
+    module = _module()
+    assert "card_read_collection_register" in module.CSRF_EXEMPT_PUBLIC_POST_ALIASES
+    answer = await entrypoint.card_read_collection_register(data={"scope": "work:project:one"},
+                                                            request=_browser_request())
+    assert answer["ok"] is False and answer["error"]["code"] == "card_read_collection_request_invalid"
+    forged = _forged("card-read-collection-register.v1", {
+        "scope": "work:project:one", "persons": ["user:a"], "actor_subject": "a", "request_id": "r-1",
+        "deadline": 1_800_000_300})
+    answer = await entrypoint.card_read_collection_register(data=forged, request=_browser_request())
+    assert answer["ok"] is False and answer["error"]["code"] == "card_participant_unauthenticated"
+    assert "collection_answer" not in answer
+
+
+@pytest.mark.asyncio
 async def test_w578_an_authenticated_plan_reaches_the_callers_own_host_and_the_planner(monkeypatch):
     import time
 
