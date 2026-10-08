@@ -18,7 +18,7 @@ const ROOT = new URL('../', import.meta.url)
 
 function files(dir, out = []) {
   for (const name of readdirSync(dir)) {
-    if (name === 'node_modules' || name === 'dist') continue
+    if (['node_modules', 'dist', 'public', 'test-results', '_shared'].includes(name) || name.startsWith('.')) continue
     const url = new URL(name, dir)
     if (statSync(url).isDirectory()) files(new URL(`${name}/`, dir), out)
     else if (/\.(mjs|js|ts|tsx)$/.test(name)) out.push(url)
@@ -86,7 +86,7 @@ test('allocation skips a reserved or invalid answer a bounded number of times, t
 // The modules a test file can open a listening socket through. Both quote
 // styles and require() count; an alias (`createServer as make`) is still the
 // imported name.
-const SOCKET_MODULES = ['vite', 'node:net', 'net', 'node:http', 'http', 'node:https', 'https', 'node:http2', 'http2', 'node:dgram', 'dgram']
+const SOCKET_MODULES = ['vite', 'node:net', 'net', 'node:http', 'http', 'node:https', 'https', 'node:http2', 'http2', 'node:dgram', 'dgram', 'ws']
 const moduleImported = (text, name) => new RegExp(`(?:from\\s*|import\\s*\\(\\s*|require\\s*\\(\\s*)(['"\`])${name.replace(/[.:]/g, '\\$&')}\\1`).test(text)
 const HELPER_CALL = /\b(?:inProcessViteServer|safeViteServer)\(/
 
@@ -94,7 +94,15 @@ const HELPER_CALL = /\b(?:inProcessViteServer|safeViteServer)\(/
  * What a source file would do to the port policy (W605). A file that can open
  * a socket must take every Vite server block from the helper, may not start
  * Vite's preview server, and may not call .listen( itself; the helper file and
- * this test are the only allowed exceptions.
+ * this test are the only allowed exceptions. Anywhere in the widget, a listen
+ * on a literal port, a WebSocketServer, or a child process that runs Vite is
+ * refused too.
+ *
+ * What this text scan cannot see (named, not claimed): a server started in a
+ * package outside this widget, or behind an indirection that hides both the
+ * module name and a literal port (a computed port handed to a re-exported
+ * factory); and the Python test servers, which stay on OS-allocated loopback
+ * ports with no reserved-set check.
  */
 export function scanTestServerSource(path, text) {
   const offenders = []
@@ -105,12 +113,15 @@ export function scanTestServerSource(path, text) {
   if ((vite || node) && /\bmiddlewareMode\s*:\s*true\b/.test(text)) offenders.push(`${path}: a literal middleware block (use inProcessViteServer())`)
   if ((vite || node) && /\bstrictPort\s*:|\bport\s*:\s*\d/.test(text)) offenders.push(`${path}: a hand-written port block (use safeViteServer())`)
   if (node && /\.listen\s*\(/.test(text)) offenders.push(`${path}: a socket listener of its own (use allocateLoopbackPort() / safeViteServer())`)
+  if (/\.listen\s*\(\s*\d/.test(text)) offenders.push(`${path}: a listen on a literal port`)
+  if (/\bnew\s+WebSocketServer\b/.test(text)) offenders.push(`${path}: a WebSocket server of its own`)
+  if ((moduleImported(text, 'node:child_process') || moduleImported(text, 'child_process')) && /\bvite\b/.test(text)) offenders.push(`${path}: Vite run as a child process (a CLI dev server)`)
   return offenders
 }
 
 const SCAN_EXEMPT = new Set(['tests/safe-port.mjs', 'tests/safe-port.test.mjs'])
 
-test('the bypass scan catches every way a test server can avoid the helper', () => {
+test('the bypass scan catches the bypasses it knows, and names what it cannot see', () => {
   const caught = (text) => scanTestServerSource('case.mjs', text)
   const bypasses = {
     S1: "import { createServer } from 'vite'\nawait (await createServer({ server: { port: 5173 } })).listen()",
@@ -125,6 +136,9 @@ test('the bypass scan catches every way a test server can avoid the helper', () 
     'require(http)': "const http = require('http')\nhttp.createServer().listen(8010)",
     'dynamic import': "const { createServer } = await import('node:https')\ncreateServer().listen(443)",
     'template quotes': "import { createServer } from `vite`\nawait createServer({})",
+    'a re-exported factory on a literal port': "import { makeServer } from './server-factory.mjs'\nmakeServer().listen(5173)",
+    'a WebSocketServer': "import { WebSocketServer } from 'ws'\nnew WebSocketServer({ port: 24678 })",
+    'vite as a child process': "import { spawn } from 'node:child_process'\nspawn('npx', ['vite', '--port', '5173'])",
   }
   for (const [name, text] of Object.entries(bypasses)) assert.notDeepEqual(caught(text), [], name)
   const allowed = {
@@ -137,7 +151,9 @@ test('the bypass scan catches every way a test server can avoid the helper', () 
 
 test('every test server in the widget goes through the helper', () => {
   const offenders = []
-  for (const url of [...files(new URL('tests/', ROOT)), ...files(new URL('src/', ROOT))]) {
+  // The whole widget, not only tests/ and src/: a server helper anywhere in it
+  // (tools/, scripts/) is reached by a test.
+  for (const url of files(ROOT)) {
     const path = url.pathname.slice(ROOT.pathname.length)
     if (SCAN_EXEMPT.has(path)) continue
     offenders.push(...scanTestServerSource(path, readFileSync(url, 'utf8')))
