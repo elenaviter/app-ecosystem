@@ -39,6 +39,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 
 | Rule id | Rule |
 | --- | --- |
+| `own_card_is_its_persons` | A person's own My Card is managed only by that person: the Reset on their own row in Team resets their own Card, never another person's, and an agent never does it. |
 | `role_holder_decides_handovers` | The agent holding an optional project role, such as the knowledge keeper, decides the hand-overs mailed to that role; a person never does, and holding the role is a condition on the operation, never authority by itself. |
 | `project_membership` | A person on the project reads it: the plan, items, notes, reports, people, workers, the board and the timeline. Membership scopes a person to a project; it is not an operation on a Card. |
 | `operator_inbox_people_only` | The operator inbox is for people: its threads, replies, read state and worker directory are read and written by a signed-in person on the project (not an older read-only viewer), never by an agent. |
@@ -167,6 +168,7 @@ canonical Card permission rather than a second permission named after the page c
 | `telegram.bot_info` | Membership (`project_membership`) | Reads the configured bot's topic settings. |
 | `project.people.list` | Membership (`project_membership`) | Project membership and Card reconciliation retain their own authority fences. |
 | `project.people.card` | Membership (`project_membership`) | An admin reads another person's Card projection; other members read only their own. |
+| `project.people.card.reset` | Membership (`project_membership`) | A person resets only their own My Card's Problem Board service to what their Control allows: preview shows the exact result, and confirm commits only that shown result in one PB/Hub transaction (work_card_transaction_card_reset_display_changed when it moved). |
 | `project.file.edit.request` | Role AND current effective Card hierarchy | A signed-in person needs project.files.edit and control.enqueue; edits only a file listed on this project. |
 | `project.file.edit.get` | Membership (`project_membership`) | The requesting person's own edit result. |
 | `work.attachment.add` | Role AND current effective Card hierarchy | plan.item.update through the current effective Card hierarchy, before promoting the staged upload; revision-fenced. |
