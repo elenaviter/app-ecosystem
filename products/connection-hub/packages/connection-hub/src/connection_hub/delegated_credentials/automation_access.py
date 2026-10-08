@@ -1654,10 +1654,12 @@ def _newly_selected_operation_grants(
 ) -> set[str] | None:
     """Grants carried by operations a save selects that the stored Card did not.
 
-    ``None`` when the growth cannot be told apart operation by operation (a
-    selection widened to every operation, a legacy selection, an operation the
-    catalog does not map to a grant): the caller then treats every grant the
-    save carries as added.
+    An explicit empty selection (``[]``) means no operations, as the resolver
+    stores it and the runtime enforces it; only a missing selection is
+    legacy. ``None`` when the growth cannot be told apart operation by
+    operation (no selection stated for a resource the Card holds operations
+    on, ``"*"``, an operation the catalog does not map to a grant): the
+    caller then treats every grant the save carries as added.
     """
 
     from connection_hub.delegated_credentials.agent_capability_sync import (
@@ -1666,18 +1668,20 @@ def _newly_selected_operation_grants(
 
     added: set[str] = set()
     configs = {resource: cfg for resource, cfg in resource_pairs}
+    selected = dict(resource_operations or {})
+    stored = dict(existing.resource_operations or {})
     for resource, cfg in configs.items():
-        now = set(_as_list(list(resource_operations.get(resource) or ())))
-        before = set(_as_list(list(dict(existing.resource_operations or {}).get(resource) or ())))
+        now = set(_as_list(list(selected.get(resource) or ())))
+        before = set(_as_list(list(stored.get(resource) or ())))
         carried = resource in dict(existing.resource_grants or {})
         if not now:
-            if carried and before:
-                return None  # an exact selection widened to every tool
             if not carried:
                 added.update(getattr(cfg, "grants", ()) or ())
-            continue
-        if carried and not before:
-            continue  # every tool before, an exact subset now
+            elif before and resource not in selected:
+                return None  # no selection stated for operations the Card holds
+            continue  # an explicit empty selection: no operation, nothing added
+        if carried and not before and resource not in stored:
+            continue  # a legacy record named no operations: an exact subset now
         tools = {tool.name: tuple(tool.grants) for tool in getattr(cfg, "tools", ()) or ()}
         for operation in now - before:
             if operation not in tools:
