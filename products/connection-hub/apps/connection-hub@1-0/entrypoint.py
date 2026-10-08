@@ -1696,6 +1696,35 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
                            catalog_store=_delegated_catalog_store(entrypoint),
                            accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
                            managed_control_scopes=managed_scopes)
+    # W638: a managed Card edit is forwarded to the host that plans its scope,
+    # signed with that caller's authority request signer. A caller whose
+    # signer secret is unavailable gets no forwarder: its edits stay refused.
+    service.bind_managed_card_edit(await _managed_card_edit_forwarders(entrypoint))
+
+
+async def _managed_card_edit_forwarders(entrypoint: Any) -> dict[str, Any]:
+    from connection_hub.delegated_credentials.managed_card_edit_forward import PeerManagedCardEdit
+    from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_operation
+
+    async def call(**kwargs: Any) -> Any:
+        # The host authenticates the forward by the Hub's proof, as a public operation.
+        return await call_bundle_operation(route="public", **kwargs)
+
+    forwarders: dict[str, Any] = {}
+    for descriptor in participant_caller_descriptors(_connections_config(entrypoint)).values():
+        if not descriptor.plan_scope_prefix:
+            continue
+        try:
+            secret = str(await _bundle_secret_value(entrypoint, secret_path=descriptor.authority_request_secret_ref,
+                                                    trace_scope="managed-card-edit", warn_missing=False) or "")
+        except Exception:  # noqa: BLE001 - a secret store failure leaves this scope refused
+            secret = ""
+        if len(secret.encode("utf-8")) < 32:
+            continue
+        forwarders[descriptor.plan_scope_prefix] = PeerManagedCardEdit(
+            call=call, bundle_id=descriptor.binding.bundle_id,
+            signer_id=descriptor.authority_request_signer_id, secret=secret)
+    return forwarders
 
 
 async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:

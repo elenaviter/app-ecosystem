@@ -798,21 +798,28 @@ async def plan_card_lifecycle(
             if (not isinstance(raw, Mapping)
                     or not {"kind", "target_subject", "access_id", "subject_hash", "original_revision"} <= set(raw)
                     or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent",
-                                   "selection"}
-                    or ("selection" in raw) != (raw.get("kind") == "reselect")):
+                                   "selection", "profile", "resource"}
+                    or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
+                                                                    "reselect_agent_card",
+                                                                    "reselect_invitation_control"})):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             decision = authorization.decision_for(f"update:{index}")
             access_id = _required_text(raw["access_id"], "card_plan_update_invalid")
             subject_hash = _required_text(raw["subject_hash"], "card_plan_update_invalid")
             original_revision = raw["original_revision"]
-            if type(original_revision) is not int or original_revision < 1:
+            # W639: the project host knows an agent Card's id, not its revision.
+            # For the agent lifecycle kinds, 0 plans against the revision the Hub
+            # loads now; the member carries it and PREPARE fences exactly that.
+            current_agent = (raw.get("kind") in {"attach_agent", "detach_agent", "apply_agent_profile"}
+                             and original_revision == 0)
+            if type(original_revision) is not int or (original_revision < 1 and not current_agent):
                 raise CardLifecyclePlanRefused("card_plan_revision_invalid", 400)
             loaded = await cards.load_current(access_id, subject_hash=subject_hash)
             if loaded is None:
                 raise CardLifecyclePlanRefused("card_plan_update_target_absent")
             original = loaded[0]
             if (subject_hash_for(original.grantor_subject) != subject_hash
-                    or original.card_revision != original_revision):
+                    or not current_agent and original.card_revision != original_revision):
                 raise CardLifecyclePlanRefused("card_plan_original_revision_changed")
             try:
                 person_identity = ProjectPersonControlIdentity.from_authority(original)
@@ -834,6 +841,38 @@ async def plan_card_lifecycle(
                 built = await build_existing_card_selection_update(
                     host, original=original, selection=raw["selection"], active=active, decision=decision,
                     project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now)
+                members.append(built["member"])
+                originals[(subject_hash, access_id)] = original.to_dict()
+                continue
+            if raw["kind"] in {"reselect_project_control", "reselect_agent_card", "reselect_invitation_control"}:
+                # W638: the project's own Control or a project agent Card takes a host-authorized selection.
+                if "parent" in raw:
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                from connection_hub.delegated_credentials.managed_card_selection_plan import (
+                    build_managed_card_selection_update,
+                )
+                built = await build_managed_card_selection_update(
+                    host, original=original, selection=raw["selection"], active=active, decision=decision,
+                    kind={"reselect_project_control": "project_control", "reselect_agent_card": "agent_card",
+                          "reselect_invitation_control": "invitation_control"}[raw["kind"]],
+                    project_ref=scope, actor_subject=actor, request_id=request_id, now=now)
+                members.append(built["member"])
+                originals[(subject_hash, access_id)] = original.to_dict()
+                continue
+            if ("profile" in raw or "resource" in raw) and raw["kind"] != "apply_agent_profile":
+                raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+            if raw["kind"] in {"attach_agent", "detach_agent", "apply_agent_profile"}:
+                if ("parent" in raw) != (raw["kind"] == "attach_agent"):
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                from connection_hub.delegated_credentials.agent_lifecycle_plan import (
+                    build_agent_lifecycle_update,
+                )
+                parent = await parent_for(raw["parent"]) if raw["kind"] == "attach_agent" else None
+                built = await build_agent_lifecycle_update(
+                    host, original=original,
+                    update={**raw, "original_revision": original.card_revision} if current_agent else raw, active=active, decision=decision,
+                    project_ref=scope, actor_subject=actor, request_id=request_id, now=now,
+                    parent=parent)
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue

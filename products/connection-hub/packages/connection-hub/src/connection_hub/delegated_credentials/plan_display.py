@@ -96,6 +96,19 @@ def plan_display(
                 or candidate.card_revision != before_revision + 1):
             raise _refuse("card_plan_display_candidate_changed")
         kind = DISPLAY_KINDS.get(candidate.issuer_kind)
+        if kind is None and not candidate.issuer_kind and candidate.control_card is not None:
+            # W638: an owner's own Card bound under a project's Control (a project agent Card).
+            kind = "agent_card"
+        if (kind is None and not candidate.issuer_kind and candidate.control_card is None
+                and member.get("action") == "detach" and isinstance(originals[key], Mapping)):
+            # W639: the same agent Card becomes unbound in the candidate. Its
+            # exact original, checked below, carries the project-Control edge.
+            try:
+                original_for_kind = CardAuthority.from_mapping(originals[key])
+            except (CardRecordError, TypeError, ValueError) as exc:
+                raise _refuse("card_plan_display_original_invalid") from exc
+            if original_for_kind.control_card is not None and original_for_kind.card_kind in {"agent", "automation"}:
+                kind = "agent_card"
         if kind is None:
             raise _refuse("card_plan_display_kind_invalid")
         if kind == "invitation_control":

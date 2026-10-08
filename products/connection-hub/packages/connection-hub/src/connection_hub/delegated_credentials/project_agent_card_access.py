@@ -296,6 +296,17 @@ class ProjectAgentCardAccess:
         decision = await self._authorize(user, access_id=access_id, project_ref=project_ref, action=AGENT_CARD_WRITE)
         if isinstance(decision, dict):
             return decision
+        host = self._host
+        if (callable(getattr(host, "_forward_agent_card_edit", None))
+                and host._managed_direct_write_refused() is not None):
+            # W638: while Card transactions are on, a bound agent Card is edited
+            # by the project's own transaction, never written directly here.
+            record = await host._load_record(clean_text(access_id), grantor_subject=decision.grantor_subject)
+            if record is not None and record.control_card is not None:
+                forwarded = await host._forward_agent_card_edit(user, record=record,
+                    project_ref=clean_text(project_ref), request_id=request_id, changes=changes)
+                if forwarded is not None:
+                    return forwarded
         delegable = await self._actor_delegable_grants(user, decision.grantor_subject)
         return await self._host.update_access(
             self._owner_user(decision),
