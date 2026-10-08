@@ -196,6 +196,41 @@ def test_a_locked_store_is_a_transient_relay_failure():
     assert transient_failure(CredentialError("credential_store_locked", "x"))
     assert transient_failure(CredentialError("credential_store_missing", "x"))
     assert transient_failure(AuthorizationError("oauth_credential_custody_timeout", "x"))
+    # The same conditions read through the OAuth stores (mint, 2026-10-08).
+    for code in ("oauth_profile_store_locked", "oauth_profile_store_missing",
+                 "oauth_session_store_locked", "oauth_session_store_missing"):
+        assert transient_failure(AuthorizationError(code, "x")), code
+    # A real store fault still parks the channel.
+    assert not transient_failure(AuthorizationError("oauth_profile_store_failed", "x"))
+
+
+@pytest.mark.parametrize("code", ["oauth_profile_store_locked", "oauth_profile_store_missing"])
+def test_a_channel_opened_while_the_oauth_store_is_locked_is_due_again_within_seconds(tmp_path, code, caplog):
+    """Host mint, 2026-10-08: the relay started at 18:47:10Z with the store
+    locked, recorded the open failure as a permanent refusal (next attempt
+    about 30 minutes out), and the 19:01Z unlock was not picked up before the
+    19:09Z restart. A locked or missing store is now due again in seconds."""
+
+    import asyncio
+
+    from connection_hub.caller.errors import AuthorizationError
+    from project_board.client import relay_pacing
+    from relay_helpers import make_host, make_supervisor
+
+    def due_after(error, seconds):
+        root = tmp_path / error.code
+        root.mkdir()
+        host, _identity, channel = make_host(root)
+        supervisor = make_supervisor(host)
+        now = [1_000_000.0]
+        supervisor._pacing = relay_pacing.RelayPacing(None, clock=lambda: now[0], rng=lambda: 1.0)
+        asyncio.run(supervisor._finish_pending_turn(host, channel, "profile-fingerprint", error))
+        now[0] += seconds
+        return supervisor._pacing.pending_due(channel.worker_name, "profile-fingerprint")
+
+    assert due_after(AuthorizationError(code, "locked"), 60)
+    # The generic store fault keeps the permanent refusal's long wait.
+    assert not due_after(AuthorizationError("oauth_profile_store_failed", "fault"), 60)
 
 
 
