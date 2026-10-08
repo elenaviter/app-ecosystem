@@ -139,3 +139,92 @@ async def test_a_dependency_that_moved_after_registration_refuses_the_whole_grou
     with pytest.raises(tx.CardTransactionRefused, match="card_dependency_moved"):
         await _service_stage(service, _service_members(before, after), catalog=CATALOG, collection=ref)
     assert await _read(store, before) == before
+
+
+# ── the group codec's collection form (card_group.py) ──
+
+from connection_hub.delegated_credentials.cards import card_group as groups
+from connection_hub.delegated_credentials.cards.card_read_set import read_collection_dependencies
+from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+
+def _ref(count=2, **changes):
+    return {"schema": "connection-hub.card-read-collection-ref.v1", "collection_id": COLLECTION,
+            "scope": "work:project:synthetic", "count": count, "root": "a" * 64, "catalog": CATALOG,
+            "deadline": 2_000_000_000, **changes}
+
+
+def _group_members(before, after):
+    return [groups.group_member(original=original, candidate=candidate, action=action)
+            for _, original, candidate, action in _service_members(before, after)]
+
+
+@pytest.mark.asyncio
+async def test_the_group_projection_by_reference_is_bounded_and_verifies_exactly(tmp_path):
+    import re
+
+    from service_foundation.coordination.durable_wire import canonical_json_bytes
+    store, service, before, after = await _setup(tmp_path)
+    members = _group_members(before, after)
+    sizes = set()
+    for count in (2, 60, 1000):
+        projection = groups.hub_group_participant_input(members=members, actor_subject="a", actor_kind="caller",
+                                                        collection=_ref(count))
+        assert projection["dependency_revisions"] == read_collection_dependencies(_ref(count))
+        sizes.add(len(re.sub(rb':[0-9]+[,}]', b':N,', canonical_json_bytes(projection))))
+        value = groups.group_candidate_value(members, collection=_ref(count))
+        assert groups.verify_group_projection(projection, value)["collection"] == _ref(count)
+    assert len(sizes) == 1
+    assert groups.group_targets(value) == {(m["subject_hash"], m["access_id"]) for m in members}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tamper", ["bool_count", "extra_read_dep", "other_ref", "no_collection_in_value",
+                                    "collection_with_enumerated_deps", "bad_ref"])
+async def test_the_group_codec_refuses_every_mixed_or_tampered_form(tmp_path, tamper):
+    store, service, before, after = await _setup(tmp_path)
+    members = _group_members(before, after)
+    projection = groups.hub_group_participant_input(members=members, actor_subject="a", actor_kind="caller",
+                                                    collection=_ref())
+    value = groups.group_candidate_value(members, collection=_ref())
+    key = f"card-collection:{COLLECTION}:{'a' * 64}"
+    if tamper == "bool_count":  # count 1 written as True: equal under ==, refused as not an exact int
+        value = groups.group_candidate_value(members, collection=_ref(1))
+        projection = groups.hub_group_participant_input(members=members, actor_subject="a", actor_kind="caller",
+                                                        collection=_ref(1))
+        projection["dependency_revisions"] = {**projection["dependency_revisions"], key: True}
+    elif tamper == "extra_read_dep":
+        projection = {**projection, "dependency_revisions": {**projection["dependency_revisions"],
+                                                             f"card-absent:{OTHER}:aut_x": 1}}
+    elif tamper == "other_ref":
+        value = groups.group_candidate_value(members, collection=_ref(root="b" * 64))
+    elif tamper == "no_collection_in_value":
+        value = groups.group_candidate_value(members)
+    elif tamper == "collection_with_enumerated_deps":
+        projection = groups.hub_group_participant_input(members=members, actor_subject="a", actor_kind="caller",
+            reads=[{"subject_hash": OTHER, "access_id": "aut_x", "revision": 0}])
+    else:
+        value = {**value, "collection": {**_ref(), "count": 0}}
+    with pytest.raises(DecisionRefused):
+        groups.verify_group_projection(projection, value)
+
+
+@pytest.mark.asyncio
+async def test_a_group_input_cannot_mix_a_collection_with_enumerated_reads(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    with pytest.raises(DecisionRefused, match="card_group_dependencies_mixed"):
+        groups.hub_group_participant_input(members=_group_members(before, after), actor_subject="a",
+                                           actor_kind="caller", collection=_ref(),
+                                           reads=[{"subject_hash": OTHER, "access_id": "aut_x", "revision": 0}])
+
+
+@pytest.mark.asyncio
+async def test_v1_enumerated_groups_are_byte_identical_to_before(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    members = _group_members(before, after)
+    value = groups.group_candidate_value(members)
+    assert set(value) == {"schema", "cards", "effects"}
+    reads = [{"subject_hash": OTHER, "access_id": "aut_x", "revision": 0}]
+    projection = groups.hub_group_participant_input(members=members, actor_subject="a", actor_kind="caller",
+                                                    reads=reads)
+    assert groups.verify_group_projection(projection, value) == value
