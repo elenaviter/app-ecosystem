@@ -76,6 +76,42 @@ class CardMutationLock(Protocol):
     ) -> AbstractAsyncContextManager[Any]: ...
 
 
+# Each held Card section is one open lock file, and a read set holds all of its
+# sections at once. Beyond the descriptors already open, keep this many free for
+# the rest of the process (sockets, logs, other requests).
+LOCK_FD_RESERVE = 64
+
+
+def _open_descriptors() -> int:
+    """How many descriptors the process holds now (Linux /proc/self/fd, macOS /dev/fd)."""
+    import os
+
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        try:
+            return max(0, len(os.listdir(directory)) - 1)  # the listing's own descriptor
+        except OSError:
+            continue
+    return 0
+
+
+def _require_lock_budget(sections: int) -> None:
+    """Refuse, before taking any section, a set the process cannot hold open at once.
+
+    Running out of descriptors mid-stack would fail with an OS error after some
+    sections were taken. This names it up front, counting the descriptors the
+    process already holds; the release configuration sets the process's
+    open-file limit (RLIMIT_NOFILE), never a request. Nothing was locked or written.
+    """
+    import resource
+
+    from .transaction_store import CardTransactionRefused
+
+    soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if soft != resource.RLIM_INFINITY and sections > soft - _open_descriptors() - LOCK_FD_RESERVE:
+        # A definite refusal: the coordinator aborts, nothing is held.
+        raise CardTransactionRefused("card_read_set_lock_budget_exceeded")
+
+
 class CardConflict(RuntimeError):
     """Another mutation owns this card, or its live revision moved."""
 
@@ -340,6 +376,7 @@ class DelegatedCardService:
             # Card's section, taken in one sorted order so stages cannot deadlock.
             async with AsyncExitStack() as sections:
                 keys = sorted({(subject_hash, access_id), *((r["subject_hash"], r["access_id"]) for r in reads or ())})
+                _require_lock_budget(len(keys))
                 for section_subject, section_access in keys:
                     await sections.enter_async_context(self._critical_section(
                         subject_hash=section_subject, access_id=section_access))
@@ -590,7 +627,9 @@ class DelegatedCardService:
 
         try:
             async with AsyncExitStack() as sections:
-                for subject_hash, access_id in sorted({(r["subject_hash"], r["access_id"]) for r in reads or ()}):
+                keys = sorted({(r["subject_hash"], r["access_id"]) for r in reads or ()})
+                _require_lock_budget(len(keys))
+                for subject_hash, access_id in keys:
                     await sections.enter_async_context(self._critical_section(
                         subject_hash=subject_hash, access_id=access_id))
                 return await prepare_read_set(self._store, transaction_id=transaction_id,

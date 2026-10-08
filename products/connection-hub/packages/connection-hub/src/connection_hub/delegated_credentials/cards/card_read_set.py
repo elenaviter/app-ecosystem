@@ -17,8 +17,8 @@ prepare, Decision and finish:
   ``provisioning`` ``{}``.
 - The candidate value is ``{"schema": "connection-hub.card-read-set.v1",
   "reads": [...], "catalog": "<64 hex or empty>"}``: reads sorted and unique
-  by (subject_hash, access_id), at least one read or a catalog, at most 64
-  reads; a read is ``{subject_hash, access_id, revision}``, revision >= 1 a
+  by (subject_hash, access_id), at least one read or a catalog, at most
+  ``MAX_READ_SET_READS`` reads and ``MAX_READ_SET_BYTES`` canonical bytes; a read is ``{subject_hash, access_id, revision}``, revision >= 1 a
   present Card and 0 an absence. No effects and no Card writes.
 
 An optional empty catalog in the generic wire is not permission for a caller
@@ -32,13 +32,27 @@ from typing import Any, Mapping, Sequence
 from service_foundation.coordination.durable_decision_log import DecisionRefused
 from service_foundation.coordination.durable_wire import WireRefused, canonical_json_bytes, sha256_hex
 
+from .census_read import MAX_ANSWER_BYTES as MAX_CENSUS_ANSWER_BYTES, MAX_PERSONS
 from .card_participant import (
     PARTICIPANT, catalog_reservation_from_dependencies, dependency_revisions, reads_from_dependencies,
 )
 
 READ_SET_BINDING_KIND = "connection-hub.card-read-set"
 READ_SET_SCHEMA = "connection-hub.card-read-set.v1"
-MAX_READ_SET_READS = 64
+# The read set holds every Card a transaction depends on. A project-wide step (the
+# zero cutover) reads the unique union of every person's My Card, Control Card and
+# Control chain Cards (CodeApp: card_business_hub_census read_reservations); a
+# shared chain (the project Control and its ancestors) counts once. So the count is
+# 2 per person plus the DISTINCT chain Cards, sized here for MAX_PERSONS people with
+# up to MAX_READ_SET_CHAIN_READS distinct chain Cards. A larger set, or one past the
+# census answer's own byte bound, is refused by name (card_read_set_too_large): no
+# proof is dropped and no member count is imposed. The 64 this replaced was sized
+# for W578's ordinary actor/target/witness read and refused a 33-member zero
+# cutover (66 reads).
+MAX_READ_SET_CHAIN_READS = 24
+MAX_READ_SET_READS = 2 * MAX_PERSONS + MAX_READ_SET_CHAIN_READS
+# The candidate's canonical bytes stay within the census answer's own bound.
+MAX_READ_SET_BYTES = MAX_CENSUS_ANSWER_BYTES
 _HEX = frozenset("0123456789abcdef")
 
 
@@ -86,9 +100,11 @@ def validate_read_set_candidate(value: Any) -> dict[str, Any]:
     if keys != sorted(keys):
         raise _refuse("card_read_set_not_canonical")
     try:
-        canonical_json_bytes(dict(value))
+        encoded = canonical_json_bytes(dict(value))
     except WireRefused as exc:
         raise _refuse("card_read_set_invalid") from exc
+    if len(encoded) > MAX_READ_SET_BYTES:
+        raise _refuse("card_read_set_too_large")
     return dict(value)
 
 
@@ -136,5 +152,5 @@ def verify_read_set_projection(projection: Mapping[str, Any], value: Any) -> dic
     return checked
 
 
-__all__ = ["MAX_READ_SET_READS", "READ_SET_BINDING_KIND", "READ_SET_SCHEMA", "hub_read_set_participant_input",
+__all__ = ["MAX_READ_SET_BYTES", "MAX_READ_SET_READS", "READ_SET_BINDING_KIND", "READ_SET_SCHEMA", "hub_read_set_participant_input",
            "read_set_candidate_value", "validate_read_set_candidate", "verify_read_set_projection"]
