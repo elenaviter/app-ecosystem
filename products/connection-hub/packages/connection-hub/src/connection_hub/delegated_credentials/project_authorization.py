@@ -24,6 +24,10 @@ PROJECT_CONTROL_CREATE = "project.control.create"
 # W638: the project host's own edit of its project Control and its agent Cards.
 PROJECT_CONTROL_UPDATE = "project.control.update"
 PROJECT_AGENT_CARD_UPDATE = "project.agent_card.update"
+# W639: an agent Card joins, leaves or takes a profile in the project's own transaction.
+PROJECT_AGENT_CARD_ATTACH = "project.agent_card.attach"
+PROJECT_AGENT_CARD_DETACH = "project.agent_card.detach"
+PROJECT_AGENT_CARD_APPLY_PROFILE = "project.agent_card.apply_profile"
 PROJECT_INVITATION_CONTROL_CREATE = "project.invitation_control.create"
 PROJECT_INVITATION_CONTROL_READ = "project.invitation_control.read"
 PROJECT_INVITATION_CONTROL_UPDATE = "project.invitation_control.update"
@@ -67,6 +71,9 @@ PROJECT_PERSON_CONTROL_OPERATIONS = frozenset(
         PROJECT_CONTROL_CREATE,
         PROJECT_CONTROL_UPDATE,
         PROJECT_AGENT_CARD_UPDATE,
+        PROJECT_AGENT_CARD_ATTACH,
+        PROJECT_AGENT_CARD_DETACH,
+        PROJECT_AGENT_CARD_APPLY_PROFILE,
         *PROJECT_INVITATION_CONTROL_OPERATIONS,
     }
 )
