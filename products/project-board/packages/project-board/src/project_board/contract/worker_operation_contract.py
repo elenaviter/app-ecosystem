@@ -63,6 +63,18 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         ),
         "grants": ("work:observe",),
     },
+    "operation.receipt.get": {
+        "description": (
+            "W574: read the durable outcome of this caller's own earlier governed "
+            "request, selected by operation, idempotency key and transport request "
+            "hash: applied (stored outcome), refused (stored code), in_progress "
+            "(admitted, not settled) or no_record (not admitted through this "
+            "transport since the ledger went live; not proof of no effect in "
+            "general). The board authorizes the stored original operation for the "
+            "caller; the request fields only select the caller's own row."
+        ),
+        "grants": ("work:relay",),
+    },
     "project.plan.item": {
         "description": (
             "Read one complete authoritative plan item by canonical URI or its "
@@ -524,6 +536,40 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
 
 PROBLEM_BOARD_OPERATIONS = frozenset(PROBLEM_BOARD_OPERATION_POLICIES)
 
+# The operations that only read: no write, no lease, no claim (W574). This is
+# the one source the client uses to tell reads from mutations, and it is
+# deliberately conservative. Every operation not listed here is treated as a
+# mutation: after an unknown outcome it is never sent again automatically,
+# with or without an idempotency key. Listing a mutation here would bring the
+# automatic resend back, so an entry must be a pure read that the board does
+# not govern as a mutation (project.references.preview is in the board's
+# mutation table and is therefore not here).
+READ_OPERATIONS = frozenset(
+    {
+        "assignment.list",
+        "mail.reconciliation.list",
+        "mail.reconciliation.read",
+        "operation.receipt.get",
+        "plan.notes.list",
+        "project.control.get",
+        "project.coordinator.get",
+        "project.plan.embedding_status",
+        "project.plan.history",
+        "project.plan.index",
+        "project.plan.item",
+        "project.plan.resolve",
+        "project.plan.search",
+        "project.role.get",
+        "workspace.shared_write.list",
+    }
+)
+
+
+def operation_is_read(operation: str) -> bool:
+    """True only for an operation declared in ``READ_OPERATIONS``."""
+
+    return str(operation or "") in READ_OPERATIONS
+
 # A service operation has one owning object kind even when transports present
 # it differently. Both the direct Problem Board MCP and named services project
 # this inventory; neither surface owns a private subset.
@@ -538,6 +584,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.github.use",
         "project.plan.index",
         "project.plan.item",
+        "operation.receipt.get",
         "work.attachment.link",
         "project.plan.history",
         "project.plan.resolve",
@@ -690,6 +737,8 @@ def authorization_operations(operation: str, payload: Mapping[str, Any]) -> tupl
 
 
 __all__ = [
+    "READ_OPERATIONS",
+    "operation_is_read",
     "canonical_problem_board_operation",
     "PROBLEM_BOARD_OPERATIONS",
     "PROBLEM_BOARD_OPERATIONS_BY_KIND",

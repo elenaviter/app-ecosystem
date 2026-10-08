@@ -120,7 +120,13 @@ which of three things happened. Read it before any retry.
   can double the effect. On `pb coordinate`, run the same command unchanged:
   the client keeps each key's exact request, returns the receipt when the late
   response arrived (`recovery.source` names where it came from), and otherwise
-  resends that exact request. A different request under a key already sent is
+  first reads the board's durable receipt (`operation.receipt.get`, W574).
+  `applied` returns the stored receipt and `refused` its code, with nothing
+  sent; `in_progress` means the board holds the request, and nothing is sent.
+  Only `no_record` ("not admitted at the time of this read", never "no
+  effect") or a board that cannot confirm the outcome leads to a resend of
+  that exact request, and only because you ran the command again. The relay
+  never resends on its own. A different request under a key already sent is
   refused locally as `work_coordinate_idempotency_key_reused`, naming the
   original request, before anything is sent.
   `work_coordinate_response_too_large` is in this class too: the operation may

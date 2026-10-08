@@ -230,6 +230,13 @@ def test_early_coordinate_retry_preserves_unknown_mutation_identity(tmp_path, mo
 
     async def uncertain_action(**arguments):
         client.calls.append(arguments)
+        if arguments["action"] == "operation.receipt.get":
+            # A board before W574 has no receipt read; the relay falls back
+            # to the same-transport resend below.
+            raise DomainError(
+                "work_worker_stream_operation_denied", "Not part of the governed service.",
+                status=403, details={"operation": "operation.receipt.get"},
+            )
         # The synthetic service committed the effect, but its first terminal
         # reply was lost. The replay must address the same transport operation.
         transport_id = arguments["transport_request_id"]
@@ -260,10 +267,14 @@ def test_early_coordinate_retry_preserves_unknown_mutation_identity(tmp_path, mo
         response = queue.take_response(
             worker_name=channel.worker_name, request_id=request["request_id"]
         )
-        assert response["ok"] is True
-        assert [call["transport_request_id"] for call in client.calls] == [request["request_id"]] * 2
-        assert all(call["payload"]["idempotency_key"] == "original-mutation-key" for call in client.calls)
+        # W574: the board cannot confirm the outcome, so the request stays
+        # unknown with the same identity; it is never sent again by the relay.
+        assert response is None
+        assert queue.holds(worker_name=channel.worker_name, request_id=request["request_id"])
+        sends = [call for call in client.calls if call["action"] != "operation.receipt.get"]
+        reads = [call for call in client.calls if call["action"] == "operation.receipt.get"]
+        assert [call["transport_request_id"] for call in sends] == [request["request_id"]]
+        assert [call["payload"]["idempotency_key"] for call in reads] == ["original-mutation-key"]
         assert len(effects) == 1
-        assert supervisor.serve_coordinate_once() == []
 
     asyncio.run(scenario())

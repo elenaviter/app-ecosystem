@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..contract.errors import DomainError
+from ..contract.operation_identity import transport_request_hash
 from .io import atomic_write_json, component, exclusive_lock, read_json, utc_now
 
 COORDINATE_RECOVERY_SCHEMA = "problem-board.coordinate-recovery.v1"
@@ -53,15 +54,13 @@ RECOVERY_RETENTION_SECONDS = 7 * 24 * 3600
 def coordinate_request_hash(
     action: str, object_ref: str, payload: Mapping[str, Any]
 ) -> str:
-    """The hash of the exact serialized request a key stands for."""
+    """The hash of the exact serialized request a key stands for.
 
-    encoded = json.dumps(
-        {"action": str(action), "object_ref": str(object_ref), "payload": payload},
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    It is the shared transport identity the board's ledger records (W574), so
+    a lost reply can be looked up by the same value.
+    """
+
+    return transport_request_hash(action, object_ref, payload)
 
 
 def mutation_idempotency_key(payload: Mapping[str, Any]) -> str:
@@ -428,6 +427,54 @@ def idempotency_key_reused(key: str, prior: Mapping[str, Any]) -> DomainError:
     )
 
 
+RECEIPT_READ_OPERATION = "operation.receipt.get"
+
+
+def lookup_remote_receipt(record: Mapping[str, Any], read: Any) -> dict[str, Any] | None:
+    """Read the board's durable receipt of a request whose outcome is unknown (W574).
+
+    ``read(action, object_ref, payload)`` performs ``operation.receipt.get``
+    and returns its result. This is a status read, not a mutation send.
+    Returns the receipt (``state`` applied, refused, in_progress or
+    no_record), ``state`` unavailable when the board predates the read
+    operation (refused with ``work_worker_stream_operation_denied`` for it)
+    and so cannot confirm the outcome, or None when nothing is unknown.
+    """
+
+    if record.get("state") == STATE_APPLIED:
+        return None
+    if not any(outcome == ATTEMPT_UNKNOWN for outcome in _attempts(record).values()):
+        return None
+    action = str(record.get("action") or "")
+    object_ref = str(record.get("object_ref") or "")
+    payload = record.get("payload") if isinstance(record.get("payload"), Mapping) else {}
+    try:
+        response = read(
+            RECEIPT_READ_OPERATION,
+            object_ref,
+            {
+                "operation": action,
+                "idempotency_key": str(record.get("idempotency_key") or ""),
+                "request_hash": transport_request_hash(action, object_ref, payload),
+            },
+        )
+    except DomainError as exc:
+        details = exc.details if isinstance(exc.details, Mapping) else {}
+        if exc.code == "work_worker_stream_operation_denied" and details.get("operation") == RECEIPT_READ_OPERATION:
+            return {"state": "unavailable"}
+        raise
+    body = response.get("object") if isinstance(response, Mapping) else None
+    if not isinstance(body, Mapping) or str(body.get("state") or "") not in (
+        "applied", "refused", "in_progress", "no_record",
+    ):
+        raise DomainError(
+            "work_coordinate_receipt_invalid",
+            "The receipt read returned no known state.",
+            status=502,
+        )
+    return dict(body)
+
+
 def recovery_identity(record: Mapping[str, Any], *, source: str) -> dict[str, Any]:
     """What a caller is shown about the original request it recovered."""
 
@@ -445,11 +492,13 @@ def recovery_identity(record: Mapping[str, Any], *, source: str) -> dict[str, An
 
 __all__ = [
     "NOT_SENT_CODES",
+    "RECEIPT_READ_OPERATION",
     "error_outcome",
     "COORDINATE_RECOVERY_SCHEMA",
     "CoordinateRecovery",
     "coordinate_request_hash",
     "idempotency_key_reused",
+    "lookup_remote_receipt",
     "mutation_idempotency_key",
     "recovery_identity",
 ]

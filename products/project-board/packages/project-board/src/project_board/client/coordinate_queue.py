@@ -58,6 +58,38 @@ def _sized_record(value: Mapping[str, Any]) -> tuple[dict[str, Any], int]:
         row["payload_bytes"] = payload_bytes
 
 
+# The receipt-read fields a deferral keeps as evidence (W574): bounded,
+# board-written states and timestamps, never a payload or a message.
+_RECEIPT_EVIDENCE_FIELDS = ("receipt_read", "admitted_at", "ledger_cutover_at")
+
+
+def _transport_error_evidence(error: DomainError) -> dict[str, Any]:
+    evidence: dict[str, Any] = {"code": error.code, "observed_at": utc_now()}
+    details = error.details if isinstance(error.details, Mapping) else {}
+    for field in _RECEIPT_EVIDENCE_FIELDS:
+        value = details.get(field)
+        if isinstance(value, str) and value and len(value) <= 64:
+            evidence[field] = value
+    return evidence
+
+
+def _expiry_details(request: Mapping[str, Any], request_id: str) -> dict[str, Any]:
+    details: dict[str, Any] = {
+        "request_id": request_id,
+        "transport_attempts": int(request.get("transport_attempts") or 0),
+    }
+    last_error = request.get("last_transport_error")
+    if isinstance(last_error, Mapping) and last_error.get("receipt_read"):
+        # The last durable-receipt read is the evidence that the outcome is
+        # still unknown; the request was not sent again.
+        details["last_receipt_read"] = {
+            field: str(last_error[field])
+            for field in (*_RECEIPT_EVIDENCE_FIELDS, "observed_at")
+            if last_error.get(field)
+        }
+    return details
+
+
 class CoordinateQueue:
     """Bounded request/response handoff between an agent and its login relay."""
 
@@ -332,12 +364,7 @@ class CoordinateQueue:
                         else "The relay did not claim the governed operation before its deadline."
                     ),
                     status=504,
-                    details={
-                        "request_id": request_id,
-                        "transport_attempts": int(
-                            request.get("transport_attempts") or 0
-                        ),
-                    },
+                    details=_expiry_details(request, request_id),
                 )
                 continue
             pending = self._path("pending", worker_name, request_id)
@@ -459,12 +486,7 @@ class CoordinateQueue:
                         else "The governed operation expired before the relay could run it."
                     ),
                     status=504,
-                    details={
-                        "request_id": request_id,
-                        "transport_attempts": int(
-                            request.get("transport_attempts") or 0
-                        ),
-                    },
+                    details=_expiry_details(request, request_id),
                 )
                 continue
             not_before = str(request.get("not_before") or "")
@@ -559,10 +581,7 @@ class CoordinateQueue:
                     "not_before": _utc_after(delay_seconds),
                     "leased_at": "",
                     "lease_expires_at": "",
-                    "last_transport_error": {
-                        "code": error.code,
-                        "observed_at": utc_now(),
-                    },
+                    "last_transport_error": _transport_error_evidence(error),
                 }
             )
             row, payload_bytes = _sized_record(row)
