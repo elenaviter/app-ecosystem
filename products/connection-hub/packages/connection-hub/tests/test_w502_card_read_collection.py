@@ -294,3 +294,22 @@ async def test_an_expired_or_foreign_collection_is_never_prepared(tmp_path, case
         await hub.prepare(TX)
     assert await tx.read_receipt(store, TX) is None
     await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)
+
+
+@pytest.mark.asyncio
+async def test_a_collection_at_the_full_bound_prepares_and_releases_with_a_bounded_receipt(tmp_path):
+    """500 persons: about 1,000 leaves plus chain Cards (MAX_COLLECTION_READS). The receipt stays bounded."""
+    import time
+
+    store, service, before, after = await _setup(tmp_path)
+    reservations = _bind_catalog(store, tmp_path)
+    extra = collections.MAX_COLLECTION_READS - 2
+    started = time.monotonic()
+    header = await _seal(store, before, extra=extra)
+    receipt = await _prepare(service, header)
+    assert receipt["count"] == collections.MAX_COLLECTION_READS
+    assert len(tx.receipt_path(store, RS).read_bytes()) < 1024
+    store._card_transaction_decisions.recorded[RS] = "committed"
+    await service.decide_read_set_transaction(transaction_id=RS, intent_digest=INTENT, decision="committed")
+    assert await reservations.holders() == [] and await tx.list_in_doubt(store) == []
+    print(f"full-bound seal+prepare+finish: {time.monotonic() - started:.2f}s")
