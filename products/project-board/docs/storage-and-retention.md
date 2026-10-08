@@ -464,8 +464,12 @@ replay of an archived event stays a replay, as for a live one: the same content
 is answered as already recorded, other content is an idempotency conflict. So
 an agent's latest runtime-account change, which every heartbeat repeats, moves
 like any event. Events archived before this index existed get their index rows
-at the start of the next run (each batch records `keys_indexed`), before any
-replay could insert one again.
+at the start of a run, before that run archives anything (each batch records
+`keys_indexed`), up to 50 such batches per run. A larger legacy set is
+indexed over a few nights; until its batch is indexed, a re-sent copy of an
+event that lives only in that part is not recognised as a replay (on
+dev-main, 2026-10-08: 110 legacy batches; that night's two runs indexed 50
+each, and the remaining 10 wait for the next run).
 
 One kind of event stays past the window: each agent's latest tooling notice
 of each kind in each project, the status its Card there shows (the operator,
