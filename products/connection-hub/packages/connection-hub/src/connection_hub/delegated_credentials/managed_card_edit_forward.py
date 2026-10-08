@@ -34,7 +34,7 @@ PROTOCOL = "managed-card-edit.v1"
 OPERATION = "project_card_edit"
 SCHEMA = "managed-card-edit.v1"
 OUTCOME_SCHEMA = "managed-card-edit-outcome.v1"
-TARGET_KINDS = frozenset({"person_control", "my_reset"})
+TARGET_KINDS = frozenset({"person_control", "my_reset", "agent_card"})
 SELECTION_FIELDS = ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
 
 BundleCall = Callable[..., Awaitable[Any]]
@@ -52,7 +52,8 @@ class ManagedCardEditError(ValueError):
 
 def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: str, kind: str,
                            principal_key: str, original_revision: int, selection: Mapping[str, Any],
-                           resource: str | None = None, display_digest: str | None = None) -> dict:
+                           resource: str | None = None, display_digest: str | None = None,
+                           access_id: str | None = None, subject_hash: str | None = None) -> dict:
     """The exact unsigned request; nothing in it comes from the browser except the edit itself."""
     for value in (actor_subject, project_ref, request_id, principal_key):
         if type(value) is not str or not 0 < len(value) <= 256 or value != value.strip() or not value.isprintable():
@@ -69,6 +70,18 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
                 "request_id": request_id, "selection": {},
                 "target": {"kind": kind, "principal_key": principal_key, "original_revision": original_revision,
                            "resource": resource, "display_digest": display_digest}}
+    if kind == "agent_card":
+        # The host cannot read an agent Card: it names the Card's own storage
+        # coordinates, and the Hub's planner keeps every field not sent.
+        if (principal_key != "card:" + str(access_id) or type(subject_hash) is not str or not subject_hash
+                or type(original_revision) is not int or original_revision < 1 or not isinstance(selection, Mapping)
+                or not selection or set(selection) - set(SELECTION_FIELDS)
+                or any(not isinstance(value, Mapping) for value in selection.values())):
+            raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+        return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref, "request_id": request_id,
+                "target": {"kind": kind, "access_id": access_id, "subject_hash": subject_hash,
+                           "original_revision": original_revision},
+                "selection": {field: dict(selection[field]) for field in SELECTION_FIELDS if field in selection}}
     # Only the fields the person changed travel; the host keeps every other
     # field of the revision-fenced original, never an empty default.
     if (kind not in TARGET_KINDS or type(original_revision) is not int or original_revision < 1

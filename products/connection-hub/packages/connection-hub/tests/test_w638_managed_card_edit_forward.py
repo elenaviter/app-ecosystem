@@ -124,3 +124,40 @@ def test_a_host_answer_for_another_request_is_not_accepted():
     with pytest.raises(ManagedCardEditError) as refused:
         asyncio.run(peer.forward(body))
     assert refused.value.reason == "managed_card_edit_answer_invalid"
+
+
+class StoredAgent:
+    access_id = "agent-card-1"
+    grantor_subject = "synthetic-agent-owner"
+    properties = {"kept": "as stored"}
+    composition_mode = ""
+    label = "Agent"
+    control_card = object()
+
+
+def agent_forward(svc, **changes):
+    arguments = dict(resource_operations={"svc": ["a"]}, expected_card_revision=2, label="Agent",
+                     properties={"kept": "as stored"}, composition_mode="and")
+    arguments.update(changes)
+    return asyncio.run(svc._forward_agent_card_edit({"user_id": "alice"}, record=StoredAgent(),
+        project_ref=PROJECT, request_id="edit-agent", changes=arguments))
+
+
+def test_an_agent_card_save_forwards_only_its_selection_with_the_cards_storage_coordinates():
+    from connection_hub.delegated_credentials.cards.store import subject_hash_for
+    host = Host()
+    result = agent_forward(service(host))
+    assert result["ok"] is True
+    data = dict(host.calls[0][2])
+    data.pop("service_proof")
+    assert data["target"] == {"kind": "agent_card", "access_id": "agent-card-1",
+        "subject_hash": subject_hash_for("synthetic-agent-owner"), "original_revision": 2}
+    assert data["selection"] == {"resource_operations": {"svc": ["a"]}} and data["actor_subject"] == "alice"
+
+
+@pytest.mark.parametrize("change", [dict(label="Renamed"), dict(properties={"x": 1}), dict(composition_mode="or"),
+                                    dict(expected_card_revision=None)])
+def test_an_agent_card_save_that_changes_more_than_its_selection_saves_nothing(change):
+    host = Host()
+    result = agent_forward(service(host), **change)
+    assert result["ok"] is False and host.calls == []
