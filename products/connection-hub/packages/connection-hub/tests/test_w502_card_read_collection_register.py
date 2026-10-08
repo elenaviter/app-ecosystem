@@ -34,6 +34,7 @@ from test_card_census_read import (
     ADMIN, NOW, OTHER, PEER, PROJECT, RECEIPT_SECRET, REQUEST_SECRET, _Nonces, _world as _census_world,
 )
 from test_card_transaction_store import INTENT, TX
+from test_w580_bound_card_writers import redis_client  # noqa: F401 - fixture
 
 DEADLINE = NOW + 300
 
@@ -145,3 +146,109 @@ async def test_a_replayed_nonce_or_an_unsigned_request_is_refused_unsigned(tmp_p
     assert replay == {"ok": False, "status": 401, "error": {"code": "card_participant_unauthenticated"}}
     tampered = {**_request(), "request_id": "zero-2"}
     assert (await operation.answer(tampered))["error"]["code"] == "card_participant_unauthenticated"
+
+
+# ── adopted from claude-app@spark1's parallel registration tests (AE 7aff3b40), adapted to this operation ──
+
+from service_foundation.coordination.participant_answer import ParticipantAnswerRefused, verify_participant_answer
+
+
+@pytest.mark.asyncio
+async def test_changed_reads_under_the_same_request_id_conflict(tmp_path):
+    operation, *_ = await _world(tmp_path)
+    first = _request()
+    assert _verified(await operation.answer(first), first)["kind"] == "collection"
+    other = _request([ADMIN])  # the same request id, another person list: other reads
+    assert _verified(await operation.answer(other), other) == {
+        "kind": "refused", "code": "card_read_collection_conflict", "status": 409}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["empty_persons", "unsorted_persons", "bad_deadline", "extra_field", "bad_schema"])
+async def test_malformed_requests_are_refused_unsigned(tmp_path, change):
+    operation, *_ = await _world(tmp_path)
+    request = _request()
+    if change == "empty_persons":
+        request["persons"] = []
+    elif change == "unsorted_persons":
+        request["persons"] = [OTHER, ADMIN]
+    elif change == "bad_deadline":
+        request["deadline"] = "soon"
+    elif change == "extra_field":
+        request["reads"] = []
+    else:
+        request["schema"] = "card-census-read.v1"
+    assert await operation.answer(request) == {"ok": False, "status": 400,
+                                               "error": {"code": "card_read_collection_request_invalid"}}
+
+
+@pytest.mark.asyncio
+async def test_a_census_proof_never_admits_a_registration(tmp_path):
+    from test_card_census_read import _request as census_request
+    operation, *_ = await _world(tmp_path)
+    assert (await operation.answer(census_request()))["error"]["code"] == "card_read_collection_request_invalid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field, value", [("request_id", "zero-x"), ("deadline", DEADLINE + 1),
+                                          ("actor_subject", "user:x"), ("persons", [ADMIN])])
+async def test_the_answer_is_bound_to_the_collection_contract(tmp_path, field, value):
+    operation, *_ = await _world(tmp_path)
+    request = _request()
+    answer = {**dict((await operation.answer(request))["collection_answer"]), field: value}
+    with pytest.raises(ParticipantAnswerRefused):
+        verify_participant_answer(answer, schema=ANSWER_SCHEMA, secret=RECEIPT_SECRET,
+            signer_id="connection-hub@1-0", audience="problem-board@1-0", direction="hub-to-authority",
+            request={name: request[name] for name in ("schema", "request_echo", "scope", "persons",
+                                                       "actor_subject", "request_id", "deadline")},
+            now=NOW, contract=AnswerContract.COLLECTION)
+
+
+@pytest.mark.asyncio
+async def test_the_reference_is_one_size_whatever_the_person_count(tmp_path):
+    import re
+
+    from service_foundation.coordination.durable_wire import canonical_json_bytes
+    sizes = set()
+    for count in (2, 30, 120):
+        operation, *_ = await _world(tmp_path / str(count))
+        persons = sorted({ADMIN, OTHER, *(f"user:extra-{index:04d}" for index in range(count - 2))})
+        request = _request(persons)
+        ref = _verified(await operation.answer(request), request)["ref"]
+        sizes.add(len(re.sub(rb'"count":[0-9]+', b'"count":N', canonical_json_bytes(ref))))
+    assert len(sizes) == 1, sizes
+
+
+async def test_a_real_pair_seals_my_control_and_the_complete_chain_like_the_census(tmp_path, redis_client):
+    from types import SimpleNamespace
+
+    from connection_hub.delegated_credentials.cards.census_read import CardCensusReadOperation
+    from test_card_census_read import _request as census_request, _verified as census_verified
+    from test_w502_my_card_fence_real_path import PROJECT_REF, TARGET, _create, _service
+
+    h = await _service(tmp_path, redis_client)
+    assert (await _create(h, "request-create"))["ok"] is True
+    caller = ParticipantCaller(service_id=PEER, request_secret=REQUEST_SECRET, receipt_secret=RECEIPT_SECRET,
+                               receipt_signer_id="connection-hub@1-0", audience="problem-board@1-0",
+                               hub_resource="connection-hub@1-0", bind=None, scope_field="project_ref",
+                               census_scope_prefix="work:project:")
+
+    class _Catalog:
+        async def read_active(self):
+            return SimpleNamespace(version="catalog-v1", content_hash="h" * 64, to_dict=lambda: {"version": "catalog-v1"})
+    census = CardCensusReadOperation(callers={PEER: caller}, card_store=h.store, catalog_store=_Catalog(),
+                                     nonces=_Nonces(), clock=lambda: NOW)
+    request = census_request([TARGET], scope=PROJECT_REF, include_catalog=False)
+    entry = census_verified(await census.answer(request), request)["persons"][0]
+    assert entry["chain"]["state"] == "complete" and entry["chain"]["cards"]
+    expected = {}
+    for card in (entry["my"], entry["control"], *entry["chain"]["cards"]):
+        expected[(card["subject_hash"], card["access_id"])] = {
+            "subject_hash": card["subject_hash"], "access_id": card["access_id"], "revision": card.get("revision", 0)}
+    operation = CardReadCollectionOperation(callers={PEER: caller}, card_store=h.store, catalog_store=_Catalog(),
+                                            nonces=_Nonces(), clock=lambda: NOW)
+    request = _request([TARGET], scope=PROJECT_REF)
+    ref = _verified(await operation.answer(request), request)["ref"]
+    _, reads = await collections.resolve_collection(h.store, ref["collection_id"])
+    assert reads == [expected[key] for key in sorted(expected)]
+    assert all(read["revision"] >= 1 for read in reads)  # My, Control and every chain Card are present
