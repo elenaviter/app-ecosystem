@@ -176,9 +176,11 @@ def _suggested_reply(message, *, project_ref=PROJECT):
     return shlex.split(line.removeprefix("reply: "))
 
 
-def test_project_scoped_person_reply_keeps_the_delivered_project_and_thread():
-    message = _message(kind="request", sender="operator", reply_to="", message_id="mail-w616",
-                       correlation_id="thread-w616", project_ref=PROJECT)
+@pytest.mark.parametrize("sender", ["control-plane", "operator"])
+def test_project_scoped_person_reply_keeps_the_delivered_project_and_thread(sender):
+    message = _message(kind="request", sender=sender, reply_to="", message_id="mail-w616",
+                       correlation_id="thread-w616", project_ref=PROJECT,
+                       operator_origin={"channel": "board", "ref": "origin-w616"})
 
     reply = _suggested_reply(message)
 
@@ -194,7 +196,7 @@ def test_project_scoped_person_reply_keeps_the_delivered_project_and_thread():
     {"channel": "share", "ref": "explicit-share"},
 ])
 def test_projectless_owner_and_share_reply_stay_projectless(origin):
-    message = _message(kind="request", sender="operator", reply_to="", project_ref="",
+    message = _message(kind="request", sender="control-plane", reply_to="", project_ref="",
                        operator_origin=origin)
 
     reply = _suggested_reply(message, project_ref="")
