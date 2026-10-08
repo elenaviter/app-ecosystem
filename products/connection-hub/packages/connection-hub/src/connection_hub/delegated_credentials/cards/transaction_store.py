@@ -385,9 +385,8 @@ def _validate_read_collection(raw: Any, transaction_id: str) -> dict[str, Any]:
                 or type(raw["participant"]) is not str or not raw["participant"]
                 or type(raw["collection_id"]) is not str or not re.fullmatch(r"[0-9a-f]{32}", raw["collection_id"])
                 or type(raw["root"]) is not str or not _HEX64.fullmatch(raw["root"])
-                or type(raw["count"]) is not int or raw["count"] < 0
-                or type(raw["catalog"]) is not str or (raw["catalog"] and not _HEX64.fullmatch(raw["catalog"]))
-                or (raw["count"] == 0 and not raw["catalog"])):
+                or type(raw["count"]) is not int or raw["count"] < 1
+                or type(raw["catalog"]) is not str or (raw["catalog"] and not _HEX64.fullmatch(raw["catalog"]))):
             raise ValueError()
         return dict(raw)
     except (KeyError, ValueError, TypeError) as exc:

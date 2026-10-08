@@ -92,10 +92,11 @@ def validate_header(raw: Any, collection_id: str) -> dict[str, Any]:
             or raw["collection_id"] != collection_id
             or any(type(raw[name]) is not str or not raw[name] for name in ("scope", "actor_subject", "request_id"))
             or type(raw["deadline"]) is not int or raw["deadline"] <= 0
-            or type(raw["count"]) is not int or not 0 <= raw["count"] <= MAX_COLLECTION_READS
+            # A collection exists to carry reads by reference; a catalog-only hold is the W578 read set
+            # (already bounded), so a sealed collection, like its reference, holds at least one read.
+            or type(raw["count"]) is not int or not 1 <= raw["count"] <= MAX_COLLECTION_READS
             or type(raw["root"]) is not str or not _HEX64.fullmatch(raw["root"])
-            or type(raw["catalog"]) is not str or (raw["catalog"] and not _HEX64.fullmatch(raw["catalog"]))
-            or (raw["count"] == 0 and not raw["catalog"])):
+            or type(raw["catalog"]) is not str or (raw["catalog"] and not _HEX64.fullmatch(raw["catalog"]))):
         raise CardStorageError("card_read_collection_header_invalid")
     return dict(raw)
 

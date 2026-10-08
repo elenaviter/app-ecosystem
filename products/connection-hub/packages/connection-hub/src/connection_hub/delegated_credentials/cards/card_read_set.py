@@ -219,7 +219,10 @@ def verify_read_collection_projection(projection: Mapping[str, Any], value: Any)
             or projection.get("actor_kind") not in ("caller", "grantor")
             or type(projection.get("actor_subject")) is not str or not projection["actor_subject"].strip()
             or projection["actor_subject"] != projection["actor_subject"].strip()
-            or projection.get("dependency_revisions") != read_collection_dependencies(ref)):
+            or not isinstance(projection.get("dependency_revisions"), Mapping)
+            # Exact integers: True == 1 in Python, so the type is checked too (CodeApp 23:03).
+            or any(type(value) is not int for value in projection["dependency_revisions"].values())
+            or dict(projection["dependency_revisions"]) != read_collection_dependencies(ref)):
         raise _refuse("card_read_set_not_bound")
     return ref
 

@@ -313,3 +313,119 @@ async def test_a_collection_at_the_full_bound_prepares_and_releases_with_a_bound
     await service.decide_read_set_transaction(transaction_id=RS, intent_digest=INTENT, decision="committed")
     assert await reservations.holders() == [] and await tx.list_in_doubt(store) == []
     print(f"full-bound seal+prepare+finish: {time.monotonic() - started:.2f}s")
+
+
+# ── adopted from CodeApp's independent review probes at 9e5c13da (23:03Z), with the two codec fixes ──
+
+def test_a_boolean_collection_dependency_is_not_the_exact_integer_count():
+    ref = _ref(1)
+    projection = read_set.hub_read_collection_participant_input(ref=ref, actor_subject="a", actor_kind="caller")
+    key = next(key for key in projection["dependency_revisions"] if key.startswith("card-collection:"))
+    projection["dependency_revisions"][key] = True
+    with pytest.raises(DecisionRefused, match="card_read_set_not_bound"):
+        read_set.verify_read_collection_projection(projection, ref)
+
+
+@pytest.mark.asyncio
+async def test_a_collection_holds_at_least_one_read_like_its_reference(tmp_path):
+    """A catalog-only hold is the W578 read set; neither a sealed header nor a reference has count 0."""
+    store, service, before, _ = await _setup(tmp_path)
+    with pytest.raises(CardStorageError, match="card_read_collection_reads_invalid|card_read_collection_header_invalid"):
+        await collections.seal_collection(store, collection_id=COLLECTION, scope="work:project:synthetic",
+                                          actor_subject="a", request_id="r", deadline=2_000_000_000, reads=[],
+                                          catalog=CATALOG)
+    with pytest.raises(CardStorageError, match="card_read_collection_header_invalid"):
+        collections.validate_header({"schema": collections.COLLECTION_HEADER_SCHEMA, "collection_id": COLLECTION,
+            "scope": "work:project:synthetic", "actor_subject": "a", "request_id": "r", "deadline": 2_000_000_000,
+            "count": 0, "root": collections.collection_root([], CATALOG), "catalog": CATALOG}, COLLECTION)
+    with pytest.raises(DecisionRefused, match="card_read_collection_ref_invalid"):
+        read_set.validate_read_collection_ref(_ref(0))
+
+
+@pytest.mark.asyncio
+async def test_a_crash_before_the_receipt_stays_unstaged_and_abort_releases_the_catalog(tmp_path, monkeypatch):
+    store, service, before, _ = await _setup(tmp_path)
+    reservations = _bind_catalog(store, tmp_path)
+    header = await _seal(store, before)
+    original = tx.write_json_atomic
+
+    async def crash(path, value):
+        if path == tx.receipt_path(store, RS):
+            raise RuntimeError("crash before prepared header")
+        return await original(path, value)
+    monkeypatch.setattr(tx, "write_json_atomic", crash)
+    with pytest.raises(RuntimeError, match="before prepared header"):
+        await _prepare(service, header)
+    assert await tx.read_receipt(store, RS) is None
+    assert await tx.list_in_doubt(store) == [{"transaction_id": RS, "state": "unstaged"}]
+    assert [row["transaction_id"] for row in await reservations.holders()] == [RS]
+    monkeypatch.setattr(tx, "write_json_atomic", original)
+    await tx.abort_unstaged(store, RS, intent_digest=INTENT)
+    assert await reservations.holders() == [] and await tx.list_in_doubt(store) == []
+    # A fence written before the crash holds nothing without a receipt: an ordinary write proceeds.
+    await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_aborted"):
+        await _prepare(service, header)
+
+
+@pytest.mark.asyncio
+async def test_a_crash_after_the_receipt_fails_closed_and_the_recorded_finish_replays(tmp_path, monkeypatch):
+    store, service, before, _ = await _setup(tmp_path)
+    reservations = _bind_catalog(store, tmp_path)
+    header = await _seal(store, before)
+    original = tx.write_json_atomic
+
+    async def crash(path, value):
+        await original(path, value)
+        if path == tx.receipt_path(store, RS):
+            raise RuntimeError("crash after prepared header")
+    monkeypatch.setattr(tx, "write_json_atomic", crash)
+    with pytest.raises(RuntimeError, match="after prepared header"):
+        await _prepare(service, header)
+    monkeypatch.setattr(tx, "write_json_atomic", original)
+    assert (await tx.read_receipt(store, RS))["state"] == "prepared"
+    assert [entry["transaction_id"] for entry in await tx.list_in_doubt(store)] == [RS]
+    with pytest.raises(CardStorageError, match="card_transaction_unresolved"):
+        await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_decision_not_recorded"):
+        await service.decide_read_set_transaction(transaction_id=RS, intent_digest=INTENT, decision="committed")
+    store._card_transaction_decisions.recorded[RS] = "committed"
+    first = await service.decide_read_set_transaction(transaction_id=RS, intent_digest=INTENT, decision="committed")
+    assert await service.decide_read_set_transaction(transaction_id=RS, intent_digest=INTENT, decision="committed") == first
+    assert await reservations.holders() == []
+    await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)
+
+
+@pytest.mark.asyncio
+async def test_a_crash_before_the_seal_leaves_no_authority(tmp_path, monkeypatch):
+    store, service, before, _ = await _setup(tmp_path)
+    original = collections.write_json_atomic
+
+    async def crash(path, value):
+        if path == collections.header_path(store, COLLECTION):
+            raise RuntimeError("crash before collection seal")
+        return await original(path, value)
+    monkeypatch.setattr(collections, "write_json_atomic", crash)
+    with pytest.raises(RuntimeError, match="before collection seal"):
+        await _seal(store, before)
+    with pytest.raises(CardStorageError, match="card_read_collection_unknown"):
+        await collections.resolve_collection(store, COLLECTION)
+
+
+@pytest.mark.asyncio
+async def test_a_finish_after_the_collection_deadline_still_replays_the_recorded_decision(tmp_path):
+    """FINISH is historical: the deadline bounds a FIRST prepare, never the recorded decision's release."""
+    store, service, before, _ = await _setup(tmp_path)
+    reservations = _bind_catalog(store, tmp_path)
+    header = await _seal(store, before)
+    await service.stage_read_collection_transaction(
+        transaction_id=RS, intent_digest=INTENT, participant="project", collection_id=COLLECTION,
+        root=header["root"], count=header["count"], catalog=header["catalog"], now=header["deadline"] - 1)
+    store._card_transaction_decisions.recorded[RS] = "aborted"
+    decided = await service.decide_read_set_transaction(transaction_id=RS, intent_digest=INTENT, decision="aborted")
+    assert decided["state"] == "aborted" and await reservations.holders() == []
+    # A replayed PREPARE after the deadline of the already-prepared transaction is historical, not a first prepare.
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_aborted"):
+        await service.stage_read_collection_transaction(
+            transaction_id=RS, intent_digest=INTENT, participant="project", collection_id=COLLECTION,
+            root=header["root"], count=header["count"], catalog=header["catalog"], now=header["deadline"] + 1)
