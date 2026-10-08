@@ -226,3 +226,41 @@ async def test_revision_zero_is_refused_for_any_other_update_kind():
                   "subject_hash": subject_hash_for(OWNER), "original_revision": 0}],
         actor_subject=ACTOR, actor_kind="caller", request_id=REQUEST, authorization=_authorization(ATTACH_AGENT, parent))
     assert result["ok"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [ATTACH_AGENT, DETACH_AGENT])
+async def test_a_decision_for_another_agent_cannot_change_this_agents_card(kind):
+    # The only check binding the project's authorization to the Card being changed.
+    parent, agent = _parent(), _agent()
+    if kind == DETACH_AGENT:
+        attached = await build_agent_lifecycle_update(None, original=agent,
+            update=_update(ATTACH_AGENT, agent), active=None, decision=_decision(ATTACH_AGENT, parent),
+            project_ref=PROJECT, actor_subject=ACTOR, request_id=REQUEST, now=1, parent=parent)
+        agent = CardAuthority.from_mapping(attached["member"]["candidate"])
+    decision = dataclasses.replace(_decision(kind, parent), target_subject="integration:other-worker")
+    with pytest.raises(DecisionRefused, match="agent_plan_authorization_invalid"):
+        await build_agent_lifecycle_update(None, original=agent, update=_update(kind, agent), active=None,
+            decision=decision, project_ref=PROJECT, actor_subject=ACTOR, request_id=REQUEST, now=1,
+            parent=parent)
+
+
+@pytest.mark.asyncio
+async def test_a_card_delegated_to_its_own_grantor_is_not_an_agent_target():
+    parent = _parent()
+    own = dataclasses.replace(_agent(), grantor_subject=AGENT)  # delegate == grantor: a subject's own Card
+    update = {**_update(ATTACH_AGENT, own), "subject_hash": subject_hash_for(AGENT)}
+    with pytest.raises(DecisionRefused, match="agent_plan_target_invalid"):
+        await build_agent_lifecycle_update(None, original=own, update=update, active=None,
+            decision=_decision(ATTACH_AGENT, parent), project_ref=PROJECT, actor_subject=ACTOR,
+            request_id=REQUEST, now=1, parent=parent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["profile", "resource"])
+async def test_profile_keys_on_a_non_profile_agent_step_are_refused_by_the_planner(key):
+    parent, agent = _parent(), _agent()
+    update = {**_update(ATTACH_AGENT, agent), key: "worker" if key == "profile" else DECLARED_RESOURCE}
+    result = await plan_card_lifecycle(_Host(parent, agent), project_ref=PROJECT, creations=[], updates=[update],
+        actor_subject=ACTOR, actor_kind="caller", request_id=REQUEST, authorization=_authorization(ATTACH_AGENT, parent))
+    assert result == {"ok": False, "error": "card_plan_update_invalid", "status": 400}, result

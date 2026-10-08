@@ -169,3 +169,22 @@ def test_a_pending_invitations_control_save_forwards_with_kind_invitation_contro
         project_ref=PROJECT, request_id="edit-invitation", kind="invitation_control",
         changes=dict(resource_operations={"svc": ["a"]}, expected_card_revision=2)))
     assert result["ok"] is True and host.calls[0][2]["target"]["kind"] == "invitation_control"
+
+
+def test_managed_card_location_names_the_stored_card_or_refuses_an_invalid_identity():
+    from connection_hub.delegated_credentials.controls.project_invitation import project_invitation_control_id
+    from connection_hub.delegated_credentials.controls.project_person import (
+        ProjectPersonControlIdentity, project_authority_subject,
+    )
+    from connection_hub.delegated_credentials.managed_card_edit_forward import managed_card_location
+
+    identity = ProjectPersonControlIdentity.build(project_ref=PROJECT, target_subject="synthetic-person")
+    assert managed_card_location("person_control", project_ref=PROJECT, ref="synthetic-person") == (
+        identity.control_id, identity.project_subject)
+    assert managed_card_location("invitation_control", project_ref=PROJECT, ref="synthetic-invitation") == (
+        project_invitation_control_id(PROJECT, "synthetic-invitation"), project_authority_subject(PROJECT))
+    for kind, project_ref, ref in (("person_control", PROJECT, ""), ("invitation_control", PROJECT, ""),
+                                   ("agent_card", PROJECT, "synthetic-person")):
+        with pytest.raises(ManagedCardEditError) as refused:
+            managed_card_location(kind, project_ref=project_ref, ref=ref)
+        assert (refused.value.reason, refused.value.status) == ("managed_card_edit_request_invalid", 400)

@@ -95,7 +95,7 @@ def managed_card_location(kind: str, *, project_ref: str, ref: str) -> tuple[str
             from .controls.project_invitation import project_invitation_control_id
             from .controls.project_person import project_authority_subject
             return project_invitation_control_id(project_ref, ref), project_authority_subject(project_ref)
-    except Exception as exc:  # noqa: BLE001 - an invalid identity names no Card
+    except ValueError as exc:  # both identity errors are ValueErrors; an invalid identity names no Card
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400) from exc
     raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
 
