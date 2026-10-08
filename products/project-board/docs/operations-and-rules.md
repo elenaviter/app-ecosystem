@@ -167,6 +167,7 @@ canonical Card permission rather than a second permission named after the page c
 | `telegram.bot_info` | Membership (`project_membership`) | Reads the configured bot's topic settings. |
 | `project.people.list` | Membership (`project_membership`) | Project membership and Card reconciliation retain their own authority fences. |
 | `project.people.card` | Membership (`project_membership`) | An admin reads another person's Card projection; other members read only their own. |
+| `project.people.card.reset` | Membership (`project_membership`) | A person resets only their own My Card's Problem Board service to what their Control allows: preview shows the exact result, and confirm commits only that shown result in one PB/Hub transaction (work_card_transaction_card_reset_display_changed when it moved). |
 | `project.file.edit.request` | Role AND current effective Card hierarchy | A signed-in person needs project.files.edit and control.enqueue; edits only a file listed on this project. |
 | `project.file.edit.get` | Membership (`project_membership`) | The requesting person's own edit result. |
 | `work.attachment.add` | Role AND current effective Card hierarchy | plan.item.update through the current effective Card hierarchy, before promoting the staged upload; revision-fenced. |
