@@ -152,5 +152,80 @@ def verify_read_set_projection(projection: Mapping[str, Any], value: Any) -> dic
     return checked
 
 
-__all__ = ["MAX_READ_SET_BYTES", "MAX_READ_SET_READS", "READ_SET_BINDING_KIND", "READ_SET_SCHEMA", "hub_read_set_participant_input",
-           "read_set_candidate_value", "validate_read_set_candidate", "verify_read_set_projection"]
+# ── W502 lane D: the same holds, by reference to a Hub-sealed collection (card_read_collection.py) ──
+#
+# The candidate is a bounded reference {collection_id, scope, count, root, catalog, deadline}; the
+# projection's dependency_revisions name the collection once ("card-collection:<id>:<root>" -> count)
+# plus the catalog reservation, so neither grows with the reads. The ordinary read-set parser refuses
+# a "card-collection:" key, so a reference is never read as an enumerated read set.
+READ_COLLECTION_BINDING_KIND = "connection-hub.card-read-collection"
+READ_COLLECTION_REF_SCHEMA = "connection-hub.card-read-collection-ref.v1"
+_REF_FIELDS = frozenset({"schema", "collection_id", "scope", "count", "root", "catalog", "deadline"})
+
+
+def validate_read_collection_ref(value: Any) -> dict[str, Any]:
+    """The canonical collection reference, or a named refusal."""
+    from .card_read_collection import MAX_COLLECTION_READS
+    if (not isinstance(value, Mapping) or set(value) != _REF_FIELDS or value["schema"] != READ_COLLECTION_REF_SCHEMA
+            or type(value["collection_id"]) is not str or len(value["collection_id"]) != 32
+            or not set(value["collection_id"]) <= _HEX
+            or type(value["scope"]) is not str or not value["scope"] or len(value["scope"]) > 256
+            or type(value["count"]) is not int or not 1 <= value["count"] <= MAX_COLLECTION_READS
+            or not _is_hex64(value["root"])
+            or type(value["catalog"]) is not str or (value["catalog"] and not _is_hex64(value["catalog"]))
+            or type(value["deadline"]) is not int or value["deadline"] <= 0):
+        raise _refuse("card_read_collection_ref_invalid")
+    return dict(value)
+
+
+def read_collection_dependencies(ref: Mapping[str, Any]) -> dict[str, int]:
+    """The projection's bounded ``dependency_revisions``: the collection once, plus the catalog."""
+    result = dependency_revisions((), catalog_version_digest=ref["catalog"])
+    result[f"card-collection:{ref['collection_id']}:{ref['root']}"] = ref["count"]
+    return result
+
+
+def _ref_aggregate(ref: Mapping[str, Any]) -> dict[str, Any]:
+    return {"binding_ref": "collection:" + ref["collection_id"],
+            "target_scope": sha256_hex(canonical_json_bytes({"scope": ref["scope"], "root": ref["root"]})),
+            "candidate_digest": sha256_hex(canonical_json_bytes(dict(ref)))}
+
+
+def hub_read_collection_participant_input(*, ref: Mapping[str, Any], actor_subject: str,
+                                          actor_kind: str) -> dict[str, Any]:
+    """The Hub's by-reference ``participant_inputs[PARTICIPANT]``; constant in the number of reads."""
+    if (actor_kind not in ("caller", "grantor") or type(actor_subject) is not str or not actor_subject.strip()
+            or actor_subject != actor_subject.strip()):
+        raise _refuse("card_read_set_actor_invalid")
+    ref = validate_read_collection_ref(ref)
+    return {"participant": PARTICIPANT, "binding_kind": READ_COLLECTION_BINDING_KIND, **_ref_aggregate(ref),
+            "target_incarnation": 1, "action": "read", "before_revision": 1, "candidate_revision": 1,
+            "dependency_revisions": read_collection_dependencies(ref),
+            "actor_subject": actor_subject, "actor_kind": actor_kind, "provisioning": {}}
+
+
+def verify_read_collection_projection(projection: Mapping[str, Any], value: Any) -> dict[str, Any]:
+    """The collection reference a verified projection names, or a named refusal (every field compared)."""
+    if projection.get("binding_kind") != READ_COLLECTION_BINDING_KIND:
+        raise _refuse("card_read_set_binding_invalid")
+    ref = validate_read_collection_ref(value)
+    expected = _ref_aggregate(ref)
+    if (projection.get("participant") != PARTICIPANT
+            or any(projection.get(name) != expected[name] for name in expected)
+            or not _exact_int(projection.get("target_incarnation")) or projection.get("action") != "read"
+            or not _exact_int(projection.get("before_revision"))
+            or not _exact_int(projection.get("candidate_revision"))
+            or projection.get("provisioning") != {}
+            or projection.get("actor_kind") not in ("caller", "grantor")
+            or type(projection.get("actor_subject")) is not str or not projection["actor_subject"].strip()
+            or projection["actor_subject"] != projection["actor_subject"].strip()
+            or projection.get("dependency_revisions") != read_collection_dependencies(ref)):
+        raise _refuse("card_read_set_not_bound")
+    return ref
+
+
+__all__ = ["MAX_READ_SET_BYTES", "MAX_READ_SET_READS", "READ_COLLECTION_BINDING_KIND", "READ_COLLECTION_REF_SCHEMA",
+           "READ_SET_BINDING_KIND", "READ_SET_SCHEMA", "hub_read_collection_participant_input",
+           "hub_read_set_participant_input", "read_collection_dependencies", "read_set_candidate_value",
+           "validate_read_collection_ref", "validate_read_set_candidate", "verify_read_collection_projection",
+           "verify_read_set_projection"]

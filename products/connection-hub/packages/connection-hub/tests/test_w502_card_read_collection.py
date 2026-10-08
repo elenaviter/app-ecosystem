@@ -182,3 +182,49 @@ async def test_a_fence_naming_another_collection_is_a_binding_violation(tmp_path
     fence.write_text(json.dumps({"transaction_id": RS, "collection_id": "d" * 32}))
     with pytest.raises(CardStorageError, match="card_transaction_read_fence_binding_invalid"):
         await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)
+
+
+# ── the by-reference binding: a bounded projection, exact validation ──
+
+from connection_hub.delegated_credentials.cards import card_read_set as read_set
+from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+
+def _ref(count: int = 2, **changes):
+    return {"schema": read_set.READ_COLLECTION_REF_SCHEMA, "collection_id": COLLECTION,
+            "scope": "work:project:synthetic", "count": count, "root": "a" * 64, "catalog": CATALOG,
+            "deadline": 2_000_000_000, **changes}
+
+
+def test_the_projection_is_one_size_whatever_the_number_of_reads():
+    # Only the count's own decimal digits differ: it is the one dependency value; the ref enters as a digest.
+    sizes = {len(canonical_json_bytes(read_set.hub_read_collection_participant_input(
+        ref=_ref(count), actor_subject="synthetic-owner", actor_kind="caller"))) - len(str(count))
+        for count in (3, 66, 1000)}
+    assert len(sizes) == 1, sizes
+    projection = read_set.hub_read_collection_participant_input(ref=_ref(1000), actor_subject="a", actor_kind="caller")
+    assert set(projection["dependency_revisions"]) == {f"card-collection:{COLLECTION}:{'a' * 64}",
+                                                       f"catalog-active:{CATALOG}"}
+    assert read_set.verify_read_collection_projection(projection, _ref(1000)) == _ref(1000)
+
+
+@pytest.mark.parametrize("change", [{"count": 0}, {"count": True}, {"root": "A" * 64}, {"collection_id": "c" * 31},
+                                    {"catalog": "x"}, {"deadline": 0}, {"schema": "other"}, {"extra": 1}])
+def test_a_malformed_reference_is_refused_by_name(change):
+    with pytest.raises(DecisionRefused, match="card_read_collection_ref_invalid"):
+        read_set.validate_read_collection_ref(_ref(**change))
+
+
+@pytest.mark.parametrize("field, value", [("dependency_revisions", {}), ("candidate_digest", "0" * 64),
+                                          ("binding_ref", "collection:" + "d" * 32), ("action", "write")])
+def test_a_projection_that_does_not_bind_the_reference_is_refused(field, value):
+    projection = {**read_set.hub_read_collection_participant_input(ref=_ref(), actor_subject="a", actor_kind="caller"),
+                  field: value}
+    with pytest.raises(DecisionRefused, match="card_read_set_not_bound"):
+        read_set.verify_read_collection_projection(projection, _ref())
+
+
+def test_an_enumerated_read_set_parser_never_reads_a_collection_key():
+    from connection_hub.delegated_credentials.cards.card_participant import reads_from_dependencies
+    with pytest.raises(DecisionRefused, match="card_dependency_invalid"):
+        reads_from_dependencies(read_set.read_collection_dependencies(_ref()))
