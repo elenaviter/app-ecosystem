@@ -18,6 +18,7 @@ hold before it is switched on. Everything here is **off by default**:
 | Census read | `card_census_read` (route public) | A signed, optimistic read of a project's person Cards, their full Control chains and the active catalog, for the initiator's business check. |
 | Lifecycle plan | `card_lifecycle_plan` (route public) | A signed, non-writing plan of one Card lifecycle change (a new project's P, C and My; a person joining; an invitation's redemption): the exact Card candidates the initiator freezes into its transaction. Same peer authentication as the census read; a caller plans only under its descriptor's `plan_scope_prefix`. |
 | Plan authorization | `cards/lifecycle_plan_authorization.py` | Before planning, the Hub asks the calling application's own host (`project_lifecycle_plan_authorize` on its authority bundle) for one decision per step. The body is `actor_subject`, `project_ref`, `request_id`, the plan's `request_digest` and the ordered `steps`, signed with the descriptor's authority request signer under protocol `card-lifecycle-plan-authorize.v1`. A missing, extra, repeated or mismatched step, or a step decision for another plan's digest, refuses the plan. |
+| Managed Card edit forward | `managed_card_edit_forward.py` | A managed edit a direct writer refuses is forwarded, signed, to the project host that plans its scope (`project_card_edit`), which makes it in its own transaction. |
 | Decision routing | `RoutedDecisionPort` | A Card staged by another application's transaction reads its decision from that application's authority. |
 | Recovery | cron `card-transaction-recover` | Finishes or presumes-aborts in-doubt Hub transactions, page by page, with the cursor kept in Redis. |
 
@@ -104,6 +105,39 @@ The planner matches the envelope's complete step list before reading the
 catalog and builds each candidate under only its own step's grants, platform
 flag and P locator. The caller binds the signed proposal to its transaction.
 A successful plan is input to prepare, not permission to commit.
+
+## Editing a managed Card from the Hub
+
+While enabled, a person's Save of a person Control bound under a project's
+Control (`project_person_control_update` for a person, not a pending
+invitation) is not written by the Hub. The Hub forwards it to the project
+host that plans that scope, and the host makes it in its own transaction:
+
+- **What travels.** `{schema: managed-card-edit.v1, actor_subject, project_ref,
+  request_id, target: {kind: person_control, principal_key, original_revision},
+  selection}`. The actor is the person the Hub authenticated, from the platform
+  session only. `selection` holds only the fields the person changed
+  (`resource_grants`, `resource_operations`, `named_service_operations`,
+  `account_scope`); the host keeps every other field of the revision-fenced
+  original, never an empty default. A Save that changes properties or the
+  composition, or names no revision, refuses before anything is sent.
+- **How it is signed.** The Hub's admission proof under the caller
+  descriptor's authority request signer, with its own protocol
+  (`managed-card-edit.v1`) and operation (`project_card_edit`), so it never
+  verifies as a plan authorization or an authority answer. The host checks the
+  signer, the exact body and a single-use nonce, then decides the person's
+  role and Card authority itself.
+- **What comes back.** `{ok: true, outcome: {schema: managed-card-edit-outcome.v1,
+  request_id, state, transaction_id, card_revision}}`. Only `committed` saved
+  the edit. `aborted` and `pending` keep the person's draft. A lost answer is
+  `managed_card_edit_outcome_unknown`: retrying the same `request_id` with the
+  same edit replays the host's one decision; a different edit under that
+  `request_id` refuses.
+- **Without a forwarder** (no plan scope, or the signer secret unavailable)
+  the writer keeps refusing `card_transactions_direct_write_refused`.
+
+The project Control, project agent Cards, a pending invitation's Control and
+the per-service reset are not forwarded yet; they stay refused while enabled.
 
 ## Disconnecting a connected account
 
@@ -346,7 +380,8 @@ obligations, not optional checks.
 
    These writes are made only by a transaction the project host coordinates:
    it plans with `card_lifecycle_plan`, then prepares and finishes through
-   `card_transaction_participant`. That coordinated path must be live before
+   `card_transaction_participant`. A person-Control Save reaches that
+   transaction through the managed Card edit forward (above). That coordinated path must be live before
    this is switched on. Until then, enabling refuses these edits.
 10. **Removing v1 waits.** The v1 authority path is removed only after the peer's
    writer switch.

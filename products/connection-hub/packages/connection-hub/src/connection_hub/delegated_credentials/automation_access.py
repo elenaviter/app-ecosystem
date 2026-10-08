@@ -2485,6 +2485,55 @@ class AutomationAccessService:
                 "card_revision": candidate.card_revision, "expires_at": candidate.expires_at}})
         return effects
 
+    def bind_managed_card_edit(self, forwarders: Mapping[str, Any]) -> None:
+        """W638: per plan scope prefix, the project host that coordinates a managed Card edit.
+
+        Bound with the Card transactions (bundle props, never a request). A
+        managed write the direct writers refuse is forwarded to that host's
+        transaction instead; without a forwarder it stays refused.
+        """
+        self._managed_card_edit_forwarders = tuple(sorted(
+            (prefix, forwarder) for prefix, forwarder in dict(forwarders).items()
+            if isinstance(prefix, str) and prefix and callable(getattr(forwarder, "forward", None))
+        ))
+
+    def _managed_card_edit_forwarder(self, project_ref: str) -> Any:
+        for prefix, forwarder in getattr(self, "_managed_card_edit_forwarders", ()):
+            if isinstance(project_ref, str) and project_ref.startswith(prefix):
+                return forwarder
+        return None
+
+    async def _forward_person_control_edit(
+        self, user: Mapping[str, Any], *, project_ref: str, target_subject: str, request_id: str,
+        selection: Mapping[str, Any], expected_card_revision: int | None, properties: Any,
+        composition_mode: str | None,
+    ) -> dict[str, Any] | None:
+        """The managed person-Control edit, made by the project's own transaction."""
+        from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
+        forwarder = self._managed_card_edit_forwarder(project_ref)
+        actor_subject = _subject_from_user(user)
+        if forwarder is None or not _clean(target_subject) or not actor_subject:
+            return None
+        if properties or composition_mode not in (None, "and"):
+            # Properties and composition are not part of this edit; changing
+            # them silently would not be the change the person saw.
+            return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
+                    "message": "Composition and Card properties are not changed by this edit. Nothing was saved."}
+        if type(expected_card_revision) is not int:
+            return {"ok": False, "error": "managed_card_edit_revision_required", "status": 409,
+                    "message": "Reload the Card and save again. Nothing was saved."}
+        try:
+            body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
+                request_id=request_id, kind="person_control", principal_key="user:" + _clean(target_subject),
+                original_revision=expected_card_revision, selection=selection)
+            outcome = await forwarder.forward(body)
+        except ManagedCardEditError as exc:
+            return exc.to_dict()
+        return {"ok": outcome["state"] == "committed", "managed_card_edit": outcome,
+                **({} if outcome["state"] == "committed" else {
+                    "error": "managed_card_edit_" + outcome["state"], "status": 409,
+                    "message": "The project did not save this change. Your draft is kept."})}
+
     def bind_managed_control_scopes(self, prefixes: Iterable[str]) -> None:
         """W578: the scopes in which a configured coordinator plans a project's Control Card (P).
 
@@ -7353,7 +7402,15 @@ class AutomationAccessService:
 
         refused = self._managed_direct_write_refused()
         if refused is not None:
-            return refused
+            forwarded = await self._forward_person_control_edit(
+                user, project_ref=project_ref, target_subject=target_subject, request_id=request_id,
+                selection={field: value for field, value in (
+                    ("resource_grants", resource_grants), ("resource_operations", resource_operations),
+                    ("named_service_operations", named_service_operations), ("account_scope", account_scope),
+                ) if value is not None},
+                expected_card_revision=expected_card_revision, properties=properties,
+                composition_mode=composition_mode)
+            return refused if forwarded is None else forwarded
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
