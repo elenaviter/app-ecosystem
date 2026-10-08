@@ -155,8 +155,15 @@ Card bound directly under the scope's project Control, and its display kind is
 `agent_card`. `reselect_project_control` plans an edit of the project Control
 itself under `project.control.update`.
 
-The project Control's own Save and a pending invitation's Control are not
-forwarded yet; they stay refused while enabled.
+**A pending invitation's Control Save** (`project_person_control_update` with
+`invitation_ref`) is forwarded the same way with `{kind: invitation_control,
+access_id, subject_hash, original_revision}`; the host plans it with
+`reselect_invitation_control` under `project.invitation_control.update`, and
+the Card keeps its invitation identity marker. Without a forwarder the writer
+loads nothing and keeps refusing.
+
+The project Control's own Save is not forwarded yet; it stays refused while
+enabled.
 
 ## Disconnecting a connected account
 

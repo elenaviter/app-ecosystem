@@ -78,3 +78,22 @@ def test_the_decision_must_be_for_exactly_this_operation_target_actor_and_reques
         asyncio.run(build_managed_card_selection_update(Host(), original=p, kind="project_control",
             selection={"resource_operations": {RESOURCE: []}}, active=None, decision=Decision(),
             project_ref=PROJECT, actor_subject="alice", request_id="plan-1", now=1_800_000_000))
+
+
+def test_a_pending_invitations_control_of_this_project_is_a_target_and_nothing_else_is():
+    from connection_hub.delegated_credentials.controls.model import new_credentialless_card
+    from connection_hub.delegated_credentials.controls.project_invitation import (
+        PROJECT_INVITATION_CONTROL_ISSUER_KIND, ProjectInvitationControlIdentity, bind_project_invitation_control,
+    )
+    invitation = ProjectInvitationControlIdentity.build(project_ref=PROJECT, invitation_ref="invite-1",
+                                                         target_email="someone@example.test")
+    card = bind_project_invitation_control(new_credentialless_card(grantor_subject=invitation.project_subject,
+        catalog_version="synthetic", control_id=invitation.control_id, issuer_ref=invitation.invitation_ref,
+        issuer_kind=PROJECT_INVITATION_CONTROL_ISSUER_KIND, issuer_label="Invited", now=1_800_000_000),
+        identity=invitation)
+    assert managed_target_kind(card, project_ref=PROJECT, kind="invitation_control") == "invitation_control"
+    with pytest.raises(DecisionRefused):
+        managed_target_kind(card, project_ref="work:project:other", kind="invitation_control")
+    with pytest.raises(DecisionRefused):
+        managed_target_kind(project_control(), project_ref=PROJECT, kind="invitation_control")
+    assert UPDATE_STEPS["reselect_invitation_control"] == "project.invitation_control.update"

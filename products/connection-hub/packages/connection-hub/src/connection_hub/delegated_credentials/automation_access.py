@@ -2549,14 +2549,14 @@ class AutomationAccessService:
 
     async def _forward_agent_card_edit(
         self, user: Mapping[str, Any], *, record: AutomationAccessRecord, project_ref: str, request_id: str,
-        changes: Mapping[str, Any],
+        changes: Mapping[str, Any], kind: str = "agent_card",
     ) -> dict[str, Any] | None:
-        """W638: a project agent Card's Save, made by the project's own transaction."""
+        """W638: a project agent Card's (or a pending invitation Control's) Save, made by the project's transaction."""
         from .cards.store import subject_hash_for
         from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
         forwarder = self._managed_card_edit_forwarder(project_ref)
         actor_subject = _subject_from_user(user)
-        if forwarder is None or record.control_card is None or not actor_subject:
+        if forwarder is None or not actor_subject or (kind == "agent_card" and record.control_card is None):
             return None
         unchanged = (
             ("properties", dict(record.properties or {})),
@@ -2579,7 +2579,7 @@ class AutomationAccessService:
                      if changes.get(field) is not None}
         try:
             body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
-                request_id=request_id, kind="agent_card", principal_key="card:" + record.access_id,
+                request_id=request_id, kind=kind, principal_key="card:" + record.access_id,
                 original_revision=revision, selection=selection,
                 access_id=record.access_id, subject_hash=subject_hash_for(record.grantor_subject))
             outcome = await forwarder.forward(body)
@@ -7457,6 +7457,19 @@ class AutomationAccessService:
         """Replace one live or pending project selection under host policy."""
 
         refused = self._managed_direct_write_refused()
+        if refused is not None and _clean(invitation_ref) and self._managed_card_edit_forwarder(project_ref) is not None:
+            # W638: a pending invitation's Control, edited by the project's own transaction.
+            from .controls.project_invitation import project_invitation_control_id
+            from .controls.project_person import project_authority_subject
+            stored = await self._load_record(project_invitation_control_id(project_ref, _clean(invitation_ref)),
+                                             grantor_subject=project_authority_subject(project_ref))
+            forwarded = None if stored is None else await self._forward_agent_card_edit(
+                user, record=stored, project_ref=project_ref, request_id=request_id, kind="invitation_control",
+                changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
+                         "named_service_operations": named_service_operations, "account_scope": account_scope,
+                         "properties": properties, "composition_mode": composition_mode, "label": label,
+                         "expected_card_revision": expected_card_revision})
+            return refused if forwarded is None else forwarded
         if refused is not None:
             forwarded = await self._forward_person_control_edit(
                 user, project_ref=project_ref, target_subject=target_subject, request_id=request_id,

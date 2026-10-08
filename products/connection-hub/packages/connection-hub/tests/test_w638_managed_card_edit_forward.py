@@ -161,3 +161,11 @@ def test_an_agent_card_save_that_changes_more_than_its_selection_saves_nothing(c
     host = Host()
     result = agent_forward(service(host), **change)
     assert result["ok"] is False and host.calls == []
+
+
+def test_a_pending_invitations_control_save_forwards_with_kind_invitation_control():
+    host = Host()
+    result = asyncio.run(service(host)._forward_agent_card_edit({"user_id": "alice"}, record=StoredAgent(),
+        project_ref=PROJECT, request_id="edit-invitation", kind="invitation_control",
+        changes=dict(resource_operations={"svc": ["a"]}, expected_card_revision=2)))
+    assert result["ok"] is True and host.calls[0][2]["target"]["kind"] == "invitation_control"

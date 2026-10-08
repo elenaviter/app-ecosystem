@@ -30,8 +30,14 @@ from .cards.model import CARD_STATE_ACTIVE, CardAuthority, authority_is_credenti
 from .catalog.descriptors import next_resource_acceptance
 from .controls.model import control_card_id_for_issuer
 from .existing_card_selection_plan import undisplayed_change
-from .project_authorization import PROJECT_AGENT_CARD_UPDATE, PROJECT_CONTROL_UPDATE, ProjectAuthorizationDecision
-OPERATIONS = {"project_control": PROJECT_CONTROL_UPDATE, "agent_card": PROJECT_AGENT_CARD_UPDATE}
+from .controls.project_invitation import (
+    PROJECT_INVITATION_CONTROL_ISSUER_KIND, ProjectInvitationControlError, ProjectInvitationControlIdentity,
+)
+from .project_authorization import (
+    PROJECT_AGENT_CARD_UPDATE, PROJECT_CONTROL_UPDATE, PROJECT_INVITATION_CONTROL_UPDATE, ProjectAuthorizationDecision,
+)
+OPERATIONS = {"project_control": PROJECT_CONTROL_UPDATE, "agent_card": PROJECT_AGENT_CARD_UPDATE,
+              "invitation_control": PROJECT_INVITATION_CONTROL_UPDATE}
 _SELECTION_FIELDS = frozenset({"resource_grants", "resource_operations", "named_service_operations", "account_scope"})
 
 
@@ -52,6 +58,15 @@ def managed_target_kind(original: CardAuthority, *, project_ref: str, kind: str)
         raise _refuse("card_plan_update_scope_invalid")
     if kind == "project_control" and _is_project_control(original, project_ref) and original.control_card is None:
         return kind
+    if kind == "invitation_control" and original.issuer_kind == PROJECT_INVITATION_CONTROL_ISSUER_KIND             and authority_is_credentialless(original):
+        # A pending invitation's Control: its own identity marker names the project.
+        try:
+            identity = ProjectInvitationControlIdentity.from_authority(original)
+        except ProjectInvitationControlError as exc:
+            raise _refuse("card_plan_update_scope_invalid") from exc
+        if identity.project_ref == project_ref and identity.control_id == original.access_id:
+            return kind
+        raise _refuse("card_plan_update_scope_invalid")
     binding = original.control_card
     if (kind == "agent_card" and binding is not None and binding.issuer_kind == "application"
             and binding.issuer_ref == project_ref

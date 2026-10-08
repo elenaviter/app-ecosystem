@@ -800,7 +800,8 @@ async def plan_card_lifecycle(
                     or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent",
                                    "selection"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
-                                                                    "reselect_agent_card"})):
+                                                                    "reselect_agent_card",
+                                                                    "reselect_invitation_control"})):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             decision = authorization.decision_for(f"update:{index}")
             access_id = _required_text(raw["access_id"], "card_plan_update_invalid")
@@ -838,7 +839,7 @@ async def plan_card_lifecycle(
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
-            if raw["kind"] in {"reselect_project_control", "reselect_agent_card"}:
+            if raw["kind"] in {"reselect_project_control", "reselect_agent_card", "reselect_invitation_control"}:
                 # W638: the project's own Control or a project agent Card takes a host-authorized selection.
                 if "parent" in raw:
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
@@ -847,7 +848,8 @@ async def plan_card_lifecycle(
                 )
                 built = await build_managed_card_selection_update(
                     host, original=original, selection=raw["selection"], active=active, decision=decision,
-                    kind="project_control" if raw["kind"] == "reselect_project_control" else "agent_card",
+                    kind={"reselect_project_control": "project_control", "reselect_agent_card": "agent_card",
+                          "reselect_invitation_control": "invitation_control"}[raw["kind"]],
                     project_ref=scope, actor_subject=actor, request_id=request_id, now=now)
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
