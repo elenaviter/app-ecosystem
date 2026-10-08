@@ -303,6 +303,8 @@ class ProjectAgentCardAccess:
             _delegable_grants=delegable,
             _platform_admin=_platform_admin(user),
             _record_transform=self._audit(user, decision, action="updated", request_id=request_id),
+            # W578: the gate decides for the authenticated requester, not the storage owner.
+            _caller_actor_subject=_subject(user),
             **changes,
         )
 

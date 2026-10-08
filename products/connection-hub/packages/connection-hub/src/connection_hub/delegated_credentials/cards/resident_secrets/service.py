@@ -213,6 +213,67 @@ class ResidentCardSecretService:
             cleanup_failure=cleanup_failure,
         )
 
+    # ── W606: re-wrap the SAME bearer for a committed Card edit, prepared at STAGE ──
+
+    @staticmethod
+    def rewrap_secret_ref(transaction_id: str, access_id: str) -> str:
+        """The one ref a Card edit's re-wrap uses: STAGE, COMMIT, ABORT and every replay address it."""
+        import hashlib
+
+        return hashlib.sha256(f"w606-rewrap:{transaction_id}:{access_id}".encode("utf-8")).hexdigest()[:32]
+
+    def rewrap_record(self, *, access_id: str, secret_ref: str, fingerprint: str, card_revision: int,
+                      created_at: int, expires_at: int) -> PreparedResidentSecret:
+        return PreparedResidentSecret(access_id=access_id, secret_ref=secret_ref, resident_access_sha256=fingerprint,
+                                      card_revision=card_revision, created_at=created_at,
+                                      expires_at=expires_at).validated()
+
+    async def prepare_rewrap(self, prepared: PreparedResidentSecret) -> None:
+        """STAGE: write the same bearer's envelope at the AFTER revision and expiry under its own ref.
+
+        The bearer is read only through ``resolve`` (the BEFORE binding) and
+        must hash to the pinned fingerprint. The active row is not touched:
+        until COMMIT installs it, the prepared envelope serves nothing. A
+        replay finds the same ref with the same envelope and returns.
+        """
+        from connection_hub.delegated_credentials.cards.resident_secrets.model import resident_bearer_fingerprint
+
+        bearer = await self.resolve(prepared.access_id)
+        if resident_bearer_fingerprint(bearer) != prepared.resident_access_sha256:
+            raise ResidentSecretError("resident_secret_rewrap_fingerprint_mismatch", access_id=prepared.access_id)
+        envelope = ResidentSecretEnvelope.create(access_id=prepared.access_id, card_revision=prepared.card_revision,
+                                                 value=bearer, created_at=prepared.created_at,
+                                                 expires_at=prepared.expires_at)
+        reserved = await self._metadata.prepare_resident_secret(prepared)
+        if reserved is not True and reserved is not False:
+            raise ResidentSecretError("resident_secret_intent_create_outcome_unknown", access_id=prepared.access_id,
+                                      secret_ref=prepared.secret_ref)
+        created = await self._secrets.create(secret_ref=prepared.secret_ref, value=envelope.to_json(),
+                                             expires_at=prepared.expires_at)
+        if created is not True:
+            existing = await self._secrets.get(secret_ref=prepared.secret_ref)
+            if existing is None or ResidentSecretEnvelope.from_json(existing) != envelope:
+                raise ResidentSecretError("resident_secret_rewrap_ref_collision", access_id=prepared.access_id,
+                                          secret_ref=prepared.secret_ref)
+
+    async def install_rewrap(self, prepared: PreparedResidentSecret, *, session_id: str,
+                             expected_revision: int) -> ResidentSecretInstallResult:
+        """COMMIT: point the active row at the prepared envelope (compare-and-set), then retire the old ref."""
+        candidate = CardHandleMetadata(
+            access_id=prepared.access_id, card_revision=prepared.card_revision, expires_at=prepared.expires_at,
+            resident_access_secret_ref=prepared.secret_ref, resident_access_sha256=prepared.resident_access_sha256,
+            session_id=session_id, state=HANDLE_STATE_ACTIVE).validated()
+        mutation = await self._metadata.install_prepared_resident_secret(candidate,
+                                                                         expected_revision=int(expected_revision))
+        cleanup_failure = None
+        if mutation.retired_secret is not None:
+            cleanup_failure = await self._cleanup.cleanup_retired_candidate(mutation.retired_secret)
+        return ResidentSecretInstallResult(metadata=mutation.metadata, cleanup_failure=cleanup_failure)
+
+    async def discard_rewrap(self, prepared: PreparedResidentSecret) -> None:
+        """ABORT or superseded: delete the prepared envelope; never a ref the active row points at."""
+        await self._cleanup.cleanup_prepared_candidate(prepared)
+
     async def resolve(self, access_id: str, *, now: int | None = None) -> str:
         """Return the bearer only after metadata and envelope agree exactly."""
 

@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 import copy
+import hashlib
 import html
 import inspect
+import hashlib
+import hmac
 import json
+import pathlib
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -43,6 +48,22 @@ from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import (
 from kdcube_ai_app.infra.plugin.bundle_loader import api, bundle_entrypoint, bundle_id, cron, mcp, ui_widget
 from kdcube_ai_app.infra.secrets import ephemeral_secret_store
 from connection_hub.delegated_credentials.cards.cache import DelegatedCardRuntimeCache
+from connection_hub.delegated_credentials.cards.composition import (
+    CardTransactionsUnavailable,
+    bind_card_transactions,
+    card_transaction_coordinator,
+    card_transactions_enabled,
+    postgres_decision_store,
+    recover_card_transactions,
+)
+from connection_hub.delegated_credentials.cards.census_read import CardCensusReadOperation
+from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import CardLifecyclePlanOperation
+from connection_hub.delegated_credentials.card_lifecycle_plan import plan_card_lifecycle
+from connection_hub.delegated_credentials.cards.participant_descriptor import (
+    build_participant_callers,
+    participant_caller_descriptors,
+)
+from connection_hub.delegated_credentials.cards.participant_operation import CardTransactionParticipantOperation
 from connection_hub.delegated_credentials.cards.reconcile import CardProjectionReconciler
 
 SITE_BUILD_COMMAND = "cp index.html site.js styles.css <VI_BUILD_DEST_ABSOLUTE_PATH>/"
@@ -275,6 +296,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "project_person_control_update",
     "project_person_control_revoke",
     "project_person_control_bind_invitation",
+    "project_person_control_bind_project",
     "project_person_my_card_seed",
     "project_person_github_key_link",
     "project_person_github_key_unlink",
@@ -292,6 +314,7 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "issuer_managed_lifecycle_apply",
     "issuer_managed_lifecycle_read",
     "issuer_managed_card_snapshots",
+    "issuer_managed_card_update",
     "delegated_access_update",
     "delegated_access_apply_profile",
     "delegated_access_add_operations",
@@ -322,15 +345,26 @@ CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
     "delegated_to_kdcube_resolve",
     "economic_usage",
     "identity_family_resolve",
+    # W609: server-to-server, admission-proof-gated, read-only; no browser form.
+    "identity_provider_subject_resolve",
+    "project_operation_authorize_for_person",
     "identity_resolve",
     "opex",
     "project_operation_authorize",
+    # W502 join: read-only, asked by the project host under the invitee's session.
+    "project_invitation_pending_revision",
     "react_context_preview",
 })
 # These public POSTs use their own protocol authentication/anti-forgery contract
 # or are read-only resolvers. They never inherit browser-operation CSRF.
 CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     "authority_provider_entrypoint_resolve",
+    # W502: authenticated only by the peer's admission proof and single-use
+    # nonce; the browser session is discarded (``del request``) and never
+    # establishes authority (test_w502_peer_endpoints_ignore_the_browser_session).
+    "card_census_read",
+    "card_lifecycle_plan",
+    "card_transaction_participant",
     "delegated_admission",
     "federated_data_bus_claim",
     "project_agent_github_token_issue",
@@ -602,6 +636,30 @@ def _contains_authenticator_secret_value(payload: Mapping[str, Any]) -> bool:
         if isinstance(value, Mapping) and _contains_authenticator_secret_value(value):
             return True
     return False
+
+
+def _account_lock(entrypoint: Any) -> Any:
+    """W578: the shared lock of one connected-account record, across every process and host (Redis).
+
+    The same key prefix as the SDK client's (``account_lock_prefix``), so the
+    Hub app and every bundle writing account records serialize on one key per
+    (user, account). Status writers (the GitHub key and agent token paths
+    included) wait at most ``ACCOUNT_LOCK_WAIT_SECONDS``.
+    """
+    from connection_hub.delegated_to_kdcube.account_lock import RedisAccountLock, account_lock_prefix
+
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    tenant, project = _runtime_tenant_project(entrypoint)
+    return RedisAccountLock(redis, prefix=account_lock_prefix(tenant, project))
+
+
+def _delegated_to_kdcube_store(entrypoint: Any, user_id: str) -> Any:
+    """A connected-account store for one user, bound to the shared account lock (W578)."""
+    store = DelegatedToKdcubeStore(user_id=user_id, bundle_id=BUNDLE_ID)
+    lock = _account_lock(entrypoint)
+    if lock is not None and callable(getattr(store, "bind_account_lock", None)):
+        store.bind_account_lock(lock)
+    return store
 
 
 def _storage_root_or_error(entrypoint: Any) -> Any:
@@ -1067,9 +1125,32 @@ async def _bind_delegated_client_request_config(
 ) -> Dict[str, Any]:
     cfg = _oauth_adapter_config(entrypoint, request)
     if request is not None:
+        original_exchange_enabled = card_transactions_enabled(_connections_config(entrypoint))
+        if original_exchange_enabled:
+            # Present before any asynchronous composition: a missing host
+            # capability must not select the legacy consume/mint workflow.
+            request.state.oauth_original_exchange_factory = None
         request.state.oauth_delegated_config = cfg
         request.state.oauth_delegated_issuer = str(cfg.get("issuer") or "").rstrip("/")
         request.state.oauth_grant_store_required = True
+        if original_exchange_enabled and _bool(cfg.get("enabled"), default=False):
+            from .surfaces.oauth_original_exchange_host import (
+                OriginalExchangeHostingUnavailable, configured_issuer,
+            )
+            delegated = _connections_config(entrypoint).get("delegated_credentials") or {}
+            oauth = delegated.get("oauth") or {}
+            try:
+                issuer = configured_issuer(oauth.get("issuer"))
+            except OriginalExchangeHostingUnavailable:
+                # The productive authorization mount must close too, before
+                # discovery, consent or code creation. The older request-Host
+                # fallback is not a configured original-exchange issuer.
+                cfg["issuer"] = ""
+                cfg["original_exchange_unavailable"] = True
+                request.state.oauth_delegated_issuer = ""
+                return cfg
+            cfg["issuer"] = issuer
+            request.state.oauth_delegated_issuer = issuer
         authority_config = _delegated_authority_config(entrypoint)
         request.state.oauth_authority_backend = authority_config.backend
         request.state.oauth_authority_generation_id = authority_config.generation_id
@@ -1094,6 +1175,35 @@ async def _bind_delegated_client_request_config(
             parsed = oauth_delegated_config(request)
             access_service = await _automation_access_service_for(entrypoint, parsed)
             request.state.automation_access_factory = lambda: access_service
+            if original_exchange_enabled:
+                from .surfaces.oauth_original_exchange_host import bind_original_exchange
+                connections = _connections_config(entrypoint)
+                delegated = connections.get("delegated_credentials") or {}
+                oauth = delegated.get("oauth") or {}
+                original = oauth.get("original_exchange") or {}
+
+                async def original_signing_secret(reference: str):
+                    return await _bundle_secret_value(entrypoint, secret_path=reference,
+                        trace_scope="oauth-original-refresh", warn_missing=False)
+
+                # All providers come from this configured host. No browser
+                # selector, new decision coordinator or implicit schema install.
+                try:
+                    if not authority_config.uses_postgresql:
+                        raise RuntimeError("original_exchange_postgresql_not_selected")
+                    persistence = await _delegated_card_persistence(entrypoint, entrypoint.redis)
+                    await bind_original_exchange(request, tenant=parsed.tenant, project=parsed.project,
+                        pg_pool=getattr(entrypoint, "pg_pool", None),
+                        configured_public_issuer=oauth.get("issuer"), hub=access_service,
+                        grant_store=request.state.oauth_grant_store,
+                        issuance_store=_durable_authority(entrypoint).oauth,
+                        cards=persistence.card_store, settings=get_settings(),
+                        refresh_signing_secret_ref=original.get("refresh_signing_secret_ref"),
+                        resolve_secret=original_signing_secret)
+                except Exception:
+                    # Exception text may contain a provider value. The SDK
+                    # returns a finite 503 from the present closed binding.
+                    request.state.oauth_original_exchange_factory = None
     return cfg
 
 
@@ -1118,6 +1228,12 @@ def _delegated_catalog_resolver(entrypoint: Any, redis: Any) -> Any:
         store=BundleStorageDelegatedCatalogStore(storage_root),
         settings=DelegatedCacheSettings.from_connections(connections),
     )
+
+
+def _delegated_catalog_store(entrypoint: Any) -> Any:
+    """W502: the catalog store a Card transaction reserves its active version in, or None (fail closed)."""
+    storage_root = entrypoint.bundle_storage_root()
+    return BundleStorageDelegatedCatalogStore(storage_root) if storage_root is not None else None
 
 
 async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
@@ -1509,15 +1625,17 @@ async def _automation_access_service_for(
     issuer_snapshots = issuer_snapshot_registry_from_connections(
         connections=connections, resolve_secret=issuer_secret, caller=call_bundle_operation,
     )
+    grant_store = await _oauth_grant_store(entrypoint)
+    card_persistence = await _delegated_card_persistence(entrypoint, redis)
     service = AutomationAccessService(
         redis=redis,
         tenant=tenant,
         project=project,
-        grant_store=await _oauth_grant_store(entrypoint),
+        grant_store=grant_store,
         authority_backend=_delegated_authority_config(entrypoint).backend,
         config=config,
         catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
-        card_persistence=await _delegated_card_persistence(entrypoint, redis),
+        card_persistence=card_persistence,
         resource_overlay_provider=lambda owner_subject: _remote_mcp_resource_overlay(
             entrypoint, owner_subject
         ),
@@ -1536,7 +1654,70 @@ async def _automation_access_service_for(
     actor, classification, snapshot_tenant, snapshot_project = _protected_lifecycle_read_context(entrypoint)
     service.bind_issuer_snapshot_registry(issuer_snapshots, actor_subject=actor,
         actor_classification=classification, tenant=snapshot_tenant, project=snapshot_project)
+    if card_transactions_enabled(connections):
+        await _bind_card_transactions(entrypoint, service, persistence=card_persistence, grant_store=grant_store)
     return service
+
+
+async def _card_decision_store(entrypoint: Any, pg_pool: Any) -> Any:
+    """The entrypoint's one Hub decision store; concurrent first callers wait for one creation."""
+    decisions = getattr(entrypoint, "_card_decision_store", None)
+    if decisions is None:
+        lock = entrypoint.__dict__.setdefault("_card_decision_store_lock", asyncio.Lock())
+        async with lock:
+            decisions = getattr(entrypoint, "_card_decision_store", None)
+            if decisions is None:
+                tenant, project = _runtime_tenant_project(entrypoint)
+                decisions = await postgres_decision_store(pg_pool, tenant=tenant, project=project)
+                entrypoint._card_decision_store = decisions
+    return decisions
+
+
+async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence: Any, grant_store: Any) -> None:
+    """W502: Hub-initiated Card writes through the ONE protocol (W581 v2), only when enabled.
+
+    Enabled without the PostgreSQL authority it refuses (fail closed); it
+    never falls back to a direct Card write.
+    """
+    config = _delegated_authority_config(entrypoint)
+    pg_pool = getattr(entrypoint, "pg_pool", None)
+    if not config.uses_postgresql or pg_pool is None:
+        raise CardTransactionsUnavailable("card_transactions_unavailable")
+    decisions = await _card_decision_store(entrypoint, pg_pool)
+    # W578: a project's Control Card in a scope a configured caller plans is
+    # written only through that caller's transaction (its plan_scope_prefix).
+    # From the descriptors alone, so a caller whose secrets are incomplete
+    # still protects its P (it fails closed rather than open).
+    managed_scopes = [descriptor.plan_scope_prefix
+                      for descriptor in participant_caller_descriptors(_connections_config(entrypoint)).values()]
+    bind_card_transactions(service, persistence=persistence, decisions=decisions, grant_store=grant_store,
+                           policies=_invocation_policy_service(entrypoint),
+                           authorities=(await _card_participant_callers(entrypoint, persistence)).authorities,
+                           catalog_store=_delegated_catalog_store(entrypoint),
+                           accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
+                           managed_control_scopes=managed_scopes)
+
+
+async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
+    """W502: each configured application allowed to drive the Hub's Card participant.
+
+    From connections.card_transactions.callers only (bundle props); secrets by
+    reference. The same authorities bind every Card store decision port, so a
+    Card another application staged reads its decision from that authority.
+    """
+    from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_operation
+
+    async def resolve(reference: str) -> str:
+        return await _bundle_secret_value(entrypoint, secret_path=reference,
+                                          trace_scope="card-transaction-participant", warn_missing=False)
+
+    async def call(**kwargs: Any) -> Any:
+        # A peer's transaction authority is a public operation it authenticates by proof.
+        return await call_bundle_operation(route="public", **kwargs)
+
+    return await build_participant_callers(
+        _connections_config(entrypoint), resolve_secret=resolve, call=call,
+        card_store=getattr(persistence, "card_store", None), card_service=getattr(persistence, "card_service", None))
 
 
 async def _automation_access_service(
@@ -1582,7 +1763,7 @@ def _delegated_to_kdcube_operations(entrypoint: Any, platform_user_id: str) -> A
         user_id=platform_user_id,
         config=delegated_to_kdcube_config(getattr(entrypoint, "bundle_props", {}) or {}),
         bundle_id=BUNDLE_ID,
-        store=DelegatedToKdcubeStore(user_id=platform_user_id, bundle_id=BUNDLE_ID),
+        store=_delegated_to_kdcube_store(entrypoint, platform_user_id),
         consent_granted_notifier=_consent_granted_notifier,
     )
 
@@ -1671,7 +1852,7 @@ async def _project_github_key(entrypoint: Any, request: Any, user: Mapping[str, 
         access=await _automation_access_service(entrypoint, request),
         user=user,
         config=delegated_to_kdcube_config(getattr(entrypoint, "bundle_props", {}) or {}),
-        store=DelegatedToKdcubeStore(user_id=platform_user_id, bundle_id=BUNDLE_ID),
+        store=_delegated_to_kdcube_store(entrypoint, platform_user_id),
         client_secret_resolver=_client_secret_resolver,
         refresh_lock=_delegated_to_kdcube_refresh_lock(entrypoint),
     )
@@ -2573,6 +2754,244 @@ def _edge_subject(edge: Mapping[str, Any] | None, challenge: Mapping[str, Any] |
     return str(source.get("subject") or (challenge or {}).get("provider_subject") or "").strip()
 
 
+# W609: a service-only reverse lookup (platform user -> provider subject).
+# It discloses one provider subject per platform user, so it is open only to a
+# registered admission service whose resources name that provider, verified by
+# its HMAC peer proof; the request's user session is never consulted.
+IDENTITY_SUBJECT_LOOKUP_OPERATION = "identity_provider_subject_resolve"
+# A token-less, domain-separated signature of its own (no delegated token is
+# presented): it cannot be confused with a delegated-admission proof.
+IDENTITY_SUBJECT_LOOKUP_DOMAIN = "connection-hub.identity-provider-subject.v1"
+IDENTITY_SUBJECT_LOOKUP_MIN_SECRET_BYTES = 32
+
+
+def identity_subject_lookup_signature(*, secret: str, service_id: str, timestamp: str, nonce: str,
+                                      platform_user_id: str, provider: str) -> str:
+    """HMAC-SHA256 over the domain, service, time, nonce, operation, resource and request digest."""
+    message = "\n".join([
+        IDENTITY_SUBJECT_LOOKUP_DOMAIN, str(service_id), str(timestamp), str(nonce),
+        IDENTITY_SUBJECT_LOOKUP_OPERATION, identity_subject_lookup_resource(provider),
+        identity_subject_lookup_digest(platform_user_id=platform_user_id, provider=provider),
+    ]).encode("utf-8")
+    return hmac.new(str(secret).encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def identity_subject_lookup_resource(provider: str) -> str:
+    return f"urn:kdcube:identity:provider-subject:{str(provider or '').strip().lower()}"
+
+
+def identity_subject_lookup_digest(*, platform_user_id: str, provider: str) -> str:
+    body = json.dumps({"platform_user_id": str(platform_user_id or "").strip(),
+                       "provider": str(provider or "").strip().lower()},
+                      sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _identity_subject_audit(service_id: str, platform_user_id: str, provider: str, outcome: str) -> None:
+    # Never the provider subject itself.
+    LOGGER.info(
+        "[connection-hub.identity_provider_subject_resolve] service=%s platform_user=%s provider=%s outcome=%s",
+        service_id, platform_user_id, provider, outcome,
+    )
+
+
+async def _identity_provider_subject_resolve(entrypoint: Any, payload: Mapping[str, Any],
+                                             *, now: int | None = None) -> Dict[str, Any]:
+    platform_user = str(payload.get("platform_user_id") or "").strip()
+    provider = str(payload.get("provider") or "").strip().lower()
+    raw_proof = payload.get("service_proof")
+    proof = {key: str((raw_proof or {}).get(key) or "") for key in ("service_id", "timestamp", "nonce", "signature")} \
+        if isinstance(raw_proof, Mapping) else {"service_id": "", "timestamp": "", "nonce": "", "signature": ""}
+    service_id = proof["service_id"]
+    if not platform_user or not provider:
+        return {"ok": False, "error": "identity_provider_subject_resolve_requires_user_and_provider", "status": 400}
+    if not service_id or not proof["signature"] or not proof["nonce"]:
+        _identity_subject_audit(service_id, platform_user, provider, "no_service_proof")
+        return {"ok": False, "error": "identity_lookup_requires_service_proof", "status": 403}
+    config = AdmissionConfig.from_connections(_connections_config(entrypoint))
+    service = config.service(service_id) if config.enabled else None
+    resource = identity_subject_lookup_resource(provider)
+    authenticators = [
+        row for row in matching_authenticator_rows(
+            _identity_config(entrypoint), provider, stored_rows=await _cached_authenticator_rows(entrypoint))
+        if row.get("enabled") is not False
+    ]
+    if service is None or not service.allows_resource(resource) or not authenticators:
+        _identity_subject_audit(service_id, platform_user, provider, "not_permitted")
+        return {"ok": False, "error": "identity_lookup_not_permitted", "status": 403}
+    # The key that verifies this service is that service's own row secret.
+    secret = await _bundle_secret_value(
+        entrypoint, secret_path=service.secret_ref,
+        trace_scope=f"identity_provider_subject.service.{service.service_id}", warn_missing=True)
+    reason = ""
+    try:
+        issued_at = int(proof["timestamp"])
+    except ValueError:
+        issued_at, reason = 0, "timestamp_invalid"
+    current = int(time.time()) if now is None else int(now)
+    if len(secret.encode("utf-8")) < IDENTITY_SUBJECT_LOOKUP_MIN_SECRET_BYTES:
+        reason = "service_secret_unavailable"
+    elif not reason and abs(current - issued_at) > max(1, config.max_clock_skew_seconds):
+        reason = "timestamp_outside_window"
+    elif not reason:
+        expected = identity_subject_lookup_signature(
+            secret=secret, service_id=service_id, timestamp=proof["timestamp"], nonce=proof["nonce"],
+            platform_user_id=platform_user, provider=provider)
+        if not hmac.compare_digest(expected, proof["signature"]):
+            reason = "signature_invalid"
+    if reason:
+        _identity_subject_audit(service_id, platform_user, provider, f"proof_refused:{reason}")
+        return {"ok": False, "error": "identity_lookup_proof_invalid", "reason": reason, "status": 403}
+    # One use per proof, across every process (no in-process state).
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    if not await redis.set(f"connection_hub:identity_subject_nonce:{service_id}:{proof['nonce']}", "1",
+                           nx=True, ex=config.nonce_ttl_seconds):
+        _identity_subject_audit(service_id, platform_user, provider, "proof_replayed")
+        return {"ok": False, "error": "identity_lookup_proof_replayed", "status": 403}
+    # Typed platform id: matched exactly, never parsed as an actor id. Read every time.
+    subjects = sorted({
+        str(edge_actor(edge).get("subject") or "").strip()
+        for edge in _edge_store(entrypoint).list_edges(target_user_id=platform_user, source_provider=provider)
+    } - {""})
+    if not subjects:
+        _identity_subject_audit(service_id, platform_user, provider, "not_linked")
+        return {"ok": False, "error": "identity_not_linked", "provider": provider}
+    if len(subjects) > 1:
+        _identity_subject_audit(service_id, platform_user, provider, "ambiguous")
+        return {"ok": False, "error": "identity_lookup_ambiguous", "provider": provider}
+    _identity_subject_audit(service_id, platform_user, provider, "resolved")
+    return {"ok": True, "provider": provider, "provider_subject": subjects[0]}
+
+
+# W615: a project operation authorized for one PROVEN person, not the request's caller.
+# Problem Board's Telegram webhook runs under one bound caller, so the ordinary
+# project_operation_authorize would decide for that caller, not the member who
+# wrote. This operation is open only to a registered admission service whose
+# resources name the provider, proven by its own HMAC (token-less, domain
+# separated), single use; the sender must hold exactly that provider edge, and
+# the decision is that person's own live Control and My Cards. The request's
+# user session is never consulted and never authorizes anything here.
+PERSON_OPERATION_AUTHORIZE = "project_operation_authorize_for_person"
+PERSON_OPERATION_DOMAIN = "connection-hub.project-operation-person.v1"
+PERSON_OPERATION_FIELDS = ("project_ref", "person_subject", "provider", "provider_subject", "resource",
+                           "operation", "required_grants", "request_resource", "surface")
+
+
+def person_operation_resource(provider: str) -> str:
+    return f"urn:kdcube:project-operation:{str(provider or '').strip().lower()}"
+
+
+def person_operation_request(payload: Mapping[str, Any]) -> Dict[str, Any]:
+    """The exact signed request: every field that shapes the decision, canonical."""
+    grants = payload.get("required_grants") or []
+    return {
+        "project_ref": str(payload.get("project_ref") or "").strip(),
+        "person_subject": str(payload.get("person_subject") or "").strip(),
+        "provider": str(payload.get("provider") or "").strip().lower(),
+        "provider_subject": str(payload.get("provider_subject") or "").strip(),
+        "resource": str(payload.get("resource") or "").strip(),
+        "operation": str(payload.get("operation") or "").strip(),
+        "required_grants": [str(grant) for grant in grants] if isinstance(grants, (list, tuple)) else None,
+        "request_resource": str(payload.get("request_resource") or "").strip(),
+        "surface": str(payload.get("surface") or "application").strip(),
+    }
+
+
+def person_operation_digest(request: Mapping[str, Any]) -> str:
+    body = json.dumps({name: request.get(name) for name in PERSON_OPERATION_FIELDS},
+                      sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def person_operation_signature(*, secret: str, service_id: str, timestamp: str, nonce: str,
+                               request: Mapping[str, Any]) -> str:
+    """HMAC-SHA256 over the domain, service, time, nonce, operation, resource and request digest."""
+    message = "\n".join([
+        PERSON_OPERATION_DOMAIN, str(service_id), str(timestamp), str(nonce), PERSON_OPERATION_AUTHORIZE,
+        person_operation_resource(str(request.get("provider") or "")), person_operation_digest(request),
+    ]).encode("utf-8")
+    return hmac.new(str(secret).encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _person_operation_audit(service_id: str, request: Mapping[str, Any], outcome: str) -> None:
+    # Never the provider subject itself.
+    LOGGER.info(
+        "[connection-hub.project_operation_authorize_for_person] service=%s person=%s provider=%s project=%s "
+        "operation=%s outcome=%s", service_id, request.get("person_subject"), request.get("provider"),
+        request.get("project_ref"), request.get("operation"), outcome,
+    )
+
+
+async def _project_operation_authorize_for_person(entrypoint: Any, payload: Mapping[str, Any], *,
+                                                  request: Any = None, now: int | None = None) -> Dict[str, Any]:
+    signed = person_operation_request(payload)
+    raw_proof = payload.get("service_proof")
+    proof = {key: str((raw_proof or {}).get(key) or "") for key in ("service_id", "timestamp", "nonce", "signature")} \
+        if isinstance(raw_proof, Mapping) else {"service_id": "", "timestamp": "", "nonce": "", "signature": ""}
+    service_id = proof["service_id"]
+    if (any(not signed[name] for name in ("project_ref", "person_subject", "provider", "provider_subject",
+                                          "resource", "operation")) or signed["required_grants"] is None):
+        return {"ok": False, "error": "project_operation_for_person_request_invalid", "status": 400}
+    if not service_id or not proof["signature"] or not proof["nonce"]:
+        _person_operation_audit(service_id, signed, "no_service_proof")
+        return {"ok": False, "error": "project_operation_for_person_requires_service_proof", "status": 403}
+    config = AdmissionConfig.from_connections(_connections_config(entrypoint))
+    service = config.service(service_id) if config.enabled else None
+    authenticators = [
+        row for row in matching_authenticator_rows(
+            _identity_config(entrypoint), signed["provider"], stored_rows=await _cached_authenticator_rows(entrypoint))
+        if row.get("enabled") is not False
+    ]
+    if (service is None or not service.allows_resource(person_operation_resource(signed["provider"]))
+            or not authenticators):
+        _person_operation_audit(service_id, signed, "not_permitted")
+        return {"ok": False, "error": "project_operation_for_person_not_permitted", "status": 403}
+    secret = await _bundle_secret_value(
+        entrypoint, secret_path=service.secret_ref,
+        trace_scope=f"project_operation_for_person.service.{service.service_id}", warn_missing=True)
+    reason = ""
+    try:
+        issued_at = int(proof["timestamp"])
+    except ValueError:
+        issued_at, reason = 0, "timestamp_invalid"
+    current = int(time.time()) if now is None else int(now)
+    if len(secret.encode("utf-8")) < IDENTITY_SUBJECT_LOOKUP_MIN_SECRET_BYTES:
+        reason = "service_secret_unavailable"
+    elif not reason and abs(current - issued_at) > max(1, config.max_clock_skew_seconds):
+        reason = "timestamp_outside_window"
+    elif not reason:
+        expected = person_operation_signature(secret=secret, service_id=service_id, timestamp=proof["timestamp"],
+                                              nonce=proof["nonce"], request=signed)
+        if not hmac.compare_digest(expected, proof["signature"]):
+            reason = "signature_invalid"
+    if reason:
+        _person_operation_audit(service_id, signed, f"proof_refused:{reason}")
+        return {"ok": False, "error": "project_operation_for_person_proof_invalid", "reason": reason, "status": 403}
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    if not await redis.set(f"connection_hub:project_operation_person_nonce:{service_id}:{proof['nonce']}", "1",
+                           nx=True, ex=config.nonce_ttl_seconds):
+        _person_operation_audit(service_id, signed, "proof_replayed")
+        return {"ok": False, "error": "project_operation_for_person_proof_replayed", "status": 403}
+    # The sender is that person only through their own provider edge: exactly that subject, read every time.
+    subjects = sorted({
+        str(edge_actor(edge).get("subject") or "").strip()
+        for edge in _edge_store(entrypoint).list_edges(target_user_id=signed["person_subject"],
+                                                       source_provider=signed["provider"])
+    } - {""})
+    if subjects != [signed["provider_subject"]]:
+        _person_operation_audit(service_id, signed, "sender_not_linked" if signed["provider_subject"] not in subjects
+                                else "sender_ambiguous")
+        return {"ok": False, "error": "project_operation_sender_not_linked", "status": 403}
+    # That person's own live Cards decide; the request's caller is never used.
+    decision = await (await _automation_access_service(entrypoint, request)).project_operation_authorize(
+        {"user_id": signed["person_subject"]}, project_ref=signed["project_ref"], resource=signed["resource"],
+        operation=signed["operation"], required_grants=signed["required_grants"],
+        request_resource=signed["request_resource"], surface=signed["surface"])
+    allowed = decision.get("allowed") if isinstance(decision, Mapping) else None
+    _person_operation_audit(service_id, signed, "allowed" if allowed is True else "refused")
+    return {**dict(decision), "person_subject": signed["person_subject"], "provider": signed["provider"]}
+
+
 def _edge_platform_user_id(edge: Mapping[str, Any] | None) -> str:
     target = edge_target(edge or {})
     return str(target.get("user_id") or "").strip()
@@ -2802,6 +3221,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 )
             durable_authority = _durable_authority(self)
             await durable_authority.prepare()
+            if card_transactions_enabled(_connections_config(self)):
+                from .surfaces.oauth_original_exchange_host import prepare_original_exchange_metadata
+                tenant, project = _runtime_tenant_project(self)
+                await prepare_original_exchange_metadata(pg_pool=pg_pool, tenant=tenant, project=project)
             LOGGER.info(
                 "[connection-hub] durable authority activated generation_id=%s",
                 authority_config.generation_id,
@@ -2866,6 +3289,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_person_control_update": {"visibility": {"user_types": []}},
                             "project_person_control_revoke": {"visibility": {"user_types": []}},
                             "project_person_control_bind_invitation": {"visibility": {"user_types": []}},
+                            "project_invitation_pending_revision": {"visibility": {"user_types": []}},
+                            "project_person_control_bind_project": {"visibility": {"user_types": []}},
                             "project_person_my_card_seed": {"visibility": {"user_types": []}},
                             "project_person_github_key_link": {"visibility": {"user_types": []}},
                             "project_person_github_key_unlink": {"visibility": {"user_types": []}},
@@ -3452,6 +3877,60 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             "failed": report.failed,
         }
 
+    @cron(
+        alias="card-transaction-recover",
+        cron_expression="* * * * *",
+        timezone="UTC",
+        span="system",
+    )
+    async def recover_card_transactions_cron(self) -> Dict[str, Any]:
+        """W502: finish or presume-abort Card transactions a crash left in doubt.
+
+        Why: after a crash between prepare and finish the Card reads
+        card_transaction_undecided until its transaction is finished or its
+        expiry passes and recovery records the ABORT; nothing else drives
+        that (EMain #599). A no-op unless connections.card_transactions.enabled.
+        """
+        if not card_transactions_enabled(_connections_config(self)):
+            return {"ok": True, "enabled": False}
+        config = _delegated_authority_config(self)
+        pg_pool = getattr(self, "pg_pool", None)
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if not config.uses_postgresql or pg_pool is None or persistence is None:
+            return {"ok": False, "enabled": True, "reason": "card_transactions_unavailable"}
+        decisions = await _card_decision_store(self, pg_pool)
+        coordinator, _ = card_transaction_coordinator(
+            persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
+            policies=_invocation_policy_service(self),
+            authorities=(await _card_participant_callers(self, persistence)).authorities,
+            catalog_store=_delegated_catalog_store(self))
+        # The cron runs on one process per tick, not always the same one, so the
+        # page cursor is shared in Redis; a missing or unreadable one restarts at "".
+        tenant, project = _runtime_tenant_project(self)
+        catalog_store = _delegated_catalog_store(self)
+        stale_marker_age = None
+        if catalog_store is not None:
+            # A crashed publisher's marker would block every catalog reservation
+            # until the next publication run (EMain #609): clear it past the bound.
+            from connection_hub.delegated_credentials.catalog.reservations import CatalogReservations
+            stale_marker_age = await CatalogReservations(catalog_store).clear_stale_publication()
+            if stale_marker_age is not None:
+                LOGGER.warning("[connection-hub.card-transactions] cleared a stale catalog publication marker "
+                               "age_seconds=%s", stale_marker_age)
+        cursor_key = f"connection-hub:card-transactions:recovery-cursor:{tenant}:{project}"
+        try:
+            stored = await redis.get(cursor_key)
+            after = stored.decode("utf-8") if isinstance(stored, bytes) else (stored or "")
+        except Exception:  # noqa: BLE001 - a lost cursor only restarts the scan
+            after = ""
+        report = await recover_card_transactions(coordinator, limit=100, after=after, max_pages=5)
+        try:
+            await redis.set(cursor_key, report["next_after"])
+        except Exception:  # noqa: BLE001
+            LOGGER.warning("[connection-hub.card-transactions] recovery cursor not saved")
+        return {"enabled": True, **report, "stale_catalog_marker_cleared": stale_marker_age is not None}
+
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 
     @api(
@@ -3509,6 +3988,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 status_code=404,
                 content={"error": "delegated_credentials_oauth_disabled"},
             )
+        if cfg.get("original_exchange_unavailable"):
+            return JSONResponse(status_code=503, content={"error": "oauth_original_exchange_unavailable"})
 
         path = str(path_tail or "").strip("/")
         public_base = _oauth_public_base_url(request)
@@ -3621,6 +4102,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 status_code=404,
                 content={"error": "delegated_credentials_oauth_disabled"},
             )
+        if cfg.get("original_exchange_unavailable"):
+            return JSONResponse(status_code=503, content={"error": "oauth_original_exchange_unavailable"})
 
         path = str(path_tail or "").strip("/")
         LOGGER.info(
@@ -3714,7 +4197,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         issuer = AgentGitHubTokenIssuer(
             access=access,
             config=delegated_to_kdcube_config(getattr(self, "bundle_props", {}) or {}),
-            store_for=lambda owner: DelegatedToKdcubeStore(user_id=owner, bundle_id=BUNDLE_ID),
+            store_for=lambda owner: _delegated_to_kdcube_store(self, owner),
             authorize=descriptor_github_authorizer(self, resolve_secret=_resolve_secret),
             client_secret_resolver=_client_secret_resolver,
             refresh_lock=_delegated_to_kdcube_refresh_lock(self),
@@ -3729,6 +4212,129 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         )
 
     # ── direct protected-service admission ──────────────────────────────────
+
+    @api(method="POST", alias="card_transaction_participant", route="public")
+    async def card_transaction_participant(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W502: the Hub's Card participant, driven by another application's coordinator.
+
+        Platform and browser session values never establish this authority:
+        the caller is the admission proof's service id, configured under
+        connections.card_transactions.callers. Every authenticated answer is
+        signed (card-transaction-participant-receipt.v1); anything that cannot
+        be authenticated or served is an unsigned refusal, which the caller
+        treats as unavailable. Disabled refuses only a new prepare.
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        config = _delegated_authority_config(self)
+        pg_pool = getattr(self, "pg_pool", None)
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if not config.uses_postgresql or pg_pool is None or persistence is None:
+            return unavailable
+        try:
+            # Caller secrets are needed to verify the proof; nothing else is built yet.
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] participant callers unavailable")
+            return unavailable
+        if not built.callers:
+            return unavailable
+
+        async def compose_after_authentication() -> None:
+            # Only an authenticated, fresh request reaches the decision store (EMain #607 N1).
+            try:
+                decisions = await _card_decision_store(self, pg_pool)
+                card_transaction_coordinator(
+                    persistence=persistence, decisions=decisions, grant_store=await _oauth_grant_store(self),
+                    policies=_invocation_policy_service(self), authorities=built.authorities,
+                    catalog_store=_delegated_catalog_store(self))
+            except Exception:
+                LOGGER.exception("[connection-hub.card-transactions] participant operation unavailable")
+                raise
+
+        tenant, project = _runtime_tenant_project(self)
+        operation = CardTransactionParticipantOperation(
+            callers=built.callers, card_store=persistence.card_store, nonces=redis,
+            enabled=card_transactions_enabled(_connections_config(self)), clock=time.time,
+            nonce_prefix=f"connection-hub:{tenant}:{project}:card-participant:nonce:",
+            after_authentication=compose_after_authentication)
+        return await operation.answer(payload)
+
+    @api(method="POST", alias="card_census_read", route="public")
+    async def card_census_read(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W502: a signed, optimistic read of one project's person Cards, chains and the active catalog.
+
+        Same peer authentication as card_transaction_participant (the caller
+        descriptor under connections.card_transactions.callers). The answer is
+        never a census by itself: the caller supplies the persons and owns
+        completeness; prepare re-verifies every revision it then reserves.
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] census callers unavailable")
+            return unavailable
+        if not built.callers:
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        operation = CardCensusReadOperation(
+            callers=built.callers, card_store=persistence.card_store, catalog_store=_delegated_catalog_store(self),
+            nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-census:nonce:")
+        return await operation.answer(payload)
+
+    @api(method="POST", alias="card_lifecycle_plan", route="public")
+    async def card_lifecycle_plan(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W578: a signed, non-writing plan of one Card lifecycle change for a peer.
+
+        Same peer authentication as card_census_read. The caller's own project
+        host authorizes every step of the plan (its descriptor's
+        project_lifecycle_plan_authorize), then the generic planner builds the
+        Card candidates; nothing is written, reserved or issued.
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] plan callers unavailable")
+            return unavailable
+        if not built.callers:
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        operation = CardLifecyclePlanOperation(
+            callers=built.callers, authorization=None, planner=plan_card_lifecycle,
+            host=await _automation_access_service(self, None), nonces=redis, clock=time.time,
+            nonce_prefix=f"connection-hub:{tenant}:{project}:card-plan:nonce:")
+        return await operation.answer(payload)
 
     @api(method="POST", alias="delegated_admission", route="public")
     async def delegated_admission(
@@ -4980,6 +5586,72 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 payload.get("control_id") or payload.get("control_card_id") or ""
             ).strip(),
             request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_person_control_bind_project",
+        route="operations",
+        csrf=True,
+        **_api_visibility("project_person_control_bind_project"),
+    )
+    async def project_person_control_bind_project(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """W502 repair: bind one person's project Control under the project's Control Card.
+
+        The project host decides and names the Control Card; the request names
+        only the project and the person.
+        """
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_person_control_bind_project(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            target_subject=str(payload.get("target_subject") or "").strip(),
+            request_id=_audit_request_id(request),
+        )
+
+    @api(
+        method="POST",
+        alias="project_invitation_pending_revision",
+        route="operations",
+        csrf=False,
+        **_api_visibility("project_invitation_pending_revision"),
+    )
+    async def project_invitation_pending_revision(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """W502 join: the signed-in invitee's pending invitation Card revision and state."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_invitation_pending_revision(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            invitation_ref=str(payload.get("invitation_ref") or "").strip(),
+            control_id=str(payload.get("control_id") or "").strip(),
         )
 
     @api(
@@ -6416,6 +7088,47 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return {"ok": False, "error": "issuer_snapshot_context_changed", "status": 409, "retryable": True}
         return result
 
+    @api(method="POST", alias="issuer_managed_card_update", route="operations", csrf=True,
+         user_types=["registered", "privileged"])
+    async def issuer_managed_card_update(self, data: Optional[Dict[str, Any]] = None,
+            request: Any = None, user_id: Optional[str] = None, fingerprint: Optional[str] = None,
+            **kwargs: Any) -> Dict[str, Any]:
+        del user_id, fingerprint
+        host = _protected_lifecycle_read_context(self)
+        if not host[0]:
+            return {"ok": False, "error": "issuer_update_requires_platform_human_scope", "status": 403}
+        from connection_hub.delegated_credentials.issuer_update import IssuerUpdateQuery, IssuerUpdateRefused
+        from connection_hub.delegated_credentials.issuer_update_host import issuer_update_orchestration_is_bound
+        try:
+            payload = IssuerUpdateQuery.from_mapping(_payload(data, **kwargs)).to_dict()
+        except IssuerUpdateRefused:
+            return {"ok": False, "error": "issuer_update_query_invalid", "status": 400}
+
+        def host_is_current():
+            return issuer_update_orchestration_is_bound() and _protected_lifecycle_read_context(self) == host
+
+        if not issuer_update_orchestration_is_bound():
+            return {"ok": False, "error": "issuer_update_requires_internal_orchestration", "status": 403}
+        service = await _automation_access_service(self, request)
+        if not host_is_current():
+            return {"ok": False, "error": "issuer_update_context_changed", "status": 409, "retryable": True}
+        bind = getattr(service, "bind_issuer_update_host", None)
+        apply = getattr(service, "issuer_managed_card_update", None)
+        if not callable(bind) or not callable(apply):
+            return {"ok": False, "error": "issuer_update_host_unavailable", "status": 503, "retryable": True}
+        actor, classification, tenant, project = host
+        bind(actor_subject=actor, actor_classification=classification, tenant=tenant, project=project,
+             host_is_current=host_is_current)
+        result = await apply(payload)
+        if not host_is_current():
+            # Do not erase an already committed write when delivery context
+            # changes; withhold the full Card and retain recoverable outcome.
+            committed = result.get("state") == "committed"
+            safe = {k: v for k, v in result.items() if k not in ("authority", "authority_fingerprint")}
+            return {**safe, "ok": False, "status": 202 if committed else 409,
+                    "reason": "issuer_update_context_changed", "retryable": True}
+        return result
+
     # ── delegated to KDCube (KDCube -> external provider for user) ──
 
     @api(method="GET", alias="delegated_to_kdcube_catalog", route="operations", **_api_visibility("delegated_to_kdcube_catalog"))
@@ -6648,38 +7361,81 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             platform_user_id,
             resolved_account_id,
         )
-        operations = _delegated_to_kdcube_operations(self, platform_user_id)
-        # Read the provider BEFORE the account is gone — pruning needs it.
-        provider_id = ""
+        # Refuse before disconnect when pruning cannot be verified. Account ids
+        # are deterministic: a surviving binding would revive on reconnect.
+        refusal = {
+            "ok": False,
+            "removed": False,
+            "account_id": resolved_account_id,
+            "error": "account_binding_not_pruned",
+            "status": 409,
+            "retryable": True,
+        }
         try:
+            operations = _delegated_to_kdcube_operations(self, platform_user_id)
             account = await operations.store.get_account(resolved_account_id)
-            provider_id = str(getattr(account, "provider_id", "") or "")
         except Exception:
             LOGGER.warning(
-                "[connection-hub.delegated_to_kdcube] could not read account before disconnect "
-                "(binding pruning skipped): account=%s", resolved_account_id, exc_info=True,
+                "[connection-hub.delegated_to_kdcube] disconnect refused: account unreadable "
+                "account=%s", resolved_account_id, exc_info=True,
             )
+            return {**refusal, "reason": "account_unreadable"}
+        if account is None:
+            # Preserve the not-removed outcome without issuing a destructive
+            # call against an account that might appear after this read.
+            return {"ok": False, "removed": False, "account_id": resolved_account_id}
+        provider_id = getattr(account, "provider_id", None)
+        if not isinstance(provider_id, str) or not provider_id.strip():
+            return {**refusal, "reason": "account_provider_unavailable"}
+        provider_id = provider_id.strip()
+        # W578: with Card transactions on, the bindings and the account go
+        # under ONE durable decision (a Card group, or the effects-only input
+        # when no Card binds the account); None keeps this ordered path, only
+        # while transactions are off.
+        try:
+            access = await _automation_access_service(self, request)
+            in_transaction = getattr(access, "disconnect_account_in_transaction", None)
+            transactional = (await in_transaction(grantor_subject=platform_user_id, provider_id=provider_id,
+                                                  account_id=resolved_account_id)
+                             if callable(in_transaction) else None)
+        except Exception:
+            LOGGER.warning(
+                "[connection-hub.delegated_to_kdcube] disconnect refused: account transaction unavailable "
+                "account=%s provider=%s", resolved_account_id, provider_id, exc_info=True,
+            )
+            return {**refusal, "reason": "account_transaction_unavailable", "status": 503}
+        if transactional is not None:
+            return {**transactional, "account_id": resolved_account_id}
+        try:
+            pruned = await access.prune_account_from_grants(
+                grantor_subject=platform_user_id,
+                provider_id=provider_id,
+                account_id=resolved_account_id,
+            )
+        except Exception:
+            LOGGER.warning(
+                "[connection-hub.delegated_to_kdcube] disconnect refused: binding pruning unavailable "
+                "account=%s provider=%s", resolved_account_id, provider_id, exc_info=True,
+            )
+            return {**refusal, "reason": "binding_pruning_unavailable"}
+        # Require the complete package contract; an older response without ok
+        # or not_pruned cannot certify that all bindings were removed.
+        if not isinstance(pruned, Mapping):
+            return {**refusal, "reason": "binding_pruning_response_invalid"}
+        count = pruned.get("pruned")
+        grants = pruned.get("grants")
+        if (pruned.get("ok") is not True or pruned.get("not_pruned") != []
+                or type(count) is not int or count < 0
+                or not isinstance(grants, list)
+                or any(not isinstance(grant, str) or not grant.strip() for grant in grants)
+                or count != len(grants) or len(set(grants)) != len(grants)):
+            return {**refusal, "reason": "binding_pruning_incomplete"}
+        # Ordering hardening only: the generalized participant protocol must
+        # still fence new bindings and account changes across this boundary.
         result = await operations.disconnect(account_id=resolved_account_id)
-        # Disconnecting closes this account's per-agent bindings too. Account ids
-        # are deterministic, so a binding left behind would silently revive if the
-        # same account were reconnected later. `Reconnect` (re-approval without
-        # disconnecting) is the action that keeps bindings. Never fails the
-        # disconnect itself.
-        if result.get("removed") and provider_id:
-            try:
-                pruned = await (await _automation_access_service(self, request)).prune_account_from_grants(
-                    grantor_subject=platform_user_id,
-                    provider_id=provider_id,
-                    account_id=resolved_account_id,
-                )
-                if pruned.get("pruned"):
-                    result["bindings_cleared"] = pruned.get("pruned")
-                    result["bindings_cleared_grants"] = pruned.get("grants") or []
-            except Exception:
-                LOGGER.warning(
-                    "[connection-hub.delegated_to_kdcube] binding pruning failed (non-fatal): "
-                    "account=%s provider=%s", resolved_account_id, provider_id, exc_info=True,
-                )
+        if result.get("removed") and count:
+            result["bindings_cleared"] = count
+            result["bindings_cleared_grants"] = grants
         return result
 
     @api(method="POST", alias="delegated_to_kdcube_resolve", route="operations", **_api_visibility("delegated_to_kdcube_resolve"))
@@ -7718,6 +8474,33 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             "connection_edge": edge,
             "principal": principal,
         }
+
+    @api(method="POST", alias="identity_provider_subject_resolve", route="operations",
+         **_api_visibility("identity_provider_subject_resolve"))
+    async def identity_provider_subject_resolve(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        platform_user_id: str = "",
+        provider: str = "",
+        service_proof: Optional[Dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """W609: one provider subject of a platform user, for a proven admission service only."""
+        payload = _payload(data, platform_user_id=platform_user_id, provider=provider,
+                           service_proof=service_proof, **kwargs)
+        return await _identity_provider_subject_resolve(self, payload)
+
+    @api(method="POST", alias="project_operation_authorize_for_person", route="operations",
+         **_api_visibility("project_operation_authorize_for_person"))
+    async def project_operation_authorize_for_person(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """W615: one project operation for a person a registered service proves through their provider edge."""
+        payload = _payload(data, **kwargs)
+        return await _project_operation_authorize_for_person(self, payload, request=request)
 
     @api(method="POST", alias="identity_family_resolve", route="operations", **_api_visibility("identity_family_resolve"))
     async def identity_family_resolve(

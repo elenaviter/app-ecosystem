@@ -54,6 +54,81 @@ tags:
 security:
   - PlatformAuth: []
 paths:
+  /bundles/{tenant}/{project}/{bundle_id}/operations/issuer_managed_card_update:
+    post:
+      tags: [Delegated Access]
+      summary: Exact widening update under a configured issuer and durable intent.
+      description: >
+        Internal server orchestration only. Actual registered/privileged human,
+        runtime scope, CSRF and the server-bound issuer update scope are required;
+        direct HTTP calls refuse. Context coordinates are not approval. A fresh
+        configured issuer decision binds the complete server-built candidate,
+        revalidated inside the production Card fence with the original expiry
+        checked at publication. Only the named resource's operations and grants
+        widen; other Card fields and credential handles remain unchanged.
+        Identical actor/context/request-id replay recovers the durable result;
+        changed replay refuses. Complete authority stays inside the server.
+      operationId: issuer_managed_card_update
+      x-kdcube-result-alias: issuer_managed_card_update
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  additionalProperties: false
+                  required: [context_ref, request_id, target, delta]
+                  properties:
+                    context_ref: {type: string, minLength: 1, maxLength: 8192}
+                    request_id: {type: string, minLength: 1, maxLength: 512}
+                    target:
+                      type: object
+                      additionalProperties: false
+                      required: [owner_subject, access_id, issuer_kind, issuer_ref, expected_card_revision, expected_authority_fingerprint]
+                      properties:
+                        owner_subject: {type: string, minLength: 1}
+                        access_id: {type: string, pattern: '^[A-Za-z0-9_-]{1,128}$'}
+                        issuer_kind: {type: string, minLength: 1}
+                        issuer_ref: {type: string, minLength: 1}
+                        expected_card_revision: {type: integer, minimum: 1}
+                        expected_authority_fingerprint: {type: string, pattern: '^[0-9a-f]{64}$'}
+                    delta:
+                      type: object
+                      additionalProperties: false
+                      required: [resource, operations, grants]
+                      properties:
+                        resource: {type: string, minLength: 1}
+                        operations:
+                          type: array
+                          uniqueItems: true
+                          maxItems: 512
+                          items: {type: string, minLength: 1, maxLength: 256}
+                        grants:
+                          type: array
+                          uniqueItems: true
+                          maxItems: 512
+                          items: {type: string, minLength: 1, maxLength: 256}
+      responses:
+        '200':
+          description: Committed, serving complete and issuer outcome confirmed; full Card is internal only.
+        '202':
+          description: Prepared outcome or committed update pending serving, finalization or safe result delivery. Retry the identical intent.
+        '400':
+          description: Malformed or authority-bearing query, before service construction.
+        '403':
+          description: Missing protected human/scope, internal orchestration or configured issuer capability.
+        '409':
+          description: Terminal refusal, changed replay or conflicting Card mutation; inspect named outcome.
+        '503':
+          description: Outcome unavailable, not proof of no write. Recover using the identical intent.
   /bundles/{tenant}/{project}/{bundle_id}/operations/issuer_managed_card_snapshots:
     post:
       tags: [Delegated Access]
@@ -559,6 +634,63 @@ paths:
       responses:
         "200":
           description: Live Control Card, full initial My Card, identity edge, and non-secret binding evidence, or a structured denial.
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_invitation_pending_revision:
+    post:
+      tags: [Delegated Access]
+      summary: Read the signed-in invitee's pending invitation Control Card revision and state.
+      description: >
+        W502 join. Under the same authority as binding the invitation: the
+        descriptor-named application provider's evidence must match the exact
+        project, invitation, pending control id and signed-in person, and the
+        stored email digest. Returns only the pending Card's revision and
+        state (active); never its selection, grants, audit or admin view.
+        Read-only; nothing is written. Every refusal before the email binding
+        succeeds is the one project_invitation_pending_unavailable (403), so the
+        read never reveals whether an invitation exists.
+      operationId: project_invitation_pending_revision
+      x-kdcube-result-alias: project_invitation_pending_revision
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectInvitationControlIdentityEnvelope"
+      responses:
+        "200":
+          description: "{ok, card_revision, state} for the invitee, or a structured denial."
+
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_control_bind_project:
+    post:
+      tags: [Delegated Access]
+      summary: Bind one person's project Control Card under the project's Control Card.
+      description: >
+        W502 repair. The project host decides the operation
+        (project.person_control.bind_project) and names the project's Control
+        Card in its decision; the request selects no Card. The binding is an
+        attach through the caller-writer gate, composed before it commits.
+        The same Control Card again is a no-op; a Card bound to another live
+        project Control is refused with p_conflict and moves only after that
+        Control has ended.
+      operationId: project_person_control_bind_project
+      x-kdcube-result-alias: project_person_control_bind_project
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProjectPersonControlIdentityEnvelope"
+      responses:
+        "200":
+          description: This person's outcome (bound or already_bound), or a structured refusal naming it.
 
   /bundles/{tenant}/{project}/{bundle_id}/operations/project_person_my_card_seed:
     post:

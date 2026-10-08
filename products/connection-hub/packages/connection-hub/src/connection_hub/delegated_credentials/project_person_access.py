@@ -27,6 +27,7 @@ from connection_hub.delegated_credentials.cards.service import (
     CardServingUnavailable,
     replace_state,
 )
+from connection_hub.delegated_credentials.caller_writer_gate import CallerWrite, CallerWriteRefused
 from connection_hub.delegated_credentials.catalog.descriptors import (
     canonical_digest,
     next_resource_acceptance,
@@ -55,16 +56,21 @@ from connection_hub.delegated_credentials.controls.snapshot import (
 from connection_hub.delegated_credentials.project_authorization import (
     ViewerAuthority,
     with_viewer_authority,
+    PROJECT_BOARD_RESTARTING,
+    unanswered_policy_refusal,
     PROJECT_PERSON_CONTROL_CREATE,
     PROJECT_PERSON_CONTROL_READ,
     PROJECT_PERSON_CONTROL_REVOKE,
     PROJECT_PERSON_CONTROL_UPDATE,
     PROJECT_PERSON_MY_CARD_SEED,
+    PROJECT_PERSON_CONTROL_BIND_PROJECT,
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
     ProjectAuthorizationPort,
     ProjectAuthorizationRequest,
 )
+from connection_hub.delegated_credentials import project_control_binding
+from connection_hub.delegated_credentials.card_lifecycle_plan import build_project_person_control
 from connection_hub.delegated_credentials.project_identity_authorization import (
     ProjectOperationAuthorizationDecision,
     ProjectOperationRequest,
@@ -296,6 +302,9 @@ class ProjectPersonControlLifecycle:
                 "status": 503,
             }
         if not decision.allowed:
+            unanswered = unanswered_policy_refusal(decision.reason, error="project_person_control_authorization_unavailable")
+            if unanswered is not None:
+                return unanswered
             return {
                 "ok": False,
                 "error": decision.reason,
@@ -458,6 +467,17 @@ class ProjectPersonControlLifecycle:
             operation=PROJECT_PERSON_CONTROL_UPDATE,
             request_id=f"{request_id}:viewer",
         )
+        if isinstance(admin, dict) and (admin.get("retryable") or int(admin.get("status") or 0) >= 500):
+            # W587 follow-up C (EMain 15:54): the policy port could not answer
+            # (for example the board was reloading). That is not a refusal, so
+            # the viewer is not told "a project admin decides this"; the save
+            # is still decided by the port.
+            restarting = admin.get("error") == PROJECT_BOARD_RESTARTING
+            return {
+                "can_edit": None,
+                "reason": PROJECT_BOARD_RESTARTING if restarting else "project_person_control_permission_unavailable",
+                "retryable": True,
+            }
         can_edit = not isinstance(admin, dict)
         return {
             "can_edit": can_edit,
@@ -507,10 +527,10 @@ class ProjectPersonControlLifecycle:
         selected_composition_mode = (
             str(composition_mode or "").strip().lower() or CONTROL_COMPOSITION_AND
         )
-        if selected_composition_mode != CONTROL_COMPOSITION_AND:
+        if selected_composition_mode not in ("and", "or"):
             return {
                 "ok": False,
-                "error": "project_person_control_requires_and",
+                "error": "control_card_composition_mode_invalid",
                 "status": 400,
             }
         identity = ProjectPersonControlIdentity.build(
@@ -536,13 +556,21 @@ class ProjectPersonControlLifecycle:
                 ProjectIdentityLifecycleError,
             ) as exc:
                 return self._identity_failure(exc)
+            bound = await self._bind_on_create(identity, decision, created=False)
+            if bound.get("ok") is not True:
+                return bound
             result = await self._view(identity=identity, decision=decision)
             if result.get("ok") is True:
                 result["created"] = False
+                result["project_control_binding"] = bound["outcome"]
                 self._identity_view(result, project_identity)
             return result
         if existing.get("error") != "project_person_control_not_found":
             return existing
+        # W502: a C is never created under a P that is absent or not exactly the project's.
+        refusal = await project_control_binding.check_project_control(self._host, identity, decision.project_control)
+        if refusal is not None:
+            return refusal
 
         try:
             active = await self._host._active_catalog()
@@ -551,20 +579,18 @@ class ProjectPersonControlLifecycle:
                 active,
                 owner_subject=identity.project_subject,
             )
-            authority = bind_project_person_control(
-                new_credentialless_card(
-                    control_id=identity.control_id,
-                    grantor_subject=identity.project_subject,
-                    catalog_version=catalog_version,
-                    issuer_ref=identity.project_ref,
-                    issuer_kind=PROJECT_PERSON_CONTROL_ISSUER_KIND,
-                    issuer_label=label or target_subject,
-                    manage_url=manage_url,
-                    properties=properties,
-                    composition_mode=selected_composition_mode,
-                    now=int(time.time()),
-                ),
+            created_at = int(time.time())
+            authority = build_project_person_control(
                 identity=identity,
+                catalog_version=catalog_version,
+                actor_subject=request.actor_subject,
+                request_id=request.request_id,
+                label=label,
+                manage_url=manage_url,
+                properties=properties,
+                composition_mode=selected_composition_mode,
+                now=created_at,
+                finalize=False,
             )
             record = self._record_from_authority(authority)
             pruned: dict[str, Any] = {
@@ -572,6 +598,7 @@ class ProjectPersonControlLifecycle:
                 "claims": [],
                 "named_service_operations": [],
             }
+            resolved = None
             if any(
                 selection is not None
                 for selection in (
@@ -604,64 +631,6 @@ class ProjectPersonControlLifecycle:
                         "pruned": resolved.reconciled.to_public_dict(),
                     }
                 pruned = resolved.reconciled.to_public_dict()
-                record = self._record_from_authority(
-                    dataclasses.replace(
-                        self._authority_from_record(record),
-                        operations=tuple(resolved.operations),
-                        resource_grants={
-                            key: tuple(value)
-                            for key, value in resolved.resource_grants.items()
-                        },
-                        resource_operations={
-                            key: tuple(value)
-                            for key, value in resolved.resource_operations.items()
-                        },
-                        named_service_operations=resolved.named_service_operations,
-                        named_services=copy.deepcopy(resolved.named_services),
-                        account_scope={
-                            provider: {
-                                account_id: tuple(claims)
-                                for account_id, claims in accounts.items()
-                            }
-                            for provider, accounts in resolved.account_scope.items()
-                        },
-                        identity_scope=resolved.identity_scope,
-                        properties=resolved.properties,
-                        resource_acceptance=next_resource_acceptance(
-                            resources=resolved.resource_grants,
-                            row_for=lambda resource: self._host._configured_resource(
-                                resource,
-                                config=catalog_config,
-                            ),
-                            catalog_version=catalog_version,
-                            selected_operations=resolved.resource_operations,
-                        ),
-                    )
-                )
-            authority = bind_project_person_control(
-                materialize_control_snapshot(
-                    self._authority_from_record(record),
-                    basis_catalog_version=catalog_version,
-                    origin="created",
-                ),
-                identity=identity,
-            )
-            audit = ProjectPersonControlAudit.build(
-                action="created",
-                actor_subject=request.actor_subject,
-                identity=identity,
-                request_id=request.request_id,
-                occurred_at=int(time.time()),
-                before=None,
-                after=authority,
-            )
-            record = self._record_from_authority(
-                bind_project_person_control(
-                    authority,
-                    identity=identity,
-                    audit=audit,
-                )
-            )
             seed_origin = (
                 (
                     PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE,
@@ -675,24 +644,36 @@ class ProjectPersonControlLifecycle:
                 if project_creation
                 else None
             )
-            if seed_origin is not None:
-                provenance_key, provenance_schema = seed_origin
-                origin_marker = {
-                    "schema": provenance_schema,
-                    "actor_subject": request.actor_subject,
-                    "request_id": request.request_id,
-                    "created_at": audit.occurred_at,
-                }
-                provenance = copy.deepcopy(dict(record.provenance or {}))
-                provenance[provenance_key] = origin_marker
-                record = self._record_from_authority(
-                    dataclasses.replace(
-                        self._authority_from_record(record),
-                        provenance=provenance,
+            authority = build_project_person_control(
+                identity=identity,
+                catalog_version=catalog_version,
+                actor_subject=request.actor_subject,
+                request_id=request.request_id,
+                base=self._authority_from_record(record),
+                resolved=resolved,
+                resource_row_for=(
+                    lambda resource: self._host._configured_resource(
+                        resource, config=catalog_config
                     )
-                )
-            await self._host._persist_record(record, expected_revision=0)
+                ) if resolved is not None else None,
+                seed_origin=seed_origin,
+                now=created_at,
+                audit_at=int(time.time()),
+            )
+            record = self._record_from_authority(authority)
+            # W502: with a named P, C's first revision is already bound under it.
+            bound_record = await project_control_binding.bound_at_creation(
+                self._host, identity, decision.project_control, record)
+            if isinstance(bound_record, dict):
+                return bound_record
+            record = bound_record
+            # A bound C is a create of a bound Card: its binding's policy decides it.
+            enlisted = ({"caller_write": CallerWrite("create", request.actor_subject, request.request_id)}
+                        if record.control_card is not None else {})
+            await self._host._persist_record(record, expected_revision=0, **enlisted)
             project_identity = await self._project_identities.ensure(record)
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CatalogUnavailable as exc:
             return {
                 "ok": False,
@@ -731,8 +712,55 @@ class ProjectPersonControlLifecycle:
         if result.get("ok") is True:
             result["created"] = True
             result["pruned"] = pruned
+            result["project_control_binding"] = (
+                "bound" if record.control_card is not None else "no_project_control")
             self._identity_view(result, project_identity)
         return result
+
+    async def _bind_on_create(self, identity: ProjectPersonControlIdentity,
+                              decision: ProjectAuthorizationDecision, *, created: bool) -> dict[str, Any]:
+        """An existing C found by create is bound under the decision's P (a new C is born bound)."""
+        try:
+            bound = await project_control_binding.bind_project_control(self._host, identity, decision.project_control)
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            bound = {"ok": False, "error": "project_person_control_not_committed", "outcome": "not_bound",
+                     "reason": getattr(exc, "reason", ""), "retryable": True, "status": 503}
+        if bound.get("ok") is not True:
+            return {**bound, "created": created, "project_control_binding": bound.get("outcome", "not_bound")}
+        return bound
+
+    async def bind_project_control(
+        self,
+        *,
+        viewer: ViewerAuthority | None = None,
+        actor_subject: str,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """W502 repair: bind one existing person's project Control under the project's Control P.
+
+        The project host decides who may (``project.person_control.bind_project``)
+        and names P in its decision; nothing in the request selects P. The
+        result names this person's outcome, so a migration can prove every
+        person bound: ``bound``, ``already_bound``, or a refusal.
+        """
+        authorized = await self._authorize(
+            viewer=viewer, actor_subject=actor_subject, project_ref=project_ref, target_subject=target_subject,
+            operation=PROJECT_PERSON_CONTROL_BIND_PROJECT, request_id=request_id)
+        if isinstance(authorized, dict):
+            return authorized
+        _request, decision = authorized
+        if decision.project_control is None:
+            return {"ok": False, "error": "project_control_locator_missing", "outcome": "no_project_control",
+                    "person": target_subject, "status": 409}
+        identity = ProjectPersonControlIdentity.build(project_ref=project_ref, target_subject=target_subject)
+        try:
+            outcome = await project_control_binding.bind_project_control(self._host, identity, decision.project_control)
+        except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            return {"ok": False, "error": "project_person_control_not_committed", "outcome": "not_bound",
+                    "reason": getattr(exc, "reason", ""), "retryable": True, "status": 503, "person": target_subject}
+        return {**outcome, "person": target_subject}
 
     async def update(
         self,
@@ -766,11 +794,11 @@ class ProjectPersonControlLifecycle:
         request, decision = authorized
         if (
             composition_mode is not None
-            and str(composition_mode).strip().lower() != CONTROL_COMPOSITION_AND
+            and str(composition_mode).strip().lower() not in ("and", "or")
         ):
             return {
                 "ok": False,
-                "error": "project_person_control_requires_and",
+                "error": "control_card_composition_mode_invalid",
                 "status": 400,
             }
         identity = ProjectPersonControlIdentity.build(
@@ -839,7 +867,7 @@ class ProjectPersonControlLifecycle:
                 properties=(
                     properties if properties is not None else existing.properties
                 ),
-                composition_mode=CONTROL_COMPOSITION_AND,
+                composition_mode=composition_mode if composition_mode is not None else existing.composition_mode,
                 label=label,
                 expected_card_revision=expected_card_revision,
                 expected_catalog_version=expected_catalog_version,

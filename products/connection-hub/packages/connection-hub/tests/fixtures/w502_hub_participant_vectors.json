@@ -1,0 +1,214 @@
+{
+  "about": "The only connection-hub.card participant input the Hub stages (EMain C1, 2026-10-06). An initiator writes participant_inputs['connection-hub.card'] = participant_input and participant_candidates['connection-hub.card'] = candidate_value; candidate_digest = sha256(kernel canonical_json_bytes(candidate_value)). Each refused variant changes one field of participant_input; the Hub never stages it.",
+  "accepted": {
+    "candidate_digest": "f73478eebdf2edbeed4ea712bd3cee032ef66af6e7d846fbf824f6a4eaef3291",
+    "candidate_value": {
+      "access_id": "aut_abc123",
+      "candidate": {
+        "access_id": "aut_abc123",
+        "account_scope": {},
+        "card_kind": "automation",
+        "card_revision": 2,
+        "catalog_version": "catalog-v1",
+        "client_id": "automation:abc",
+        "client_metadata": {},
+        "composition_mode": "",
+        "created_at": 1780000000,
+        "delegate_subject": "integration:automation:abc",
+        "entry_resource": "",
+        "expires_at": 1780003600,
+        "grantor_subject": "platform-user-1",
+        "identity_scope": "",
+        "issuer_kind": "",
+        "issuer_label": "",
+        "issuer_ref": "",
+        "label": "staged change",
+        "last_four": "",
+        "last_issued_at": 0,
+        "manage_url": "",
+        "named_service_operations": {},
+        "named_services": {},
+        "operations": [
+          "messages.search"
+        ],
+        "properties": {},
+        "provenance": {},
+        "resource_acceptance": {},
+        "resource_grants": {
+          "https://example.test/mcp": [
+            "messages:read"
+          ]
+        },
+        "resource_operations": {
+          "https://example.test/mcp": [
+            "messages.search"
+          ]
+        },
+        "schema": "connection_hub.delegated_card_authority.v7",
+        "source": "manual",
+        "state": "active"
+      },
+      "effects": [
+        {
+          "key": "card",
+          "kind": "credential_lifetime",
+          "payload": {
+            "access_id": "aut_abc123",
+            "base_card_revision": 1,
+            "expires_at": 1890000000
+          }
+        }
+      ],
+      "original_revision": 1
+    },
+    "name": "card_update_with_credential_lifetime",
+    "participant_input": {
+      "action": "update",
+      "actor_kind": "caller",
+      "actor_subject": "user:project-admin",
+      "before_revision": 1,
+      "binding_kind": "connection-hub.card",
+      "binding_ref": "aut_abc123",
+      "candidate_digest": "f73478eebdf2edbeed4ea712bd3cee032ef66af6e7d846fbf824f6a4eaef3291",
+      "candidate_revision": 2,
+      "dependency_revisions": {},
+      "participant": "connection-hub.card",
+      "provisioning": {},
+      "target_incarnation": 1,
+      "target_scope": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb"
+    }
+  },
+  "grantor_subject": "platform-user-1",
+  "participant": "connection-hub.card",
+  "refused": [
+    {
+      "field": "binding_kind",
+      "name": "binding_kind_project",
+      "value": "project"
+    },
+    {
+      "field": "target_incarnation",
+      "name": "target_incarnation_text",
+      "value": "incarnation-one"
+    },
+    {
+      "field": "dependency_revisions",
+      "name": "dependency_revisions_control",
+      "value": {
+        "control": 8
+      }
+    },
+    {
+      "field": "actor_kind",
+      "name": "actor_kind_human",
+      "value": "human"
+    },
+    {
+      "field": "target_scope",
+      "name": "target_scope_raw_grantor",
+      "value": "platform-user-1"
+    }
+  ],
+  "schema": "w502-hub-participant-vectors.v1",
+  "accepted_with_reservations": {
+    "name": "pb_initiated_update_with_reads_and_catalog",
+    "about": "The accepted vector plus read reservations: an unchanged person Control at r3 (card:), an absent My Card slot (card-absent:, value 1) and the active catalog version (catalog-active:, value 1). candidate_value and candidate_digest are unchanged; only dependency_revisions differs.",
+    "reads": [
+      {
+        "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb",
+        "access_id": "person-control-0123456789abcdef01234567",
+        "revision": 3
+      },
+      {
+        "subject_hash": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb",
+        "access_id": "person-my-card-89abcdef0123456789abcdef",
+        "revision": 0
+      }
+    ],
+    "catalog": {
+      "version": "catalog_20261006T000000Z_0123456789ab",
+      "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "digest": "2b8411b7f1a162875521fa560538c14b89d35399636f4b218cb684c9f7a82c4f",
+      "digest_rule": "sha256_hex(canonical_json_bytes({content_hash, version}))"
+    },
+    "participant_input": {
+      "participant": "connection-hub.card",
+      "binding_kind": "connection-hub.card",
+      "binding_ref": "aut_abc123",
+      "target_scope": "cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb",
+      "target_incarnation": 1,
+      "action": "update",
+      "before_revision": 1,
+      "candidate_revision": 2,
+      "candidate_digest": "f73478eebdf2edbeed4ea712bd3cee032ef66af6e7d846fbf824f6a4eaef3291",
+      "dependency_revisions": {
+        "catalog-active:2b8411b7f1a162875521fa560538c14b89d35399636f4b218cb684c9f7a82c4f": 1,
+        "card:cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb:person-control-0123456789abcdef01234567": 3,
+        "card-absent:cfbcd0cf39e2a5a9b24268d3c6599a943b4989c1a48c62d55a8608f2003b8cdb:person-my-card-89abcdef0123456789abcdef": 1
+      },
+      "actor_subject": "user:project-admin",
+      "actor_kind": "caller",
+      "provisioning": {}
+    },
+    "candidate_value": {
+      "access_id": "aut_abc123",
+      "candidate": {
+        "access_id": "aut_abc123",
+        "account_scope": {},
+        "card_kind": "automation",
+        "card_revision": 2,
+        "catalog_version": "catalog-v1",
+        "client_id": "automation:abc",
+        "client_metadata": {},
+        "composition_mode": "",
+        "created_at": 1780000000,
+        "delegate_subject": "integration:automation:abc",
+        "entry_resource": "",
+        "expires_at": 1780003600,
+        "grantor_subject": "platform-user-1",
+        "identity_scope": "",
+        "issuer_kind": "",
+        "issuer_label": "",
+        "issuer_ref": "",
+        "label": "staged change",
+        "last_four": "",
+        "last_issued_at": 0,
+        "manage_url": "",
+        "named_service_operations": {},
+        "named_services": {},
+        "operations": [
+          "messages.search"
+        ],
+        "properties": {},
+        "provenance": {},
+        "resource_acceptance": {},
+        "resource_grants": {
+          "https://example.test/mcp": [
+            "messages:read"
+          ]
+        },
+        "resource_operations": {
+          "https://example.test/mcp": [
+            "messages.search"
+          ]
+        },
+        "schema": "connection_hub.delegated_card_authority.v7",
+        "source": "manual",
+        "state": "active"
+      },
+      "effects": [
+        {
+          "key": "card",
+          "kind": "credential_lifetime",
+          "payload": {
+            "access_id": "aut_abc123",
+            "base_card_revision": 1,
+            "expires_at": 1890000000
+          }
+        }
+      ],
+      "original_revision": 1
+    },
+    "candidate_digest": "f73478eebdf2edbeed4ea712bd3cee032ef66af6e7d846fbf824f6a4eaef3291"
+  }
+}

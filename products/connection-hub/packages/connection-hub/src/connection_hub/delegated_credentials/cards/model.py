@@ -630,6 +630,13 @@ class CardAuthority:
         mode = clean_text(self.composition_mode).lower()
         if mode and mode not in CONTROL_COMPOSITIONS:
             raise CardRecordError("control_card_composition_mode_invalid")
+        service_modes = self.properties.get("service_composition_modes", {})
+        if not isinstance(service_modes, Mapping) or any(
+            not isinstance(service, str) or not service.strip() or service != service.strip()
+            or selected_mode not in CONTROL_COMPOSITIONS
+            for service, selected_mode in service_modes.items()
+        ):
+            raise CardRecordError("control_card_service_composition_modes_invalid")
         if self.source == CREDENTIALLESS_CARD_SOURCE:
             if not self.issuer_ref:
                 raise CardRecordError("credentialless_card_issuer_ref_missing")
@@ -639,8 +646,6 @@ class CardAuthority:
                 raise CardRecordError("credentialless_card_has_delegate")
             if self.expires_at:
                 raise CardRecordError("credentialless_card_has_expiry")
-            if self.control_card is not None:
-                raise CardRecordError("control_card_chain_not_supported")
             mode = mode or CONTROL_COMPOSITION_AND
         elif self.source == PROJECT_PERSON_SELECTION_SOURCE:
             if self.card_kind != CARD_KIND_AUTOMATION:

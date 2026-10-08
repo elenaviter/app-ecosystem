@@ -173,6 +173,11 @@ async def resolve_pointer(store: Any, payload: Mapping[str, Any], *,
 
 
 async def assert_pointer_replaceable(store: Any, *, subject_hash: str, access_id: str) -> None:
+    from .update_store import assert_replaceable as assert_update_replaceable
+    await assert_update_replaceable(store, subject_hash=subject_hash, access_id=access_id)
+    # W578: no ordinary write publishes around an undecided staged transaction.
+    from .transaction_store import assert_replaceable as assert_transaction_replaceable
+    await assert_transaction_replaceable(store, subject_hash=subject_hash, access_id=access_id)
     # The shared intent exists BEFORE either pointer is staged. This covers
     # the otherwise unguarded participant after an intent-only/first-pointer
     # kill. Production callers check inside the same Card's mutation fence.

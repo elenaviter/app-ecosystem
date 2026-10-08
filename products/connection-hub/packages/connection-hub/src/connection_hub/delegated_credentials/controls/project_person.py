@@ -107,8 +107,6 @@ class ProjectPersonControlIdentity:
             raise ProjectPersonControlError("project_person_control_issuer_kind_mismatch")
         if authority.issuer_ref != identity.project_ref:
             raise ProjectPersonControlError("project_person_control_issuer_ref_mismatch")
-        if authority.composition_mode != CONTROL_COMPOSITION_AND:
-            raise ProjectPersonControlError("project_person_control_requires_and")
         return identity
 
     def to_property(self) -> dict[str, str]:
@@ -150,6 +148,11 @@ def project_person_control_snapshot(authority: CardAuthority) -> dict[str, Any]:
             for provider, accounts in sorted(authority.account_scope.items())
         },
         "properties": _public_properties(authority),
+        # W587 follow-up (EMain 15:13): accepting a reviewed catalog change is
+        # an authorization change too; without these an accept-only save was
+        # refused as "nothing changed" and the drift could never be accepted.
+        "catalog_version": authority.catalog_version,
+        "resource_acceptance": copy.deepcopy(authority.to_dict().get("resource_acceptance") or {}),
     }
 
 

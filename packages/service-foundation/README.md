@@ -46,4 +46,10 @@ when ordinary work is push-driven.
 `service-foundation` does not import `app-foundation`, and `app-foundation`
 does not import `service-foundation`. Products may depend on either or both.
 
+The in-progress generic durable decision coordinator and PostgreSQL store live
+under `service_foundation.coordination`. Their v2 canonical authority bytes
+and frozen test vector are documented in
+[`docs/service-foundation/durable-decision.md`](../../docs/service-foundation/durable-decision.md).
+The package has not been released with this coordination feature yet.
+
 License: MIT. Source: https://github.com/elenaviter/app-ecosystem

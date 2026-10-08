@@ -15,7 +15,7 @@ from .io import bounded_text, exclusive_lock
 from .mail_attachments import worker_message_with_attachments
 from .mail_budget import MAX_WORKER_INPUT_BYTES, MailPullBudget
 from .quarantine import quarantine_summary
-from .store import BACKLOG_UNRESOLVED_KINDS, SELECTIVE_RECEIVE_BUDGET, SharedFieldStore
+from .store import BACKLOG_UNRESOLVED_KINDS, CONTROL_SELECTION_BUDGET, SELECTIVE_RECEIVE_BUDGET, SharedFieldStore
 
 
 WORKER_INPUT_SCHEMA = "problem-board.worker-input.v2"
@@ -89,6 +89,7 @@ def _worker_input_session_view(session: Mapping[str, Any]) -> dict[str, Any]:
         "inbox_overdue_by_seconds",
         "general_receive_due",
         "selective_receives_since_general",
+        "control_selections_used",
         "last_inbox_result_at",
         "last_mail_settled_at",
         "last_settled_message_ref",
@@ -562,7 +563,9 @@ def _pull_worker_input(
             status=409,
         )
     selective_used = int(listener.get("selective_receives_since_general") or 0)
-    if selective and listener.get("general_receive_due"):
+    control_key = _control_selection_key(listener, correlation_id=correlation_id, sender=sender, message_ref=message_ref)
+    control_used = int(listener.get("control_selections_used") or 0) if control_key else 0
+    if selective and listener.get("general_receive_due") and not control_key:
         raise DomainError(
             "field_mail_general_receive_due",
             "Run ordinary pb worker receive before another selective receive.",
@@ -1072,14 +1075,25 @@ def _pull_worker_input(
                 "held": selected["held"],
                 "held_count": selected["held_count"],
                 "previous_state": selected["previous_state"],
-                "general_receive_due": selective_used + 1 >= SELECTIVE_RECEIVE_BUDGET,
-                "selective_receives_remaining": max(0, SELECTIVE_RECEIVE_BUDGET - selective_used - 1),
+                "general_receive_due": (
+                    bool(listener.get("general_receive_due")) if control_key
+                    else selective_used + 1 >= SELECTIVE_RECEIVE_BUDGET
+                ),
+                "selective_receives_remaining": (
+                    max(0, SELECTIVE_RECEIVE_BUDGET - selective_used) if control_key
+                    else max(0, SELECTIVE_RECEIVE_BUDGET - selective_used - 1)
+                ),
                 "instruction": (
-                    "Run ordinary pb worker receive before another selection."
+                    f"Window control on its own budget: {CONTROL_SELECTION_BUDGET - control_used - 1} more "
+                    "receive(s) on this correlation and sender before an ordinary receive is due."
+                    if control_key
+                    else "Run ordinary pb worker receive before another selection."
                     if selective_used + 1 >= SELECTIVE_RECEIVE_BUDGET
                     else f"{SELECTIVE_RECEIVE_BUDGET - selective_used - 1} more selective receive(s) before an ordinary receive is due."
                 ),
             })
+            if control_key:
+                selection_view["control_selections_remaining"] = max(0, CONTROL_SELECTION_BUDGET - control_used - 1)
             if selected["operator_pending"]:
                 selection_view["state"] = "operator_pending"
                 selection_view["instruction"] = "Admitted operator mail is pending. Run ordinary pb worker receive."
@@ -1250,6 +1264,7 @@ def _pull_worker_input(
             state=next_state,
             inbox_checked=not selective,
             selective_receive=selective,
+            control_selection=control_key,
             message_refs=message_refs,
             control_refs=control_refs,
             observed_control_plane_state=control_plane_state,
@@ -1264,7 +1279,9 @@ def _pull_worker_input(
             limited_by=budget.limited_by,
         )
         if mark:
-            result["backlog"] = _backlog_view(mark, backlog_tally, leased_kinds=backlog_leased, backlog=backlog)
+            result["backlog"] = _backlog_view(
+                mark, backlog_tally, leased_kinds=backlog_leased, backlog=backlog, selected=selective,
+            )
         payload_bytes = _worker_input_wire_bytes(result)
         result["delivery"]["payload_bytes"] = payload_bytes
         payload_bytes = _worker_input_wire_bytes(result)
@@ -1311,14 +1328,55 @@ def _pull_worker_input(
         raise
 
 
+def _control_selection_key(
+    listener: Mapping[str, Any], *, correlation_id: str, sender: str, message_ref: str,
+) -> str:
+    """The window-control budget key for a correlation-and-sender selection, or "".
+
+    Only a selection by correlation and stable sender qualifies (window
+    control arrives that way), only one such key between ordinary receives,
+    and only while its CONTROL_SELECTION_BUDGET lasts. Everything else uses
+    the general selective budget (W563).
+    """
+
+    if message_ref or not correlation_id or not sender:
+        return ""
+    key = f"{str(sender).strip().lower()}|{str(correlation_id).strip()}"
+    current = str(listener.get("control_selection_key") or "")
+    if current and current != key:
+        return ""
+    if int(listener.get("control_selections_used") or 0) >= CONTROL_SELECTION_BUDGET:
+        return ""
+    return key
+
+
 def _backlog_view(
     mark: Mapping[str, Any],
     tally: Mapping[str, Any],
     *,
     leased_kinds: Sequence[str],
     backlog: bool,
+    selected: bool = False,
 ) -> dict[str, Any]:
     """The backlog line every receive carries while a mark is set (W563)."""
+
+    if selected:
+        # A selected receive looks only at its own matches and never counts
+        # the marked mail, so it must not say the backlog is empty or advise
+        # ending the mark (Root, 08:44 UTC: a selected view printed pending 0
+        # and "clear the mark" while 300 marked messages were pending).
+        return {
+            "mark_id": str(mark.get("mark_id") or ""),
+            "marked_at": str(mark.get("marked_at") or ""),
+            "reason": str(mark.get("reason") or ""),
+            "marked_count": int(mark.get("count") or 0),
+            "counted": False,
+            "received_now": False,
+            "instruction": (
+                "This selected receive does not count the marked backlog. "
+                "`pb worker inbox` shows it; never end the mark from a selected receive."
+            ),
+        }
 
     # The tally counted the marked mail before this batch leased some of it.
     pending = max(0, int(tally.get("count") or 0) - len(leased_kinds))

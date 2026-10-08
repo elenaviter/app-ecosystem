@@ -60,6 +60,10 @@ class _Service:
         self.calls.append(("bind", {"user": user, **kwargs}))
         return {"ok": True, "bound": True}
 
+    async def project_person_control_bind_project(self, user, **kwargs):
+        self.calls.append(("bind_project", {"user": user, **kwargs}))
+        return {"ok": True, "outcome": "bound"}
+
     async def project_person_my_card_seed(self, user, **kwargs):
         self.calls.append(("seed", {"user": user, **kwargs}))
         return {"ok": True, "seeded": True}
@@ -104,6 +108,7 @@ def test_operations_are_declared_as_csrf_protected_posts() -> None:
             "project_person_control_update",
             "project_person_control_revoke",
             "project_person_control_bind_invitation",
+            "project_person_control_bind_project",
             "project_person_my_card_seed",
             "project_person_github_key_link",
             "project_person_github_key_unlink",
@@ -935,3 +940,21 @@ async def test_project_control_create_resolves_membership_through_bundle_operati
         "delegable_grants": ["work:review"],
     }
     assert membership_calls == ["platform-admin-1", "platform-user-2"]
+
+
+@pytest.mark.asyncio
+async def test_bind_project_passes_only_project_and_person(entrypoint) -> None:
+    """W502: the request never names the project's Control Card; the host's decision does."""
+    request = SimpleNamespace(state=SimpleNamespace(request_id="host-request-bind-project"), scope={})
+    await entrypoint.module.ConnectionHubEntrypoint.project_person_control_bind_project(
+        entrypoint.instance,
+        data={"project_ref": "work:project:quickstart", "target_subject": "person-1",
+              "control_id": "forged-control", "holder_subject": "forged-holder", "actor_subject": "forged"},
+        request=request,
+    )
+    assert entrypoint.service.calls[-1] == ("bind_project", {
+        "user": {"user_id": "authenticated-admin"},
+        "project_ref": "work:project:quickstart",
+        "target_subject": "person-1",
+        "request_id": "host-request-bind-project",
+    })

@@ -207,3 +207,85 @@ def test_the_parser_offers_the_mark_and_the_backlog_receive():
     assert (marked.worker_command, marked.reason, marked.clear) == ("backlog-mark", "W563 relief", False)
     assert parser.parse_args(["worker", "backlog-mark", "--clear"]).clear is True
     assert parser.parse_args(["worker", "receive", "--backlog"]).backlog is True
+
+
+def test_window_control_is_received_by_correlation_without_leasing_unrelated_work(field):
+    # Root, 6 October 08:44 UTC: after three window-only selective reads, the
+    # exact receive of ALL CLEAR was refused (general receive due), and the
+    # ordinary fallback forced six unrelated bodies to reach the release.
+    from project_board.client.store import CONTROL_SELECTION_BUDGET
+
+    unrelated = [_send(field, f"unrelated-{n}", kind="request", subject=f"Unrelated {n}") for n in range(6)]
+    window = "client-063-window-devmain"
+    sequence = ["READY requested", "Renew READY now", "START", "ALL CLEAR"]
+    taken = []
+    for subject in sequence:
+        _send(field, f"ctl-{subject}", kind="request", subject=subject, correlation_id=window)
+        got = pull_worker_input(field, worker_name=WORKER, correlation_id=window, sender=SENDER)
+        taken.extend(_subjects(got))
+        assert got["selection"]["control_selections_remaining"] == CONTROL_SELECTION_BUDGET - len(taken)
+
+    assert taken == sequence, "every control message, in order, and nothing else"
+    pending = {header["message_ref"] for header in field.pending_mail_headers(WORKER)}
+    assert {row["message_ref"] for row in unrelated} <= pending, "no unrelated work was leased"
+    # The general budget is untouched, so ordinary fairness is unchanged.
+    listener = field.worker_listener_session(WORKER)
+    assert listener["selective_receives_since_general"] == 0 and not listener["general_receive_due"]
+    # The ordinary receive still delivers the unrelated mail, oldest first,
+    # and resets the control budget.
+    ordinary = pull_worker_input(field, worker_name=WORKER, limit=10)
+    assert _subjects(ordinary) == [f"Unrelated {n}" for n in range(6)]
+    assert field.worker_listener_session(WORKER)["control_selections_used"] == 0
+
+
+def test_the_control_budget_is_bounded_and_one_correlation_at_a_time(field):
+    from project_board.client.store import CONTROL_SELECTION_BUDGET
+
+    for pick in [_send(field, f"pick-{n}", subject=f"Pick {n}") for n in range(SELECTIVE_RECEIVE_BUDGET)]:
+        pull_worker_input(field, worker_name=WORKER, message_ref=pick["message_ref"])
+    for number in range(CONTROL_SELECTION_BUDGET):
+        _send(field, f"w1-{number}", subject=f"W1 {number}", correlation_id="window-1")
+        pull_worker_input(field, worker_name=WORKER, correlation_id="window-1", sender=SENDER)
+
+    _send(field, "w1-late", subject="W1 late", correlation_id="window-1")
+    with pytest.raises(DomainError) as spent:
+        pull_worker_input(field, worker_name=WORKER, correlation_id="window-1", sender=SENDER)
+    assert spent.value.code == "field_mail_general_receive_due"
+    _send(field, "w2", subject="W2", correlation_id="window-2")
+    with pytest.raises(DomainError) as other:
+        pull_worker_input(field, worker_name=WORKER, correlation_id="window-2", sender=SENDER)
+    assert other.value.code == "field_mail_general_receive_due", "a second correlation uses the general budget"
+
+
+def test_a_selected_receive_never_reports_an_empty_backlog(field):
+    # Root, 08:44 UTC: a selected receive printed "backlog: pending 0" and
+    # advised clearing the mark while 300 marked messages were pending.
+    _history(field, 12)
+    field.mark_backlog(WORKER, reason="set aside")
+    control = _send(field, "ctl", subject="ALL CLEAR", correlation_id="window-x")
+
+    got = pull_worker_input(field, worker_name=WORKER, message_ref=control["message_ref"])
+
+    assert got["backlog"]["counted"] is False
+    assert "pending_count" not in got["backlog"]
+    text = render_envelope({"ok": True, "result": got})
+    assert "backlog: not counted by this selected receive · marked 12" in text
+    assert "The backlog is empty" not in text and "backlog: pending 0" not in text
+    assert len([header for header in field.pending_mail_headers(WORKER) if header["backlog"]]) == 12
+
+
+def test_a_second_window_uses_the_general_budget_while_the_first_still_has_control_budget(field):
+    # Ops' review of #573: "one correlation at a time" must hold while the
+    # first window still has budget, not only after it is spent.
+    _send(field, "w1", subject="W1", correlation_id="window-1")
+    pull_worker_input(field, worker_name=WORKER, correlation_id="window-1", sender=SENDER)
+    _send(field, "w2", subject="W2", correlation_id="window-2")
+
+    got = pull_worker_input(field, worker_name=WORKER, correlation_id="window-2", sender=SENDER)
+
+    assert _subjects(got) == ["W2"]
+    assert "control_selections_remaining" not in got["selection"]
+    listener = field.worker_listener_session(WORKER)
+    assert listener["control_selection_key"] == f"{SENDER}|window-1"
+    assert listener["control_selections_used"] == 1
+    assert listener["selective_receives_since_general"] == 1, "the second window counted on the general budget"

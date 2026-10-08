@@ -17,10 +17,34 @@ PROJECT_PERSON_CONTROL_READ = "project.person_control.read"
 PROJECT_PERSON_CONTROL_UPDATE = "project.person_control.update"
 PROJECT_PERSON_CONTROL_REVOKE = "project.person_control.revoke"
 PROJECT_PERSON_MY_CARD_SEED = "project.person_my_card.seed"
+# W502: bind an existing person's project Control under the project's Control P.
+PROJECT_PERSON_CONTROL_BIND_PROJECT = "project.person_control.bind_project"
+# W578: create the project's own application Control P (a brand-new project's genesis plan).
+PROJECT_CONTROL_CREATE = "project.control.create"
 PROJECT_INVITATION_CONTROL_CREATE = "project.invitation_control.create"
 PROJECT_INVITATION_CONTROL_READ = "project.invitation_control.read"
 PROJECT_INVITATION_CONTROL_UPDATE = "project.invitation_control.update"
 PROJECT_INVITATION_CONTROL_REVOKE = "project.invitation_control.revoke"
+# W587 follow-up C (operator, 2026-10-06 15:58): the project host gave no
+# answer, because its call failed or its application was still starting (a
+# board reload). The resolver names these; they are not refusals, so a Card's
+# viewer is never told "a project admin decides this" for them, and a save
+# fails closed as retryable instead of forbidden.
+PROJECT_MEMBERSHIP_PROVIDER_UNAVAILABLE = "project_membership_provider_unavailable"
+PROJECT_MEMBERSHIP_PROVIDER_NOT_READY = "project_membership_provider_not_ready"
+PROJECT_BOARD_RESTARTING = "project_board_restarting"
+
+
+def unanswered_policy_refusal(reason: str, *, error: str) -> dict[str, Any] | None:
+    """A retryable 503 for a decision the project host never gave, else None."""
+
+    if reason == PROJECT_MEMBERSHIP_PROVIDER_NOT_READY:
+        error = PROJECT_BOARD_RESTARTING
+    elif reason != PROJECT_MEMBERSHIP_PROVIDER_UNAVAILABLE:
+        return None
+    return {"ok": False, "error": error, "reason": reason, "retryable": True, "status": 503}
+
+
 PROJECT_INVITATION_CONTROL_OPERATIONS = frozenset(
     {
         PROJECT_INVITATION_CONTROL_CREATE,
@@ -36,6 +60,8 @@ PROJECT_PERSON_CONTROL_OPERATIONS = frozenset(
         PROJECT_PERSON_CONTROL_UPDATE,
         PROJECT_PERSON_CONTROL_REVOKE,
         PROJECT_PERSON_MY_CARD_SEED,
+        PROJECT_PERSON_CONTROL_BIND_PROJECT,
+        PROJECT_CONTROL_CREATE,
         *PROJECT_INVITATION_CONTROL_OPERATIONS,
     }
 )
@@ -54,6 +80,16 @@ def _required(value: Any, reason: str) -> str:
     if not result:
         raise ProjectAuthorizationError(reason)
     return result
+
+
+def _is_digest(value: Any) -> bool:
+    """A plan request digest: exactly 64 lowercase hex characters."""
+
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
 
 
 def _operation(value: Any) -> str:
@@ -127,6 +163,33 @@ class ProjectMembershipConfig:
 
 
 @dataclass(frozen=True)
+class ProjectControlLocator:
+    """W502: the project host's exact record of this project's Control Card P.
+
+    ``control_id`` and ``holder_subject`` come from the host's own stored link
+    (Problem Board's control_card_link), never from a request. The Hub binds a
+    person's project Control under exactly this Card, or binds nothing.
+    """
+
+    control_id: str
+    holder_subject: str
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "ProjectControlLocator | None":
+        if raw is None:
+            return None
+        if not isinstance(raw, Mapping):
+            raise ProjectAuthorizationError("project_control_locator_invalid")
+        control_id, holder = clean_text(raw.get("control_id")), clean_text(raw.get("holder_subject"))
+        if not control_id or not holder or set(raw) - {"control_id", "holder_subject"}:
+            raise ProjectAuthorizationError("project_control_locator_invalid")
+        return cls(control_id=control_id, holder_subject=holder)
+
+    def to_dict(self) -> dict[str, str]:
+        return {"control_id": self.control_id, "holder_subject": self.holder_subject}
+
+
+@dataclass(frozen=True)
 class ProjectMembershipEvidence:
     """One host-owned project membership answer, with no implied authority."""
 
@@ -135,6 +198,9 @@ class ProjectMembershipEvidence:
     role: str
     delegable_grants: tuple[str, ...] = ()
     evidence: Mapping[str, Any] = field(default_factory=dict)
+    # W502: the project's Control Card P, a project-level fact the host
+    # answers with the membership; None when the project has none yet.
+    project_control: ProjectControlLocator | None = None
 
     @classmethod
     def build(
@@ -145,10 +211,12 @@ class ProjectMembershipEvidence:
         role: Any,
         delegable_grants: Any = (),
         evidence: Mapping[str, Any] | None = None,
+        project_control: Any = None,
     ) -> ProjectMembershipEvidence:
         if evidence is not None and not isinstance(evidence, Mapping):
             raise ProjectAuthorizationError("project_membership_evidence_invalid")
         return cls(
+            project_control=ProjectControlLocator.from_mapping(project_control),
             project_ref=_required(
                 project_ref,
                 "project_membership_project_ref_missing",
@@ -200,6 +268,11 @@ class ProjectAuthorizationRequest:
     managed; they confer no authority by themselves. Creator bootstrap is a
     policy decision made by the port for ``PROJECT_PERSON_CONTROL_CREATE``,
     never a request flag.
+
+    ``request_digest`` is empty for an ordinary single operation. For one step
+    of a lifecycle plan it is that plan's 64-hex request digest, so a decision
+    issued for another plan under the same request id cannot answer it (W578
+    N1).
     """
 
     actor_subject: str
@@ -207,6 +280,13 @@ class ProjectAuthorizationRequest:
     target_subject: str
     operation: str
     request_id: str
+    request_digest: str = ""
+
+    def __post_init__(self) -> None:
+        if self.request_digest != "" and not _is_digest(self.request_digest):
+            raise ProjectAuthorizationError(
+                "project_authorization_request_digest_invalid"
+            )
 
     @classmethod
     def build(
@@ -217,6 +297,7 @@ class ProjectAuthorizationRequest:
         target_subject: Any,
         operation: Any,
         request_id: Any,
+        request_digest: Any = "",
     ) -> ProjectAuthorizationRequest:
         return cls(
             actor_subject=_required(
@@ -236,7 +317,14 @@ class ProjectAuthorizationRequest:
                 request_id,
                 "project_authorization_request_id_missing",
             ),
+            request_digest=clean_text(request_digest),
         )
+
+
+_DECISION_REQUIRED = frozenset({"allowed", "actor_subject", "project_ref", "target_subject", "operation",
+                                "request_id"})
+_DECISION_FIELDS = _DECISION_REQUIRED | {"request_digest", "reason", "delegable_grants", "platform_admin",
+                                         "evidence", "project_control"}
 
 
 @dataclass(frozen=True)
@@ -253,6 +341,10 @@ class ProjectAuthorizationDecision:
     delegable_grants: tuple[str, ...] = ()
     platform_admin: bool = False
     evidence: Mapping[str, Any] = field(default_factory=dict)
+    # W502: the host's exact project Control Card P for this project, if any.
+    project_control: ProjectControlLocator | None = None
+    # W578 N1: copied from the request it answers; "" for an ordinary request.
+    request_digest: str = ""
 
     @classmethod
     def allow(
@@ -262,14 +354,17 @@ class ProjectAuthorizationDecision:
         delegable_grants: Any = (),
         platform_admin: bool = False,
         evidence: Mapping[str, Any] | None = None,
+        project_control: ProjectControlLocator | None = None,
     ) -> ProjectAuthorizationDecision:
         return cls(
+            project_control=project_control,
             allowed=True,
             actor_subject=request.actor_subject,
             project_ref=request.project_ref,
             target_subject=request.target_subject,
             operation=request.operation,
             request_id=request.request_id,
+            request_digest=request.request_digest,
             delegable_grants=_grants(delegable_grants),
             platform_admin=bool(platform_admin),
             evidence=copy.deepcopy(dict(evidence or {})),
@@ -290,8 +385,64 @@ class ProjectAuthorizationDecision:
             target_subject=request.target_subject,
             operation=request.operation,
             request_id=request.request_id,
+            request_digest=request.request_digest,
             reason=_required(reason, "project_authorization_denial_reason_missing"),
             evidence=copy.deepcopy(dict(evidence or {})),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """The decision's wire mapping (W578: what a project host's plan answer carries per step)."""
+
+        out: dict[str, Any] = {
+            "allowed": self.allowed,
+            "actor_subject": self.actor_subject,
+            "project_ref": self.project_ref,
+            "target_subject": self.target_subject,
+            "operation": self.operation,
+            "request_id": self.request_id,
+            "request_digest": self.request_digest,
+            "reason": self.reason,
+            "delegable_grants": list(self.delegable_grants),
+            "platform_admin": self.platform_admin,
+            "evidence": copy.deepcopy(dict(self.evidence)),
+        }
+        if self.project_control is not None:
+            out["project_control"] = self.project_control.to_dict()
+        return out
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> ProjectAuthorizationDecision:
+        """A decision from its wire mapping, refusing unknown, missing or mistyped fields.
+
+        It is not validated against any request here: the caller binds it to
+        its own request with ``validate_for`` (a plan envelope does so per step).
+        """
+
+        if not isinstance(raw, Mapping) or set(raw) - _DECISION_FIELDS or not _DECISION_REQUIRED <= set(raw):
+            raise ProjectAuthorizationError("project_authorization_decision_invalid")
+        if type(raw["allowed"]) is not bool or type(raw.get("platform_admin", False)) is not bool:
+            raise ProjectAuthorizationError("project_authorization_decision_invalid")
+        texts = ("actor_subject", "project_ref", "target_subject", "operation", "request_id",
+                 "request_digest", "reason")
+        if any(type(raw.get(name, "")) is not str for name in texts):
+            raise ProjectAuthorizationError("project_authorization_decision_invalid")
+        grants = raw.get("delegable_grants", [])
+        evidence = raw.get("evidence", {})
+        if not isinstance(grants, list) or not isinstance(evidence, Mapping):
+            raise ProjectAuthorizationError("project_authorization_decision_invalid")
+        return cls(
+            allowed=raw["allowed"],
+            actor_subject=raw["actor_subject"],
+            project_ref=raw["project_ref"],
+            target_subject=raw["target_subject"],
+            operation=raw["operation"],
+            request_id=raw["request_id"],
+            request_digest=raw.get("request_digest", ""),
+            reason=raw.get("reason", ""),
+            delegable_grants=_grants(grants),
+            platform_admin=raw.get("platform_admin", False),
+            evidence=copy.deepcopy(dict(evidence)),
+            project_control=ProjectControlLocator.from_mapping(raw.get("project_control")),
         )
 
     def validate_for(self, request: ProjectAuthorizationRequest) -> None:
@@ -311,6 +462,10 @@ class ProjectAuthorizationDecision:
             raise ProjectAuthorizationError("project_authorization_operation_mismatch")
         if clean_text(self.request_id) != request.request_id:
             raise ProjectAuthorizationError("project_authorization_request_id_mismatch")
+        if clean_text(self.request_digest) != request.request_digest:
+            raise ProjectAuthorizationError(
+                "project_authorization_request_digest_mismatch"
+            )
         if not isinstance(self.platform_admin, bool):
             raise ProjectAuthorizationError("project_authorization_admin_flag_invalid")
         if not isinstance(self.evidence, Mapping):
@@ -329,6 +484,123 @@ class ProjectAuthorizationDecision:
             raise ProjectAuthorizationError(
                 "project_authorization_denial_authority_invalid"
             )
+
+
+LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA = "connection-hub.lifecycle-plan-authorization.v1"
+MAX_LIFECYCLE_PLAN_STEPS = 8
+
+
+@dataclass(frozen=True)
+class LifecyclePlanStep:
+    """One step of a lifecycle plan: its local ref, the exact operation and the person it is for."""
+
+    ref: str
+    operation: str
+    target_subject: str
+
+
+@dataclass(frozen=True)
+class LifecyclePlanAuthorizationRequest:
+    """W578: what the project host is asked to authorize for ONE complete plan request.
+
+    Every step belongs to the same authenticated actor, project scope,
+    request id and the digest of the complete plan request (CodeApp 23:48).
+    The host evaluates each step's exact operation and target; nothing here
+    grants anything by itself.
+    """
+
+    actor_subject: str
+    project_ref: str
+    request_id: str
+    request_digest: str
+    steps: tuple[LifecyclePlanStep, ...]
+
+    def __post_init__(self) -> None:
+        for name in ("actor_subject", "project_ref", "request_id"):
+            _required(getattr(self, name), f"lifecycle_plan_{name}_missing")
+        if not _is_digest(self.request_digest):
+            raise ProjectAuthorizationError("lifecycle_plan_request_digest_invalid")
+        refs = [step.ref for step in self.steps]
+        if (not 1 <= len(self.steps) <= MAX_LIFECYCLE_PLAN_STEPS or len(set(refs)) != len(refs)
+                or any(not clean_text(step.ref) or not clean_text(step.target_subject) for step in self.steps)):
+            raise ProjectAuthorizationError("lifecycle_plan_steps_invalid")
+        for step in self.steps:
+            _operation(step.operation)
+
+    def step_request(self, step: LifecyclePlanStep) -> "ProjectAuthorizationRequest":
+        """The exact single-step request this step's decision must answer."""
+        return ProjectAuthorizationRequest(actor_subject=self.actor_subject, project_ref=self.project_ref,
+                                           target_subject=step.target_subject, operation=step.operation,
+                                           request_id=self.request_id, request_digest=self.request_digest)
+
+
+@dataclass(frozen=True)
+class LifecyclePlanAuthorization:
+    """W578: the host's answer for a complete plan: one exact decision per step, nothing more.
+
+    Not a union of grants and never a broadened singular decision: each step
+    keeps its own typed decision (its delegable grants, platform flag and P
+    locator), and the planner constructs each candidate under that step's
+    bounds only. Output never authorizes itself.
+    """
+
+    request: LifecyclePlanAuthorizationRequest
+    decisions: tuple[tuple[str, "ProjectAuthorizationDecision"], ...]
+    schema: str = LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA
+
+    def __post_init__(self) -> None:
+        # Fail closed by construction (EMain F1 on #632): an empty, partial or
+        # mismatched envelope never exists, so allowed/decision_for can only be
+        # read on one that covers every step of its own request exactly.
+        if self.schema != LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA or not isinstance(
+                self.request, LifecyclePlanAuthorizationRequest):
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_request_mismatch")
+        if not isinstance(self.decisions, tuple) or any(
+                not isinstance(item, tuple) or len(item) != 2 for item in self.decisions):
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_steps_mismatch")
+        refs = [ref for ref, _ in self.decisions]
+        if not refs or sorted(refs) != sorted(step.ref for step in self.request.steps) or len(set(refs)) != len(refs):
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_steps_mismatch")
+        by_ref = dict(self.decisions)
+        for step in self.request.steps:
+            decision = by_ref[step.ref]
+            if not isinstance(decision, ProjectAuthorizationDecision):
+                raise ProjectAuthorizationError("lifecycle_plan_authorization_decision_invalid")
+            decision.validate_for(self.request.step_request(step))
+
+    def validate_for(self, request: LifecyclePlanAuthorizationRequest) -> None:
+        """Refuse an envelope for another request (its own steps were checked at construction)."""
+        if self.request != request:
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_request_mismatch")
+
+    @property
+    def allowed(self) -> bool:
+        return all(decision.allowed for _, decision in self.decisions)
+
+    def refusal(self) -> str:
+        """The first denied step's reason ("" when every step is allowed)."""
+        for step in self.request.steps:
+            decision = dict(self.decisions)[step.ref]
+            if not decision.allowed:
+                return clean_text(decision.reason) or "project_authorization_denied"
+        return ""
+
+    def decision_for(self, ref: str) -> "ProjectAuthorizationDecision":
+        """The exact decision for one step; it must be an allow."""
+        decision = dict(self.decisions).get(ref)
+        if decision is None:
+            raise ProjectAuthorizationError("lifecycle_plan_authorization_step_unknown")
+        if not decision.allowed:
+            raise ProjectAuthorizationError(clean_text(decision.reason) or "project_authorization_denied")
+        return decision
+
+
+class LifecyclePlanAuthorizationPort(Protocol):
+    """The project host's whole-plan policy adapter (PB owns its policy)."""
+
+    async def authorize_lifecycle_plan(
+        self, request: LifecyclePlanAuthorizationRequest,
+    ) -> LifecyclePlanAuthorization: ...
 
 
 class ProjectAuthorizationPort(Protocol):
@@ -465,6 +737,7 @@ class ResolverBackedProjectAuthorizationPort:
             request,
             delegable_grants=actor.delegable_grants,
             evidence=evidence,
+            project_control=actor.project_control,
         )
 
 
@@ -503,6 +776,18 @@ def with_viewer_authority(
     )
 
 __all__ = [
+    "LIFECYCLE_PLAN_AUTHORIZATION_SCHEMA",
+    "LifecyclePlanAuthorization",
+    "LifecyclePlanAuthorizationPort",
+    "LifecyclePlanAuthorizationRequest",
+    "LifecyclePlanStep",
+    "MAX_LIFECYCLE_PLAN_STEPS",
+    "PROJECT_CONTROL_CREATE",
+    "ProjectControlLocator",
+    "PROJECT_BOARD_RESTARTING",
+    "PROJECT_MEMBERSHIP_PROVIDER_NOT_READY",
+    "PROJECT_MEMBERSHIP_PROVIDER_UNAVAILABLE",
+    "unanswered_policy_refusal",
     "ViewerAuthority",
     "with_viewer_authority",
     "PROJECT_INVITATION_CONTROL_CREATE",

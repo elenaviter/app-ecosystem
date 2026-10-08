@@ -110,6 +110,7 @@ All are authenticated (`PlatformAuth`) and visibility-gated by
 | `project_person_control_update` | POST | operations | Replace selected dimensions of one live-person or pending-invitation Control Card under Card and catalog revision preconditions. The authorization decision supplies the exact delegable ceiling. A live target cannot update her own Card; a pending invitation has no target identity. Composition remains fixed to `and`, and every applied change records an immutable field-level audit event. |
 | `project_person_control_revoke` | POST | operations | Revoke one live-person or unbound invitation Control Card under the same exact host decision. Live revocation ends the identity edge and both Cards stop contributing authority. Pending revocation consumes no identity and prevents later binding. |
 | `project_person_control_bind_invitation` | POST | operations | Bind a provider-verified pending invitation to the signed-in person. Exact project, invitation, pending Card id, person, and email-digest evidence are required. A compare-and-swap first consumes the pending Card with durable binding evidence; only the winning claim may create the deterministic live Control Card, the person's initial My Card with the full reviewed selection, and the project identity edge. Exact retries repair person-side writes after a successful claim without resetting later user narrowing. |
+| `project_person_control_bind_project` | POST | operations | W502 repair: bind one existing person's project Control Card under the project's Control Card, which the project host names in its decision (`project.person_control.bind_project`); the request names only `project_ref` and `target_subject`. Idempotent; the answer names this person's `outcome`: `bound`, `already_bound`, or a refusal such as `p_conflict` (bound to another live project Control) or `p_invalid`. |
 | `project_person_my_card_seed` | POST | operations | Replace the selection in an untouched My Card for an existing-person migration or a new-project creator. The authenticated actor must be a project administrator, and the Control Card must carry exactly one immutable `migration` or `project_creation` origin. Connection Hub reconciles the submitted selection with the active catalog, intersects every resource, operation, named-service, and account dimension with the current Control Card, and writes no unrelated Card field. Revision 1 plus a durable seed marker makes the operation one-shot and exactly replayable. Every newly created My Card otherwise begins with its Control Card's selection. |
 | `project_person_github_key_link` | POST | operations | Link the signed-in person's GitHub connection (the `github.app` provider) to their My Card for `project_ref`; `account_id` chooses when more than one is connected. The agents this person owns use it while they attend the project. The link names the account, never a token. Refusals: `github_not_connected` (with the `connect` hint), `github_account_choice_required`, `github_provider_not_configured`. |
 | `project_person_github_key_unlink` | POST | operations | Remove the GitHub link from the person's My Card for `project_ref`. The GitHub connection itself stays. |
@@ -225,6 +226,27 @@ whole pair instead of being redacted. This is an internal orchestration result,
 not a widget/Team listing API. The
 [full-snapshot contract](../../../../../docs/connection-hub/issuer-full-snapshot.md)
 owns the wire, credential-refusal and qualification boundaries.
+
+### Protected exact issuer update
+
+`issuer_managed_card_update` is POST on the operations route, with CSRF and
+actual registered/privileged human/runtime context. The trusted server must
+wrap its existing request-bound SDK call with the public
+`bind_issuer_update_orchestration()` scope; direct HTTP calls refuse. Raw
+updated authority stays inside that server.
+
+The body is `{data: {context_ref, request_id, target, delta}}`. `target` binds
+owner, Card ID, issuer coordinates, exact revision and full original
+fingerprint. `delta` binds one resource's final sorted unique `operations` and
+`grants`; only widening is supported. Every other Card field and all live
+credential handles remain unchanged. The configured write issuer authorizes
+the complete server-built candidate; caller-supplied context is not approval.
+
+Identical mutation-key retry recovers the original durable outcome, never a
+second revision. Changed replay refuses. `202` may mean committed with serving
+or issuer-finalization work pending, not no write. The
+[portable issuer contract](../../../../../docs/connection-hub/issuer-managed-writes.md)
+owns storage visibility, deadline, recovery and qualification boundaries.
 
 ### Public OAuth routes
 
@@ -451,6 +473,25 @@ Example response:
 ```json
 { "data": { "provider": "slack", "account_id": "<workspace_account_id>" } }
 ```
+
+The authenticated user's account store supplies the provider; the payload's
+`provider` is not authority. Before removing a connected account, the handler
+requires the grant-pruning service to confirm the complete result with
+`ok: true`, an empty `not_pruned` list and consistent `pruned` / `grants` fields.
+An unreadable account, unavailable service, partial pruning, or incomplete
+response returns `ok: false`, `removed: false`,
+`error: account_binding_not_pruned`, `status: 409` and `retryable: true` without
+calling disconnect. An already absent account returns the ordinary not-removed
+result without a destructive call. Successful removals retain
+`bindings_cleared` and `bindings_cleared_grants` when bindings were pruned.
+
+Pruning may already have narrowed some grants before a refusal. Retry only
+after the reported dependency or pending Card operation is resolved. This
+ordering does not atomically fence a concurrent new binding or account
+replacement, and a later disconnect failure does not undo completed pruning.
+Those cases require the shared prepare/decision/recovery participant boundary.
+Re-approval through **Reconnect**, without disconnecting, keeps existing
+bindings.
 
 `delegated_to_kdcube_connect_credential` (iCloud):
 

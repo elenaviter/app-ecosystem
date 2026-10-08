@@ -1,6 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
+import { withNewerCard } from './cardFreshness';
 import {
   applyDelegatedAccessRevokeResult,
   delegatedAccessRevokePayload,
@@ -51,6 +52,8 @@ export interface DelegatedAccessState {
   loading: boolean;
   loadRequestId: string;
   busy: boolean;
+  /** W587: Control reads in flight; busy clears when the last one settles. */
+  controlReads: number;
   error: string;
 }
 
@@ -65,6 +68,7 @@ const initialState: DelegatedAccessState = {
   loading: true,
   loadRequestId: '',
   busy: false,
+  controlReads: 0,
   error: '',
 };
 
@@ -325,6 +329,9 @@ export const updateDelegatedAccess = createAsyncThunk<
           ...(properties !== undefined ? { properties } : {}),
         },
       );
+      if (res?.ok === false && res.error === 'card_transactions_direct_write_refused') {
+        return rejectWithValue(res.message || 'Coordinated Card changes are unavailable. Your draft and current Card are kept.');
+      }
       // A precondition failure is not an error to show and forget: it carries
       // the refreshed card the editor must reload.
       if (res?.ok === false && res?.status === 409) return res;
@@ -380,6 +387,9 @@ export const updateAgentCapabilitySelection = createAsyncThunk<
   },
 );
 
+export const PERSON_REMOVAL_GUIDANCE =
+  'Remove this person in Problem Board (Team). Their Control Card and access stay as they are until then.';
+
 export const revokeDelegatedAccess = createAsyncThunk<
   DelegatedAccessRevokeResult,
   {
@@ -407,6 +417,12 @@ export const revokeDelegatedAccess = createAsyncThunk<
               }
           : delegatedAccessRevokePayload(accessId, expectedCardRevision),
       );
+      if (res?.ok === false && res.error === 'card_transactions_direct_write_refused') {
+        // W502: a person leaves a project only through the project's own removal, which
+        // ends their Control and My Card together; this panel cannot do it alone.
+        if (projectPersonControl?.kind === 'person') return rejectWithValue(PERSON_REMOVAL_GUIDANCE);
+        return rejectWithValue(res.message || 'Coordinated Card changes are unavailable. Your current Card and access are kept.');
+      }
       // A conflict carries a refusal, not a removal. Keep its shape for the
       // reducer and let the caller refresh reads without retrying the write.
       if (res?.ok === false && res?.status === 409) return res;
@@ -514,22 +530,29 @@ const delegatedAccessSlice = createSlice({
       })
       .addCase(loadProjectAgentCard.fulfilled, (state, action) => {
         state.focusedCard = action.payload;
+        // W587: a newer read also replaces the list row, so no row shows an older copy.
+        state.items = withNewerCard(state.items, action.payload);
       })
       .addCase(loadProjectAgentCard.rejected, (state, action) => {
         state.focusedCard = undefined;
         state.error = action.payload || 'This Card could not be opened through the project';
       })
       .addCase(loadControlCard.pending, (state) => {
+        state.controlReads += 1;
         state.busy = true;
         state.error = '';
       })
       .addCase(loadControlCard.fulfilled, (state, action) => {
-        state.busy = false;
+        state.controlReads = Math.max(0, state.controlReads - 1);
+        if (state.controlReads === 0) state.busy = false;
         state.focusedCard = action.payload.access;
         state.focusedViewer = action.payload.viewer;
+        // W587: a newer read also replaces the list row, so no row shows an older copy.
+        state.items = withNewerCard(state.items, action.payload.access);
       })
       .addCase(loadControlCard.rejected, (state, action) => {
-        state.busy = false;
+        state.controlReads = Math.max(0, state.controlReads - 1);
+        if (state.controlReads === 0) state.busy = false;
         state.focusedCard = undefined;
         state.focusedViewer = undefined;
         state.error = action.payload ?? 'Failed to load the Control Card';

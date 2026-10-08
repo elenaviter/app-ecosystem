@@ -481,8 +481,10 @@ export interface DelegatedAccessCreateResult {
  *  Connection Hub is its only editor: a project admin changes it here, anyone
  *  else reads it. */
 export interface ProjectPersonControlViewer {
-  can_edit: boolean;
+  /** null: the project's permission check could not answer just now (not a refusal). */
+  can_edit: boolean | null;
   reason?: string;
+  retryable?: boolean;
 }
 
 export interface ControlCardGetResult {

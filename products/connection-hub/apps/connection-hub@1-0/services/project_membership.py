@@ -70,6 +70,12 @@ def _log_provider_failure(reason: str, bundle_id: str, operation: str, exc: Base
     )
 
 
+def _application_not_ready(exc: BaseException) -> bool:
+    """The platform's ApplicationNotReadyError, by name: its import path is the platform's."""
+
+    return any(cls.__name__ == "ApplicationNotReadyError" for cls in type(exc).__mro__)
+
+
 def _refusal_reason(response: Mapping[str, Any]) -> str:
     error = response.get("error")
     if isinstance(error, Mapping):
@@ -104,12 +110,16 @@ class BundleOperationProjectMembershipResolver:
                 data={"project_ref": project_ref, "subject": subject},
             )
         except Exception as exc:
-            _log_provider_failure(
-                "project_membership_provider_unavailable", self._bundle_id, self._operation, exc
+            # W587 follow-up C: the host application still starting (a board
+            # reload) is named, so the Card says it is restarting. A string,
+            # not the package constant: this file reloads without a rebuild.
+            reason = (
+                "project_membership_provider_not_ready"
+                if _application_not_ready(exc)
+                else "project_membership_provider_unavailable"
             )
-            raise ProjectAuthorizationError(
-                "project_membership_provider_unavailable"
-            ) from exc
+            _log_provider_failure(reason, self._bundle_id, self._operation, exc)
+            raise ProjectAuthorizationError(reason) from exc
         if not isinstance(response, Mapping):
             raise ProjectAuthorizationError(
                 "project_membership_provider_response_invalid"
@@ -140,6 +150,8 @@ class BundleOperationProjectMembershipResolver:
                 if isinstance(membership.get("evidence"), Mapping)
                 else {}
             ),
+            # W502: the host's exact project Control Card, if it has one.
+            project_control=membership.get("project_control"),
         )
 
 

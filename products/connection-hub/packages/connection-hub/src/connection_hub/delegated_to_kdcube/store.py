@@ -9,10 +9,12 @@ in user secrets. Callers should use the broker/client, not these keys directly.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import logging
 import re
+import secrets
 import uuid
 from typing import Any, Iterable, Protocol
 
@@ -29,6 +31,22 @@ LOGGER = logging.getLogger("kdcube.connections.delegated_to_kdcube")
 ACCOUNT_INDEX_KEY = "delegated_to_kdcube.account_index"
 ACCOUNT_KEY_PREFIX = "delegated_to_kdcube.accounts"
 CREDENTIAL_KEY_PREFIX = "delegated_to_kdcube.credentials"
+# W578: the pinned outcome of one disconnect's account deletion, by its effect identity.
+ACCOUNT_DELETE_PIN_PREFIX = "delegated_to_kdcube.account_delete."
+# W578: a staged disconnect's hold on one account incarnation, until its decision.
+ACCOUNT_DELETE_HOLD_PREFIX = "delegated_to_kdcube.account_delete_hold."
+
+
+class AccountLockUnavailable(RuntimeError):
+    """An incarnation operation was asked of a store composed without the shared account lock."""
+
+
+class AccountDisconnectPending(RuntimeError):
+    """A reconnect while a staged disconnect holds this account's incarnation; retry after its decision."""
+
+    def __init__(self, reason: str = "account_disconnect_pending") -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class UserConfigurationStore(Protocol):
@@ -100,12 +118,26 @@ class DelegatedToKdcubeStore:
         user_id: str,
         backend: UserConfigurationStore,
         bundle_id: str = CONNECTION_HUB_BUNDLE_ID,
+        account_lock: Any = None,
     ) -> None:
         self.user_id = as_str(user_id)
         if not self.user_id:
             raise ValueError("user_id is required for delegated to KDCube storage")
         self.bundle_id = as_str(bundle_id) or CONNECTION_HUB_BUNDLE_ID
         self._backend = backend
+        # W578: account_lock(user_id, account_id) -> async context manager, the
+        # composition's shared mutation lock for one account record. Every
+        # account write takes it; the incarnation operations refuse without it.
+        self._account_lock = account_lock
+
+    def bind_account_lock(self, account_lock: Any) -> None:
+        """W578: bind the composition's shared account lock to a store built without it."""
+        self._account_lock = account_lock
+
+    def _account_section(self, account_id: str):
+        if self._account_lock is None:
+            return contextlib.nullcontext()
+        return self._account_lock(self.user_id, account_id)
 
     # ── user prop helpers ───────────────────────────────────────────────────
 
@@ -225,7 +257,28 @@ class DelegatedToKdcubeStore:
             external_subject=account.external_subject,
             workspace=account.workspace,
         )
+        async with self._account_section(account_id):
+            hold = await self._prop(self.account_delete_hold_key(account_id))
+            if isinstance(hold, dict) and hold.get("incarnation"):
+                # W578 (claude-main, #644 P1): a reconnect would keep the held
+                # incarnation and be deleted by the staged disconnect's effect.
+                raise AccountDisconnectPending()
+            return await self._upsert_account(account)
+
+    async def _upsert_account(self, account: ConnectedAccount) -> ConnectedAccount:
+        account_id = as_str(account.account_id) or account_id_for(
+            provider_id=account.provider_id,
+            connector_app_id=account.connector_app_id,
+            external_subject=account.external_subject,
+            workspace=account.workspace,
+        )
         now = utc_now()
+        # W578 (claude-main, #644): every upsert is a connection established by
+        # fresh consent, so it is a NEW incarnation, a reconnect included. A
+        # disconnect planned against the previous one then refuses at STAGE
+        # (account_incarnation_moved) instead of deleting this connection. A
+        # caller-carried incarnation is never used; status changes keep it.
+        incarnation = secrets.token_hex(16)
         stored = ConnectedAccount(
             account_id=account_id,
             provider_id=account.provider_id,
@@ -240,6 +293,7 @@ class DelegatedToKdcubeStore:
             connected_at=account.connected_at or now,
             updated_at=now,
             metadata=dict(account.metadata or {}),
+            incarnation=incarnation,
         )
         await self._set_prop(self.account_prop_key(account_id), stored.to_dict())
         await self._write_index([*await self._index(), account_id])
@@ -256,6 +310,10 @@ class DelegatedToKdcubeStore:
         return stored
 
     async def disconnect_account(self, account_id: str, *, delete_credential: bool = True) -> bool:
+        async with self._account_section(account_id):
+            return await self._disconnect_account(account_id, delete_credential=delete_credential)
+
+    async def _disconnect_account(self, account_id: str, *, delete_credential: bool = True) -> bool:
         existing = await self.get_account(account_id)
         if existing is None:
             return False
@@ -265,7 +323,124 @@ class DelegatedToKdcubeStore:
             await self.delete_credential(existing.credential_id)
         return True
 
+    def _require_account_lock(self) -> None:
+        if self._account_lock is None:
+            raise AccountLockUnavailable("account_lock_unavailable")
+
+    async def ensure_incarnation(self, account_id: str) -> str:
+        """W578: the stored account's incarnation, minting one for a legacy record that has none ("" if absent).
+
+        Under the account lock: minted once at a stored record without one,
+        persisted and reread, so the identity a disconnect binds is the stored one.
+        """
+        self._require_account_lock()
+        async with self._account_section(account_id):
+            existing = await self.get_account(account_id)
+            if existing is None:
+                return ""
+            if not existing.incarnation:
+                await self._set_prop(self.account_prop_key(account_id),
+                                     {**existing.to_dict(), "incarnation": secrets.token_hex(16)})
+            reread = await self.get_account(account_id)
+            return reread.incarnation if reread is not None else ""
+
+    def account_delete_pin_key(self, pin: str) -> str:
+        return f"{ACCOUNT_DELETE_PIN_PREFIX}{as_str(pin)}"
+
+    def account_delete_hold_key(self, account_id: str) -> str:
+        return f"{ACCOUNT_DELETE_HOLD_PREFIX}{as_str(account_id)}"
+
+    async def hold_incarnation_for_delete(self, account_id: str, incarnation: str, *, pin: str) -> None:
+        """W578: a staged disconnect holds exactly this incarnation until its decision (the effect's STAGE).
+
+        Refuses (``AccountDisconnectPending``) when the stored account is not
+        that incarnation, so a disconnect never stages against a connection it
+        did not bind; another pin's hold refuses as well. While held, a
+        reconnect of the account is refused, retryably.
+        """
+        self._require_account_lock()
+        async with self._account_section(account_id):
+            key = self.account_delete_hold_key(account_id)
+            hold = await self._prop(key)
+            if isinstance(hold, dict) and hold.get("incarnation"):
+                if hold.get("pin") == pin and hold.get("incarnation") == incarnation:
+                    return  # a replay of this stage
+                raise AccountDisconnectPending("account_disconnect_held")
+            existing = await self.get_account(account_id)
+            if existing is None or existing.incarnation != incarnation:
+                raise AccountDisconnectPending("account_incarnation_moved")
+            await self._set_prop(key, {"incarnation": incarnation, "pin": as_str(pin)})
+
+    async def release_incarnation_hold(self, account_id: str, *, pin: str) -> None:
+        """W578: an ABORT releases only this disconnect's hold."""
+        self._require_account_lock()
+        async with self._account_section(account_id):
+            key = self.account_delete_hold_key(account_id)
+            hold = await self._prop(key)
+            if isinstance(hold, dict) and hold.get("pin") == pin:
+                await self._delete_prop(key)
+
+    async def disconnect_incarnation(self, account_id: str, incarnation: str, *, pin: str,
+                                     delete_credential: bool = True) -> str:
+        """W578: disconnect exactly this incarnation of the account; never a later reconnection.
+
+        ``pin`` is the decision's effect identity. Under the account lock the
+        first completed outcome is pinned and every replay returns it, without
+        looking at the account again: ``disconnected``, ``account_absent``
+        (already gone when first applied) or ``account_reconnected`` (another
+        incarnation was stored; left as it is). A ``deleting`` pin, left by a
+        crash between the pin and the deletion, finishes the deletion of that
+        incarnation if it is still there and pins ``disconnected``.
+        """
+        self._require_account_lock()
+        if not as_str(pin) or not as_str(incarnation):
+            raise ValueError("account delete pin and incarnation are required")
+        key = self.account_delete_pin_key(pin)
+        async with self._account_section(account_id):
+            pinned = await self._prop(key)
+            if isinstance(pinned, dict) and pinned.get("state") in ("disconnected", "account_absent",
+                                                                      "account_reconnected"):
+                return pinned["state"]
+            existing = await self.get_account(account_id)
+            resuming = isinstance(pinned, dict) and pinned.get("state") == "deleting"
+            if existing is not None and existing.incarnation == incarnation:
+                await self._set_prop(key, {"state": "deleting", "account_id": account_id,
+                                           "incarnation": incarnation, "credential_id": existing.credential_id})
+                await self._disconnect_account(account_id, delete_credential=delete_credential)
+                outcome = "disconnected"
+            elif resuming:
+                if existing is None:
+                    # A crash inside the deletion (record gone, index or credential
+                    # not yet): finish exactly that cleanup. A reconnection would be
+                    # a stored record of another incarnation, which owns the same
+                    # deterministic credential id, so nothing is touched then.
+                    await self._write_index([item for item in await self._index() if item != account_id])
+                    credential_id = as_str(pinned.get("credential_id"))
+                    if delete_credential and credential_id:
+                        await self.delete_credential(credential_id)
+                outcome = "disconnected"
+            else:
+                outcome = "account_absent" if existing is None else "account_reconnected"
+            await self._set_prop(key, {"state": outcome, "account_id": account_id, "incarnation": incarnation})
+            hold_key = self.account_delete_hold_key(account_id)
+            hold = await self._prop(hold_key)
+            if isinstance(hold, dict) and hold.get("pin") == pin:
+                await self._delete_prop(hold_key)  # decided and applied: a reconnect may proceed
+            return outcome
+
     async def set_account_status(
+        self,
+        account_id: str,
+        status: str,
+        *,
+        credential_status: str = "",
+        last_error: str = "",
+    ) -> ConnectedAccount | None:
+        async with self._account_section(account_id):
+            return await self._set_account_status(account_id, status, credential_status=credential_status,
+                                                  last_error=last_error)
+
+    async def _set_account_status(
         self,
         account_id: str,
         status: str,
@@ -304,7 +479,15 @@ class DelegatedToKdcubeStore:
             connected_at=existing.connected_at,
             updated_at=utc_now(),
             metadata=metadata,
+            incarnation=existing.incarnation,
         )
+        # W578 (claude-main, S3b P1): a status write never recreates a record.
+        # It writes only while the same incarnation is still stored, so a
+        # writer that read before a disconnect deleted the account cannot put
+        # it back (the shared account lock closes the remaining gap).
+        current = await self.get_account(account_id)
+        if current is None or current.incarnation != existing.incarnation:
+            return None
         await self._set_prop(self.account_prop_key(account_id), updated.to_dict())
         return updated
 
@@ -336,6 +519,25 @@ class DelegatedToKdcubeStore:
             bool(credential.get("access_token")),
             bool(credential.get("refresh_token")),
         )
+
+    async def set_account_credential(self, account_id: str, credential_id: str,
+                                     credential: dict[str, Any], *, incarnation: str = "") -> bool:
+        """W578: write a refreshed credential only while the connection it was refreshed for is stored.
+
+        Under the account lock. ``incarnation`` is the connection the refresh
+        read before its token: a refresh that finishes after a disconnect
+        (record gone) or after a reconnection (another incarnation, which owns
+        the same deterministic credential id) writes nothing (False), so no old
+        secret outlives the disconnect or overwrites the fresh consent. Without
+        an incarnation nothing proves which connection it is for: no write.
+        """
+        async with self._account_section(account_id):
+            existing = await self.get_account(account_id)
+            if (existing is None or not incarnation or existing.incarnation != incarnation
+                    or existing.credential_id != credential_id):
+                return False
+            await self.set_credential(credential_id, credential)
+            return True
 
     async def get_credential(self, credential_id: str) -> dict[str, Any]:
         if not credential_id:

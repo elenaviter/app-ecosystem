@@ -41,6 +41,8 @@ from connection_hub.delegated_credentials.controls.project_person import (
     ProjectPersonControlIdentity,
     bind_project_person_control,
 )
+from connection_hub.delegated_credentials import project_control_binding
+from connection_hub.delegated_credentials.caller_writer_gate import CallerWrite, CallerWriteRefused
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
     ProjectIdentityLifecycle,
     ProjectIdentityLifecycleError,
@@ -58,6 +60,10 @@ from connection_hub.delegated_credentials.project_invitation_pending import (
     ProjectInvitationPendingCards,
     RecordFromAuthority,
 )
+
+
+# W502 join: the one answer for every pending-revision refusal before the email binding.
+PENDING_REVISION_REFUSED = {"ok": False, "error": "project_invitation_pending_unavailable", "status": 403}
 
 
 def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
@@ -186,6 +192,58 @@ class ProjectInvitationRedemption:
             revoked_record=revoked_record,
         )
 
+    async def pending_revision(
+        self,
+        *,
+        actor_subject: str,
+        project_ref: str,
+        invitation_ref: str,
+        control_id: str,
+    ) -> dict[str, Any]:
+        """W502 join: the pending invitation Card's revision and state, for its own invitee only.
+
+        The same authority as ``bind``: the board's binding resolver answers for
+        this session's person and verified email, and the Card must name that
+        email, this project, invitation and control id, and still be pending
+        (active). Returns nothing else: no selection, grants, audit or admin view.
+
+        No probing (Main, CodeApp): every refusal before the email binding
+        succeeds is the one ``PENDING_REVISION_REFUSED``, whatever the cause;
+        only a bound invitee learns that the Card is no longer pending. An
+        unavailable resolver or Card store stays a distinct retryable 503, since
+        it does not depend on the reference.
+        """
+
+        actor = str(actor_subject or "").strip()
+        if not actor or not str(control_id or "").strip():
+            return dict(PENDING_REVISION_REFUSED)
+        evidence = await self._claims.evidence(
+            actor_subject=actor,
+            project_ref=project_ref,
+            invitation_ref=invitation_ref,
+            control_id=control_id,
+        )
+        if isinstance(evidence, dict):
+            return evidence if evidence.get("retryable") else dict(PENDING_REVISION_REFUSED)
+        loaded = await self._pending_cards.load(
+            project_ref=project_ref,
+            invitation_ref=invitation_ref,
+            control_id=control_id,
+        )
+        if isinstance(loaded, dict):
+            return loaded if loaded.get("retryable") else dict(PENDING_REVISION_REFUSED)
+        pending_record, pending_state, pending_identity = loaded
+        if pending_identity.target_email_digest != evidence.email_digest:
+            return dict(PENDING_REVISION_REFUSED)
+        # Bound: the invitee may learn that their own invitation is no longer pending.
+        if pending_state != CARD_STATE_ACTIVE:
+            return {"ok": False, "error": "project_invitation_control_not_active", "status": 409}
+        return {
+            "ok": True,
+            "card_revision": self._authority_from_record(pending_record).card_revision,
+            "state": pending_state,
+        }
+
     async def bind(
         self,
         *,
@@ -287,6 +345,13 @@ class ProjectInvitationRedemption:
                 "error": "project_invitation_binding_request_id_missing",
                 "status": 400,
             }
+        # W502: before the invitation is consumed, refuse a P that is absent
+        # or not exactly this project's, so no C is created to stay unbound.
+        refusal = await project_control_binding.check_project_control(
+            self._host, live_identity, evidence.project_control
+        )
+        if refusal is not None:
+            return refusal
 
         try:
             if pending_state == CARD_STATE_ACTIVE:
@@ -356,7 +421,22 @@ class ProjectInvitationRedemption:
                     audit=audit,
                 )
                 live_record = self._record_from_authority(live)
-                await self._host._persist_record(live_record, expected_revision=0)
+                # W502: with a named P, the live C's first revision is already bound under it.
+                bound_record = await project_control_binding.bound_at_creation(
+                    self._host, live_identity, evidence.project_control, live_record
+                )
+                if isinstance(bound_record, dict):
+                    return bound_record
+                live_record = bound_record
+                # A bound C is a create of a bound Card: its binding's policy decides it.
+                enlisted = (
+                    {"caller_write": CallerWrite("create", actor, marker["request_id"])}
+                    if live_record.control_card is not None
+                    else {}
+                )
+                await self._host._persist_record(
+                    live_record, expected_revision=0, **enlisted
+                )
                 created = True
             live = self._authority_from_record(live_record)
             identity_result = await self._project_identities.ensure(
@@ -366,6 +446,8 @@ class ProjectInvitationRedemption:
                     PROJECT_INVITATION_BINDING_PROVENANCE: marker,
                 },
             )
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except (
             CardRecordError,
             ControlCardError,
@@ -394,9 +476,43 @@ class ProjectInvitationRedemption:
                 action="project_invitation_control_bound",
                 access=live_record.to_public_dict(),
             )
+        if created:
+            # A C written by this redemption was born bound (or no P was named).
+            project_control = {
+                "ok": True,
+                "outcome": "bound" if live_record.control_card is not None else "no_project_control",
+            }
+        else:
+            # An existing C (an exact retry) is bound under the evidence's P.
+            try:
+                project_control = await project_control_binding.bind_project_control(
+                    self._host, live_identity, evidence.project_control
+                )
+            except (CardConflict, CardCommitFailed) as exc:
+                project_control = {
+                    "ok": False,
+                    "error": "project_person_control_not_committed",
+                    "outcome": "not_bound",
+                    "reason": getattr(exc, "reason", ""),
+                    "retryable": True,
+                    "status": 503,
+                }
+            if project_control.get("ok") is not True:
+                return {**project_control, "bound": created,
+                        "project_control_binding": project_control.get("outcome", "not_bound")}
+            if project_control["outcome"] == "bound":
+                try:
+                    reloaded = await self._host._load_record_any_state(
+                        live_identity.control_id, grantor_subject=live_identity.project_subject
+                    )
+                except CardUnavailable:
+                    reloaded = None  # committed; the view below is the pre-binding revision
+                if reloaded is not None:
+                    live_record = reloaded[0]
         return {
             "ok": True,
             "bound": created,
+            "project_control_binding": project_control["outcome"],
             "pending_control_id": pending_identity.control_id,
             "control_card": live_record.to_public_dict(),
             "my_card": identity_result.my_card.to_public_dict(),

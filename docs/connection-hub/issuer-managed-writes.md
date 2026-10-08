@@ -374,3 +374,133 @@ The package contract has independent source approval. New host wiring and its
 author tests are not mounted authentication, issuer cross-process replay,
 combined-candidate qualification or activation. No live configuration changes
 are part of this source composition.
+
+## Exact widening issuer update
+
+`issuer_managed_card_update` is a separate POST operations alias for internal
+server orchestration. It requires the actual registered/privileged human,
+actual runtime scope, CSRF declaration and the public
+`bind_issuer_update_orchestration()` scope from `issuer_update_host`. No request
+field or HTTP header can bind that scope. Its full Card result must remain
+inside the calling server; it is not a widget response.
+
+The strict query is `{context_ref, request_id, target, delta}`. `target` contains
+exactly `owner_subject`, `access_id`, `issuer_kind`, `issuer_ref`,
+`expected_card_revision` and `expected_authority_fingerprint` (the complete
+original authority hash). `delta` contains exactly `resource`, `operations`
+and `grants`: sorted unique string lists describing the desired final
+selection of that one resource. Extra actor, approval, decision, candidate,
+digest or credential fields refuse before service construction. The operation
+never creates a Card or updates a credential handle.
+
+This first version only widens both selections. It preserves every other
+resource, identity, issuer/provenance field, property, catalog acceptance,
+account and named-service selection, lifetime and credential metadata. Only
+the selected resource, its derived flat operation union and revision change.
+Narrowing and an empty delta refuse. Legacy payloads whose original durable
+fingerprint differs from their normalized model require a separate migration;
+this API does not silently rewrite them. Credential-shaped material in the
+original authority also refuses before mutation, never redacts the result.
+
+The actual complete candidate is built under the production Card fence. Its
+digest is bound into `IssuerRequest(action="update")` for the configured write
+issuer. The opaque `context_ref` must identify that issuer's immutable intent;
+the issuer owns its approval, current policy, caller authority and reservation
+rules. A supplied context authorizes nothing by itself. Hub takes a fresh
+sealed decision, then revalidates inside the same Card fence immediately before
+publication. The second decision cannot extend the first decision's expiry,
+and the publication deadline cannot outlive the original Card's lifetime.
+The actual file publication thread checks that deadline after writing its
+temporary file and directly before the visibility rename.
+
+Issuer calls occur while the receipt and Card fences are held. Each remote
+issuer call is bounded to five seconds; the 30-second forward-progress
+deadline covers acquisition and orchestration, not forced cancellation of a
+started storage operation. A slow or hung backend must drain before unlock
+and remains an explicit host qualification limit.
+
+The durable replay key is `(actual actor, context_ref, request_id)`. Its receipt
+binds the **entire** query. Reusing the key with a changed target, fingerprint
+or delta refuses; an identical retry recovers the original outcome and never
+applies a second revision. Each individual Card update needs its own stable
+request ID. This differs from the read-only snapshot request ID, which does
+not consume a mutation receipt. Retrying a terminal refusal requires a new
+request ID, not a restored provider under the old one.
+
+The service requires the named filesystem atomic-rename backend and a verified
+same-host/shared flock capability. It holds receipt and production Card fences
+through checks, staging and serving completion. A durable intent precedes every
+revision/pointer write and blocks competing ordinary writers and revocations
+until recovery completes. The prepared pointer resolves the original Card;
+one committed receipt rename exposes the new revision. Staged revisions are
+absent from history and explicit revision reads before that commit. Interrupted
+preparation recovers as a terminal refusal; a committed receipt is never undone
+or relabelled after a later failure. Started file/Redis writes drain under both
+fences on cancellation or timeout; a hung backend can exceed the logical
+deadline, and the service must not steal its lock.
+
+An expired cache marker can have been read-through restored to the exact
+original Card before a no-write refusal finishes. Recovery recognizes that
+exact original revision and complete fingerprint as a finished removal,
+retires the refused intent and permits later writers. A foreign, malformed or
+unavailable cache entry remains unresolved; recovery never deletes it blindly.
+
+Identical terminal replay also retries removal of its exact active-intent file.
+A kill or unlink failure between the completed receipt rename and retirement
+must not permanently populate the bounded active queue. Retrying retirement
+does not rewrite serving state or the original outcome, reauthorize a mutation,
+or overwrite a later legitimate Card revision.
+
+A committed update whose cache/index completion or issuer finalization remains
+pending returns `202`, its committed state and a retryable outcome—not a
+no-write failure. Identical retry finishes that work without fresh mutation
+authority. A later legitimate revision is never overwritten by replay. The
+complete original after-result is read from the receipt's immutable revision,
+not whichever revision is current at retry time. Context movement after commit
+retains commit truth but withholds the full Card result. No handles are removed,
+rewritten or minted by this path.
+
+This is source/API work, not mounted approval, issuer nonce-store/replay,
+live-data/bootstrap or activation qualification. It changes the durable pointer
+reader contract, so a reviewed combined reader/writer rollout is mandatory;
+old readers fail closed on the new pointer schema. No live config, credentials,
+data or runtime changes are authorized by the source change.
+
+### Disposable real-backend UPDATE recovery witness
+
+The app test `tests/test_issuer_update_real_backend_recovery.py` runs the
+production SDK persistence and ordered file fences, filesystem Card/receipt
+storage, Redis Lua cache transitions and Redis grantor index. Its caller pins
+the App Ecosystem and SDK source overlays. Each boundary starts a new child,
+kills only that child, then uses fresh processes for reads, competing writes,
+identical recovery and changed replay. It covers intent, marker, sidecar,
+revision, prepared pointer, committed receipt, projection and completed receipt;
+the final case creates a legitimate later revision before recovery. Additional
+cases cover real marker expiry/read-through, a foreign marker that must remain
+untouched, and loss of a committed projection and its index. The same cases are available for
+standalone Redis and Redis Cluster; a missing backend is reported as a skip,
+not real-backend evidence.
+
+No backend is provisioned or restarted by the tests. The fixture owner must
+first identify a dedicated disposable test server, never a deployed server,
+and provide an existing non-production loopback target. Then set `REDIS_URL`
+for standalone Redis or `REDIS_CLUSTER_NODE` for Cluster, together with
+`CONNECTION_HUB_TEST_DISPOSABLE_REDIS=1`. Targets carrying credentials, remote
+hosts, malformed paths or the conventional deployed Redis port 6379 refuse
+before connection. Explicit confirmation is a safety gate, not proof that the
+server is disposable; that proof belongs to the fixture owner's record.
+
+Use the project's prepared interpreter and exact source overlay, with pytest's
+base temporary directory inside the caller's registered scratch run. Each case
+uses a fresh random synthetic tenant and a fixture-owned storage root. Cleanup
+deletes only the exact Card/index/epoch/lock keys of that namespace, one key at a
+time for Cluster; it never scans or flushes a database. The previous source can
+be run through the same test files with its package overlay to establish the
+serving-complete boundary's baseline failure without editing production code.
+
+The external issuer is still a synthetic adapter through the real
+`IssuerRegistry`; the current-host predicate is synthetic too. There is no
+real domain approval, issuer nonce store, mounted human request, PostgreSQL
+credential custody or service-restart/Redis rollback qualification here. Those
+remain separately named gates. A source-only run with both targets unset runs
+only fixture-safety tests and explicitly skips every backend recovery case.

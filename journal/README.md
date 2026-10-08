@@ -7,6 +7,9 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-10-06 | Authenticated replies bind a participant to one exact request attempt | Shared canonical HMAC envelopes verify configured signer, audience, direction, every frozen request field and fresh retry echo; signed refusals stay distinct from unsigned transport failure, while application policy and the seven-field durable Receipt remain unchanged. |
+| 2026-10-06 | Bounded recovery pages preserve durable completion and legacy refusal | Generic keyset paging advances past failed and unexpired rows, carries failure continuation, wraps to retry, and retains restart-safe finish receipts without another decision ledger; both PostgreSQL JSON codecs and unchanged legacy bounds are tested. |
+| 2026-10-06 | Exact issuer updates preserve the original Card and recover one durable intent | A widening-only delta binds the full original fingerprint and immutable issuer context; receipt-backed visibility, publication-thread expiry checks, cancellation drain and truthful committed/pending recovery do not claim mounted or activation qualification. |
 | 2026-10-06 | Full Card snapshots keep a separate issuer capability | Request-local host wiring preserves the independent snapshot proof and registry, actual human/scope binding, whole-pair credential refusal and original fingerprints; source tests are not mounted or activation evidence. |
 | 2026-10-01 | Explicit interactive account selection through hosted login | Optional host-selected account chooser policy, Cognito authorization extras with reserved-parameter rejection, and focused security/noninteractive regression evidence. |
 | 2026-08-29 | Design note: the ecosystem components repo, Prokura to PyPI first | The founding decisions: the repository's purpose and name, the original Prokura naming and its rationale, the two-phase packaging shape, and the stability constraints. |
@@ -106,6 +109,18 @@ that concern this repository so the history is discoverable from here.
 | 2026-10-05 | Opaque issuer authorization gates externally managed Card writes | In-progress phase-one source contract: exact server-built candidate and signed peer context using bounded invocation/digest admission fields, frozen Unicode digest vector, locally sealed decisions, lock-local fresh revalidation, named legacy snapshot refusal, explicit unconfirmed outcomes and descriptor-selected app composition; live provisioning and mounted qualification remain open. Public contract: [issuer-managed writes](../docs/connection-hub/issuer-managed-writes.md). |
 
 | 2026-10-06 | Caller-recorded revocation must survive the next read | Draft preserved for independent journal publication: generic target-ID/revision preconditions reach the durable revoke fence; replacement before load and replacement before lock acquisition refuse without revoking another revision. Source qualification and legacy multi-Card lifecycle limits stay separate. |
+
+| 2026-10-06 | Terminal issuer receipts must finish active-intent retirement | — |
+
+| 2026-10-06 | Current Control hierarchies preserve stored selections and downstream policy | A bounded, exact-coordinate resolver connects ordinary and human authorization readers; ancestor-ceiling interpretation, provider-wide dimensions and application interface gaps remain explicit qualification boundaries. |
+
+| 2026-10-06 | One durable transaction decision serves multiple participants | Generic coordinator, production PostgreSQL decision-store source and strict v2 intent/projection wire bytes; application composition and runtime activation remain separate. |
+
+| 2026-10-06 | Fixed census and participant contracts share authenticated response bytes | A closed trusted contract selection preserves participant vectors and binds census scope, person-list order, catalog flag, fresh attempt, peer identity and timestamp. Result policy, complete membership and write authority stay application-owned. [Public contract](../docs/service-foundation/durable-decision.md#fixed-census-contract). |
+
+| 2026-10-06 | Account disconnect refuses incomplete grant pruning | Deterministic account ids can revive surviving grant bindings after reconnect. The app now verifies complete pruning before disconnect, refuses unavailable or partial results, and retains the explicit concurrent-binding and post-prune failure limits. |
+
+| 2026-10-07 | Original OAuth credentials are issued under their Card decision | Reserved before COMMIT in a table no reader uses, activated only by the decision's effect against the exact committed Card; process-cut recovery returns the original credentials. SDK custody, delivery and session activation stay SDK-owned. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

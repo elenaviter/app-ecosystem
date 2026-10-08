@@ -30,13 +30,16 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from dataclasses import replace as replace_fields
-from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable, Iterable, Mapping
+from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from connection_hub.concurrency import bounded_gather
 from connection_hub.delegated_credentials.issuer_gate import (
     IssuerDecision, IssuerRegistry, IssuerRequest, IssuerWriteRefused,
     change_digest, issuer_write_refusal,
+)
+from connection_hub.delegated_credentials.caller_writer_gate import (
+    CallerWrite, CallerWriteRefused, binding_of, caller_write_outcome, caller_writer_before_commit, reset_candidate,
 )
 from connection_hub.authority_inventory import (
     AuthorityGrantInventory,
@@ -106,6 +109,7 @@ from connection_hub.delegated_credentials.agent_capability_policy import (
     descriptor_control,
 )
 from connection_hub.delegated_credentials.resource_operations import (
+    normalize_resource_grants,
     normalize_resource_operations,
     operation_union,
     project_legacy_operations,
@@ -135,6 +139,7 @@ from connection_hub.delegated_credentials.controls.effective import (
     ControlCardMismatch,
     effective_card_authority,
 )
+from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 from connection_hub.delegated_credentials.conversation_target_policy import (
     conversation_targets,
 )
@@ -143,6 +148,7 @@ from connection_hub.delegated_credentials.controls.model import (
     control_card_id_for_issuer,
     new_credentialless_card,
 )
+from connection_hub.delegated_credentials.card_lifecycle_plan import build_application_control
 from connection_hub.delegated_credentials.controls.snapshot import (
     CONTROL_SNAPSHOT_PROPERTY,
     control_snapshot_is_exact,
@@ -207,6 +213,7 @@ from connection_hub.delegated_credentials.cards.cache import (
     DelegatedCardRuntimeCache,
 )
 from connection_hub.delegated_credentials.cards.store import (
+    CardStorageError,
     subject_hash_for,
 )
 from connection_hub.delegated_credentials.cards.resolver import (
@@ -1431,6 +1438,28 @@ class AutomationAccessRecord:
         return public
 
 
+def _authority_snapshot(name: str, value: Any) -> Any:
+    """W603: one authority field in comparable form; a missing or malformed value is never equal to any."""
+    if name == "operations":
+        if not isinstance(value, (list, tuple)) or any(type(item) is not str or not item for item in value):
+            return _MALFORMED
+        return tuple(sorted(set(value)))
+    if not isinstance(value, Mapping) or any(
+            not isinstance(items, (list, tuple)) or any(type(item) is not str or not item for item in items)
+            for items in value.values()):
+        return _MALFORMED
+    try:
+        normalized = (normalize_resource_grants if name == "resource_grants" else normalize_resource_operations)(value)
+    except (TypeError, ValueError):
+        return _MALFORMED
+    if len(normalized) != len(value):
+        return _MALFORMED  # an empty or duplicate key after cleaning is malformed, not dropped
+    return {key: tuple(sorted(set(items))) for key, items in normalized.items()}
+
+
+_MALFORMED = object()
+
+
 def card_authority_from_record(record: AutomationAccessRecord) -> CardAuthority:
     """The record's non-secret authorization decision."""
     return CardAuthority(
@@ -1815,6 +1844,12 @@ class AutomationAccessService:
         self._issuer_snapshots = registry
         self._issuer_snapshot_host = (actor_subject, actor_classification, tenant, project)
 
+    def bind_issuer_update_host(self, *, actor_subject: str, actor_classification: str,
+                                tenant: str, project: str, host_is_current: Any) -> None:
+        """Bind actual request context and its live, trusted confinement check."""
+        self._issuer_update_host = (actor_subject, actor_classification, tenant, project)
+        self._issuer_update_host_is_current = host_is_current
+
     def bind_project_authorization_port(
         self,
         authorization_port: ProjectAuthorizationPort | None,
@@ -1847,6 +1882,8 @@ class AutomationAccessService:
     async def _ensure_control_snapshot(
         self,
         record: AutomationAccessRecord,
+        *,
+        actor_subject: str = "",
     ) -> AutomationAccessRecord:
         """Migrate one legacy Control Card from its first durable revision.
 
@@ -1930,7 +1967,23 @@ class AutomationAccessService:
             await self._persist_record(
                 record_from_card(migrated),
                 expected_revision=current.card_revision,
+                caller_write=CallerWrite("control_snapshot", actor_subject) if actor_subject else None,
             )
+        except CallerWriteRefused as exc:
+            if exc.reason == "card_transactions_direct_write_refused":
+                # W578: while Card transactions are on, a bound Control's
+                # migration is not persisted outside its owner's transaction
+                # (the fail-closed boundary could narrow it); it is used in
+                # memory, at the CURRENT revision, as below.
+                return record_from_card(dataclasses.replace(migrated, card_revision=current.card_revision))
+            if exc.reason != "caller_writer_not_enlisted" or actor_subject:
+                raise
+            # W580/B: a governed Control read on a path with no authenticated
+            # actor is not migrated durably here. The migrated snapshot (the
+            # historical or fail-closed boundary) is used in memory for this
+            # read; the next actor-bearing write persists it under the gate.
+            # It keeps the CURRENT revision: nothing new was committed.
+            return record_from_card(dataclasses.replace(migrated, card_revision=current.card_revision))
         except CardConflict:
             reloaded = await self._load_record(
                 current.access_id,
@@ -1975,31 +2028,29 @@ class AutomationAccessService:
     ) -> tuple[AutomationAccessRecord | None, CardAuthority | None]:
         """The record's Control Card and its effective authority; (None, None) when unresolvable.
 
-        A Card bound to the Control Card its project holds for the person is
-        resolved under the project's subject and composed by selection
-        intersection (W260); every other binding keeps ordinary composition.
+        The first result is the current parent-composed immediate Control.
+        Exact project-held person edges use their derived holder; all other
+        edges retain ordinary owner/holder checks. No read writes My Card.
         Raises ControlCardMismatch or CardUnavailable, never falls open.
         """
 
-        binding = record.control_card
         caller = card_authority_from_record(record)
-        held = project_held_control(caller)
-        if held is not None:
-            control = await self._resolve_control_record(
-                held.control_id, grantor_subject=held.grantor_subject
-            )
-            if control is None:
+
+        async def load_control(control_id: str, *, grantor_subject: str) -> CardAuthority | None:
+            current = await self._load_record(control_id, grantor_subject=grantor_subject)
+            return card_authority_from_record(current) if current is not None else None
+
+        try:
+            result = await compose_control_hierarchy(caller, load_control=load_control)
+        except ControlCardMismatch as exc:
+            if exc.reason == "control_card_unresolvable":
                 return None, None
-            return control, compose_with_project_held_control(
-                caller, card_authority_from_record(control)
-            )
-        control = await self._resolve_control_record(
-            binding.control_id,
-            grantor_subject=binding.holder_subject or record.grantor_subject,
+            raise
+        return (
+            record_from_card(result.effective_control_card)
+            if result.effective_control_card is not None else None,
+            result.effective_card,
         )
-        if control is None:
-            return None, None
-        return control, effective_card_authority(caller, card_authority_from_record(control))
 
     async def _effective_control_view(
         self,
@@ -2316,14 +2367,334 @@ class AutomationAccessService:
             access_id, subject_hash=_subject_key(grantor_subject)
         )
 
+    async def _enlisted_gate(
+        self, authority: CardAuthority, *, expected_revision: int, caller_write: CallerWrite | None,
+        candidate: Mapping[str, Any] | None = None,
+    ) -> tuple[Callable[[], Awaitable[None]] | None, Any]:
+        """W580/B: the bound-Card gate for a writer that did not bring its own.
+
+        The binding is the stored Card's (or, for a create, the one the
+        candidate takes). A Card bound to a registered kind is never written
+        by an unnamed writer: it is refused by name, before any effect.
+        """
+        registry = getattr(self, "_caller_writers", None)
+        if registry is None:
+            return None, None
+        current = None
+        if expected_revision > 0:
+            loaded = await self._cards().load(authority.access_id, subject_hash=_subject_key(authority.grantor_subject))
+            current = loaded[0] if loaded is not None else None
+        binding = binding_of(current) if current is not None else ("", "")
+        if not binding[0]:
+            binding = binding_of(authority)
+        if not binding[0] or not registry.is_bound(binding[0]):
+            return None, None
+        if caller_write is None:
+            raise CallerWriteRefused("caller_writer_not_enlisted")
+        return await caller_writer_before_commit(
+            registry, current, actor_subject=caller_write.actor_subject, action=caller_write.action,
+            candidate=dict(candidate) if candidate is not None else authority.to_dict(),
+            request_id=caller_write.request_id or secrets.token_urlsafe(18),
+            context_ref=caller_write.context_ref, binding=binding,
+        )
+
+    async def card_credential_limits(self, access_id: str, *, grantor_subject: str) -> tuple[int | None, int] | None:
+        """W585: the live Card's credential limits for the SDK token routes (Infra, 17:35).
+
+        ``(expires_at or None, card_revision)`` of the ACTIVE Card the trusted
+        server-side ``registry_access_id`` names, under its grantor; ``None``
+        when the Card is absent, not active, or Card storage is unavailable, so
+        the caller forwards no cap and keeps its existing refusal for an
+        ended Card. Never read from a request; no module state.
+        """
+        if not access_id or not grantor_subject:
+            return None
+        try:
+            loaded = await self._cards().load(str(access_id), subject_hash=_subject_key(str(grantor_subject)))
+        except CardUnavailable:
+            return None
+        if loaded is None:
+            return None
+        current = loaded[0]
+        if current.state != CARD_STATE_ACTIVE or current.access_id != access_id:
+            return None
+        return (int(current.expires_at) or None, int(current.card_revision))
+
+    def bind_card_coordinator(self, coordinator: Any, *, intents: Any, decisions: Any,
+                              intent_ttl_seconds: int = 60) -> None:
+        """W502 ONE protocol: Card edits run through the generic coordinator (W581).
+
+        The composition binds the Coordinator with the Hub's HubCardParticipant
+        (built on the SDK DelegatedCardService and its per-Card flock), the
+        LocalCardIntentSource and the coordinator's DecisionStore.
+        """
+        self._card_coordinator = (coordinator, intents, decisions, max(1, int(intent_ttl_seconds)))
+
+    def _managed_direct_write_refused(self) -> dict[str, Any] | None:
+        """W578: with Card transactions enabled, a managed project Card write never takes a direct path.
+
+        A project's P, a person's C and their My Card, their bindings and an
+        invitation's redemption change together with the project host's own
+        membership, so they are written only by a transaction the project host
+        coordinates (the Hub takes part through ``card_transaction_participant``).
+        Enabled means ``bind_card_coordinator`` was called. Disabled changes nothing.
+        """
+
+        if getattr(self, "_card_coordinator", None) is None:
+            return None
+        return {
+            "ok": False,
+            "error": "card_transactions_direct_write_refused",
+            "message": "This project Card change is made through the project's own transaction.",
+            "retryable": False,
+            "status": 409,
+        }
+
+    def bind_card_credential_handles(self, handles: Any) -> None:
+        """W606: the Card handle store whose rows a coordinated edit moves (composition only)."""
+        self._card_credential_handles = handles
+
+    async def _handle_binding_effects(
+        self, pairs: Sequence[tuple[CardAuthority | None, CardAuthority]],
+    ) -> list[dict[str, Any]]:
+        """W606: one ``handle_binding`` per edited credential-bearing Card, decided from its own handle row.
+
+        A Card edit never changes the credential a remote party holds (the
+        token is a pointer to the live Card); only the serving row's Card
+        revision and expiry follow the committed edit, by compare-and-set on
+        the row identity pinned here. No row (a credential-less Card, or a
+        Redis-held one that binds no revision), a row already not at the base
+        revision, a create, or an ending Card carries no effect.
+        """
+        handles = getattr(self, "_card_credential_handles", None)
+        if handles is None or not callable(getattr(handles, "binding_identity", None)):
+            return []
+        effects = []
+        for original, candidate in pairs:
+            if original is None or candidate.state != CARD_STATE_ACTIVE:
+                continue
+            identity = await handles.binding_identity(candidate.access_id)
+            if not isinstance(identity, Mapping) or identity.get("from_revision") != original.card_revision:
+                continue  # no row, or a row not at the base revision
+            effects.append({"kind": "handle_binding", "key": f"handle:{candidate.access_id}", "payload": {
+                "access_id": candidate.access_id, "from_identity": identity["from_identity"],
+                "from_fingerprint": identity["from_fingerprint"],
+                # An agent row's re-wrap envelope is prepared at this fixed instant (0 when there is none).
+                "prepared_at": int(time.time()) if identity["from_fingerprint"] else 0,
+                "from_revision": identity["from_revision"], "from_expires_at": identity["from_expires_at"],
+                "card_revision": candidate.card_revision, "expires_at": candidate.expires_at}})
+        return effects
+
+    def bind_managed_control_scopes(self, prefixes: Iterable[str]) -> None:
+        """W578: the scopes in which a configured coordinator plans a project's Control Card (P).
+
+        Each card-transaction caller's trusted ``plan_scope_prefix`` (bundle
+        props, never a request). A P of a scope inside one is created, changed,
+        attached and revoked only through that caller's lifecycle plan and
+        group transaction while Card transactions are enabled.
+        """
+        self._managed_control_scopes = tuple(sorted({
+            prefix for prefix in prefixes if isinstance(prefix, str) and prefix
+        }))
+
+    def _managed_project_control(self, *, access_id: str, issuer_kind: str, issuer_ref: str,
+                                 grantor_subject: str) -> bool:
+        """W578: is this exact Card a managed project's P while Card transactions are enabled?
+
+        The same identity the lifecycle planner requires of P: an application
+        Control whose id is derived from its issuer ref and holder, in a scope
+        a configured coordinator plans. Read from the stored Card (or, for a
+        create, the id the Card would have), never from a request label.
+        """
+        if getattr(self, "_card_coordinator", None) is None:
+            return False
+        ref = _clean(issuer_ref)
+        if _clean(issuer_kind) != "application" or not ref:
+            return False
+        if not any(ref.startswith(prefix) for prefix in getattr(self, "_managed_control_scopes", ())):
+            return False
+        try:
+            expected = control_card_id_for_issuer("application", ref, grantor_subject=_clean(grantor_subject))
+        except ControlCardError:
+            return False
+        return _clean(access_id) == expected
+
+    def _managed_project_control_refused(self, record: Any) -> dict[str, Any] | None:
+        """W578: refuse a direct write to a stored managed P (its own fields or its parent link)."""
+
+        if (record is None or _clean(getattr(record, "issuer_kind", "")) != "application"
+                or not _record_is_credentialless(record)):
+            return None
+        if not self._managed_project_control(access_id=record.access_id, issuer_kind=record.issuer_kind,
+                                             issuer_ref=record.issuer_ref, grantor_subject=record.grantor_subject):
+            return None
+        return self._managed_direct_write_refused()
+
+    def _managed_project_binding_refused(self, record: Any) -> dict[str, Any] | None:
+        """W578: refuse a direct change of a stored link to a managed P (detach, or attach replacing it)."""
+
+        binding = getattr(record, "control_card", None)
+        if binding is None:
+            return None
+        holder = _clean(getattr(binding, "holder_subject", "")) or record.grantor_subject
+        if not self._managed_project_control(access_id=binding.control_id, issuer_kind=binding.issuer_kind,
+                                             issuer_ref=binding.issuer_ref, grantor_subject=holder):
+            return None
+        return self._managed_direct_write_refused()
+
+    # W578: the fields of a Control-bound Card whose change can lower (or move) its
+    # authority. While Card transactions are on a direct write may change none of
+    # them; ``expires_at`` may only move forward. Display and bookkeeping fields
+    # (label, manage_url, client_metadata, provenance, revision, issuance
+    # metadata) grant nothing. ``properties`` counts whole: some properties are
+    # authorization (card_property_classes).
+    _BOUND_AUTHORITY_FIELDS = frozenset({
+        "account_scope", "catalog_version", "composition_mode", "control_card", "entry_resource",
+        "identity_scope", "named_service_operations", "named_services", "operations", "properties",
+        "resource_acceptance", "resource_grants", "resource_operations", "state",
+        "access_id", "grantor_subject", "delegate_subject", "client_id", "issuer_kind", "issuer_ref", "source",
+        "card_kind",
+    })
+
+    async def _refuse_bound_direct_write(self, record: AutomationAccessRecord, authority: CardAuthority, *,
+                                         expected_revision: int) -> None:
+        """W578: with Card transactions on, a Control-bound Card changes only through its owner's transaction.
+
+        A person's My Card or a project-bound agent Card carries authority its
+        Control's owner relies on (under an AND composition a project needs the
+        My Card of its usable administrators), so creating one, replacing its
+        credentials or changing anything that can lower its authority would
+        bypass that owner's decision. Until it is enlisted such a write refuses.
+        A write passes only when it changes no authority field, moves the
+        expiry only forward and keeps the credentials (a prolongation, or a
+        governed edit of display fields).
+        """
+
+        if getattr(self, "_card_coordinator", None) is None:
+            return
+        if expected_revision <= 0:
+            if record.control_card is not None:
+                raise CallerWriteRefused("card_transactions_direct_write_refused")
+            return
+        loaded = await self._cards().load(record.access_id, subject_hash=_subject_key(record.grantor_subject))
+        if loaded is None:
+            if record.control_card is not None:
+                raise CallerWriteRefused("card_transactions_direct_write_refused")
+            return
+        current, handles = loaded
+        if record.control_card is None and current.control_card is None:
+            return  # unbound before and after: not this rule's (a detach is bound before)
+        before, after = current.to_dict(), authority.to_dict()
+        changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
+        if (changed & self._BOUND_AUTHORITY_FIELDS
+                or int(after.get("expires_at") or 0) < int(before.get("expires_at") or 0)
+                or handles != card_handles_from_record(record)):
+            raise CallerWriteRefused("card_transactions_direct_write_refused")
+
+    async def _coordinated_write(
+        self, record: AutomationAccessRecord, authority: CardAuthority, *, expected_revision: int,
+        caller_write: CallerWrite | None, gate: Callable[[], Awaitable[None]] | None, witness: str,
+        effects: Sequence[Mapping[str, Any]] = (),
+    ) -> bool:
+        """Run one existing-Card write as a one-participant transaction; False if not routable yet.
+
+        Routable now: an existing Card whose credential handles do not change
+        (update, extend, prune, reset, a fold's Card write). Writes that change
+        handles, revokes and creation still take the direct path until their
+        handle changes are recorded effects (W582); nothing binds the
+        coordinator in production yet.
+        """
+        bound = getattr(self, "_card_coordinator", None)
+        if bound is None or expected_revision <= 0:
+            return False
+        from service_foundation.coordination.durable_decision_log import DecisionRefused, IntentDraft
+
+        from .cards.card_participant import PARTICIPANT, CardIntent, card_intent_payload_digest, hub_participant_input
+        coordinator, intents, decisions, ttl = bound
+        subject_hash = _subject_key(record.grantor_subject)
+        loaded = await self._cards().load(record.access_id, subject_hash=subject_hash)
+        if loaded is None:
+            return False
+        current, handles = loaded
+        if handles != card_handles_from_record(record):
+            return False
+        action = caller_write.action if caller_write is not None else "update"
+        actor = (caller_write.actor_subject if caller_write is not None else "") or record.grantor_subject
+        actor_kind = "caller" if caller_write is not None and caller_write.actor_subject else "grantor"
+        # W606: the edited Card's handle row moves with the edit, inside the same decision.
+        effects = [*effects, *await self._handle_binding_effects([(current, authority)])]
+        payload = card_intent_payload_digest(original=current, candidate=authority, effects=effects)
+        request_id = (caller_write.request_id if caller_write is not None else "") or secrets.token_urlsafe(18)
+        # W581 v2 (46a29992): one global intent; the Hub's input is its projection,
+        # whose candidate_digest commits to base, candidate and every effect.
+        draft = IntentDraft(
+            replay_scope=f"{PARTICIPANT}:{subject_hash}:{actor}", request_id=request_id,
+            expires_at=int(datetime.now(timezone.utc).timestamp()) + ttl, participants=(PARTICIPANT,),
+            payload={"participant_inputs": {PARTICIPANT: hub_participant_input(
+                original=current, candidate=authority, subject_hash=subject_hash, action=action,
+                actor_subject=actor, actor_kind=actor_kind, effects=effects)}})
+        try:
+            row = await decisions.begin(draft)
+            transaction_id = row.transaction_id
+            await intents.record(CardIntent(transaction_id=transaction_id, intent_digest=row.intent.digest,
+                                            subject_hash=subject_hash, original=current, candidate=authority,
+                                            effects=tuple(dict(effect) for effect in effects),
+                                            action=action, actor_subject=actor, actor_kind=actor_kind))
+        except DecisionRefused as exc:
+            raise CardConflict(str(exc)) from exc
+        try:
+            await coordinator.prepare_existing(transaction_id)
+            if gate is not None:
+                await gate()  # the binding's policy revalidates before the one decision
+        except BaseException as exc:
+            await coordinator.decide(transaction_id, "aborted")
+            await coordinator.finish(transaction_id)
+            if isinstance(exc, DecisionRefused):
+                raise CardConflict(str(exc)) from exc
+            raise
+        try:
+            # Governed Cards carry the gate's authorized change digest; an
+            # ungoverned Card's witness is only its payload digest, which is
+            # not an authorization (audit tells them apart by the binding).
+            await coordinator.decide(transaction_id, "committed", witness_digest=witness or payload)
+        except DecisionRefused as exc:
+            # A refused COMMIT (an approval that expired, say) must not leave
+            # the Card prepared: record the ABORT if nothing is decided yet,
+            # then finish whatever the store holds (W581 S2).
+            try:
+                await coordinator.decide(transaction_id, "aborted")
+            except DecisionRefused:
+                pass  # already decided; finish materializes that decision
+            await coordinator.finish(transaction_id)
+            raise CardConflict(str(exc)) from exc
+        await coordinator.finish(transaction_id)
+        return True
+
     async def _persist_record(
         self, record: AutomationAccessRecord, *, expected_revision: int,
         before_commit: Callable[[], Awaitable[None]] | None = None,
         expected_issuer_digest: str = "",
+        caller_write: CallerWrite | None = None,
+        pre_gate: tuple[Any, Any] | None = None,
+        effects: Sequence[Mapping[str, Any]] = (),
     ) -> None:
         persistence = self._cards()
         persist = persistence.persist
         authority = card_authority_from_record(record)
+        await self._refuse_bound_direct_write(record, authority, expected_revision=expected_revision)
+        if self._managed_project_control_refused(record) is not None:
+            # W578 (claude-main, #648): every direct writer, today's and any later
+            # one, meets this; a managed P is written only through its project's
+            # transaction (the participant stages it, never through this path).
+            raise CallerWriteRefused("card_transactions_direct_write_refused")
+        caller_request = None
+        if before_commit is None:
+            # pre_gate: a writer with side effects decided BEFORE them (W580 F5);
+            # the same decision is revalidated inside the commit here.
+            before_commit, caller_request = pre_gate if pre_gate is not None else await self._enlisted_gate(
+                authority, expected_revision=expected_revision, caller_write=caller_write)
+            if caller_request is not None:
+                expected_issuer_digest = caller_request.change_digest
         guard = {}
         if before_commit is not None:
             persist = getattr(persistence, "persist_guarded", None)
@@ -2339,13 +2710,46 @@ class AutomationAccessService:
                     raise IssuerWriteRefused("issuer_candidate_changed")
 
             guard["before_commit"] = bound_commit
-        await persist(
-            authority,
-            card_handles_from_record(record),
-            subject_hash=_subject_key(record.grantor_subject),
-            expected_revision=expected_revision,
-            **guard,
-        )
+        witness = caller_request.change_digest if caller_request is not None else expected_issuer_digest
+        try:
+            coordinated = await self._coordinated_write(
+                record, authority, expected_revision=expected_revision, caller_write=caller_write,
+                gate=guard.get("before_commit"), witness=witness, effects=effects)
+            if effects and not coordinated:
+                # Effects exist only inside the protocol: never dropped silently.
+                raise CardConflict("card_effects_unroutable")
+        except BaseException:
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=expected_revision)
+            raise
+        if coordinated:
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="committed", card_revision=authority.card_revision)
+            return
+        try:
+            await persist(
+                authority,
+                card_handles_from_record(record),
+                subject_hash=_subject_key(record.grantor_subject),
+                expected_revision=expected_revision,
+                **guard,
+            )
+        except CardServingUnavailable:
+            # The durable commit happened; only serving is behind.
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="committed", card_revision=authority.card_revision)
+            raise
+        except BaseException:
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=expected_revision)
+            raise
+        if caller_request is not None:
+            await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                       state="committed", card_revision=authority.card_revision)
 
     async def _forget_record(
         self,
@@ -2353,9 +2757,33 @@ class AutomationAccessService:
         *,
         revoked_record: AutomationAccessRecord | None = None,
         before_commit: Callable[[], Awaitable[None]] | None = None,
+        caller_write: CallerWrite | None = None,
     ) -> None:
         authority = card_authority_from_record(record)
         subject_hash = _subject_key(record.grantor_subject)
+        caller_request = None
+        if before_commit is None and getattr(self, "_caller_writers", None) is not None:
+            # Ops B3 (12:14): a revoke can remove the last usable admin, so a
+            # governed Card is never revoked by an unnamed writer either.
+            before_commit, caller_request = await self._enlisted_gate(
+                authority, expected_revision=authority.card_revision, caller_write=caller_write,
+                candidate={"action": "revoke", "access_id": authority.access_id,
+                           "card_revision": authority.card_revision})
+        if caller_request is not None:
+            forget = getattr(self._cards(), "forget_guarded", None)
+            if not callable(forget) or revoked_record is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=authority.card_revision)
+                raise IssuerWriteRefused("issuer_commit_gate_unavailable")
+            try:
+                await forget(authority, subject_hash=subject_hash, before_commit=before_commit)
+            except BaseException:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=authority.card_revision)
+                raise
+            await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                       state="committed", card_revision=authority.card_revision + 1)
+            return
         if before_commit is not None:
             forget = getattr(self._cards(), "forget_guarded", None)
             if not callable(forget) or revoked_record is not None:
@@ -2507,6 +2935,16 @@ class AutomationAccessService:
             _LOGGER.exception("[connection-hub] issuer lifecycle unavailable")
             return {"ok": False, "error": "issuer_lifecycle_unavailable", "status": 503, "retryable": True}
 
+    async def issuer_managed_card_update(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        from .issuer_update import issuer_managed_card_update
+        host = getattr(self, "_issuer_update_host", ())
+        if (len(host) != 4 or host[1] not in ("registered", "privileged")
+                or not all(type(v) is str and v.strip() for v in host)):
+            return {"ok": False, "status": 403, "error": "issuer_update_host_unavailable"}
+        return await issuer_managed_card_update(body, actor_subject=host[0],
+            registry=getattr(self, "_issuers", None), persistence=self._persistence,
+            host_is_current=getattr(self, "_issuer_update_host_is_current", None))
+
     def _issuer_managed(self, record: AutomationAccessRecord) -> bool:
         return _record_is_credentialless(record) and self._issuers.is_managed(record.issuer_kind)
 
@@ -2556,6 +2994,77 @@ class AutomationAccessService:
                 raise IssuerWriteRefused(refusal["reason"])
 
         return before_commit, request
+
+    def bind_caller_writers(self, registry: Any) -> None:
+        """W578: the hosting composition registers the caller-writer policies once."""
+        self._caller_writers = registry
+
+    def _caller_actor_subject(self, user: Mapping[str, Any]) -> str:
+        # The authenticated hosting actor when the host bound one (a person
+        # acting on another owner's Card through a hosting route), else the
+        # caller itself; never the storage owner.
+        return self._issuer_actor_subject if self._issuer_actor_subject_bound else _subject_from_user(user)
+
+    async def reset_service_to_control(
+        self, user: Mapping[str, Any], *, access_id: str, resource: str,
+        expected_card_revision: int, request_id: str = "", context_ref: str = "",
+    ) -> dict[str, Any]:
+        """W578: explicit per-service Reset to Control, decided like any bound owner write.
+
+        One service's selection becomes the current Control's selection for
+        that service, resolved through the authoritative Control (never a
+        caller-supplied selection); every other service, the identity and the
+        credentials are unchanged. Nothing calls this on a read or on a
+        Control change.
+        """
+        grantor_subject = _subject_from_user(user)
+        existing = await self._load_record(_clean(access_id), grantor_subject=grantor_subject)
+        if existing is None:
+            return {"ok": False, "status": 404, "error": "access_not_found"}
+        if int(expected_card_revision) != int(existing.card_revision):
+            return {"ok": False, "status": 409, "error": "card_revision_conflict",
+                    "expected": int(expected_card_revision), "actual": int(existing.card_revision)}
+        if existing.control_card is None:
+            return {"ok": False, "status": 409, "error": "caller_writer_reset_requires_control"}
+        # TODO(W577): take effective_control_card from the hierarchy resolver
+        # once it lands; the raw current Control is not the effective ceiling
+        # under a parent chain (Infra, 11:06). Until then reset is not claimed
+        # complete for chained Controls.
+        try:
+            control, _ = await self._compose_with_control(existing)
+        except (CardUnavailable, ControlCardMismatch) as exc:
+            return {"ok": False, "status": 503, "error": "control_card_unavailable",
+                    "reason": getattr(exc, "reason", ""), "retryable": True}
+        if control is None:
+            return {"ok": False, "status": 503, "error": "control_card_unresolvable", "retryable": True}
+        control_authority = card_authority_from_record(control)
+        resource = _clean(resource)
+        try:
+            candidate = reset_candidate(
+                card_authority_from_record(existing), resource=resource,
+                control_operations=control_authority.resource_operations.get(resource, ()),
+                control_grants=control_authority.resource_grants.get(resource, ()),
+                control_named_services=(control_authority.named_service_operations.operations.get(resource)
+                                        if not (control_authority.named_service_operations.is_all
+                                                or control_authority.named_service_operations.is_unknown)
+                                        else None),
+            )
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
+        # The reset service's named-service selection follows the Control too (reset_candidate set it);
+        # update_access reads an omitted selection as "keep", so the computed one must be forwarded.
+        selection = CardAuthority.from_mapping(candidate).named_service_operations
+        forwarded_named = (None if selection.is_all or selection.is_unknown
+                           else {key: dict(value) for key, value in selection.operations.items()})
+        return await self.update_access(
+            user, access_id=existing.access_id,
+            resource_grants={key: list(value) for key, value in candidate["resource_grants"].items()},
+            resource_operations={key: list(value) for key, value in candidate["resource_operations"].items()},
+            named_service_operations=forwarded_named,
+            expected_card_revision=existing.card_revision,
+            _issuer_request_id=request_id, _issuer_context_ref=context_ref,
+            _caller_write_action="reset",
+        )
 
     async def _issuer_outcome(self, request: IssuerRequest | None, *,
                               state: str, card_revision: int) -> dict[str, Any]:
@@ -4090,7 +4599,10 @@ class AutomationAccessService:
             properties=selected_properties,
         )
         try:
-            await self._persist_record(record, expected_revision=committed_revision)
+            await self._persist_record(record, expected_revision=committed_revision, caller_write=CallerWrite(
+                "create" if committed_revision == 0 else "replace", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
@@ -4947,6 +5459,8 @@ class AutomationAccessService:
         _issuer_decision: IssuerDecision | None = None,
         _issuer_request_id: str = "",
         _issuer_context_ref: str = "",
+        _caller_write_action: str = "update",
+        _caller_actor_subject: str = "",
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -4984,6 +5498,9 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_not_found"}
         if existing.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_owned"}
+        refused = self._managed_project_control_refused(existing)
+        if refused is not None:
+            return refused
         try:
             descriptor_marker = descriptor_control(existing.properties)
         except AgentCapabilityPolicyError as exc:
@@ -5004,7 +5521,7 @@ class AutomationAccessService:
             return IssuerWriteRefused("issuer_snapshot_requires_explicit_migration").to_dict()
         if _record_is_credentialless(existing) and not self._issuer_managed(existing):
             try:
-                existing = await self._ensure_control_snapshot(existing)
+                existing = await self._ensure_control_snapshot(existing, actor_subject=self._caller_actor_subject(user))
             except CardUnavailable as exc:
                 return {
                     "ok": False,
@@ -5318,17 +5835,40 @@ class AutomationAccessService:
             )
         except IssuerWriteRefused as exc:
             return exc.to_dict()
+        # W578: a Card bound to a Control whose kind has a registered caller
+        # policy is decided by that policy, before and inside the commit, when
+        # the issuer gate does not already govern it.
+        caller_request = None
+        if before_commit is None:
+            try:
+                before_commit, caller_request = await caller_writer_before_commit(
+                    getattr(self, "_caller_writers", None), card_authority_from_record(existing),
+                    actor_subject=_clean(_caller_actor_subject) or self._caller_actor_subject(user),
+                    action=_caller_write_action,
+                    candidate=card_authority_from_record(updated).to_dict(),
+                    request_id=_clean(_issuer_request_id) or secrets.token_urlsafe(18),
+                    context_ref=_issuer_context_ref,
+                )
+            except CallerWriteRefused as exc:
+                return exc.to_dict()
+        gate_digest = (issuer_request or caller_request).change_digest if before_commit is not None else ""
         try:
-            guard = {"before_commit": before_commit, "expected_issuer_digest": issuer_request.change_digest} if before_commit is not None else {}
+            guard = {"before_commit": before_commit, "expected_issuer_digest": gate_digest} if before_commit is not None else {}
             await self._persist_record(updated, expected_revision=existing.card_revision, **guard)
-        except IssuerWriteRefused as exc:
+        except (IssuerWriteRefused, CallerWriteRefused) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=existing.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=existing.card_revision))
             return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
             outcome = await self._issuer_outcome(issuer_request, state="committed", card_revision=updated.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="committed", card_revision=updated.card_revision))
             return {**_serving_state_unavailable(exc), **outcome}
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=existing.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=existing.card_revision))
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
@@ -5338,6 +5878,8 @@ class AutomationAccessService:
                 **outcome,
             }
         outcome = await self._issuer_outcome(issuer_request, state="committed", card_revision=updated.card_revision)
+        outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                  state="committed", card_revision=updated.card_revision))
         await self.notify_change(
             _clean(_notification_subject) or grantor_subject,
             action="updated",
@@ -5802,7 +6344,10 @@ class AutomationAccessService:
             properties=merged_properties,
         )
         try:
-            await self._persist_record(record, expected_revision=target_revision)
+            await self._persist_record(record, expected_revision=target_revision,
+                                       caller_write=CallerWrite("fold", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
@@ -6196,7 +6741,7 @@ class AutomationAccessService:
         state = loaded[1]
         if state == CARD_STATE_ACTIVE:
             try:
-                record = await self._ensure_control_snapshot(record)
+                record = await self._ensure_control_snapshot(record, actor_subject=self._caller_actor_subject(user))
             except CardUnavailable as exc:
                 return {
                     "ok": False,
@@ -6301,6 +6846,11 @@ class AutomationAccessService:
             )
         except ControlCardError as exc:
             return {"ok": False, "error": exc.reason, "status": 400}
+        # W578: a managed project's P is created only through its lifecycle
+        # plan; an existing one is neither started nor repaired here.
+        if self._managed_project_control(access_id=control_id, issuer_kind=issuer_kind, issuer_ref=issuer_ref,
+                                         grantor_subject=grantor_subject):
+            return self._managed_direct_write_refused()
         try:
             existing = await self._load_record_any_state(
                 control_id,
@@ -6327,7 +6877,7 @@ class AutomationAccessService:
             if profile_name and _control_card_unstarted(record):
                 return await self._start_control_card(user, record, profile_name)
             try:
-                record = await self._ensure_control_snapshot(record)
+                record = await self._ensure_control_snapshot(record, actor_subject=self._caller_actor_subject(user))
             except CardUnavailable as exc:
                 return {
                     "ok": False,
@@ -6399,22 +6949,26 @@ class AutomationAccessService:
                     "status": 404,
                 }
         try:
-            authority = new_credentialless_card(
-                control_id=control_id,
-                grantor_subject=grantor_subject,
+            created_at = int(time.time())
+            authority = build_application_control(
+                project_ref=issuer_ref,
+                holder_subject=grantor_subject,
                 catalog_version=catalog_version,
                 initial_selection=(
                     card_authority_from_record(initial_selection)
                     if initial_selection is not None
                     else None
                 ),
-                issuer_ref=issuer_ref,
                 issuer_kind=issuer_kind,
                 issuer_label=issuer_label,
                 manage_url=manage_url,
                 properties=properties,
                 composition_mode=composition_mode,
-                now=int(time.time()),
+                profile_marker=(
+                    {"profile": profile_name, "catalog_version": catalog_version}
+                    if profile_start is not None else None
+                ),
+                now=created_at,
             )
             record = record_from_card(authority)
             pruned: dict[str, Any] = {
@@ -6434,17 +6988,6 @@ class AutomationAccessService:
                 if initial_selection is not None
                 else profile_start
             )
-            if profile_start is not None:
-                record = dataclasses.replace(
-                    record,
-                    provenance={
-                        **dict(record.provenance or {}),
-                        "control_card_initial_selection": {
-                            "profile": profile_name,
-                            "catalog_version": catalog_version,
-                        },
-                    },
-                )
             if start is not None:
                 resolved = await self._resolve_card_authority(
                     user=user,
@@ -6472,46 +7015,22 @@ class AutomationAccessService:
                         ),
                     }
                 pruned = resolved.reconciled.to_public_dict()
-                record = dataclasses.replace(
-                    record,
-                    operations=tuple(resolved.operations),
-                    resource_grants={
-                        key: tuple(value)
-                        for key, value in resolved.resource_grants.items()
-                    },
-                    resource_operations={
-                        key: tuple(value)
-                        for key, value in resolved.resource_operations.items()
-                    },
-                    named_service_operations=resolved.named_service_operations,
-                    named_services=copy.deepcopy(resolved.named_services),
-                    account_scope={
-                        provider: {
-                            account_id: tuple(claims)
-                            for account_id, claims in accounts.items()
-                        }
-                        for provider, accounts in resolved.account_scope.items()
-                    },
-                    identity_scope=resolved.identity_scope,
-                    properties=resolved.properties,
-                    resource_acceptance=next_resource_acceptance(
-                        resources=resolved.resource_grants,
-                        row_for=lambda resource: self._configured_resource(
-                            resource,
-                            config=catalog_config,
-                        ),
-                        catalog_version=catalog_version,
-                        selected_operations=resolved.resource_operations,
+                authority = build_application_control(
+                    project_ref=issuer_ref,
+                    holder_subject=grantor_subject,
+                    catalog_version=catalog_version,
+                    issuer_kind=issuer_kind,
+                    base=card_authority_from_record(record),
+                    resolved=resolved,
+                    resource_row_for=lambda resource: self._configured_resource(
+                        resource, config=catalog_config
                     ),
                 )
-            record = record_from_card(
-                materialize_control_snapshot(
-                    card_authority_from_record(record),
-                    basis_catalog_version=catalog_version,
-                    origin="created",
-                )
-            )
-            await self._persist_record(record, expected_revision=0)
+            record = record_from_card(authority)
+            await self._persist_record(record, expected_revision=0,
+                                       caller_write=CallerWrite("create", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except (CardRecordError, ControlCardError) as exc:
             return {"ok": False, "error": exc.reason, "status": 400}
         except CardServingUnavailable as exc:
@@ -6651,6 +7170,9 @@ class AutomationAccessService:
             }
         if existing is None or not _record_is_credentialless(existing):
             return {"ok": False, "error": "control_card_not_found", "status": 404}
+        refused = self._managed_project_control_refused(existing)
+        if refused is not None:
+            return refused
         updated = await self.update_access(
             user,
             access_id=existing.access_id,
@@ -6757,6 +7279,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Create a live-person or pending-invitation project Control Card."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -6826,6 +7351,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Replace one live or pending project selection under host policy."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -6881,6 +7409,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Revoke one live-person or pending-invitation project Card."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -6904,6 +7435,61 @@ class AutomationAccessService:
             request_id=request_id,
         )
 
+    async def project_person_control_bind_project(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """W502 repair: bind one person's project Control under the project's Control Card.
+
+        The project host decides the operation and names the Control Card;
+        the result names this person's outcome for a migration report.
+        """
+
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {
+                "ok": False,
+                "error": "delegated_access_requires_authenticated_user",
+            }
+        return await self._project_person_controls.bind_project_control(
+            viewer=await self._viewer_authority(user),
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            target_subject=target_subject,
+            request_id=request_id,
+        )
+
+    async def project_invitation_pending_revision(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        invitation_ref: str,
+        control_id: str,
+    ) -> dict[str, Any]:
+        """W502 join: the signed-in invitee reads their pending invitation Card's revision and state.
+
+        A read under bind's own authority (the board's binding resolver for
+        this session's verified email); no Card is written.
+        """
+
+        actor_subject = _subject_from_user(user)
+        if not actor_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await self._project_invitation_controls.pending_revision(
+            actor_subject=actor_subject,
+            project_ref=project_ref,
+            invitation_ref=invitation_ref,
+            control_id=control_id,
+        )
+
     async def project_person_control_bind_invitation(
         self,
         user: Mapping[str, Any],
@@ -6915,6 +7501,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Bind a provider-verified pending Card to the signed-in person."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -6943,6 +7532,9 @@ class AutomationAccessService:
     ) -> dict[str, Any]:
         """Seed an existing person's untouched My Card under project policy."""
 
+        refused = self._managed_direct_write_refused()
+        if refused is not None:
+            return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -7154,8 +7746,9 @@ class AutomationAccessService:
             }
         if record is None or record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_not_found", "status": 404}
-        if _record_is_credentialless(record):
-            return {"ok": False, "error": "control_card_target_invalid", "status": 409}
+        refused = self._managed_project_control_refused(record)
+        if refused is not None:
+            return refused
         if expected_card_revision is not None and int(expected_card_revision) != int(
             record.card_revision
         ):
@@ -7178,7 +7771,8 @@ class AutomationAccessService:
                     "access": record.to_public_dict(),
                     "control_card": await self._effective_control_view(record),
                 }
-            refusal = _held_binding_refusal(record, caller_is_project=bool(_clean(_control_holder)))
+            refusal = self._managed_project_binding_refused(record) or _held_binding_refusal(
+                record, caller_is_project=bool(_clean(_control_holder)))
             if refusal is not None:
                 return refusal
             if record.control_card.control_id != expected_previous_control_id:
@@ -7198,6 +7792,9 @@ class AutomationAccessService:
             }
         if control.grantor_subject != control_holder:
             return {"ok": False, "error": "control_card_grantor_mismatch", "status": 403}
+        refused = self._managed_project_control_refused(control)
+        if refused is not None:
+            return refused
         binding = ControlCardBinding(
             control_id=control.access_id,
             issuer_ref=control.issuer_ref,
@@ -7209,13 +7806,9 @@ class AutomationAccessService:
             holder_subject=control_holder if control_holder != grantor_subject else "",
         )
         try:
-            effective_card_authority(
-                dataclasses.replace(
-                    card_authority_from_record(record),
-                    control_card=binding,
-                ),
-                card_authority_from_record(control),
-            )
+            resolved_control, _ = await self._compose_with_control(dataclasses.replace(record, control_card=binding))
+            if resolved_control is None:
+                raise ControlCardMismatch("control_card_unresolvable")
         except ControlCardMismatch as exc:
             return {
                 "ok": False,
@@ -7230,18 +7823,41 @@ class AutomationAccessService:
         )
         if _record_transform is not None:
             updated = _record_transform(record, updated)
+        # W578: a bound attach/detach is decided by the binding's policy.
         try:
-            await self._persist_record(updated, expected_revision=record.card_revision)
+            before_commit, caller_request = await caller_writer_before_commit(
+                getattr(self, "_caller_writers", None), card_authority_from_record(record),
+                actor_subject=self._caller_actor_subject(user), action="attach",
+                candidate=card_authority_from_record(updated).to_dict(),
+                request_id=secrets.token_urlsafe(18), binding=binding_of(card_authority_from_record(record)) if record.control_card is not None else binding_of(card_authority_from_record(updated)),
+            )
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
+        guard = ({"before_commit": before_commit, "expected_issuer_digest": caller_request.change_digest}
+                 if before_commit is not None else {})
+        try:
+            await self._persist_record(updated, expected_revision=record.card_revision, **guard)
+        except CallerWriteRefused as exc:
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="refused", card_revision=record.card_revision)
+            return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
-            return _serving_state_unavailable(exc)
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="committed", card_revision=updated.card_revision)
+            return {**_serving_state_unavailable(exc), **outcome}
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="refused", card_revision=record.card_revision)
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
                 "reason": getattr(exc, "reason", ""),
                 "retryable": True,
                 "status": 503,
+                **outcome,
             }
+        await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                   state="committed", card_revision=updated.card_revision)
         await self.notify_change(
             grantor_subject,
             action="control_card_attached",
@@ -7283,6 +7899,9 @@ class AutomationAccessService:
         record = loaded[0] if loaded is not None else None
         if record is None or not _record_is_credentialless(record):
             return {"ok": False, "error": "control_card_not_found", "status": 404}
+        refused = self._managed_project_control_refused(record)
+        if refused is not None:
+            return refused
         result = await self.revoke_access(user, access_id=record.access_id)
         if result.get("ok") is True:
             result["control_id"] = record.access_id
@@ -7347,7 +7966,8 @@ class AutomationAccessService:
             }
         if record.control_card is None:
             return {"ok": True, "detached": False, "access": record.to_public_dict()}
-        refusal = _held_binding_refusal(record, caller_is_project=_through_project)
+        refusal = (self._managed_project_control_refused(record) or self._managed_project_binding_refused(record)
+                   or _held_binding_refusal(record, caller_is_project=_through_project))
         if refusal is not None:
             return refusal
         if record.control_card.control_id != selected_control_id:
@@ -7364,18 +7984,41 @@ class AutomationAccessService:
         )
         if _record_transform is not None:
             updated = _record_transform(record, updated)
+        # W578: a bound attach/detach is decided by the binding's policy.
         try:
-            await self._persist_record(updated, expected_revision=record.card_revision)
+            before_commit, caller_request = await caller_writer_before_commit(
+                getattr(self, "_caller_writers", None), card_authority_from_record(record),
+                actor_subject=self._caller_actor_subject(user), action="detach",
+                candidate=card_authority_from_record(updated).to_dict(),
+                request_id=secrets.token_urlsafe(18), binding=None,
+            )
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
+        guard = ({"before_commit": before_commit, "expected_issuer_digest": caller_request.change_digest}
+                 if before_commit is not None else {})
+        try:
+            await self._persist_record(updated, expected_revision=record.card_revision, **guard)
+        except CallerWriteRefused as exc:
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="refused", card_revision=record.card_revision)
+            return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
-            return _serving_state_unavailable(exc)
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="committed", card_revision=updated.card_revision)
+            return {**_serving_state_unavailable(exc), **outcome}
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
+            outcome = await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                 state="refused", card_revision=record.card_revision)
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
                 "reason": getattr(exc, "reason", ""),
                 "retryable": True,
                 "status": 503,
+                **outcome,
             }
+        await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                   state="committed", card_revision=updated.card_revision)
         await self.notify_change(
             grantor_subject,
             action="control_card_detached",
@@ -8315,62 +8958,11 @@ class AutomationAccessService:
     ) -> list[dict[str, Any]]:
         """Apply the card editor's explicit outer-operation use policies."""
 
-        selected_operations = normalize_resource_operations(resource_operations)
-        submitted = {
-            _clean(resource): {
-                _clean(operation): _clean(mode).lower()
-                for operation, mode in dict(operations or {}).items()
-                if _clean(operation)
-            }
-            for resource, operations in dict(invocation_policies or {}).items()
-            if _clean(resource) and isinstance(operations, Mapping)
-        }
-        required_keys = {
-            (resource, operation)
-            for resource, operations in selected_operations.items()
-            for operation in operations
-        }
-        submitted_keys = {
-            (resource, operation)
-            for resource, operations in submitted.items()
-            for operation in operations
-        }
-        if submitted_keys != required_keys:
-            raise ValueError("every selected outer operation requires one invocation policy")
-        if not submitted_keys:
+        submitted = self._oauth_policy_selection(resource_operations, invocation_policies)
+        if not submitted:
             return []
-        if self._invocation_policies is None:
-            raise ValueError("invocation policy service is unavailable")
 
-        from connection_hub.invocation_policy import (
-            POLICY_ALWAYS,
-            POLICY_ONCE,
-            SURFACE_OUTER,
-            InvocationAuthority,
-        )
-
-        allowed_modes = {POLICY_ALWAYS, POLICY_ONCE}
-        invalid_modes = sorted({
-            mode
-            for operations in submitted.values()
-            for mode in operations.values()
-            if mode not in allowed_modes
-        })
-        if invalid_modes:
-            raise ValueError("invalid invocation policy mode(s): " + ", ".join(invalid_modes))
-
-        broad_secret_once = sorted(
-            resource
-            for resource, operations in submitted.items()
-            if any(mode == POLICY_ONCE for mode in operations.values())
-            and resource.startswith("urn:kdcube:management:secret:")
-            and SecretResource.parse(resource).broad
-        )
-        if broad_secret_once:
-            raise ValueError(
-                "broad secret selectors cannot use an allow-once policy: "
-                + ", ".join(broad_secret_once)
-            )
+        from connection_hub.invocation_policy import SURFACE_OUTER, InvocationAuthority
 
         current = await self._invocation_policies.list_for_card(
             owner_subject=_clean(grantor_subject),
@@ -8400,7 +8992,69 @@ class AutomationAccessService:
                 written.append(policy.to_public_dict())
         return written
 
-    async def record_oauth_grant(
+    def _oauth_policy_selection(
+        self, resource_operations: Mapping[str, Any], invocation_policies: Mapping[str, Any],
+    ) -> dict[str, dict[str, str]]:
+        """The consent's outer-operation policies, validated: one per selected operation (ValueError).
+
+        ``apply_oauth_invocation_policies`` and the W585 issuance plan use the
+        same rules, so the one-decision path admits exactly what the old route did.
+        """
+
+        selected_operations = normalize_resource_operations(resource_operations)
+        submitted = {
+            _clean(resource): {
+                _clean(operation): _clean(mode).lower()
+                for operation, mode in dict(operations or {}).items()
+                if _clean(operation)
+            }
+            for resource, operations in dict(invocation_policies or {}).items()
+            if _clean(resource) and isinstance(operations, Mapping)
+        }
+        required_keys = {
+            (resource, operation)
+            for resource, operations in selected_operations.items()
+            for operation in operations
+        }
+        submitted_keys = {
+            (resource, operation)
+            for resource, operations in submitted.items()
+            for operation in operations
+        }
+        if submitted_keys != required_keys:
+            raise ValueError("every selected outer operation requires one invocation policy")
+        if not submitted_keys:
+            return {}
+        if self._invocation_policies is None:
+            raise ValueError("invocation policy service is unavailable")
+
+        from connection_hub.invocation_policy import POLICY_ALWAYS, POLICY_ONCE
+
+        allowed_modes = {POLICY_ALWAYS, POLICY_ONCE}
+        invalid_modes = sorted({
+            mode
+            for operations in submitted.values()
+            for mode in operations.values()
+            if mode not in allowed_modes
+        })
+        if invalid_modes:
+            raise ValueError("invalid invocation policy mode(s): " + ", ".join(invalid_modes))
+
+        broad_secret_once = sorted(
+            resource
+            for resource, operations in submitted.items()
+            if any(mode == POLICY_ONCE for mode in operations.values())
+            and resource.startswith("urn:kdcube:management:secret:")
+            and SecretResource.parse(resource).broad
+        )
+        if broad_secret_once:
+            raise ValueError(
+                "broad secret selectors cannot use an allow-once policy: "
+                + ", ".join(broad_secret_once)
+            )
+        return submitted
+
+    async def _oauth_grant_record(
         self,
         *,
         grantor_subject: str,
@@ -8423,28 +9077,25 @@ class AutomationAccessService:
         properties: Mapping[str, Any] | None = None,
         replace_authority: bool = False,
         expected_card_revision: int | None = None,
-    ) -> AutomationAccessRecord | None:
-        """Register (or update) an OAuth-flow delegated grant in the registry.
+        now: int | None = None,
+    ) -> tuple[AutomationAccessRecord, int, bool, dict[str, Any]] | None:
+        """The Card ``record_oauth_grant`` writes: (record, committed revision, initial consent, account scope).
 
-        Called on every token issuance for an external client (initial consent
-        and refresh rotations), so the user sees the connection in Connection
-        Hub and revoking it invalidates the CURRENT refresh token and access
-        grant. Automation Cards are one record per (grantor, client), while
-        connector Cards also include their entry resource; reconsent updates
-        that identified Card instead of piling up rows.
-
-        ``replace_authority`` distinguishes an authorization-code exchange
-        from a refresh rotation. A reviewed consent replaces every authority
-        dimension exactly; a refresh carries the existing card forward.
-
-        Every DCR ``client_id`` is an independent caller. Redirect URIs are
-        callback channels, not reconnect identity, so a fresh registration
-        never inherits from or retires another client's Card.
+        Computed, not written. W603's original issuance plans the same candidate
+        from the same inputs, so both paths grant exactly the same authority.
+        ``now`` is the issuance instant (the database clock for W603).
         """
         grantor = _clean(grantor_subject)
         client = _clean(client_id)
         if not grantor or not client:
             return None
+        if grantor.startswith("integration:"):
+            # W585 gate (d): the same rule as _delegate_mutation_refusal. A
+            # delegated bearer that approved a consent is not a grantor, so no
+            # Card is created or changed under an "integration:" identity
+            # (outside every human's Control chain). Refused before any effect;
+            # the token route withholds the token on CardConflict.
+            raise CardConflict("delegated_access_requires_grantor")
         resource_value = _clean(resource)
         submitted_client_metadata = normalize_public_client_metadata(client_metadata)
         selected_kind = _clean(card_kind)
@@ -8471,7 +9122,7 @@ class AutomationAccessService:
         if requested_access_id and requested_access_id != resolved_access_id:
             raise CardConflict("card_identity_mismatch")
         access_id = resolved_access_id
-        now = int(time.time())
+        now = int(time.time()) if now is None else int(now)
         created_at = now
         existing_resource_grants: dict[str, tuple[str, ...]] = {}
         existing_account_scope: dict[str, dict[str, list[str]]] = {}
@@ -8692,7 +9343,85 @@ class AutomationAccessService:
                 record,
                 config=authority_config,
             )
-        await self._persist_record(record, expected_revision=existing_card_revision)
+        return record, existing_card_revision, is_initial_consent, merged_account_scope
+
+    async def record_oauth_grant(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        client_label: str = "",
+        scopes: Iterable[str] = (),
+        operations: Iterable[str] | None = None,
+        resource_grants: Mapping[str, Any] | None = None,
+        resource_operations: Mapping[str, Any] | None = None,
+        resource: str = "",
+        access_id: str = "",
+        card_kind: str = "",
+        identity_scope: str = "",
+        access_token: str = "",
+        refresh_token: str = "",
+        account_scope: Mapping[str, Any] | None = None,
+        named_service_operations: Any = None,
+        catalog_version: str = "",
+        client_metadata: Mapping[str, Any] | None = None,
+        properties: Mapping[str, Any] | None = None,
+        replace_authority: bool = False,
+        expected_card_revision: int | None = None,
+    ) -> AutomationAccessRecord | None:
+        """Register (or update) an OAuth-flow delegated grant in the registry.
+
+        Called on every token issuance for an external client (initial consent
+        and refresh rotations), so the user sees the connection in Connection
+        Hub and revoking it invalidates the CURRENT refresh token and access
+        grant. Automation Cards are one record per (grantor, client), while
+        connector Cards also include their entry resource; reconsent updates
+        that identified Card instead of piling up rows.
+
+        ``replace_authority`` distinguishes an authorization-code exchange
+        from a refresh rotation. A reviewed consent replaces every authority
+        dimension exactly; a refresh carries the existing card forward.
+
+        Every DCR ``client_id`` is an independent caller. Redirect URIs are
+        callback channels, not reconnect identity, so a fresh registration
+        never inherits from or retires another client's Card.
+        """
+        built = await self._oauth_grant_record(
+            grantor_subject=grantor_subject,
+            client_id=client_id,
+            client_label=client_label,
+            scopes=scopes,
+            operations=operations,
+            resource_grants=resource_grants,
+            resource_operations=resource_operations,
+            resource=resource,
+            access_id=access_id,
+            card_kind=card_kind,
+            identity_scope=identity_scope,
+            access_token=access_token,
+            refresh_token=refresh_token,
+            account_scope=account_scope,
+            named_service_operations=named_service_operations,
+            catalog_version=catalog_version,
+            client_metadata=client_metadata,
+            properties=properties,
+            replace_authority=replace_authority,
+            expected_card_revision=expected_card_revision,
+        )
+        if built is None:
+            return None
+        record, existing_card_revision, is_initial_consent, merged_account_scope = built
+        grantor, client, access_id = record.grantor_subject, record.client_id, record.access_id
+        # Raises CallerWriteRefused when the binding's policy refuses. The SDK
+        # OAuth route then withholds the tokens but does NOT yet revoke them:
+        # its _issue_tokens has already bound the access grant and created the
+        # refresh token, and only its CardConflict branch revokes (KD 3fc59611,
+        # oauth/http/routes.py). Until that route revokes on every withheld
+        # branch (Ops D1, SDK scope), no host may bind a caller-writer
+        # registry: a refused grant would leave live, unreturned tokens, and a
+        # refresh rotation's withheld grant still resolves to the active Card.
+        await self._persist_record(record, expected_revision=existing_card_revision,
+                                   caller_write=CallerWrite("oauth_grant", grantor))
         _LOGGER.info(
             "[automation-access] oauth grant recorded card=%s client=%s initial=%s "
             "account_scope_providers=%s",
@@ -8701,6 +9430,609 @@ class AutomationAccessService:
         )
         await self.notify_change(grantor, action="granted", access=record.to_public_dict())
         return record
+
+    # ── W603: an original OAuth issuance under ONE Card decision ────────────
+    #
+    # begin_oauth_issuance plans the Card ``record_oauth_grant`` would write and
+    # its two ``credential_issue`` effects, stores that plan once (database
+    # clock, first writer wins) and begins the decision from it, so every
+    # replay begins the identical decision. The SDK mints and reserves each
+    # credential (reserve_oauth_issuance); complete_oauth_issuance prepares,
+    # commits and finishes that decision, whose COMMIT activates the reserved
+    # credentials. A first consent is a one-member Card group ``create`` (the
+    # existing shape for an absent original); a later consent is the existing
+    # single-Card transaction with action ``oauth_grant``. Neither is a direct
+    # write, and no bearer, code or verifier reaches the Hub.
+
+    def bind_oauth_issuance_store(self, store: Any) -> None:
+        """W603: the PostgreSQL OAuth authority holding issuance plans and reservations (composition only)."""
+        self._oauth_issuance_store = store
+
+    def _issuance_parts(self) -> tuple[Any, Any, Any, int, Any]:
+        from .oauth_issuance import IssuanceRefused
+
+        bound = getattr(self, "_card_coordinator", None)
+        store = getattr(self, "_oauth_issuance_store", None)
+        if bound is None or store is None:
+            raise IssuanceRefused("card_transactions_unavailable", retryable=True)
+        coordinator, intents, decisions, ttl = bound
+        return coordinator, intents, decisions, ttl, store
+
+    async def begin_oauth_issuance(
+        self,
+        *,
+        grantor_subject: str,
+        client_id: str,
+        original_request_id: str,
+        client_label: str = "",
+        scopes: Iterable[str] = (),
+        operations: Iterable[str] | None = None,
+        resource_grants: Mapping[str, Any] | None = None,
+        resource_operations: Mapping[str, Any] | None = None,
+        resource: str = "",
+        access_id: str = "",
+        card_kind: str = "",
+        identity_scope: str = "",
+        account_scope: Mapping[str, Any] | None = None,
+        named_service_operations: Any = None,
+        catalog_version: str = "",
+        client_metadata: Mapping[str, Any] | None = None,
+        properties: Mapping[str, Any] | None = None,
+        replace_authority: bool = True,
+        expected_card_revision: int | None = None,
+        invocation_policies: Mapping[str, Any] | None = None,
+    ) -> Any:
+        """W603: plan one authorization-code exchange's Card change and begin its ONE decision.
+
+        Returns the ``OAuthIssuancePlan``. ``original_request_id`` is the SDK's
+        identity of the original exchange; the same request with the same
+        inputs returns the same plan, deadlines included, and with other
+        inputs refuses ``issuance_replay_changed``. The inputs are those of
+        ``record_oauth_grant``'s consent, and the candidate is computed by the
+        same code. Refuses ``card_transactions_unavailable`` (retryable) when
+        Card transactions or the issuance store are not bound.
+
+        ``invocation_policies`` (W585 host gap) are the consent's outer-operation
+        policies, ``{resource: {operation: "always"|"once"}}``, validated as
+        ``apply_oauth_invocation_policies`` does. They become this decision's
+        ``invocation_policy`` effects, never a second write. ``None`` (the
+        default) is today's issuance: no policy effect, and the original digest
+        is unchanged because the field is then absent from it.
+        """
+        from .oauth.issuance_store import IssuanceStoreRefused
+        from .oauth_issuance import IssuanceRefused, decision_request_id, original_input_digest
+        from .cards.card_participant import PARTICIPANT
+
+        _coordinator, intents, decisions, ttl, store = self._issuance_parts()
+        grantor, client = _clean(grantor_subject), _clean(client_id)
+        if (not grantor or not client or type(original_request_id) is not str or not original_request_id
+                or len(original_request_id) > 256 or original_request_id != original_request_id.strip()):
+            raise IssuanceRefused("issuance_request_invalid")
+        record_inputs = {
+            "client_label": client_label, "scopes": list(scopes),
+            "operations": None if operations is None else list(operations),
+            "resource_grants": resource_grants, "resource_operations": resource_operations,
+            "resource": resource, "access_id": access_id, "card_kind": card_kind, "identity_scope": identity_scope,
+            "account_scope": account_scope, "named_service_operations": named_service_operations,
+            "catalog_version": catalog_version, "client_metadata": client_metadata, "properties": properties,
+            "replace_authority": bool(replace_authority), "expected_card_revision": expected_card_revision,
+        }
+        try:
+            # Canonical JSON both digests and freezes the inputs (tuples become lists).
+            record_inputs = json.loads(json.dumps(record_inputs, sort_keys=True, allow_nan=False))
+            policies = None if invocation_policies is None else json.loads(
+                json.dumps(invocation_policies, sort_keys=True, allow_nan=False))
+            digest_inputs = {"grantor_subject": grantor, "client_id": client, **record_inputs}
+            if policies is not None:
+                digest_inputs["invocation_policies"] = policies
+            input_digest = original_input_digest(digest_inputs)
+        except (TypeError, ValueError):
+            raise IssuanceRefused("issuance_request_invalid") from None
+        request = decision_request_id(scope=f"{PARTICIPANT}:oauth-issuance", grantor_subject=grantor,
+                                      client_id=client, original_request_id=original_request_id)
+        stored = await store.read_issuance_plan_request(request)
+        if stored is None:
+            planned = await self._plan_oauth_issuance(store=store, ttl=ttl, request=request,
+                                                      input_digest=input_digest, grantor=grantor, client=client,
+                                                      record_inputs=record_inputs, invocation_policies=policies)
+            try:
+                stored = await store.put_issuance_plan(decision_request_id=request,
+                                                       original_input_digest=input_digest, plan=planned,
+                                                       reserved_until=planned["reserved_until"])
+            except IssuanceStoreRefused as exc:
+                raise IssuanceRefused(exc.reason) from None
+        elif stored["original_input_digest"] != input_digest:
+            raise IssuanceRefused("issuance_replay_changed")
+        return await self._begin_planned_issuance(stored["plan"], intents=intents, decisions=decisions, store=store)
+
+    async def _plan_oauth_issuance(self, *, store: Any, ttl: int, request: str, input_digest: str, grantor: str,
+                                   client: str, record_inputs: Mapping[str, Any],
+                                   invocation_policies: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """The immutable plan: the candidate Card, the decision draft, both effects and every deadline."""
+        from connection_hub.authority_registry import DELEGATED_CLIENT_AUTHORITY_ID
+
+        from .cards.card_group import group_member, hub_group_participant_input
+        from .cards.card_participant import PARTICIPANT, hub_participant_input
+        from .cards.participant_effects import MAX_EFFECTS
+        from .oauth_issuance import (
+            ISSUANCE_DELIVERY_SECONDS, ISSUANCE_PLAN_SCHEMA, ISSUANCE_SLOTS, IssuanceRefused,
+            credential_issue_effect, effect_digest,
+        )
+
+        now = await store.issuance_clock()
+        try:
+            built = await self._oauth_grant_record(grantor_subject=grantor, client_id=client, access_token="",
+                                                   refresh_token="", now=now, **record_inputs)
+        except CardConflict as exc:
+            raise IssuanceRefused(str(getattr(exc, "reason", "") or exc)) from None
+        if built is None:
+            raise IssuanceRefused("issuance_request_invalid")
+        record, base_revision, _initial, _scope = built
+        candidate = card_authority_from_record(record)
+        try:
+            await self._refuse_bound_direct_write(record, candidate, expected_revision=base_revision)
+        except CallerWriteRefused as exc:
+            raise IssuanceRefused(exc.reason) from None
+        if self._managed_project_control_refused(record) is not None:
+            raise IssuanceRefused("card_transactions_direct_write_refused")
+        subject_hash = _subject_key(grantor)
+        original = None
+        if base_revision > 0:
+            card_store = getattr(self._cards(), "card_store", None)
+            current = None if card_store is None else await card_store.read_current_authority(
+                subject_hash=subject_hash, access_id=candidate.access_id)
+            if current is None or current[1].card_revision != base_revision:
+                raise IssuanceRefused("card_intent_base_moved", retryable=True)
+            original = current[1]
+        effects = [credential_issue_effect(access_id=candidate.access_id, slot=slot, expires_at=candidate.expires_at,
+                                           card_revision=candidate.card_revision) for slot in ISSUANCE_SLOTS]
+        # W606: a re-consent moves the existing handle row through handle_binding (one writer per row);
+        # credential_issue writes handle metadata only for a create.
+        effects += await self._handle_binding_effects([(original, candidate)])
+        if invocation_policies is not None:
+            effects += await self._oauth_policy_effects(grantor=grantor, candidate=candidate,
+                resource_operations=record_inputs.get("resource_operations") or {},
+                invocation_policies=invocation_policies)
+        if len(effects) > MAX_EFFECTS:
+            # One decision carries at most MAX_EFFECTS; never drop, truncate or split (CodeApp, W585).
+            raise IssuanceRefused("issuance_too_many_policies")
+        actor_kind = "caller"  # the same enlisted actor record_oauth_grant names (CallerWrite oauth_grant)
+        if original is None:
+            action = "create"
+            participant_input = hub_group_participant_input(
+                members=[group_member(original=None, candidate=candidate, action=action)],
+                actor_subject=grantor, actor_kind=actor_kind, effects=effects)
+        else:
+            action = "oauth_grant"
+            participant_input = hub_participant_input(
+                original=original, candidate=candidate, subject_hash=subject_hash, action=action,
+                actor_subject=grantor, actor_kind=actor_kind, effects=effects)
+        decision_expires = now + ttl
+        delivery_deadline = min(candidate.expires_at, now + ISSUANCE_DELIVERY_SECONDS)
+        reserved_until = min(delivery_deadline, decision_expires)
+        if reserved_until <= now:
+            raise IssuanceRefused("issuance_card_expired")
+        return {
+            "schema": ISSUANCE_PLAN_SCHEMA,
+            "draft": {"replay_scope": f"{PARTICIPANT}:{subject_hash}:{grantor}:oauth-issuance", "request_id": request,
+                      "expires_at": decision_expires,
+                      "payload": {"participant_inputs": {PARTICIPANT: participant_input}}},
+            "intent": {"shape": "group" if original is None else "card", "subject_hash": subject_hash,
+                       "original": None if original is None else original.to_dict(),
+                       "candidate": candidate.to_dict(), "effects": effects, "action": action,
+                       "actor_subject": grantor, "actor_kind": actor_kind},
+            "decision_request_id": request, "original_input_digest": input_digest,
+            "tenant": store.tenant, "project": store.project, "access_id": candidate.access_id,
+            "grantor_subject": grantor, "client_id": client, "credential_issuer": DELEGATED_CLIENT_AUTHORITY_ID,
+            "credential_subject": integration_subject(grantor, client_id=client),
+            "base_revision": base_revision, "candidate_revision": candidate.card_revision,
+            "expires_at": candidate.expires_at, "card_content_hash": candidate.content_hash(),
+            "operations": list(candidate.operations),
+            "resource_grants": {key: list(items) for key, items in candidate.resource_grants.items()},
+            "resource_operations": {key: list(items) for key, items in candidate.resource_operations.items()},
+            "delivery_deadline": delivery_deadline, "reserved_until": reserved_until, "slots": list(ISSUANCE_SLOTS),
+            "effect_digests": {effect["key"]: effect_digest(effect) for effect in effects},
+        }
+
+    async def _oauth_policy_effects(self, *, grantor: str, candidate: Any, resource_operations: Mapping[str, Any],
+                                    invocation_policies: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """W585: the consent's policies as this decision's existing ``invocation_policy`` effects.
+
+        Each is bound to the candidate Card's own access id and owner, and to
+        the policy's current revision, which the policy target re-checks at
+        PREPARE; a moved policy aborts the whole decision.
+        """
+        from connection_hub.invocation_policy import SURFACE_OUTER, InvocationAuthority
+
+        from .oauth_issuance import IssuanceRefused
+
+        try:
+            selection = self._oauth_policy_selection(resource_operations, invocation_policies)
+        except ValueError as exc:
+            unavailable = str(exc) == "invocation policy service is unavailable"
+            raise IssuanceRefused("issuance_invocation_policies_unavailable" if unavailable
+                                  else "issuance_invocation_policies_invalid", retryable=unavailable) from None
+        if not selection:
+            return []
+        current = await self._invocation_policies.list_for_card(owner_subject=grantor, access_id=candidate.access_id)
+        revisions = {
+            (policy.authority.resource, policy.authority.operation): policy.revision
+            for policy in current
+            if policy.authority.surface == SURFACE_OUTER
+            and not policy.authority.provider_id and not policy.authority.account_id
+        }
+        effects = []
+        for resource, operations in sorted(selection.items()):
+            for operation, mode in sorted(operations.items()):
+                authority = InvocationAuthority(access_id=candidate.access_id, resource=resource,
+                                                surface=SURFACE_OUTER, operation=operation)
+                effects.append({"kind": "invocation_policy", "key": authority.key,
+                                "payload": {"owner_subject": grantor, "authority": authority.to_dict(), "mode": mode,
+                                            "expected_revision": revisions.get((resource, operation), 0)}})
+        return effects
+
+    @staticmethod
+    def _issuance_intent(plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
+        from .cards.card_participant import CardGroupIntent, CardGroupMemberIntent, CardIntent
+
+        spec = plan["intent"]
+        candidate = CardAuthority.from_mapping(spec["candidate"])
+        effects = tuple(dict(effect) for effect in spec["effects"])
+        if spec["shape"] == "group":
+            return CardGroupIntent(
+                transaction_id=transaction_id, intent_digest=intent_digest,
+                members=(CardGroupMemberIntent(subject_hash=spec["subject_hash"], original=None, candidate=candidate,
+                                               action=spec["action"]),),
+                effects=effects, actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
+        return CardIntent(transaction_id=transaction_id, intent_digest=intent_digest, subject_hash=spec["subject_hash"],
+                          original=CardAuthority.from_mapping(spec["original"]), candidate=candidate, effects=effects,
+                          action=spec["action"], actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
+
+    @staticmethod
+    def _issuance_plan(plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
+        from .oauth_issuance import IssuanceRefused, OAuthIssuancePlan
+
+        try:
+            return OAuthIssuancePlan.from_mapping({**plan, "transaction_id": transaction_id,
+                                                   "intent_digest": intent_digest})
+        except (KeyError, TypeError, ValueError):
+            # A plan stored before a field existed is never completed from a newer Card.
+            raise IssuanceRefused("issuance_plan_outdated") from None
+
+    async def _begin_planned_issuance(self, plan: Mapping[str, Any], *, intents: Any, decisions: Any,
+                                      store: Any) -> Any:
+        """Begin (or replay) the decision exactly as stored, record its intent, bind the plan to it."""
+        from service_foundation.coordination.durable_decision_log import DecisionRefused, IntentDraft
+
+        from .cards.card_participant import PARTICIPANT
+        from .oauth.issuance_store import IssuanceStoreRefused
+        from .oauth_issuance import IssuanceRefused
+
+        draft_value = plan["draft"]
+        draft = IntentDraft(replay_scope=draft_value["replay_scope"], request_id=draft_value["request_id"],
+                            expires_at=draft_value["expires_at"], participants=(PARTICIPANT,),
+                            payload=draft_value["payload"])
+        try:
+            row = await decisions.begin(draft)
+            await intents.record(self._issuance_intent(plan, row.transaction_id, row.intent.digest))
+            await store.bind_issuance_plan_transaction(decision_request_id=plan["decision_request_id"],
+                                                       transaction_id=row.transaction_id)
+        except DecisionRefused as exc:
+            # An expired draft that never began, or a conflicting replay: nothing is reserved yet.
+            raise IssuanceRefused("issuance_begin_refused" if str(exc) != "intent_conflict"
+                                  else "issuance_replay_changed") from None
+        except IssuanceStoreRefused as exc:
+            raise IssuanceRefused(exc.reason) from None
+        return self._issuance_plan(plan, row.transaction_id, row.intent.digest)
+
+    async def _trusted_issuance(self, transaction_id: str, *, decisions: Any, store: Any) -> tuple[Any, Any, Any]:
+        """(stored plan, the plan as the Hub would return it, the decision row) for a transaction id."""
+        from .oauth_issuance import IssuanceRefused
+
+        if type(transaction_id) is not str:
+            raise IssuanceRefused("issuance_plan_unknown")
+        stored = await store.read_issuance_plan(transaction_id)
+        row = await decisions.read(transaction_id) if stored is not None else None
+        if stored is None or row is None:
+            raise IssuanceRefused("issuance_plan_unknown")
+        plan = stored["plan"]
+        return plan, self._issuance_plan(plan, transaction_id, row.intent.digest), row
+
+    @staticmethod
+    def _checked_issuance_record(plan: Mapping[str, Any], slot: str, record: Any) -> dict[str, Any]:
+        """The SDK's non-secret credential record, bound to the planned Card, issuer and subjects."""
+        from .cards.participant_effects import ParticipantEffectRefused, _no_secret_fields
+        from .oauth_issuance import IssuanceRefused
+
+        if not isinstance(record, Mapping) or any(type(key) is not str for key in record):
+            raise IssuanceRefused("issuance_record_mismatch")
+        credential = record.get("credential")
+        envelope_fields = {"credential_id", "credential_kind", "issuer_authority_id", "issuer_authenticator_id",
+                           "subject", "tenant", "project", "audience", "session_id", "verified_authority", "attrs",
+                           "iat", "exp", "schema"}
+        if not isinstance(credential, Mapping) or not set(credential) <= envelope_fields:
+            raise IssuanceRefused("issuance_record_mismatch")
+        try:
+            # The envelope's keys are the fixed CredentialEnvelope fields (``credential_id`` and
+            # ``credential_kind`` are identifiers, not secrets); everything else, and every value
+            # inside the envelope, meets the secret-field rule.
+            _no_secret_fields({key: value for key, value in record.items() if key != "credential"})
+            _no_secret_fields({"attrs": credential.get("attrs") or {},
+                               "verified_authority": credential.get("verified_authority") or {}})
+            if any(not isinstance(credential.get(name, ""), (str, int)) or isinstance(credential.get(name), bool)
+                   for name in envelope_fields - {"attrs", "verified_authority"}):
+                raise ParticipantEffectRefused("card_effect_record_invalid")
+        except ParticipantEffectRefused:
+            raise IssuanceRefused("issuance_record_secret_field") from None
+        attrs = credential.get("attrs")
+        candidate_kind = str(plan["intent"]["candidate"].get("card_kind") or "")
+        if (record.get("registry_access_id") != plan["access_id"]
+                or credential.get("subject") != plan["credential_subject"]
+                or credential.get("issuer_authority_id") != plan["credential_issuer"]
+                or credential.get("tenant") != plan["tenant"] or credential.get("project") != plan["project"]
+                or not isinstance(attrs, Mapping) or attrs.get("grantor_subject") != plan["grantor_subject"]
+                or attrs.get("client_id") != plan["client_id"]
+                or (slot == "refresh" and (record.get("sub") != plan["grantor_subject"]
+                                           or record.get("client_id") != plan["client_id"]))
+                or ("sub" in record and record.get("sub") != plan["grantor_subject"])
+                or ("client_id" in record and record.get("client_id") != plan["client_id"])
+                or (record.get("card_kind") and record.get("card_kind") != candidate_kind)):
+            raise IssuanceRefused("issuance_record_mismatch")
+        # The authority a reader takes from the record or its envelope is exactly the planned Card's:
+        # every field present, well formed and equal after the shared normalization (no union, no fallback).
+        for source in (record, attrs):
+            for name in ("operations", "resource_grants", "resource_operations"):
+                if _authority_snapshot(name, source.get(name)) != _authority_snapshot(name, plan[name]):
+                    raise IssuanceRefused("issuance_record_authority_mismatch")
+        return dict(record)
+
+    async def reserve_oauth_issuance(self, *, plan: Any, slot: str, token_sha256: str, record: Mapping[str, Any],
+                                     ttl_seconds: int) -> str:
+        """W603: reserve one credential the SDK minted for this plan; returns the opaque reservation id.
+
+        Only ``plan.transaction_id`` selects: every other plan field must equal
+        the stored plan (``issuance_plan_mismatch`` otherwise), and the Card
+        id, subjects, revision, cap and deadline are copied from the stored
+        plan, never from the caller. The record must carry no secret field and
+        must name the planned Card, issuer, credential subject, grantor and
+        client. Idempotent on (transaction, slot); a retry never renews the
+        deadline. Refused once the decision is decided.
+        """
+        from .oauth.issuance_store import IssuanceStoreRefused
+        from .oauth_issuance import IssuanceRefused, OAuthIssuancePlan
+
+        _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
+        if isinstance(plan, Mapping):
+            try:
+                plan = OAuthIssuancePlan.from_mapping(plan)
+            except (KeyError, TypeError, ValueError):
+                raise IssuanceRefused("issuance_plan_mismatch") from None
+        if not isinstance(plan, OAuthIssuancePlan):
+            raise IssuanceRefused("issuance_plan_mismatch")
+        stored, trusted, row = await self._trusted_issuance(plan.transaction_id, decisions=decisions, store=store)
+        if plan != trusted:
+            raise IssuanceRefused("issuance_plan_mismatch")
+        if row.terminal:
+            raise IssuanceRefused("issuance_decision_closed")
+        if slot not in trusted.slots:
+            raise IssuanceRefused("reservation_slot_undeclared")
+        checked = self._checked_issuance_record(stored, slot, record)
+        try:
+            return await store.reserve_issued_credential(transaction_id=trusted.transaction_id, slot=slot,
+                                                         token_sha256=token_sha256, record=checked,
+                                                         ttl_seconds=ttl_seconds)
+        except IssuanceStoreRefused as exc:
+            raise IssuanceRefused(exc.reason) from None
+
+    async def release_oauth_issuance(self, *, transaction_id: str, slot: str) -> str:
+        """W603: the SDK releases a reservation STAGE never bound (``reservation_bound`` once it is)."""
+        from .oauth.issuance_store import IssuanceStoreRefused
+        from .oauth_issuance import IssuanceRefused
+
+        *_parts, store = self._issuance_parts()
+        try:
+            return await store.release_issued_credential(transaction_id=transaction_id, slot=slot, unbound_only=True)
+        except IssuanceStoreRefused as exc:
+            raise IssuanceRefused(exc.reason) from None
+
+    async def expire_oauth_issuance_reservations(self, *, limit: int = 100) -> int:
+        """W603: the scheduled sweep: never-bound reservations past their deadline end ``expired``."""
+        *_parts, store = self._issuance_parts()
+        return await store.expire_issuance_reservations(limit=limit)
+
+    async def read_oauth_issuance(self, *, transaction_id: str) -> Any:
+        """W603: the issuance's outcome as it stands now, READ ONLY; returns the ``OAuthIssuanceResult``.
+
+        For a caller recovering an uncertain original response: it never
+        prepares, decides, finishes or claims anything, so a read before both
+        reservations exist cannot ABORT the issuance. ``state`` is
+        ``committed`` only once the decision committed and every slot applied;
+        ``aborted`` once it aborted; otherwise ``pending``, with each slot's
+        reservation outcome (``pending`` until it is reserved and applied).
+        Refuses ``issuance_plan_unknown`` for a transaction with no plan.
+        """
+        _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
+        plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
+        return await self._issuance_result(plan, trusted, decisions=decisions, store=store)
+
+    async def read_oauth_issuance_plan(self, *, transaction_id: str) -> Any:
+        """W603: the stored ``OAuthIssuancePlan`` of a transaction, READ ONLY (the plan ``begin`` returned)."""
+        _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
+        _plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
+        return trusted
+
+    async def read_oauth_issuance_plan_by_request(self, *, decision_request_id: str) -> Any:
+        """W585: the ``OAuthIssuancePlan`` ``begin`` returned for one original exchange, READ ONLY.
+
+        For a caller that lost ``begin``'s answer before it kept the transaction
+        id. ``decision_request_id`` is the plan's own field-tagged request
+        identity (``oauth_issuance.decision_request_id`` over the scope, grantor,
+        client and original request id), which the caller keeps before
+        ``begin``. Only the one plan stored for it in this Hub's own
+        tenant/project answers; no candidate input is needed or accepted. It
+        never plans, begins, prepares, decides, finishes or claims. Refuses
+        ``issuance_plan_unknown`` when no plan was stored for that request, and
+        ``issuance_plan_unbound`` when the plan exists but ``begin`` did not
+        bind its decision (nothing can be reserved or completed for it).
+        """
+        from .oauth_issuance import IssuanceRefused
+
+        _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
+        if (type(decision_request_id) is not str or len(decision_request_id) != 64
+                or decision_request_id.strip("0123456789abcdef")):
+            raise IssuanceRefused("issuance_request_invalid")
+        stored = await store.read_issuance_plan_request(decision_request_id)
+        if stored is None:
+            raise IssuanceRefused("issuance_plan_unknown")
+        if not stored["transaction_id"]:
+            raise IssuanceRefused("issuance_plan_unbound")
+        _plan, trusted, _row = await self._trusted_issuance(stored["transaction_id"], decisions=decisions, store=store)
+        if trusted.decision_request_id != decision_request_id:
+            raise IssuanceRefused("issuance_plan_unknown")
+        return trusted
+
+    async def complete_oauth_issuance(self, *, transaction_id: str, expect: Mapping[str, str] | None = None) -> Any:
+        """W603: prepare, commit and finish the issuance's decision; returns the ``OAuthIssuanceResult``.
+
+        Every reservation is derived from the transaction; ``expect``
+        (slot -> token_sha256) is only an equality check. Completions of one
+        transaction are serialized across processes by a short claim on its
+        plan (``issuance_completion_section``; no connection is held across
+        the work), so a lost-response retry racing the first call answers that
+        call's outcome (``pending`` while it runs) instead of aborting it. The
+        claim is renewed before each decision and a lost claim decides
+        nothing. Under the claim an undecided decision is prepared (STAGE binds each
+        reservation), passed through the enlisted caller-writer gate exactly as
+        ``record_oauth_grant``'s write, and committed. Only a KNOWN refusal
+        (a named decision, transaction, gate or issuance refusal) records an
+        ABORT; any other failure leaves the decision undecided for a retry or
+        for recovery, which presumes ABORT once it expires. ``state`` is
+        ``committed`` only once every slot's effect has applied (``applied`` or
+        ``superseded``); otherwise ``aborted`` or ``pending``, and on
+        ``pending`` the caller calls again without minting.
+        """
+        from .oauth.issuance_store import IssuanceStoreRefused
+        from .oauth_issuance import IssuanceRefused
+
+        coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
+        plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
+        if expect is not None:
+            reservations = await store.issuance_reservations(transaction_id)
+            if not isinstance(expect, Mapping) or any(
+                    reservations.get(slot, {}).get("token_sha256") != digest for slot, digest in expect.items()):
+                raise IssuanceRefused("issuance_expect_mismatch")
+        candidate = CardAuthority.from_mapping(plan["intent"]["candidate"])
+        decided_here, abort_reason = False, ""
+        try:
+            async with store.issuance_completion_section(transaction_id) as renew:
+                row = await decisions.read(transaction_id)  # read again under the claim
+                if row is not None and not row.terminal:
+                    decided_here, abort_reason = await self._decide_issuance(
+                        plan, trusted, candidate, coordinator=coordinator, renew=renew)
+                try:
+                    await coordinator.finish(transaction_id)
+                except Exception:  # noqa: BLE001 - undecided, or effects/serving behind: pending, finished again later
+                    _LOGGER.warning("[connection_hub.oauth_issuance] issuance not finished: transaction=%s",
+                                    transaction_id, exc_info=True)
+        except IssuanceStoreRefused as exc:
+            if exc.reason != "issuance_completion_busy":
+                raise IssuanceRefused(exc.reason) from None
+            # Another completion holds the section: report the decision as it stands (pending until it ends).
+        result = await self._issuance_result(plan, trusted, decisions=decisions, store=store,
+                                             reason=abort_reason)
+        if decided_here and result.state == "committed":
+            await self.notify_change(trusted.grantor_subject, action="granted",
+                                     access=record_from_card(candidate).to_public_dict())
+        return result
+
+    async def _decide_issuance(self, plan: Mapping[str, Any], trusted: Any, candidate: CardAuthority, *,
+                               coordinator: Any, renew: Callable[[], Awaitable[bool]]) -> tuple[bool, str]:
+        """Prepare, gate and decide under the completion section: (committed here, abort reason).
+
+        A known refusal records ABORT; the refused caller-write outcome is
+        recorded only when THIS call's ABORT is the recorded decision. Any
+        other failure (an outage, a lost connection, cancellation) decides
+        nothing and returns (False, "").
+        """
+        from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+        from .cards.card_participant import PARTICIPANT
+        from .cards.transaction_store import CardTransactionRefused
+        from .oauth_issuance import IssuanceRefused
+
+        known = (DecisionRefused, CardTransactionRefused, CallerWriteRefused, IssuerWriteRefused, CardConflict,
+                 IssuanceRefused)
+        transaction_id = trusted.transaction_id
+        caller_request = None
+        try:
+            gate, caller_request = await self._enlisted_gate(
+                candidate, expected_revision=trusted.base_revision,
+                caller_write=CallerWrite("oauth_grant", trusted.grantor_subject,
+                                         request_id=trusted.decision_request_id))
+            await coordinator.prepare_existing(transaction_id)
+            if gate is not None:
+                await gate()
+            witness = (caller_request.change_digest if caller_request is not None
+                       else plan["draft"]["payload"]["participant_inputs"][PARTICIPANT]["candidate_digest"])
+            if not await renew():
+                return False, ""  # the claim lapsed to another completion: it decides
+            await coordinator.decide(transaction_id, "committed", witness_digest=witness)
+        except known as exc:
+            reason = str(getattr(exc, "reason", "") or exc or type(exc).__name__)[:128]
+            try:
+                if not await renew():
+                    return False, ""
+                await coordinator.decide(transaction_id, "aborted")
+            except DecisionRefused:
+                return False, ""  # decided already: finish reports that decision
+            except Exception:  # noqa: BLE001 - nothing recorded: recovery presumes the abort on expiry
+                _LOGGER.warning("[connection_hub.oauth_issuance] abort not recorded: transaction=%s",
+                                transaction_id, exc_info=True)
+                return False, ""
+            if caller_request is not None:
+                await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                           state="refused", card_revision=trusted.base_revision)
+            _LOGGER.info("[connection_hub.oauth_issuance] issuance aborted: transaction=%s reason=%s",
+                         transaction_id, reason)
+            return False, reason
+        except Exception:  # noqa: BLE001 - unknown: left undecided for a retry or recovery
+            _LOGGER.warning("[connection_hub.oauth_issuance] issuance not decided: transaction=%s", transaction_id,
+                            exc_info=True)
+            return False, ""
+        if caller_request is not None:
+            await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                       state="committed", card_revision=candidate.card_revision)
+        return True, ""
+
+    async def _issuance_result(self, plan: Mapping[str, Any], trusted: Any, *, decisions: Any, store: Any,
+                               reason: str = "") -> Any:
+        from .cards.card_participant import PARTICIPANT
+        from .oauth_issuance import OAuthIssuanceResult, SlotOutcome
+
+        row = await decisions.read(trusted.transaction_id)
+        reservations = await store.issuance_reservations(trusted.transaction_id)
+        per_slot = {}
+        for slot in trusted.slots:
+            held = reservations.get(slot, {})
+            state, outcome = held.get("state", ""), held.get("outcome", "")
+            per_slot[slot] = SlotOutcome(
+                outcome=("applied" if state == "activated" else "superseded" if outcome == "superseded"
+                         else "released" if state in ("released", "expired") else "pending"),
+                effect_digest=trusted.effect_digests[slot], token_sha256=held.get("token_sha256", ""))
+        finished = row.finished.get(PARTICIPANT) if row is not None else None
+        if row is not None and row.state == "committed" and finished is not None and all(
+                outcome.outcome in ("applied", "superseded") for outcome in per_slot.values()):
+            state, receipt = "committed", finished.receipt_digest
+        elif row is not None and row.state == "aborted":
+            state, receipt = "aborted", ""
+        else:
+            state, receipt = "pending", ""
+        return OAuthIssuanceResult(
+            transaction_id=trusted.transaction_id, intent_digest=trusted.intent_digest, state=state,
+            access_id=trusted.access_id,
+            card_revision=trusted.candidate_revision if state == "committed" else trusted.base_revision,
+            expires_at=trusted.expires_at, delivery_deadline=trusted.delivery_deadline, receipt_digest=receipt,
+            per_slot=per_slot, reason=reason if state != "committed" else "")
 
     async def oauth_seed_account_scope(
         self,
@@ -8830,6 +10162,175 @@ class AutomationAccessService:
             if operations
         }
 
+    def bind_account_stores(self, accounts_for: Callable[[str], Any] | None) -> None:
+        """W578: the grantor's connected-account store, composed with the shared account lock."""
+        self._account_stores_for = accounts_for
+
+    async def _account_binding_members(
+        self, grantor_subject: str, provider_id: str, account_id: str,
+    ) -> list[tuple[CardAuthority, CardAuthority]] | dict[str, Any]:
+        """W578: every live Card of the grantor that binds the account, with its candidate minus that account.
+
+        Classified by each Card's actual binding: a Card bound under a Control
+        (a My Card, a person or project Control) or a credentialless Control
+        changes only through its owner's transaction, so while that route does
+        not exist the whole disconnect refuses. Only unbound Cards are members.
+        """
+        cards = await self._cards().list_active(subject_hash=_subject_key(grantor_subject))
+        members = []
+        for current in sorted(cards, key=lambda card: card.access_id):
+            accounts = dict((current.account_scope or {}).get(provider_id) or {})
+            if account_id not in accounts:
+                continue
+            if current.control_card is not None or authority_is_credentialless(current):
+                return {"ok": False, "error": "card_transactions_direct_write_refused", "removed": False,
+                        "message": "This account is bound by a project Card; the project must change it.",
+                        "retryable": False, "status": 409}
+            accounts.pop(account_id, None)
+            scope = {p: dict(b) for p, b in (current.account_scope or {}).items()}
+            if accounts:
+                scope[provider_id] = accounts
+            else:
+                scope.pop(provider_id, None)
+            members.append((current, replace_fields(current, account_scope=scope,
+                                                    card_revision=current.card_revision + 1)))
+        return members
+
+    async def disconnect_account_in_transaction(
+        self, *, grantor_subject: str, provider_id: str, account_id: str,
+    ) -> dict[str, Any] | None:
+        """W578: an account disconnect as ONE durable transaction, the account deleted only after COMMIT.
+
+        ``None`` only when Card transactions are off (the caller keeps its
+        ordered path). Otherwise the account's incarnation is bound and
+        ``account_delete`` names that exact incarnation. Every unbound Card
+        binding the account is a group member, its candidate minus that
+        account; when no Card binds it, the same decision carries the effect
+        alone, as a versioned effects-only input (card_effects.py; CodeApp,
+        7 October 2026 02:45 UTC), never an empty group. After ``begin`` the
+        account is fenced for this transaction and the Cards are listed again:
+        a different set (a Card that gained the binding included) aborts,
+        retryably. Then prepare (STAGE holds the incarnation), COMMIT and
+        FINISH, which applies the deletion before the fence is released.
+        ``removed`` is true only when the deletion is applied; an undecided or
+        unfinished transaction answers retryably and recovery finishes it.
+        """
+        bound = getattr(self, "_card_coordinator", None)
+        if bound is None:
+            return None
+        accounts_for = getattr(self, "_account_stores_for", None)
+        unavailable = {"ok": False, "error": "card_transactions_unavailable", "removed": False,
+                       "retryable": True, "status": 503}
+        if accounts_for is None:
+            return unavailable
+        from service_foundation.coordination.durable_decision_log import DecisionRefused, IntentDraft
+
+        from connection_hub.delegated_to_kdcube.store import AccountLockUnavailable
+
+        from .cards.card_effects import hub_effects_participant_input
+        from .cards.card_group import group_member, hub_group_participant_input
+        from .cards.card_participant import PARTICIPANT, CardEffectsIntent, CardGroupIntent, CardGroupMemberIntent
+        from .cards.transaction_store import CardTransactionRefused
+
+        coordinator, intents, decisions, ttl = bound
+        accounts = accounts_for(grantor_subject)
+        try:
+            incarnation = await accounts.ensure_incarnation(account_id)
+        except AccountLockUnavailable:
+            return unavailable
+        if not incarnation:
+            return {"ok": True, "removed": False}
+        try:
+            members = await self._account_binding_members(grantor_subject, provider_id, account_id)
+        except Exception:  # noqa: BLE001 - Cards unreadable (CardUnavailable, a store outage): retry
+            _LOGGER.warning("[connection_hub.disconnect] binding Cards unreadable: account=%s", account_id,
+                            exc_info=True)
+            return unavailable
+        if isinstance(members, dict):
+            return members
+        subject_hash = _subject_key(grantor_subject)
+        effect = {"kind": "account_delete", "key": f"{provider_id}:{account_id}",
+                  "payload": {"access_id": members[0][0].access_id if members else "",
+                              "grantor_subject": grantor_subject, "provider_id": provider_id,
+                              "account_id": account_id, "incarnation": incarnation}}
+        # W606: each credential-bearing member Card's handle row moves with the disconnect's decision.
+        bindings = await self._handle_binding_effects(members) if members else []
+        if members:
+            participant_input = hub_group_participant_input(
+                members=[group_member(original=current, candidate=candidate, action="update")
+                         for current, candidate in members],
+                actor_subject=grantor_subject, actor_kind="grantor", effects=[effect, *bindings])
+        else:
+            participant_input = hub_effects_participant_input(
+                subject_hash=subject_hash, effects=[effect], actor_subject=grantor_subject, actor_kind="grantor")
+        draft = IntentDraft(
+            replay_scope=f"{PARTICIPANT}:{subject_hash}:{grantor_subject}:account-disconnect",
+            request_id=secrets.token_urlsafe(18),
+            expires_at=int(datetime.now(timezone.utc).timestamp()) + ttl, participants=(PARTICIPANT,),
+            payload={"participant_inputs": {PARTICIPANT: participant_input}})
+        try:
+            row = await decisions.begin(draft)
+        except Exception:  # noqa: BLE001 - nothing begun: a finite, retryable answer
+            _LOGGER.warning("[connection_hub.disconnect] account transaction could not begin", exc_info=True)
+            return unavailable
+        transaction_id = row.transaction_id
+        card_service = getattr(self._cards(), "card_service", None)
+        try:
+            # Inside the abort scope (claude-main, #645): a failure to record the
+            # intent is an ABORT too, never a begun transaction left to recovery.
+            await intents.record(CardGroupIntent(
+                transaction_id=transaction_id, intent_digest=row.intent.digest,
+                members=tuple(CardGroupMemberIntent(subject_hash=subject_hash, original=current,
+                                                    candidate=candidate, action="update")
+                              for current, candidate in members),
+                effects=(effect, *bindings), actor_subject=grantor_subject, actor_kind="grantor") if members else
+                CardEffectsIntent(transaction_id=transaction_id, intent_digest=row.intent.digest,
+                                  subject_hash=subject_hash, effects=(effect,), actor_subject=grantor_subject,
+                                  actor_kind="grantor"))
+            if card_service is None:
+                raise DecisionRefused("card_transactions_unavailable")
+            await card_service.reserve_accounts([(provider_id, account_id)], transaction_id=transaction_id)
+            again = await self._account_binding_members(grantor_subject, provider_id, account_id)
+            if (not isinstance(again, list) or [(c.access_id, c.card_revision) for c, _ in again]
+                    != [(c.access_id, c.card_revision) for c, _ in members]):
+                raise DecisionRefused("card_account_binding_changed")
+            await coordinator.prepare_existing(transaction_id)
+        except BaseException as exc:
+            # claude-main #645 P2: nothing escapes undecided after begin. Every
+            # refusal or failure before COMMIT is an ABORT, finished at once so
+            # the fence is released; a failed abort is left to recovery.
+            try:
+                await coordinator.decide(transaction_id, "aborted")
+                await coordinator.finish(transaction_id)
+            except Exception:  # noqa: BLE001 - recovery presumes the abort
+                _LOGGER.warning("[connection_hub.disconnect] abort not finished: transaction=%s", transaction_id,
+                                exc_info=True)
+                if not isinstance(exc, Exception):
+                    raise
+                return {"ok": False, "error": "card_transaction_pending", "removed": False, "retryable": True,
+                        "status": 503}
+            if not isinstance(exc, Exception):
+                raise  # cancellation propagates, after its transaction was aborted
+            if isinstance(exc, (DecisionRefused, CardTransactionRefused)):
+                return {"ok": False, "error": "account_binding_not_pruned", "reason": str(exc), "removed": False,
+                        "retryable": True, "status": 409}
+            _LOGGER.warning("[connection_hub.disconnect] account transaction refused: transaction=%s",
+                            transaction_id, exc_info=True)
+            return {**unavailable, "reason": "card_transaction_aborted"}
+        try:
+            await coordinator.decide(transaction_id, "committed", witness_digest=participant_input["candidate_digest"])
+            await coordinator.finish(transaction_id)
+        except Exception:  # noqa: BLE001 - decided or not, recovery finishes it; never claimed removed
+            _LOGGER.warning("[connection_hub.disconnect] account transaction not finished: transaction=%s",
+                            transaction_id, exc_info=True)
+            return {"ok": False, "error": "card_transaction_pending", "removed": False, "retryable": True,
+                    "status": 503}
+        stored = await accounts.get_account(account_id)
+        removed = stored is None or stored.incarnation != incarnation
+        return {"ok": removed, "removed": removed, "bindings_cleared": len(members),
+                "bindings_cleared_grants": [current.access_id for current, _ in members],
+                **({} if removed else {"error": "card_transaction_pending", "retryable": True, "status": 503})}
+
     async def prune_account_from_grants(
         self, *, grantor_subject: str, provider_id: str, account_id: str
     ) -> dict[str, Any]:
@@ -8842,18 +10343,24 @@ class AutomationAccessService:
         therefore closes the bindings too; ``Reconnect`` (re-approval without
         disconnecting) is the action that preserves them.
 
-        Never raises: a pruning failure must not fail the disconnect itself.
+        Never raises. A Card it could not prune (for example one with an
+        unresolved transaction) is reported in ``not_pruned`` with ``ok``
+        False, never skipped silently: its binding would otherwise survive
+        and revive on reconnect (W580 finding 2). The caller decides whether
+        the disconnect may proceed.
         """
         subject = _clean(grantor_subject)
         provider = _clean(provider_id)
         account = _clean(account_id)
         if not subject or not provider or not account:
-            return {"pruned": 0, "grants": []}
+            return {"ok": True, "pruned": 0, "grants": [], "not_pruned": []}
         try:
             candidates = await self._list_active_records(subject)
         except Exception:
-            return {"pruned": 0, "grants": []}
+            return {"ok": False, "pruned": 0, "grants": [], "not_pruned": [],
+                    "reason": "grants_unreadable", "retryable": True}
         pruned: list[str] = []
+        not_pruned: list[str] = []
         for record in candidates:
             access_id = record.access_id
             try:
@@ -8880,7 +10387,8 @@ class AutomationAccessService:
                     card_revision=record.card_revision + 1,
                 )
                 await self._persist_record(
-                    pruned_record, expected_revision=record.card_revision
+                    pruned_record, expected_revision=record.card_revision,
+                    caller_write=CallerWrite("prune", subject),
                 )
                 pruned.append(access_id)
                 await self.notify_change(
@@ -8892,6 +10400,7 @@ class AutomationAccessService:
                     "(non-fatal): access_id=%s provider=%s account=%s",
                     access_id, provider, account, exc_info=True,
                 )
+                not_pruned.append(access_id)
                 continue
         if pruned:
             _LOGGER.info(
@@ -8899,7 +10408,10 @@ class AutomationAccessService:
                 "provider=%s account=%s grants=%s",
                 len(pruned), provider, account, pruned,
             )
-        return {"pruned": len(pruned), "grants": pruned}
+        outcome = {"ok": not not_pruned, "pruned": len(pruned), "grants": pruned, "not_pruned": not_pruned}
+        if not_pruned:
+            outcome.update(reason="account_binding_not_pruned", retryable=True)
+        return outcome
 
 
     async def extend_client_access(
@@ -9104,17 +10616,23 @@ class AutomationAccessService:
         if resolved.error is not None:
             return resolved.error
         if resolved.revoke:
-            revoked = await self.revoke_access(
-                user,
-                access_id=selected_access_id,
-            )
-            if not revoked.get("ok"):
-                return revoked
+            # Audit A3: an edit that leaves nothing recognised is REFUSED, never
+            # revoked, exactly as update_access does since the 2026-09-12
+            # incident. The client holds tokens that point at this Card; an
+            # ordinary edit must never invalidate them (operator, 2026-10-07:
+            # "changing what this token points into should not invalidate the
+            # actual token the parties possess"). Revocation stays the explicit
+            # delegated_access_revoke command.
             return {
-                "ok": True,
-                "revoked": True,
-                "access_id": selected_access_id,
+                "ok": False,
+                "error": "delegated_access_requires_resource_grants",
                 "pruned": resolved.reconciled.to_public_dict(),
+                "message": (
+                    "This change would leave the client's card with nothing the service "
+                    "catalog still offers, so it was not applied and the card is unchanged. "
+                    "Select at least one current service, or revoke the card "
+                    "deliberately if that is what you intend."
+                ),
             }
         resource_grants = {
             res: tuple(vals) for res, vals in resolved.resource_grants.items()
@@ -9149,7 +10667,10 @@ class AutomationAccessService:
             card_revision=record.card_revision + 1,
         )
         try:
-            await self._persist_record(updated, expected_revision=record.card_revision)
+            await self._persist_record(updated, expected_revision=record.card_revision,
+                                       caller_write=CallerWrite("extend", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
@@ -9301,7 +10822,10 @@ class AutomationAccessService:
             provenance=provenance,
         )
         try:
-            await self._persist_record(renewed, expected_revision=committed_revision)
+            await self._persist_record(renewed, expected_revision=committed_revision,
+                                       caller_write=CallerWrite("renew", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
@@ -9382,24 +10906,23 @@ class AutomationAccessService:
                     else "An agent's credential renews itself the next time the agent is granted from the chat."
                 ),
             }
-        if record.refresh_token:
-            extend_refresh = getattr(store, "extend_refresh_token", None)
-            if extend_refresh is None:
-                return expired("Reconnect from the client.")
-            if not await extend_refresh(record.refresh_token, ttl):
-                return expired("Reconnect from the client.")
-            if record.access_token:
-                extend_grant = getattr(store, "extend_access_grant", None)
-                if extend_grant is not None:
-                    await extend_grant(record.access_token, ttl)
-        else:
-            extend_card = getattr(store, "extend_card_credentials", None)
-            if extend_card is None or not await extend_card(record.access_id, ttl):
-                return expired("Reconnect from the client.")
-
-        committed_revision = await self._committed_revision(
-            record.access_id, grantor_subject=record.grantor_subject
-        )
+        # The precondition read applies the shared Card fence, so a Card with
+        # an unresolved transaction is refused BEFORE the credential's life is
+        # extended (W580 finding 1). A stage that lands after this read and
+        # before the commit is still refused at the commit, but the extension
+        # is not undone: only one shared SQL transaction closes that (N1).
+        try:
+            committed_revision = await self._committed_revision(
+                record.access_id, grantor_subject=record.grantor_subject
+            )
+        except (CardUnavailable, CardConflict, CardStorageError) as exc:
+            return {
+                "ok": False,
+                "error": "delegated_card_not_committed",
+                "reason": getattr(exc, "reason", "") or str(exc),
+                "retryable": True,
+                "status": 503,
+            }
         provenance = dict(record.provenance or {})
         provenance["prolongations"] = int(provenance.get("prolongations") or 0) + 1
         provenance["prolonged_at"] = now
@@ -9409,8 +10932,66 @@ class AutomationAccessService:
             expires_at=new_expires_at,
             provenance=provenance,
         )
+        coordinated = getattr(self, "_card_coordinator", None) is not None
+        if coordinated:
+            # Ops 13:19: a credential that has already ended is refused, Card
+            # unchanged, exactly as before routing. The check is read-only and
+            # runs BEFORE the policy is asked (W580 F6, Ops 13:32), so no
+            # decision is opened for a write that cannot happen. The effect
+            # moves only live credentials, so one that ends later is not revived.
+            credentials_live = getattr(store, "card_credentials_live", None)
+            if credentials_live is None:
+                return expired("Reconnect from the client.")
+            try:
+                if not await credentials_live(record.access_id):
+                    return expired("Reconnect from the client.")
+            except GrantStoreUnavailable as exc:
+                return {"ok": False, "error": "delegated_credential_store_unavailable",
+                        "reason": exc.operation, "retryable": True, "status": 503}
+        # W580 F5: the binding's policy (and the prolong shape rule) decides
+        # BEFORE the credential's life is touched; a refusal extends nothing.
         try:
-            await self._persist_record(prolonged, expected_revision=committed_revision)
+            pre_gate = await self._enlisted_gate(
+                card_authority_from_record(prolonged), expected_revision=committed_revision,
+                caller_write=CallerWrite("prolong", self._caller_actor_subject(user)))
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
+        # Under the ONE protocol the credential's life is a decision-bound
+        # effect: one ABSOLUTE deadline, applied only after the COMMIT (W582,
+        # Ops 13:16). Without a coordinator (not yet composed) the direct
+        # extension below runs only after the policy allowed it (F5).
+        lifetime = [{"kind": "credential_lifetime", "key": "card",
+                     "payload": {"access_id": record.access_id, "expires_at": int(new_expires_at),
+                                 "base_card_revision": int(committed_revision)}}] if coordinated else []
+
+        async def ended_after_decision() -> dict[str, Any]:
+            # W580 F6: the policy was asked, so its decision is finalized
+            # refused like every other refused bound write, never left open.
+            await caller_write_outcome(getattr(self, "_caller_writers", None), pre_gate[1],
+                                       state="refused", card_revision=committed_revision)
+            return expired("Reconnect from the client.")
+
+        if not coordinated and record.refresh_token:
+            extend_refresh = getattr(store, "extend_refresh_token", None)
+            if extend_refresh is None:
+                return await ended_after_decision()
+            if not await extend_refresh(record.refresh_token, ttl):
+                return await ended_after_decision()
+            if record.access_token:
+                extend_grant = getattr(store, "extend_access_grant", None)
+                if extend_grant is not None:
+                    await extend_grant(record.access_token, ttl)
+        elif not coordinated:
+            extend_card = getattr(store, "extend_card_credentials", None)
+            if extend_card is None or not await extend_card(record.access_id, ttl):
+                return await ended_after_decision()
+
+        try:
+            await self._persist_record(prolonged, expected_revision=committed_revision,
+                                       caller_write=CallerWrite("prolong", self._caller_actor_subject(user)),
+                                       pre_gate=pre_gate, effects=lifetime)
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except CardServingUnavailable as exc:
             return _serving_state_unavailable(exc)
         except (CardUnavailable, CardConflict, CardCommitFailed) as exc:
@@ -9474,6 +11055,17 @@ class AutomationAccessService:
         record = loaded[0]
         if record.grantor_subject != grantor_subject:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
+        refused = self._managed_project_control_refused(record)
+        if refused is not None:
+            return refused
+        if record.control_card is not None:
+            # W578: ending a Card bound under a Control (a person's My Card, a
+            # project-bound agent Card) changes the authority its Control's
+            # owner relies on, so while Card transactions are on only that
+            # owner's transaction may end it; until it is enlisted it refuses.
+            refused = self._managed_direct_write_refused()
+            if refused is not None:
+                return refused
         if self._issuer_managed(record) and not has_expectations:
             return {"ok": False, "error": "delegated_access_revoke_precondition_required", "status": 409}
         if has_expectations and record.card_revision != expected_card_revision:
@@ -9511,12 +11103,28 @@ class AutomationAccessService:
             )
         except IssuerWriteRefused as exc:
             return exc.to_dict()
+        # W578: a revoke of a bound Card is decided by its binding's policy.
+        caller_request = None
+        if before_commit is None:
+            try:
+                before_commit, caller_request = await caller_writer_before_commit(
+                    getattr(self, "_caller_writers", None), card_authority_from_record(record),
+                    actor_subject=self._caller_actor_subject(user), action="revoke",
+                    candidate={"action": "revoke", "access_id": record.access_id,
+                               "card_revision": record.card_revision},
+                    request_id=_clean(_issuer_request_id) or secrets.token_urlsafe(18),
+                    context_ref=_issuer_context_ref,
+                )
+            except CallerWriteRefused as exc:
+                return exc.to_dict()
         serving_error: CardServingUnavailable | None = None
         try:
             guard = {"before_commit": before_commit} if before_commit is not None else {}
             await self._forget_record(record, **guard)
-        except IssuerWriteRefused as exc:
+        except (IssuerWriteRefused, CallerWriteRefused) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=record.card_revision))
             return {**exc.to_dict(), **outcome}
         except CardServingUnavailable as exc:
             # Durable revocation already won. Continue invalidating the
@@ -9525,6 +11133,8 @@ class AutomationAccessService:
             serving_error = exc
         except CardConflict as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=record.card_revision))
             if has_expectations and exc.reason == "card_revision_moved":
                 return {"ok": False, "error": "delegated_card_revision_conflict",
                         "reason": exc.reason, "retryable": False, "status": 409, **outcome}
@@ -9532,6 +11142,8 @@ class AutomationAccessService:
                     "reason": exc.reason, "retryable": True, "status": 503, **outcome}
         except (CardUnavailable, CardCommitFailed) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=record.card_revision)
+            outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                      state="refused", card_revision=record.card_revision))
             return {
                 "ok": False,
                 "error": "delegated_card_not_committed",
@@ -9541,6 +11153,8 @@ class AutomationAccessService:
                 **outcome,
             }
         outcome = await self._issuer_outcome(issuer_request, state="committed", card_revision=record.card_revision + 1)
+        outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
+                                                  state="committed", card_revision=record.card_revision + 1))
         removed_session = False
         if record.session_id:
             authority = self._authority

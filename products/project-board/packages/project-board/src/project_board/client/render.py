@@ -152,6 +152,17 @@ def _render_error(error: Any) -> str:
     remaining = {k: v for k, v in error.items() if k not in ("code", "message", "details")}
     if remaining:
         lines.extend(_flatten(remaining, prefix=""))
+    current = details.get("current_revision") if isinstance(details, Mapping) else None
+    if code == "work_item_revision_conflict" and isinstance(current, int) and current > 0:
+        # W563: an additive note (plan.note.append) is retried once with the
+        # same text at the current revision; a replacement edit re-reads the
+        # item and decides again, because its compare-and-set protects
+        # another writer's change. Never retry an outcome-unknown write with
+        # altered content.
+        lines.append(
+            f"retry: plan.note.append only: the same text, unchanged, with \"expected_revision\": {current}. "
+            "A replacement edit (plan.item.update) reads the item again and decides first."
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -1368,7 +1379,16 @@ def _render_receive(result: Mapping[str, Any], flags: list[str]) -> list[str]:
             + _cmd(["pb", "worker", "leases"], flags)
         )
     backlog = result.get("backlog")
-    if isinstance(backlog, Mapping):
+    if isinstance(backlog, Mapping) and backlog.get("counted") is False:
+        # W563: a selected receive does not count the marked mail; say so
+        # instead of printing a pending count it never took.
+        lines.append(
+            "backlog: not counted by this selected receive · marked {} at {}".format(
+                backlog.get("marked_count", "?"), backlog.get("marked_at") or "-",
+            )
+        )
+        lines.append(str(backlog.get("instruction") or ""))
+    elif isinstance(backlog, Mapping):
         # W563: the marked mail stays visible on every receive.
         lines.append(
             "backlog: pending {} · requests, decisions and questions {} · oldest {} · marked {} at {}{}".format(
@@ -3494,13 +3514,13 @@ def _commands_for(
     ]
     if kind in ("question", "request") and correlation_id:
         recipient = "operator" if sender in (None, "", "control-plane", "operator") else str(sender)
-        reply_scope = [] if recipient == "operator" else scope
         key = f"reply-{message_id}" if message_id else "reply-<message_id>"
+        # The delivered project selects the writer's route, even for operator replies.
         lines.append(
             "reply: "
             + _cmd(
                 [
-                    "pb", "worker", "send", *reply_scope,
+                    "pb", "worker", "send", *scope,
                     "--recipient", recipient, "--kind", "reply",
                     "--correlation-id", str(correlation_id), "--reply-to", str(message_ref),
                     "--subject", "<subject>", "--body-file", "<path>", "--idempotency-key", key,

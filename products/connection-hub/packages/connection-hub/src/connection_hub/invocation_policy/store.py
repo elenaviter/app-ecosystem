@@ -89,6 +89,10 @@ class InvocationPolicyStore(Protocol):
         self, *, owner_hash: str, change: InvocationPolicyChange
     ) -> None: ...
 
+    async def delete_policy_change(
+        self, *, owner_hash: str, authority: InvocationAuthority
+    ) -> None: ...
+
     async def read_invocation(
         self,
         *,
@@ -216,6 +220,14 @@ class BundleStorageInvocationPolicyStore:
             ),
             change.to_dict(),
         )
+
+    async def delete_policy_change(
+        self, *, owner_hash: str, authority: InvocationAuthority
+    ) -> None:
+        try:
+            self.policy_change_path(owner_hash=owner_hash, authority=authority).unlink(missing_ok=True)
+        except OSError as exc:
+            raise InvocationPolicyRecordError("policy_change_release_failed") from exc
 
     async def read_invocation(
         self,

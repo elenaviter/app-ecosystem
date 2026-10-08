@@ -136,8 +136,12 @@ use `pb worker receive --message-ref <work:mail:...>` or
 result says whether a match was claimed, is already held or settled, or was
 blocked by pending operator mail. A selection leaves other pending mail in
 place and returns normal leases for any claimed messages; settle each once.
-Run ordinary `pb worker receive` after a selection before selecting again.
-Use ordinary receive with every native `--wake-id`.
+Up to three selections are allowed between ordinary receives; then an
+ordinary `pb worker receive` is due. A selection by `--correlation-id` and
+`--sender` for one window's control has its own budget of eight on that one
+correlation, and does not use the three. A selected receive does not count the
+marked backlog, so it never reports the backlog empty; `pb worker inbox` shows
+it. Use ordinary receive with every native `--wake-id`.
 
 ## Lease Discipline
 

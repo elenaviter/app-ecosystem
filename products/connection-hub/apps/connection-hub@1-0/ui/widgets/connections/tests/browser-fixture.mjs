@@ -9,6 +9,8 @@ import react from '@vitejs/plugin-react'
 import { chromium } from 'playwright-core'
 import { createServer, loadConfigFromFile } from 'vite'
 
+import { safeViteServer } from './safe-port.mjs'
+
 // A browser this machine already has: an explicit path, Playwright's own
 // install, or any cached Chromium build. None found means the caller skips and
 // says why, instead of failing on a download it cannot make.
@@ -31,6 +33,10 @@ export async function launchBrowser() {
 }
 
 export async function startFixtureServer() {
+  // W605: an OS-allocated loopback port no live service uses (Vite reads port
+  // 0 as 5173, which shadowed dev-main's live UI on 2026-10-06), given to Vite
+  // with strictPort so a lost race fails instead of moving (see safe-port.mjs).
+  const serverConfig = await safeViteServer()
   const root = new URL('..', import.meta.url).pathname
   const loaded = await loadConfigFromFile({ command: 'serve', mode: 'test' }, join(root, 'vite.config.ts'))
   const server = await createServer({
@@ -38,7 +44,7 @@ export async function startFixtureServer() {
     configFile: false,
     plugins: [react()],
     resolve: { alias: loaded.config.resolve.alias },
-    server: { port: 0, host: '127.0.0.1', strictPort: false },
+    server: serverConfig,
     logLevel: 'silent',
   })
   await server.listen()

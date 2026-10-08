@@ -45,6 +45,12 @@ from ..contract.scoped_collection import CollectionError, ScopedKeysetCursor
 
 # Selective receives allowed between two ordinary receives (W563, Q11).
 SELECTIVE_RECEIVE_BUDGET = 3
+# W563 (Root, 6 October 08:44 UTC): window control (READY requests, renewals,
+# START, ALL CLEAR, CANCEL) arrives on one correlation from one executor. A
+# held agent receives it by that correlation and sender on its own bounded
+# budget, so releasing a hold never needs an ordinary receive that leases
+# unrelated work. One control correlation at a time between ordinary receives.
+CONTROL_SELECTION_BUDGET = 8
 # W563 (coordinator, 2026-10-06 00:35Z): a backlog mark sets at most this
 # many pending messages aside, and keeps this many earlier marks as history.
 BACKLOG_MARK_MAXIMUM = 5000
@@ -3565,6 +3571,8 @@ class SharedFieldStore:
                 "last_inbox_check_at": str(previous.get("last_inbox_check_at") or ""),
                 "general_receive_due": bool(previous.get("general_receive_due")),
                 "selective_receives_since_general": int(previous.get("selective_receives_since_general") or 0),
+                "control_selection_key": str(previous.get("control_selection_key") or ""),
+                "control_selections_used": int(previous.get("control_selections_used") or 0),
                 "last_message_refs": list(previous.get("last_message_refs") or []),
                 "last_control_refs": list(previous.get("last_control_refs") or []),
                 "observed_control_plane_state": str(
@@ -3617,6 +3625,7 @@ class SharedFieldStore:
         state: str = "waiting",
         inbox_checked: bool = False,
         selective_receive: bool = False,
+        control_selection: str = "",
         message_refs: Sequence[str] = (),
         control_refs: Sequence[str] = (),
         observed_control_plane_state: str | None = None,
@@ -3648,7 +3657,12 @@ class SharedFieldStore:
                 heartbeat_at=now,
                 revision=int(listener.get("revision") or 0) + 1,
             )
-            if selective_receive:
+            if selective_receive and control_selection:
+                # Window control on its own budget (CONTROL_SELECTION_BUDGET);
+                # the general selective budget is untouched.
+                listener["control_selection_key"] = control_selection
+                listener["control_selections_used"] = int(listener.get("control_selections_used") or 0) + 1
+            elif selective_receive:
                 # W563 (Q11, coordinator 2026-10-05): up to SELECTIVE_RECEIVE_BUDGET
                 # selective receives between ordinary ones; the ordinary receive
                 # still serves the oldest mail, so old mail keeps moving.
@@ -3658,6 +3672,8 @@ class SharedFieldStore:
             if inbox_checked:
                 listener["general_receive_due"] = False
                 listener["selective_receives_since_general"] = 0
+                listener["control_selection_key"] = ""
+                listener["control_selections_used"] = 0
                 observed_message_refs = _bounded_message_refs(message_refs)
                 listener.update(
                     last_inbox_check_at=now,
@@ -7630,18 +7646,22 @@ class SharedFieldStore:
         # The normal reply command keeps its local reply-to (and settlement
         # receipt). Resolve the origin from that exact addressed mail rather
         # than asking the worker to invent or copy private routing data.
-        if clean_recipient in {"operator", "owner"} and clean_kind == "reply" and reply_to:
+        # W616: any operator-mail kind answering a person's message carries its
+        # origin, so the board returns it to that person, not the project owner.
+        if clean_recipient in {"operator", "owner"} and reply_to:
             with exclusive_lock(self._mail_lock(clean_project, clean_sender)):
                 incoming = self._mail_record_unlocked(clean_project, clean_sender, reply_to)
             origin = dict((incoming.get("payload") or {}).get("operator_origin") or {})
             if origin.get("ref"):
-                if str(incoming.get("correlation_id") or "") != mail["correlation_id"]:
+                same_thread = str(incoming.get("correlation_id") or "") == mail["correlation_id"]
+                if clean_kind == "reply" and not same_thread:
                     raise DomainError(
                         "field_operator_origin_mismatch",
                         "Reply correlation does not match the addressed operator message.",
                         status=409,
                     )
-                mail["payload"]["operator_origin_ref"] = str(origin["ref"])
+                if same_thread:
+                    mail["payload"]["operator_origin_ref"] = str(origin["ref"])
         if not clean_project:
             if mail["work_ref"]:
                 raise DomainError(
@@ -12682,6 +12702,10 @@ class SharedFieldStore:
                 }
         if str(row.get("kind") or "") == "mail.route":
             proof = row.get("remote_result")
+            # W616: whom a project mail reached; owner_default names a reply that missed its writer.
+            routed = str(proof.get("routed_to") or "") if isinstance(proof, Mapping) else ""
+            if routed in {"originating_operator", "thread_writer", "owner_default", "owner_explicit"}:
+                result["routed_to"] = routed
             notification = proof.get("notification") if isinstance(proof, Mapping) else None
             if isinstance(notification, Mapping):
                 # Keep Board acceptance distinct from channel outcome, without

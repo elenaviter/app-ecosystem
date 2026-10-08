@@ -5510,6 +5510,8 @@ class ProblemBoardRelaySupervisor:
         # channel or a reload cannot hold every worker's pb coordinate.
         self._coordinate_task: asyncio.Task | None = None
         self._coordinate_draining: dict[str, asyncio.Task] = {}
+        # A channel's coordinate check (queue, then Card) running in its own thread.
+        self._coordinate_checking: dict[str, asyncio.Task] = {}
         # Local-state housekeeping (legacy cleanup, retention) costs time in
         # proportion to history, so it runs in a thread beside the cycle, never
         # inside it (W287, rule LS5 in storage-and-retention.md).
@@ -5537,10 +5539,12 @@ class ProblemBoardRelaySupervisor:
         # W563: per worker, whether each pending message is a quiet notice.
         self._quiet_classified: dict[str, dict[str, bool]] = {}
         self._quiet_mark: dict[str, str] = {}
-        # The session wake's mailbox and listener store calls run in the
-        # channel's own thread (W456): a hung mailbox holds that channel only,
-        # never another channel's wake or the default pool's scans.
+        # Authority reads and writes stay serialized per channel. Read-only
+        # inbox discovery/classification has its own thread: a queued wake's
+        # large quiet/backlog scan must not hold the same channel's coordinate
+        # claim, fresh Card/session fence or completion behind it (W456).
         self._store_executors = ChannelExecutors()
+        self._mail_scan_executors = ChannelExecutors(thread_name_prefix="problem-board-mail-scan")
         # One drain per worker at a time, whichever path starts it. The
         # queue's claim is exclusive per request and released before the
         # request runs, so without this a side drain executing an earlier
@@ -5584,6 +5588,14 @@ class ProblemBoardRelaySupervisor:
             else self.retryable(error)
         )
 
+    async def _load_host_config(self) -> HostRelayConfig:
+        """The host config, read fresh in the host-config thread, never on the loop."""
+
+        return await run_off_loop(
+            HostRelayConfig.load, self.config_path,
+            executor=self._store_executors.for_channel("host-config"),
+        )
+
     async def _channel_off_loop(
         self, channel: WorkerChannelConfig, call: Callable[..., Any], /, *args: Any, **kwargs: Any
     ) -> Any:
@@ -5591,6 +5603,19 @@ class ProblemBoardRelaySupervisor:
 
         return await run_off_loop(
             call, *args, executor=self._store_executors.for_channel(channel.worker_name), **kwargs
+        )
+
+    async def _mail_scan_off_loop(
+        self, channel: WorkerChannelConfig, call: Callable[..., Any], /, *args: Any
+    ) -> Any:
+        """Read-only inbox discovery/classification, never authority or writes.
+
+        Reads remain uncached. The notify lock still spans this call, and
+        run_off_loop joins the thread on cancellation before releasing it.
+        """
+
+        return await run_off_loop(
+            call, *args, executor=self._mail_scan_executors.for_channel(channel.worker_name)
         )
 
     async def _notify_session(
@@ -5944,7 +5969,7 @@ class ProblemBoardRelaySupervisor:
         if queued is not None:
             # Fix 3b: mail delivered during the wait still joins the wake;
             # only the inbox files the wake does not name yet are read.
-            added = await self._channel_off_loop(
+            added = await self._mail_scan_off_loop(
                 channel, field.inbox_refs_not_in, channel.worker_name, queued
             )
             return [*queued, *added], listener, False
@@ -6000,7 +6025,7 @@ class ProblemBoardRelaySupervisor:
         known = self._quiet_classified.setdefault(channel.worker_name, {})
         new = [ref for ref in pending_refs if ref not in known]
         if new:
-            found = await self._channel_off_loop(channel, field.quiet_mail_refs, channel.worker_name, new)
+            found = await self._mail_scan_off_loop(channel, field.quiet_mail_refs, channel.worker_name, new)
             known.update({ref: ref in found for ref in new})
         current = set(pending_refs)
         for ref in [ref for ref in known if ref not in current]:
@@ -6008,6 +6033,29 @@ class ProblemBoardRelaySupervisor:
         if all(known.get(ref) for ref in pending_refs):
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
+
+        def wake_refs() -> list[str]:
+            # W563 (Root, 6 October 08:44 UTC): a wake names only the mail
+            # that is not quiet, the mail it wakes the session for. It used
+            # to name the last MAX_WAKE_MESSAGE_REFS of every pending ref,
+            # backlog included, in inbox-file order, so with 300 marked
+            # messages the one current question was usually not named; a
+            # wake-ack defers only named mail, and that question woke the
+            # held session again after every acknowledgement. Mail read
+            # after classification is not known yet and counts as not quiet.
+            return [ref for ref in pending_refs if not known.get(ref, False)]
+
+        async def push_wake(**kwargs: Any) -> dict[str, Any] | None:
+            # A wake that would name nothing is not pushed (Ops' review of
+            # #573): the only mail that was not quiet can be consumed between
+            # the classification and the authoritative pending read.
+            refs = wake_refs()
+            if not refs:
+                await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
+                return queue_reconciliation
+            return await self._notify_session(
+                host, channel, event_kind="input.available", message_refs=refs, **kwargs,
+            )
 
         async def mailbox_empty() -> bool:
             # W448 fix 3: a queued wake's refs stand in for the mailbox only on
@@ -6190,7 +6238,7 @@ class ProblemBoardRelaySupervisor:
             coalesced = await self._channel_off_loop(channel,
                 field.coalesce_worker_session_wake,
                 channel.worker_name,
-                message_refs=pending_refs,
+                message_refs=wake_refs(),
                 wake_id=outstanding_wake_id,
             )
             if coalesced is None:
@@ -6211,16 +6259,11 @@ class ProblemBoardRelaySupervisor:
                     if await mailbox_empty():
                         await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                         return queue_reconciliation
-                    return await self._notify_session(
-                        host,
-                        channel,
-                        event_kind="input.available",
-                        message_refs=pending_refs,
-                    )
+                    return await push_wake()
                 coalesced = await self._channel_off_loop(channel,
                     field.coalesce_worker_session_wake,
                     channel.worker_name,
-                    message_refs=pending_refs,
+                    message_refs=wake_refs(),
                     wake_id=outstanding_wake_id,
                 )
             if coalesced is not None:
@@ -6239,11 +6282,7 @@ class ProblemBoardRelaySupervisor:
                 if await mailbox_empty():
                     await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
                     return queue_reconciliation
-                return await self._notify_session(
-                    host,
-                    channel,
-                    event_kind="input.available",
-                    message_refs=pending_refs,
+                return await push_wake(
                     wake_id=outstanding_wake_id,
                     retried=True,
                 )
@@ -6271,12 +6310,7 @@ class ProblemBoardRelaySupervisor:
         if await mailbox_empty():
             await self._channel_off_loop(channel, field.clear_wake_hold, channel.worker_name)
             return queue_reconciliation
-        return await self._notify_session(
-            host,
-            channel,
-            event_kind="input.available",
-            message_refs=pending_refs,
-        )
+        return await push_wake()
 
     @staticmethod
     def _record_authorization(
@@ -6601,7 +6635,7 @@ class ProblemBoardRelaySupervisor:
         # In a thread (W456 criterion 4, Infra's review of cf48: a slow profile
         # read here held the shared loop 0.8 s). Still read fresh, before the
         # connection opens, so the identity fence is unchanged.
-        card_fingerprint = await asyncio.to_thread(self._card_fingerprint, host, channel)
+        card_fingerprint = await self._channel_off_loop(channel, self._card_fingerprint, host, channel)
         # Readers of a failed channel see this attempt running rather than a
         # retry time already past (W461). Success clears the whole record
         # below; failure and cancellation clear the mark in the handler.
@@ -7287,7 +7321,11 @@ class ProblemBoardRelaySupervisor:
     ) -> dict[str, Any]:
         # A file lock and a file read: off the event loop (W456 criterion 4,
         # dev-main 2026-10-05: the lock's holder write held the loop 4.4 s).
-        injected = await asyncio.to_thread(
+        # In this channel's own store thread, not the loop's shared pool: with
+        # more channels than that pool has threads, one channel's slow file
+        # read queued every other channel's (W456 criterion 1, 2026-10-06).
+        injected = await self._channel_off_loop(
+            channel,
             consume_relay_fault,
             self.config_path,
             worker_name=channel.worker_name,
@@ -7309,7 +7347,7 @@ class ProblemBoardRelaySupervisor:
         # (W456 criterion 4, dev-main 2026-10-05: that read held it 3.2 s).
         if session is not None and not self._session_matches(
             host, channel, session, require_card=False,
-            card=await asyncio.to_thread(self._card_fingerprint, host, channel),
+            card=await self._channel_off_loop(channel, self._card_fingerprint, host, channel),
         ):
             await self._drop_session(channel.worker_name)
             session = None
@@ -7339,7 +7377,7 @@ class ProblemBoardRelaySupervisor:
                 self._sessions[channel.worker_name] = session
                 if self._session_matches(
                     host, channel, session, require_card=False,
-                    card=await asyncio.to_thread(self._card_fingerprint, host, channel),
+                    card=await self._channel_off_loop(channel, self._card_fingerprint, host, channel),
                 ):
                     break
                 logger.info(
@@ -7443,6 +7481,7 @@ class ProblemBoardRelaySupervisor:
         for worker_name in list(self._beside_notifies):
             await self._cancel_notify_beside_turn(worker_name)
         self._store_executors.shutdown()
+        self._mail_scan_executors.shutdown()
         self._local_work_scanner.close()
         for worker_name in list(self._sessions):
             await self._drop_session(worker_name)
@@ -7756,12 +7795,18 @@ class ProblemBoardRelaySupervisor:
         # symptom anyone ever sees is that the board feels slow. Losing the Data
         # Bus turns every wake into the full ceiling, so say so once per
         # transition rather than letting it read as normal latency.
-        self._record_push_state(
+        # Every file step of the wait runs in the host-config thread, never on
+        # the shared loop (W456 criterion 4): each wake read the config and the
+        # fault file inline, and the push-state record wrote one.
+        host_executor = self._store_executors.for_channel("host-config")
+        await run_off_loop(
+            self._record_push_state,
             push_sessions=push_sessions,
             sessions=len(self._sessions),
             ceiling_seconds=float(timeout_seconds),
+            executor=host_executor,
         )
-        host = HostRelayConfig.load(self.config_path)
+        host = await self._load_host_config()
         active_worker_names = [
             worker.worker_name for worker in host.workers if worker.state == "active"
         ]
@@ -7770,9 +7815,11 @@ class ProblemBoardRelaySupervisor:
             for worker in host.workers
             if worker.state in {"active", "pending_authorization"}
         ]
-        if pending_relay_faults(
+        if await run_off_loop(
+            pending_relay_faults,
             self.config_path,
             worker_names=active_worker_names,
+            executor=host_executor,
         ):
             return False
         # An operator action is not a board event, so push never carries it.
@@ -7987,7 +8034,8 @@ class ProblemBoardRelaySupervisor:
     async def stop_coordinate_server(self) -> None:
         tasks = [
             task
-            for task in (self._coordinate_task, *self._coordinate_draining.values())
+            for task in (self._coordinate_task, *self._coordinate_draining.values(),
+                         *self._coordinate_checking.values())
             if task is not None and not task.done()
         ]
         for task in tasks:
@@ -7996,6 +8044,7 @@ class ProblemBoardRelaySupervisor:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._coordinate_task = None
         self._coordinate_draining.clear()
+        self._coordinate_checking.clear()
 
     async def _serve_coordinate_requests(self) -> None:
         """Serve local coordinate requests as they arrive, not once per cycle.
@@ -8008,7 +8057,7 @@ class ProblemBoardRelaySupervisor:
 
         while True:
             try:
-                await self.serve_coordinate_pass()
+                await self.serve_coordinate_pass(wait=False)
             except Exception:  # noqa: BLE001 - the next pass retries
                 logger.warning("Problem Board coordinate server pass failed", exc_info=True)
             await asyncio.sleep(self.COORDINATE_SERVE_INTERVAL_SECONDS)
@@ -8029,32 +8078,60 @@ class ProblemBoardRelaySupervisor:
             host, self._coordinate_ready(host, self._coordinate_candidates(host))
         )
 
-    async def serve_coordinate_pass(self) -> list[str]:
+    async def serve_coordinate_pass(self, *, wait: bool = True) -> list[str]:
         """``serve_coordinate_once`` with every file read off the event loop (W461).
 
         It runs every 0.25 s for every channel. Inline, its host config read
         and request-queue globs were the most frequent relay loop block on
         2026-10-02 (51 of 128 before the upgrade).
+
+        Each channel is checked in its own store thread, as its own task
+        (W456 criterion 1, 2026-10-06): one shared thread checked every
+        channel's queue and Card in turn, so a slow read for one channel held
+        every other channel's coordinate calls. The server loop does not wait
+        for a channel's check (``wait=False``); a channel still being checked
+        is skipped until it finishes. One-shot callers and tests wait.
         """
 
-        executor = self._store_executors.for_channel("coordinate-server")
-        host = await run_off_loop(HostRelayConfig.load, self.config_path, executor=executor)
-        candidates = self._coordinate_candidates(host)
-        if not candidates:
+        host = await self._load_host_config()
+        launched = []
+        for name, session in self._coordinate_candidates(host):
+            if name in self._coordinate_checking:
+                continue
+            task = asyncio.create_task(
+                self._check_coordinate_candidate(host, name, session),
+                name=f"problem-board-coordinate-check-{name}",
+            )
+            self._coordinate_checking[name] = task
+            task.add_done_callback(
+                lambda done, name=name: self._coordinate_checking.pop(name, None)
+                if self._coordinate_checking.get(name) is done else None
+            )
+            launched.append(task)
+        if not wait or not launched:
             return []
-        ready = await run_off_loop(self._coordinate_ready, host, candidates, executor=executor)
+        return [name for name in await asyncio.gather(*launched) if name]
+
+    async def _check_coordinate_candidate(
+        self, host: HostRelayConfig, name: str, session: "_ChannelSession"
+    ) -> str:
+        """One channel's ready requests and Card, in its own store thread; starts its drain."""
+
+        executor = self._store_executors.for_channel(name)
+        ready = await run_off_loop(self._coordinate_ready, host, [(name, session)], executor=executor)
         # A session may have closed, been replaced or had its Card replaced
         # while the files were read. The loop state is checked again here; the
         # Card is read once more off the loop, and only what still matches is
         # dispatched in the same loop step as that answer (W461 review P1).
         ready = self._still_coordinate_candidates(host, ready)
         if not ready:
-            return []
+            return ""
         bound = await run_off_loop(self._coordinate_cards_match, host, ready, executor=executor)
-        return self._start_coordinate_drains(
+        started = self._start_coordinate_drains(
             host,
-            [(name, session) for name, session in self._still_coordinate_candidates(host, ready) if name in bound],
+            [(n, s) for n, s in self._still_coordinate_candidates(host, ready) if n in bound],
         )
+        return started[0] if started else ""
 
     def _still_coordinate_candidates(
         self, host: HostRelayConfig, ready: Sequence[tuple[str, "_ChannelSession"]]
@@ -8941,7 +9018,9 @@ class ProblemBoardRelaySupervisor:
         self._ensure_coordinate_server()
         self._ensure_outbox_server()
         with self._trace.stage("host.load", operation="relay.config"):
-            host = HostRelayConfig.load(self.config_path)
+            # Off the event loop (W456 criterion 4, dev-main 2026-10-06: this
+            # read held the shared loop 4.7 s). Read fresh every cycle.
+            host = await self._load_host_config()
         self._ensure_local_state_maintenance(host.field_root)
         self._ensure_loop_lag_sampler()
         with self._trace.stage(
@@ -8950,7 +9029,7 @@ class ProblemBoardRelaySupervisor:
         ):
             locally_retired = await self._disable_locally_terminal_channels(host)
         if locally_retired:
-            host = HostRelayConfig.load(self.config_path)
+            host = await self._load_host_config()
         channels = [worker for worker in host.workers if worker.state == "active"]
         pending_channels = [
             worker for worker in host.workers if worker.state == "pending_authorization"

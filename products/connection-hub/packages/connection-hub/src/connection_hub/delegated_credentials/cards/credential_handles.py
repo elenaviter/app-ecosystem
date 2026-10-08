@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import time
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from connection_hub.delegated_credentials.cards.handle_metadata import (
     HANDLE_STATE_ACTIVE,
@@ -86,6 +86,10 @@ class RedisCardCredentialHandleStore:
     async def remove(self, authority: CardAuthority) -> None:
         await self._store.remove(authority.access_id)
 
+    async def binding_identity(self, access_id: str) -> None:
+        """W606: Redis records are read by Card id alone and bind no revision, so nothing can go stale."""
+        return None
+
 
 class PostgresCardCredentialHandleStore:
     """Minimized PostgreSQL metadata plus host-owned resident bearer custody.
@@ -105,6 +109,75 @@ class PostgresCardCredentialHandleStore:
     ) -> None:
         self._metadata = metadata_store
         self._resident_secrets = resident_secrets
+
+    async def binding_identity(self, access_id: str) -> dict[str, Any] | None:
+        """W606: the active row's pinned identity for a coordinated edit, or None (no row, or not active).
+
+        Read when the edit's intent is built, so the identity is fixed in the
+        decision before STAGE; the bearer itself is never read here.
+        """
+        from connection_hub.delegated_credentials.cards.handle_binding import binding_identity_digest
+
+        current = await self._metadata.read_current(access_id)
+        if current is None or current.state != HANDLE_STATE_ACTIVE:
+            return None
+        return {"from_identity": binding_identity_digest(current), "from_revision": current.card_revision,
+                "from_expires_at": current.expires_at,
+                # A resident agent secret's envelope is bound to the Card revision and expiry
+                # (resident_secrets.resolve), so such a row moves by re-wrapping the same bearer.
+                "from_fingerprint": current.resident_access_sha256 if current.resident_access_secret_ref else ""}
+
+    def _rewrap_record(self, transaction_id: str, access_id: str, binding: Mapping[str, Any]) -> Any:
+        resident = self._resident_secrets
+        return resident.rewrap_record(
+            access_id=access_id, secret_ref=resident.rewrap_secret_ref(transaction_id, access_id),
+            fingerprint=binding["from_fingerprint"], card_revision=binding["card_revision"],
+            created_at=binding["prepared_at"], expires_at=binding["expires_at"])
+
+    async def stage_rewrap(self, transaction_id: str, access_id: str, binding: Mapping[str, Any]) -> None:
+        """W606 STAGE for an agent row: prepare the same bearer's envelope at the AFTER Card under its fixed ref.
+
+        A resident secret's envelope is bound to the Card revision and expiry
+        (``resident_secrets.resolve``), so the row can only move to a fresh
+        ref. Preparing it here means a Card edit whose re-wrap cannot succeed
+        (a bearer that no longer resolves or matches) refuses at STAGE and is
+        never committed. The active row is untouched until COMMIT.
+        """
+        await self._resident_secrets.prepare_rewrap(self._rewrap_record(transaction_id, access_id, binding))
+
+    async def commit_rewrap(self, transaction_id: str, access_id: str, binding: Mapping[str, Any]) -> str:
+        """W606 COMMIT: install the prepared envelope on the row still pinned at STAGE; ``applied`` or ``superseded``."""
+        from connection_hub.delegated_credentials.cards.handle_binding import binding_identity_digest
+        from connection_hub.delegated_credentials.cards.handle_metadata import CardHandleMetadataConflict
+
+        prepared = self._rewrap_record(transaction_id, access_id, binding)
+        current = await self._metadata.read_current(access_id)
+        if (current is not None and current.state == HANDLE_STATE_ACTIVE
+                and current.resident_access_secret_ref == prepared.secret_ref
+                and (current.card_revision, current.expires_at) == (prepared.card_revision, prepared.expires_at)):
+            return "applied"  # a replay: this effect already installed its prepared envelope
+        if (current is None or current.state != HANDLE_STATE_ACTIVE
+                or binding_identity_digest(current) != binding["from_identity"]):
+            await self._resident_secrets.discard_rewrap(prepared)
+            return "superseded"
+        try:
+            await self._resident_secrets.install_rewrap(prepared, session_id=current.session_id,
+                                                        expected_revision=current.revision)
+        except CardHandleMetadataConflict:
+            await self._resident_secrets.discard_rewrap(prepared)
+            return "superseded"
+        return "applied"
+
+    async def discard_rewrap(self, transaction_id: str, access_id: str, binding: Mapping[str, Any]) -> None:
+        """W606 ABORT, or a superseded COMMIT: the prepared envelope goes; the active row keeps its old ref."""
+        await self._resident_secrets.discard_rewrap(self._rewrap_record(transaction_id, access_id, binding))
+
+    async def advance_binding(self, access_id: str, **binding: Any) -> str:
+        """W606: the compare-and-set the ``handle_binding`` effect applies at COMMIT."""
+        advance = getattr(self._metadata, "advance_binding", None)
+        if advance is None:
+            raise CardCredentialHandleUnavailable("card_handle_binding_unavailable", access_id=access_id)
+        return await advance(access_id, **binding)
 
     async def ensure_schema(self) -> None:
         ensure = getattr(self._metadata, "ensure_schema", None)

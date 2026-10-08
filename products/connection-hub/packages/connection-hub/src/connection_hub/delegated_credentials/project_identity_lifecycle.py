@@ -32,6 +32,8 @@ from connection_hub.delegated_credentials.controls.project_person import (
     ProjectPersonControlIdentity,
 )
 from connection_hub.delegated_credentials.named_service_policy import clean_text
+from connection_hub.delegated_credentials.controls.effective import ControlCardMismatch
+from connection_hub.delegated_credentials.controls.hierarchy import compose_control_hierarchy
 from connection_hub.delegated_credentials.project_identity_authorization import (
     PROJECT_IDENTITY_EDGE_SCHEMA,
     ProjectCardResolution,
@@ -554,6 +556,18 @@ class ProjectIdentityLifecycle:
         )
         if reason := edge.validation_reason():
             raise ProjectIdentityLifecycleError(reason)
+        if (control_authority is not None and control_authority.state == CARD_STATE_ACTIVE
+                and control_authority.control_card is not None):
+            async def load_control(access_id: str, *, grantor_subject: str) -> CardAuthority | None:
+                loaded = await self._host._load_record_any_state(access_id, grantor_subject=grantor_subject)
+                return self._authority(*loaded) if loaded is not None else None
+
+            try:
+                hierarchy = await compose_control_hierarchy(my_authority, load_control=load_control)
+                control_resolution = ProjectCardResolution.current(
+                    hierarchy.control_card, control_dependencies=hierarchy.dependencies[1:])
+            except ControlCardMismatch as exc:
+                control_resolution = ProjectCardResolution.unavailable(exc.reason)
         return ProjectIdentityResolution(
             edge=edge,
             control_card=control_resolution,

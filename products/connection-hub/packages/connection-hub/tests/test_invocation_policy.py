@@ -751,3 +751,34 @@ async def test_general_prepared_change_blocks_account_calls_without_override(tmp
     assert overridden.allowed is True
     assert overridden.policy is not None
     assert overridden.policy.authority == account
+
+
+@pytest.mark.asyncio
+async def test_an_aborted_card_change_releases_only_its_own_prepared_marker(tmp_path):
+    # W582: FINISH(aborted) releases the policy prepared at STAGE; idempotent,
+    # and never undoes a commit or another change's marker.
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="tx-a:restart", now=100)
+    assert await service.release_policy_change(owner_subject="user-1", authority=authority,
+                                               change_id="tx-other:restart") is False
+    blocked = await service.begin(owner_subject="user-1", authority=authority, invocation_id="i-1",
+                                  request_digest=canonical_request_digest({"s": 1}), now=101)
+    assert blocked.reason == "delegated_invocation_policy_changing"
+    assert await service.release_policy_change(owner_subject="user-1", authority=authority,
+                                               change_id="tx-a:restart") is True
+    assert await service.release_policy_change(owner_subject="user-1", authority=authority,
+                                               change_id="tx-a:restart") is False  # idempotent
+    after = await service.begin(owner_subject="user-1", authority=authority, invocation_id="i-2",
+                                request_digest=canonical_request_digest({"s": 1}), now=102)
+    assert after.reason != "delegated_invocation_policy_changing"
+    # A committed marker is never released.
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="tx-b:restart", now=103)
+    policy = await service.commit_policy_change(owner_subject="user-1", authority=authority,
+                                                change_id="tx-b:restart", now=104)
+    assert await service.release_policy_change(owner_subject="user-1", authority=authority,
+                                               change_id="tx-b:restart") is False
+    assert (await service.commit_policy_change(owner_subject="user-1", authority=authority,
+                                               change_id="tx-b:restart", now=105)) == policy

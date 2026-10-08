@@ -16,6 +16,7 @@ from pathlib import Path
 from project_board.client import cli, first_run
 from project_board.client.authorization import authorization_command
 from project_board.client.card_refusal import replace_card_command
+from procedure_reference import reference_text
 
 PACKAGE = Path(__file__).resolve().parents[1]
 PRODUCT = PACKAGE.parents[1]
@@ -72,7 +73,7 @@ def test_no_page_suggests_authorize_without_device_outside_the_fallback() -> Non
 
 
 def test_the_skill_tells_the_approver_to_use_their_own_device() -> None:
-    skill = (PACKAGE / "src/project_board/procedures/problem-board-worker/SKILL.md").read_text(encoding="utf-8")
+    skill = reference_text(PACKAGE / "src/project_board/procedures/problem-board-worker/SKILL.md")
     step = skill[skill.index("4. Follow `next`"): skill.index("5. Establish the notification path")]
     assert "pb worker authorize <profile> --device" in step
     assert "never drop `--device`" in step

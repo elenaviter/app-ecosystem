@@ -321,6 +321,31 @@ class InvocationPolicyService:
             )
             return current
 
+    async def release_policy_change(
+        self,
+        *,
+        owner_subject: str,
+        authority: InvocationAuthority,
+        change_id: str,
+    ) -> bool:
+        """W582: drop a PREPARED marker whose Card change was ABORTED; idempotent.
+
+        Only the exact PREPARED marker of ``change_id`` is removed: a committed
+        marker, another change's marker or none at all is left as it is (and
+        False returned), so a late or repeated release never undoes a commit.
+        """
+        owner = str(owner_subject or "").strip()
+        clean_change_id = validated_invocation_id(change_id)
+        if not owner:
+            raise InvocationPolicyRecordError("owner_subject_missing")
+        owner_hash = owner_hash_for(owner)
+        async with self._critical_section(owner_hash=owner_hash, authority=authority):
+            change = await self._store.read_policy_change(owner_hash=owner_hash, authority=authority)
+            if change is None or change.change_id != clean_change_id or change.state != POLICY_CHANGE_PREPARED:
+                return False
+            await self._store.delete_policy_change(owner_hash=owner_hash, authority=authority)
+            return True
+
     async def issue_request_permit(
         self,
         *,

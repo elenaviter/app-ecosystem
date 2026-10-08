@@ -27,6 +27,10 @@ from connection_hub.delegated_credentials.catalog.hashing import (
 from connection_hub.delegated_credentials.catalog.models import (
     CatalogDocument,
 )
+from connection_hub.delegated_credentials.catalog.reservations import (
+    CatalogReservationRefused,
+    CatalogReservations,
+)
 from connection_hub.delegated_credentials.catalog.runtime_cache import (
     DelegatedCatalogRuntimeCache,
 )
@@ -43,7 +47,11 @@ SharedStorageOperationRunner = Callable[..., Awaitable[Any]]
 
 
 class CatalogPublicationError(RuntimeError):
-    """The catalog could not be published for this app generation."""
+    """The catalog could not be published for this app generation.
+
+    ``catalog_reserved`` is retryable: a Card transaction holds the active
+    version until it is decided (W502).
+    """
 
     def __init__(self, reason: str) -> None:
         super().__init__(reason)
@@ -95,6 +103,10 @@ async def ensure_delegated_catalog(
     registered = {"connections": connections, "hash": expected_hash}
 
     async def _publish() -> None:
+        # Publishers are serialized here, so a marker found now was left by one
+        # that died mid-publication; clear it so reservations resume (EMain #609).
+        if await CatalogReservations(store).clear_dead_publication():
+            _LOGGER.warning("[connection-hub.delegated-catalog] cleared a dead publication marker reason=%s", reason)
         if reread is not None:
             fresh = await reread()
             try:
@@ -122,8 +134,25 @@ async def ensure_delegated_catalog(
             if not await store.version_exists(document.version):
                 await store.write_version(document)
         else:
-            await store.write_version(document)
-            await store.publish_active(document)
+            # W502: never publish over a Card transaction that reserved the
+            # active version (catalog/reservations.py has the ordering).
+            reservations = CatalogReservations(store)
+            marker = await reservations.begin_publication(document)
+            try:
+                await reservations.assert_publishable(document)
+                if await reservations.reassert_publication(marker):
+                    await reservations.assert_publishable(document)
+                await store.write_version(document)
+                await store.publish_active(document)
+            except CatalogReservationRefused as exc:
+                _LOGGER.warning(
+                    "[connection-hub.delegated-catalog] catalog publication waiting on transaction %s "
+                    "version=%s reason=%s",
+                    ",".join(exc.holders), document.version, reason,
+                )
+                raise CatalogPublicationError(exc.reason) from None
+            finally:
+                await reservations.end_publication()
 
         await cache.cache_version(document, ttl_seconds=residency.version_cache_seconds)
         if not await cache.publish_active(

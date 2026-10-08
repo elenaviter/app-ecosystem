@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 import uuid
 from collections import deque
 from typing import Any
@@ -21,6 +22,7 @@ from connection_hub.delegated_credentials.devices.authority_schema import (
 )
 from connection_hub.delegated_credentials.oauth.authority_store import (
     PostgresOAuthAuthorityStore,
+    RefreshCardIncarnationMoved,
     RefreshTokenReuseDetected,
 )
 from connection_hub.delegated_credentials.oauth.store import GrantStore
@@ -906,3 +908,448 @@ async def test_card_credential_lifecycle_executes_against_real_postgres() -> Non
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_card_credentials_absolute_expiry_is_replay_safe_against_real_postgres() -> None:
+    # W582 (Ops gate 3): one absolute deadline; a replay bumps no revision; a
+    # past deadline really expires; a Card with nothing live is a named no-op.
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    store = PostgresOAuthAuthorityStore(
+        pg_pool=pool,
+        tenant=f"authority-test-{uuid.uuid4().hex}",
+        project="card-credential-expiry",
+    )
+
+    async def revisions():
+        async with pool.acquire() as connection:
+            return (
+                await connection.fetchval(f"SELECT revision FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = $1", "aut_card"),
+                await connection.fetchval(f"SELECT revision FROM {store.schema}.{TABLE_ACCESS_BINDINGS} WHERE registry_access_id = $1", "aut_card"),
+                await connection.fetchval(f"SELECT extract(epoch FROM expires_at)::bigint FROM {store.schema}.{TABLE_ACCESS_BINDINGS} WHERE registry_access_id = $1", "aut_card"),
+            )
+
+    try:
+        await store.ensure_schema()
+        await store.create_refresh_token(
+            {"registry_access_id": "aut_card", "card_kind": "automation", "client_id": "client-1", "sub": "user-1"},
+            ttl_seconds=600,
+        )
+        await store.bind_access_grant("access-bearer", {"registry_access_id": "aut_card", "operations": ["search"]},
+                                      ttl_seconds=600)
+        deadline = int(time.time()) + 7200
+        assert await store.card_credentials_live("aut_card") is True
+        assert await store.set_card_credentials_expiry("aut_card", deadline) == "applied"
+        first = await revisions()
+        assert first[2] == deadline
+        assert await store.set_card_credentials_expiry("aut_card", deadline) == "applied"
+        assert await revisions() == first  # the replay wrote nothing
+        past = int(time.time()) - 60
+        assert await store.set_card_credentials_expiry("aut_card", past) == "applied"
+        assert (await revisions())[2] == past
+        assert await store.get_access_grant_record("access-bearer") is None  # really expired
+        # Ops 13:19: an ended credential is never revived by a later deadline.
+        assert await store.card_credentials_live("aut_card") is False
+        ended = await revisions()
+        assert await store.set_card_credentials_expiry("aut_card", deadline) == "no_active_credentials"
+        assert await revisions() == ended
+        assert await store.set_card_credentials_expiry("aut_none", deadline) == "no_active_credentials"
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+        await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_binding_is_revoked_by_its_pinned_digest_against_real_postgres() -> None:
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=2)
+    store = PostgresOAuthAuthorityStore(pg_pool=pool, tenant=f"authority-test-{uuid.uuid4().hex}",
+                                        project="grant-revoke-digest")
+    try:
+        await store.ensure_schema()
+        await store.bind_access_grant("old-bearer", {"registry_access_id": "aut_card", "operations": ["s"]},
+                                      ttl_seconds=600)
+        await store.bind_access_grant("new-bearer", {"registry_access_id": "aut_card", "operations": ["s"]},
+                                      ttl_seconds=600)
+        old = hashlib.sha256(b"old-bearer").hexdigest()
+        assert await store.revoke_access_grant_by_digest(old) == "revoked"
+        assert await store.revoke_access_grant_by_digest(old) == "revoked"  # replay-stable (Ops N-O)
+        assert await store.revoke_access_grant_by_digest("0" * 64) == "absent"
+        assert await store.get_access_grant_record("old-bearer") is None
+        assert await store.get_access_grant_record("new-bearer") is not None  # the replacement is untouched
+    finally:
+        async with pool.acquire() as connection:
+            await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+        await pool.close()
+
+
+async def _capped_store():
+    dsn = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("CONNECTION_HUB_TEST_POSTGRES_DSN is not set")
+    import asyncpg
+
+    pool = await asyncpg.create_pool(dsn, min_size=2, max_size=4)
+    store = PostgresOAuthAuthorityStore(pg_pool=pool, tenant=f"cap-test-{uuid.uuid4().hex}", project="w585")
+    await store.ensure_schema()
+    await store.ensure_schema()  # W585: the additive DDL is idempotent
+    return pool, store
+
+
+async def _family(pool, store, access_id="aut_card"):
+    async with pool.acquire() as connection:
+        row = await connection.fetchrow(
+            f"""SELECT extract(epoch FROM expires_at)::bigint AS expires_at,
+                       extract(epoch FROM cap_expires_at)::bigint AS cap, card_revision
+                FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = $1""", access_id)
+        generation = await connection.fetchrow(
+            f"""SELECT extract(epoch FROM generation.expires_at)::bigint AS expires_at, generation.state
+                FROM {store.schema}.{TABLE_REFRESH_GENERATIONS} AS generation
+                JOIN {store.schema}.{TABLE_FAMILIES} AS family
+                  ON family.current_generation_id = generation.generation_id
+                WHERE family.registry_access_id = $1""", access_id)
+    return dict(row), dict(generation)
+
+
+async def _drop(pool, store):
+    async with pool.acquire() as connection:
+        await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
+    await pool.close()
+
+
+RECORD = {"registry_access_id": "aut_card", "card_kind": "automation", "client_id": "client-1", "sub": "user-1"}
+
+
+@pytest.mark.asyncio
+async def test_w585_rotation_never_outlives_the_committed_card_cap_against_real_postgres() -> None:
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        # No cap at all: rotation behaves exactly as before (now + ttl).
+        token = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600)
+        family, generation = await _family(pool, store)
+        assert family["cap"] is None and abs(family["expires_at"] - (now + 3600)) <= 5
+        # The committed Card lifetime (revision 2) sets the cap; rotation stays under it.
+        cap = now + 600
+        assert await store.set_card_credentials_expiry("aut_card", cap, card_revision=2) == "applied"
+        token = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600)
+        family, generation = await _family(pool, store)
+        assert (family["cap"], family["card_revision"]) == (cap, 2)
+        assert family["expires_at"] == cap and generation["expires_at"] == cap
+        # Ops: a caller cap HIGHER than the stored cap still takes the stored cap.
+        token = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, expires_at_cap=cap + 1000)
+        family, generation = await _family(pool, store)
+        assert family["expires_at"] == cap and generation["expires_at"] == cap
+        # A lower caller cap wins.
+        token = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, expires_at_cap=cap - 100)
+        family, generation = await _family(pool, store)
+        assert family["expires_at"] == cap - 100 and generation["expires_at"] == cap - 100
+        assert token
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_a_passed_cap_or_a_moved_incarnation_refuses_without_consuming_the_token() -> None:
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        assert await store.set_card_credentials_expiry("aut_card", now + 600, card_revision=3) == "applied"
+        # The caller read Card revision 2; the family is capped by revision 3.
+        # W585 C2: a typed, retryable refusal, distinct from the terminal None below.
+        with pytest.raises(RefreshCardIncarnationMoved, match="refresh_card_incarnation_moved"):
+            await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, card_incarnation=2)
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active"  # not consumed: a re-read caller can retry
+        assert await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, expires_at_cap=now - 1) is None
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active"
+        rotated = await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, card_incarnation=3)
+        assert rotated
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_an_older_card_revision_never_moves_the_cap_back() -> None:
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        assert await store.set_card_credentials_expiry("aut_card", now + 300, card_revision=4) == "applied"
+        # A replayed effect from revision 3 does not touch the family.
+        await store.set_card_credentials_expiry("aut_card", now + 3000, card_revision=3)
+        family, _ = await _family(pool, store)
+        assert (family["cap"], family["card_revision"], family["expires_at"]) == (now + 300, 4, now + 300)
+        # The same revision replays without a write.
+        assert await store.set_card_credentials_expiry("aut_card", now + 300, card_revision=4) == "applied"
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_issuance_carries_the_cap_from_the_start() -> None:
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        await store.create_refresh_token(RECORD, ttl_seconds=3600, cap_expires_at=now + 120, card_revision=5)
+        family, generation = await _family(pool, store)
+        assert (family["cap"], family["card_revision"]) == (now + 120, 5)
+        assert family["expires_at"] == now + 120 and generation["expires_at"] == now + 120
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order", ["rotate_first", "effect_first", "concurrent"])
+async def test_w585_rotation_racing_the_lifetime_effect_never_passes_the_committed_cap(order) -> None:
+    # Ops gate (a): rotation versus the credential_lifetime FINISH, in both orders and concurrently.
+    import asyncio
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        cap = now + 400
+
+        async def rotate():
+            return await store.rotate_refresh_token(token, RECORD, ttl_seconds=3600)
+
+        async def effect():
+            return await store.set_card_credentials_expiry("aut_card", cap, card_revision=2)
+
+        if order == "rotate_first":
+            await rotate()
+            await effect()
+        elif order == "effect_first":
+            await effect()
+            await rotate()
+        else:
+            await asyncio.gather(rotate(), effect())
+        family, generation = await _family(pool, store)
+        assert family["cap"] == cap and family["card_revision"] == 2
+        assert family["expires_at"] <= cap and generation["expires_at"] <= cap  # never revived or extended
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_a_stale_lifetime_effect_never_moves_the_access_binding() -> None:
+    # Ops W1 (14:25): the binding is revision-guarded like the family. A replayed revision-3
+    # effect after the revision-5 cap moves neither the family nor the access binding.
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        await store.bind_access_grant("access-bearer", {"registry_access_id": "aut_card", "operations": ["search"]},
+                                      ttl_seconds=3600)
+        assert await store.set_card_credentials_expiry("aut_card", now + 600, card_revision=5) == "applied"
+
+        async def binding():
+            async with pool.acquire() as connection:
+                row = await connection.fetchrow(
+                    f"""SELECT extract(epoch FROM expires_at)::bigint AS expires_at, card_revision
+                        FROM {store.schema}.{TABLE_ACCESS_BINDINGS} WHERE registry_access_id = 'aut_card'""")
+            return dict(row)
+
+        assert await binding() == {"expires_at": now + 600, "card_revision": 5}
+        for stale in (now + 3000, now + 60):  # later and earlier deadlines from an older revision
+            # Every live row is at a newer revision: the superseded effect is the named no-op.
+            assert await store.set_card_credentials_expiry("aut_card", stale, card_revision=3) == "no_active_credentials"
+            assert await binding() == {"expires_at": now + 600, "card_revision": 5}
+            family, _ = await _family(pool, store)
+            assert (family["cap"], family["card_revision"]) == (now + 600, 5)
+        # A second family issued later without a revision (0) lets the stale effect through the
+        # live-row count; the binding's own guard still leaves it at revision 5.
+        second = {**RECORD, "client_id": "client-2"}
+        await store.create_refresh_token(second, ttl_seconds=3600)
+        await store.set_card_credentials_expiry("aut_card", now + 3000, card_revision=3)
+        assert await binding() == {"expires_at": now + 600, "card_revision": 5}
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_issuance_through_the_public_facade_carries_the_cap_against_real_postgres() -> None:
+    # Infra and Ops, 16:13: the SDK issues through GrantStore, never the authority directly.
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        facade = GrantStore(object(), tenant=store.tenant, project=store.project, refresh_ttl=3600,
+                            authority_store=store)
+        token = await facade.create_refresh_token(
+            client_id="client-1", sub="user-1", scopes=[], registry_access_id="aut_card",
+            card_kind="automation", cap_expires_at=now + 120, card_revision=5)
+        assert token
+        family, generation = await _family(pool, store)
+        assert (family["cap"], family["card_revision"]) == (now + 120, 5)
+        assert family["expires_at"] == now + 120 and generation["expires_at"] == now + 120
+        with pytest.raises(ValueError, match="refresh_cap_passed"):
+            await facade.create_refresh_token(client_id="client-1", sub="user-1", scopes=[],
+                                              registry_access_id="aut_late", cap_expires_at=now - 1)
+        async with pool.acquire() as connection:
+            assert await connection.fetchval(
+                f"SELECT count(*) FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = 'aut_late'") == 0
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_c2_the_facade_names_a_moved_incarnation_and_keeps_the_token_against_real_postgres() -> None:
+    """W585 C2: the SDK rotates through GrantStore. A moved incarnation reaches it typed, not as
+    GrantStoreUnavailable and not as the terminal None, and the presented token stays usable."""
+    pool, store = await _capped_store()
+    try:
+        now = int(time.time())
+        facade = GrantStore(object(), tenant=store.tenant, project=store.project, refresh_ttl=3600,
+                            authority_store=store)
+        token = await facade.create_refresh_token(
+            client_id="client-1", sub="user-1", scopes=[], registry_access_id="aut_card",
+            card_kind="automation", cap_expires_at=now + 600, card_revision=5)
+        with pytest.raises(RefreshCardIncarnationMoved):
+            await facade.rotate_refresh_token(token, card_incarnation=4)
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active"
+        assert await facade.rotate_refresh_token(token, expires_at_cap=now - 1) is None  # terminal stays None
+        rotated = await facade.rotate_refresh_token(token, card_incarnation=5)  # re-read: the same token works
+        assert rotated and rotated != token
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_the_redis_fallback_bounds_issuance_by_the_cap() -> None:
+    class Redis:
+        def __init__(self) -> None:
+            self.setex_calls: list[tuple[str, int]] = []
+
+        async def setex(self, key, ttl, value):
+            self.setex_calls.append((key, int(ttl)))
+
+    redis = Redis()
+    facade = GrantStore(redis, tenant="t", project="p", refresh_ttl=3600)
+    now = int(time.time())
+    await facade.create_refresh_token(client_id="c", sub="s", scopes=[], cap_expires_at=now + 90)
+    await facade.create_refresh_token(client_id="c", sub="s", scopes=[])
+    assert 85 <= redis.setex_calls[0][1] <= 90
+    assert redis.setex_calls[1][1] == 3600
+    with pytest.raises(ValueError, match="refresh_cap_passed"):
+        await facade.create_refresh_token(client_id="c", sub="s", scopes=[], cap_expires_at=now - 1)
+    assert len(redis.setex_calls) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cap_source", ["stored", "caller"])
+async def test_w585_a_rotation_that_waits_on_the_family_lock_past_its_cap_is_refused_unconsumed(cap_source) -> None:
+    """Ops' gate (16:14): session A holds the family lock across the cap deadline;
+    session B's rotation, which began before the deadline, must refuse and leave
+    the presented generation unconsumed. now() (the transaction start) passed it."""
+
+    import asyncio
+
+    pool, store = await _capped_store()
+    try:
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3600)
+        async with pool.acquire() as connection:
+            database_now = int(await connection.fetchval("SELECT extract(epoch FROM now())::bigint"))
+        cap = database_now + 3
+        # "stored": the committed Card wrote the cap (family expiry and cap both).
+        # "caller": only the rotation's own cap bounds it, so the cap check alone refuses.
+        if cap_source == "stored":
+            assert await store.set_card_credentials_expiry("aut_card", cap, card_revision=1) == "applied"
+        caller_cap = {"expires_at_cap": cap} if cap_source == "caller" else {}
+        holder = await pool.acquire()
+        lock = holder.transaction()
+        await lock.start()
+        await holder.execute(f"SELECT 1 FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = 'aut_card' FOR UPDATE")
+        rotation = asyncio.create_task(store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, **caller_cap))
+        await asyncio.sleep(0.5)
+        assert not rotation.done(), "the rotation must be waiting on the family lock"
+        while int(time.time()) <= cap + 1:
+            await asyncio.sleep(0.25)
+        await lock.rollback()
+        await pool.release(holder)
+        assert await asyncio.wait_for(rotation, 10) is None
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active", "the presented generation is not consumed"
+    finally:
+        await _drop(pool, store)
+
+
+async def _hold_family_lock(pool, store, access_id="aut_card"):
+    holder = await pool.acquire()
+    lock = holder.transaction()
+    await lock.start()
+    await holder.execute(
+        f"SELECT 1 FROM {store.schema}.{TABLE_FAMILIES} WHERE registry_access_id = $1 FOR UPDATE", access_id)
+    return holder, lock
+
+
+async def _release(pool, holder, lock):
+    await lock.rollback()
+    await pool.release(holder)
+
+
+@pytest.mark.asyncio
+async def test_w585_a_no_cap_rotation_that_waits_past_the_generation_expiry_is_refused_unconsumed() -> None:
+    """Ops T5 (16:32): no cap at all, so only generation_live and family_live
+    guard; both read the clock after the lock."""
+
+    import asyncio
+
+    pool, store = await _capped_store()
+    try:
+        token = await store.create_refresh_token(RECORD, ttl_seconds=3)
+        holder, lock = await _hold_family_lock(pool, store)
+        rotation = asyncio.create_task(store.rotate_refresh_token(token, RECORD, ttl_seconds=3600))
+        await asyncio.sleep(0.5)
+        assert not rotation.done(), "the rotation must be waiting on the family lock"
+        await asyncio.sleep(3.5)
+        await _release(pool, holder, lock)
+        assert await asyncio.wait_for(rotation, 10) is None
+        _, generation = await _family(pool, store)
+        assert generation["state"] == "active", "the presented generation is not consumed"
+    finally:
+        await _drop(pool, store)
+
+
+@pytest.mark.asyncio
+async def test_w585_a_retry_that_waits_past_the_family_end_mints_nothing_and_revives_nothing() -> None:
+    """Ops C1 (16:32): the W408 retry branch decided with now() after the lock,
+    so a retry that started before the family ended minted a successor and
+    revived the family to +ttl."""
+
+    import asyncio
+
+    pool, store = await _capped_store()
+    try:
+        token = await store.create_refresh_token(RECORD, ttl_seconds=4)
+        rotated = await store.rotate_refresh_token(token, RECORD, ttl_seconds=4, refresh_request_fingerprint="fp-1")
+        assert rotated
+        family_before, _ = await _family(pool, store)
+        holder, lock = await _hold_family_lock(pool, store)
+        retry = asyncio.create_task(
+            store.rotate_refresh_token(token, RECORD, ttl_seconds=3600, refresh_request_fingerprint="fp-1"))
+        await asyncio.sleep(0.5)
+        assert not retry.done(), "the retry must be waiting on the family lock"
+        while int(time.time()) <= family_before["expires_at"] + 1:
+            await asyncio.sleep(0.25)
+        await _release(pool, holder, lock)
+        assert await asyncio.wait_for(retry, 10) is None
+        family_after, _ = await _family(pool, store)
+        assert family_after["expires_at"] == family_before["expires_at"], "the family is not revived"
+    finally:
+        await _drop(pool, store)

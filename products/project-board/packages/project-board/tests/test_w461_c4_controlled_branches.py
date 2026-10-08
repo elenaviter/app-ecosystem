@@ -592,3 +592,73 @@ def test_every_contract_operation_is_either_a_declared_read_or_never_resent():
             with pytest.raises(ReceiptPending):
                 asyncio.run(_settle_unknown_by_receipt(board_without_the_read, request, arguments))
             assert operation not in sent, f"{operation} was sent again"
+
+
+# W573: the relay's Data Bus client stops reconnecting on a permanent refusal -
+
+
+def test_w573_the_pb_classifier_is_the_shared_permanent_set():
+    from project_board.contract.errors import PERMANENT_CREDENTIAL_CODES, permanent_credential_refusal
+
+    assert all(permanent_credential_refusal(_refusal(code)) for code in PERMANENT_CREDENTIAL_CODES)
+    for transient in ("work_relay_transport_unavailable", "data_bus_outcome_unknown", "oauth_mcp_endpoint_unreachable"):
+        assert permanent_credential_refusal(_refusal(transient)) is False
+    assert permanent_credential_refusal(ConnectionError("no code")) is False
+
+
+def test_w573_the_relay_builds_its_data_bus_client_with_the_pb_classifier():
+    import inspect
+
+    from project_board.client import cli
+
+    source = inspect.getsource(cli)
+    assert "refusal_classifier=permanent_credential_refusal" in source
+
+
+@pytest.mark.parametrize("code", ["delegated_card_revoked", "delegated_card_not_found"])
+def test_w573_a_revoked_card_ends_the_socket_reconnect_after_one_attempt(code, monkeypatch, record_property):
+    import asyncio
+
+    from app_foundation.data_bus import DataBusClaim, DataBusIngressRejected, FederatedDataBusClient
+    from app_foundation.data_bus import client as client_module
+    from project_board.contract.errors import permanent_credential_refusal
+
+    real_sleep = asyncio.sleep
+
+    class _Asyncio:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def sleep(self, delay, *args, **kwargs):
+            await real_sleep(0)
+
+    monkeypatch.setattr(client_module, "asyncio", _Asyncio())
+    client = FederatedDataBusClient(
+        platform_url="http://127.0.0.1:9",
+        claim=DataBusClaim(
+            tenant="t", project="p", bundle_id="problem-board@1-0", session_id="s",
+            expires_at=2_000_000_000, federated_token="synthetic-not-a-credential", partition_ref="work:worker-stream:w573",
+        ),
+        refusal_classifier=permanent_credential_refusal,
+    )
+    opens = []
+
+    async def refused_open():
+        opens.append(code)
+        raise DataBusIngressRejected(code, "Synthetic: the Card is gone.", details={"code": code})
+
+    client._connect_namespace = refused_open
+    started = time.monotonic()
+
+    async def scenario():
+        task = asyncio.get_running_loop().create_task(client._reconnect())
+        client._reconnect_task = task
+        await asyncio.wait_for(task, timeout=5)
+        await client.close()
+
+    asyncio.run(scenario())
+    record_property("w573_terminal_ms", round((time.monotonic() - started) * 1000, 3))
+
+    assert opens == [code], "zero further open attempts after the permanent refusal"
+    assert client.terminal_refusal["state"] == "refused_permanent"
+    assert client.terminal_refusal["code"] == code

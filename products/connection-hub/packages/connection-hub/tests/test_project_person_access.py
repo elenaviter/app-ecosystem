@@ -33,6 +33,8 @@ from connection_hub.delegated_credentials.controls.snapshot import (
     materialize_control_snapshot,
 )
 from connection_hub.delegated_credentials.project_authorization import (
+    ProjectAuthorizationError,
+    ResolverBackedProjectAuthorizationPort,
     PROJECT_PERSON_CONTROL_CREATE,
     PROJECT_PERSON_CONTROL_READ,
     PROJECT_PERSON_CONTROL_REVOKE,
@@ -235,6 +237,7 @@ class _Host:
                 named_service_operations=named_service_operations,
                 account_scope=kwargs.get("account_scope", existing.account_scope),
                 properties=kwargs.get("properties", existing.properties),
+                composition_mode=kwargs.get("composition_mode", existing.composition_mode),
             )
         )
         transform = kwargs["_record_transform"]
@@ -453,7 +456,7 @@ async def test_ordinary_new_my_card_starts_equal_to_its_selected_control_card() 
 
 
 @pytest.mark.asyncio
-async def test_create_refuses_union_composition_before_storage() -> None:
+async def test_create_accepts_upstream_union_composition() -> None:
     host = _Host()
 
     result = await _lifecycle(host, _Port()).create(
@@ -465,12 +468,9 @@ async def test_create_refuses_union_composition_before_storage() -> None:
         label="Quickstart member",
     )
 
-    assert result == {
-        "ok": False,
-        "error": "project_person_control_requires_and",
-        "status": 400,
-    }
-    assert host.records == {}
+    assert result["ok"] is True, result
+    identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=TARGET)
+    assert host.records[(identity.project_subject, identity.control_id)][0].composition_mode == "or"
 
 
 @pytest.mark.asyncio
@@ -521,11 +521,13 @@ async def test_a_member_is_refused_its_own_project_card_by_the_policy() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_refuses_union_composition_before_write() -> None:
+async def test_update_accepts_upstream_union_without_rewriting_my() -> None:
     host = _Host()
     lifecycle = _lifecycle(host, _Port())
     await _create(lifecycle)
     host.update_calls.clear()
+    person = ProjectPersonCardIdentity.build(project_ref=PROJECT_REF, person_subject=TARGET)
+    original_my = host.records[(TARGET, person.my_card_id)][0].authority.to_dict()
 
     result = await lifecycle.update(
         actor_subject=ADMIN,
@@ -536,12 +538,9 @@ async def test_update_refuses_union_composition_before_write() -> None:
         expected_card_revision=1,
     )
 
-    assert result == {
-        "ok": False,
-        "error": "project_person_control_requires_and",
-        "status": 400,
-    }
-    assert host.update_calls == []
+    assert result["ok"] is True, result
+    assert host.update_calls[0]["composition_mode"] == "or"
+    assert host.records[(TARGET, person.my_card_id)][0].authority.to_dict() == original_my
 
 
 @pytest.mark.asyncio
@@ -1145,10 +1144,46 @@ async def test_the_lifecycle_s_own_cards_compose_through_the_project_held_path()
 
 
 @pytest.mark.asyncio
+async def test_human_lifecycle_reads_current_ancestor_without_my_rewrite() -> None:
+    from connection_hub.delegated_credentials.cards.model import ControlCardBinding
+    from connection_hub.delegated_credentials.controls.model import new_credentialless_card
+
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle, migration=True)
+    identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=TARGET)
+    person = ProjectPersonCardIdentity.build(project_ref=PROJECT_REF, person_subject=TARGET)
+    child, _ = host.records[(identity.project_subject, identity.control_id)]
+    child = _Record(dataclasses.replace(child.authority,
+        resource_grants={RESOURCE: (GRANT,)}, resource_operations={RESOURCE: (OPERATION,)}))
+    my, _ = host.records[(TARGET, person.my_card_id)]
+    host.records[(TARGET, person.my_card_id)] = (_Record(dataclasses.replace(my.authority,
+        resource_grants={RESOURCE: (GRANT,)}, resource_operations={RESOURCE: (OPERATION,)})), CARD_STATE_ACTIVE)
+    original_my = host.records[(TARGET, person.my_card_id)][0].authority.to_dict()
+    parent = new_credentialless_card(grantor_subject=identity.project_subject,
+        catalog_version=child.catalog_version, control_id="ancestor", issuer_ref="issuer:ancestor",
+        issuer_kind="service", initial_selection=child.authority, now=1)
+    child = dataclasses.replace(child.authority, composition_mode="or", control_card=ControlCardBinding(
+        control_id=parent.access_id, issuer_ref=parent.issuer_ref, issuer_kind=parent.issuer_kind,
+        control_revision=parent.card_revision))
+    host.records[(identity.project_subject, identity.control_id)] = (_Record(child), CARD_STATE_ACTIVE)
+    host.records[(identity.project_subject, parent.access_id)] = (
+        _Record(dataclasses.replace(parent, resource_grants={}, resource_operations={})), CARD_STATE_ACTIVE)
+    request = ProjectOperationRequest(person_subject=TARGET, project_ref=PROJECT_REF,
+        resource=RESOURCE, operation=OPERATION, required_grants=(GRANT,))
+    assert (await lifecycle.authorize_operation(request)).allowed is False
+    host.records[(identity.project_subject, parent.access_id)] = (
+        _Record(dataclasses.replace(parent, card_revision=2)), CARD_STATE_ACTIVE)
+    assert (await lifecycle.authorize_operation(request)).allowed is True
+    del host.records[(identity.project_subject, parent.access_id)]
+    assert (await lifecycle.authorize_operation(request)).allowed is False
+    assert host.records[(TARGET, person.my_card_id)][0].authority.to_dict() == original_my
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("change", "reason"),
     [
-        ({"composition_mode": "or"}, "project_person_control_requires_and"),
         ({"issuer_ref": "work:project:other"}, None),
         ({"identity_scope": "delegate"}, "control_card_identity_scope_mismatch"),
         ({"state": "revoked"}, "control_card_not_active"),
@@ -1415,3 +1450,125 @@ async def test_a_stale_revision_and_a_missing_my_card_are_named() -> None:
 
     assert stale == {"ok": False, "error": "project_identity_my_card_revision_conflict", "status": 409}
     assert missing == {"ok": False, "error": "project_identity_my_card_missing", "status": 409}
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_permission_check_is_not_shown_as_a_refusal() -> None:
+    """W587 follow-up C (EMain 15:54): while the board reloaded, the policy port
+    could not answer the edit question and an admin was shown "a project admin
+    decides this". An unavailable port is an unknown permission, not a refusal."""
+
+    class _ReloadingPort(_Port):
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                self.requests.append(request)
+                raise RuntimeError("ApplicationNotReadyError: problem-board is reloading")
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _ReloadingPort()).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["ok"] is True
+    assert view["viewer"] == {
+        "can_edit": None,
+        "reason": "project_person_control_permission_unavailable",
+        "retryable": True,
+    }
+
+
+class _BoardRestartingResolver:
+    """The live path at 15:48 (W587 follow-up C): the project host's application
+    was still starting, so the membership call failed and the resolver named it."""
+
+    def __init__(self, reason: str = "project_membership_provider_not_ready") -> None:
+        self.reason = reason
+
+    async def resolve_project_membership(self, *, project_ref: str, subject: str):
+        raise ProjectAuthorizationError(self.reason)
+
+
+def _restarting_port(reason: str = "project_membership_provider_not_ready") -> ResolverBackedProjectAuthorizationPort:
+    return ResolverBackedProjectAuthorizationPort(
+        resolver=_BoardRestartingResolver(reason), administrative_roles=("admin",),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_restarting_board_is_said_so_on_the_view_and_never_as_a_refusal() -> None:
+    """Operator, 2026-10-06 15:58: "It's clear that uh, something was restarted."
+    The real port turns the resolver's failure into a DENY decision (status 403
+    before this), which #590's raising-port test did not cover."""
+
+    class _EditQuestionRestarting(_Port):
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                return await _restarting_port().authorize_project_person_control(request)
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _EditQuestionRestarting()).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["ok"] is True
+    assert view["viewer"] == {"can_edit": None, "reason": "project_board_restarting", "retryable": True}
+
+
+@pytest.mark.asyncio
+async def test_a_restarting_board_refuses_reads_and_saves_as_retryable_not_forbidden() -> None:
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    restarting = _lifecycle(host, _restarting_port())
+    read = await restarting.get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    saved = await restarting.update(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET,
+        request_id="request-update", label="Wider",
+    )
+    expected = {
+        "ok": False, "error": "project_board_restarting",
+        "reason": "project_membership_provider_not_ready", "retryable": True, "status": 503,
+    }
+    assert read == expected
+    assert saved == expected
+    assert host.update_calls == [], "fail closed: nothing is written while the board restarts"
+
+
+@pytest.mark.asyncio
+async def test_an_unreachable_project_host_is_an_unknown_permission_not_a_refusal() -> None:
+    class _EditQuestionUnreachable(_Port):
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                port = _restarting_port("project_membership_provider_unavailable")
+                return await port.authorize_project_person_control(request)
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    view = await _lifecycle(host, _EditQuestionUnreachable()).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    )
+    assert view["viewer"] == {
+        "can_edit": None, "reason": "project_person_control_permission_unavailable", "retryable": True,
+    }
+    saved = await _lifecycle(host, _restarting_port("project_membership_provider_unavailable")).update(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET,
+        request_id="request-update", label="Wider",
+    )
+    assert saved == {
+        "ok": False, "error": "project_person_control_authorization_unavailable",
+        "reason": "project_membership_provider_unavailable", "retryable": True, "status": 503,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_provider_refusal_is_still_forbidden() -> None:
+    # Only the two unanswered reasons are retryable; a host's own refusal stays a 403.
+    saved = await _lifecycle(_Host(), _restarting_port("project_membership_provider_refused")).update(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET,
+        request_id="request-update", label="Wider",
+    )
+    assert saved == {"ok": False, "error": "project_membership_provider_refused", "status": 403}

@@ -167,6 +167,13 @@ class BundleStorageDelegatedCardStore:
         from .lifecycle_store import LIFECYCLE_POINTER_SCHEMA, resolve_pointer
         if payload.get("schema") == LIFECYCLE_POINTER_SCHEMA:
             return await resolve_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
+        from .update_store import UPDATE_POINTER_SCHEMA, resolve_pointer as resolve_update_pointer
+        if payload.get("schema") == UPDATE_POINTER_SCHEMA:
+            return await resolve_update_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
+        # W578: a staged cross-realm transaction resolves through its receipt too.
+        from .transaction_store import TRANSACTION_POINTER_SCHEMA, resolve_pointer as resolve_transaction_pointer
+        if payload.get("schema") == TRANSACTION_POINTER_SCHEMA:
+            return await resolve_transaction_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
         return CardCurrentPointer.from_mapping(payload)
 
     async def read_revision(
@@ -195,6 +202,25 @@ class BundleStorageDelegatedCardStore:
 
     async def _revision_is_committed(self, *, subject_hash: str, access_id: str, revision_name: str) -> bool:
         path = self.revision_path(subject_hash=subject_hash, access_id=access_id, revision_name=revision_name)
+        update_marker = await read_json_or_none(path.with_suffix(".issuer-update.json"))
+        if update_marker is not None:
+            if not isinstance(update_marker, dict) or set(update_marker) != {"transaction_id"}:
+                raise CardStorageError("issuer_update_revision_binding_invalid")
+            from .update_store import read_receipt as read_update_receipt
+            receipt = await read_update_receipt(self, update_marker["transaction_id"])
+            if receipt is None:
+                raise CardStorageError("issuer_update_receipt_missing")
+            from ..issuer_update import IssuerUpdateQuery
+            target = IssuerUpdateQuery.from_mapping(receipt["binding"]["request"]).target
+            if ((target.subject_hash, target.access_id, receipt["after"]["revision_name"])
+                    != (subject_hash, access_id, revision_name)):
+                raise CardStorageError("issuer_update_revision_binding_invalid")
+            return receipt["state"] == "committed"
+        transaction_marker = await read_json_or_none(path.with_suffix(".card-transaction.json"))
+        if transaction_marker is not None:
+            from .transaction_store import revision_is_committed
+            return await revision_is_committed(self, transaction_marker, subject_hash=subject_hash,
+                                               access_id=access_id, revision_name=revision_name)
         marker = await read_json_or_none(path.with_suffix(".lifecycle.json"))
         if marker is None:
             return True  # ordinary immutable revision, unchanged v1 format

@@ -159,6 +159,9 @@ bundles:
           #     full_snapshot_operation: "opaque_issuer_full_snapshot"
           # Read and full export are separate capabilities, never implied by
           # the write operation. Full snapshots are internal personal data.
+          # Exact widening updates use the configured write issuer and an
+          # issuer-owned immutable context. Their internal orchestration scope
+          # is not a request/descriptor grant and does not approve a mutation.
           #     service_id: "connection-hub"
           #     peer_proof_secret_ref: "existing.approved.peer_secret"
           #     adapter_id: "authority-app:issuer-v1"
@@ -1636,6 +1639,19 @@ bundles:
                 request_bound_operations:
                 - "kdcube.management.application.reload"
                 request_permit_ttl_seconds: 600
+              # W609: Problem Board reads one Telegram subject per platform user
+              # (identity_provider_subject_resolve) to post its notifications.
+              # W615: it also asks project_operation_authorize_for_person for a
+              # Telegram reply's sender, proven through that person's Telegram
+              # edge. Its OWN signing secret (never another service's); each
+              # resource names one provider and one purpose.
+              problem-board:
+                label: "Problem Board (Telegram notifications and replies)"
+                enabled: true
+                secret_ref: "connections.delegated_credentials.admission.services.problem-board.signing_secret"
+                resources:
+                - "urn:kdcube:identity:provider-subject:telegram"
+                - "urn:kdcube:project-operation:telegram"
           # Legacy connection-provider app registry. New per-user delegated
           # external credentials live under delegated_to_kdcube below.
         providers: {}
