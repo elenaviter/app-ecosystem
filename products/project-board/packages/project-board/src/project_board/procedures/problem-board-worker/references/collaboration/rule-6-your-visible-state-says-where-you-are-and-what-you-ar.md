@@ -50,6 +50,18 @@ it, what you touched (Rule 3), and what you are waiting on.
   for the first, and for a later one the later mail that carried the news,
   the merge notice for a completion when earlier progress reports spent the
   assignment notice (W267, 2026-09-22 22:17Z). A source event is spent once.
+- **A large feature's parts show when they are merged into it.** When a
+  feature is built from many items on its own integration branch (W502, for
+  example), an item whose code is merged into that branch moves to Review
+  and gets the tag `<feature>-integrated` (`w502-integrated`), with a named
+  reviewer for what is left to check. Working means code is still being
+  written; Review with the tag means merged into the feature and waiting for
+  its check; Done means checked. Before you take over another agent's
+  Working item, read its status and tags. Why: a Working item of an offline
+  owner looks abandoned, and an agent that took one over spent its tokens
+  before finding the work already merged (operator, 2026-10-08: "it must be
+  something very easy", "yes. and add the tag, why not.", and "nd hould be
+  added to procedure in overall as a mechanism to track portions of large").
 - **When a review returns your item**, you keep it and you start again: the
   assignment stays yours with a new ownership version, the branch stays, the
   change request stays open, and the return is work to begin now, like an
