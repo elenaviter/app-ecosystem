@@ -422,10 +422,14 @@ excluded from timeline results, so one message appears once.
 
 ## Service-Event Archive
 
-Service events older than the same hot window as the conversation index
-(`routines.conversation_store.hot_days`, default 90 days) can move from
-Postgres to the board's bundle storage. The board's `event-archive` job runs
-once a day at 02:40 UTC, one instance per tenant and project:
+Service events older than the board's hot window move from Postgres to the
+board's bundle storage. The window is the board's own bundle property
+`event_archive_hot_days`, **14 days** by default (the operator, 2026-10-07:
+"default is 14 days"). The template sets it explicitly; absent or empty means
+14, and any other value that is not a whole number of days of at least 1
+archives nothing and logs an error. The
+board's `event-archive` job runs once a day at 02:40 UTC, one instance per
+tenant and project, and logs the window and where it came from:
 
 ```text
 <board bundle storage>/events/<project-id>/<yyyy>/<mm>/<dd>/
@@ -436,17 +440,49 @@ once a day at 02:40 UTC, one instance per tenant and project:
 Each batch is recorded in `problem_board_event_archive_batches` before
 anything is deleted. The job reads the part back, checks its SHA-256 and its
 exact event set against the manifest, and only then deletes those events and
-marks the batch `pruned`. A failed check deletes nothing and records the error
-on the batch; an interrupted run resumes from the ledger.
+marks the batch `pruned`. An event is deleted only while its kind, summary,
+metadata and content hash still equal the archived copy; one that changed after
+the part was written stays and moves later in its new version. A failed check
+deletes nothing and records the error on the batch; an interrupted run resumes
+from the ledger.
 
-Some events stay in Postgres whatever their age:
-- `worker.retired`, because the Archive reads a retired agent's history from it;
-- each agent's latest tooling notice of each kind, which its Card shows;
-- each agent's latest runtime-account change, which every heartbeat replays.
+One bad batch never stops the night. Its error stays on the ledger
+(`error`, `updated_at`), a warning is logged, and the run goes on; a batch
+that fails again in the same run has its rows skipped for the rest of that run,
+so newer rows still move. The next night rewrites the same batch, which heals a
+missing or corrupt part. A stuck batch whose rows another batch has since
+archived is `retired` ("superseded by …") and its files are removed; a stuck
+batch with rows that are neither hot nor archived anywhere else stays
+`written` and is logged as possible data loss. What a night archived is the
+ledger, never a listing of the storage folder: a crash between writing a part
+and recording it can leave an unread file.
 
-A timeline search whose date range starts before the newest archived event
-also reads the archived days in that range. A search without a start date
-reads Postgres only.
+Rows move whole: nothing of an archived event stays in Postgres but a small
+index row (`problem_board_events_archived`: its identity, actor and source
+ref, kind, time and a content fingerprint; no summary or metadata). With it a
+replay of an archived event stays a replay, as for a live one: the same content
+is answered as already recorded, other content is an idempotency conflict. So
+an agent's latest runtime-account change, which every heartbeat repeats, moves
+like any event. Events archived before this index existed get their index rows
+at the start of the next run (each batch records `keys_indexed`), before any
+replay could insert one again.
+
+One kind of event stays past the window: each agent's latest tooling notice
+of each kind in each project, the status its Card there shows (the operator,
+2026-10-08: "its \"lates status\" so latest status is always only one"). Every
+older notice moves. `worker.retired` moves too: the Archive page reads a
+retired agent's projects and former role back through the one cold reader,
+by agent and kind, and the retired-agent lists use the index rows.
+
+**Reading the archive: one place.** The operator, 2026-10-08: "it must be the
+single place where this is done. where data is requested for date range." Old
+events are read back only through `archived_events`: by a date range with the
+cold layout's filters (project, agent), or, for the Archive page, one agent's
+events of one kind. A Timeline search
+whose range starts before the newest archived event reads the archived days in
+that range; a search without dates reads Postgres only. No other reader goes
+to the archive, and there is no full-text search over it. An event in two
+archived parts is returned once, from the newest.
 
 ## Mail Archive
 
@@ -465,16 +501,30 @@ whole row:
   <batch-id>.manifest.json   row count, message ids, time range, SHA-256
 ```
 
-A message stays in Postgres while anything still acts on it:
-- mail its person has not read yet;
-- a control still pending, leased, or with a discard requested;
-- the current control of an active assignment;
-- retirement delivery evidence;
-- each agent's latest notice of a kind its heartbeat replays.
+Read or unread makes no difference: every inbox message older than the window
+moves (the operator, 2026-10-07: "what is the difference between the message
+someone read or no … it is still blowup the postgres").
 
-A message and the control that answered it move together. A row that
-changed after its part was written is not deleted. Assignments and their
-ownership history are the board's current state and are not archived by age.
+Rows move whole. Each agent's latest notice of a kind stays past the window
+(its current status). Mail an agent never received does not wait forever: the
+operator, 2026-10-08: "(B) expire it, tell the sender, and move it." The same
+nightly job marks a control still pending, or leased with a lapsed lease,
+older than the window `expired`; it is never delivered afterwards. Its sender
+is told, once per run, in ONE summary per project listing every message of
+theirs that expired (subject, reference and recipient; the first 20 and how
+many more) and why (the operator, 2026-10-08: "(B) the same summary, but
+without waking the agent"). An agent gets it as a quiet notice, read at its
+next receive without a wake; a person gets one Inbox message. Each summary has
+a fixed id, so a rerun sends nothing twice. Once the notice is recorded, the expired control moves like
+any other row on a later run. A settled control moves even when an active
+assignment or a retirement still names it: both read its index row (its ref,
+routing, sender and payload hash; its payload was erased at settlement).
+
+A message and the control that answered it move together. A row is deleted
+only while it equals its archived copy in every column; a reply or an edit
+that lands after the part was written keeps it in Postgres, and a later night
+moves the new version. Assignments and their ownership history are the
+board's current state and are not archived by age.
 
 An archived message leaves a small index row in Postgres
 (`problem_board_inbox_archived`, `problem_board_controls_archived`). It holds
@@ -485,10 +535,23 @@ it, and its time; the body and payload are in the archive. With that row:
 - a reply to an archived control still finds its sender;
 - thread counts and the Inbox's dated worker search include archived mail.
 
-Reading archived mail back:
-- A dated timeline search reads the archived days in its range, like events.
-- An Inbox conversation pages its live and archived messages in one order.
-  Unread mail stays live past the window, so the two interleave in time.
+Reading archived mail back, only for a request with a date range (the one
+place, as for events):
+- Archived mail is retrievable by date range, project, worker (agent) and the
+  person it is addressed to (`archived_mail`); there is no full-text search
+  over the archive. A part that cannot be read or does not verify is named
+  under `unavailable` and the rest is returned. A message in two parts is read
+  once, in its newest version, and a restore (the maintainer's way back)
+  returns only that newest version.
+- A dated Timeline search reads the archived days in its range, like events.
+- A part that cannot be read, does not verify, or whose manifest no longer
+  matches the SHA-256 the ledger recorded is never shown as if the result were
+  complete: the Timeline and the Inbox's dated search return the days they
+  could not read (`cold_unavailable`) and the board says "Some archived days
+  could not be read (...); these results may be incomplete."
+- An Inbox conversation pages only its live messages; its message count still
+  includes archived mail. A dated search of the conversation pages live and
+  archived messages together, newest first.
 - Both mark an archived row `storage: cold`; the board shows it as
   **Cold archive**.
 - An Inbox conversation's search with dates and no text lists that
@@ -520,6 +583,12 @@ parts and index rows. So before such a rollback, the board's
   batch's ledger row.
 
 The parts stay in storage. Running it twice on the same day changes nothing.
+
+**Running it now.** The operator wants each archive run checked right after a
+deploy, not at night. The job runs on demand by setting its schedule
+(`event_archive_cron`) to a near-term UTC minute, reloading, reading back the
+scheduled job, and restoring `40 2 * * *` afterwards; the steps are in the
+board's `docs/event-archive-schedule.md`. Never call the job directly.
 
 The bundle property `enabled.cron.event-archive: false` turns the job off.
 Deleting rows makes their space reusable for new rows; it does not shrink the
