@@ -2514,9 +2514,22 @@ class AutomationAccessService:
         actor_subject = _subject_from_user(user)
         if forwarder is None or not _clean(target_subject) or not actor_subject:
             return None
+        if properties is not None:
+            # The editor sends the Card's properties back with every Save.
+            # They are not part of this edit: only an unchanged copy may travel.
+            from .controls.project_person import ProjectPersonControlError, ProjectPersonControlIdentity
+            try:
+                identity = ProjectPersonControlIdentity.build(project_ref=project_ref, target_subject=target_subject)
+                stored = await self._load_record(identity.control_id, grantor_subject=identity.project_subject)
+            except (ProjectPersonControlError, ValueError):
+                stored = None
+            if stored is None or dict(properties) != dict(stored.properties or {}):
+                properties = {"changed": True}
+            else:
+                properties = None
         if properties or composition_mode not in (None, "and"):
-            # Properties and composition are not part of this edit; changing
-            # them silently would not be the change the person saw.
+            # Changing properties or composition here would not be the change
+            # the person saw for this selection.
             return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
                     "message": "Composition and Card properties are not changed by this edit. Nothing was saved."}
         if type(expected_card_revision) is not int:
@@ -3053,6 +3066,78 @@ class AutomationAccessService:
         # acting on another owner's Card through a hosting route), else the
         # caller itself; never the storage owner.
         return self._issuer_actor_subject if self._issuer_actor_subject_bound else _subject_from_user(user)
+
+    async def _service_reset_display(self, user: Mapping[str, Any], *, access_id: str, resource: str):
+        """The owner's My Card, its project and the exact displayed Reset of one service."""
+        from .caller_writer_gate import CallerWriteRefused
+        from .managed_card_reset import ManagedCardResetError, managed_card_reset_display
+        from .project_identity_lifecycle import ProjectIdentityLifecycleError, ProjectPersonCardIdentity
+        actor = _subject_from_user(user)
+        if not actor:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user", "status": 401}
+        record = await self._load_record(_clean(access_id), grantor_subject=actor)
+        if record is None:
+            return {"ok": False, "error": "delegated_access_not_found", "status": 404}
+        card = card_authority_from_record(record)
+        try:
+            identity = ProjectPersonCardIdentity.from_my_card(card)
+        except ProjectIdentityLifecycleError:
+            return {"ok": False, "error": "card_reset_requires_project_my_card", "status": 409}
+        if identity.person_subject != actor or card.control_card is None:
+            return {"ok": False, "error": "card_reset_requires_project_my_card", "status": 409}
+        control, _ = await self._compose_with_control(record)
+        if control is None:
+            return {"ok": False, "error": "card_reset_control_unavailable", "status": 503}
+        try:
+            selection, display, digest = managed_card_reset_display(
+                card, card_authority_from_record(control), resource=_clean(resource))
+        except ManagedCardResetError:
+            return {"ok": False, "error": "original_business_noop", "status": 409,
+                    "message": "This service already matches its Control."}
+        except CallerWriteRefused as exc:
+            return {"ok": False, "error": str(exc.args[0] if exc.args else "card_reset_invalid"), "status": 409}
+        return {"ok": True, "identity": identity, "display": display, "display_digest": digest}
+
+    async def reset_service_preview(self, user: Mapping[str, Any], *, access_id: str,
+                                    resource: str) -> dict[str, Any]:
+        """W638: show the exact result of resetting one service; nothing is written."""
+        shown = await self._service_reset_display(user, access_id=access_id, resource=resource)
+        if shown.get("ok") is not True:
+            return shown
+        return {"ok": True, "preview": shown["display"], "display_digest": shown["display_digest"]}
+
+    async def reset_service_confirm(self, user: Mapping[str, Any], *, access_id: str, resource: str,
+                                    original_revision: int, display_digest: str,
+                                    request_id: str) -> dict[str, Any]:
+        """W638: commit exactly the shown Reset, through the project's transaction when enabled."""
+        shown = await self._service_reset_display(user, access_id=access_id, resource=resource)
+        if shown.get("ok") is not True:
+            return shown
+        if (shown["display_digest"] != display_digest
+                or shown["display"]["original_revision"] != original_revision):
+            return {"ok": False, "error": "card_reset_display_changed", "status": 409,
+                    "message": "Your Card or its Control changed since the Reset was shown. Nothing was saved."}
+        if self._managed_direct_write_refused() is None:
+            # Card transactions off: the owner's direct Reset writer, gated as before.
+            return await self.reset_service_to_control(user, access_id=access_id, resource=_clean(resource),
+                expected_card_revision=original_revision, request_id=request_id)
+        from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
+        identity = shown["identity"]
+        forwarder = self._managed_card_edit_forwarder(identity.project_ref)
+        if forwarder is None:
+            return self._managed_direct_write_refused()
+        actor = _subject_from_user(user)
+        try:
+            outcome = await forwarder.forward(managed_card_edit_body(actor_subject=actor,
+                project_ref=identity.project_ref, request_id=request_id, kind="my_reset",
+                principal_key="user:" + actor, original_revision=original_revision, selection={},
+                resource=_clean(resource), display_digest=display_digest))
+        except ManagedCardEditError as exc:
+            return exc.to_dict()
+        return {"ok": outcome["state"] == "committed", "managed_card_edit": outcome,
+                **({} if outcome["state"] == "committed" else {
+                    "error": "managed_card_edit_" + outcome["state"], "status": 409,
+                    "message": "The project did not save this Reset. Nothing else changed."})}
 
     async def reset_service_to_control(
         self, user: Mapping[str, Any], *, access_id: str, resource: str,

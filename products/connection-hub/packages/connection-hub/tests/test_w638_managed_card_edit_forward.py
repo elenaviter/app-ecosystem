@@ -33,8 +33,16 @@ class Host:
                                         "state": self.state, "transaction_id": "tx-1", "card_revision": 4}}
 
 
+class Stored:
+    properties = {"kept": "as stored"}
+
+
 def service(host=None):
     value = AutomationAccessService.__new__(AutomationAccessService)
+
+    async def load_record(access_id, *, grantor_subject):
+        return Stored()
+    value._load_record = load_record
     if host is not None:
         value.bind_managed_card_edit({"work:project:": PeerManagedCardEdit(
             call=host.call, bundle_id="problem-board@1-0", signer_id="synthetic-hub", secret=SECRET)})
@@ -83,6 +91,13 @@ def test_anything_the_host_cannot_bind_exactly_is_refused_or_left_to_the_direct_
     else:
         assert result["ok"] is False
     assert host.calls == []
+
+
+def test_the_cards_unchanged_properties_sent_back_with_save_still_forward():
+    host = Host()
+    result = forward(service(host), properties={"kept": "as stored"})
+    assert result["ok"] is True and len(host.calls) == 1
+    assert "properties" not in host.calls[0][2]
 
 
 @pytest.mark.parametrize("state", ["aborted", "pending"])

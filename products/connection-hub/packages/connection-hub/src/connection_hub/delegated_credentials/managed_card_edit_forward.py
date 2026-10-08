@@ -34,7 +34,7 @@ PROTOCOL = "managed-card-edit.v1"
 OPERATION = "project_card_edit"
 SCHEMA = "managed-card-edit.v1"
 OUTCOME_SCHEMA = "managed-card-edit-outcome.v1"
-TARGET_KINDS = frozenset({"person_control"})
+TARGET_KINDS = frozenset({"person_control", "my_reset"})
 SELECTION_FIELDS = ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
 
 BundleCall = Callable[..., Awaitable[Any]]
@@ -51,11 +51,24 @@ class ManagedCardEditError(ValueError):
 
 
 def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: str, kind: str,
-                           principal_key: str, original_revision: int, selection: Mapping[str, Any]) -> dict:
+                           principal_key: str, original_revision: int, selection: Mapping[str, Any],
+                           resource: str | None = None, display_digest: str | None = None) -> dict:
     """The exact unsigned request; nothing in it comes from the browser except the edit itself."""
     for value in (actor_subject, project_ref, request_id, principal_key):
         if type(value) is not str or not 0 < len(value) <= 256 or value != value.strip() or not value.isprintable():
             raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+    if kind == "my_reset":
+        # The owner's Reset of one service: the host derives the result itself
+        # and commits it only when its digest is the one the person was shown.
+        if (principal_key != "user:" + actor_subject or type(original_revision) is not int or original_revision < 1
+                or type(resource) is not str or not resource or resource != resource.strip()
+                or type(display_digest) is not str or len(display_digest) != 64
+                or any(c not in "0123456789abcdef" for c in display_digest) or selection):
+            raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+        return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref,
+                "request_id": request_id, "selection": {},
+                "target": {"kind": kind, "principal_key": principal_key, "original_revision": original_revision,
+                           "resource": resource, "display_digest": display_digest}}
     # Only the fields the person changed travel; the host keeps every other
     # field of the revision-fenced original, never an empty default.
     if (kind not in TARGET_KINDS or type(original_revision) is not int or original_revision < 1
