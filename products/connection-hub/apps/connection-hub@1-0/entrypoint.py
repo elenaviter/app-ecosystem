@@ -316,7 +316,6 @@ CSRF_PROTECTED_OPERATION_ALIASES = frozenset({
     "issuer_managed_card_snapshots",
     "issuer_managed_card_update",
     "delegated_access_update",
-    "delegated_access_reset_service",
     "delegated_access_apply_profile",
     "delegated_access_add_operations",
     "delegated_agent_grant_create",
@@ -5505,45 +5504,6 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             migration=payload.get("migration") is True,
             project_creation=payload.get("project_creation") is True,
         )
-
-    @api(
-        method="POST",
-        alias="delegated_access_reset_service",
-        route="operations",
-        csrf=True,
-        **_api_visibility("delegated_access_reset_service"),
-    )
-    async def delegated_access_reset_service(
-        self,
-        data: Optional[Dict[str, Any]] = None,
-        request: Any = None,
-        user_id: Optional[str] = None,
-        fingerprint: Optional[str] = None,
-        **kwargs: Any,
-    ) -> Dict[str, Any]:
-        """The owner's per-service Reset to Control: preview the exact result, then confirm it."""
-
-        del fingerprint
-        payload = _payload(data, **kwargs)
-        user = _platform_user_payload(self, user_id=user_id)
-        if not user:
-            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        service = await _automation_access_service(self, request)
-        access_id = str(payload.get("access_id") or "").strip()
-        resource = str(payload.get("resource") or "").strip()
-        phase = payload.get("phase")
-        if phase == "preview":
-            return await service.reset_service_preview(user, access_id=access_id, resource=resource)
-        request_id = payload.get("request_id")
-        if (phase != "confirm" or type(payload.get("original_revision")) is not int
-                or type(payload.get("display_digest")) is not str
-                or type(request_id) is not str or not 0 < len(request_id.strip()) <= 256):
-            return {"ok": False, "error": "card_reset_request_invalid", "status": 400}
-        # The browser keeps this request ID until a terminal outcome, so a
-        # retry of the same Reset replays the project's one decision.
-        return await service.reset_service_confirm(user, access_id=access_id, resource=resource,
-            original_revision=payload["original_revision"], display_digest=payload["display_digest"],
-            request_id=request_id.strip())
 
     @api(
         method="POST",

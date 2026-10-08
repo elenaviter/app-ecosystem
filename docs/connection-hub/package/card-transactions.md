@@ -136,15 +136,11 @@ host that plans that scope, and the host makes it in its own transaction:
 - **Without a forwarder** (no plan scope, or the signer secret unavailable)
   the writer keeps refusing `card_transactions_direct_write_refused`.
 
-**The owner's per-service Reset** (`delegated_access_reset_service`) is
-shown before it is confirmed. `managed_card_reset.managed_card_reset_display`
-composes the My Card's current effective Control and applies `reset_candidate`
-to one service; the preview answers that result and its `display_digest` and
-writes nothing. Confirm forwards `{kind: my_reset, principal_key, original_revision,
-resource, display_digest}` with an empty `selection`: the host recomputes the
-result with the same function from its own signed read and commits it only if
-the digest matches. With Card transactions off, confirm uses the owner's gated
-Reset writer (`reset_service_to_control`) after the same digest check.
+**The per-service Reset to Control** is not a Hub operation: it is a button
+on the person's own card in Problem Board, and the project host makes it in
+its own transaction. The Hub supplies only the pure, shared
+`managed_card_reset.managed_card_reset_display`, so the host computes the
+exact shown result with the Hub's own composition and `reset_candidate`.
 
 The editor sends a Card's properties back with every Save: only a copy equal
 to the stored person Control may travel with a forwarded edit.
