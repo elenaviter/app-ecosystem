@@ -2,13 +2,14 @@
 // has, and a Vite server over the widget root that serves tests/fixtures.
 
 import { existsSync, readdirSync } from 'node:fs'
-import { createServer as createNetServer } from 'node:net'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import react from '@vitejs/plugin-react'
 import { chromium } from 'playwright-core'
 import { createServer, loadConfigFromFile } from 'vite'
+
+import { safeViteServer } from './safe-port.mjs'
 
 // A browser this machine already has: an explicit path, Playwright's own
 // install, or any cached Chromium build. None found means the caller skips and
@@ -31,24 +32,11 @@ export async function launchBrowser() {
   }
 }
 
-// A port the OS just handed out. Vite reads port 0 as "unset" and falls back
-// to 5173, and on dev-main 127.0.0.1:5173 shadows the live UI's proxy port
-// (2026-10-06 15:03), so the fixture never lets Vite choose.
-async function freePort() {
-  return new Promise((resolve, reject) => {
-    const probe = createNetServer()
-    probe.unref()
-    probe.on('error', reject)
-    probe.listen(0, '127.0.0.1', () => {
-      const { port } = probe.address()
-      probe.close(() => resolve(port))
-    })
-  })
-}
-
 export async function startFixtureServer() {
-  const port = await freePort()
-  if (port === 5173) throw new Error('fixture refused port 5173 (the live UI proxy port)')
+  // W605: an OS-allocated loopback port no live service uses (Vite reads port
+  // 0 as 5173, which shadowed dev-main's live UI on 2026-10-06), given to Vite
+  // with strictPort so a lost race fails instead of moving (see safe-port.mjs).
+  const serverConfig = await safeViteServer()
   const root = new URL('..', import.meta.url).pathname
   const loaded = await loadConfigFromFile({ command: 'serve', mode: 'test' }, join(root, 'vite.config.ts'))
   const server = await createServer({
@@ -56,7 +44,7 @@ export async function startFixtureServer() {
     configFile: false,
     plugins: [react()],
     resolve: { alias: loaded.config.resolve.alias },
-    server: { port, host: '127.0.0.1', strictPort: true },
+    server: serverConfig,
     logLevel: 'silent',
   })
   await server.listen()
