@@ -34,7 +34,7 @@ PLAN_ECHO_FIELDS = PLAN_REQUEST_FIELDS - {"schema"}
 PLAN_ANSWER_FIELDS = PLAN_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
 # W502 lane D: register a Hub-sealed Card read collection (Connection Hub's card_read_collection_register).
 COLLECTION_REQUEST_FIELDS = frozenset({
-    "schema", "request_echo", "scope", "persons", "actor_subject", "request_id", "deadline",
+    "schema", "request_echo", "scope", "persons", "exclude", "actor_subject", "request_id", "deadline",
 })
 COLLECTION_ECHO_FIELDS = COLLECTION_REQUEST_FIELDS - {"schema"}
 COLLECTION_ANSWER_FIELDS = COLLECTION_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}

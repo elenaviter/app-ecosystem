@@ -127,7 +127,7 @@ async def test_w502_read_collection_registration_ignores_the_browser_session(ent
                                                             request=_browser_request())
     assert answer["ok"] is False and answer["error"]["code"] == "card_read_collection_request_invalid"
     forged = _forged("card-read-collection-register.v1", {
-        "scope": "work:project:one", "persons": ["user:a"], "actor_subject": "a", "request_id": "r-1",
+        "scope": "work:project:one", "persons": ["user:a"], "exclude": [], "actor_subject": "a", "request_id": "r-1",
         "deadline": 1_800_000_300})
     answer = await entrypoint.card_read_collection_register(data=forged, request=_browser_request())
     assert answer["ok"] is False and answer["error"]["code"] == "card_participant_unauthenticated"

@@ -11,7 +11,8 @@ from service_foundation.coordination.participant_answer import (
 
 SECRET, SCHEMA, NOW = "k" * 40, "card-read-collection-answer.v1", 1_800_000_000
 REQUEST = {"schema": "card-read-collection-register.v1", "request_echo": "a" * 32, "scope": "work:project:q",
-           "persons": ["user:a", "user:b"], "actor_subject": "a", "request_id": "zero-1", "deadline": NOW + 300}
+           "persons": ["user:a", "user:b"], "exclude": [{"subject_hash": "a" * 64, "access_id": "c1"}],
+           "actor_subject": "a", "request_id": "zero-1", "deadline": NOW + 300}
 
 
 def _answer(**changes):

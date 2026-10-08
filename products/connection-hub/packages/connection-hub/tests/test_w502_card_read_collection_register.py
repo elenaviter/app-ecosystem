@@ -50,9 +50,11 @@ async def _world(tmp_path):
     return operation, census, store, control, identity, catalog_store
 
 
-def _request(persons=(ADMIN, OTHER), *, scope=PROJECT, request_id="zero-1", deadline=DEADLINE):
+def _request(persons=(ADMIN, OTHER), *, scope=PROJECT, request_id="zero-1", deadline=DEADLINE, exclude=()):
     data = {"schema": REQUEST_SCHEMA, "request_echo": os.urandom(16).hex(), "scope": scope,
-            "persons": sorted(persons), "actor_subject": "admin-1", "request_id": request_id, "deadline": deadline}
+            "persons": sorted(persons), "exclude": sorted((dict(item) for item in exclude),
+                                                          key=lambda item: (item["subject_hash"], item["access_id"])),
+            "actor_subject": "admin-1", "request_id": request_id, "deadline": deadline}
     proof = {"service_id": PEER, "timestamp": str(NOW), "nonce": os.urandom(12).hex()}
     proof["signature"] = sign_admission_request(
         secret=REQUEST_SECRET, **proof, delegated_token=f"{REQUEST_SCHEMA}:{data['request_echo']}",
@@ -66,7 +68,7 @@ def _verified(response, request):
     answer = dict(response["collection_answer"])
     proof = answer.pop("receipt_proof")
     assert answer["schema"] == ANSWER_SCHEMA and answer["request_digest"] == collection_request_digest(request)
-    for name in ("request_echo", "scope", "persons", "actor_subject", "request_id", "deadline"):
+    for name in ("request_echo", "scope", "persons", "exclude", "actor_subject", "request_id", "deadline"):
         assert answer[name] == request[name]
     assert sign_participant_answer(answer, schema=ANSWER_SCHEMA, secret=RECEIPT_SECRET,
                                    signer_id=proof["service_id"], timestamp=proof["timestamp"],
@@ -199,7 +201,7 @@ async def test_the_answer_is_bound_to_the_collection_contract(tmp_path, field, v
     with pytest.raises(ParticipantAnswerRefused):
         verify_participant_answer(answer, schema=ANSWER_SCHEMA, secret=RECEIPT_SECRET,
             signer_id="connection-hub@1-0", audience="problem-board@1-0", direction="hub-to-authority",
-            request={name: request[name] for name in ("schema", "request_echo", "scope", "persons",
+            request={name: request[name] for name in ("schema", "request_echo", "scope", "persons", "exclude",
                                                        "actor_subject", "request_id", "deadline")},
             now=NOW, contract=AnswerContract.COLLECTION)
 
@@ -252,3 +254,40 @@ async def test_a_real_pair_seals_my_control_and_the_complete_chain_like_the_cens
     _, reads = await collections.resolve_collection(h.store, ref["collection_id"])
     assert reads == [expected[key] for key in sorted(expected)]
     assert all(read["revision"] >= 1 for read in reads)  # My, Control and every chain Card are present
+
+
+# ── a write group's own targets are excluded, every other read of every named person stays (23:23Z) ──
+
+@pytest.mark.asyncio
+async def test_exclude_removes_exactly_the_group_targets_and_keeps_the_persons_other_reads(tmp_path):
+    operation, census, store, control, identity, catalog_store = await _world(tmp_path)
+    expected, _ = await _census_reservations(census, (ADMIN, OTHER))
+    target = {"subject_hash": expected[0]["subject_hash"], "access_id": expected[0]["access_id"]}
+    minted = {"subject_hash": "e" * 64, "access_id": "aut_newly_minted"}  # a target that is no dependency
+    request = _request(exclude=[target, minted], request_id="child-1")
+    ref = _verified(await operation.answer(request), request)["ref"]
+    _, reads = await collections.resolve_collection(store, ref["collection_id"])
+    assert reads == expected[1:] and ref["count"] == len(expected) - 1
+
+
+@pytest.mark.asyncio
+async def test_excluding_every_read_refuses_an_empty_collection(tmp_path):
+    operation, census, *_ = await _world(tmp_path)
+    expected, _ = await _census_reservations(census, (OTHER,))
+    request = _request([OTHER], exclude=[{"subject_hash": r["subject_hash"], "access_id": r["access_id"]}
+                                         for r in expected], request_id="child-2")
+    assert _verified(await operation.answer(request), request) == {
+        "kind": "refused", "code": "card_read_collection_empty", "status": 409}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exclude", [
+    [{"subject_hash": "A" * 64, "access_id": "x"}], [{"subject_hash": "a" * 64}],
+    [{"subject_hash": "b" * 64, "access_id": "x"}, {"subject_hash": "a" * 64, "access_id": "x"}],
+    [{"subject_hash": "a" * 64, "access_id": f"x{index}"} for index in range(9)]])
+async def test_a_malformed_exclude_is_refused_unsigned(tmp_path, exclude):
+    operation, *_ = await _world(tmp_path)
+    request = _request()
+    request["exclude"] = exclude
+    assert await operation.answer(request) == {"ok": False, "status": 400,
+                                               "error": {"code": "card_read_collection_request_invalid"}}

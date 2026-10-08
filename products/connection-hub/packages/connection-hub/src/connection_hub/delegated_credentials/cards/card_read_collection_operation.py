@@ -46,7 +46,9 @@ OPERATION = "card_read_collection_register"
 REQUEST_SCHEMA = "card-read-collection-register.v1"
 ANSWER_SCHEMA = "card-read-collection-answer.v1"
 DIRECTION = "hub-to-authority"
-REQUEST_FIELDS = ("schema", "request_echo", "scope", "persons", "actor_subject", "request_id", "deadline")
+REQUEST_FIELDS = ("schema", "request_echo", "scope", "persons", "exclude", "actor_subject", "request_id", "deadline")
+# A write group's own targets, which are its writes and never its read dependencies (W651, claude-ops@spark1 23:23Z).
+MAX_EXCLUDE = 8
 _ECHO = re.compile(r"[0-9a-f]{32,128}\Z")
 
 
@@ -71,11 +73,26 @@ def _valid_request(data: Any) -> bool:
             and type(data["deadline"]) is int and data["deadline"] > 0
             and type(persons) is list and 0 < len(persons) <= MAX_PERSONS
             and all(_bounded(person) for person in persons)
-            and persons == sorted(set(persons)))
+            and persons == sorted(set(persons))
+            and _valid_exclude(data["exclude"]))
 
 
-def descriptors_of(person_results: list[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """The census consumer's read reservations over these person entries, or a named refusal."""
+def _valid_exclude(exclude: Any) -> bool:
+    if type(exclude) is not list or len(exclude) > MAX_EXCLUDE:
+        return False
+    keys = []
+    for item in exclude:
+        if (not isinstance(item, Mapping) or set(item) != {"subject_hash", "access_id"}
+                or type(item["subject_hash"]) is not str or not re.fullmatch(r"[0-9a-f]{64}", item["subject_hash"])
+                or not _bounded(item["access_id"])):
+            return False
+        keys.append((item["subject_hash"], item["access_id"]))
+    return keys == sorted(set(keys))
+
+
+def descriptors_of(person_results: list[Mapping[str, Any]], exclude: Any = ()) -> list[dict[str, Any]]:
+    """The census consumer's read reservations over these person entries, minus ``exclude`` (a write
+    group's own targets), or a named refusal."""
     reads: dict[tuple[str, str], dict[str, Any]] = {}
     for result in person_results:
         entries = [result["my"], result["control"]]
@@ -90,6 +107,10 @@ def descriptors_of(person_results: list[Mapping[str, Any]]) -> list[dict[str, An
             key = (entry["subject_hash"], entry["access_id"])
             reads[key] = {"subject_hash": key[0], "access_id": key[1],
                           "revision": entry["revision"] if entry["state"] == "present" else 0}
+    for item in exclude or ():
+        reads.pop((item["subject_hash"], item["access_id"]), None)  # a newly minted target need not be read
+    if not reads:
+        raise _Refused("card_read_collection_empty", 409)
     if len(reads) > MAX_COLLECTION_READS:
         raise _Refused("card_read_collection_too_large", 413)
     return [reads[key] for key in sorted(reads)]
@@ -138,7 +159,8 @@ class CardReadCollectionOperation(CardCensusReadOperation):
                 raise _Refused("card_census_scope_forbidden", 403)
             if data["deadline"] <= int(self._clock()):
                 raise _Refused("card_read_collection_expired", 409)
-            reads = descriptors_of([await self._person(data["scope"], person) for person in data["persons"]])
+            reads = descriptors_of([await self._person(data["scope"], person) for person in data["persons"]],
+                                   data["exclude"])
             catalog = await self._active_catalog()
             if catalog is None:
                 raise _Refused("card_catalog_reservation_unavailable", 503)
