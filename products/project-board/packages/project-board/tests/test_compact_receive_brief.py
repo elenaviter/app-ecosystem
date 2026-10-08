@@ -168,6 +168,44 @@ def test_a_distinct_payload_work_ref_and_a_named_operator_origin_stay():
     assert f"source_message_ref = {MESSAGE_REF}" in text
 
 
+def _suggested_reply(message, *, project_ref=PROJECT):
+    envelope = _receive(message)
+    envelope["result"]["items"][0]["project_ref"] = project_ref
+    text = render_envelope(envelope, worker_flags=FLAGS)
+    line = next(line for line in text.splitlines() if line.startswith("reply: "))
+    return shlex.split(line.removeprefix("reply: "))
+
+
+@pytest.mark.parametrize("sender", ["control-plane", "operator"])
+def test_project_scoped_person_reply_keeps_the_delivered_project_and_thread(sender):
+    message = _message(kind="request", sender=sender, reply_to="", message_id="mail-w616",
+                       correlation_id="thread-w616", project_ref=PROJECT,
+                       operator_origin={"channel": "board", "ref": "origin-w616"})
+
+    reply = _suggested_reply(message)
+
+    assert reply[reply.index("--project-ref") + 1] == PROJECT
+    assert reply[reply.index("--recipient") + 1] == "operator"
+    assert reply[reply.index("--correlation-id") + 1] == "thread-w616"
+    assert reply[reply.index("--reply-to") + 1] == MESSAGE_REF
+    assert reply[reply.index("--idempotency-key") + 1] == "reply-mail-w616"
+
+
+@pytest.mark.parametrize("origin", [
+    {"channel": "board", "ref": "direct-owner"},
+    {"channel": "share", "ref": "explicit-share"},
+])
+def test_projectless_owner_and_share_reply_stay_projectless(origin):
+    message = _message(kind="request", sender="control-plane", reply_to="", project_ref="",
+                       operator_origin=origin)
+
+    reply = _suggested_reply(message, project_ref="")
+
+    assert "--project-ref" not in reply
+    assert reply[reply.index("--reply-to") + 1] == MESSAGE_REF
+    assert reply[reply.index("--correlation-id") + 1] == "w472-start"
+
+
 @pytest.mark.parametrize("filename", [
     "verification.md", "my report (final).md", "it's \"quoted\".md", "отчёт ✓.md", "a;rm -rf x.md",
 ])

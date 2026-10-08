@@ -3514,13 +3514,13 @@ def _commands_for(
     ]
     if kind in ("question", "request") and correlation_id:
         recipient = "operator" if sender in (None, "", "control-plane", "operator") else str(sender)
-        reply_scope = [] if recipient == "operator" else scope
         key = f"reply-{message_id}" if message_id else "reply-<message_id>"
+        # The delivered project selects the writer's route, even for operator replies.
         lines.append(
             "reply: "
             + _cmd(
                 [
-                    "pb", "worker", "send", *reply_scope,
+                    "pb", "worker", "send", *scope,
                     "--recipient", recipient, "--kind", "reply",
                     "--correlation-id", str(correlation_id), "--reply-to", str(message_ref),
                     "--subject", "<subject>", "--body-file", "<path>", "--idempotency-key", key,
