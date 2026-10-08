@@ -198,3 +198,31 @@ async def test_profile_uses_actual_catalog_worker_and_coordinator_selections():
         assert candidate.card_revision == original.card_revision + 1
         assert candidate.control_card == original.control_card
     assert original.resource_operations[DECLARED_RESOURCE] == ("project.plan.item",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [ATTACH_AGENT, DETACH_AGENT])
+async def test_revision_zero_plans_against_the_current_agent_revision_and_reports_it(kind):
+    # W639: the project host knows the agent Card's id, not its revision.
+    parent, agent = _parent(), _agent()
+    if kind == DETACH_AGENT:
+        attached = await build_agent_lifecycle_update(None, original=agent,
+            update=_update(ATTACH_AGENT, agent), active=None, decision=_decision(ATTACH_AGENT, parent),
+            project_ref=PROJECT, actor_subject=ACTOR, request_id=REQUEST, now=1, parent=parent)
+        agent = CardAuthority.from_mapping(attached["member"]["candidate"])
+    update = {**_update(kind, agent), "original_revision": 0}
+    result = await plan_card_lifecycle(_Host(parent, agent), project_ref=PROJECT, creations=[], updates=[update],
+        actor_subject=ACTOR, actor_kind="caller", request_id=REQUEST, authorization=_authorization(kind, parent))
+    assert result["ok"] is True, result
+    (member,) = result["plan"]["candidate_value"]["cards"]
+    assert member["original_revision"] == agent.card_revision  # the exact revision PREPARE will fence
+
+
+@pytest.mark.asyncio
+async def test_revision_zero_is_refused_for_any_other_update_kind():
+    parent = _parent()
+    result = await plan_card_lifecycle(_Host(parent), project_ref=PROJECT, creations=[],
+        updates=[{"kind": "revoke", "target_subject": AGENT, "access_id": parent.access_id,
+                  "subject_hash": subject_hash_for(OWNER), "original_revision": 0}],
+        actor_subject=ACTOR, actor_kind="caller", request_id=REQUEST, authorization=_authorization(ATTACH_AGENT, parent))
+    assert result["ok"] is False
