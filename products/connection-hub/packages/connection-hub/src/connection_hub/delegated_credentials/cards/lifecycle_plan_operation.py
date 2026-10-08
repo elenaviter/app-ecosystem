@@ -39,7 +39,7 @@ from service_foundation.coordination.participant_answer import sign_participant_
 
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
 from ..project_authorization import (
-    PROJECT_CONTROL_CREATE, PROJECT_INVITATION_CONTROL_REVOKE, PROJECT_PERSON_CONTROL_BIND_PROJECT,
+    PROJECT_AGENT_CARD_UPDATE, PROJECT_CONTROL_CREATE, PROJECT_CONTROL_UPDATE, PROJECT_INVITATION_CONTROL_REVOKE, PROJECT_PERSON_CONTROL_BIND_PROJECT,
     PROJECT_PERSON_CONTROL_CREATE, PROJECT_PERSON_CONTROL_REVOKE, PROJECT_PERSON_CONTROL_UPDATE, LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest,
     LifecyclePlanStep, ProjectAuthorizationError,
 )
@@ -69,7 +69,10 @@ UPDATE_STEPS = {"revoke": PROJECT_INVITATION_CONTROL_REVOKE, "attach": PROJECT_P
                 # W607: an existing person Control or My Card takes a PB-supplied selection.
                 "reselect": PROJECT_PERSON_CONTROL_UPDATE,
                 # W502: an active person leaves the project; their Control and My end in one decision.
-                "remove_person": PROJECT_PERSON_CONTROL_REVOKE}
+                "remove_person": PROJECT_PERSON_CONTROL_REVOKE,
+                # W638: the project's own Control and a project agent Card take a host-authorized selection.
+                "reselect_project_control": PROJECT_CONTROL_UPDATE,
+                "reselect_agent_card": PROJECT_AGENT_CARD_UPDATE}
 
 # planner(host, *, project_ref, creations, updates, actor_subject, actor_kind, request_id, authorization)
 #   -> {"ok": True, "plan": {...}} or {"ok": False, "error": <code>}
