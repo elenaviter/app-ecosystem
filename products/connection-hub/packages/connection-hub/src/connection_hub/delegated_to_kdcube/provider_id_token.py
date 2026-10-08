@@ -110,18 +110,22 @@ class ProviderIdTokenVerifier:
         self._fetch_json = fetch_json or _fetch_json
         self._jwks_client_factory = jwks_client_factory or _pyjwt_jwks_client
         self._clock = clock
-        self._metadata: IssuerMetadata | None = None
-        self._metadata_at = 0.0
+        # (metadata, fetched_at), replaced as one value so a reader never sees
+        # metadata from one fetch with the time of another. No lock: the
+        # verifier is process-wide and serves every event loop, and an
+        # asyncio.Lock binds to the loop it is first awaited on. Two
+        # concurrent misses fetch twice, which is harmless.
+        self._cached: tuple[IssuerMetadata, float] | None = None
         self._jwks_clients: dict[str, Any] = {}
-        self._lock = asyncio.Lock()
 
     async def metadata(self) -> IssuerMetadata:
-        async with self._lock:
-            now = self._clock()
-            if self._metadata is None or now - self._metadata_at >= self._metadata_ttl:
-                self._metadata = self._parse_metadata(await self._fetch_json(self._discovery_url))
-                self._metadata_at = now
-            return self._metadata
+        cached = self._cached
+        now = self._clock()
+        if cached is not None and now - cached[1] < self._metadata_ttl:
+            return cached[0]
+        metadata = self._parse_metadata(await self._fetch_json(self._discovery_url))
+        self._cached = (metadata, now)
+        return metadata
 
     def _parse_metadata(self, document: Mapping[str, Any]) -> IssuerMetadata:
         issuer = str(document.get("issuer") or "").strip()

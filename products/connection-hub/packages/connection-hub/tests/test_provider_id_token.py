@@ -9,6 +9,7 @@ payload that merely failed to decode.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -195,3 +196,32 @@ async def test_the_issuer_is_taken_from_metadata_not_assumed():
     document = _discovery(issuer="https://www.linkedin.com")
     claims = await _verifier(document).verify(_token(iss="https://www.linkedin.com"), audience=CLIENT_ID)
     assert claims["iss"] == "https://www.linkedin.com"
+
+
+def test_one_verifier_serves_every_event_loop_of_the_process():
+    """The process-wide verifier is awaited from more than one event loop.
+
+    Each ``asyncio.run`` is a new loop. Two concurrent misses in each force any
+    loop-bound primitive the verifier holds to wait, so one bound to the first
+    loop fails in the second with ``RuntimeError``.
+    """
+
+    fetches: list[str] = []
+
+    async def slow_fetch(url):
+        fetches.append(url)
+        await asyncio.sleep(0.01)
+        return _discovery()
+
+    verifier = ProviderIdTokenVerifier(
+        DISCOVERY_URL, metadata_ttl_seconds=0, fetch_json=slow_fetch
+    )
+
+    async def two_concurrent_misses():
+        return await asyncio.gather(verifier.metadata(), verifier.metadata())
+
+    for run in range(2):
+        before = len(fetches)
+        first, second = asyncio.run(two_concurrent_misses())
+        assert first.issuer == second.issuer == ISSUER
+        assert len(fetches) - before <= 2, f"run {run} fetched {len(fetches) - before} times"
