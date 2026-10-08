@@ -51,13 +51,15 @@ def _soft_nofile(limit: int):
 
 
 def test_the_bound_is_derived_from_the_census_ceiling_not_a_literal():
-    assert rs.MAX_READ_SET_READS == 2 * MAX_PERSONS + rs.MAX_READ_SET_FIXED_READS
+    assert rs.MAX_READ_SET_READS == 2 * MAX_PERSONS + rs.MAX_READ_SET_CHAIN_READS
     assert rs.MAX_READ_SET_READS >= 2 * 33  # the 33-member zero cutover that 64 refused
     assert rs.MAX_READ_SET_BYTES == MAX_ANSWER_BYTES
 
 
 @pytest.mark.parametrize("members", [33, MAX_PERSONS])
-def test_a_project_wide_read_set_up_to_the_census_ceiling_is_accepted(members):
+def test_a_project_wide_read_set_with_a_shared_chain_up_to_the_census_ceiling_is_accepted(members):
+    # A shared chain counts once, so the set is My and Control per person; distinct
+    # chain Cards beyond MAX_READ_SET_CHAIN_READS are refused by name instead.
     reads = _absent_reads(2 * members)
     assert rs.validate_read_set_candidate(_candidate(reads))["reads"] == _candidate(reads)["reads"]
 

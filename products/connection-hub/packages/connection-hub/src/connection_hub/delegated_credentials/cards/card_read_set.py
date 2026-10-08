@@ -39,14 +39,18 @@ from .card_participant import (
 
 READ_SET_BINDING_KIND = "connection-hub.card-read-set"
 READ_SET_SCHEMA = "connection-hub.card-read-set.v1"
-# The read set holds every Card a transaction depends on, so its ceiling is the
-# product's own: the census answers at most MAX_PERSONS people, and a project-wide
-# step (the zero cutover) reads each person's My Card and Control Card. The
-# headroom covers the fixed reads (actor, the project Control and adjacent Cards).
-# The 64 this replaced was sized for W578's ordinary actor/target/witness read and
-# refused a 33-member zero cutover (66 reads).
-MAX_READ_SET_FIXED_READS = 24
-MAX_READ_SET_READS = 2 * MAX_PERSONS + MAX_READ_SET_FIXED_READS
+# The read set holds every Card a transaction depends on. A project-wide step (the
+# zero cutover) reads the unique union of every person's My Card, Control Card and
+# Control chain Cards (CodeApp: card_business_hub_census read_reservations); a
+# shared chain (the project Control and its ancestors) counts once. So the count is
+# 2 per person plus the DISTINCT chain Cards, sized here for MAX_PERSONS people with
+# up to MAX_READ_SET_CHAIN_READS distinct chain Cards. A larger set, or one past the
+# census answer's own byte bound, is refused by name (card_read_set_too_large): no
+# proof is dropped and no member count is imposed. The 64 this replaced was sized
+# for W578's ordinary actor/target/witness read and refused a 33-member zero
+# cutover (66 reads).
+MAX_READ_SET_CHAIN_READS = 24
+MAX_READ_SET_READS = 2 * MAX_PERSONS + MAX_READ_SET_CHAIN_READS
 # The candidate's canonical bytes stay within the census answer's own bound.
 MAX_READ_SET_BYTES = MAX_CENSUS_ANSWER_BYTES
 _HEX = frozenset("0123456789abcdef")
