@@ -232,7 +232,8 @@ def test_an_enumerated_read_set_parser_never_reads_a_collection_key():
 
 # ── through the Hub participant, from a signed authority, by reference ──
 
-async def _participant(tmp_path, *, deadline: int = 2_000_000_000, actor: str = "synthetic-owner"):
+async def _participant(tmp_path, *, deadline: int = 2_000_000_000, actor: str = "synthetic-owner",
+                       intent_scope: str = "work:project:synthetic"):
     from test_w578_card_group_participant import AUTHORITY, _Authority
 
     from connection_hub.delegated_credentials.cards.authority_intent_source import (
@@ -247,16 +248,32 @@ async def _participant(tmp_path, *, deadline: int = 2_000_000_000, actor: str = 
         request_id="r-1", deadline=deadline, reads=_reads(before), catalog=CATALOG)
     ref = {"schema": read_set.READ_COLLECTION_REF_SCHEMA, **{key: header[key] for key in (
         "collection_id", "scope", "count", "root", "catalog", "deadline")}}
-    authority = _Authority(read_set.hub_read_collection_participant_input(ref=ref, actor_subject=actor,
-                                                                          actor_kind="caller"), ref)
+    authority = _scoped_authority(read_set.hub_read_collection_participant_input(
+        ref=ref, actor_subject=actor, actor_kind="caller"), ref, project_ref=intent_scope)
     clock = lambda: 1_800_000_000  # noqa: E731
     decisions = AuthorityDecisionReader(fetch=authority.fetch, authority=AUTHORITY, clock=clock)
     tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
     hub = HubCardParticipant(service=service, store=store,
                              intents=AuthorityCardIntentSource(store=store, fetch=authority.fetch,
-                                                               authority=AUTHORITY, clock=clock),
+                                                               authority=AUTHORITY, clock=clock,
+                                                               scope_field="project_ref"),
                              decisions=decisions)
     return store, hub, authority, reservations, before
+
+
+def _scoped_authority(participant_input, candidate, *, project_ref):
+    """The W578 test authority, its intent carrying the qualified project scope the Hub binds."""
+    from service_foundation.coordination.durable_decision_log import DecisionRecord, IntentDraft
+    from test_w578_card_group_participant import NOW as GROUP_NOW, TX, _Authority
+
+    from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
+    authority = _Authority(participant_input, candidate)
+    draft = IntentDraft(replay_scope="pb:group", request_id="pb-group", expires_at=GROUP_NOW + 600,
+                        participants=(PARTICIPANT,),
+                        payload={"project_ref": project_ref, "participant_inputs": {PARTICIPANT: participant_input},
+                                 "participant_candidates": {PARTICIPANT: candidate}})
+    authority.record = DecisionRecord(draft.bind(TX, 1), "preparing", {}, {})
+    return authority
 
 
 @pytest.mark.asyncio
@@ -282,7 +299,29 @@ async def test_a_by_reference_read_set_prepares_and_finishes_through_the_partici
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case, code", [("expired", "card_read_collection_expired"),
+async def test_a_reference_scoped_to_another_project_than_the_verified_intent_is_not_bound(tmp_path):
+    """CodeApp 23:37Z: the reference's scope must be the verified intent's own qualified scope."""
+    from test_w578_card_group_participant import TX
+    store, hub, authority, reservations, before = await _participant(tmp_path,
+                                                                      intent_scope="work:project:different-original")
+    with pytest.raises(DecisionRefused, match="card_intent_not_bound"):
+        await hub.prepare(TX)
+    assert await tx.read_receipt(store, TX) is None
+
+
+@pytest.mark.asyncio
+async def test_a_decision_that_outlives_its_collection_is_not_bound(tmp_path):
+    from test_w578_card_group_participant import NOW as GROUP_NOW, TX
+    store, hub, authority, reservations, before = await _participant(tmp_path, deadline=GROUP_NOW + 300)
+    with pytest.raises(DecisionRefused, match="card_intent_not_bound"):
+        await hub.prepare(TX)
+    assert await tx.read_receipt(store, TX) is None
+
+
+@pytest.mark.asyncio
+# An expired collection is now refused one step earlier: its decision outlives it, so it is not bound
+# (the stage's own card_read_collection_expired is pinned at the service level).
+@pytest.mark.parametrize("case, code", [("expired", "card_intent_not_bound"),
                                         ("other_actor", "card_read_collection_moved")])
 async def test_an_expired_or_foreign_collection_is_never_prepared(tmp_path, case, code):
     from test_w578_card_group_participant import TX

@@ -486,6 +486,10 @@ class HubCardParticipant:
         if record.intent.digest != intent.intent_digest or PARTICIPANT not in record.intent.participants:
             raise DecisionRefused("card_intent_not_bound")
         projection = hub_projection(record.intent)
+        collection = getattr(intent, "collection", None)
+        if collection is not None and record.intent.expires_at > collection["deadline"]:
+            # W502 lane D (CodeApp 23:37Z): the decision never outlives the collection it holds.
+            raise DecisionRefused("card_intent_not_bound")
         if isinstance(intent, CardGroupIntent):
             return self._bound_group(intent, projection)
         if isinstance(intent, CardReadSetIntent):
@@ -521,8 +525,10 @@ class HubCardParticipant:
         """W578: the read set the intent holds is exactly the projection's, field by field."""
         from .card_read_set import read_set_candidate_value, verify_read_collection_projection, verify_read_set_projection
         if intent.collection is not None:
-            # W502 lane D: the reference, field by field; the Hub's own collection holds the reads.
-            if intent.reads or verify_read_collection_projection(projection, intent.collection)["catalog"] != intent.catalog:
+            # W502 lane D: the reference, field by field; the Hub's own collection holds the reads. Its scope
+            # is the verified intent's own qualified scope (CodeApp 23:37Z), never another project's.
+            if (intent.reads or not intent.scope or intent.collection.get("scope") != intent.scope
+                    or verify_read_collection_projection(projection, intent.collection)["catalog"] != intent.catalog):
                 raise DecisionRefused("card_intent_not_bound")
         else:
             verify_read_set_projection(projection, read_set_candidate_value(intent.reads, intent.catalog))
@@ -552,7 +558,8 @@ class HubCardParticipant:
         if intent.collection is not None:
             # W502 lane D: the codec bound the reference; the deps name the collection, never reads.
             from .card_read_set import read_collection_dependencies
-            if (intent.reads or dict(projection["dependency_revisions"]) != read_collection_dependencies(intent.collection)
+            if (intent.reads or not intent.scope or intent.collection.get("scope") != intent.scope
+                    or dict(projection["dependency_revisions"]) != read_collection_dependencies(intent.collection)
                     or intent.collection["catalog"] != intent.catalog
                     or not intent.actor_subject or projection["actor_subject"] != intent.actor_subject
                     or projection["actor_kind"] != intent.actor_kind):

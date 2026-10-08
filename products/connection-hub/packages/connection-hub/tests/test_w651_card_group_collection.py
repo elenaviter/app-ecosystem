@@ -303,3 +303,27 @@ async def test_members_stage_in_canonical_order_and_only_the_lead_carries_the_co
     assert [entry[1] for entry in seen] == [member[2].access_id for member in members]  # canonical order
     assert seen[0][2] == {key: ref[key] for key in ("collection_id", "root", "count")} and seen[0][3] == 5
     assert all(entry[2] is None and entry[3] == 0 for entry in seen[1:])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope, bound", [("work:project:synthetic", True), ("work:project:different-original", False),
+                                          ("", False)])
+async def test_a_group_reference_binds_only_to_its_verified_intent_scope(tmp_path, scope, bound):
+    """CodeApp 23:37Z, group form: the reference's scope is the verified intent's own qualified scope."""
+    from connection_hub.delegated_credentials.cards.card_participant import (
+        CardGroupIntent, CardGroupMemberIntent, HubCardParticipant,
+    )
+    store, service, before, after = await _setup(tmp_path)
+    ref = _ref()
+    members = _service_members(before, after)
+    projection = groups.hub_group_participant_input(members=_group_members(before, after), actor_subject="a",
+                                                    actor_kind="caller", collection=ref)
+    intent = CardGroupIntent(transaction_id=GROUP, intent_digest=INTENT,
+                             members=tuple(CardGroupMemberIntent(subject_hash=m[0], original=m[1], candidate=m[2],
+                                                                 action=m[3]) for m in members),
+                             actor_subject="a", actor_kind="caller", scope=scope, catalog=CATALOG, collection=ref)
+    if bound:
+        assert HubCardParticipant._bound_group(intent, projection) is intent
+    else:
+        with pytest.raises(DecisionRefused, match="card_intent_not_bound"):
+            HubCardParticipant._bound_group(intent, projection)
