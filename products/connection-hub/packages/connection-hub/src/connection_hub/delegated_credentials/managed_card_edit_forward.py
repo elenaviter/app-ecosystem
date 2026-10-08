@@ -34,7 +34,7 @@ PROTOCOL = "managed-card-edit.v1"
 OPERATION = "project_card_edit"
 SCHEMA = "managed-card-edit.v1"
 OUTCOME_SCHEMA = "managed-card-edit-outcome.v1"
-TARGET_KINDS = frozenset({"person_control", "agent_card", "invitation_control"})
+TARGET_KINDS = frozenset({"person_control", "agent_card", "invitation_control", "project_control"})
 SELECTION_FIELDS = ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
 
 BundleCall = Callable[..., Awaitable[Any]]
@@ -57,9 +57,10 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
     for value in (actor_subject, project_ref, request_id, principal_key):
         if type(value) is not str or not 0 < len(value) <= 256 or value != value.strip() or not value.isprintable():
             raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
-    if kind in {"agent_card", "invitation_control"}:
-        # The host cannot read an agent Card: it names the Card's own storage
-        # coordinates, and the Hub's planner keeps every field not sent.
+    if kind in {"agent_card", "invitation_control", "project_control"}:
+        # The host cannot read an agent Card or the project Control (P): it names
+        # the Card's own storage coordinates, and the Hub's planner keeps every
+        # field not sent.
         if (principal_key != "card:" + str(access_id) or type(subject_hash) is not str or not subject_hash
                 or type(original_revision) is not int or original_revision < 1 or not isinstance(selection, Mapping)
                 or not selection or set(selection) - set(SELECTION_FIELDS)
