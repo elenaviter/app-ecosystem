@@ -6,9 +6,11 @@ Public OAuth client registry.
 
 Claude Code is pre-registered as a public client (no secret,
 ``token_endpoint_auth_method = none``). Redirect-URI matching follows RFC 8252:
-the loopback redirects (``localhost`` / ``127.0.0.1``) match on any port because
-the native client binds a dynamic local port for its callback; all other
-redirects must match exactly.
+a loopback redirect (``localhost`` / ``127.0.0.1`` / ``::1``) may differ from a
+registered one in its port alone, because the native client binds a dynamic
+local port for its callback; scheme, host, path and query match byte for byte,
+and userinfo, fragments and malformed ports are refused. All other redirects
+must match exactly.
 """
 from __future__ import annotations
 
@@ -335,6 +337,37 @@ def dcr_redirect_allowed(
     return redirect_uri_allowed(allowlist, uri)
 
 
+def _loopback_without_port(uri: str) -> Optional[Tuple[str, Optional[int]]]:
+    """The URI with only its port removed, and that port; None if not a clean loopback URI.
+
+    Every other byte is kept, so two URIs compare equal exactly when they differ
+    in the port alone (RFC 8252 section 8.4).
+    """
+    if uri != uri.strip() or any(ord(char) < 0x21 or ord(char) == 0x7F for char in uri):
+        return None
+    if "#" in uri:
+        return None
+    try:
+        parts = urlsplit(uri)
+        port = parts.port
+    except (TypeError, ValueError):
+        return None
+    netloc = parts.netloc
+    if (
+        parts.hostname not in _LOOPBACK_HOSTS
+        or "@" in netloc
+        or netloc.endswith(":")
+        or port == 0
+    ):
+        return None
+    start = uri.find("//")
+    if start < 0 or uri[start + 2 : start + 2 + len(netloc)] != netloc:
+        return None
+    host = netloc.rsplit(":", 1)[0] if port is not None else netloc
+    rest = uri[start + 2 + len(netloc) :]
+    return uri[: start + 2] + host + rest, port
+
+
 def redirect_uri_allowed(client: Optional[PublicClient], uri: str) -> bool:
     if client is None or not uri:
         return False
@@ -342,8 +375,8 @@ def redirect_uri_allowed(client: Optional[PublicClient], uri: str) -> bool:
         return True
     if client.application_type == "web":
         return False
-    got = urlsplit(uri)
-    if got.hostname not in _LOOPBACK_HOSTS:
+    got = _loopback_without_port(uri)
+    if got is None:
         return False
     # A metadata document is authored by the client, so an explicit port there
     # is a constraint to honour. A portless loopback URI cannot pin the
@@ -351,13 +384,11 @@ def redirect_uri_allowed(client: Optional[PublicClient], uri: str) -> bool:
     # which is the form Claude Code publishes.
     document_client = client.registration_kind == CLIENT_REGISTRATION_METADATA_DOCUMENT
     for allowed in client.redirect_uris:
-        a = urlsplit(allowed)
-        if (
-            a.hostname in _LOOPBACK_HOSTS
-            and a.hostname == got.hostname
-            and a.scheme == got.scheme
-            and a.path == got.path
-            and not (document_client and a.port is not None)
-        ):
+        registered = _loopback_without_port(allowed)
+        if registered is None:
+            continue
+        if document_client and registered[1] is not None:
+            continue
+        if registered[0] == got[0]:
             return True
     return False
