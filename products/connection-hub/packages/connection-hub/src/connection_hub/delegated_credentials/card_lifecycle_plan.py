@@ -859,6 +859,8 @@ async def plan_card_lifecycle(
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
+            if ("profile" in raw or "resource" in raw) and raw["kind"] != "apply_agent_profile":
+                raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             if raw["kind"] in {"attach_agent", "detach_agent", "apply_agent_profile"}:
                 if ("parent" in raw) != (raw["kind"] == "attach_agent"):
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
