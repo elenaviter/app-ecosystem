@@ -39,6 +39,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 
 | Rule id | Rule |
 | --- | --- |
+| `own_card_is_its_persons` | A person's own My Card is managed only by that person: the Reset on their own row in Team resets their own Card, never another person's, and an agent never does it. |
 | `role_holder_decides_handovers` | The agent holding an optional project role, such as the knowledge keeper, decides the hand-overs mailed to that role; a person never does, and holding the role is a condition on the operation, never authority by itself. |
 | `project_membership` | A person on the project reads it: the plan, items, notes, reports, people, workers, the board and the timeline. Membership scopes a person to a project; it is not an operation on a Card. |
 | `operator_inbox_people_only` | The operator inbox is for people: its threads, replies, read state and worker directory are read and written by a signed-in person on the project (not an older read-only viewer), never by an agent. |
