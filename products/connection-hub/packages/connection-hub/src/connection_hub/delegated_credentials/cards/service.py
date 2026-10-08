@@ -348,9 +348,13 @@ class DelegatedCardService:
     async def stage_transaction(
         self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
         original: CardAuthority | None, candidate: CardAuthority, now: Any, effects: Any = (), reads: Any = (),
-        catalog: str = "", group: Mapping[str, Any] | None = None,
+        catalog: str = "", group: Mapping[str, Any] | None = None, collection: Mapping[str, Any] | None = None,
+        collection_reads: Any = (),
     ) -> dict[str, Any]:
         """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served.
+
+        W502 lane D: ``collection`` and its resolved ``collection_reads`` hold the
+        dependencies by reference instead of ``reads`` (transaction_store.stage).
 
         ``effects`` are the writer's non-Card changes, recorded in the prepared
         receipt and applied only when FINISH materializes a COMMITTED decision
@@ -375,7 +379,8 @@ class DelegatedCardService:
             # W502 read reservations: the candidate's section and every dependency
             # Card's section, taken in one sorted order so stages cannot deadlock.
             async with AsyncExitStack() as sections:
-                keys = sorted({(subject_hash, access_id), *((r["subject_hash"], r["access_id"]) for r in reads or ())})
+                keys = sorted({(subject_hash, access_id), *((r["subject_hash"], r["access_id"])
+                                                            for r in (*(reads or ()), *(collection_reads or ())))})
                 _require_lock_budget(len(keys))
                 for section_subject, section_access in keys:
                     await sections.enter_async_context(self._critical_section(
@@ -400,7 +405,8 @@ class DelegatedCardService:
                     staged = await stage(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                          participant=participant, subject_hash=subject_hash, original=original,
                                          candidate=candidate, now=now, effects=effects, reads=reads,
-                                         catalog=catalog, group=group)
+                                         catalog=catalog, group=group, collection=collection,
+                                         collection_reads=collection_reads)
                     await self._run_effect_hook("_effect_preparer", staged, refusal="card_effect_prepare_failed")
                     return staged
                 except (CardStorageError, CardTransactionRefused):
@@ -504,7 +510,8 @@ class DelegatedCardService:
     async def stage_group_transaction(
         self, *, transaction_id: str, intent_digest: str, participant: str,
         members: Sequence[tuple[str, CardAuthority | None, CardAuthority, str]], now: Any,
-        effects: Any = (), reads: Any = (), catalog: str = "",
+        effects: Any = (), reads: Any = (), catalog: str = "", collection: Mapping[str, Any] | None = None,
+        actor_subject: str | None = None, now_epoch: int | None = None,
     ) -> dict[str, Any]:
         """W578: stage a card group (several Cards) under ONE transaction decision.
 
@@ -528,6 +535,30 @@ class DelegatedCardService:
                    for subject_hash, original, candidate, action in members]
         if not ordered:
             raise CardTransactionRefused("card_transaction_group_invalid")
+        # W502 lane D: the group's dependencies by reference to the Hub's own sealed collection.
+        collection_ref, collection_reads = None, []
+        if collection is not None:
+            from .card_read_collection import resolve_collection
+            if reads:
+                raise CardTransactionRefused("card_group_dependencies_mixed")
+            try:
+                header, collection_reads = await resolve_collection(self._store, collection["collection_id"])
+            except CardStorageError as exc:
+                raise CardTransactionRefused(str(exc)) from exc
+            if (header["root"] != collection["root"] or header["count"] != collection["count"]
+                    or header["catalog"] != collection["catalog"] or header["catalog"] != catalog
+                    or header["scope"] != collection["scope"] or header["deadline"] != collection["deadline"]
+                    or actor_subject is not None and header["actor_subject"] != actor_subject):
+                raise CardTransactionRefused("card_read_collection_moved")
+            targets = {(str(subject_hash), candidate.access_id) for subject_hash, _, candidate, _ in ordered}
+            if targets & {(read["subject_hash"], read["access_id"]) for read in collection_reads}:
+                # The group's own Cards are its writes, never its read dependencies.
+                raise CardTransactionRefused("card_group_collection_overlaps_target")
+            from .transaction_store import read_receipt as _read_receipt
+            if (now_epoch is not None and now_epoch >= header["deadline"]
+                    and await _read_receipt(self._store, transaction_id) is None):
+                raise CardTransactionRefused("card_read_collection_expired")
+            collection_ref = {key: collection[key] for key in ("collection_id", "root", "count")}
         for subject_hash, original, candidate, action in ordered:
             before = original.to_dict() if original is not None else None
             after = candidate.to_dict()
@@ -582,7 +613,8 @@ class DelegatedCardService:
                 transaction_id=member_transaction_id(transaction_id, index), intent_digest=intent_digest,
                 participant=participant, subject_hash=subject_hash, original=original, candidate=candidate,
                 now=now, effects=effects if lead else (), reads=reads if lead else (),
-                catalog=catalog if lead else "", group=group_member_ref(group, index))
+                catalog=catalog if lead else "", group=group_member_ref(group, index),
+                collection=collection_ref if lead else None, collection_reads=collection_reads if lead else ())
         return await complete_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest)
 
     async def decide_group_transaction(
