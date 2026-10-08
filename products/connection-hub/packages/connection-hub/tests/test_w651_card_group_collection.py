@@ -228,3 +228,78 @@ async def test_v1_enumerated_groups_are_byte_identical_to_before(tmp_path):
     projection = groups.hub_group_participant_input(members=members, actor_subject="a", actor_kind="caller",
                                                     reads=reads)
     assert groups.verify_group_projection(projection, value) == value
+
+
+# ── Main 23:22Z: the W578 locking rule, pinned for the collection form ──
+
+@pytest.mark.asyncio
+async def test_a_write_to_a_leaf_after_the_lead_staged_is_refused_until_the_decision(tmp_path):
+    from dataclasses import replace
+
+    from connection_hub.delegated_credentials.cards.service import CardConflict
+    from test_card_transaction_store import NOW
+    store, service, before, after = await _setup(tmp_path)
+    _bind_catalog(store, tmp_path)
+    ref = await _seal(store, [{"subject_hash": SUBJECT_HASH, "access_id": "aut_dep_absent", "revision": 0}])
+    await _service_stage(service, _service_members(before, after), catalog=CATALOG, collection=ref)
+    created = replace(after, access_id="aut_dep_absent", card_revision=1)
+    with pytest.raises(CardConflict, match="card_transaction_unresolved"):
+        await service.commit(created, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
+    await _service_finish(store, service, "aborted")
+    await service.commit(created, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)  # released by the decision
+
+
+@pytest.mark.asyncio
+async def test_a_member_that_moved_before_its_own_staging_refuses_the_group_and_abort_releases_the_leaves(
+        tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from test_card_transaction_store import NOW
+    store, service, before, after = await _setup(tmp_path)
+    reservations = _bind_catalog(store, tmp_path)
+    ref = await _seal(store, _other_reads())
+    members = _service_members(before, after)
+    real = service.stage_transaction
+    calls = []
+
+    async def stage_then_move(**kwargs):
+        receipt = await real(**kwargs)
+        calls.append(kwargs["transaction_id"])
+        if len(calls) == 1:  # the lead staged; the next member's slot moves before its own staging
+            later = members[1]
+            moved = replace(later[2], card_revision=1) if later[1] is None else replace(later[1], card_revision=later[1].card_revision + 1)
+            await service.commit(moved, subject_hash=later[0], expected_revision=0 if later[1] is None
+                                 else later[1].card_revision, now=NOW)
+        return receipt
+    monkeypatch.setattr(service, "stage_transaction", stage_then_move)
+    with pytest.raises(tx.CardTransactionRefused) as refused:
+        await _service_stage(service, members, catalog=CATALOG, collection=ref)
+    # The second member (a newly minted id) found its slot used before its own staging.
+    assert str(refused.value) == "card_transaction_absent_slot_used"
+    monkeypatch.setattr(service, "stage_transaction", real)
+    with pytest.raises(CardStorageError, match="card_transaction_unresolved"):
+        await tx.assert_replaceable(store, subject_hash=OTHER, access_id="aut_other_0000")  # still held
+    await _service_finish(store, service, "aborted")
+    await tx.assert_replaceable(store, subject_hash=OTHER, access_id="aut_other_0000")
+    assert await reservations.holders() == []
+
+
+@pytest.mark.asyncio
+async def test_members_stage_in_canonical_order_and_only_the_lead_carries_the_collection(tmp_path, monkeypatch):
+    store, service, before, after = await _setup(tmp_path)
+    _bind_catalog(store, tmp_path)
+    ref = await _seal(store, _other_reads(5))
+    members = _service_members(before, after)
+    real = service.stage_transaction
+    seen = []
+
+    async def record(**kwargs):
+        seen.append((kwargs["transaction_id"], kwargs["candidate"].access_id,
+                     kwargs.get("collection"), len(kwargs.get("collection_reads") or ())))
+        return await real(**kwargs)
+    monkeypatch.setattr(service, "stage_transaction", record)
+    await _service_stage(service, members, catalog=CATALOG, collection=ref)
+    assert [entry[0] for entry in seen] == [tx.member_transaction_id(GROUP, index) for index in range(len(members))]
+    assert [entry[1] for entry in seen] == [member[2].access_id for member in members]  # canonical order
+    assert seen[0][2] == {key: ref[key] for key in ("collection_id", "root", "count")} and seen[0][3] == 5
+    assert all(entry[2] is None and entry[3] == 0 for entry in seen[1:])

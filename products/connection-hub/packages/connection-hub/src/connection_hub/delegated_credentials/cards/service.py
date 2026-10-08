@@ -524,6 +524,16 @@ class DelegatedCardService:
         aggregate receipt is written first, every member is staged under its
         own Card section, and the aggregate is marked staged last; the group's
         reads, catalog and effects ride on its lead member.
+
+        Locking (W578 rule, kept for W502 lane D, Main 23:22Z): every read,
+        enumerated or a sealed collection's leaf, is verified and fenced
+        atomically with the LEAD member, in one sorted section over the lead's
+        candidate and every read, before any other member stages; each other
+        member is then fenced at its own staging, in the group's canonical
+        order, against its own expected revision. Every read and member stays
+        fenced until the decision, so at the decision point all are held at
+        once (two-phase locking); the canonical order prevents deadlock
+        between concurrent groups. There is no single combined section.
         """
         from ..caller_writer_gate import binding_change_refusal, candidate_shape_refusal
         from .model import CARD_STATE_ACTIVE
