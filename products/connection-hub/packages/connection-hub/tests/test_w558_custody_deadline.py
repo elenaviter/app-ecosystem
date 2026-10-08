@@ -133,6 +133,90 @@ def test_a_locked_store_refuses_at_once_and_the_same_process_reads_after_the_unl
 
 
 
+def _locked_secret_service(monkeypatch, state):
+    """A Secret Service whose collection is locked until ``state["locked"]`` is cleared."""
+
+    import sys
+    import types
+
+    class _ItemNotFound(Exception):
+        pass
+
+    class Collection:
+        def __init__(self, connection, path=None):
+            pass
+
+        def is_locked(self):
+            return state["locked"]
+
+    secretstorage = types.ModuleType("secretstorage")
+    secretstorage.dbus_init = lambda: types.SimpleNamespace(close=lambda: None)
+    collection = types.ModuleType("secretstorage.collection")
+    collection.Collection = Collection
+    exceptions = types.ModuleType("secretstorage.exceptions")
+    exceptions.ItemNotFoundException = _ItemNotFound
+    monkeypatch.setitem(sys.modules, "secretstorage", secretstorage)
+    monkeypatch.setitem(sys.modules, "secretstorage.collection", collection)
+    monkeypatch.setitem(sys.modules, "secretstorage.exceptions", exceptions)
+
+    class SecretServiceBackend:
+        priority = 5
+        prompts = 0
+
+        def get_preferred_collection(self):  # keyring's path: it would prompt
+            SecretServiceBackend.prompts += 1
+
+        def get_password(self, service, username):
+            if state["locked"]:
+                threading.Event().wait()  # an unlock prompt nobody answers
+            return None  # unlocked: this profile holds no token yet
+
+    return SecretServiceBackend
+
+
+@pytest.mark.parametrize("prefix", ["oauth_profile", "oauth_session"])
+def test_a_locked_oauth_store_says_locked_and_the_same_process_reads_after_the_unlock(
+    short_deadline, monkeypatch, prefix
+):
+    """Host mint, 2026-10-08: the OAuth profile store read while locked said
+    oauth_profile_store_failed, which the relay treats as permanent, so the
+    channel was parked and the 19:01Z unlock was never picked up."""
+
+    from connection_hub.caller.authorization.session import (
+        NativeOAuthProfileCredentialStore,
+        NativeOAuthSessionCredentialStore,
+    )
+
+    state = {"locked": True}
+    backend = _locked_secret_service(monkeypatch, state)
+    kind = NativeOAuthProfileCredentialStore if prefix == "oauth_profile" else NativeOAuthSessionCredentialStore
+    store = kind(backend=backend(), platform_name="Linux", enforce_native_backend=False)
+    ref = "0" * 32
+
+    async def read():
+        return await profile_session.OAuthProfileSessionService._in_custody_read(store.get, ref)
+
+    with pytest.raises(AuthorizationError) as locked:
+        asyncio.run(read())
+    assert locked.value.code == f"{prefix}_store_locked"
+    state["locked"] = False  # the operator unlocks
+    assert asyncio.run(read()) is None
+    assert backend.prompts == 0
+
+
+def test_an_unavailable_oauth_store_keeps_the_locked_and_missing_conditions():
+    from connection_hub.caller.authorization.session import UnavailableOAuthCredentialStore
+    from connection_hub.caller.errors import CredentialError
+
+    for condition in ("locked", "missing"):
+        store = UnavailableOAuthCredentialStore(
+            CredentialError(f"credential_store_{condition}", "x"), error_prefix="oauth_profile"
+        )
+        with pytest.raises(AuthorizationError) as refused:
+            store.get("0" * 32)
+        assert refused.value.code == f"oauth_profile_store_{condition}"
+
+
 def test_a_slow_write_is_never_abandoned_so_writes_land_in_order(short_deadline):
     """Review of #528 (claude-main, P2): an abandoned write kept running and landed after a
     newer one, leaving the older value stored. Writes keep running to completion, in order."""

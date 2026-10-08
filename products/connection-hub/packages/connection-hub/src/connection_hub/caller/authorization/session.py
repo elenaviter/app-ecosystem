@@ -358,6 +358,10 @@ class UnavailableOAuthCredentialStore:
             "unsupported_credential_store": f"unsupported_{error_prefix}_store",
             "insecure_keyring_backend": f"insecure_{error_prefix}_store",
             "unavailable_keyring_backend": f"unavailable_{error_prefix}_store",
+            # W558: a locked or absent store ends when the person unlocks or
+            # creates it; it is not a store fault.
+            "credential_store_locked": f"{error_prefix}_store_locked",
+            "credential_store_missing": f"{error_prefix}_store_missing",
         }.get(error.code, f"{error_prefix}_store_failed")
 
     def put(self, _credential_ref: str, _token: OAuthTokenSet) -> None:
@@ -458,6 +462,11 @@ class NativeOAuthSessionCredentialStore:
             "native_secret_rollback_failed": f"{prefix}_store_rollback_failed",
             "native_secret_too_large": f"{prefix}_credential_invalid",
             "native_secret_key_invalid": f"{prefix}_credential_ref_invalid",
+            # W558 (host mint, 2026-10-08): without these a locked keyring read
+            # through the OAuth store became the generic store failure, which
+            # the relay treats as permanent, so an unlock was never picked up.
+            "native_secret_store_locked": f"{prefix}_store_locked",
+            "native_secret_store_missing": f"{prefix}_store_missing",
         }.get(exc.code, f"{prefix}_store_failed")
         raise AuthorizationError(code, exc.message) from None
 

@@ -5327,6 +5327,13 @@ TRANSIENT_ERROR_CODES = frozenset(
         # opens on the first attempt after the unlock, with no relay restart.
         "credential_store_locked",
         "credential_store_missing",
+        # The same two conditions read through the OAuth stores (W558, mint
+        # 2026-10-08: the relay parked its channel on the generic code and
+        # never picked the unlock up).
+        "oauth_profile_store_locked",
+        "oauth_profile_store_missing",
+        "oauth_session_store_locked",
+        "oauth_session_store_missing",
         "oauth_credential_custody_timeout",
     }
 )
