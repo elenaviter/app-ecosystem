@@ -2590,6 +2590,31 @@ class AutomationAccessService:
                     "error": "managed_card_edit_" + outcome["state"], "status": 409,
                     "message": "The project did not save this change. Your draft is kept."})}
 
+    async def _forward_managed_project_control(
+        self, user: Mapping[str, Any], *, record: AutomationAccessRecord, request_id: str | None,
+        changes: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """W638: a managed project Control's (P) Save, made by the project's own transaction.
+
+        None when ``record`` is not a managed P or no forwarder is configured:
+        the caller then keeps its direct-write refusal. A Save without a route
+        request id gets one stable per Save (actor, P, expected revision and the
+        selection sent), so retrying the same Save replays the project's one
+        decision and never makes a second.
+        """
+        if self._managed_project_control_refused(record) is None:
+            return None
+        if not request_id:
+            selection = {field: changes[field] for field in
+                         ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
+                         if changes.get(field) is not None}
+            digest = hashlib.sha256(json.dumps(
+                [_subject_from_user(user), record.access_id, changes.get("expected_card_revision"), selection],
+                sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+            request_id = "project-control-save:" + digest[:48]
+        return await self._forward_agent_card_edit(user, record=record, project_ref=_clean(record.issuer_ref),
+                                                   request_id=request_id, changes=changes, kind="project_control")
+
     def bind_managed_control_scopes(self, prefixes: Iterable[str]) -> None:
         """W578: the scopes in which a configured coordinator plans a project's Control Card (P).
 
@@ -5562,6 +5587,7 @@ class AutomationAccessService:
         | None = None,
         _notification_subject: str = "",
         _issuer_decision: IssuerDecision | None = None,
+        request_id: str | None = None,
         _issuer_request_id: str = "",
         _issuer_context_ref: str = "",
         _caller_write_action: str = "update",
@@ -5605,7 +5631,13 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_not_owned"}
         refused = self._managed_project_control_refused(existing)
         if refused is not None:
-            return refused
+            # W638: the owner's Save of a managed P goes through the project's own transaction.
+            forwarded = await self._forward_managed_project_control(user, record=existing, request_id=request_id,
+                changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
+                         "named_service_operations": named_service_operations, "account_scope": account_scope,
+                         "properties": properties, "composition_mode": composition_mode, "label": label,
+                         "expected_card_revision": expected_card_revision})
+            return forwarded if forwarded is not None else refused
         try:
             descriptor_marker = descriptor_control(existing.properties)
         except AgentCapabilityPolicyError as exc:
@@ -7241,6 +7273,7 @@ class AutomationAccessService:
         expected_card_revision: int | None = None,
         expected_catalog_version: str | None = None,
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
+        request_id: str | None = None,
         _delegable_grants: Iterable[str] | None = None,
         _record_transform: Callable[
             [AutomationAccessRecord, AutomationAccessRecord],
@@ -7277,7 +7310,13 @@ class AutomationAccessService:
             return {"ok": False, "error": "control_card_not_found", "status": 404}
         refused = self._managed_project_control_refused(existing)
         if refused is not None:
-            return refused
+            # W638: a managed P's Save goes through the project's own transaction.
+            forwarded = await self._forward_managed_project_control(user, record=existing, request_id=request_id,
+                changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
+                         "named_service_operations": named_service_operations, "account_scope": account_scope,
+                         "properties": properties, "composition_mode": composition_mode, "label": label,
+                         "expected_card_revision": expected_card_revision})
+            return forwarded if forwarded is not None else refused
         updated = await self.update_access(
             user,
             access_id=existing.access_id,
