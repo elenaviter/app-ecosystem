@@ -640,7 +640,8 @@ class DelegatedCardService:
 
     async def stage_read_collection_transaction(
         self, *, transaction_id: str, intent_digest: str, participant: str, collection_id: str, root: str,
-        count: int, catalog: str = "",
+        count: int, catalog: str = "", scope: str | None = None, deadline: int | None = None,
+        actor_subject: str | None = None, now: int | None = None,
     ) -> dict[str, Any]:
         """W502 lane D: hold a Hub-sealed collection's Cards, absences and catalog under one decision.
 
@@ -656,8 +657,16 @@ class DelegatedCardService:
             header, reads = await resolve_collection(self._store, collection_id)
         except CardStorageError as exc:
             raise CardTransactionRefused(str(exc)) from exc
-        if header["root"] != root or header["count"] != count or header["catalog"] != catalog:
+        if (header["root"] != root or header["count"] != count or header["catalog"] != catalog
+                or scope is not None and header["scope"] != scope
+                or deadline is not None and header["deadline"] != deadline
+                or actor_subject is not None and header["actor_subject"] != actor_subject):
             raise CardTransactionRefused("card_read_collection_moved")
+        if now is not None and now >= header["deadline"]:
+            # A first PREPARE never outlives the collection; a replay of a prepared receipt is historical.
+            from .transaction_store import read_receipt
+            if await read_receipt(self._store, transaction_id) is None:
+                raise CardTransactionRefused("card_read_collection_expired")
         try:
             async with AsyncExitStack() as sections:
                 keys = sorted({(r["subject_hash"], r["access_id"]) for r in reads})

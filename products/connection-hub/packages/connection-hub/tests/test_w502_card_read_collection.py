@@ -228,3 +228,69 @@ def test_an_enumerated_read_set_parser_never_reads_a_collection_key():
     from connection_hub.delegated_credentials.cards.card_participant import reads_from_dependencies
     with pytest.raises(DecisionRefused, match="card_dependency_invalid"):
         reads_from_dependencies(read_set.read_collection_dependencies(_ref()))
+
+
+# ── through the Hub participant, from a signed authority, by reference ──
+
+async def _participant(tmp_path, *, deadline: int = 2_000_000_000, actor: str = "synthetic-owner"):
+    from test_w578_card_group_participant import AUTHORITY, _Authority
+
+    from connection_hub.delegated_credentials.cards.authority_intent_source import (
+        AuthorityCardIntentSource, AuthorityDecisionReader,
+    )
+    from connection_hub.delegated_credentials.cards.card_participant import DecisionStorePort, HubCardParticipant
+
+    store, service, before, after = await _setup(tmp_path)
+    reservations = _bind_catalog(store, tmp_path)
+    header = await collections.seal_collection(
+        store, collection_id=COLLECTION, scope="work:project:synthetic", actor_subject="synthetic-owner",
+        request_id="r-1", deadline=deadline, reads=_reads(before), catalog=CATALOG)
+    ref = {"schema": read_set.READ_COLLECTION_REF_SCHEMA, **{key: header[key] for key in (
+        "collection_id", "scope", "count", "root", "catalog", "deadline")}}
+    authority = _Authority(read_set.hub_read_collection_participant_input(ref=ref, actor_subject=actor,
+                                                                          actor_kind="caller"), ref)
+    clock = lambda: 1_800_000_000  # noqa: E731
+    decisions = AuthorityDecisionReader(fetch=authority.fetch, authority=AUTHORITY, clock=clock)
+    tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
+    hub = HubCardParticipant(service=service, store=store,
+                             intents=AuthorityCardIntentSource(store=store, fetch=authority.fetch,
+                                                               authority=AUTHORITY, clock=clock),
+                             decisions=decisions)
+    return store, hub, authority, reservations, before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["committed", "aborted"])
+async def test_a_by_reference_read_set_prepares_and_finishes_through_the_participant(tmp_path, decision):
+    from test_w578_card_group_participant import TX
+
+    store, hub, authority, reservations, before = await _participant(tmp_path)
+    receipt = await hub.prepare(TX)
+    assert receipt.transaction_id == TX
+    raw = json.loads(tx.receipt_path(store, TX).read_text())
+    assert raw["schema"] == tx.READ_COLLECTION_RECEIPT_SCHEMA and "reads" not in raw
+    # The Hub's own intent record holds the reference, not the reads.
+    intent = json.loads((store.root / "card-transactions" / "intents" / f"{TX}.json").read_text())
+    assert intent["reads"] == [] and intent["collection"]["collection_id"] == COLLECTION
+    with pytest.raises(CardStorageError, match="card_transaction_unresolved"):
+        await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    authority.decision = decision
+    await hub.finish(TX, decision)
+    assert (await tx.state(store, transaction_id=TX))["state"] == decision
+    assert await reservations.holders() == [] and await tx.list_in_doubt(store) == []
+    await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case, code", [("expired", "card_read_collection_expired"),
+                                        ("other_actor", "card_read_collection_moved")])
+async def test_an_expired_or_foreign_collection_is_never_prepared(tmp_path, case, code):
+    from test_w578_card_group_participant import TX
+
+    store, hub, authority, reservations, before = await _participant(
+        tmp_path, deadline=1 if case == "expired" else 2_000_000_000,
+        actor="someone-else" if case == "other_actor" else "synthetic-owner")
+    with pytest.raises(DecisionRefused, match=code):
+        await hub.prepare(TX)
+    assert await tx.read_receipt(store, TX) is None
+    await tx.assert_replaceable(store, subject_hash=SUBJECT_HASH, access_id=before.access_id)

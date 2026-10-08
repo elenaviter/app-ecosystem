@@ -144,6 +144,15 @@ class AuthorityCardIntentSource(_AuthorityReads):
         projection, value = verified.projection, verified.candidate
         if projection.get("binding_kind") == "connection-hub.card-group":
             return await self._load_group(transaction_id, verified)
+        if projection.get("binding_kind") == "connection-hub.card-read-collection":
+            # W502 lane D: the VERIFIED bounded reference; staging resolves the Hub's own sealed collection.
+            intent = CardReadSetIntent(
+                transaction_id=transaction_id, intent_digest=verified.intent.digest, reads=(),
+                catalog=value["catalog"], actor_subject=projection["actor_subject"],
+                actor_kind=projection["actor_kind"], authority=self._authority_id,
+                scope=intent_scope(verified.intent, self._scope_field), collection=dict(value))
+            await self._local.record(intent)
+            return intent
         if projection.get("binding_kind") == "connection-hub.card-read-set":
             # W578: a read set holds the VERIFIED reads and catalog; staging checks each one's revision.
             intent = CardReadSetIntent(

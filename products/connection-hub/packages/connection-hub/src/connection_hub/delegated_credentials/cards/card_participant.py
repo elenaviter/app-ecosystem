@@ -322,12 +322,17 @@ class CardReadSetIntent:
     actor_kind: str = ""
     authority: str = ""
     scope: str = ""
+    # W502 lane D: a bounded reference to a Hub-sealed collection instead of reads (never both).
+    collection: Mapping[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema": READ_SET_INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
-                "intent_digest": self.intent_digest, "reads": [dict(read) for read in self.reads],
-                "catalog": self.catalog, "actor_subject": self.actor_subject, "actor_kind": self.actor_kind,
-                "authority": self.authority, "scope": self.scope}
+        value = {"schema": READ_SET_INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
+                 "intent_digest": self.intent_digest, "reads": [dict(read) for read in self.reads],
+                 "catalog": self.catalog, "actor_subject": self.actor_subject, "actor_kind": self.actor_kind,
+                 "authority": self.authority, "scope": self.scope}
+        if self.collection is not None:
+            value["collection"] = dict(self.collection)
+        return value
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CardReadSetIntent":
@@ -338,7 +343,8 @@ class CardReadSetIntent:
                        reads=tuple(dict(read) for read in raw.get("reads") or ()),
                        catalog=str(raw.get("catalog") or ""), actor_subject=str(raw.get("actor_subject") or ""),
                        actor_kind=str(raw.get("actor_kind") or ""), authority=str(raw.get("authority") or ""),
-                       scope=str(raw.get("scope") or ""))
+                       scope=str(raw.get("scope") or ""),
+                       collection=dict(raw["collection"]) if isinstance(raw.get("collection"), Mapping) else None)
         except (KeyError, TypeError, ValueError) as exc:
             raise DecisionRefused("card_intent_invalid") from exc
 
@@ -505,8 +511,13 @@ class HubCardParticipant:
     @staticmethod
     def _bound_read_set(intent: "CardReadSetIntent", projection: Mapping[str, Any]) -> "CardReadSetIntent":
         """W578: the read set the intent holds is exactly the projection's, field by field."""
-        from .card_read_set import read_set_candidate_value, verify_read_set_projection
-        verify_read_set_projection(projection, read_set_candidate_value(intent.reads, intent.catalog))
+        from .card_read_set import read_set_candidate_value, verify_read_collection_projection, verify_read_set_projection
+        if intent.collection is not None:
+            # W502 lane D: the reference, field by field; the Hub's own collection holds the reads.
+            if intent.reads or verify_read_collection_projection(projection, intent.collection)["catalog"] != intent.catalog:
+                raise DecisionRefused("card_intent_not_bound")
+        else:
+            verify_read_set_projection(projection, read_set_candidate_value(intent.reads, intent.catalog))
         if (not intent.actor_subject or projection["actor_subject"] != intent.actor_subject
                 or projection["actor_kind"] != intent.actor_kind):
             raise DecisionRefused("card_intent_not_bound")
@@ -550,9 +561,17 @@ class HubCardParticipant:
             return await self._receipt(prepared)
         if isinstance(intent, CardReadSetIntent):
             try:
-                prepared = await self._service.stage_read_set_transaction(
-                    transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
-                    reads=intent.reads, catalog=intent.catalog)
+                if intent.collection is not None:
+                    ref = intent.collection
+                    prepared = await self._service.stage_read_collection_transaction(
+                        transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
+                        collection_id=ref["collection_id"], root=ref["root"], count=ref["count"],
+                        catalog=ref["catalog"], scope=ref["scope"], deadline=ref["deadline"],
+                        actor_subject=intent.actor_subject, now=int(self._now().timestamp()))
+                else:
+                    prepared = await self._service.stage_read_set_transaction(
+                        transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
+                        reads=intent.reads, catalog=intent.catalog)
             except CardTransactionRefused as exc:
                 raise DecisionRefused(str(exc)) from exc
             return await self._receipt(prepared)

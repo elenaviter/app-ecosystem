@@ -38,6 +38,7 @@ from .card_participant import candidate_value_digest
 
 GROUP_BINDING_KIND = "connection-hub.card-group"  # cards/card_group.py; imported lazily (no import cycle)
 READ_SET_BINDING_KIND = "connection-hub.card-read-set"  # cards/card_read_set.py; imported lazily
+READ_COLLECTION_BINDING_KIND = "connection-hub.card-read-collection"  # W502 lane D, card_read_set.py
 
 PROTOCOL = "card-transaction-authority.v2"
 UNSIGNED_FIELDS = frozenset({
@@ -161,6 +162,15 @@ def verify_card_authority_v2(
         from .card_read_set import verify_read_set_projection
         try:
             verify_read_set_projection(projection, candidate)
+        except DecisionRefused:
+            _refuse("authority_candidate_invalid")
+    elif isinstance(projection, Mapping) and projection.get("binding_kind") == READ_COLLECTION_BINDING_KIND:
+        # W502 lane D: a bounded reference to a Hub-sealed collection; every field compared.
+        from service_foundation.coordination.durable_decision_log import DecisionRefused
+
+        from .card_read_set import verify_read_collection_projection
+        try:
+            verify_read_collection_projection(projection, candidate)
         except DecisionRefused:
             _refuse("authority_candidate_invalid")
     elif (type(candidate) is not dict or set(candidate) != CANDIDATE_FIELDS
