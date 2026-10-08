@@ -96,6 +96,9 @@ def plan_display(
                 or candidate.card_revision != before_revision + 1):
             raise _refuse("card_plan_display_candidate_changed")
         kind = DISPLAY_KINDS.get(candidate.issuer_kind)
+        if kind is None and not candidate.issuer_kind and candidate.control_card is not None:
+            # W638: an owner's own Card bound under a project's Control (a project agent Card).
+            kind = "agent_card"
         if kind is None:
             raise _refuse("card_plan_display_kind_invalid")
         if kind == "invitation_control":
