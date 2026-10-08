@@ -3944,6 +3944,32 @@ class ProblemBoardHostRelayAdapter:
             disposition = str(remote.get("disposition") or "accepted")
             outcome = "ignored" if disposition.startswith("ignored_") else "sent"
             remote_result = None
+            if kind == "mail.route":
+                # Keep the Board's bounded delivery facts for outbox-status.
+                # Never persist its recipient, notification detail, or raw route.
+                remote_result = {"disposition": disposition}
+                routed_to = remote.get("routed_to")
+                if isinstance(routed_to, str) and routed_to in {
+                    "originating_operator",
+                    "thread_writer",
+                    "owner_default",
+                    "owner_explicit",
+                }:
+                    remote_result["routed_to"] = routed_to
+                notification = remote.get("notification")
+                if isinstance(notification, Mapping):
+                    state = notification.get("state")
+                    if isinstance(state, str) and state in {
+                        "sent",
+                        "partial",
+                        "not_connected",
+                        "not_configured",
+                        "no_notifier",
+                        "failed",
+                        "delivery_unknown",
+                        "not_requested",
+                    }:
+                        remote_result["notification"] = {"state": state}
             if kind == 'mail.reconciliation.publish' and payload.get('purpose') == 'retired_worker_delivery':
                 expected = {str(m.get('source_message_ref') or '') for m in payload.get('members') or []}
                 covered = {str(m.get('source_message_ref') or '') for m in remote.get('coverage') or []
