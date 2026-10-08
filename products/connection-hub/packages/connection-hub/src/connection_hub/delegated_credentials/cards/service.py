@@ -638,6 +638,40 @@ class DelegatedCardService:
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
 
+    async def stage_read_collection_transaction(
+        self, *, transaction_id: str, intent_digest: str, participant: str, collection_id: str, root: str,
+        count: int, catalog: str = "",
+    ) -> dict[str, Any]:
+        """W502 lane D: hold a Hub-sealed collection's Cards, absences and catalog under one decision.
+
+        The reads come from the Hub's own sealed collection, never from the
+        initiator's intent; they are taken in the same sorted section order as a
+        read set, verified, fenced with this transaction and collection, and only
+        then is the bounded receipt (ref, root, count) written.
+        """
+        from .card_read_collection import resolve_collection
+        from .transaction_store import CardTransactionRefused, prepare_read_collection
+
+        try:
+            header, reads = await resolve_collection(self._store, collection_id)
+        except CardStorageError as exc:
+            raise CardTransactionRefused(str(exc)) from exc
+        if header["root"] != root or header["count"] != count or header["catalog"] != catalog:
+            raise CardTransactionRefused("card_read_collection_moved")
+        try:
+            async with AsyncExitStack() as sections:
+                keys = sorted({(r["subject_hash"], r["access_id"]) for r in reads})
+                _require_lock_budget(len(keys))
+                for subject_hash, access_id in keys:
+                    await sections.enter_async_context(self._critical_section(
+                        subject_hash=subject_hash, access_id=access_id))
+                return await prepare_read_collection(self._store, transaction_id=transaction_id,
+                                                     intent_digest=intent_digest, participant=participant,
+                                                     collection_id=collection_id, root=root, count=count,
+                                                     catalog=catalog, reads=reads)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
     async def decide_read_set_transaction(
         self, *, transaction_id: str, intent_digest: str, decision: str, reason: str = "",
     ) -> dict[str, Any]:
