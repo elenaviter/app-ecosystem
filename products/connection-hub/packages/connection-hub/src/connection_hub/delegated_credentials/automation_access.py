@@ -2517,11 +2517,12 @@ class AutomationAccessService:
         if properties is not None:
             # The editor sends the Card's properties back with every Save.
             # They are not part of this edit: only an unchanged copy may travel.
-            from .controls.project_person import ProjectPersonControlError, ProjectPersonControlIdentity
+            from .managed_card_edit_forward import managed_card_location
             try:
-                identity = ProjectPersonControlIdentity.build(project_ref=project_ref, target_subject=target_subject)
-                stored = await self._load_record(identity.control_id, grantor_subject=identity.project_subject)
-            except (ProjectPersonControlError, ValueError):
+                access_id, grantor = managed_card_location(
+                    "person_control", project_ref=project_ref, ref=_clean(target_subject))
+                stored = await self._load_record(access_id, grantor_subject=grantor)
+            except ValueError:
                 stored = None
             if stored is None or dict(properties) != dict(stored.properties or {}):
                 properties = {"changed": True}
@@ -7459,10 +7460,13 @@ class AutomationAccessService:
         refused = self._managed_direct_write_refused()
         if refused is not None and _clean(invitation_ref) and self._managed_card_edit_forwarder(project_ref) is not None:
             # W638: a pending invitation's Control, edited by the project's own transaction.
-            from .controls.project_invitation import project_invitation_control_id
-            from .controls.project_person import project_authority_subject
-            stored = await self._load_record(project_invitation_control_id(project_ref, _clean(invitation_ref)),
-                                             grantor_subject=project_authority_subject(project_ref))
+            from .managed_card_edit_forward import ManagedCardEditError, managed_card_location
+            try:
+                access_id, grantor = managed_card_location(
+                    "invitation_control", project_ref=project_ref, ref=_clean(invitation_ref))
+            except ManagedCardEditError as exc:
+                return exc.to_dict()
+            stored = await self._load_record(access_id, grantor_subject=grantor)
             forwarded = None if stored is None else await self._forward_agent_card_edit(
                 user, record=stored, project_ref=project_ref, request_id=request_id, kind="invitation_control",
                 changes={"resource_grants": resource_grants, "resource_operations": resource_operations,

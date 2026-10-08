@@ -80,6 +80,25 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
             "selection": {field: dict(selection[field]) for field in SELECTION_FIELDS if field in selection}}
 
 
+def managed_card_location(kind: str, *, project_ref: str, ref: str) -> tuple[str, str]:
+    """Where a managed person Control or pending invitation Control is stored: (access_id, grantor subject).
+
+    The project-domain identities stay here, outside the generic Card core.
+    """
+    try:
+        if kind == "person_control":
+            from .controls.project_person import ProjectPersonControlIdentity
+            identity = ProjectPersonControlIdentity.build(project_ref=project_ref, target_subject=ref)
+            return identity.control_id, identity.project_subject
+        if kind == "invitation_control":
+            from .controls.project_invitation import project_invitation_control_id
+            from .controls.project_person import project_authority_subject
+            return project_invitation_control_id(project_ref, ref), project_authority_subject(project_ref)
+    except Exception as exc:  # noqa: BLE001 - an invalid identity names no Card
+        raise ManagedCardEditError("managed_card_edit_request_invalid", 400) from exc
+    raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+
+
 def sign_managed_card_edit(body: Mapping[str, Any], *, bundle_id: str, signer_id: str, secret: str,
                            clock: Callable[[], float] = time.time) -> dict[str, str]:
     """The Hub's ``service_proof`` over exactly ``body``."""
@@ -135,4 +154,4 @@ class PeerManagedCardEdit:
 
 
 __all__ = ["OPERATION", "OUTCOME_SCHEMA", "PROTOCOL", "SCHEMA", "ManagedCardEditError", "PeerManagedCardEdit",
-           "managed_card_edit_body", "sign_managed_card_edit"]
+           "managed_card_edit_body", "managed_card_location", "sign_managed_card_edit"]
