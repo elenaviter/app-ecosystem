@@ -74,6 +74,10 @@ UPDATE_STEPS = {"revoke": PROJECT_INVITATION_CONTROL_REVOKE, "attach": PROJECT_P
                 "reselect_project_control": PROJECT_CONTROL_UPDATE,
                 "reselect_agent_card": PROJECT_AGENT_CARD_UPDATE}
 
+# W639: agent attendance/profile decisions use this same authorized PLAN.
+from ..agent_lifecycle_plan import AGENT_UPDATE_STEPS
+UPDATE_STEPS.update(AGENT_UPDATE_STEPS)
+
 # planner(host, *, project_ref, creations, updates, actor_subject, actor_kind, request_id, authorization)
 #   -> {"ok": True, "plan": {...}} or {"ok": False, "error": <code>}
 Planner = Callable[..., Awaitable[Mapping[str, Any]]]
