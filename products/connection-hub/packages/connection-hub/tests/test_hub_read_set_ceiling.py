@@ -73,13 +73,23 @@ def test_a_candidate_past_the_byte_bound_is_refused_even_within_the_count():
     assert _refused(_candidate(reads)) == "card_read_set_too_large"
 
 
-def test_the_lock_budget_refuses_before_any_section_and_infinity_never_refuses(monkeypatch):
+def test_the_lock_budget_counts_descriptors_in_use_and_infinity_never_refuses(monkeypatch):
     monkeypatch.setattr(resource, "getrlimit", lambda _which: (300, 300))
-    card_service._require_lock_budget(300 - card_service.LOCK_FD_RESERVE)  # exactly at the budget
+    monkeypatch.setattr(card_service, "_open_descriptors", lambda: 40)
+    budget = 300 - 40 - card_service.LOCK_FD_RESERVE
+    card_service._require_lock_budget(budget)  # exactly at the budget
     with pytest.raises(tx.CardTransactionRefused, match="card_read_set_lock_budget_exceeded"):
-        card_service._require_lock_budget(300 - card_service.LOCK_FD_RESERVE + 1)
+        card_service._require_lock_budget(budget + 1)
+    # Descriptors already in use shrink the budget.
+    monkeypatch.setattr(card_service, "_open_descriptors", lambda: 200)
+    with pytest.raises(tx.CardTransactionRefused, match="card_read_set_lock_budget_exceeded"):
+        card_service._require_lock_budget(budget)
     monkeypatch.setattr(resource, "getrlimit", lambda _which: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
     card_service._require_lock_budget(10_000)
+
+
+def test_the_process_descriptor_count_is_read_from_the_os():
+    assert card_service._open_descriptors() >= 3  # stdin, stdout, stderr at least
 
 
 @pytest.mark.asyncio

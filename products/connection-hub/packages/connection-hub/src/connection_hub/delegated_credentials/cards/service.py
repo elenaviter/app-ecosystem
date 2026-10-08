@@ -77,23 +77,37 @@ class CardMutationLock(Protocol):
 
 
 # Each held Card section is one open lock file, and a read set holds all of its
-# sections at once. Keep this many descriptors free for the rest of the process.
-LOCK_FD_RESERVE = 128
+# sections at once. Beyond the descriptors already open, keep this many free for
+# the rest of the process (sockets, logs, other requests).
+LOCK_FD_RESERVE = 64
+
+
+def _open_descriptors() -> int:
+    """How many descriptors the process holds now (Linux /proc/self/fd, macOS /dev/fd)."""
+    import os
+
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        try:
+            return max(0, len(os.listdir(directory)) - 1)  # the listing's own descriptor
+        except OSError:
+            continue
+    return 0
 
 
 def _require_lock_budget(sections: int) -> None:
     """Refuse, before taking any section, a set the process cannot hold open at once.
 
     Running out of descriptors mid-stack would fail with an OS error after some
-    sections were taken. This names it up front; the operator raises the
-    process's open-file limit (RLIMIT_NOFILE). Nothing was locked or written.
+    sections were taken. This names it up front, counting the descriptors the
+    process already holds; the release configuration sets the process's
+    open-file limit (RLIMIT_NOFILE), never a request. Nothing was locked or written.
     """
     import resource
 
     from .transaction_store import CardTransactionRefused
 
     soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-    if soft != resource.RLIM_INFINITY and sections > soft - LOCK_FD_RESERVE:
+    if soft != resource.RLIM_INFINITY and sections > soft - _open_descriptors() - LOCK_FD_RESERVE:
         # A definite refusal: the coordinator aborts, nothing is held.
         raise CardTransactionRefused("card_read_set_lock_budget_exceeded")
 
