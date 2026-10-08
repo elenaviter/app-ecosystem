@@ -279,19 +279,26 @@ class CardGroupIntent:
     authority: str = ""
     scope: str = ""
     catalog: str = ""
+    # W502 lane D: the group's dependencies by reference to a Hub-sealed collection (never with reads).
+    collection: Mapping[str, Any] | None = None
 
     def candidate_value(self) -> dict[str, Any]:
         from .card_group import group_candidate_value, group_member
-        return group_candidate_value([group_member(original=member.original, candidate=member.candidate,
-                                                   action=member.action) for member in self.members],
-                                     self.effects)
+        members = [group_member(original=member.original, candidate=member.candidate, action=member.action)
+                   for member in self.members]
+        if self.collection is None:
+            return group_candidate_value(members, self.effects)
+        return group_candidate_value(members, self.effects, collection=dict(self.collection))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema": GROUP_INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
-                "intent_digest": self.intent_digest, "members": [member.to_dict() for member in self.members],
-                "effects": [dict(effect) for effect in self.effects], "actor_subject": self.actor_subject,
-                "actor_kind": self.actor_kind, "reads": [dict(read) for read in self.reads],
-                "authority": self.authority, "scope": self.scope, "catalog": self.catalog}
+        value = {"schema": GROUP_INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
+                 "intent_digest": self.intent_digest, "members": [member.to_dict() for member in self.members],
+                 "effects": [dict(effect) for effect in self.effects], "actor_subject": self.actor_subject,
+                 "actor_kind": self.actor_kind, "reads": [dict(read) for read in self.reads],
+                 "authority": self.authority, "scope": self.scope, "catalog": self.catalog}
+        if self.collection is not None:
+            value["collection"] = dict(self.collection)
+        return value
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "CardGroupIntent":
@@ -305,7 +312,8 @@ class CardGroupIntent:
                        actor_kind=str(raw.get("actor_kind") or ""),
                        reads=tuple(dict(read) for read in raw.get("reads") or ()),
                        authority=str(raw.get("authority") or ""), scope=str(raw.get("scope") or ""),
-                       catalog=str(raw.get("catalog") or ""))
+                       catalog=str(raw.get("catalog") or ""),
+                       collection=dict(raw["collection"]) if isinstance(raw.get("collection"), Mapping) else None)
         except (KeyError, TypeError, ValueError) as exc:
             raise DecisionRefused("card_intent_invalid") from exc
 
@@ -541,6 +549,15 @@ class HubCardParticipant:
         if projection.get("binding_kind") != "connection-hub.card-group":
             raise DecisionRefused("card_intent_not_bound")
         verify_group_projection(projection, intent.candidate_value())
+        if intent.collection is not None:
+            # W502 lane D: the codec bound the reference; the deps name the collection, never reads.
+            from .card_read_set import read_collection_dependencies
+            if (intent.reads or dict(projection["dependency_revisions"]) != read_collection_dependencies(intent.collection)
+                    or intent.collection["catalog"] != intent.catalog
+                    or not intent.actor_subject or projection["actor_subject"] != intent.actor_subject
+                    or projection["actor_kind"] != intent.actor_kind):
+                raise DecisionRefused("card_intent_not_bound")
+            return intent
         if (reads_from_dependencies(projection["dependency_revisions"]) != sorted(
                 (dict(read) for read in intent.reads), key=lambda read: (read["subject_hash"], read["access_id"]))
                 or catalog_reservation_from_dependencies(projection["dependency_revisions"]) != intent.catalog
@@ -581,7 +598,10 @@ class HubCardParticipant:
                     transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
                     members=[(member.subject_hash, member.original, member.candidate, member.action)
                              for member in intent.members],
-                    now=self._now(), effects=intent.effects, reads=intent.reads, catalog=intent.catalog)
+                    now=self._now(), effects=intent.effects, reads=intent.reads, catalog=intent.catalog,
+                    collection=intent.collection,
+                    actor_subject=intent.actor_subject if intent.collection is not None else None,
+                    now_epoch=int(self._now().timestamp()) if intent.collection is not None else None)
             except CardTransactionRefused as exc:
                 raise DecisionRefused(str(exc)) from exc
             return await self._receipt(prepared)

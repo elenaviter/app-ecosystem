@@ -213,13 +213,17 @@ class AuthorityCardIntentSource(_AuthorityReads):
                 raise DecisionRefused("card_intent_invalid") from None
             members.append(CardGroupMemberIntent(subject_hash=member["subject_hash"], original=original,
                                                  candidate=candidate, action=member["action"]))
+        collection = dict(value["collection"]) if isinstance(value.get("collection"), Mapping) else None
         intent = CardGroupIntent(
             transaction_id=transaction_id, intent_digest=verified.intent.digest, members=tuple(members),
             effects=tuple(dict(effect) for effect in value["effects"]),
             actor_subject=projection["actor_subject"], actor_kind=projection["actor_kind"],
-            reads=tuple(reads_from_dependencies(projection["dependency_revisions"])), authority=self._authority_id,
-            scope=intent_scope(verified.intent, self._scope_field),
-            catalog=catalog_reservation_from_dependencies(projection["dependency_revisions"]))
+            # W502 lane D: a group by reference holds its dependencies in the Hub's own sealed collection.
+            reads=() if collection is not None else tuple(reads_from_dependencies(projection["dependency_revisions"])),
+            authority=self._authority_id, scope=intent_scope(verified.intent, self._scope_field),
+            catalog=collection["catalog"] if collection is not None
+            else catalog_reservation_from_dependencies(projection["dependency_revisions"]),
+            collection=collection)
         await self._local.record(intent)
         return intent
 
