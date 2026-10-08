@@ -3958,7 +3958,11 @@ class ProblemBoardHostRelayAdapter:
                     remote_result["routed_to"] = routed_to
                 notification = remote.get("notification")
                 if isinstance(notification, Mapping):
-                    state = notification.get("state")
+                    state = notification.get("state", "")
+                    if state == "":
+                        # An explicit empty Board notification means that no
+                        # channel notification was requested for this route.
+                        state = "not_requested"
                     if isinstance(state, str) and state in {
                         "sent",
                         "partial",

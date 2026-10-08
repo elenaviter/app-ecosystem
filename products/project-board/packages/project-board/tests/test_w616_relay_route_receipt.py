@@ -133,11 +133,19 @@ def test_mail_route_receipt_is_projected_from_the_real_relay_drain(tmp_path):
             {"disposition": "accepted"},
         ),
         (
+            {"disposition": "accepted", "notification": {
+                "state": "", "detail": "secret-detail-token",
+            }},
             {"disposition": "accepted", "notification": {"state": "not_requested"}},
+        ),
+        (
+            {"disposition": "accepted", "notification": {
+                "detail": "secret-detail-token",
+            }},
             {"disposition": "accepted", "notification": {"state": "not_requested"}},
         ),
     ],
-    ids=["no-notification", "malformed", "unknown-values", "not-requested"],
+    ids=["no-notification", "malformed", "unknown-values", "empty-state", "missing-state"],
 )
 def test_mail_route_receipt_omits_untrusted_or_absent_details(
     tmp_path, answer, expected_proof
