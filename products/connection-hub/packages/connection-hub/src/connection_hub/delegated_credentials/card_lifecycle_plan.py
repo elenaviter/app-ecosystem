@@ -798,7 +798,7 @@ async def plan_card_lifecycle(
             if (not isinstance(raw, Mapping)
                     or not {"kind", "target_subject", "access_id", "subject_hash", "original_revision"} <= set(raw)
                     or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent",
-                                   "selection"}
+                                   "selection", "profile", "resource"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control"})):
@@ -851,6 +851,20 @@ async def plan_card_lifecycle(
                     kind={"reselect_project_control": "project_control", "reselect_agent_card": "agent_card",
                           "reselect_invitation_control": "invitation_control"}[raw["kind"]],
                     project_ref=scope, actor_subject=actor, request_id=request_id, now=now)
+                members.append(built["member"])
+                originals[(subject_hash, access_id)] = original.to_dict()
+                continue
+            if raw["kind"] in {"attach_agent", "detach_agent", "apply_agent_profile"}:
+                if ("parent" in raw) != (raw["kind"] == "attach_agent"):
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                from connection_hub.delegated_credentials.agent_lifecycle_plan import (
+                    build_agent_lifecycle_update,
+                )
+                parent = await parent_for(raw["parent"]) if raw["kind"] == "attach_agent" else None
+                built = await build_agent_lifecycle_update(
+                    host, original=original, update=raw, active=active, decision=decision,
+                    project_ref=scope, actor_subject=actor, request_id=request_id, now=now,
+                    parent=parent)
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
