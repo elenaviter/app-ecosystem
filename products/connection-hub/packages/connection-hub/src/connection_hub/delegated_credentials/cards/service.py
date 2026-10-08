@@ -554,6 +554,18 @@ class DelegatedCardService:
             if targets & {(read["subject_hash"], read["access_id"]) for read in collection_reads}:
                 # The group's own Cards are its writes, never its read dependencies.
                 raise CardTransactionRefused("card_group_collection_overlaps_target")
+            # Every Control a member binds is a member or a PRESENT leaf of the collection: the parent
+            # rule the codec applies to enumerated reads, applied here where the leaves are visible.
+            from service_foundation.coordination.durable_decision_log import DecisionRefused as _Refused
+
+            from .card_group import _require_parent_reads, group_member as _group_member
+            try:
+                _require_parent_reads(
+                    [_group_member(original=original, candidate=candidate, action=action)
+                     for _, original, candidate, action in ordered], targets,
+                    {(read["subject_hash"], read["access_id"]) for read in collection_reads if read["revision"] >= 1})
+            except _Refused as exc:
+                raise CardTransactionRefused(str(exc)) from exc
             from .transaction_store import read_receipt as _read_receipt
             if (now_epoch is not None and now_epoch >= header["deadline"]
                     and await _read_receipt(self._store, transaction_id) is None):
