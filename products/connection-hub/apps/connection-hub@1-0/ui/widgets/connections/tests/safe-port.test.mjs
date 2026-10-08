@@ -83,20 +83,64 @@ test('allocation skips a reserved or invalid answer a bounded number of times, t
   assert.ok(real > 0 && !isReservedPort(real))
 })
 
+// The modules a test file can open a listening socket through. Both quote
+// styles and require() count; an alias (`createServer as make`) is still the
+// imported name.
+const SOCKET_MODULES = ['vite', 'node:net', 'net', 'node:http', 'http', 'node:https', 'https', 'node:http2', 'http2', 'node:dgram', 'dgram']
+const moduleImported = (text, name) => new RegExp(`(?:from\\s*|import\\s*\\(\\s*|require\\s*\\(\\s*)(['"\`])${name.replace(/[.:]/g, '\\$&')}\\1`).test(text)
+const HELPER_CALL = /\b(?:inProcessViteServer|safeViteServer)\(/
+
+/**
+ * What a source file would do to the port policy (W605). A file that can open
+ * a socket must take every Vite server block from the helper, may not start
+ * Vite's preview server, and may not call .listen( itself; the helper file and
+ * this test are the only allowed exceptions.
+ */
+export function scanTestServerSource(path, text) {
+  const offenders = []
+  const vite = moduleImported(text, 'vite')
+  const node = SOCKET_MODULES.filter((name) => name !== 'vite').some((name) => moduleImported(text, name))
+  if (vite && /\bcreateServer\b/.test(text) && !HELPER_CALL.test(text)) offenders.push(`${path}: a Vite server without the safe-port helper`)
+  if (vite && /\bpreview\b/.test(text)) offenders.push(`${path}: a Vite preview server (not covered by the safe-port helper)`)
+  if ((vite || node) && /\bmiddlewareMode\s*:\s*true\b/.test(text)) offenders.push(`${path}: a literal middleware block (use inProcessViteServer())`)
+  if ((vite || node) && /\bstrictPort\s*:|\bport\s*:\s*\d/.test(text)) offenders.push(`${path}: a hand-written port block (use safeViteServer())`)
+  if (node && /\.listen\s*\(/.test(text)) offenders.push(`${path}: a socket listener of its own (use allocateLoopbackPort() / safeViteServer())`)
+  return offenders
+}
+
+const SCAN_EXEMPT = new Set(['tests/safe-port.mjs', 'tests/safe-port.test.mjs'])
+
+test('the bypass scan catches every way a test server can avoid the helper', () => {
+  const caught = (text) => scanTestServerSource('case.mjs', text)
+  const bypasses = {
+    S1: "import { createServer } from 'vite'\nawait (await createServer({ server: { port: 5173 } })).listen()",
+    S2: 'import { createServer } from "vite"\nawait (await createServer({ server: { port: 5173 } })).listen()',
+    S3: "import { createServer as makeServer } from 'vite'\nawait (await makeServer({})).listen()",
+    S4: "import { createServer } from 'node:http'\ncreateServer(() => {}).listen(5173, '0.0.0.0')",
+    S5: "import net from 'node:net'\nnet.createServer().listen(24678)",
+    S6: "import { createServer } from 'node:net'\ncreateServer().listen(0, '127.0.0.1')",
+    S7: "import { createServer } from 'vite'\nimport { safeViteServer } from './safe-port.mjs'\nawait createServer({ server: { middlewareMode: true } })",
+    S8: "import { preview } from 'vite'\nawait preview({ preview: { port: 5173 } })",
+    'S8 default port': "import { preview } from 'vite'\nawait preview({})",
+    'require(http)': "const http = require('http')\nhttp.createServer().listen(8010)",
+    'dynamic import': "const { createServer } = await import('node:https')\ncreateServer().listen(443)",
+    'template quotes': "import { createServer } from `vite`\nawait createServer({})",
+  }
+  for (const [name, text] of Object.entries(bypasses)) assert.notDeepEqual(caught(text), [], name)
+  const allowed = {
+    'the helper': "import { createServer } from 'vite'\nimport { safeViteServer } from './safe-port.mjs'\nconst server = await createServer({ server: await safeViteServer() })\nawait server.listen()",
+    'in-process': "import { createServer } from 'vite'\nimport { inProcessViteServer } from './safe-port.mjs'\nawait createServer({ server: inProcessViteServer() })",
+    'a source-inspection test': "import { readFileSync } from 'node:fs'\nassert.match(source, /strictPort: true/)",
+  }
+  for (const [name, text] of Object.entries(allowed)) assert.deepEqual(caught(text), [], name)
+})
+
 test('every test server in the widget goes through the helper', () => {
   const offenders = []
   for (const url of [...files(new URL('tests/', ROOT)), ...files(new URL('src/', ROOT))]) {
     const path = url.pathname.slice(ROOT.pathname.length)
-    if (path === 'tests/safe-port.mjs' || path === 'tests/safe-port.test.mjs') continue
-    const text = readFileSync(url, 'utf8')
-    const vite = /from 'vite'/.test(text) && /\bcreateServer\(/.test(text)
-    if (vite && !/\b(?:inProcessViteServer|safeViteServer)\(/.test(text)) offenders.push(`${path}: a Vite server without the safe-port helper`)
-    if (/middlewareMode:\s*true/.test(text)) offenders.push(`${path}: a literal middleware block (use inProcessViteServer())`)
-    // Only a file that can open a socket (it imports Vite or node:net) is held
-    // to these; a test that inspects another file's source may quote them.
-    const opens = /from 'vite'|from 'node:net'/.test(text)
-    if (opens && /\bstrictPort:|\bport:\s*0\b/.test(text)) offenders.push(`${path}: a hand-written port block (use safeViteServer())`)
-    if (opens && /\.listen\(\s*0\b/.test(text)) offenders.push(`${path}: its own port probe (use allocateLoopbackPort())`)
+    if (SCAN_EXEMPT.has(path)) continue
+    offenders.push(...scanTestServerSource(path, readFileSync(url, 'utf8')))
   }
   assert.deepEqual(offenders, [])
 })
