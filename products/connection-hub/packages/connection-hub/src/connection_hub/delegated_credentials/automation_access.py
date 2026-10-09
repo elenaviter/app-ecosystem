@@ -7875,6 +7875,51 @@ class AutomationAccessService:
             }
         return {"ok": True, **decision.to_dict()}
 
+    async def project_operations_authorize(
+        self,
+        user: Mapping[str, Any],
+        *,
+        project_ref: str,
+        resource: str,
+        operations: Any,
+        surface: str = "application",
+    ) -> dict[str, Any]:
+        """Evaluate many operations of one signed-in person in ONE exchange (the chain is resolved once).
+
+        Each entry is ``{"operation", "required_grants"?, "request_resource"?}``; ``decisions`` answers them
+        in order, each exactly what ``project_operation_authorize`` returns for that entry alone.
+        """
+
+        from connection_hub.delegated_credentials.project_identity_lifecycle import MAX_BATCH_OPERATIONS
+
+        person_subject = _subject_from_user(user)
+        if not person_subject:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        if (not isinstance(operations, (list, tuple)) or not operations
+                or len(operations) > MAX_BATCH_OPERATIONS
+                or any(not isinstance(entry, Mapping) for entry in operations)):
+            return {"ok": False, "error": "project_operations_request_invalid", "status": 400}
+        requests = [
+            ProjectOperationRequest(
+                person_subject=person_subject,
+                project_ref=project_ref,
+                resource=resource,
+                operation=str(entry.get("operation") or "").strip(),
+                required_grants=entry.get("required_grants", ()),
+                request_resource=str(entry.get("request_resource") or "").strip(),
+                surface=surface,
+            )
+            for entry in operations
+        ]
+        try:
+            decisions = await self._project_person_controls.authorize_operations(requests)
+        except ProjectIdentityLifecycleError as exc:
+            return {"ok": False, "error": exc.reason, "status": 409}
+        except CardUnavailable as exc:
+            return {"ok": False, "error": "project_identity_edge_unavailable", "reason": exc.reason,
+                    "retryable": True, "status": 503}
+        return {"ok": True, "decisions": [decision.to_dict() for decision in decisions]}
+
     async def control_card_basis(
         self,
         user: Mapping[str, Any],

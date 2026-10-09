@@ -699,8 +699,49 @@ class ProjectIdentityLifecycle:
             catalog=catalog,
         )
 
+    async def authorize_many(self, requests: list) -> list:
+        """``authorize`` for several operations of one person and project, resolving the chain once."""
+        return await _authorize_many(self, list(requests))
+
+
+MAX_BATCH_OPERATIONS = 2000
+
+
+async def _authorize_many(lifecycle: "ProjectIdentityLifecycle",
+                          requests: list) -> list:
+    """The decisions of ``authorize`` for several requests of ONE person and project, from one resolution.
+
+    Operator, 2026-10-09: "Checking 1000 operations must take same time as checking 2". The person's chain
+    (edge, Control Card and its ancestors, My Card) and the ACTIVE catalog are read once; each request is
+    then the same pure ``authorize_project_operation``, so every answer equals its single ``authorize``.
+    """
+    if not requests:
+        return []
+    person, project = requests[0].person_subject, requests[0].project_ref
+    if any(request.person_subject != person or request.project_ref != project for request in requests):
+        raise ValueError("project_operation_batch_mixed")
+    valid = [request for request in requests if not request.validation_reason()]
+    resolution = (await lifecycle.resolve(project_ref=project, person_subject=person)) if valid else None
+    catalog: ActiveCatalogCapabilities | None = None
+    if valid:
+        try:
+            catalog = ActiveCatalogCapabilities(await lifecycle._host._active_catalog())
+        except CatalogUnavailable:
+            catalog = None
+    decisions = []
+    for request in requests:
+        if request.validation_reason() or resolution is None:
+            decisions.append(authorize_project_operation(request=request, edge=None, control_card=None,
+                                                         my_card=None, catalog=None))
+        else:
+            decisions.append(authorize_project_operation(request=request, edge=resolution.edge,
+                                                         control_card=resolution.control_card,
+                                                         my_card=resolution.my_card, catalog=catalog))
+    return decisions
+
 
 __all__ = [
+    "MAX_BATCH_OPERATIONS",
     "MY_CARD_COMMIT_EMAIL_PROPERTY",
     "MY_CARD_GITHUB_PROPERTY",
     "MY_CARD_PERSON_PROPERTIES",

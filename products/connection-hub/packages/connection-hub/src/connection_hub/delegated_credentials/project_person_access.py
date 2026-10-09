@@ -1410,6 +1410,11 @@ class ProjectPersonControlLifecycle:
 
         return await self._project_identities.authorize(request)
 
+    async def authorize_operations(self, requests: list) -> list:
+        """Resolve the live project edge ONCE and evaluate every requested operation."""
+
+        return await self._project_identities.authorize_many(requests)
+
 
 __all__ = [
     "PROJECT_PERSON_CONTROL_MIGRATION_PROVENANCE",
