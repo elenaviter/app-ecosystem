@@ -35,6 +35,7 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from connection_hub.concurrency import bounded_gather
 from connection_hub.delegated_credentials.managed_grants import (
+    MANAGED_GRANT_NOT_EDITABLE,
     managed_grant_changes,
     managed_grant_refusal,
     managed_operation_changes,
@@ -9280,6 +9281,7 @@ class AutomationAccessService:
         replace_authority: bool = False,
         expected_card_revision: int | None = None,
         now: int | None = None,
+        _application_write: bool = False,
     ) -> tuple[AutomationAccessRecord, int, bool, dict[str, Any]] | None:
         """The Card ``record_oauth_grant`` writes: (record, committed revision, initial consent, account scope).
 
@@ -9545,6 +9547,18 @@ class AutomationAccessService:
                 record,
                 config=authority_config,
             )
+            if not _application_write:
+                # W661 S5 (G2): an OAuth consent never adds or removes an application-managed grant or
+                # operation; refused before the Card is persisted (the route then withholds the tokens).
+                held_grants = dict(existing_card.resource_grants) if existing_card is not None else {}
+                held_operations = dict(existing_card.resource_operations) if existing_card is not None else {}
+                changes = managed_grant_changes(
+                    authority_config, self._resource_grants(record.resource_grants), self._resource_grants(held_grants))
+                changes += managed_operation_changes(
+                    authority_config, self._resource_grants(record.resource_operations),
+                    self._resource_grants(held_operations))
+                if changes:
+                    raise CallerWriteRefused(MANAGED_GRANT_NOT_EDITABLE)
         return record, existing_card_revision, is_initial_consent, merged_account_scope
 
     async def record_oauth_grant(
@@ -9570,6 +9584,7 @@ class AutomationAccessService:
         properties: Mapping[str, Any] | None = None,
         replace_authority: bool = False,
         expected_card_revision: int | None = None,
+        _application_write: bool = False,
     ) -> AutomationAccessRecord | None:
         """Register (or update) an OAuth-flow delegated grant in the registry.
 
@@ -9609,6 +9624,7 @@ class AutomationAccessService:
             properties=properties,
             replace_authority=replace_authority,
             expected_card_revision=expected_card_revision,
+            _application_write=_application_write,
         )
         if built is None:
             return None
@@ -10868,6 +10884,15 @@ class AutomationAccessService:
             label=new_label or record.label,
             card_revision=record.card_revision + 1,
         )
+        # W661 S5 (G2): a consent extension never adds or removes an application-managed grant or operation.
+        changes = managed_grant_changes(
+            extend_config, self._resource_grants(dict(updated.resource_grants)),
+            self._resource_grants(dict(record.resource_grants)))
+        changes += managed_operation_changes(
+            extend_config, self._resource_grants(dict(updated.resource_operations)),
+            self._resource_grants(dict(record.resource_operations)))
+        if changes:
+            return managed_grant_refusal(changes)
         try:
             await self._persist_record(updated, expected_revision=record.card_revision,
                                        caller_write=CallerWrite("extend", self._caller_actor_subject(user)))

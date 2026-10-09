@@ -57,8 +57,9 @@ def _row(connections):
 
 async def _card(connections, scopes=("app:read",), operations=("item.read",)):
     service = _service(_GrantStore({}), _Persistence(), connections=connections)
+    # Seeded as the application's own write: a Card may hold a managed grant the application set.
     card = await service.record_oauth_grant(grantor_subject=GRANTOR, client_id="dcr-synthetic",
-        scopes=list(scopes), operations=list(operations), resource=CONCRETE_RESOURCE)
+        scopes=list(scopes), operations=list(operations), resource=CONCRETE_RESOURCE, _application_write=True)
     assert card is not None
     return service, card
 
@@ -255,3 +256,39 @@ def test_only_the_reset_paths_opt_out_of_the_guard():
             if re.search(r"_application_write=True", line):
                 hits.append(path.name)
     assert sorted(hits) == ["automation_access.py", "project_person_access.py"], hits
+
+
+
+# G2 (claude-test re-review of 225f4d33): the OAuth consent paths persist a Card directly; both are guarded.
+@pytest.mark.asyncio
+async def test_an_oauth_consent_requesting_a_managed_grant_is_refused_before_the_card_is_written():
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+    persistence = _Persistence()
+    service = _service(_GrantStore({}), persistence, connections=_connections())
+    with pytest.raises(CallerWriteRefused) as refused:
+        await service.record_oauth_grant(grantor_subject=GRANTOR, client_id="dcr-consent",
+            scopes=["app:read", "app:steward"], operations=["item.read", "item.steward"], resource=CONCRETE_RESOURCE)
+    assert refused.value.reason == "managed_grant_not_editable"
+    assert not getattr(persistence, "current", {}), "nothing was persisted"
+    # The same consent without the managed grant is recorded.
+    card = await service.record_oauth_grant(grantor_subject=GRANTOR, client_id="dcr-consent",
+        scopes=["app:read"], operations=["item.read"], resource=CONCRETE_RESOURCE)
+    assert card is not None
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_rotation_carries_an_application_set_managed_grant_forward():
+    service, card = await _card(_connections(), scopes=("app:read", "app:steward"), operations=("item.read", "item.steward"))
+    rotated = await service.record_oauth_grant(grantor_subject=GRANTOR, client_id="dcr-synthetic", resource=CONCRETE_RESOURCE)
+    assert rotated is not None and "app:steward" in rotated.resource_grants[DECLARED_RESOURCE]
+
+
+@pytest.mark.asyncio
+async def test_a_consent_extension_adding_a_managed_grant_is_refused():
+    service, card = await _card(_connections())
+    extended = await service.extend_client_access(USER, client_id="dcr-synthetic", access_id=card.access_id,
+        resource=DECLARED_RESOURCE, claims=["app:steward"])
+    assert extended["ok"] is False and extended["error"] == "managed_grant_not_editable", extended
+    plain = await service.extend_client_access(USER, client_id="dcr-synthetic", access_id=card.access_id,
+        resource=DECLARED_RESOURCE, claims=["app:read"])
+    assert plain.get("error") != "managed_grant_not_editable", plain
