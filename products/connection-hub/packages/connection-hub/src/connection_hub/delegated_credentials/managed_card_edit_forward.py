@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
 
+from ..bundle_operations import BundleOperationResultError, normalize_bundle_operation_result
 from .admission import AdmissionRequest, sign_admission_request
 
 PROTOCOL = "managed-card-edit.v1"
@@ -159,11 +160,21 @@ class PeerManagedCardEdit:
         proof = sign_managed_card_edit(body, bundle_id=self._bundle_id, signer_id=self._signer_id,
                                        secret=self._secret, clock=self._clock)
         try:
+            # Live 2026-10-09 23:01Z: the platform adds the signed-in session's user_id/fingerprint to an
+            # operation's arguments unless they are given; the project's exact signed body then carried an extra
+            # field and was refused as invalid. As the project's own Hub calls do, the body travels whole under
+            # "data" and the identity hints are given as None: the person is the signed actor_subject.
             answer = await self._call(bundle_id=self._bundle_id, operation=OPERATION,
-                                      data={**body, "service_proof": proof})
+                                      data={"data": {**body, "service_proof": proof},
+                                            "user_id": None, "fingerprint": None})
         except Exception:  # noqa: BLE001 - transport failure: the outcome is unknown, retry the same request
             raise ManagedCardEditError("managed_card_edit_outcome_unknown", 503,
                                        "The project did not answer. Retry the same change.") from None
+        try:
+            # The operation route answers {"status": "ok", ..., "<operation>": answer}; read the project's own answer.
+            answer = normalize_bundle_operation_result(OPERATION, answer)
+        except BundleOperationResultError:
+            raise ManagedCardEditError("managed_card_edit_answer_invalid", 502) from None
         return _outcome(answer, body)
 
 

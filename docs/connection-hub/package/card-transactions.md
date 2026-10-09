@@ -121,6 +121,11 @@ host that plans that scope, and the host makes it in its own transaction:
   `account_scope`); the host keeps every other field of the revision-fenced
   original, never an empty default. A Save that changes properties or the
   composition, or names no revision, refuses before anything is sent.
+- **How it is sent.** The signed body travels whole under the operation's
+  `data` argument, with `user_id` and `fingerprint` given as `null`. The
+  platform otherwise fills those two arguments from the signed-in session, and
+  the host's exact-body check refuses the extra field
+  (`work_managed_card_edit_request_invalid`).
 - **How it is signed.** The Hub's admission proof under the caller
   descriptor's authority request signer, with its own protocol
   (`managed-card-edit.v1`) and operation (`project_card_edit`), so it never
@@ -128,7 +133,10 @@ host that plans that scope, and the host makes it in its own transaction:
   signer, the exact body and a single-use nonce, then decides the person's
   role and Card authority itself.
 - **What comes back.** `{ok: true, outcome: {schema: managed-card-edit-outcome.v1,
-  request_id, state, transaction_id, card_revision}}`. Only `committed` saved
+  request_id, state, transaction_id, card_revision}}`, read from inside the
+  operation route's envelope (`{status: ok, project_card_edit: …}`). A refusal
+  keeps the host's own code, status and message. The Hub logs the target kind,
+  that code and that status. Only `committed` saved
   the edit. `aborted` and `pending` keep the person's draft. A lost answer is
   `managed_card_edit_outcome_unknown`: retrying the same `request_id` with the
   same edit replays the host's one decision; a different edit under that
