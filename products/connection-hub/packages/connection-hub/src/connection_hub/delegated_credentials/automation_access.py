@@ -9520,7 +9520,11 @@ class AutomationAccessService:
             catalog_version=existing_catalog_version,
             card_revision=existing_card_revision + 1,
             account_scope=normalize_account_scope(merged_account_scope),
-            identity_scope=_clean(identity_scope),
+            # A refresh rotation carries the Card's identity scope when its stored refresh record names none
+            # (records issued through the original exchange keep no identity scope): a rotation is not a
+            # review and must not clear the Card's authority.
+            identity_scope=(_clean(identity_scope) or (
+                _clean(existing_card.identity_scope) if existing_card is not None and not replace_authority else "")),
             created_at=created_at,
             expires_at=now + ttl,
             source=ACCESS_SOURCE_OAUTH,
