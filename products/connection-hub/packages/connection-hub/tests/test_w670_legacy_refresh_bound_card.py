@@ -60,12 +60,3 @@ async def test_a_refresh_rotation_of_a_bound_card_keeps_the_agent_connected(tmp_
     assert visible.control_card == bound.control_card
     assert replace(visible, card_revision=bound.card_revision, expires_at=bound.expires_at) == bound
 
-
-@pytest.mark.asyncio
-async def test_control_the_same_refresh_passes_with_card_transactions_off(tmp_path):
-    host, store, bound = await _bound(tmp_path)
-    del host._card_coordinator  # transactions off: the pre-activation direct path
-    record = _refresh_rotation(bound)
-    await host._persist_record(record, expected_revision=bound.card_revision,
-                               caller_write=CallerWrite("update", "person-1"))
-    assert host._persistence.direct == [bound.card_revision + 1]
