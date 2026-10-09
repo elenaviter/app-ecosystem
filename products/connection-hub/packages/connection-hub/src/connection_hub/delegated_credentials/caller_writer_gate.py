@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from .issuer_gate import change_digest
+from .named_service_policy import configured_named_service_operations
 
 # W580/B (CodeApp, 11:33): EVERY writer of a bound Card names its action and
 # is decided by the binding's policy; expiry is governed too. The per-action
@@ -315,6 +316,33 @@ async def caller_writer_before_commit(
             raise CallerWriteRefused(reason)
 
     return before_commit, request
+
+
+def control_named_services_entry(control: Any, resource: str) -> Any:
+    """The Control's named-service selection for one service, as ``reset_candidate`` takes it.
+
+    An exact Control gives its entry for the service. An ALL Control (or a
+    legacy UNKNOWN one) gives its materialized boundary under its grants for
+    that service, frozen into an exact entry: the expansion of the catalog
+    generation it was saved against, the rule an unrelated edit already applies
+    (automation_access._inherited_selection). A legacy UNKNOWN Control with no
+    materialized boundary cannot be represented and refuses, rather than leave
+    the old personal selection in place (W638, claude-main 02:46Z).
+    """
+    named = getattr(control, "named_service_operations", None)
+    if named is None:
+        return None
+    if not (named.is_all or named.is_unknown):
+        return dict(named.operations).get(resource)
+    boundary = getattr(control, "named_services", None) or {}
+    namespaces = boundary.get("namespaces") if isinstance(boundary, Mapping) else None
+    if not (isinstance(namespaces, Mapping) and namespaces):
+        if named.is_unknown:
+            raise CallerWriteRefused("caller_writer_reset_control_named_services_unknown")
+        return {}
+    grants = (getattr(control, "resource_grants", None) or {}).get(resource, ())
+    offered = configured_named_service_operations(boundary, grants=list(grants))
+    return {namespace: sorted(operations) for namespace, operations in offered.items() if operations}
 
 
 def reset_candidate(current: Any, *, resource: str, control_operations: Any, control_grants: Any,

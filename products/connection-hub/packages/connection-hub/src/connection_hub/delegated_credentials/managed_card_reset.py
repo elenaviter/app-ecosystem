@@ -16,7 +16,7 @@ from typing import Any
 
 from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
 
-from .caller_writer_gate import reset_candidate
+from .caller_writer_gate import control_named_services_entry, reset_candidate
 from .cards.model import CardAuthority
 
 DISPLAY_SCHEMA = "managed-card-reset-display.v1"
@@ -42,11 +42,10 @@ def managed_card_reset_display(my: CardAuthority, control: CardAuthority, *,
     with each Control's own AND/OR). Raises ``CallerWriteRefused`` when the
     service is not held, and ``ManagedCardResetError`` when nothing would change.
     """
-    named = control.named_service_operations
     candidate = reset_candidate(my, resource=resource,
         control_operations=(control.resource_operations or {}).get(resource, ()),
         control_grants=(control.resource_grants or {}).get(resource, ()),
-        control_named_services=None if (named.is_all or named.is_unknown) else dict(named.operations).get(resource))
+        control_named_services=control_named_services_entry(control, resource))
     before, after = _service(my.to_dict(), resource), _service(candidate, resource)
     if before == after:
         raise ManagedCardResetError("managed_card_reset_unchanged")

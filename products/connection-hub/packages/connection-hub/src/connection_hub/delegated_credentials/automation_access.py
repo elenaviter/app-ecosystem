@@ -39,7 +39,8 @@ from connection_hub.delegated_credentials.issuer_gate import (
     change_digest, issuer_write_refusal,
 )
 from connection_hub.delegated_credentials.caller_writer_gate import (
-    CallerWrite, CallerWriteRefused, binding_of, caller_write_outcome, caller_writer_before_commit, reset_candidate,
+    CallerWrite, CallerWriteRefused, binding_of, caller_write_outcome, caller_writer_before_commit,
+    control_named_services_entry, reset_candidate,
 )
 from connection_hub.authority_inventory import (
     AuthorityGrantInventory,
@@ -3175,10 +3176,7 @@ class AutomationAccessService:
                 card_authority_from_record(existing), resource=resource,
                 control_operations=control_authority.resource_operations.get(resource, ()),
                 control_grants=control_authority.resource_grants.get(resource, ()),
-                control_named_services=(control_authority.named_service_operations.operations.get(resource)
-                                        if not (control_authority.named_service_operations.is_all
-                                                or control_authority.named_service_operations.is_unknown)
-                                        else None),
+                control_named_services=control_named_services_entry(control_authority, resource),
             )
         except CallerWriteRefused as exc:
             return exc.to_dict()
