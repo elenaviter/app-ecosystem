@@ -61,6 +61,11 @@ class _Board:
         self.answer, self.raises, self.calls = answer, raises, []
 
     async def __call__(self, *, bundle_id, operation, data):
+        # As the operation route sees it: the signed body under "data", the identity hints given as None
+        # (else the platform adds the session's), and the answer inside the route's envelope.
+        signed = data["data"]
+        assert data == {"data": signed, "user_id": None, "fingerprint": None}
+        data = signed
         self.calls.append((bundle_id, operation, data))
         if self.raises:
             raise self.raises
@@ -74,7 +79,8 @@ class _Board:
                                      approval_context={"protocol": PROTOCOL}),
             now=NOW)
         assert verdict.allowed, verdict
-        return self.answer(body) if callable(self.answer) else self.answer
+        return {"status": "ok", "bundle_id": bundle_id,
+                operation: self.answer(body) if callable(self.answer) else self.answer}
 
 
 def _port(board):
@@ -175,3 +181,50 @@ async def test_each_descriptor_built_caller_asks_its_own_host_under_its_authorit
     port._clock = lambda: NOW  # the fake board verifies at a fixed time
     assert (await port.authorize_lifecycle_plan(request)).allowed
     assert board.calls[0][0] == PB_BUNDLE and board.calls[0][2]["service_proof"]["service_id"] == "connection-hub"
+
+
+def _platform_route(answer):
+    """The operation route as the platform runs it: a hint not given is filled from the session; the
+    operation receives the rest as its arguments; its answer comes back inside the route's envelope."""
+    seen = {}
+
+    async def route(*, bundle_id, operation, data):
+        arguments = dict(data)
+        arguments.setdefault("user_id", "session-user")
+        arguments.setdefault("fingerprint", "session-fingerprint")
+        seen.update(body=arguments.pop("data"), hints=arguments)
+        return {"status": "ok", "bundle_id": bundle_id, operation: answer(seen["body"])}
+
+    return route, seen
+
+
+@pytest.mark.asyncio
+async def test_the_platform_adds_no_session_identity_to_the_signed_plan_body():
+    """Live 2026-10-09 23:01Z (managed edit): a flat body took the session's user_id; the plan body is the same."""
+    request = _request()
+    route, seen = _platform_route(lambda body: {"ok": True, "decisions": _decisions(request)})
+    authorization = await _port(route).authorize_lifecycle_plan(request)
+    assert seen["hints"] == {"user_id": None, "fingerprint": None}
+    assert set(seen["body"]) == {"actor_subject", "project_ref", "request_id", "request_digest", "steps",
+                                 "service_proof"}
+    assert [ref for ref, _ in authorization.decisions] == [step.ref for step in request.steps]
+
+
+@pytest.mark.asyncio
+async def test_a_raw_answer_from_a_local_call_is_read_as_before():
+    request = _request()
+
+    async def local(*, bundle_id, operation, data):  # a local (non-route) call answers the operation's own body
+        return {"ok": True, "decisions": _decisions(request)}
+
+    authorization = await _port(local).authorize_lifecycle_plan(request)
+    assert len(authorization.decisions) == len(request.steps)
+
+
+@pytest.mark.asyncio
+async def test_a_route_answer_outside_the_contract_is_invalid_never_refused_or_allowed():
+    async def route(*, bundle_id, operation, data):
+        return {"status": "error", "detail": "synthetic"}
+
+    with pytest.raises(ProjectAuthorizationError, match="card_plan_authorization_invalid"):
+        await _port(route).authorize_lifecycle_plan(_request())

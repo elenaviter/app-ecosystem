@@ -22,6 +22,20 @@ hold before it is switched on. Everything here is **off by default**:
 | Decision routing | `RoutedDecisionPort` | A Card staged by another application's transaction reads its decision from that application's authority. |
 | Recovery | cron `card-transaction-recover` | Finishes or presumes-aborts in-doubt Hub transactions, page by page, with the cursor kept in Redis. |
 
+**How the Hub calls a host's signed operation.** This applies to plan
+authorization, the transaction authority fetch (`cards/authority_transport.py`)
+and the managed Card edit forward:
+
+- **Send.** The signed body travels whole under the operation's `data`
+  argument, with `user_id` and `fingerprint` given as `null`. Otherwise the
+  platform fills those two from the signed-in session, and the host's
+  exact-body check refuses the extra field.
+- **Read.** The answer is read through `normalize_bundle_operation_result`.
+  Inside a request, the operation route wraps it as
+  `{status: ok, <operation>: answer}`; a local call returns it bare. A
+  wrapper outside that contract is an invalid answer, never an allow or a
+  refusal.
+
 ## The person Control under the project Control (C -> P)
 
 A person's project Control Card C (the per-person Card a project admin edits)

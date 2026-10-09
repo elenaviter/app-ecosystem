@@ -34,10 +34,14 @@ class _Call:
         self.body, self.raise_with, self.calls = body, raise_with, []
 
     async def __call__(self, *, bundle_id, operation, data):
-        self.calls.append((bundle_id, operation, data))
+        # As the operation route sees it: the signed body under "data", the identity hints given as None
+        # (else the platform adds the session's), and the answer inside the route's envelope.
+        body = data["data"]
+        assert data == {"data": body, "user_id": None, "fingerprint": None}
+        self.calls.append((bundle_id, operation, body))
         if self.raise_with:
             raise self.raise_with
-        return self.body
+        return {"status": "ok", "bundle_id": bundle_id, operation: self.body}
 
 
 async def _sign(unsigned):
@@ -116,7 +120,7 @@ async def test_end_to_end_with_the_real_board_signer_behind_the_configured_call(
 
     hub, pb, store, before, after, applier = await ais._hub(tmp_path)
 
-    async def board_endpoint(*, bundle_id, operation, data):
+    async def board_answer(*, bundle_id, operation, data):
         assert (bundle_id, operation) == ("problem-board@1-0", "project_card_transaction_authority")
         try:
             return {"ok": True, **await pb.fetch(data["transaction_id"], data["phase"], data["request_echo"])}
@@ -125,6 +129,12 @@ async def test_end_to_end_with_the_real_board_signer_behind_the_configured_call(
                     "authority_late_stage": "work_card_transaction_authority_late_stage"}.get(exc.reason, "other")
             return {"ok": False, "status": 409, "error": {"code": code, "message": "x"}}
 
+    async def board_endpoint(*, bundle_id, operation, data):
+        # The operation route: the nested body arrives as the operation's data; the answer comes back enveloped.
+        assert data["user_id"] is None and data["fingerprint"] is None
+        answer = await board_answer(bundle_id=bundle_id, operation=operation, data=data["data"])
+        return {"status": "ok", operation: answer}
+
     fetch = configured_authority_fetch(call=board_endpoint, binding_config=PB_BINDING, sign_request=_sign)
     hub._intents._fetch = fetch
     hub._decisions._fetch = fetch
@@ -132,3 +142,52 @@ async def test_end_to_end_with_the_real_board_signer_behind_the_configured_call(
     pb.decide("committed")
     await hub.finish(ais.TX, "committed")
     assert await ais._visible(store, before) == after
+
+
+@pytest.mark.asyncio
+async def test_the_platform_adds_no_session_identity_to_the_signed_authority_request():
+    """Live 2026-10-09 23:01Z (managed edit): a flat body took the session's user_id and the host refused it."""
+    seen = {}
+
+    async def route(*, bundle_id, operation, data):
+        # The platform's rule for an operation's arguments: a hint not given is filled from the session.
+        arguments = dict(data)
+        arguments.setdefault("user_id", "session-user")
+        arguments.setdefault("fingerprint", "session-fingerprint")
+        seen.update(body=arguments.pop("data"), hints=arguments)
+        return {"status": "ok", operation: {"ok": True, "schema": PROTOCOL, "phase": "stage"}}
+
+    fetch = configured_authority_fetch(call=route, binding_config=PB_BINDING, sign_request=_sign)
+    assert await fetch(TX, "stage", ECHO) == {"schema": PROTOCOL, "phase": "stage"}
+    assert seen["hints"] == {"user_id": None, "fingerprint": None}
+    assert "user_id" not in seen["body"] and "fingerprint" not in seen["body"]
+
+
+@pytest.mark.asyncio
+async def test_an_enveloped_refusal_keeps_the_configured_refusal_mapping():
+    async def route(*, bundle_id, operation, data):
+        return {"status": "ok", operation: {"ok": False, "status": 409, "error": {
+            "code": "work_card_transaction_intent_mismatch", "message": "x"}}}
+
+    fetch = configured_authority_fetch(call=route, binding_config=PB_BINDING, sign_request=_sign)
+    with pytest.raises(TransactionAuthorityRefused, match="authority_intent_mismatch"):
+        await fetch(TX, "stage", ECHO)
+
+
+@pytest.mark.asyncio
+async def test_a_raw_answer_from_a_local_call_is_read_as_before():
+    async def local(*, bundle_id, operation, data):
+        return {"ok": True, "schema": PROTOCOL, "phase": "stage"}
+
+    fetch = configured_authority_fetch(call=local, binding_config=PB_BINDING, sign_request=_sign)
+    assert await fetch(TX, "stage", ECHO) == {"schema": PROTOCOL, "phase": "stage"}
+
+
+@pytest.mark.asyncio
+async def test_a_route_answer_outside_the_contract_is_invalid():
+    async def route(*, bundle_id, operation, data):
+        return {"status": "error", "detail": "synthetic"}
+
+    fetch = configured_authority_fetch(call=route, binding_config=PB_BINDING, sign_request=_sign)
+    with pytest.raises(TransactionAuthorityRefused, match="authority_response_invalid"):
+        await fetch(TX, "stage", ECHO)

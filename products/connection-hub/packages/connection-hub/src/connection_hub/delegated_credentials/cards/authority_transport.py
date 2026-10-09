@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Mapping
 
+from ...bundle_operations import BundleOperationResultError, normalize_bundle_operation_result
 from .card_participant import PARTICIPANT
 from .transaction_authority_v2 import PROTOCOL, TransactionAuthorityRefused
 
@@ -77,14 +78,20 @@ def configured_authority_fetch(*, call: AuthorityCall, binding_config: Any, sign
                     "transaction_id": transaction_id, "participant": PARTICIPANT}
         try:
             proof = await sign_request(dict(unsigned))
+            # The signed body travels whole under "data" with the identity hints given as None (else the
+            # platform adds the session's and the host's exact-body check refuses), as managed_card_edit_forward.
             body = await call(bundle_id=config.bundle_id, operation=config.operation,
-                              data={**unsigned, "service_proof": proof})
+                              data={"data": {**unsigned, "service_proof": proof},
+                                    "user_id": None, "fingerprint": None})
         except TransactionAuthorityRefused:
             raise
         except Exception:  # noqa: BLE001 - transport failure, by name only
             raise TransactionAuthorityRefused("authority_unavailable") from None
-        if not isinstance(body, Mapping):
-            raise TransactionAuthorityRefused("authority_response_invalid")
+        try:
+            # Inside a request the operation route answers {"status": "ok", ..., "<operation>": answer}.
+            body = normalize_bundle_operation_result(config.operation, body)
+        except BundleOperationResultError:
+            raise TransactionAuthorityRefused("authority_response_invalid") from None
         if body.get("ok") is not True:
             error = body.get("error")
             code = error.get("code") if isinstance(error, Mapping) else None
