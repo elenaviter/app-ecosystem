@@ -9,6 +9,7 @@ refused, and never reaches the decision store.
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,6 +39,13 @@ class _Nonces:
         return True
 
 
+class _CardService:
+    @asynccontextmanager
+    async def collection_section(self, collection_id):
+        raise AssertionError("an unauthenticated request reached the collection lock")
+        yield  # pragma: no cover - the fixture refuses unauthenticated acquisition
+
+
 @pytest.fixture
 def entrypoint(monkeypatch):
     module = _module()
@@ -46,7 +54,7 @@ def entrypoint(monkeypatch):
                                hub_resource="connection-hub@1-0", bind=None, census_scope_prefix="work:project:")
 
     async def persistence(_entrypoint, _redis):
-        return SimpleNamespace(card_store=object(), card_service=object())
+        return SimpleNamespace(card_store=object(), card_service=_CardService())
 
     async def callers(_entrypoint, _persistence):
         return BuiltCallers(callers={"problem-board": caller}, authorities={})
@@ -132,6 +140,52 @@ async def test_w502_read_collection_registration_ignores_the_browser_session(ent
     answer = await entrypoint.card_read_collection_register(data=forged, request=_browser_request())
     assert answer["ok"] is False and answer["error"]["code"] == "card_participant_unauthenticated"
     assert "collection_answer" not in answer
+
+
+@pytest.mark.asyncio
+async def test_w651_registration_endpoint_passes_the_services_collection_lock(entrypoint, monkeypatch):
+    module = _module()
+    acquired = []
+
+    @asynccontextmanager
+    async def section(collection_id):
+        acquired.append(collection_id)
+        yield
+
+    provider = SimpleNamespace(collection_section=section)
+
+    async def persistence(_entrypoint, _redis):
+        return SimpleNamespace(card_store=object(), card_service=provider)
+
+    class Operation:
+        def __init__(self, **kwargs):
+            assert kwargs["collection_lock"] is section
+            self.section = kwargs["collection_lock"]
+
+        async def answer(self, payload):
+            async with self.section("a" * 32):
+                return {"fixture": "lock-provider-bound"}
+
+    monkeypatch.setattr(module, "_delegated_card_persistence", persistence)
+    monkeypatch.setattr(module, "CardReadCollectionOperation", Operation)
+    assert await entrypoint.card_read_collection_register(data={}) == {"fixture": "lock-provider-bound"}
+    assert acquired == ["a" * 32]
+
+
+@pytest.mark.asyncio
+async def test_w651_registration_endpoint_refuses_a_missing_collection_lock(entrypoint, monkeypatch):
+    module = _module()
+
+    async def persistence(_entrypoint, _redis):
+        return SimpleNamespace(card_store=object(), card_service=object())
+
+    def forbidden(**kwargs):
+        raise AssertionError("registration constructed without the collection lock")
+
+    monkeypatch.setattr(module, "_delegated_card_persistence", persistence)
+    monkeypatch.setattr(module, "CardReadCollectionOperation", forbidden)
+    assert await entrypoint.card_read_collection_register(data={}) == {
+        "ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
 
 
 @pytest.mark.asyncio
