@@ -217,6 +217,23 @@ class PostgresCardCredentialHandleStore:
         cls._validate_binding(authority, metadata)
 
     @staticmethod
+    def _validate_identity(
+        authority: CardAuthority,
+        metadata: CardHandleMetadata,
+    ) -> None:
+        """A credential belongs to its Card, not to one Card revision (operator, 2026-10-09).
+
+        A Card edit or a refresh moves the Card's revision and expiry; the credential stays valid until its own
+        revocation or expiry, or the Card's revocation (checked on the live Card at use). So a read checks only
+        that the row is this Card's. The exact revision and expiry binding stays for migration reconciliation.
+        """
+        if metadata.access_id != authority.access_id:
+            raise CardCredentialHandleUnavailable(
+                "card_handle_access_id_mismatch",
+                access_id=authority.access_id,
+            )
+
+    @staticmethod
     def _validate_binding(
         authority: CardAuthority,
         metadata: CardHandleMetadata,
@@ -246,11 +263,16 @@ class PostgresCardCredentialHandleStore:
                 access_id=authority.access_id,
             ) from exc
         if metadata is None:
+            if authority.card_kind != CARD_KIND_AGENT:
+                # Only a hosted agent's bearer is held here. A Card issued through the original OAuth exchange
+                # under Card transactions gets no row at all (no handle store is bound into the transaction),
+                # and its credential lives with the OAuth authority: a missing row withholds nothing it needs.
+                return CardCredentialHandles(access_id=authority.access_id)
             raise CardCredentialHandleUnavailable(
                 "card_handle_metadata_missing",
                 access_id=authority.access_id,
             )
-        self._validate_binding(authority, metadata)
+        self._validate_identity(authority, metadata)
         access_token = ""
         if authority.card_kind == CARD_KIND_AGENT:
             try:

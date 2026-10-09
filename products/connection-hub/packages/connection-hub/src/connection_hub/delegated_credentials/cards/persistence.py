@@ -345,12 +345,22 @@ class DurableCardPersistence:
             durable_ids = await self._store.list_card_ids(subject_hash=subject_hash)
         except Exception as exc:
             raise CardUnavailable("durable_card_unreadable") from exc
+        # Authorities only: these listings (identity lookup, the owner's Cards) never use credential
+        # handles, so one Card whose handles cannot be read (an agent Card's resident bearer) must not make
+        # every other Card of the owner unlistable. A Card that needs its handles reads them when used.
         found: list[CardAuthority] = []
         for access_id in durable_ids:
-            loaded = await self.load_current(access_id, subject_hash=subject_hash)
-            if loaded is None:
+            try:
+                current = await self._store.read_current_authority(
+                    subject_hash=subject_hash, access_id=access_id
+                )
+            except Exception as exc:
+                raise CardUnavailable("durable_card_unreadable") from exc
+            if current is None:
                 continue
-            authority, _ = loaded
+            _, authority = current
+            if subject_hash_for(authority.grantor_subject) != str(subject_hash):
+                continue
             found.append(authority)
         return found
 

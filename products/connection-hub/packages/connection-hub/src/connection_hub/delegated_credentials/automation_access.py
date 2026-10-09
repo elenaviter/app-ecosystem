@@ -9343,6 +9343,10 @@ class AutomationAccessService:
             )
         )
         if identity.get("ok") is not True:
+            _LOGGER.warning(
+                "[automation-access] oauth grant card identity refused client=%s error=%s reason=%s",
+                client, _clean(identity.get("error")), _clean(identity.get("reason")),
+            )
             raise CardConflict(_clean(identity.get("error")) or "card_identity_invalid")
         selected_kind = _clean(identity.get("card_kind"))
         resolved_access_id = _clean(identity.get("access_id"))
