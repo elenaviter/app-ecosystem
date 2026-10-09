@@ -1572,3 +1572,73 @@ async def test_a_provider_refusal_is_still_forbidden() -> None:
         request_id="request-update", label="Wider",
     )
     assert saved == {"ok": False, "error": "project_membership_provider_refused", "status": 403}
+
+
+async def _authorized_service():
+    host = _Host()
+    lifecycle = _lifecycle(host, _Port())
+    await _create(lifecycle)
+    control_identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=TARGET)
+    person_identity = ProjectPersonCardIdentity.build(project_ref=PROJECT_REF, person_subject=TARGET)
+    control, control_state = host.records[(control_identity.project_subject, control_identity.control_id)]
+    my_card, my_card_state = host.records[(TARGET, person_identity.my_card_id)]
+    selected = {"resource_grants": {RESOURCE: (GRANT,)}, "resource_operations": {RESOURCE: (OPERATION,)}}
+    host.records[(control_identity.project_subject, control_identity.control_id)] = (
+        _Record(dataclasses.replace(control.authority, **selected)), control_state)
+    host.records[(TARGET, person_identity.my_card_id)] = (
+        _Record(dataclasses.replace(my_card.authority, **selected)), my_card_state)
+    service = AutomationAccessService.__new__(AutomationAccessService)
+    service._project_person_controls = lifecycle
+    identities = lifecycle._project_identities
+    reads = {"resolve": 0}
+    original = identities.resolve
+
+    async def counted(**kwargs):
+        reads["resolve"] += 1
+        return await original(**kwargs)
+
+    identities.resolve = counted
+    return service, reads
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [2, 1000])
+async def test_many_operations_are_one_exchange_with_one_chain_resolution(count) -> None:
+    # Operator, 2026-10-09: "Checking 1000 operations must take same time as checking 2".
+    service, reads = await _authorized_service()
+    entries = [{"operation": OPERATION, "required_grants": [GRANT]}] + [
+        {"operation": f"review.unknown{index}", "required_grants": [GRANT]} for index in range(count - 1)]
+    answer = await service.project_operations_authorize(
+        {"user_id": TARGET}, project_ref=PROJECT_REF, resource=RESOURCE, operations=entries)
+    assert answer["ok"] is True and len(answer["decisions"]) == count
+    assert reads["resolve"] == 1  # the chain is read once, whatever the count
+    assert answer["decisions"][0]["allowed"] is True
+    assert all(decision["allowed"] is False for decision in answer["decisions"][1:])
+
+
+@pytest.mark.asyncio
+async def test_each_batched_decision_equals_its_single_decision() -> None:
+    service, _ = await _authorized_service()
+    entries = [{"operation": OPERATION, "required_grants": [GRANT]},
+               {"operation": "review.unknown", "required_grants": [GRANT]},
+               {"operation": OPERATION, "required_grants": ["work:other"]}]
+    batch = await service.project_operations_authorize(
+        {"user_id": TARGET}, project_ref=PROJECT_REF, resource=RESOURCE, operations=entries)
+    for entry, decision in zip(entries, batch["decisions"]):
+        single = await service.project_operation_authorize(
+            {"user_id": TARGET}, project_ref=PROJECT_REF, resource=RESOURCE,
+            operation=entry["operation"], required_grants=tuple(entry["required_grants"]))
+        single.pop("ok")
+        # This fake host mints a new catalog version on each read; the batch reads it once for all.
+        assert {**decision, "active_catalog_version": ""} == {**single, "active_catalog_version": ""}
+    assert len({decision["active_catalog_version"] for decision in batch["decisions"]}) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operations", [None, [], "review.accept", [1], [{}] * 2001])
+async def test_a_malformed_or_oversized_batch_is_refused(operations) -> None:
+    service, reads = await _authorized_service()
+    answer = await service.project_operations_authorize(
+        {"user_id": TARGET}, project_ref=PROJECT_REF, resource=RESOURCE, operations=operations)
+    assert answer == {"ok": False, "error": "operation_batch_invalid", "status": 400}
+    assert reads["resolve"] == 0

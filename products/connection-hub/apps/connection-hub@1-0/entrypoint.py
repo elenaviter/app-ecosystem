@@ -352,6 +352,7 @@ CSRF_EXEMPT_POST_OPERATION_ALIASES = frozenset({
     "identity_resolve",
     "opex",
     "project_operation_authorize",
+    "project_operations_authorize",
     # W502 join: read-only, asked by the project host under the invitee's session.
     "project_invitation_pending_revision",
     "react_context_preview",
@@ -3333,6 +3334,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                             "project_person_github_key_status": {"visibility": {"user_types": []}},
                             "project_person_commit_email_set": {"visibility": {"user_types": []}},
                             "project_operation_authorize": {"visibility": {"user_types": []}},
+                            "project_operations_authorize": {"visibility": {"user_types": []}},
                             "control_card_attach": {"visibility": {"user_types": []}},
                             "control_card_detach": {"visibility": {"user_types": []}},
                             "control_card_revoke": {"visibility": {"user_types": []}},
@@ -5949,6 +5951,38 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             operation=str(payload.get("operation") or "").strip(),
             required_grants=payload.get("required_grants", ()),
             request_resource=str(payload.get("request_resource") or "").strip(),
+            surface=str(payload.get("surface") or "application").strip(),
+        )
+
+    @api(
+        method="POST",
+        alias="project_operations_authorize",
+        route="operations",
+        csrf=False,
+        **_api_visibility("project_operations_authorize"),
+    )
+    async def project_operations_authorize(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        user_id: Optional[str] = None,
+        fingerprint: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        """Authorize many project operations for the signed-in person in one exchange."""
+
+        del fingerprint
+        payload = _payload(data, **kwargs)
+        user = _platform_user_payload(self, user_id=user_id)
+        if not user:
+            return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        return await (
+            await _automation_access_service(self, request)
+        ).project_operations_authorize(
+            user,
+            project_ref=str(payload.get("project_ref") or "").strip(),
+            resource=str(payload.get("resource") or "").strip(),
+            operations=payload.get("operations"),
             surface=str(payload.get("surface") or "application").strip(),
         )
 
