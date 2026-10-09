@@ -1717,3 +1717,27 @@ async def test_a_decided_read_refusal_returns_without_waiting_for_the_edit_quest
     assert refused["ok"] is False and "viewer" not in refused
     # Retired: cancelled while waiting, or never started at all; never left running and never answered.
     assert port.edit_answered is False and (port.edit_cancelled or not port.edit_started)
+
+
+@pytest.mark.asyncio
+async def test_a_missing_card_returns_its_not_found_without_waiting_for_the_edit_question() -> None:
+    # CodeApp return on #719 (second): after READ allows, an unsuccessful view returns at once too.
+    import asyncio
+
+    class SilentEditPort(_Port):
+        def __init__(self):
+            super().__init__()
+            self.edit_answered = False
+
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                await asyncio.Event().wait()  # never answers
+                self.edit_answered = True
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()  # no Card was ever created
+    port = SilentEditPort()
+    answer = await asyncio.wait_for(_lifecycle(host, port).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read"), timeout=2)
+    assert answer["ok"] is False and "viewer" not in answer
+    assert port.edit_answered is False

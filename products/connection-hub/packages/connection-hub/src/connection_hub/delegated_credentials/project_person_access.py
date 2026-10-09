@@ -478,10 +478,13 @@ class ProjectPersonControlLifecycle:
                 project_ref=project_ref,
                 target_subject=target_subject,
             )
-            view, viewer_answer = await asyncio.gather(
-                timed("view", self._view(identity=identity, decision=decision)), edit_question)
-            if view.get("ok") is True:
-                view["viewer"] = viewer_answer
+            # The edit question keeps running while the view is read; it is awaited only for a view that
+            # needs viewer metadata. An unsuccessful view (e.g. not found) returns at once (CodeApp return).
+            view = await timed("view", self._view(identity=identity, decision=decision))
+            if view.get("ok") is not True:
+                await _retire(edit_question)
+                return view
+            view["viewer"] = await edit_question
             return view
         except BaseException:
             await _retire(edit_question)
