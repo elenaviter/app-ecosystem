@@ -105,3 +105,32 @@ async def test_a_census_over_a_catalog_stored_before_the_fix_names_the_path(tmp_
     with pytest.raises(WireRefused):
         await operation.answer(census._request([]))
     assert f"answer.result.catalog.document.{TIMEOUT_PATH}" in caplog.text and "5.0" not in caplog.text
+
+
+# Live 2026-10-09 20:25Z, after the float fix: Fit to role still "unavailable" and NEITHER side named why.
+# Every census outcome now leaves one value-free line on the Hub: a signed refusal's fixed code, the
+# answer size and catalog size, or the failing exception's class.
+@pytest.mark.asyncio
+async def test_a_signed_refusal_and_an_answer_each_leave_one_value_free_line(tmp_path, caplog):
+    caplog.set_level(logging.INFO)
+    operation, store, control, identity, catalog_store = await census._world(tmp_path)
+    request = census._request([])
+    census._verified(await operation.answer(request), request)
+    assert "card census read answered:" in caplog.text and "catalog" in caplog.text
+    caplog.clear()
+    forbidden = census._request([], scope="work:other:project")
+    await operation.answer(forbidden)
+    assert "card census read refused" in caplog.text and "code=" in caplog.text
+    assert census.REQUEST_SECRET not in caplog.text and census.RECEIPT_SECRET not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_an_answer_over_the_bound_logs_its_size_and_the_catalogs(tmp_path, monkeypatch, caplog):
+    from connection_hub.delegated_credentials.cards import census_read
+
+    caplog.set_level(logging.WARNING)
+    monkeypatch.setattr(census_read, "MAX_ANSWER_BYTES", 600)
+    operation, *_ = await census._world(tmp_path)
+    await operation.answer(census._request([]))
+    assert "card census answer over the bound:" in caplog.text and "catalog" in caplog.text
+    assert "card census read refused: code=card_census_too_large status=413" in caplog.text
