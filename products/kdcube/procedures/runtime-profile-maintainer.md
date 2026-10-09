@@ -352,6 +352,23 @@ named, and the commit range; the attestation results (`MATCH` per bundle, the
 source per service, the client commits); and the eviction count or the
 restarted containers.
 
+## Sync secret values on demand
+
+The operator may ask for it at any time (board message to the coordinator, a work item, or Telegram); the coordinator
+routes it to the console agent of the runtime's host (deploys run only there, per the project environment file). On a
+standalone runtime whose `assembly.yaml` has `secrets.provider: secrets-file` and `secrets.service.backend: host-vault`
+(the shadow state of [Host Vault](repo:kdcube/app/ai-app/docs/service/secrets/host-vault-README.md)), the file pair is the
+source of truth and the vault holds only staged copies. Nothing mirrors either direction automatically.
+
+- **File to vault (create-only):** `kdcube secrets backend host-vault stage --tenant <t> --project <p> --path "$REPO" --dry-run --json`,
+  report its counts (matched, missing, differing) to the operator, then the same command without `--dry-run`. The stage
+  checks every key before the first write, creates only absent keys and refuses on any differing value.
+- **A differing value:** stop. Report the key names (never values or digests) and ask the operator which side is
+  authoritative per key; nothing is overwritten without that decision.
+- **Vault to file:** `kdcube secrets export`, an administrator ceremony the operator confirms in the browser each
+  time; an agent prepares it and never completes it alone.
+- No value, length or digest is printed, exported or passed on a command line, in any direction.
+
 ## Who clears a refresh
 
 `kdcube refresh --build` rebuilds the operator's stack, so it is theirs to
