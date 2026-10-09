@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import dataclasses
+import logging
 import time
 from typing import Any, Callable, Iterable, Mapping
 
@@ -182,6 +184,22 @@ def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
         "retryable": True,
         "status": 503,
     }
+
+
+_LOG = logging.getLogger(__name__)
+
+
+async def _retire(task: "asyncio.Future") -> None:
+    """Cancel a question this read owns but no longer needs, and wait for it to finish."""
+    if task.done():
+        if not task.cancelled():
+            task.exception()  # consumed: an unneeded answer's failure is not this read's failure
+        return
+    task.cancel()
+    try:
+        await task
+    except BaseException:  # noqa: BLE001 - its cancellation or failure belongs to no caller
+        pass
 
 
 class ProjectPersonControlLifecycle:
@@ -419,30 +437,62 @@ class ProjectPersonControlLifecycle:
         target_subject: str,
         request_id: str,
     ) -> dict[str, Any]:
-        authorized = await self._authorize(
-            viewer=viewer,
-            actor_subject=actor_subject,
-            project_ref=project_ref,
-            target_subject=target_subject,
-            operation=PROJECT_PERSON_CONTROL_READ,
-            request_id=request_id,
-        )
-        if isinstance(authorized, dict):
-            return authorized
-        _request, decision = authorized
-        identity = ProjectPersonControlIdentity.build(
-            project_ref=project_ref,
-            target_subject=target_subject,
-        )
-        view = await self._view(identity=identity, decision=decision)
-        if view.get("ok") is True:
-            view["viewer"] = await self._viewer(
+        # Live 2026-10-09 (operator: "waiting 10 seconds for card retrieval is unacceptable"): the read's
+        # authorization and the viewer's edit question are independent policy-port questions, so they are
+        # asked together instead of one after the other; the view needs only the read's decision.
+        started = time.monotonic()
+        timings: dict[str, float] = {}
+
+        async def timed(name: str, call):
+            begin = time.monotonic()
+            try:
+                return await call
+            finally:
+                timings[name] = (time.monotonic() - begin) * 1000.0
+
+        async def ask_edit() -> dict[str, Any]:
+            # The question is created inside the task, so a task retired before it starts creates nothing.
+            return await timed("edit_authorize", self._viewer(
                 actor_subject=actor_subject,
                 project_ref=project_ref,
                 target_subject=target_subject,
                 request_id=request_id,
+            ))
+
+        edit_question = asyncio.ensure_future(ask_edit())
+        try:
+            authorized = await timed("read_authorize", self._authorize(
+                viewer=viewer,
+                actor_subject=actor_subject,
+                project_ref=project_ref,
+                target_subject=target_subject,
+                operation=PROJECT_PERSON_CONTROL_READ,
+                request_id=request_id,
+            ))
+            if isinstance(authorized, dict):
+                # A decided refusal returns at once; the edit question cannot contribute (CodeApp return).
+                await _retire(edit_question)
+                return authorized
+            _request, decision = authorized
+            identity = ProjectPersonControlIdentity.build(
+                project_ref=project_ref,
+                target_subject=target_subject,
             )
-        return view
+            # The edit question keeps running while the view is read; it is awaited only for a view that
+            # needs viewer metadata. An unsuccessful view (e.g. not found) returns at once (CodeApp return).
+            view = await timed("view", self._view(identity=identity, decision=decision))
+            if view.get("ok") is not True:
+                await _retire(edit_question)
+                return view
+            view["viewer"] = await edit_question
+            return view
+        except BaseException:
+            await _retire(edit_question)
+            raise
+        finally:
+            _LOG.info("person control read timing total_ms=%.1f read_authorize_ms=%.1f edit_authorize_ms=%.1f "
+                      "view_ms=%.1f", (time.monotonic() - started) * 1000.0, timings.get("read_authorize", 0.0),
+                      timings.get("edit_authorize", 0.0), timings.get("view", 0.0))
 
     async def _viewer(
         self,

@@ -1642,3 +1642,102 @@ async def test_a_malformed_or_oversized_batch_is_refused(operations) -> None:
         {"user_id": TARGET}, project_ref=PROJECT_REF, resource=RESOURCE, operations=operations)
     assert answer == {"ok": False, "error": "operation_batch_invalid", "status": 400}
     assert reads["resolve"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_person_control_read_asks_its_two_policy_questions_together_and_logs_its_stages(caplog) -> None:
+    # Live 2026-10-09: the read's authorization and the viewer's edit question waited for each other.
+    import asyncio
+    import logging
+
+    class SlowPort(_Port):
+        def __init__(self):
+            super().__init__()
+            self.running, self.peak = 0, 0
+
+        async def authorize_project_person_control(self, request):
+            self.running += 1
+            self.peak = max(self.peak, self.running)
+            try:
+                await asyncio.sleep(0.05)
+                return await super().authorize_project_person_control(request)
+            finally:
+                self.running -= 1
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    port = SlowPort()
+    caplog.set_level(logging.INFO)
+    view = await _lifecycle(host, port).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read")
+    assert view["ok"] is True and view["viewer"]["can_edit"] is True
+    assert port.peak == 2  # both questions were in flight at once
+    assert sorted(request.operation for request in port.requests) == sorted(
+        [PROJECT_PERSON_CONTROL_READ, PROJECT_PERSON_CONTROL_UPDATE])
+    assert "person control read timing total_ms=" in caplog.text and "edit_authorize_ms=" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_refused_read_still_refuses_with_the_edit_question_asked_alongside() -> None:
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    port = _Port(deny_actor="someone-else")
+    refused = await _lifecycle(host, port).get(
+        actor_subject="someone-else", project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read")
+    assert refused["ok"] is False and "viewer" not in refused
+
+
+@pytest.mark.asyncio
+async def test_a_decided_read_refusal_returns_without_waiting_for_the_edit_question() -> None:
+    # CodeApp return on #719: a refused read must not wait for the optional edit question, which is cancelled.
+    import asyncio
+
+    class SplitPort(_Port):
+        def __init__(self):
+            super().__init__(deny_actor="someone-else")
+            self.edit_started = self.edit_cancelled = self.edit_answered = False
+
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                self.edit_started = True
+                try:
+                    await asyncio.Event().wait()  # never answers
+                except asyncio.CancelledError:
+                    self.edit_cancelled = True
+                    raise
+                self.edit_answered = True
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    port = SplitPort()
+    refused = await asyncio.wait_for(_lifecycle(host, port).get(
+        actor_subject="someone-else", project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read"),
+        timeout=2)
+    assert refused["ok"] is False and "viewer" not in refused
+    # Retired: cancelled while waiting, or never started at all; never left running and never answered.
+    assert port.edit_answered is False and (port.edit_cancelled or not port.edit_started)
+
+
+@pytest.mark.asyncio
+async def test_a_missing_card_returns_its_not_found_without_waiting_for_the_edit_question() -> None:
+    # CodeApp return on #719 (second): after READ allows, an unsuccessful view returns at once too.
+    import asyncio
+
+    class SilentEditPort(_Port):
+        def __init__(self):
+            super().__init__()
+            self.edit_answered = False
+
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                await asyncio.Event().wait()  # never answers
+                self.edit_answered = True
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()  # no Card was ever created
+    port = SilentEditPort()
+    answer = await asyncio.wait_for(_lifecycle(host, port).get(
+        actor_subject=TARGET, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read"), timeout=2)
+    assert answer["ok"] is False and "viewer" not in answer
+    assert port.edit_answered is False
