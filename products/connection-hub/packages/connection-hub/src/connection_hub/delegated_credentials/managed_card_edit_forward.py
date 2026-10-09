@@ -22,7 +22,9 @@ Hub's half of that hand-over, and it stays generic: it knows Cards, not roles.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import time
 from typing import Any, Awaitable, Callable, Mapping
 
@@ -38,6 +40,8 @@ TARGET_KINDS = frozenset({"person_control", "agent_card", "invitation_control", 
 SELECTION_FIELDS = ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
 
 BundleCall = Callable[..., Awaitable[Any]]
+_LOG = logging.getLogger(__name__)
+_CODE = re.compile(r"[a-z][a-z0-9_.]{0,79}")
 
 
 class ManagedCardEditError(ValueError):
@@ -120,6 +124,15 @@ def _outcome(answer: Any, body: Mapping[str, Any]) -> dict[str, Any]:
         code = error.get("code") if isinstance(error, Mapping) else error
         message = error.get("message") if isinstance(error, Mapping) else answer.get("message")
         status = answer.get("status")
+        # Live 2026-10-09 22:13Z: a refused Control save showed only "The project did not save this Card change."
+        # and neither side logged why. One value-free line: the target kind and the project's fixed code. A code
+        # is logged only from the structured ``error.code`` field (the fixed-code contract); a flat error string
+        # is free text whatever its spelling, so it is never logged (CodeApp return on #720).
+        structured = error.get("code") if isinstance(error, Mapping) else None
+        _LOG.warning("managed card edit refused by the project: kind=%s code=%s status=%s",
+                     (body.get("target") or {}).get("kind", "-"),
+                     structured if isinstance(structured, str) and _CODE.fullmatch(structured) else "-",
+                     status if type(status) is int else "-")
         raise ManagedCardEditError(str(code or "managed_card_edit_refused"),
                                    status if type(status) is int and 400 <= status < 600 else 409,
                                    str(message or ""))
