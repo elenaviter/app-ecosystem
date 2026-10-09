@@ -3960,7 +3960,18 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             await redis.set(cursor_key, report["next_after"])
         except Exception:  # noqa: BLE001
             LOGGER.warning("[connection-hub.card-transactions] recovery cursor not saved")
-        return {"enabled": True, **report, "stale_catalog_marker_cleared": stale_marker_age is not None}
+        # W651 retention: after recovery finished what it could, delete the sealed read collections whose
+        # deadline passed and that no in-flight transaction names; bounded per tick.
+        collections = None
+        card_service = getattr(persistence, "card_service", None)
+        if callable(getattr(card_service, "sweep_expired_collections", None)):
+            try:
+                collections = await card_service.sweep_expired_collections(now=int(time.time()))
+            except Exception as exc:  # noqa: BLE001 - retention retries next tick; recovery's report stands
+                LOGGER.warning("[connection-hub.card-transactions] collection retention failed reason=%s",
+                               type(exc).__name__)
+        return {"enabled": True, **report, "stale_catalog_marker_cleared": stale_marker_age is not None,
+                "collections": collections}
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 

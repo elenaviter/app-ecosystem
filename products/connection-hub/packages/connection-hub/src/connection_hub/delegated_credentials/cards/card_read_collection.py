@@ -164,6 +164,76 @@ async def resolve_collection(store: Any, collection_id: str) -> tuple[dict[str, 
     return header, reads
 
 
+# ── retention (W651): a collection is deleted once its deadline passed and no in-flight transaction names it ──
+#
+# Horizon ZERO beyond the deadline (Main, 2026-10-09 00:05Z): no decision outlives its collection
+# (``_bound_intent``), a first PREPARE after the deadline refuses (``card_read_collection_expired``), and a
+# decided transaction's fences hold nothing; every remaining user is an in-flight receipt or entry, which
+# ``transaction_store.protected_collections`` reads. The caller holds this collection's lock (taken
+# OUTERMOST by every stage, finish and sweep of a collection), so eligibility and deletion are one step.
+
+
+def collection_lock_path(store: Any, collection_id: str):
+    """The collection's own lock file, beside (never inside) the directory retention deletes."""
+    _collection_dir(store, collection_id)  # validates the id
+    return store.root / "card-collection-locks" / f"{collection_id}.lock"
+
+
+async def expired_collection_ids(store: Any, *, now: int, limit: int) -> list[str]:
+    """Up to ``limit`` collection ids whose sealed header's deadline has passed (a bounded directory read)."""
+    import asyncio
+    import itertools
+
+    directory = store.root / "card-collections"
+
+    def names():
+        try:
+            return sorted(path.name for path in itertools.islice(directory.iterdir(), 4 * limit + 64)
+                          if path.is_dir() and _ID.fullmatch(path.name))
+        except FileNotFoundError:
+            return []
+
+    found = []
+    for collection_id in await asyncio.to_thread(names):
+        try:
+            header = await load_header(store, collection_id)
+        except CardStorageError:
+            continue  # an invalid header is never deleted by retention: it is evidence
+        if header is not None and now >= header["deadline"]:
+            found.append(collection_id)
+        elif header is None and await list_child_names(_collection_dir(store, collection_id) / "leaves") == []:
+            found.append(collection_id)  # an empty directory left by a finished delete
+        if len(found) >= limit:
+            break
+    return found
+
+
+async def delete_collection(store: Any, collection_id: str) -> int:
+    """Leaves first, header LAST, then the empty directories; idempotent. Returns the leaves removed.
+
+    A crash part-way leaves a header with fewer leaves: ``resolve_collection`` then refuses
+    ``card_read_collection_incomplete`` (no PREPARE can use it), and the next sweep finishes the delete.
+    """
+    import asyncio
+
+    root = _collection_dir(store, collection_id)
+    leaves = root / "leaves"
+    removed = 0
+    for name in await list_child_names(leaves):
+        try:
+            await asyncio.to_thread((leaves / name).unlink, missing_ok=True)
+            removed += 1
+        except OSError:
+            pass
+    await asyncio.to_thread(header_path(store, collection_id).unlink, missing_ok=True)
+    for directory in (leaves, root):
+        try:
+            await asyncio.to_thread(directory.rmdir)
+        except OSError:
+            pass  # absent already, or an unsealed registration retry wrote into it: the next sweep looks again
+    return removed
+
+
 __all__ = ["COLLECTION_HEADER_SCHEMA", "COLLECTION_LEAF_SCHEMA", "MAX_COLLECTION_READS", "collection_root",
-           "descriptors_valid", "header_path", "leaf", "leaf_path", "load_header", "resolve_collection",
+           "collection_lock_path", "delete_collection", "descriptors_valid", "expired_collection_ids", "header_path", "leaf", "leaf_path", "load_header", "resolve_collection",
            "seal_collection", "validate_header"]

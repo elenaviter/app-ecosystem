@@ -56,9 +56,13 @@ def collection_request_digest(request: Mapping[str, Any]) -> str:
     return shared_request_digest({name: request[name] for name in REQUEST_FIELDS}, contract=AnswerContract.COLLECTION)
 
 
-def collection_id_for(*, service_id: str, scope: str, request_id: str) -> str:
-    """Deterministic per caller, scope and request: a retry reaches the same sealed collection."""
-    return sha256_hex(canonical_json_bytes({"service_id": service_id, "scope": scope, "request_id": request_id}))[:32]
+def collection_id_for(*, service_id: str, scope: str, request_id: str, deadline: int) -> str:
+    """Deterministic per caller, scope, request and deadline: a retry reaches the same sealed collection.
+
+    The deadline is part of the id so a collection retention deleted (only after its deadline) can never
+    be sealed again under the same id: registration refuses that deadline (``card_read_collection_expired``)."""
+    return sha256_hex(canonical_json_bytes({"service_id": service_id, "scope": scope, "request_id": request_id,
+                                            "deadline": deadline}))[:32]
 
 
 def _valid_request(data: Any) -> bool:
@@ -166,7 +170,7 @@ class CardReadCollectionOperation(CardCensusReadOperation):
                 raise _Refused("card_catalog_reservation_unavailable", 503)
             catalog_digest = catalog_version_digest(catalog["version"], catalog["content_hash"])
             collection_id = collection_id_for(service_id=caller.service_id, scope=data["scope"],
-                                              request_id=data["request_id"])
+                                              request_id=data["request_id"], deadline=data["deadline"])
             try:
                 header = await seal_collection(
                     self._cards, collection_id=collection_id, scope=data["scope"], actor_subject=data["actor_subject"],
