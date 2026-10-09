@@ -717,6 +717,8 @@ async def _authorize_many(lifecycle: "ProjectIdentityLifecycle",
     """
     if not requests:
         return []
+    if len(requests) > MAX_BATCH_OPERATIONS:
+        raise ProjectIdentityLifecycleError("operation_batch_invalid")
     person, project = requests[0].person_subject, requests[0].project_ref
     if any(request.person_subject != person or request.project_ref != project for request in requests):
         raise ValueError("project_operation_batch_mixed")

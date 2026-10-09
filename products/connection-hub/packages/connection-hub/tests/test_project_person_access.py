@@ -1640,5 +1640,5 @@ async def test_a_malformed_or_oversized_batch_is_refused(operations) -> None:
     service, reads = await _authorized_service()
     answer = await service.project_operations_authorize(
         {"user_id": TARGET}, project_ref=PROJECT_REF, resource=RESOURCE, operations=operations)
-    assert answer == {"ok": False, "error": "project_operations_request_invalid", "status": 400}
+    assert answer == {"ok": False, "error": "operation_batch_invalid", "status": 400}
     assert reads["resolve"] == 0

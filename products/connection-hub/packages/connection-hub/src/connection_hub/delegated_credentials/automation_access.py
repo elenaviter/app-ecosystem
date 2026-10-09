@@ -7887,18 +7887,15 @@ class AutomationAccessService:
         """Evaluate many operations of one signed-in person in ONE exchange (the chain is resolved once).
 
         Each entry is ``{"operation", "required_grants"?, "request_resource"?}``; ``decisions`` answers them
-        in order, each exactly what ``project_operation_authorize`` returns for that entry alone.
+        in order, each exactly the single-operation decision for that entry alone.
         """
-
-        from connection_hub.delegated_credentials.project_identity_lifecycle import MAX_BATCH_OPERATIONS
 
         person_subject = _subject_from_user(user)
         if not person_subject:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
         if (not isinstance(operations, (list, tuple)) or not operations
-                or len(operations) > MAX_BATCH_OPERATIONS
                 or any(not isinstance(entry, Mapping) for entry in operations)):
-            return {"ok": False, "error": "project_operations_request_invalid", "status": 400}
+            return {"ok": False, "error": "operation_batch_invalid", "status": 400}
         requests = [
             ProjectOperationRequest(
                 person_subject=person_subject,
@@ -7914,7 +7911,9 @@ class AutomationAccessService:
         try:
             decisions = await self._project_person_controls.authorize_operations(requests)
         except ProjectIdentityLifecycleError as exc:
-            return {"ok": False, "error": exc.reason, "status": 409}
+            # The batch bound is the lifecycle's (refused before any read): a malformed request, 400.
+            status = 400 if exc.reason == "operation_batch_invalid" else 409
+            return {"ok": False, "error": exc.reason, "status": status}
         except CardUnavailable as exc:
             return {"ok": False, "error": "project_identity_edge_unavailable", "reason": exc.reason,
                     "retryable": True, "status": 503}
