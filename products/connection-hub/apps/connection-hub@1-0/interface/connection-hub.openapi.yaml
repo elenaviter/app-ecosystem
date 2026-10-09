@@ -867,6 +867,53 @@ paths:
         "200":
           description: Project operation allow or named default-closed denial.
 
+  /bundles/{tenant}/{project}/{bundle_id}/operations/project_operations_authorize:
+    post:
+      tags: [Delegated Access]
+      summary: Authorize many project operations for the signed-in person in one exchange.
+      description: >
+        The same evaluation as `project_operation_authorize` for a list of operations of one person and
+        one project. The person's chain (project identity edge, per-person Control Card and its ancestors,
+        My Card) and the active catalog are resolved once, so the cost does not grow with the number of
+        operations. `data.operations` is a list of `{operation, required_grants?, request_resource?}`
+        (at most 2000). `ok: true` returns `decisions`, one per entry in the same order, each exactly the
+        decision `project_operation_authorize` returns for that entry alone. A malformed or oversized
+        list returns `ok: false`, `error: operation_batch_invalid`, status 400, before anything is read.
+      operationId: project_operations_authorize
+      x-kdcube-result-alias: project_operations_authorize
+      parameters:
+        - $ref: "#/components/parameters/Tenant"
+        - $ref: "#/components/parameters/Project"
+        - $ref: "#/components/parameters/BundleId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [data]
+              properties:
+                data:
+                  type: object
+                  required: [project_ref, resource, operations]
+                  properties:
+                    project_ref: {type: string}
+                    resource: {type: string}
+                    surface: {type: string}
+                    operations:
+                      type: array
+                      maxItems: 2000
+                      items:
+                        type: object
+                        required: [operation]
+                        properties:
+                          operation: {type: string}
+                          required_grants: {type: array, items: {type: string}}
+                          request_resource: {type: string}
+      responses:
+        "200":
+          description: One decision per requested operation, in order, or a named refusal of the whole list.
+
   /bundles/{tenant}/{project}/{bundle_id}/operations/delegated_invocation_policy_set:
     post:
       tags: [Delegated Access]

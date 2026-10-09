@@ -13,6 +13,7 @@ not delivered.
 | Operation | Decides for | Who may call |
 | --- | --- | --- |
 | `project_operation_authorize` | the request's signed-in caller | any signed-in person, for themselves |
+| `project_operations_authorize` | the request's signed-in caller, for many operations in one exchange (the chain is resolved once) | any signed-in person, for themselves |
 | `project_operation_authorize_for_person` | the `person_subject` named in the request | only a registered admission service, with its own proof |
 
 The decision itself is the same per-person evaluation: that person's own live
