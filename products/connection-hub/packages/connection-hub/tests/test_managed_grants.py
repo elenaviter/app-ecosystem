@@ -314,6 +314,8 @@ async def test_an_oauth_consent_during_a_catalog_outage_is_refused_retryably():
         await service.record_oauth_grant(grantor_subject=GRANTOR, client_id="dcr-outage",
             scopes=["app:read"], operations=["item.read"], resource=CONCRETE_RESOURCE)
     assert refused.value.reason == "managed_grants_unknown_catalog_unavailable"
+    # Retryable, not forbidden: an outage is not a refusal of the request itself.
+    assert refused.value.to_dict()["status"] == 503 and refused.value.to_dict()["retryable"] is True
     assert not getattr(persistence, "current", {})
 
 

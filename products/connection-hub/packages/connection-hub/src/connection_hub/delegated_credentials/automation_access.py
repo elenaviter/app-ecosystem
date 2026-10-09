@@ -37,6 +37,7 @@ from connection_hub.concurrency import bounded_gather
 from connection_hub.delegated_credentials.managed_grants import (
     MANAGED_GRANT_NOT_EDITABLE,
     MANAGED_GRANTS_UNKNOWN,
+    ManagedGrantsUnknown,
     managed_grant_changes,
     managed_grant_refusal,
     managed_operation_changes,
@@ -9569,7 +9570,7 @@ class AutomationAccessService:
                                if existing_card is not None else {})
             if (self._resource_grants(dict(record.resource_grants)) != held_grants
                     or self._resource_grants(dict(record.resource_operations)) != held_operations):
-                raise CallerWriteRefused(MANAGED_GRANTS_UNKNOWN)
+                raise ManagedGrantsUnknown()
         return record, existing_card_revision, is_initial_consent, merged_account_scope
 
     async def record_oauth_grant(

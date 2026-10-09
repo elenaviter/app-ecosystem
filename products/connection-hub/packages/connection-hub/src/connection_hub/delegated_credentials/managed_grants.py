@@ -15,10 +15,24 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+
 MANAGED_GRANT_NOT_EDITABLE = "managed_grant_not_editable"
 # With the catalog unavailable no managed grant is known: a client write that changes authority is refused
 # (retryable) rather than allowed blind (L2, decided fail-closed).
 MANAGED_GRANTS_UNKNOWN = "managed_grants_unknown_catalog_unavailable"
+
+
+class ManagedGrantsUnknown(CallerWriteRefused):
+    """A client write refused because the catalog is unavailable: retryable (503), not forbidden (403).
+
+    A CallerWriteRefused, so every path that withholds on a refused write (the OAuth route) still does."""
+
+    def __init__(self) -> None:
+        super().__init__(MANAGED_GRANTS_UNKNOWN)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**super().to_dict(), "status": 503, "retryable": True}
 
 
 def _grants(value: Any) -> set[str]:
@@ -98,4 +112,4 @@ def managed_grant_refusal(changes: list[str]) -> dict[str, Any]:
     }
 
 
-__all__ = ["MANAGED_GRANTS_UNKNOWN", "MANAGED_GRANT_NOT_EDITABLE", "managed_grant_changes", "managed_grant_refusal", "managed_operation_changes", "managed_operations"]
+__all__ = ["ManagedGrantsUnknown", "MANAGED_GRANTS_UNKNOWN", "MANAGED_GRANT_NOT_EDITABLE", "managed_grant_changes", "managed_grant_refusal", "managed_operation_changes", "managed_operations"]
