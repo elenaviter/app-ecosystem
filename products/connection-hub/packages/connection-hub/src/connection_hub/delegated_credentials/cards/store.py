@@ -155,8 +155,14 @@ class BundleStorageDelegatedCardStore:
         )
 
     async def read_current(
-        self, *, subject_hash: str, access_id: str
+        self, *, subject_hash: str, access_id: str, consult_decision: bool = True
     ) -> CardCurrentPointer | None:
+        """The committed current pointer.
+
+        ``consult_decision=False`` is only for a listing that needs a Card's identity, never its current
+        grants: a Card inside a Card transaction then reads as its last locally committed revision instead
+        of refusing while the coordinator's decision or its effects are outstanding.
+        """
         payload = await read_json_or_none(
             self.current_path(subject_hash=subject_hash, access_id=access_id)
         )
@@ -173,7 +179,8 @@ class BundleStorageDelegatedCardStore:
         # W578: a staged cross-realm transaction resolves through its receipt too.
         from .transaction_store import TRANSACTION_POINTER_SCHEMA, resolve_pointer as resolve_transaction_pointer
         if payload.get("schema") == TRANSACTION_POINTER_SCHEMA:
-            return await resolve_transaction_pointer(self, payload, subject_hash=subject_hash, access_id=access_id)
+            return await resolve_transaction_pointer(self, payload, subject_hash=subject_hash, access_id=access_id,
+                                                     consult_decision=consult_decision)
         return CardCurrentPointer.from_mapping(payload)
 
     async def read_revision(
@@ -239,14 +246,16 @@ class BundleStorageDelegatedCardStore:
         return receipt["state"] == "committed"
 
     async def read_current_authority(
-        self, *, subject_hash: str, access_id: str
+        self, *, subject_hash: str, access_id: str, consult_decision: bool = True
     ) -> tuple[CardCurrentPointer, CardAuthority] | None:
         """The latest committed revision, with its pointer's hash verified.
 
         ``None`` means the card is confirmed absent. A pointer that names a
         missing or altered revision raises: that is corruption, not absence.
         """
-        pointer = await self.read_current(subject_hash=subject_hash, access_id=access_id)
+        pointer = await self.read_current(
+            subject_hash=subject_hash, access_id=access_id, consult_decision=consult_decision
+        )
         if pointer is None:
             return None
         payload = await self._read_revision_payload(

@@ -86,7 +86,7 @@ class _Store:
     def __init__(self, authorities: dict[str, CardAuthority]) -> None:
         self._authorities = authorities
 
-    async def read_current_authority(self, *, subject_hash: str, access_id: str):
+    async def read_current_authority(self, *, subject_hash: str, access_id: str, consult_decision: bool = True):
         authority = self._authorities.get(access_id)
         if authority is None:
             return None

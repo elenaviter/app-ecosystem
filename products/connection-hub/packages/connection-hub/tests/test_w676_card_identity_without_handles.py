@@ -29,10 +29,11 @@ class _ListingStore(_Store):
     async def list_card_ids(self, *, subject_hash: str):
         return sorted(self._authorities)
 
-    async def read_current_authority(self, *, subject_hash: str, access_id: str):
+    async def read_current_authority(self, *, subject_hash: str, access_id: str, consult_decision: bool = True):
         if access_id in self._unreadable:
             raise OSError("synthetic unreadable revision")
-        return await super().read_current_authority(subject_hash=subject_hash, access_id=access_id)
+        return await super().read_current_authority(subject_hash=subject_hash, access_id=access_id,
+                                                    consult_decision=consult_decision)
 
 
 def _oauth_card():
