@@ -33,6 +33,16 @@ def _browser_request() -> Request:
                                 (b"x-csrf-token", b"browser-token")]})
 
 
+def _collection_section(collection_id):
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def held():
+        yield
+
+    return held()
+
+
 class _Nonces:
     async def set(self, key, value, *, ex, nx):
         return True
@@ -46,7 +56,8 @@ def entrypoint(monkeypatch):
                                hub_resource="connection-hub@1-0", bind=None, census_scope_prefix="work:project:")
 
     async def persistence(_entrypoint, _redis):
-        return SimpleNamespace(card_store=object(), card_service=object())
+        # W651: registration seals under the Card service's collection lock (collection_section).
+        return SimpleNamespace(card_store=object(), card_service=SimpleNamespace(collection_section=_collection_section))
 
     async def callers(_entrypoint, _persistence):
         return BuiltCallers(callers={"problem-board": caller}, authorities={})
@@ -132,6 +143,40 @@ async def test_w502_read_collection_registration_ignores_the_browser_session(ent
     answer = await entrypoint.card_read_collection_register(data=forged, request=_browser_request())
     assert answer["ok"] is False and answer["error"]["code"] == "card_participant_unauthenticated"
     assert "collection_answer" not in answer
+
+
+@pytest.mark.asyncio
+async def test_w651_registration_receives_the_card_services_collection_lock(entrypoint, monkeypatch):
+    """The production endpoint passes persistence.card_service.collection_section into the operation."""
+    module = type(entrypoint).card_read_collection_register.__globals__  # the fixture instance's own module
+    built = []
+    real = module["CardReadCollectionOperation"]
+
+    def recording(**kwargs):
+        built.append(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setitem(module, "CardReadCollectionOperation", recording)
+    await entrypoint.card_read_collection_register(data={"scope": "work:project:one"}, request=_browser_request())
+    assert len(built) == 1 and built[0]["collection_lock"] is _collection_section
+
+
+@pytest.mark.asyncio
+async def test_w651_registration_without_a_collection_lock_is_unavailable(entrypoint, monkeypatch):
+    """Never seal without the lock retention takes: no provider, a 503 before any request handling."""
+    module = type(entrypoint).card_read_collection_register.__globals__  # the fixture instance's own module
+
+    async def persistence(_entrypoint, _redis):
+        return SimpleNamespace(card_store=object(), card_service=object())
+
+    def never_built(**kwargs):
+        raise AssertionError("an operation was built without the collection lock")
+
+    monkeypatch.setitem(module, "_delegated_card_persistence", persistence)
+    monkeypatch.setitem(module, "CardReadCollectionOperation", never_built)
+    answer = await entrypoint.card_read_collection_register(data={"scope": "work:project:one"},
+                                                            request=_browser_request())
+    assert answer == {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
 
 
 @pytest.mark.asyncio
