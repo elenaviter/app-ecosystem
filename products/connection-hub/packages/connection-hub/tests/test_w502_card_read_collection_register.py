@@ -99,7 +99,7 @@ async def test_registration_seals_exactly_the_census_read_reservations_and_answe
     assert result["kind"] == "collection"
     ref = validate_read_collection_ref(result["ref"])
     assert ref["schema"] == READ_COLLECTION_REF_SCHEMA and ref["scope"] == PROJECT and ref["deadline"] == DEADLINE
-    assert ref["collection_id"] == collection_id_for(service_id=PEER, scope=PROJECT, request_id="zero-1")
+    assert ref["collection_id"] == collection_id_for(service_id=PEER, scope=PROJECT, request_id="zero-1", deadline=DEADLINE)
     expected, catalog = await _census_reservations(census, (ADMIN, OTHER))
     header, reads = await collections.resolve_collection(store, ref["collection_id"])
     assert reads == expected and ref["count"] == len(expected)
@@ -126,7 +126,7 @@ async def test_a_staged_card_refuses_the_registration_and_seals_nothing(tmp_path
     result = _verified(await operation.answer(request), request)
     assert result == {"kind": "refused", "code": "card_read_collection_in_transaction", "status": 409}
     assert await collections.load_header(store, collection_id_for(
-        service_id=PEER, scope=PROJECT, request_id="zero-1")) is None
+        service_id=PEER, scope=PROJECT, request_id="zero-1", deadline=DEADLINE)) is None
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ of the person list stays the caller's, as for the census.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 from typing import Any, Mapping
@@ -56,9 +57,13 @@ def collection_request_digest(request: Mapping[str, Any]) -> str:
     return shared_request_digest({name: request[name] for name in REQUEST_FIELDS}, contract=AnswerContract.COLLECTION)
 
 
-def collection_id_for(*, service_id: str, scope: str, request_id: str) -> str:
-    """Deterministic per caller, scope and request: a retry reaches the same sealed collection."""
-    return sha256_hex(canonical_json_bytes({"service_id": service_id, "scope": scope, "request_id": request_id}))[:32]
+def collection_id_for(*, service_id: str, scope: str, request_id: str, deadline: int) -> str:
+    """Deterministic per caller, scope, request and deadline: a retry reaches the same sealed collection.
+
+    The deadline is part of the id so a collection retention deleted (only after its deadline) can never
+    be sealed again under the same id: registration refuses that deadline (``card_read_collection_expired``)."""
+    return sha256_hex(canonical_json_bytes({"service_id": service_id, "scope": scope, "request_id": request_id,
+                                            "deadline": deadline}))[:32]
 
 
 def _valid_request(data: Any) -> bool:
@@ -122,8 +127,12 @@ class CardReadCollectionOperation(CardCensusReadOperation):
     ``card_store`` is the Hub's Card store, which also holds the sealed collections.
     """
 
-    def __init__(self, *, nonce_prefix: str = "connection-hub:card-collection:nonce:", **kwargs: Any) -> None:
+    def __init__(self, *, nonce_prefix: str = "connection-hub:card-collection:nonce:",
+                 collection_lock: Any = None, **kwargs: Any) -> None:
+        """``collection_lock(collection_id)`` is the Card service's collection lock (the same one every
+        stage, finish and the retention sweep take); production always passes it."""
         super().__init__(nonce_prefix=nonce_prefix, **kwargs)
+        self._collection_lock = collection_lock
 
     async def answer(self, data: Any) -> dict[str, Any]:
         try:  # frozen before any await
@@ -166,11 +175,18 @@ class CardReadCollectionOperation(CardCensusReadOperation):
                 raise _Refused("card_catalog_reservation_unavailable", 503)
             catalog_digest = catalog_version_digest(catalog["version"], catalog["content_hash"])
             collection_id = collection_id_for(service_id=caller.service_id, scope=data["scope"],
-                                              request_id=data["request_id"])
+                                              request_id=data["request_id"], deadline=data["deadline"])
             try:
-                header = await seal_collection(
-                    self._cards, collection_id=collection_id, scope=data["scope"], actor_subject=data["actor_subject"],
-                    request_id=data["request_id"], deadline=data["deadline"], reads=reads, catalog=catalog_digest)
+                async with (self._collection_lock(collection_id) if self._collection_lock is not None
+                            else contextlib.nullcontext()):
+                    # Re-checked under the lock, after every await: a registration that began before the
+                    # deadline never seals after it, so retention's deleted id is never sealed again.
+                    if data["deadline"] <= int(self._clock()):
+                        raise _Refused("card_read_collection_expired", 409)
+                    header = await seal_collection(
+                        self._cards, collection_id=collection_id, scope=data["scope"],
+                        actor_subject=data["actor_subject"], request_id=data["request_id"],
+                        deadline=data["deadline"], reads=reads, catalog=catalog_digest)
             except CardStorageError as exc:
                 if str(exc) == "card_read_collection_conflict":
                     # The same request sealed other reads before: re-register under a new request id.

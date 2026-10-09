@@ -280,6 +280,77 @@ class DelegatedCardService:
             wait_seconds=CARD_LOCK_WAIT_SECONDS,
         )
 
+    def _collection_section(self, collection_id: str):
+        """W651 retention: one sealed collection's lock, taken OUTERMOST (before any Card section) by
+        every stage and finish that resolves the collection and by the sweep, in that one fixed order."""
+        from .card_read_collection import collection_lock_path
+
+        return self._mutation_lock(
+            lock_path=collection_lock_path(self._store, collection_id),
+            resource_id=f"card-collection:{collection_id}",
+            operation="card-collection-retention",
+            wait_seconds=CARD_LOCK_WAIT_SECONDS,
+        )
+
+    def collection_section(self, collection_id: str):
+        """The same collection lock for the registration operation (it seals under it)."""
+        return self._collection_section(collection_id)
+
+    @asynccontextmanager
+    async def _optional_collection_section(self, collection_id: str):
+        if not collection_id:
+            yield
+            return
+        try:
+            async with self._collection_section(collection_id):
+                yield
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def sweep_expired_collections(self, *, now: int, limit: int = 8) -> dict[str, int]:
+        """W651 retention, bounded per call: delete sealed collections whose deadline passed and that no
+        in-flight transaction names (``protected_collections``); zero horizon beyond the deadline (Main,
+        2026-10-09). Eligibility is re-read under the collection's lock, so a concurrent PREPARE either
+        completes first (and protects it) or finds it gone (``card_read_collection_unknown``)."""
+        from .card_read_collection import collection_lock_path, delete_collection, expired_collection_ids, load_header
+        from .transaction_store import protected_collections
+
+        report = {"deleted": 0, "leaves": 0, "protected": 0, "skipped": 0}
+        for collection_id in await expired_collection_ids(self._store, now=now, limit=limit):
+            try:
+                async with self._collection_section(collection_id):
+                    try:
+                        header = await load_header(self._store, collection_id)
+                    except CardStorageError:
+                        report["skipped"] += 1
+                        continue
+                    if header is not None and now < header["deadline"]:
+                        report["skipped"] += 1
+                        continue
+                    protected = await protected_collections(self._store)
+                    if protected is None:
+                        report["skipped"] += 1
+                        break  # in-flight users cannot be known: delete nothing this pass
+                    if collection_id in protected:
+                        report["protected"] += 1
+                        continue
+                    try:
+                        report["leaves"] += await delete_collection(self._store, collection_id)
+                    except CardStorageError:
+                        report["skipped"] += 1  # a leaf remains: the header stays, the next pass retries
+                        continue
+                    report["deleted"] += 1
+                    # Safe while held: whoever takes this lock next (on either file) re-checks the deadline
+                    # under it, which has passed: registration and a first PREPARE refuse, a sweep finds
+                    # nothing, and a replay of a prepared receipt would have protected the collection.
+                    try:
+                        collection_lock_path(self._store, collection_id).unlink(missing_ok=True)
+                    except OSError:
+                        pass
+            except CardMutationLockTimeout:
+                report["skipped"] += 1
+        return report
+
     async def commit(
         self,
         authority: CardAuthority,
@@ -535,6 +606,29 @@ class DelegatedCardService:
         once (two-phase locking); the canonical order prevents deadlock
         between concurrent groups. There is no single combined section.
         """
+        from .transaction_store import CardTransactionRefused
+
+        collection_id = ""
+        if collection is not None:
+            from .card_read_collection import collection_lock_path
+            try:
+                collection_id = str(collection["collection_id"])
+                collection_lock_path(self._store, collection_id)
+            except (CardStorageError, KeyError, TypeError) as exc:
+                raise CardTransactionRefused("card_read_collection_id_invalid") from exc
+        # W651: the collection's lock OUTERMOST, then the Card sections each step takes (one fixed order).
+        async with self._optional_collection_section(collection_id):
+            return await self._stage_group(
+                transaction_id=transaction_id, intent_digest=intent_digest, participant=participant,
+                members=members, now=now, effects=effects, reads=reads, catalog=catalog, collection=collection,
+                actor_subject=actor_subject, now_epoch=now_epoch)
+
+    async def _stage_group(
+        self, *, transaction_id: str, intent_digest: str, participant: str,
+        members: Sequence[tuple[str, CardAuthority | None, CardAuthority, str]], now: Any,
+        effects: Any, reads: Any, catalog: str, collection: Mapping[str, Any] | None,
+        actor_subject: str | None, now_epoch: int | None,
+    ) -> dict[str, Any]:
         from ..caller_writer_gate import binding_change_refusal, candidate_shape_refusal
         from .model import CARD_STATE_ACTIVE
         from .transaction_store import (
@@ -626,7 +720,8 @@ class DelegatedCardService:
                 group = await begin_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
                                           participant=participant,
                                           members=[(subject_hash, candidate.access_id)
-                                                   for subject_hash, _, candidate, _ in ordered])
+                                                   for subject_hash, _, candidate, _ in ordered],
+                                          collection_id=collection_ref["collection_id"] if collection_ref else "")
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
         for index, (subject_hash, original, candidate, _) in enumerate(ordered):
@@ -654,6 +749,16 @@ class DelegatedCardService:
         group = await read_receipt(self._store, transaction_id)
         if not is_group_receipt(group):
             raise CardTransactionRefused("card_transaction_unknown")
+        from .transaction_store import _receipt_collection_id
+        lead = await read_receipt(self._store, group["members"][0]["transaction_id"])
+        async with self._optional_collection_section(_receipt_collection_id(lead) if lead is not None else ""):
+            return await self._decide_group(group, transaction_id=transaction_id, intent_digest=intent_digest,
+                                            decision=decision, reason=reason, now=now)
+
+    async def _decide_group(self, group: Mapping[str, Any], *, transaction_id: str, intent_digest: str,
+                            decision: str, reason: str, now: int | None) -> dict[str, Any]:
+        from .transaction_store import CardTransactionRefused, finish_group, read_receipt
+
         if decision == "committed" and not group["staged"]:
             # EMain F1: never commit any member of a group that was not staged as a whole.
             raise CardTransactionRefused("card_transaction_not_staged")
@@ -704,6 +809,24 @@ class DelegatedCardService:
         read set, verified, fenced with this transaction and collection, and only
         then is the bounded receipt (ref, root, count) written.
         """
+        from .card_read_collection import collection_lock_path
+        from .transaction_store import CardTransactionRefused
+
+        try:
+            collection_lock_path(self._store, collection_id)
+        except CardStorageError as exc:
+            raise CardTransactionRefused(str(exc)) from exc
+        async with self._optional_collection_section(collection_id):
+            return await self._stage_read_collection(
+                transaction_id=transaction_id, intent_digest=intent_digest, participant=participant,
+                collection_id=collection_id, root=root, count=count, catalog=catalog, scope=scope,
+                deadline=deadline, actor_subject=actor_subject, now=now)
+
+    async def _stage_read_collection(
+        self, *, transaction_id: str, intent_digest: str, participant: str, collection_id: str, root: str,
+        count: int, catalog: str, scope: str | None, deadline: int | None, actor_subject: str | None,
+        now: int | None,
+    ) -> dict[str, Any]:
         from .card_read_collection import resolve_collection
         from .transaction_store import CardTransactionRefused, prepare_read_collection
 
@@ -739,10 +862,13 @@ class DelegatedCardService:
         self, *, transaction_id: str, intent_digest: str, decision: str, reason: str = "",
     ) -> dict[str, Any]:
         """W578: the recorded decision releases a read set's fences; nothing was staged, nothing is served."""
-        from .transaction_store import finish_read_set
+        from .transaction_store import _receipt_collection_id, finish_read_set, is_read_collection_receipt, read_receipt
 
-        return await finish_read_set(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
-                                     decision=decision, reason=reason)
+        receipt = await read_receipt(self._store, transaction_id)
+        collection_id = _receipt_collection_id(receipt) if is_read_collection_receipt(receipt) else ""
+        async with self._optional_collection_section(collection_id):
+            return await finish_read_set(self._store, transaction_id=transaction_id, intent_digest=intent_digest,
+                                         decision=decision, reason=reason)
 
     async def stage_effects_transaction(
         self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str, effects: Any,

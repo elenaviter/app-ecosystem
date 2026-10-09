@@ -195,6 +195,67 @@ def active_path(store: Any, transaction_id: str):
     return store.root / "card-transactions" / "active" / f"{_checked_id(transaction_id)}.json"
 
 
+def _active_entry(transaction_id: str, collection_id: str) -> dict[str, Any]:
+    """The index entry names the sealed collection the transaction holds ("" for none), so retention can
+    protect it even while the entry is unstaged (no receipt yet)."""
+    return {"transaction_id": transaction_id, "collection_id": collection_id}
+
+
+async def protected_collections(store: Any) -> set[str] | None:
+    """Every sealed collection an in-flight transaction names, or None when that cannot be known.
+
+    Read from the bounded active index: the entry's own ``collection_id``, else
+    its receipt (a read-collection receipt, an ordinary receipt's ``collection``,
+    or a group aggregate followed to its lead). An entry without the field and
+    without a receipt (written before entries named collections), a group whose
+    lead cannot be read, or more entries than the bound: None, and retention
+    deletes nothing (fails closed).
+    """
+    import asyncio
+
+    from .update_store import UPDATE_RECEIPT_SCHEMA
+
+    directory = store.root / "card-transactions" / "active"
+
+    def names():
+        try:
+            return [path.stem for path in itertools.islice(directory.iterdir(), MAX_ACTIVE_TRANSACTIONS + 1)
+                    if path.is_file() and path.suffix == ".json"]
+        except FileNotFoundError:
+            return []
+
+    found = await asyncio.to_thread(names)
+    if len(found) > MAX_ACTIVE_TRANSACTIONS:
+        return None
+    protected: set[str] = set()
+    try:
+        for transaction_id in sorted(found):
+            if not _HEX64.fullmatch(transaction_id):
+                continue  # an atomic-write temporary, not an entry
+            raw = await read_json_or_none(active_path(store, transaction_id))
+            if raw is None:
+                continue  # removed since listed: decided
+            if isinstance(raw, Mapping) and type(raw.get("collection_id")) is str:
+                if raw["collection_id"]:
+                    protected.add(raw["collection_id"])
+                continue
+            if isinstance(raw, Mapping) and raw.get("schema") == UPDATE_RECEIPT_SCHEMA:
+                continue  # an issuer update's entry is its own receipt and holds no collection
+            receipt = await read_receipt(store, transaction_id)
+            if receipt is None:
+                return None
+            if is_group_receipt(receipt):
+                receipt = await read_receipt(store, receipt["members"][0]["transaction_id"])
+                if receipt is None:
+                    return None
+            collection_id = _receipt_collection_id(receipt)
+            if collection_id:
+                protected.add(collection_id)
+    except CardStorageError:
+        return None
+    return protected
+
+
 def _reads_valid(reads: Any, subject_hash: Any, access_id: Any) -> bool:
     """W502 read reservations: unchanged Cards (revision >= 1) or absent ones (0), never the candidate."""
     if not isinstance(reads, list) or not reads:
@@ -411,12 +472,29 @@ def _receipt_collection_id(receipt: Mapping[str, Any]) -> str:
 
 
 async def _collection_reads(store: Any, receipt: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The fences to release. A DECIDED receipt's fences hold nothing (``_live_read_fence``), so once
+    retention deleted its collection (wholly or partly) their release is inert and skipped; every other
+    FINISH duty still runs. A prepared receipt's collection is protected; missing, it refuses."""
     from .card_read_collection import resolve_collection
     try:
         _, reads = await resolve_collection(store, _receipt_collection_id(receipt))
     except CardStorageError as exc:
+        if receipt["state"] in DECISIONS and str(exc) in ("card_read_collection_unknown",
+                                                          "card_read_collection_incomplete"):
+            return []
         raise CardTransactionRefused(str(exc)) from exc
     return reads
+
+
+async def _require_collection_before_decision(store: Any, receipt: Mapping[str, Any]) -> None:
+    """A PREPARED receipt's collection must resolve BEFORE its decision is written: one that is missing
+    refuses and the receipt stays in doubt; only an already decided receipt tolerates its absence."""
+    if _receipt_collection_id(receipt):
+        from .card_read_collection import resolve_collection
+        try:
+            await resolve_collection(store, _receipt_collection_id(receipt))
+        except CardStorageError as exc:
+            raise CardTransactionRefused(str(exc)) from exc
 
 
 def is_read_collection_receipt(receipt: Mapping[str, Any] | None) -> bool:
@@ -930,7 +1008,8 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     #    group member has none: recovery finds it through its group's entry,
     #    and a coordinator is only ever asked about the group's id.
     if group is None:
-        await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
+        await write_json_atomic(active_path(store, transaction_id), _active_entry(
+            transaction_id, recorded_collection["collection_id"] if recorded_collection else ""))
     if held:  # fenced before the receipt makes them live
         await _reserve_reads(store, transaction_id, held,
                              collection_id=recorded_collection["collection_id"] if recorded_collection else "")
@@ -993,6 +1072,7 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
         raise CardTransactionRefused("card_transaction_decision_unverified") from exc
     if recorded != decision:
         raise CardTransactionRefused("card_transaction_decision_not_recorded")
+    await _require_collection_before_decision(store, receipt)
     decided = {**receipt, "state": decision, "reason": str(reason or "")[:128]}
     _validate(decided, transaction_id)
     # The one visibility point: the receipt rename. COMMITTED readers get AFTER.
@@ -1019,7 +1099,7 @@ async def decide(store: Any, *, transaction_id: str, intent_digest: str, decisio
 
 
 async def begin_group(store: Any, *, transaction_id: str, intent_digest: str, participant: str,
-                      members: list[tuple[str, str]]) -> dict[str, Any]:
+                      members: list[tuple[str, str]], collection_id: str = "") -> dict[str, Any]:
     """Write (or replay) the aggregate receipt naming every member, before any member is staged."""
     _checked_id(transaction_id)
     if not _HEX64.fullmatch(str(intent_digest or "")) or not str(participant or "").strip():
@@ -1052,7 +1132,8 @@ async def begin_group(store: Any, *, transaction_id: str, intent_digest: str, pa
             recorded = "undecided"
         if recorded in DECISIONS:
             raise CardTransactionRefused("card_transaction_late_stage")
-    await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
+    # The group's entry names its lead's collection, so retention protects it before the lead is staged.
+    await write_json_atomic(active_path(store, transaction_id), _active_entry(transaction_id, collection_id))
     await write_json_atomic(receipt_path(store, transaction_id), receipt)
     return receipt
 
@@ -1181,7 +1262,7 @@ async def prepare_read_set(store: Any, *, transaction_id: str, intent_digest: st
             recorded = "undecided"
         if recorded in DECISIONS:
             raise CardTransactionRefused("card_transaction_late_stage")
-    await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
+    await write_json_atomic(active_path(store, transaction_id), _active_entry(transaction_id, ""))
     if recorded_reads:
         await _reserve_reads(store, transaction_id, recorded_reads)  # live once the receipt exists
     if catalog:
@@ -1235,7 +1316,7 @@ async def prepare_read_collection(store: Any, *, transaction_id: str, intent_dig
             recorded = "undecided"
         if recorded in DECISIONS:
             raise CardTransactionRefused("card_transaction_late_stage")
-    await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
+    await write_json_atomic(active_path(store, transaction_id), _active_entry(transaction_id, collection_id))
     if reads:
         await _reserve_reads(store, transaction_id, reads, collection_id=collection_id)  # live once the receipt exists
     if catalog:
@@ -1269,6 +1350,7 @@ async def finish_read_set(store: Any, *, transaction_id: str, intent_digest: str
         raise CardTransactionRefused("card_transaction_decision_unverified") from exc
     if recorded != decision:
         raise CardTransactionRefused("card_transaction_decision_not_recorded")
+    await _require_collection_before_decision(store, receipt)
     decided = {**receipt, "state": decision, "reason": str(reason or "")[:128]}
     _validate(decided, transaction_id)
     await write_json_atomic(receipt_path(store, transaction_id), decided)
@@ -1278,13 +1360,8 @@ async def finish_read_set(store: Any, *, transaction_id: str, intent_digest: str
 
 async def _release_read_set(store: Any, receipt: Mapping[str, Any]) -> None:
     if is_read_collection_receipt(receipt):
-        # The same sealed collection names every fence; a missing collection refuses, never guesses.
-        from .card_read_collection import resolve_collection
-        try:
-            _, reads = await resolve_collection(store, receipt["collection_id"])
-        except CardStorageError as exc:
-            raise CardTransactionRefused(str(exc)) from exc
-        await _release_reads(store, receipt, reads)
+        # The same sealed collection names every fence (a deleted one only for an already decided receipt).
+        await _release_reads(store, receipt, await _collection_reads(store, receipt))
     else:
         await _release_reads(store, receipt)
     if receipt.get("catalog"):
@@ -1334,7 +1411,7 @@ async def prepare_effects(store: Any, *, transaction_id: str, intent_digest: str
             decided = "undecided"
         if decided in DECISIONS:
             raise CardTransactionRefused("card_transaction_late_stage")
-    await write_json_atomic(active_path(store, transaction_id), {"transaction_id": transaction_id})
+    await write_json_atomic(active_path(store, transaction_id), _active_entry(transaction_id, ""))
     await write_json_atomic(receipt_path(store, transaction_id), receipt)
     return receipt
 
@@ -1387,6 +1464,6 @@ __all__ = ["CardTransactionRefused", "DECISIONS", "GROUP_RECEIPT_SCHEMA", "TRANS
            "is_group_receipt", "member_transaction_id", "READ_SET_RECEIPT_SCHEMA", "finish_read_set",
            "is_read_set_receipt", "prepare_read_set", "EFFECTS_RECEIPT_SCHEMA", "decide_effects",
            "is_effects_receipt", "prepare_effects", "retire_effects",
-           "TransactionDecisionPort", "abort_unstaged", "active_path", "read_fence_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
+           "TransactionDecisionPort", "abort_unstaged", "active_path", "protected_collections", "read_fence_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
            "effect_outcomes", "effects_path", "list_in_doubt", "marker_path", "pending_effects",
            "read_receipt", "resolve_pointer", "stage", "state"]
