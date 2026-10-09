@@ -38,6 +38,7 @@ from connection_hub.delegated_credentials.managed_grants import (
     managed_grant_changes,
     managed_grant_refusal,
     managed_operation_changes,
+    managed_operations,
 )
 from connection_hub.delegated_credentials.issuer_gate import (
     IssuerDecision, IssuerRegistry, IssuerRequest, IssuerWriteRefused,
@@ -3602,6 +3603,8 @@ class AutomationAccessService:
                         "grants": list(tool.grants),
                         **({"group": tool.group} if getattr(tool, "group", "") else {}),
                         **({} if getattr(tool, "person_card", True) else {"person_card": False}),
+                        # Needs a managed grant: shown as the Card holds it, never changed by an editor.
+                        **({"managed": True} if tool.name in managed_operations(resource) else {}),
                     }
                     for tool in resource.tools
                     if _grants_delegable(tool.grants, delegable)
@@ -4188,6 +4191,7 @@ class AutomationAccessService:
         if _client_upsert:
             # A client Card editor never assigns an application-managed grant.
             changes = managed_grant_changes(catalog_config, self._resource_grants(resource_grants), {})
+            changes += managed_operation_changes(catalog_config, self._resource_grants(resource_operations or {}), {})
             if changes:
                 return managed_grant_refusal(changes)
 
@@ -5740,12 +5744,12 @@ class AutomationAccessService:
             # A client Card edit keeps every application-managed grant exactly as the Card holds it.
             changes = managed_grant_changes(
                 catalog_config, self._resource_grants(resource_grants), self._resource_grants(existing.resource_grants))
-            if _person_control and resource_operations is not None:
-                # W560: on a person's Control Card the application decides the operations it marks
-                # person_card: false; a client edit keeps them exactly as the Card holds them.
+            if resource_operations is not None:
+                # An operation that needs a managed grant (every Card), and on a person's Control Card an
+                # operation the application decides for a person (W560), stays as the Card holds it.
                 changes += managed_operation_changes(
                     catalog_config, self._resource_grants(resource_operations),
-                    self._resource_grants(existing.resource_operations))
+                    self._resource_grants(existing.resource_operations), person_control=_person_control)
             if changes:
                 return managed_grant_refusal(changes)
         if existing.source == ACCESS_SOURCE_OAUTH:

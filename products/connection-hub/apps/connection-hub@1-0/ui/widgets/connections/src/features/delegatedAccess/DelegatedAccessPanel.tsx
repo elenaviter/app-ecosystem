@@ -1713,11 +1713,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         selectedResourceEntries.map(([resource]) => resource),
       ),
     );
+    // A new Card never carries an operation the application manages (it needs a managed grant).
     const selectedResourceOperations = Object.fromEntries(
-      selectedResourceEntries.map(([resource]) => [
-        resource,
-        resourceOperations[resource] || [],
-      ]),
+      selectedResourceEntries.map(([resource]) => {
+        const managed = new Set((createResources.find((option) => option.resource === resource)?.operations || [])
+          .filter((operation) => operation.managed).map((operation) => operation.name));
+        return [resource, (resourceOperations[resource] || []).filter((operation) => !managed.has(operation))];
+      }),
     );
     const includesApplicationResource = selectedResourceEntries.some(
       ([resource]) => resource === APPLICATION_API_RESOURCE,
@@ -3757,8 +3759,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               >
                                 <input
                                   type="checkbox"
-                                  disabled={scopeBlocked}
-                                  checked={selected}
+                                  disabled={scopeBlocked || operation.managed === true}
+                                  checked={selected && operation.managed !== true}
                                   onChange={(event) => toggleResourceOperation(
                                     item,
                                     operation.name,
@@ -3768,6 +3770,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                                 />
                                 <span className="operation-name">
                                   <span>{operation.label || operation.name}</span>
+                                  {operation.managed ? <small className="grant-chip-managed">{MANAGED_OPERATION_NOTE}</small> : null}
                                   {operation.label && operation.label !== operation.name ? (
                                     <code className="operation-id">{operation.name}</code>
                                   ) : null}

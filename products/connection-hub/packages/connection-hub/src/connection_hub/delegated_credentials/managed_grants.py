@@ -43,18 +43,37 @@ def managed_grant_changes(config: Any, requested: Mapping[str, Any], existing: M
     return changes
 
 
-def managed_operation_changes(config: Any, requested: Mapping[str, Any], existing: Mapping[str, Any]) -> list[str]:
-    """Every resource:operation the catalog marks person_card: false (the application decides it for
-    a person) whose presence differs between the requested selection and the Card as it stands. Used for a
-    person's Control Card only; other Cards keep the whole catalog editable."""
+def managed_operations(row: Any, *, person_control: bool = False) -> set[str]:
+    """The operations of a catalog row a client Card editor never changes.
+
+    Every Card: an operation that needs one of the row's managed grants (it would grant or drop that
+    grant's power through the operation field). A person's Control Card also: an operation the catalog
+    marks ``person_card: false`` (the application decides it for a person)."""
+    if row is None:
+        return set()
+    managed_grants = _grants(getattr(row, "managed_grants", ()))
+    out: set[str] = set()
+    for tool in getattr(row, "tools", ()) or ():
+        name = str(getattr(tool, "name", "") or "").strip()
+        if not name:
+            continue
+        if managed_grants & _grants(getattr(tool, "grants", ())):
+            out.add(name)
+        elif person_control and getattr(tool, "person_card", True) is False:
+            out.add(name)
+    return out
+
+
+def managed_operation_changes(config: Any, requested: Mapping[str, Any], existing: Mapping[str, Any],
+                              *, person_control: bool = False) -> list[str]:
+    """Every resource:operation among managed_operations whose presence differs between the requested
+    selection and the Card as it stands ({} for a new Card)."""
     changes: list[str] = []
     requested = requested if isinstance(requested, Mapping) else {}
     existing = existing if isinstance(existing, Mapping) else {}
     for resource in sorted({str(key) for key in (*requested, *existing)}):
         row = config.resource_config(resource) if config is not None else None
-        managed = {getattr(tool, "name", "") for tool in (getattr(row, "tools", ()) or ())
-                   if getattr(tool, "person_card", True) is False} if row is not None else set()
-        managed.discard("")
+        managed = managed_operations(row, person_control=person_control)
         if not managed:
             continue
         before = _grants(existing.get(resource)) & managed
@@ -76,4 +95,4 @@ def managed_grant_refusal(changes: list[str]) -> dict[str, Any]:
     }
 
 
-__all__ = ["MANAGED_GRANT_NOT_EDITABLE", "managed_grant_changes", "managed_grant_refusal", "managed_operation_changes"]
+__all__ = ["MANAGED_GRANT_NOT_EDITABLE", "managed_grant_changes", "managed_grant_refusal", "managed_operation_changes", "managed_operations"]

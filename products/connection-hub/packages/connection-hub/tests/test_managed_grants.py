@@ -97,7 +97,8 @@ async def test_a_client_update_that_ticks_or_unticks_a_managed_grant_is_refused(
         resource_grants={DECLARED_RESOURCE: ["app:read", "app:steward"]},
         resource_operations={DECLARED_RESOURCE: ["item.read", "item.steward"]})
     assert ticked["ok"] is False and ticked["error"] == "managed_grant_not_editable", ticked
-    assert ticked["grants"] == [f"{DECLARED_RESOURCE}:app:steward"]
+    # The grant and the operation that needs it are both managed.
+    assert ticked["grants"] == [f"{DECLARED_RESOURCE}:app:steward", f"{DECLARED_RESOURCE}:item.steward"]
     # A manual change on the same Card still saves.
     narrowed = await service.update_access(USER, access_id=card.access_id, _client_upsert=True,
         resource_grants={DECLARED_RESOURCE: ["app:read"]}, resource_operations={DECLARED_RESOURCE: ["item.read"]})
@@ -161,11 +162,14 @@ def test_a_person_control_change_is_any_role_decided_operation_whose_presence_di
     from connection_hub.delegated_credentials.managed_grants import managed_operation_changes
     config = oauth_delegated_config_from_connections(_person_connections())
     held = {DECLARED_RESOURCE: ["item.read", "item.role_only"]}
-    assert managed_operation_changes(config, held, held) == []
-    assert managed_operation_changes(config, {DECLARED_RESOURCE: ["item.read"]}, held) == [f"{DECLARED_RESOURCE}:item.role_only"]
+    person = dict(person_control=True)
+    assert managed_operation_changes(config, held, held, **person) == []
+    assert managed_operation_changes(config, {DECLARED_RESOURCE: ["item.read"]}, held, **person) == [f"{DECLARED_RESOURCE}:item.role_only"]
     assert managed_operation_changes(config, {DECLARED_RESOURCE: ["item.read", "item.role_only"]},
-                                     {DECLARED_RESOURCE: ["item.read"]}) == [f"{DECLARED_RESOURCE}:item.role_only"]
-    assert managed_operation_changes(config, {DECLARED_RESOURCE: ["item.steward"]}, held) == [f"{DECLARED_RESOURCE}:item.role_only"]
+                                     {DECLARED_RESOURCE: ["item.read"]}, **person) == [f"{DECLARED_RESOURCE}:item.role_only"]
+    assert managed_operation_changes(config, {DECLARED_RESOURCE: ["item.steward"]}, held, **person) == [f"{DECLARED_RESOURCE}:item.role_only"]
+    # Not a person's Control Card: a person_card: false operation is editable (W360).
+    assert managed_operation_changes(config, {DECLARED_RESOURCE: ["item.read"]}, held) == []
 
 
 @pytest.mark.asyncio
@@ -181,3 +185,25 @@ async def test_a_person_control_client_edit_cannot_tick_a_role_decided_operation
         resource_grants={DECLARED_RESOURCE: ["app:read"]},
         resource_operations={DECLARED_RESOURCE: ["item.read", "item.role_only"]})
     assert other["ok"] is True, other
+
+
+# An operation whose required grants include a managed grant is itself managed, on every Card: the
+# operation field could otherwise grant or drop that grant's power (W661 S5 / W560, approved 10:28Z).
+@pytest.mark.asyncio
+async def test_an_operation_needing_a_managed_grant_is_listed_managed_and_locked_on_every_card():
+    from connection_hub.delegated_credentials.managed_grants import managed_operations
+    config = oauth_delegated_config_from_connections(_connections())
+    assert managed_operations(config.resource_config(DECLARED_RESOURCE)) == {"item.steward"}
+    service, card = await _card(_connections(), scopes=("app:read", "app:steward"),
+                                operations=("item.read", "item.steward"))
+    row = next(item for item in await service.resource_options(USER) if item["resource"] == DECLARED_RESOURCE)
+    assert [op["name"] for op in row["operations"] if op.get("managed")] == ["item.steward"]
+    # Dropping the operation (keeping its grant) is refused on an ordinary Card, too.
+    dropped = await service.update_access(USER, access_id=card.access_id, _client_upsert=True,
+        resource_grants={DECLARED_RESOURCE: ["app:read", "app:steward"]},
+        resource_operations={DECLARED_RESOURCE: ["item.read"]})
+    assert dropped["ok"] is False and dropped["grants"] == [f"{DECLARED_RESOURCE}:item.steward"], dropped
+    created = await _service(_GrantStore({}), _Persistence(), connections=_connections()).create_access(
+        USER, label="synthetic", _client_upsert=True, resource_grants={DECLARED_RESOURCE: ["app:read"]},
+        resource_operations={DECLARED_RESOURCE: ["item.read", "item.steward"]})
+    assert created["ok"] is False and created["grants"] == [f"{DECLARED_RESOURCE}:item.steward"], created

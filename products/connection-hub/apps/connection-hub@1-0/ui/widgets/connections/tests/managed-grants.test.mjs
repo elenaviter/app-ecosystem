@@ -55,3 +55,10 @@ test('W560: an operation the application decides for a person is shown as held, 
   assert.deepEqual(withManagedGrantsAsHeld({ [R]: ['review.assign', 'project.people.invite'] }, { [R]: [] }, managedOps),
     { [R]: ['review.assign'] })
 })
+
+test('the create form locks an operation the application manages and never sends it', () => {
+  const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /disabled=\{scopeBlocked \|\| operation\.managed === true\}/)
+  assert.match(panel, /checked=\{selected && operation\.managed !== true\}/)
+  assert.match(panel, /const selectedResourceOperations = Object\.fromEntries\([\s\S]*?\.filter\(\(operation\) => !managed\.has\(operation\)\)/)
+})
