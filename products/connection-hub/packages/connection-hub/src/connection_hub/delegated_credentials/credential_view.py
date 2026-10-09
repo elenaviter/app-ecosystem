@@ -217,15 +217,19 @@ class DelegatedCredentialView:
         # the live Card, while the stored access grant keeps its issuance map at
         # the top level, so a union would re-add a resource the live Card dropped.
         resource_grants: dict[str, tuple[str, ...]] = {}
+        resource_grants_present = False
         for src in (cred_attrs, grant_record, record_cred_attrs):
             rg = src.get("resource_grants")
             if isinstance(rg, Mapping):
+                resource_grants_present = True
                 for res, vals in rg.items():
                     res_key = str(res or "").strip()
                     if res_key and res_key not in resource_grants:
                         resource_grants[res_key] = _as_list(vals)
                 break
-        if not resource_grants:
+        # A present map is authoritative even when EMPTY (a live Card granting no
+        # resource); only a record that carries no map at all synthesizes one.
+        if not resource_grants_present:
             single = str(cred_attrs.get("resource") or grant_record.get("resource") or "").strip()
             if single:
                 resource_grants[single] = tuple(sorted(grants))

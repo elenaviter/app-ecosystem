@@ -171,3 +171,25 @@ def test_a_legacy_snapshot_keeps_its_issued_map():
     for record in (both, record_only):
         view = DelegatedCredentialView.from_parts(record["credential"], record)
         assert view.resource_grants == {"https://a.example/mcp": ("read",)}
+
+
+def test_a_present_but_empty_live_map_grants_no_resource_and_never_falls_through(monkeypatch):
+    """Main's edge (2026-10-09 02:10Z): a live Card granting no resource is authoritative; neither the
+    issuance top-level map nor a single issued ``resource`` brings one back. Fall-through only when the
+    map is ABSENT (legacy)."""
+    live = _live({}, {})
+    for path in ("/guard", "/second"):
+        status, body = _call(monkeypatch, live, path)
+        assert status == 403 and body["error_description"] in (
+            "delegated credential resource is missing", "delegated credential resource mismatch"), (path, status, body)
+    record = {"resource": "https://a.example/mcp", "scopes": ["read"],
+              "resource_grants": {"https://a.example/mcp": ["read"]},
+              "credential": {"attrs": {"resource_grants": {}, "resource": "https://a.example/mcp"}}}
+    view = DelegatedCredentialView.from_parts(record["credential"], record)
+    assert view.resource_grants == {} and not view.resources
+
+
+def test_a_legacy_record_without_any_map_still_synthesizes_its_single_resource():
+    record = {"resource": "https://a.example/mcp", "scopes": ["read"], "credential": {"attrs": {}}}
+    view = DelegatedCredentialView.from_parts(record["credential"], record)
+    assert view.resource_grants == {"https://a.example/mcp": ("read",)}
