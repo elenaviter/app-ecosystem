@@ -333,7 +333,8 @@ def control_named_services_entry(control: Any, resource: str) -> Any:
     if named is None:
         return None
     if not (named.is_all or named.is_unknown):
-        return dict(named.operations).get(resource)
+        # An exact (or NONE) Control without an entry for the service grants it none.
+        return dict(named.operations).get(resource) or {}
     boundary = getattr(control, "named_services", None) or {}
     namespaces = boundary.get("namespaces") if isinstance(boundary, Mapping) else None
     if not (isinstance(namespaces, Mapping) and namespaces):
@@ -375,8 +376,25 @@ def reset_candidate(current: Any, *, resource: str, control_operations: Any, con
     # The service's complete authority: its named-service selection follows the
     # Control's too (Infra, 11:02), only for this resource's entry.
     named = getattr(current, "named_service_operations", None)
-    if control_named_services is not None and named is not None and not (named.is_all or named.is_unknown):
-        entries = {key: value for key, value in dict(named.operations).items() if key != resource}
+    if control_named_services is not None and named is not None:
+        if named.is_all or named.is_unknown:
+            # The personal Card selects all (or is legacy-unknown): its OTHER services keep exactly what that
+            # selection means, frozen from its own materialized boundary under its own grants per service
+            # (automation_access._inherited_selection); only this service takes the Control's entry.
+            boundary = getattr(current, "named_services", None) or {}
+            namespaces = boundary.get("namespaces") if isinstance(boundary, Mapping) else None
+            if not (isinstance(namespaces, Mapping) and namespaces) and named.is_unknown:
+                raise CallerWriteRefused("caller_writer_reset_named_services_unknown")
+            entries = {}
+            for other, other_grants in selected_grants.items():
+                if other == resource:
+                    continue
+                offered = configured_named_service_operations(boundary, grants=list(other_grants or ()))
+                frozen = {namespace: sorted(ops) for namespace, ops in offered.items() if ops}
+                if frozen:
+                    entries[other] = frozen
+        else:
+            entries = {key: value for key, value in dict(named.operations).items() if key != resource}
         if control_named_services:
             entries[resource] = control_named_services
         changes["named_service_operations"] = type(named).exact(entries)
