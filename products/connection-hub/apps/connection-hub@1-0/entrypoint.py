@@ -1201,7 +1201,8 @@ async def _bind_delegated_client_request_config(
                         issuance_store=_durable_authority(entrypoint).oauth,
                         cards=persistence.card_store, settings=get_settings(),
                         refresh_signing_secret_ref=original.get("refresh_signing_secret_ref"),
-                        resolve_secret=original_signing_secret)
+                        resolve_secret=original_signing_secret,
+                        owner_bundle_id=_entrypoint_bundle_id(entrypoint))
                 except Exception:
                     # Exception text may contain a provider value. The SDK
                     # returns a finite 503 from the present closed binding.
@@ -1809,6 +1810,7 @@ def _delegated_to_kdcube_oauth_state_store(entrypoint: Any) -> RedisOAuthStateSt
         secret_store=ephemeral_secret_store(
             namespace="login-attempts",
             settings=settings,
+            bundle_id=_entrypoint_bundle_id(entrypoint),
         ),
     )
 

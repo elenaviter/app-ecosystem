@@ -34,31 +34,13 @@ def test_explicit_existing_public_or_local_issuer_is_preserved(host, issuer):
     assert host.configured_issuer(issuer) == issuer.rstrip("/")
 
 
-@pytest.mark.parametrize("tenant, project", [
-    ("demo-tenant", "demo-project"), ("ab", "c"), ("t" * 200, "p" * 200),
-    ("Tenant.With.Dots", "Project/With:Odd chars"), ("", ""), ("ünïcode", "проект"),
-])
-def test_namespace_satisfies_the_sdk_runtime_secret_contract(host, tenant, project):
-    """W595: the namespace must pass the SDK's own validator, or custody.qualify can never succeed."""
+def test_custody_namespace_is_the_readable_hub_purpose(host):
+    """Records live under the Hub bundle and this purpose; isolation comes from the deployment root."""
     from kdcube_ai_app.infra.secrets.runtime_contract import valid_namespace
-    namespace = host.custody_namespace(tenant, project)
-    assert valid_namespace(namespace), namespace
-    assert len(namespace) <= 64 and namespace.startswith("chub-oauth-")
-
-
-def test_namespace_keeps_the_previous_scope_digest_prefix(host):
-    import hashlib
-    scope = json.dumps({"tenant": "demo-tenant", "project": "demo-project"}, sort_keys=True,
-                       separators=(",", ":"), ensure_ascii=True)
-    assert host.custody_namespace("demo-tenant", "demo-project") == \
-        "chub-oauth-" + hashlib.sha256(scope.encode()).hexdigest()[:52]
-
-
-def test_namespace_is_stable_and_scope_separated(host):
-    first = host.custody_namespace("ab", "c")
-    assert first == host.custody_namespace("ab", "c")
-    assert first != host.custody_namespace("a", "bc")
-    assert first != host.custody_namespace("ab", "d")
+    assert host.CUSTODY_NAMESPACE == "oauth-refresh-tokens"
+    assert valid_namespace(host.CUSTODY_NAMESPACE)
+    for tenant, project in [("demo-tenant", "demo-project"), ("ab", "c"), ("t" * 200, "p" * 200)]:
+        assert host.custody_namespace(tenant, project) == "oauth-refresh-tokens"
 
 
 @pytest.mark.asyncio
@@ -257,7 +239,7 @@ async def test_host_fences_refuse_changed_or_unavailable_original_evidence(host,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["issuer", "pool", "signer", "session", "custody", "none"])
+@pytest.mark.parametrize("failure", ["issuer", "pool", "signer", "session", "custody", "owner", "none"])
 async def test_real_sdk_flow_is_bound_only_after_host_qualification(host, monkeypatch, failure):
     from kdcube_ai_app.auth import session_authority_runtime
     from kdcube_ai_app.infra.secrets import issuance
@@ -267,7 +249,9 @@ async def test_real_sdk_flow_is_bound_only_after_host_qualification(host, monkey
     custody = SimpleNamespace(namespace=scope, qualify=AsyncMock())
     if failure == "custody":
         custody.qualify.side_effect = RuntimeError("not qualified")
-    monkeypatch.setattr(issuance, "issuance_secret_custody", lambda **kwargs: custody)
+    custody_calls = []
+    monkeypatch.setattr(issuance, "issuance_secret_custody",
+                        lambda **kwargs: custody_calls.append(kwargs) or custody)
     monkeypatch.setattr(session_authority_runtime, "bundle_session_store_for",
                         lambda **kwargs: None if failure == "session" else object())
     scene = _scene(host)
@@ -275,13 +259,16 @@ async def test_real_sdk_flow_is_bound_only_after_host_qualification(host, monkey
         configured_public_issuer=None if failure == "issuer" else "https://configured.test/public/oauth",
         hub=scene.hub, grant_store=SimpleNamespace(refresh_ttl=3600), issuance_store=scene.store,
         cards=scene.cards, settings=object(), refresh_signing_secret_ref="" if failure == "signer" else "protected.ref",
-        resolve_secret=AsyncMock(return_value=b"test-only-signing-key-more-than-32-bytes"))
+        resolve_secret=AsyncMock(return_value=b"test-only-signing-key-more-than-32-bytes"),
+        owner_bundle_id="" if failure == "owner" else "connection-hub@1-0")
     if failure != "none":
         with pytest.raises((host.OriginalExchangeHostingUnavailable, RuntimeError)):
             await host.bind_original_exchange(request, **kwargs)
         assert request.state.oauth_original_exchange_factory is None
         return
     await host.bind_original_exchange(request, **kwargs)
+    assert custody_calls == [{"namespace": "oauth-refresh-tokens", "settings": kwargs["settings"],
+                              "bundle_id": "connection-hub@1-0"}]
     bound = request.state.oauth_original_exchange_factory()
     assert type(bound) is OriginalCodeExchangeHandler
     assert (bound.tenant, bound.project) == ("tenant", "project")
