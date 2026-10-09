@@ -28,3 +28,13 @@ def test_a_refusal_code_that_is_not_a_fixed_code_is_never_logged(caplog):
     with pytest.raises(forward.ManagedCardEditError):
         forward._outcome({"ok": False, "error": "Free text: something secret-ish"}, BODY)
     assert "code=- status=-" in caplog.text and "secret-ish" not in caplog.text
+
+
+@pytest.mark.parametrize("flat", ["synthetic_private_project_detail", "card_edit_actor_cards_denied"])
+def test_a_flat_error_string_is_never_logged_even_when_it_is_spelled_like_a_code(caplog, flat):
+    # CodeApp return on #720: lexical shape is not proof of a fixed value-free code.
+    caplog.set_level(logging.WARNING)
+    with pytest.raises(forward.ManagedCardEditError) as refused:
+        forward._outcome({"ok": False, "error": flat, "status": 403}, BODY)
+    assert refused.value.reason == flat and refused.value.status == 403  # the refusal itself is unchanged
+    assert flat not in caplog.text and "code=- status=403" in caplog.text
