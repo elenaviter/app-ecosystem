@@ -73,7 +73,8 @@ async def test_an_existing_card_edit_is_one_coordinated_transaction(tmp_path):
 @pytest.mark.asyncio
 async def test_a_write_that_changes_credential_handles_is_not_routed_yet(tmp_path):
     host, store, decisions, before, after = await _host(tmp_path)
-    changed = replace(record_from_card(after), access_token="new-bearer")
+    # A handle the store holds (its session) changes; an OAuth token the store never holds is not a handle.
+    changed = replace(record_from_card(after), session_id="another-session")
     await host._persist_record(changed, expected_revision=before.card_revision)
     assert host._persistence.direct == [after.card_revision] and decisions.decisions == []
 
@@ -157,7 +158,7 @@ async def test_a_governed_coordinated_commit_records_the_gates_change_digest(tmp
 @pytest.mark.asyncio
 async def test_effects_that_cannot_be_routed_are_refused_never_dropped(tmp_path):
     host, store, decisions, before, after = await _host(tmp_path)
-    changed = replace(record_from_card(after), access_token="new-bearer")  # not routable yet
+    changed = replace(record_from_card(after), session_id="another-session")  # a handle change: not routable yet
     effects = [{"kind": "credential_lifetime", "key": "card",
                 "payload": {"access_id": before.access_id, "expires_at": 1_790_000_000, "base_card_revision": 1}}]
     with pytest.raises(CardConflict, match="card_effects_unroutable"):
