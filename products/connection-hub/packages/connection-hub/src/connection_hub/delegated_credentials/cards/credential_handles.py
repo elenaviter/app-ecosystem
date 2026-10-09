@@ -263,6 +263,8 @@ class PostgresCardCredentialHandleStore:
                 access_id=authority.access_id,
             ) from exc
         if metadata is None:
+            if authority.card_kind != CARD_KIND_AGENT and await self._create_missing_row(authority):
+                return CardCredentialHandles(access_id=authority.access_id)
             raise CardCredentialHandleUnavailable(
                 "card_handle_metadata_missing",
                 access_id=authority.access_id,
@@ -284,6 +286,34 @@ class PostgresCardCredentialHandleStore:
             access_token=access_token,
             session_id=metadata.session_id,
         )
+
+    async def _create_missing_row(self, authority: CardAuthority) -> bool:
+        """Write the row a Card issued before issue-time rows existed never got; True when it now exists.
+
+        Only a Card with NO row at all (W676 original issuance under Card transactions wrote none until
+        issue-time rows) gets one, from its current authority, exactly as ``write`` does at issue. A revoked
+        or expired row is never recreated: that credential has ended. Only a non-agent Card: it holds no
+        bearer here, so the row carries no secret.
+        """
+        try:
+            if await self._metadata.read_current(authority.access_id) is not None:
+                return False  # a row exists but is not active: its credential ended
+            await self.write(authority, CardCredentialHandles(access_id=authority.access_id))
+            return True
+        except Exception as exc:
+            # A concurrent first read may have written the same row (the store's compare-and-set refused
+            # this one): the row exists now, which is all the read needs.
+            try:
+                if await self._metadata.read_active(authority.access_id) is not None:
+                    return True
+            except Exception:
+                pass
+            if isinstance(exc, CardCredentialHandleUnavailable):
+                raise
+            raise CardCredentialHandleUnavailable(
+                "card_handle_metadata_unavailable",
+                access_id=authority.access_id,
+            ) from exc
 
     async def read_current(
         self,
