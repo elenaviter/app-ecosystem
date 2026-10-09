@@ -80,6 +80,15 @@ async def test_an_edited_or_refreshed_oauth_card_still_loads_its_credential(read
 
 
 @pytest.mark.asyncio
+async def test_a_new_oauth_card_issued_without_a_handle_row_loads_on_its_first_refresh():
+    # Original OAuth exchange under Card transactions binds no handle store, so the new Card has no row
+    # (effect_targets.py CredentialIssueTarget writes one only with a bound store); its first refresh loads it.
+    card = _card(CARD_KIND_AUTOMATION, revision=1, expires_at=NOW + 7200)
+    store, resident = _store(None)
+    assert (await store.read(card)).access_id == card.access_id and resident.resolved == []
+
+
+@pytest.mark.asyncio
 async def test_an_edited_agent_card_still_resolves_its_resident_bearer():
     card = _card(CARD_KIND_AGENT, revision=22, expires_at=NOW + 7200)
     store, resident = _store(_row(card, revision=21, expires_at=NOW + 3600, resident=True))
