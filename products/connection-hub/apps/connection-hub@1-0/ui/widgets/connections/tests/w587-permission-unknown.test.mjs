@@ -70,7 +70,8 @@ test('a Card that did not open while the board restarted says so, not "does not 
 })
 
 test('the panel offers Try again on the restart and uses the restart text for Edit, Reload and Save', () => {
-  assert.match(panel, /isBoardRestarting\(delegatedAccessError\) && controlFocus \? \(/)
+  // 2026-10-09: an open read that did not answer in time offers the same Try again.
+  assert.match(panel, /\(focusTimedOut \|\| isBoardRestarting\(delegatedAccessError\)\) && controlFocus \? \(/)
   assert.match(panel, /onClick=\{\(\) => setFocusRetry\(\(n\) => n \+ 1\)\}>Try again<\/button>/)
   assert.match(panel, /\}, \[controlFocusValue, focusRetry, dispatch\]\);/)
   assert.match(panel, /lastReadError\.current = String\(error \|\| ''\);/)
