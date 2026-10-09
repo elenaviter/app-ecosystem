@@ -1523,6 +1523,25 @@ def card_handles_from_record(record: AutomationAccessRecord) -> CardCredentialHa
     )
 
 
+def card_handles_unchanged(stored: CardCredentialHandles, record: AutomationAccessRecord) -> bool:
+    """Whether persisting ``record`` leaves the Card's stored credential handles as they are.
+
+    The comparison is made in the handle store's own terms. A store that holds
+    a bearer for this Card (a resident agent Card, or the pre-cutover Redis
+    records) compares the full material. The PostgreSQL store keeps no token
+    for an OAuth Card: its access and refresh tokens live in the OAuth
+    authority store, which a refresh rotates after checking the presented
+    refresh token and the live Card. For such a Card the Card's handles are its
+    access id and session, so a rotation that keeps them changes no credential
+    the Card holds.
+    """
+    if stored == card_handles_from_record(record):
+        return True
+    if stored.access_token or stored.refresh_token:
+        return False
+    return (stored.access_id, stored.session_id) == (record.access_id, record.session_id)
+
+
 def record_from_card(
     authority: CardAuthority,
     handles: CardCredentialHandles | None = None,
@@ -2729,7 +2748,7 @@ class AutomationAccessService:
         changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
         if (changed & self._BOUND_AUTHORITY_FIELDS
                 or int(after.get("expires_at") or 0) < int(before.get("expires_at") or 0)
-                or handles != card_handles_from_record(record)):
+                or not card_handles_unchanged(handles, record)):
             raise CallerWriteRefused("card_transactions_direct_write_refused")
 
     async def _coordinated_write(
@@ -2757,7 +2776,7 @@ class AutomationAccessService:
         if loaded is None:
             return False
         current, handles = loaded
-        if handles != card_handles_from_record(record):
+        if not card_handles_unchanged(handles, record):
             return False
         action = caller_write.action if caller_write is not None else "update"
         actor = (caller_write.actor_subject if caller_write is not None else "") or record.grantor_subject
