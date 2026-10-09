@@ -93,14 +93,14 @@ def test_a_change_is_any_managed_grant_whose_presence_differs():
 @pytest.mark.asyncio
 async def test_a_client_update_that_ticks_or_unticks_a_managed_grant_is_refused():
     service, card = await _card(_connections())
-    ticked = await service.update_access(USER, access_id=card.access_id, _client_upsert=True,
+    ticked = await service.update_access(USER, access_id=card.access_id,
         resource_grants={DECLARED_RESOURCE: ["app:read", "app:steward"]},
         resource_operations={DECLARED_RESOURCE: ["item.read", "item.steward"]})
     assert ticked["ok"] is False and ticked["error"] == "managed_grant_not_editable", ticked
     # The grant and the operation that needs it are both managed.
     assert ticked["grants"] == [f"{DECLARED_RESOURCE}:app:steward", f"{DECLARED_RESOURCE}:item.steward"]
     # A manual change on the same Card still saves.
-    narrowed = await service.update_access(USER, access_id=card.access_id, _client_upsert=True,
+    narrowed = await service.update_access(USER, access_id=card.access_id,
         resource_grants={DECLARED_RESOURCE: ["app:read"]}, resource_operations={DECLARED_RESOURCE: ["item.read"]})
     assert narrowed["ok"] is True, narrowed
 
@@ -109,11 +109,11 @@ async def test_a_client_update_that_ticks_or_unticks_a_managed_grant_is_refused(
 async def test_a_client_update_cannot_untick_a_managed_grant_the_application_set():
     service, card = await _card(_connections(), scopes=("app:read", "app:steward"),
                                 operations=("item.read", "item.steward"))
-    unticked = await service.update_access(USER, access_id=card.access_id, _client_upsert=True,
+    unticked = await service.update_access(USER, access_id=card.access_id,
         resource_grants={DECLARED_RESOURCE: ["app:read"]}, resource_operations={DECLARED_RESOURCE: ["item.read"]})
     assert unticked["ok"] is False and unticked["error"] == "managed_grant_not_editable", unticked
     # Keeping it as it is, while changing nothing else managed, saves.
-    kept = await service.update_access(USER, access_id=card.access_id, _client_upsert=True,
+    kept = await service.update_access(USER, access_id=card.access_id,
         resource_grants={DECLARED_RESOURCE: ["app:read", "app:steward"]},
         resource_operations={DECLARED_RESOURCE: ["item.read", "item.steward"]})
     assert kept["ok"] is True, kept
@@ -121,9 +121,9 @@ async def test_a_client_update_cannot_untick_a_managed_grant_the_application_set
 
 @pytest.mark.asyncio
 async def test_the_application_path_still_sets_a_managed_grant():
-    """Only a client upsert is refused; the application's own write (no client flag) is not."""
+    """Every Card write is guarded by default; only the application's own write opts out explicitly."""
     service, card = await _card(_connections())
-    applied = await service.update_access(USER, access_id=card.access_id,
+    applied = await service.update_access(USER, access_id=card.access_id, _application_write=True,
         resource_grants={DECLARED_RESOURCE: ["app:read", "app:steward"]},
         resource_operations={DECLARED_RESOURCE: ["item.read", "item.steward"]})
     assert applied["ok"] is True, applied
@@ -133,7 +133,7 @@ async def test_the_application_path_still_sets_a_managed_grant():
 @pytest.mark.asyncio
 async def test_a_client_create_with_a_managed_grant_is_refused():
     service = _service(_GrantStore({}), _Persistence(), connections=_connections())
-    created = await service.create_access(USER, label="synthetic", _client_upsert=True,
+    created = await service.create_access(USER, label="synthetic",
         resource_grants={DECLARED_RESOURCE: ["app:read", "app:steward"]},
         resource_operations={DECLARED_RESOURCE: ["item.read", "item.steward"]})
     assert created["ok"] is False and created["error"] == "managed_grant_not_editable", created
@@ -175,13 +175,13 @@ def test_a_person_control_change_is_any_role_decided_operation_whose_presence_di
 @pytest.mark.asyncio
 async def test_a_person_control_client_edit_cannot_tick_a_role_decided_operation_but_other_cards_can():
     service, card = await _card(_person_connections())
-    person = await service.update_access(USER, access_id=card.access_id, _client_upsert=True, _person_control=True,
+    person = await service.update_access(USER, access_id=card.access_id, _person_control=True,
         resource_grants={DECLARED_RESOURCE: ["app:read"]},
         resource_operations={DECLARED_RESOURCE: ["item.read", "item.role_only"]})
     assert person["ok"] is False and person["error"] == "managed_grant_not_editable", person
     assert person["grants"] == [f"{DECLARED_RESOURCE}:item.role_only"]
     # Not a person's Control Card: the whole catalog stays editable (W360).
-    other = await service.update_access(USER, access_id=card.access_id, _client_upsert=True,
+    other = await service.update_access(USER, access_id=card.access_id,
         resource_grants={DECLARED_RESOURCE: ["app:read"]},
         resource_operations={DECLARED_RESOURCE: ["item.read", "item.role_only"]})
     assert other["ok"] is True, other
@@ -199,11 +199,59 @@ async def test_an_operation_needing_a_managed_grant_is_listed_managed_and_locked
     row = next(item for item in await service.resource_options(USER) if item["resource"] == DECLARED_RESOURCE)
     assert [op["name"] for op in row["operations"] if op.get("managed")] == ["item.steward"]
     # Dropping the operation (keeping its grant) is refused on an ordinary Card, too.
-    dropped = await service.update_access(USER, access_id=card.access_id, _client_upsert=True,
+    dropped = await service.update_access(USER, access_id=card.access_id,
         resource_grants={DECLARED_RESOURCE: ["app:read", "app:steward"]},
         resource_operations={DECLARED_RESOURCE: ["item.read"]})
     assert dropped["ok"] is False and dropped["grants"] == [f"{DECLARED_RESOURCE}:item.steward"], dropped
     created = await _service(_GrantStore({}), _Persistence(), connections=_connections()).create_access(
-        USER, label="synthetic", _client_upsert=True, resource_grants={DECLARED_RESOURCE: ["app:read"]},
+        USER, label="synthetic", resource_grants={DECLARED_RESOURCE: ["app:read"]},
         resource_operations={DECLARED_RESOURCE: ["item.read", "item.steward"]})
     assert created["ok"] is False and created["grants"] == [f"{DECLARED_RESOURCE}:item.steward"], created
+
+
+
+# G1 (claude-test review of 97b86727): the guard is the DEFAULT of every Card write, so every client route
+# (Control Card update, agent Card update, add operations, apply profile, create, update) is covered.
+def _profile_connections():
+    connections = _connections()
+    connections["delegated_credentials"]["oauth"]["resources"][0]["authorization_profiles"] = {
+        "steward": {"scope": "app:profile:steward", "label": "Steward", "operations": ["item.read", "item.steward"]},
+    }
+    return connections
+
+
+@pytest.mark.asyncio
+async def test_a_bare_card_update_is_guarded_by_default():
+    service, card = await _card(_connections())
+    bare = await service.update_access(USER, access_id=card.access_id,
+        resource_grants={DECLARED_RESOURCE: ["app:read", "app:steward"]},
+        resource_operations={DECLARED_RESOURCE: ["item.read", "item.steward"]})
+    assert bare["ok"] is False and bare["error"] == "managed_grant_not_editable", bare
+
+
+@pytest.mark.asyncio
+async def test_adding_an_operation_that_needs_a_managed_grant_is_refused():
+    service, card = await _card(_connections())
+    added = await service.add_operations(USER, access_id=card.access_id, operations=["item.steward"])
+    assert added["ok"] is False and added["error"] == "managed_grant_not_editable", added
+
+
+@pytest.mark.asyncio
+async def test_applying_a_profile_that_carries_a_managed_grant_is_refused():
+    service, card = await _card(_profile_connections())
+    applied = await service.apply_authorization_profile(USER, access_id=card.access_id, profile="steward")
+    assert applied["ok"] is False and applied["error"] == "managed_grant_not_editable", applied
+
+
+def test_only_the_reset_paths_opt_out_of_the_guard():
+    """A client route can only bypass the guard by passing _application_write=True; only the two Reset
+    paths (which copy the Control's grants) do."""
+    import pathlib, re
+    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "connection_hub"
+    app = pathlib.Path(__file__).resolve().parents[3] / "apps" / "connection-hub@1-0" / "entrypoint.py"
+    hits = []
+    for path in [*root.rglob("*.py"), app]:
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"_application_write=True", line):
+                hits.append(path.name)
+    assert sorted(hits) == ["automation_access.py", "project_person_access.py"], hits

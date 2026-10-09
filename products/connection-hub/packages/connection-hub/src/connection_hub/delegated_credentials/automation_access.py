@@ -3193,6 +3193,7 @@ class AutomationAccessService:
                            else {key: dict(value) for key, value in selection.operations.items()})
         return await self.update_access(
             user, access_id=existing.access_id,
+            _application_write=True,  # W661 S5: the Reset copies the Control's grants, managed ones included
             resource_grants={key: list(value) for key, value in candidate["resource_grants"].items()},
             resource_operations={key: list(value) for key, value in candidate["resource_operations"].items()},
             named_service_operations=forwarded_named,
@@ -4151,7 +4152,7 @@ class AutomationAccessService:
         ttl_seconds: Any = None,
         client_id: str | None = None,
         merge_existing: bool = True,
-        _client_upsert: bool = False,
+        _application_write: bool = False,
     ) -> dict[str, Any]:
         """Create a delegated-access grant the current user grants to a client.
 
@@ -4188,8 +4189,8 @@ class AutomationAccessService:
         catalog_config = await self._catalog_config(
             active, owner_subject=grantor_subject
         )
-        if _client_upsert:
-            # A client Card editor never assigns an application-managed grant.
+        if not _application_write:
+            # Only the application's own write may assign an application-managed grant (default: refused).
             changes = managed_grant_changes(catalog_config, self._resource_grants(resource_grants), {})
             changes += managed_operation_changes(catalog_config, self._resource_grants(resource_operations or {}), {})
             if changes:
@@ -5610,7 +5611,7 @@ class AutomationAccessService:
         _issuer_context_ref: str = "",
         _caller_write_action: str = "update",
         _caller_actor_subject: str = "",
-        _client_upsert: bool = False,
+        _application_write: bool = False,
         _person_control: bool = False,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
@@ -5740,8 +5741,9 @@ class AutomationAccessService:
             active,
             owner_subject=grantor_subject,
         )
-        if _client_upsert:
-            # A client Card edit keeps every application-managed grant exactly as the Card holds it.
+        if not _application_write:
+            # A Card write keeps every application-managed grant exactly as the Card holds it, unless it is
+            # the application's own write (explicit opt-out; every client route is guarded by default).
             changes = managed_grant_changes(
                 catalog_config, self._resource_grants(resource_grants), self._resource_grants(existing.resource_grants))
             if resource_operations is not None:
