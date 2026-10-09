@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol
 
 from .issuer_gate import change_digest
+from .named_service_policy import configured_named_service_operations
 
 # W580/B (CodeApp, 11:33): EVERY writer of a bound Card names its action and
 # is decided by the binding's policy; expiry is governed too. The per-action
@@ -317,6 +318,34 @@ async def caller_writer_before_commit(
     return before_commit, request
 
 
+def control_named_services_entry(control: Any, resource: str) -> Any:
+    """The Control's named-service selection for one service, as ``reset_candidate`` takes it.
+
+    An exact Control gives its entry for the service. An ALL Control (or a
+    legacy UNKNOWN one) gives its materialized boundary under its grants for
+    that service, frozen into an exact entry: the expansion of the catalog
+    generation it was saved against, the rule an unrelated edit already applies
+    (automation_access._inherited_selection). A legacy UNKNOWN Control with no
+    materialized boundary cannot be represented and refuses, rather than leave
+    the old personal selection in place (W638, claude-main 02:46Z).
+    """
+    named = getattr(control, "named_service_operations", None)
+    if named is None:
+        return None
+    if not (named.is_all or named.is_unknown):
+        # An exact (or NONE) Control without an entry for the service grants it none.
+        return dict(named.operations).get(resource) or {}
+    boundary = getattr(control, "named_services", None) or {}
+    namespaces = boundary.get("namespaces") if isinstance(boundary, Mapping) else None
+    if not (isinstance(namespaces, Mapping) and namespaces):
+        if named.is_unknown:
+            raise CallerWriteRefused("caller_writer_reset_control_named_services_unknown")
+        return {}
+    grants = (getattr(control, "resource_grants", None) or {}).get(resource, ())
+    offered = configured_named_service_operations(boundary, grants=list(grants))
+    return {namespace: sorted(operations) for namespace, operations in offered.items() if operations}
+
+
 def reset_candidate(current: Any, *, resource: str, control_operations: Any, control_grants: Any,
                     control_named_services: Any = None) -> dict[str, Any]:
     """Explicit per-service Reset to Control: one service's selection becomes the current Control's.
@@ -347,8 +376,25 @@ def reset_candidate(current: Any, *, resource: str, control_operations: Any, con
     # The service's complete authority: its named-service selection follows the
     # Control's too (Infra, 11:02), only for this resource's entry.
     named = getattr(current, "named_service_operations", None)
-    if control_named_services is not None and named is not None and not (named.is_all or named.is_unknown):
-        entries = {key: value for key, value in dict(named.operations).items() if key != resource}
+    if control_named_services is not None and named is not None:
+        if named.is_all or named.is_unknown:
+            # The personal Card selects all (or is legacy-unknown): its OTHER services keep exactly what that
+            # selection means, frozen from its own materialized boundary under its own grants per service
+            # (automation_access._inherited_selection); only this service takes the Control's entry.
+            boundary = getattr(current, "named_services", None) or {}
+            namespaces = boundary.get("namespaces") if isinstance(boundary, Mapping) else None
+            if not (isinstance(namespaces, Mapping) and namespaces) and named.is_unknown:
+                raise CallerWriteRefused("caller_writer_reset_named_services_unknown")
+            entries = {}
+            for other, other_grants in selected_grants.items():
+                if other == resource:
+                    continue
+                offered = configured_named_service_operations(boundary, grants=list(other_grants or ()))
+                frozen = {namespace: sorted(ops) for namespace, ops in offered.items() if ops}
+                if frozen:
+                    entries[other] = frozen
+        else:
+            entries = {key: value for key, value in dict(named.operations).items() if key != resource}
         if control_named_services:
             entries[resource] = control_named_services
         changes["named_service_operations"] = type(named).exact(entries)
