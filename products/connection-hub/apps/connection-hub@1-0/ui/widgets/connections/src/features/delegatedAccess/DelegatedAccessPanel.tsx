@@ -186,7 +186,7 @@ import {
   catalogDriftForPersonCard, hiddenHeldGrants, notOfferedOnPersonCard, resourcesForPersonCard, resourcesForPersonMyCard,
   visibleOperations,
 } from './personCardOperations';
-import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
+import { callerEditNote, cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, providerAccountsSummary, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
 import {
   delegatedAccessRevokePayload,
@@ -2725,7 +2725,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 <summary className="muted account-provider-summary">
                   {providers[provider]?.label || provider}
                   {' — '}
-                  {boundCount ? `${boundCount}/${total} accounts` : 'no accounts yet'}
+                  {providerAccountsSummary(boundCount, total)}
                   {open ? null : <span className="account-sub"> · + choose</span>}
                 </summary>
                 <div className="account-provider-body">
@@ -5105,9 +5105,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     ? `Authority combined from the caller Card and ${label}.`
                     : `Authority shared by the caller Card and ${label}.`))
             : (editing && controlActive && !effectiveReady
-                ? `Pending changes to the caller Card. Refresh this card to load ${label} and preview the composed Effective Card.`
+                ? callerEditNote(editDirty, `Refresh this card to load ${label} and preview the composed Effective Card.`)
                 : (editing
-                    ? `Pending changes to the caller Card. ${label} remains linked.`
+                    ? callerEditNote(editDirty, `${label} remains linked.`)
                     : 'Authority granted directly to this caller Card.'))}</small>
         </div>
         {!controlActive && control.reason ? <small>Reason: {readableIdentifier(control.reason)}</small> : null}
@@ -5420,6 +5420,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             </div>
           ) : null}
           <CatalogDriftNotice drift={cardCatalogDrift(record)} />
+          {/* W681: the My Card's GitHub link stays in view while the Card is edited; Edit never hides it. */}
+          {isMyCard(record)
+            ? <MyCardGithubSection projectRef={myCardProjectRef(record)} openParams={openParams} />
+            : null}
           {record.source === 'control' ? (
             <div className="card-fields control-card-fields">
               <Field label={projectPersonControl?.kind === 'person' ? 'For' : 'Issued by'}>
@@ -5823,7 +5827,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         </div>
                       ) : null}
                       <CatalogDriftNotice drift={cardCatalogDrift(item)} />
-                      {!editing && isMyCard(item)
+                      {isMyCard(item)
                         ? <MyCardGithubSection projectRef={myCardProjectRef(item)} openParams={openParams} />
                         : null}
                       {editing ? (

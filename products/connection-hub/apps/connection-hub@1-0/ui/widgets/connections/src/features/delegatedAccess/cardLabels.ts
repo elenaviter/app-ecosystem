@@ -125,3 +125,15 @@ export function personControlCardTitle(
   if (holder === 'Another person') return "Another person's Control Card";
   return `${holder}'s Control Card`;
 }
+
+// W681 (operator, 2026-10-09: "the section with github dissappeared from this card"): opening the
+// editor is not a change. The note says "Pending changes" only once the draft differs from the Card.
+export function callerEditNote(dirty: boolean, detail: string): string {
+  return `${dirty ? 'Pending changes to' : 'Editing'} the caller Card. ${detail}`;
+}
+
+// W681: a provider's accounts in the editor. "no accounts yet" only when the person has none; an account
+// that exists but is not chosen for this Card is "0/1 accounts", never "no accounts yet".
+export function providerAccountsSummary(selected: number, total: number): string {
+  return total > 0 ? `${selected}/${total} accounts` : 'no accounts yet';
+}
