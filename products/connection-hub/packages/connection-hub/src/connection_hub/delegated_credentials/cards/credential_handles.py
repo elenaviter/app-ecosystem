@@ -263,10 +263,6 @@ class PostgresCardCredentialHandleStore:
                 access_id=authority.access_id,
             ) from exc
         if metadata is None:
-            if authority.card_kind != CARD_KIND_AGENT:
-                # Only a hosted agent's bearer is held here; any other Card's credential lives with the OAuth
-                # authority or its holder, so a missing, revoked or expired row withholds nothing it needs.
-                return CardCredentialHandles(access_id=authority.access_id)
             raise CardCredentialHandleUnavailable(
                 "card_handle_metadata_missing",
                 access_id=authority.access_id,

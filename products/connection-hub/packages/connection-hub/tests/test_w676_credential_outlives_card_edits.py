@@ -3,8 +3,10 @@
 Operator, 2026-10-09: "changing something on teh card does not change the credential. credential is changed
 separately by refresh, revoke etc" / "this token must work as long as it is not revoke or expired. and even
 if i changed the card it still must work unchanged" / "revoking the Card also invalidate the credential, of
-course." Live: a refresh committed Card revision 22 while its handle row stayed at 21, and the exact
-revision check then refused every read of that Card. A read now checks only that the row is this Card's.
+course." / "simply make wha twas added undo". Live: a refresh committed Card revision 22 while its handle
+row stayed at 21, and the exact revision check added on 2026-09-23 (a5f57d93) then refused every read of that
+Card. That check is undone for reads: a read checks only that the row is this Card's. The Card's revocation
+is enforced on the live Card at use (test_w652_live_authority_readers.py).
 """
 
 from __future__ import annotations
@@ -75,17 +77,6 @@ async def test_an_edited_or_refreshed_oauth_card_still_loads_its_credential(read
     store, resident = _store(_row(card, revision=21, expires_at=NOW + 3600))
     handles = await getattr(store, read)(card)
     assert handles.access_id == card.access_id and resident.resolved == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("row_state", ["missing", "revoked", "expired"])
-async def test_an_oauth_card_needs_no_handle_row_its_credential_lives_with_the_oauth_authority(row_state):
-    card = _card(CARD_KIND_AUTOMATION, revision=22, expires_at=NOW + 7200)
-    row = None if row_state == "missing" else _row(
-        card, revision=21, expires_at=(NOW - 10 if row_state == "expired" else NOW + 3600),
-        state=HANDLE_STATE_REVOKED if row_state == "revoked" else HANDLE_STATE_ACTIVE)
-    store, _ = _store(row)
-    assert (await store.read(card)).access_id == card.access_id
 
 
 @pytest.mark.asyncio
