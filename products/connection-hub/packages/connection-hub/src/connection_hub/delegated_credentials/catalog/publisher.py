@@ -26,6 +26,8 @@ from connection_hub.delegated_credentials.catalog.hashing import (
 )
 from connection_hub.delegated_credentials.catalog.models import (
     CatalogDocument,
+    CatalogNotWireSafe,
+    wire_safe_connections,
 )
 from connection_hub.delegated_credentials.catalog.reservations import (
     CatalogReservationRefused,
@@ -65,6 +67,16 @@ class CatalogPublicationResult:
     created: bool
 
 
+def _wire_safe(connections: Mapping[str, Any]) -> dict[str, Any]:
+    """The connections as the catalog stores them; a value no signed answer can carry refuses publication."""
+    try:
+        return wire_safe_connections(connections)
+    except CatalogNotWireSafe as exc:
+        _LOGGER.error("[connection-hub.delegated-catalog] catalog not published: a value at %s cannot be "
+                      "carried by a signed participant answer (only integral numbers can)", exc.path)
+        raise CatalogPublicationError("connections_not_wire_safe") from exc
+
+
 async def ensure_delegated_catalog(
     *,
     connections: Mapping[str, Any],
@@ -91,6 +103,7 @@ async def ensure_delegated_catalog(
     it the captured value is published as-is.
     """
     residency = (settings or DelegatedCacheSettings()).catalog
+    connections = _wire_safe(connections)
     try:
         expected_hash = connections_content_hash(connections)
     except (TypeError, ValueError) as exc:
@@ -108,7 +121,7 @@ async def ensure_delegated_catalog(
         if await CatalogReservations(store).clear_dead_publication():
             _LOGGER.warning("[connection-hub.delegated-catalog] cleared a dead publication marker reason=%s", reason)
         if reread is not None:
-            fresh = await reread()
+            fresh = _wire_safe(await reread())
             try:
                 fresh_hash = connections_content_hash(fresh)
             except (TypeError, ValueError) as exc:

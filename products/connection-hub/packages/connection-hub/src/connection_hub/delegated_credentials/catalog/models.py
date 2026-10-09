@@ -32,6 +32,45 @@ class CatalogDocumentError(ValueError):
         self.reason = reason
 
 
+class CatalogNotWireSafe(CatalogDocumentError):
+    """A catalog value no signed participant answer can carry; ``path`` names it (never the value)."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__("connections_not_wire_safe")
+        self.path = path
+
+
+def wire_safe_connections(connections: Mapping[str, Any]) -> dict[str, Any]:
+    """A deep copy of ``connections`` holding only values the signed participant wire carries.
+
+    The census signs the active catalog with the durable wire encoding, which carries integers only
+    (live 2026-10-09: the Hub's own ``fetch_timeout_seconds: 5.0`` refused every census since 09-02).
+    An integral float becomes its integer, the same number for every reader of the catalog. Any other
+    float refuses here, at publication, naming its path, instead of failing each census later.
+    """
+
+    def clean(value: Any, path: str) -> Any:
+        if value is None or isinstance(value, bool):
+            return None if value is None else bool(value)
+        if isinstance(value, int):
+            return int(value)  # exact types: a YAML loader's int or str subclass is not on the wire either
+        if isinstance(value, str):
+            return str(value)
+        if isinstance(value, float):
+            if value.is_integer():
+                return int(value)
+            raise CatalogNotWireSafe(path)
+        if isinstance(value, Mapping):
+            if not all(isinstance(key, str) for key in value):
+                raise CatalogNotWireSafe(path)
+            return {str(key): clean(item, f"{path}.{key}") for key, item in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [clean(item, f"{path}[{index}]") for index, item in enumerate(value)]
+        raise CatalogNotWireSafe(path)
+
+    return clean(dict(connections or {}), "connections")
+
+
 def utc_stamp(moment: datetime) -> str:
     """Sortable ``YYYY-MM-DD-HH-MM-SS-mmm`` UTC stamp used in resource names."""
     value = moment.astimezone(timezone.utc)
@@ -64,7 +103,7 @@ class CatalogDocument:
     ) -> "CatalogDocument":
         """Create a document for a mapping, deep-copied at capture time."""
         moment = created_at or datetime.now(timezone.utc)
-        body = copy.deepcopy(dict(connections or {}))
+        body = wire_safe_connections(connections)
         content_hash = connections_content_hash(body)
         return cls(
             version=catalog_version_name(content_hash, created_at=moment),
@@ -123,7 +162,9 @@ __all__ = [
     "CATALOG_VERSION_PREFIX",
     "CatalogDocument",
     "CatalogDocumentError",
+    "CatalogNotWireSafe",
     "catalog_version_name",
     "utc_stamp",
     "utc_timestamp",
+    "wire_safe_connections",
 ]
