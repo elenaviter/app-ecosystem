@@ -48,10 +48,11 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 from typing import Any, Callable, Mapping
 
-from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
+from service_foundation.coordination.durable_wire import WireRefused, canonical_json_bytes, sha256_hex
 from service_foundation.coordination.participant_answer import AnswerContract
 from service_foundation.coordination.participant_answer import request_digest as shared_request_digest
 from service_foundation.coordination.participant_answer import sign_participant_answer
@@ -331,13 +332,38 @@ class CardCensusReadOperation:
             return self._unsigned(caller, data, digest, value)
 
         unsigned = unsigned_for(result)
-        if len(canonical_json_bytes(unsigned)) > MAX_ANSWER_BYTES:
+        try:
+            encoded = canonical_json_bytes(unsigned)
+        except WireRefused:
+            # Name where (never what): live 2026-10-09 a catalog float failed every census, unnamed.
+            _LOG.error("card census answer not signable: a value at %s cannot be carried", _non_wire_path(unsigned))
+            raise
+        if len(encoded) > MAX_ANSWER_BYTES:
             unsigned = unsigned_for({"kind": "refused", "code": "card_census_too_large", "status": 413})
         proof = sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=caller.receipt_secret,
                                         signer_id=caller.receipt_signer_id, timestamp=str(int(self._clock())),
                                         contract=AnswerContract.CENSUS)
         return {"ok": unsigned["result"].get("kind") != "refused",
                 "census_answer": {**unsigned, "receipt_proof": proof}}
+
+
+_LOG = logging.getLogger(__name__)
+
+
+def _non_wire_path(value: Any, path: str = "answer") -> str:
+    """The JSON path of the first value the signed wire refuses, for the log; never the value."""
+    if value is None or type(value) in (str, bool, int):
+        return ""
+    if type(value) in (list, tuple):
+        return next((found for index, item in enumerate(value) if (found := _non_wire_path(item, f"{path}[{index}]"))), "")
+    if type(value) is dict:
+        for key, item in value.items():
+            if type(key) is not str:
+                return f"{path}.<non-string key>"
+            if found := _non_wire_path(item, f"{path}.{key}"):
+                return found
+        return ""
+    return path
 
 
 def _present(authority: Any, *, my_card: bool = False) -> dict[str, Any]:
