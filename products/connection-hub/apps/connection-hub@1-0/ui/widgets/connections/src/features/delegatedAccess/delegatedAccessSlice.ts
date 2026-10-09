@@ -54,6 +54,9 @@ export interface DelegatedAccessState {
   busy: boolean;
   /** W587: Control reads in flight; busy clears when the last one settles. */
   controlReads: number;
+  /** The current Control reads (thunk request ids). A read retired by an explicit retry or by leaving the
+   *  Card is dropped from here: its late answer or refusal applies nothing and no longer holds busy. */
+  controlReadIds: string[];
   error: string;
 }
 
@@ -69,6 +72,7 @@ const initialState: DelegatedAccessState = {
   loadRequestId: '',
   busy: false,
   controlReads: 0,
+  controlReadIds: [],
   error: '',
 };
 
@@ -498,6 +502,14 @@ const delegatedAccessSlice = createSlice({
   name: 'delegatedAccess',
   initialState,
   reducers: {
+    /** An explicit retry, or leaving the Card, retires every outstanding Control read: they stop holding busy,
+     *  and their late answers or refusals apply nothing (2026-10-09 CodeApp return on #717). */
+    retireControlReads(state) {
+      if (!state.controlReadIds.length) return;
+      state.controlReadIds = [];
+      state.controlReads = 0;
+      state.busy = false;
+    },
     clearDelegatedAccessError(state) {
       state.error = '';
     },
@@ -537,13 +549,17 @@ const delegatedAccessSlice = createSlice({
         state.focusedCard = undefined;
         state.error = action.payload || 'This Card could not be opened through the project';
       })
-      .addCase(loadControlCard.pending, (state) => {
-        state.controlReads += 1;
+      .addCase(loadControlCard.pending, (state, action) => {
+        state.controlReadIds.push(action.meta.requestId);
+        state.controlReads = state.controlReadIds.length;
         state.busy = true;
         state.error = '';
       })
       .addCase(loadControlCard.fulfilled, (state, action) => {
-        state.controlReads = Math.max(0, state.controlReads - 1);
+        // A retired read (superseded by a retry, or its Card left) applies nothing when it answers late.
+        if (!state.controlReadIds.includes(action.meta.requestId)) return;
+        state.controlReadIds = state.controlReadIds.filter((id) => id !== action.meta.requestId);
+        state.controlReads = state.controlReadIds.length;
         if (state.controlReads === 0) state.busy = false;
         state.focusedCard = action.payload.access;
         state.focusedViewer = action.payload.viewer;
@@ -551,7 +567,9 @@ const delegatedAccessSlice = createSlice({
         state.items = withNewerCard(state.items, action.payload.access);
       })
       .addCase(loadControlCard.rejected, (state, action) => {
-        state.controlReads = Math.max(0, state.controlReads - 1);
+        if (!state.controlReadIds.includes(action.meta.requestId)) return;
+        state.controlReadIds = state.controlReadIds.filter((id) => id !== action.meta.requestId);
+        state.controlReads = state.controlReadIds.length;
         if (state.controlReads === 0) state.busy = false;
         state.focusedCard = undefined;
         state.focusedViewer = undefined;
@@ -714,5 +732,5 @@ const delegatedAccessSlice = createSlice({
   },
 });
 
-export const { clearDelegatedAccessError, clearIssuedDelegatedAccess } = delegatedAccessSlice.actions;
+export const { clearDelegatedAccessError, clearIssuedDelegatedAccess, retireControlReads } = delegatedAccessSlice.actions;
 export default delegatedAccessSlice.reducer;

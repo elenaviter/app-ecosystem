@@ -440,6 +440,14 @@ What the shell owns, and what it does not:
     member reads it.
   - `control_card_id` + `project_ref` + `target_subject` (or `invitation_ref`):
     a person's Control Card in the project (`project_person_control_get`).
+- A `control_card_id` link opens with ONE server read. If it does not answer
+  within 45 s the widget shows "Card unavailable. Connection Hub did not answer
+  in time. Try again." with **Try again**; it never re-reads by itself. An
+  answer that arrives later, while that open is still current, still opens the
+  Card. **Try again**, or leaving the Card, retires the outstanding read: it no
+  longer holds the editor busy, and its late answer or refusal changes nothing
+  (it can never replace a newer Card the retry opened). A late refusal of the
+  current read shows its own reason, not the timeout text.
 - The **Open Control Card** button on a composed Card (W424) is keyed by the
   binding's `control_id`:
   - On a person's My Card (`source` `project-person`), the binding is

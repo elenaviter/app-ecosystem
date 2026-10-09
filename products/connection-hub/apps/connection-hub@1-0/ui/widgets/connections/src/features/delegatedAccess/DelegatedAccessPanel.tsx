@@ -140,6 +140,7 @@ import {
   createDelegatedAccess,
   grantAgentAccess,
   loadControlCard,
+  retireControlReads,
   loadDelegatedAccess,
   renewDelegatedAccess,
   revokeDelegatedAccess,
@@ -2469,14 +2470,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         }
       })
       .catch(() => {
-        if (current) setAccessCardFocusState('unavailable');
+        if (!current) return;
+        // A late refusal shows its own reason, not the timeout text.
+        setFocusTimedOut(false);
+        setAccessCardFocusState('unavailable');
       });
     const cancel = onPendingTooLong(reading, CONTROL_OPEN_READ_SECONDS * 1000, () => {
       if (!current) return;
       setFocusTimedOut(true);
       setAccessCardFocusState('unavailable');
     });
-    return () => { current = false; cancel(); };
+    // An explicit retry (focusRetry) or leaving the Card retires this read: it stops holding busy and its
+    // late answer can no longer replace the Card the newer read opened.
+    return () => { current = false; cancel(); dispatch(retireControlReads()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [controlFocusValue, focusRetry, dispatch]);
   // W587, the operator's rule (14:50): "i asked not to refetch! i asked only

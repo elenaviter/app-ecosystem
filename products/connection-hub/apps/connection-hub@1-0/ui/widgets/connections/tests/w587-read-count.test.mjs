@@ -35,7 +35,9 @@ test('a Control link is read once to open it; the view does not read it a second
 })
 
 test('busy clears when the last Control read settles, never sticks after a superseded one', () => {
-  assert.match(slice, /loadControlCard\.pending, \(state\) => \{\s+state\.controlReads \+= 1;\s+state\.busy = true;/)
-  const settled = slice.match(/state\.controlReads = Math\.max\(0, state\.controlReads - 1\);\s+if \(state\.controlReads === 0\) state\.busy = false;/g) || []
+  // 2026-10-09 (#717): reads are tracked by request id; a retired read neither counts nor applies.
+  assert.match(slice, /loadControlCard\.pending, \(state, action\) => \{\s+state\.controlReadIds\.push\(action\.meta\.requestId\);\s+state\.controlReads = state\.controlReadIds\.length;\s+state\.busy = true;/)
+  const settled = slice.match(/if \(!state\.controlReadIds\.includes\(action\.meta\.requestId\)\) return;\s+state\.controlReadIds = state\.controlReadIds\.filter\(\(id\) => id !== action\.meta\.requestId\);\s+state\.controlReads = state\.controlReadIds\.length;\s+if \(state\.controlReads === 0\) state\.busy = false;/g) || []
   assert.equal(settled.length, 2) // fulfilled and rejected
+  assert.match(slice, /retireControlReads\(state\) \{/)
 })
