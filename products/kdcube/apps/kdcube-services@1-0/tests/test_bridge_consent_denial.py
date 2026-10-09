@@ -1,0 +1,485 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Elena Viter
+
+"""The named-services door's consent denial carries the per-agent grant path.
+
+Regression: a hosted agent's op on an ungranted namespace (mail via a bearer
+holding only slack grants) returned a bare `delegated_consent_required` error —
+no agent identity, no resource, no grant action — so the caller's chat surface
+could not raise the scoped consent banner and the Connection Hub landing showed
+no pending claims. The denial now carries the full consent block for
+`kdcube-agent:*` callers; other client families keep the reconnect guidance."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import load_dynamic_module_for_path
+from connection_hub.authority_registry import (
+    CredentialEnvelope,
+)
+from connection_hub.delegated_credentials.catalog.authorization import (
+    ActiveCatalogCapabilities,
+)
+from connection_hub.delegated_credentials.catalog.models import (
+    CatalogDocument,
+)
+from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.named_service_admission import (
+    managed_named_service_admission,
+    store_managed_named_service_admission_snapshot,
+)
+from kdcube_ai_app.apps.chat.sdk.solutions.named_services_providers import NamedServiceRequest
+
+BUNDLE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _bridge_module():
+    _name, module = load_dynamic_module_for_path(
+        BUNDLE_ROOT / "services" / "named_services" / "bridge.py"
+    )
+    return module
+
+
+class _Policy:
+    namespace = "mail"
+
+    def tool_configured(self, tool_name):
+        return True
+
+    def operation_configured(self, *, tool_name, operation):
+        return True
+
+    def grants_for(self, *, tool_name, operation):
+        return ["mail:read"]
+
+    def authority_for(self, *, tool_name, operation):
+        return ""
+
+
+RESOURCE_PATTERN = (
+    "*/api/integrations/bundles/*/*/kdcube-services@1-0/public/mcp/named_services*"
+)
+
+
+def _request(
+    client_id: str,
+    grants=None,
+    account_scope=None,
+    *,
+    catalog_namespaces=None,
+    card_namespaces=None,
+):
+    grants = list(grants or ["named_services:use", "slack:read"])
+    credential = CredentialEnvelope(
+        subject=f"integration:{client_id}:user-1",
+        attrs={
+            "client_id": client_id,
+            "grantor_subject": "user-1",
+            "grants": grants,
+            "resource": RESOURCE_PATTERN,
+        },
+    )
+    grant_record = {
+        "client_id": client_id,
+        "registry_access_id": "oauth-test-access",
+        "grantor_subject": "user-1",
+        "delegate_subject": credential.subject,
+        "card_revision": 3,
+        "catalog_version": "test-card-catalog",
+        "grants": [],
+        "resource_grants": {RESOURCE_PATTERN: [*grants]},
+        "account_scope": dict(account_scope or {}),
+    }
+    if catalog_namespaces is not None:
+        grant_record["named_services"] = {
+            "namespaces": (
+                card_namespaces
+                if card_namespaces is not None
+                else catalog_namespaces
+            )
+        }
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            delegated_credential={
+                "credential": credential.to_dict(),
+                "grant_record": grant_record,
+            }
+        )
+    )
+    if catalog_namespaces is not None:
+        connections = {
+            "delegated_credentials": {
+                "oauth": {
+                    "enabled": True,
+                    "resources": [
+                        {
+                            "resource": RESOURCE_PATTERN,
+                            "grants": ["named_services:use"],
+                            "named_services": {"namespaces": catalog_namespaces},
+                        },
+                    ],
+                },
+            },
+        }
+        store_managed_named_service_admission_snapshot(
+            request,
+            catalog=ActiveCatalogCapabilities(CatalogDocument.build(connections)),
+            grant_record=grant_record,
+            credential=credential,
+            resource=RESOURCE_PATTERN,
+            request_resource=(
+                "/api/integrations/bundles/t/p/kdcube-services@1-0/public/mcp/"
+                "named_services"
+            ),
+            outer_operation="named_services_call",
+        )
+    return request
+
+
+def _bridge(m, request):
+    return m.NamedServicesMcpBridge(config={}, tenant="t", project="p", request=request)
+
+
+async def test_agent_caller_denial_carries_the_consent_block():
+    m = _bridge_module()
+    client = "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react"
+    bridge = _bridge(m, _request(client))
+
+    denial = await bridge._authorize(_Policy(), "object.search", tool_name="search")
+
+    assert denial["error"] == "delegated_consent_required"
+    assert denial["missing_grants"] == ["mail:read"]
+    assert denial["code"] == "connections.consent_needed"
+    consent = denial["consent"]
+    assert consent["kind"] == "delegated_agent_grant"
+    assert consent["agent_client_id"] == client
+    assert consent["resource"].endswith("named_services*")
+    assert consent["claims"] == ["mail:read"]
+    assert consent["tool_name"] == "mail"
+    assert consent["grant"]["operation"] == "delegated_agent_grant_create"
+    assert consent["grant"]["payload"]["claims"] == ["mail:read"]
+    assert "Connection Hub" in denial["next_step"]
+
+
+async def test_external_caller_gets_identity_block_and_reconnect_fallback():
+    # An external delegated client (Claude Code) is part of the SAME universal
+    # contract: its denial carries the consent block naming the client and the
+    # missing claims. Without a configured public base URL there is no hub deep
+    # link, so the reconnect guidance stays as the fallback next step.
+    m = _bridge_module()
+    bridge = _bridge(m, _request("claude"))
+
+    denial = await bridge._authorize(_Policy(), "object.search", tool_name="search")
+
+    assert denial["error"] == "delegated_consent_required"
+    consent = denial["consent"]
+    assert consent["agent_client_id"] == "claude"
+    assert consent["claims"] == ["mail:read"]
+    assert "grant" not in consent          # one-click grant is hosted-agent only
+    assert "Reconnect" in denial["next_step"]
+
+
+def _request_via_subject():
+    """The LIVE projection: grant_record without client_id; the delegate
+    subject on the credential is the only agent identity, and the credential
+    attrs carry the granted resource."""
+    return SimpleNamespace(state=SimpleNamespace(delegated_credential={
+        "credential": {
+            "sub": "integration:kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react:user-1",
+            "attrs": {
+                "grants": ["named_services:use"],
+                "resource": "*/kdcube-services@1-0/public/mcp/named_services*",
+            },
+        },
+        "grant_record": {"grants": []},
+    }))
+
+
+async def test_agent_identity_falls_back_to_the_delegate_subject():
+    # Regression (live 2026-07-19): the projected grant_record carried no
+    # client_id, so the denial went out bare (block={}) and no banner rose.
+    m = _bridge_module()
+    bridge = _bridge(m, _request_via_subject())
+
+    denial = await bridge._authorize(_Policy(), "object.search", tool_name="search")
+
+    assert denial["missing_grants"] == ["mail:read"]
+    consent = denial["consent"]
+    assert consent["agent_client_id"] == "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react"
+    assert consent["resource"] == "*/kdcube-services@1-0/public/mcp/named_services*"
+    assert consent["grant"]["payload"]["claims"] == ["mail:read"]
+
+
+async def test_get_forwards_provider_filters() -> None:
+    m = _bridge_module()
+    bridge = _bridge(m, _request("claude"))
+    captured = {}
+
+    async def fake_call(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    bridge.call = fake_call
+    result = await bridge.get(
+        namespace="sheets",
+        object_ref="sheets:google:account-1:spreadsheet:sheet-1",
+        filters_json='{"ranges":["Plan!A1:D20"]}',
+    )
+
+    assert result == {"ok": True}
+    assert captured["operation"] == "object.get"
+    assert captured["filters"] == {"ranges": ["Plan!A1:D20"]}
+
+
+async def test_search_forwards_provider_cursor() -> None:
+    m = _bridge_module()
+    bridge = _bridge(m, _request("claude"))
+    captured = {}
+
+    async def fake_call(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    bridge.call = fake_call
+    result = await bridge.search(
+        namespace="mail",
+        query="invoice",
+        cursor="gmail-page-2",
+    )
+
+    assert result == {"ok": True}
+    assert captured["cursor"] == "gmail-page-2"
+
+
+async def test_schema_forwards_recursive_capability_search() -> None:
+    m = _bridge_module()
+    bridge = _bridge(m, _request("claude"))
+    captured = {}
+
+    async def fake_call(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True}
+
+    bridge.call = fake_call
+    result = await bridge.schema(
+        namespace="docs",
+        query="reply to a comment",
+        search_mode="hybrid",
+        limit=8,
+    )
+
+    assert result == {"ok": True}
+    assert captured["operation"] == "object.schema"
+    assert captured["query"] == "reply to a comment"
+    assert captured["search_mode"] == "hybrid"
+    assert captured["limit"] == 8
+
+
+async def test_bounded_action_authorizes_the_exact_action_key(monkeypatch) -> None:
+    m = _bridge_module()
+    config = {
+        "namespaces": {
+            "slack": {
+                "tools": {
+                    "action": {
+                        "operation": "object.action",
+                        "operations": {
+                            "object.action.post_message": {
+                                "grants": ["named_services:use", "slack:post"]
+                            },
+                            "object.action.upload_file": {
+                                "grants": [
+                                    "named_services:use",
+                                    "slack:files:write",
+                                ]
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    bridge = m.NamedServicesMcpBridge(
+        config=config,
+        tenant="t",
+        project="p",
+        request=_request(
+            "claude",
+            ["named_services:use", "slack:post"],
+            catalog_namespaces=config["namespaces"],
+        ),
+    )
+    captured = {}
+
+    async def fake_endpoint(_endpoint, request, *, admission):
+        assert admission.mode == "delegated"
+        captured["request"] = request
+        return m.NamedServiceResponse.ok_response(namespace="slack")
+
+    monkeypatch.setattr(m, "call_named_service_endpoint", fake_endpoint)
+
+    allowed = await bridge.object_action(
+        namespace="slack",
+        object_ref="slack:account:channel:C123",
+        action="post_message",
+        payload_json='{"text":"hello"}',
+    )
+    denied = await bridge.object_action(
+        namespace="slack",
+        object_ref="slack:account:channel:C123",
+        action="upload_file",
+        payload_json='{"staged_ref":"upload:1"}',
+    )
+
+    assert allowed["ok"] is True
+    assert captured["request"].operation == "object.action"
+    assert captured["request"].action == "post_message"
+    assert denied["error"] == "delegated_consent_required"
+    assert denied["missing_grants"] == ["slack:files:write"]
+
+
+async def test_admission_binds_account_scope_for_the_provider_call_only() -> None:
+    config = {
+        "namespaces": {
+            "slack": {
+                "tools": {
+                    "action": {
+                        "operation": "object.action",
+                        "operations": {
+                            "object.action.upload_file": {
+                                "grants": ["named_services:use", "slack:files:write"]
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    request = _request(
+        "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react",
+        ["named_services:use"],
+        account_scope={"slack": {"slack-1": ["slack:files:write"]}},
+        catalog_namespaces=config["namespaces"],
+    )
+
+    from connection_hub.agent_account_scope import (
+        account_claim_scope_for,
+        clear_agent_account_scope,
+    )
+
+    clear_agent_account_scope()
+    decision = await managed_named_service_admission(request).authorize(
+        NamedServiceRequest(
+            namespace="slack",
+            operation="object.action",
+            action="upload_file",
+        )
+    )
+
+    assert decision.allowed is True
+    assert account_claim_scope_for("slack") is None
+    with decision.bind():
+        assert account_claim_scope_for("slack") == {
+            "slack-1": ("slack:files:write",)
+        }
+    assert account_claim_scope_for("slack") is None
+
+
+async def test_account_scope_claim_satisfies_provider_backed_bridge_gate(monkeypatch) -> None:
+    # Live regression (2026-08-17): the grant card carried slack:channels in
+    # account_scope, but the bridge only checked bearer grants and denied
+    # object.list before the provider broker could use the account binding.
+    m = _bridge_module()
+    config = {
+        "namespaces": {
+            "slack": {
+                "tools": {
+                    "call": {
+                        "operation": "*",
+                        "operations": {
+                            "object.list": {
+                                "grants": ["named_services:use", "slack:channels"]
+                            },
+                        },
+                    }
+                }
+            }
+        }
+    }
+    bridge = m.NamedServicesMcpBridge(
+        config=config,
+        tenant="t",
+        project="p",
+        request=_request(
+            "kdcube-agent:ported-langgraph-agents@2026-07-13:lg-react",
+            ["named_services:use"],
+            account_scope={"slack": {"slack-1": ["slack:channels"]}},
+            catalog_namespaces=config["namespaces"],
+        ),
+    )
+    captured = {}
+
+    async def fake_endpoint(_endpoint, request, *, admission):
+        assert admission.mode == "delegated"
+        captured["request"] = request
+        return m.NamedServiceResponse.ok_response(namespace="slack")
+
+    monkeypatch.setattr(m, "call_named_service_endpoint", fake_endpoint)
+
+    result = await bridge.generic_call(
+        namespace="slack",
+        operation="object.list",
+        filters_json="{}",
+    )
+
+    assert result["ok"] is True
+    assert captured["request"].operation == "object.list"
+
+
+async def test_a_tool_the_card_does_not_carry_denies_like_a_missing_operation():
+    """Narrowing a card can drop a whole tool, not only an operation.
+
+    Narrowing a card drops whole tools as readily as single operations, and
+    both are the same condition: the catalog offers it, the card does not. One
+    predicate over the card's tree answers both, so neither can report a
+    deployment misconfiguration and send the caller to wait for a fix nobody is
+    going to make.
+    """
+    m = _bridge_module()
+    catalog_namespaces = {
+        "mail": {
+            "tools": {
+                "search": {"operation": "object.search"},
+            }
+        }
+    }
+    request = _request(
+        "dcr-claude",
+        catalog_namespaces=catalog_namespaces,
+        card_namespaces={"mail": {"tools": {}}},
+    )
+    decision = await managed_named_service_admission(request).authorize(
+        NamedServiceRequest(namespace="mail", operation="object.search")
+    )
+
+    assert decision.allowed is False
+    assert decision.denial.error.code == "delegated_capability_not_granted"
+    recovery = decision.denial.ret["recovery"]
+    assert recovery["request_user_consent"] is True
+    assert recovery["action"] == "grant_capability_in_delegated_access"
+
+
+async def test_a_caller_with_no_card_still_reads_it_as_a_configuration_gap():
+    """Without a card the boundary IS the descriptor, so the old wording holds."""
+    m = _bridge_module()
+
+    class _NoTool(_Policy):
+        def tool_configured(self, tool_name):
+            return False
+
+    bridge = _bridge(m, SimpleNamespace(state=SimpleNamespace()))
+    denial = await bridge._authorize(_NoTool(), "object.search", tool_name="search")
+
+    assert denial is not None
+    assert denial.get("error") == "named_service_tool_not_configured", denial

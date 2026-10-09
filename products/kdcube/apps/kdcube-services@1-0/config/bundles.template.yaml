@@ -1,0 +1,89 @@
+bundles:
+  version: "1"
+  default_bundle_id: "kdcube-services@1-0"
+  items:
+    - id: "kdcube-services@1-0"
+      name: "KDCube Services"
+      repo: "https://github.com/elenaviter/app-ecosystem.git"
+      ref: "<FULL_REVIEWED_APP_ECOSYSTEM_COMMIT>"
+      subdir: "products/kdcube/apps/kdcube-services@1-0"
+      module: "entrypoint"
+      singleton: false
+      config:
+        named_services:
+          schema_search:
+            vector_backend: "faiss-local"
+        surfaces:
+          as_provider:
+            bundle:
+              visibility:
+                allowed_roles: []
+            mcp:
+              conversations:
+                auth:
+                  mode: "managed"
+                  authority_id: "delegated_client"
+                  selected_tool_grants: true
+              named_services:
+                auth:
+                  mode: "managed"
+                  authority_id: "delegated_client"
+                  selected_tool_grants: true
+              productivity:
+                auth:
+                  mode: "managed"
+                  authority_id: "delegated_client"
+                  selected_tool_grants: true
+                connector_apps:
+                  google: "gmail"
+                  slack: "slack-demo"
+                  linkedin: "demo"
+                # Web search + fetch (no connected account). Both knobs are
+                # operator-owned; a call cannot widen them.
+                web:
+                  # Egress filter. Allowlist unset = every host allowed;
+                  # blocklist unset = no host blocked; deny wins over allow.
+                  # Entry format: example.org (domain + subdomains),
+                  # *.example.org (subdomains only). The *_file forms point at
+                  # text files instead (one entry per line, '#' comments,
+                  # re-read on change).
+                  # allowlist:
+                  #   - example.org
+                  # blocklist:
+                  #   - tracker.example
+                  # allowlist_file: /path/to/web-allowlist.txt
+                  # blocklist_file: /path/to/web-blocklist.txt
+                  # Default for the tools' use_llm parameter: LLM snippet
+                  # relevance scoring and content refinement on search.
+                  use_llm_default: false
+        connections:
+          connection_hub:
+            bundle_id: connection-hub@1-0
+        integrations:
+          linkedin:
+            # LinkedIn requires a dated version header on every /rest call and
+            # sunsets old versions. Raise this when LinkedIn retires the
+            # configured one; see the LinkedIn integration recipe.
+            api_version: "202601"
+          # Telegram notify: this app SENDS to the caller's connected account
+          # through the deployment bot the workspace app runs on. The row
+          # references the SAME bot the Connection Hub authenticates (secret
+          # ref into the hub's authenticator secret) and declares NO webhook:
+          # one webhook exists per bot, and the workspace bundle owns it.
+          telegram.kdcube_ref:
+            provider: telegram
+            where: connection-hub
+            enabled: false
+            secret_refs:
+              bot_token: bundles.connection-hub@1-0.secrets.identity.authenticators.telegram_kdcube_ref.bot_token
+            definition:
+              bot_name: kdcube-ref
+              # Drives the t.me deep link the telegram_status operation
+              # answers with (the Connect journey runs in the bot's Mini App).
+              bot_username: kdcube_doc_bot
+        ui:
+          widgets:
+            bundle_storage:
+              enabled: true
+              src_folder: "sdk://solutions/storage/ui.widget.storage"
+              build_command: "npm install --no-package-lock && OUTDIR=<VI_BUILD_DEST_ABSOLUTE_PATH> npm run build"

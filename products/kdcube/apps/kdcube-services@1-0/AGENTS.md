@@ -1,0 +1,67 @@
+---
+id: kdcube-services@1-0/agents
+title: "KDCube Services — Builder-Agent Onboarding"
+summary: "How to work on the external KDCube service app: thin surface wiring, modular service packages, managed delegated-credential MCP auth."
+status: active
+tags: ["agents", "builder", "onboarding", "mcp", "delegated-credentials", "connection-hub"]
+see_also:
+  - "README.md"
+  - "interface/README.md"
+  - "interface/kdcube-services.openapi.yaml"
+  - "docs/README.md"
+  - "docs/storage/README.md"
+---
+
+# KDCube Services — Builder-Agent Onboarding
+
+## Read First
+
+- `README.md` — product role and current service list.
+- `interface/README.md` — public MCP URL, auth policy, tools, dataflow.
+- `interface/kdcube-services.openapi.yaml` — machine contract for widget,
+  operation, MCP, signed-file, and non-HTTP surface declarations.
+- `docs/storage/README.md` — storage ownership, read-through data, temporary
+  staging, signing secrets, generated output, and cleanup.
+- `entrypoint.py` — thin bundle/surface adapter.
+- `services/` — product service modules.
+- `surfaces/mcp/` — service-family MCP adapters only. Keep `mcp` nested
+  under `surfaces/`; a top-level `mcp/` package shadows the installed MCP SDK.
+- [KDCube delegated-credential MCP integration](https://github.com/kdcube/kdcube/blob/main/app/ai-app/docs/recipes/connections/protect-bundle-mcp-with-managed-credentials-README.md).
+
+## Rules
+
+- Keep `entrypoint.py` thin. It declares bundle identity, defaults, and surface
+  decorators only.
+- Put product logic in `services/<service>/`.
+- Put MCP tool schema/registration in `surfaces/mcp/<service>.py`; call service
+  modules from there.
+- Do not implement auth in tools. Managed MCP auth is enforced by the proc MCP
+  bridge from `surfaces.as_provider.mcp.<alias>.auth`.
+- `auth_config` on `@mcp` is only a pointer to descriptor-owned config. Real
+  grants/tools/authority values belong in `bundles.yaml` or
+  `configuration_defaults()`.
+- Add one MCP alias per service family. Do not overload a generic `kdcube`
+  endpoint with unrelated tools.
+- Keep decorators, interface README/OpenAPI, descriptor templates, root README,
+  storage map, tests, and journal synchronized in the same change.
+- Add a dated journal entry for runtime, interface, configuration, storage,
+  security, or release-contract changes.
+
+## Validate
+
+```bash
+python -m py_compile entrypoint.py surfaces/mcp/conversations.py services/conversations/__init__.py
+python -m pytest -q tests
+```
+
+Export domain logic lives in the conversation SDK
+(`sdk.solutions.conversation.export` and `sdk.solutions.conversation.mcp_export`);
+this bundle only publishes the MCP tool schema and supplies pooled resources
+from the runtime. To compile-check the SDK owner from the source root:
+
+```bash
+python -m py_compile kdcube_ai_app/apps/chat/sdk/solutions/conversation/export.py kdcube_ai_app/apps/chat/sdk/solutions/conversation/mcp_export.py
+```
+
+Then reload the bundle and test the real public MCP URL through Connection Hub
+delegated OAuth consent.
