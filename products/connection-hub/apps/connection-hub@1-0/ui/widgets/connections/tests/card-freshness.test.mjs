@@ -130,7 +130,7 @@ test('the catalog is pinned with the revision when the edit starts', () => {
 test('an open read that never answers times out once; one that answers in time does not', async () => {
   const { onPendingTooLong, CONTROL_OPEN_READ_SECONDS, CONTROL_OPEN_TIMEOUT_MESSAGE } =
     await import('../src/features/delegatedAccess/cardFreshness.ts')
-  assert.equal(CONTROL_OPEN_READ_SECONDS, 20)
+  assert.equal(CONTROL_OPEN_READ_SECONDS, 45)
   assert.equal(CONTROL_OPEN_TIMEOUT_MESSAGE, 'Connection Hub did not answer in time. Try again.')
   let fired = 0
   onPendingTooLong(new Promise(() => {}), 20, () => { fired += 1 })

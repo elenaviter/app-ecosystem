@@ -91,8 +91,9 @@ export function isStaleEditRefusal(result: { status?: number; error?: string } |
 
 /** Live 2026-10-09 21:23Z: a Control link spun on "Opening the requested Card..." because its one read
  *  never answered (no timeout). The open read waits this long, then offers "Try again"; an answer that
- *  arrives later still opens the Card. */
-export const CONTROL_OPEN_READ_SECONDS = 20;
+ *  arrives later still opens the Card. 45 s, not less: the same read took 14 s live while Problem Board
+ *  authorized each catalog operation one by one (Main, 21:37Z), and a slow answer must still open. */
+export const CONTROL_OPEN_READ_SECONDS = 45;
 export const CONTROL_OPEN_TIMEOUT_MESSAGE = 'Connection Hub did not answer in time. Try again.';
 
 /** Runs ``onTimeout`` once if ``promise`` has not settled within ``ms``; returns the cancel. */
