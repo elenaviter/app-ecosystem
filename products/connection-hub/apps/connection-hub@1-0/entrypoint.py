@@ -1700,7 +1700,10 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
                            accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
                            managed_control_scopes=managed_scopes,
                            # W606: a coordinated edit (a refresh rotation included) moves its handle row.
-                           credential_handles=getattr(persistence, "credential_handles", None))
+                           credential_handles=getattr(persistence, "credential_handles", None),
+                           # W603: an original code exchange plans and activates its credentials in this
+                           # authority; without it begin_oauth_issuance refuses card_transactions_unavailable.
+                           issuance_store=_durable_authority(entrypoint).oauth)
     # W638: a managed Card edit is forwarded to the host that plans its scope,
     # signed with that caller's authority request signer. A caller whose
     # signer secret is unavailable gets no forwarder: its edits stay refused.
