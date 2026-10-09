@@ -4372,9 +4372,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         if not built.callers:
             return unavailable
         tenant, project = _runtime_tenant_project(self)
+        card_service = getattr(persistence, "card_service", None)
+        if not callable(getattr(card_service, "collection_section", None)):
+            return unavailable  # W651: never seal without the collection lock retention takes
         operation = CardReadCollectionOperation(
             callers=built.callers, card_store=persistence.card_store, catalog_store=_delegated_catalog_store(self),
-            nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-collection:nonce:")
+            nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-collection:nonce:",
+            collection_lock=card_service.collection_section)
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_lifecycle_plan", route="public")

@@ -292,6 +292,10 @@ class DelegatedCardService:
             wait_seconds=CARD_LOCK_WAIT_SECONDS,
         )
 
+    def collection_section(self, collection_id: str):
+        """The same collection lock for the registration operation (it seals under it)."""
+        return self._collection_section(collection_id)
+
     @asynccontextmanager
     async def _optional_collection_section(self, collection_id: str):
         if not collection_id:
@@ -330,10 +334,15 @@ class DelegatedCardService:
                     if collection_id in protected:
                         report["protected"] += 1
                         continue
-                    report["leaves"] += await delete_collection(self._store, collection_id)
+                    try:
+                        report["leaves"] += await delete_collection(self._store, collection_id)
+                    except CardStorageError:
+                        report["skipped"] += 1  # a leaf remains: the header stays, the next pass retries
+                        continue
                     report["deleted"] += 1
-                    # Safe while held: the id can never be sealed again (its deadline is in the id),
-                    # so a waiter on this lock only finds the collection gone.
+                    # Safe while held: whoever takes this lock next (on either file) re-checks the deadline
+                    # under it, which has passed: registration and a first PREPARE refuse, a sweep finds
+                    # nothing, and a replay of a prepared receipt would have protected the collection.
                     try:
                         collection_lock_path(self._store, collection_id).unlink(missing_ok=True)
                     except OSError:

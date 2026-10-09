@@ -179,22 +179,29 @@ def collection_lock_path(store: Any, collection_id: str):
     return store.root / "card-collection-locks" / f"{collection_id}.lock"
 
 
+SWEEP_CURSOR = "card-collection-sweep-cursor.json"
+
+
 async def expired_collection_ids(store: Any, *, now: int, limit: int) -> list[str]:
-    """Up to ``limit`` collection ids whose sealed header's deadline has passed (a bounded directory read)."""
-    import asyncio
-    import itertools
+    """Up to ``limit`` collection ids whose sealed header's deadline has passed.
 
+    Each call reads at most ``4 * limit + 64`` headers, resuming after a durable cursor
+    (``card-collection-sweep-cursor.json``) and wrapping to the start after the last id, so live or
+    protected collections never starve an expired one (CodeApp, 2026-10-09). The cursor is a hint
+    only: a lost or stale one restarts the scan; eligibility is always re-read under the lock.
+    """
+    scan = 4 * limit + 64
     directory = store.root / "card-collections"
-
-    def names():
-        try:
-            return sorted(path.name for path in itertools.islice(directory.iterdir(), 4 * limit + 64)
-                          if path.is_dir() and _ID.fullmatch(path.name))
-        except FileNotFoundError:
-            return []
-
-    found = []
-    for collection_id in await asyncio.to_thread(names):
+    try:
+        names = [name for name in await list_child_names(directory) if _ID.fullmatch(name)]
+    except Exception:  # noqa: BLE001 - an unreadable directory: nothing this pass
+        return []
+    raw = await read_json_or_none(store.root / SWEEP_CURSOR)
+    after = raw.get("after") if isinstance(raw, Mapping) and type(raw.get("after")) is str else ""
+    pending = [name for name in names if name > after][:scan]
+    found, last = [], ""
+    for collection_id in pending:
+        last = collection_id
         try:
             header = await load_header(store, collection_id)
         except CardStorageError:
@@ -205,32 +212,39 @@ async def expired_collection_ids(store: Any, *, now: int, limit: int) -> list[st
             found.append(collection_id)  # an empty directory left by a finished delete
         if len(found) >= limit:
             break
+    # The next pass resumes after the last header read, or wraps once the end was reached.
+    reached_end = not pending or (last == pending[-1] and len(pending) < scan)
+    await write_json_atomic(store.root / SWEEP_CURSOR, {"after": "" if reached_end else last})
     return found
 
 
 async def delete_collection(store: Any, collection_id: str) -> int:
     """Leaves first, header LAST, then the empty directories; idempotent. Returns the leaves removed.
 
-    A crash part-way leaves a header with fewer leaves: ``resolve_collection`` then refuses
-    ``card_read_collection_incomplete`` (no PREPARE can use it), and the next sweep finishes the delete.
+    The header (the deadline) is removed only once NO leaf remains: a leaf that cannot be removed
+    refuses ``card_read_collection_delete_incomplete`` and keeps the header, so the next sweep retries
+    (CodeApp, 2026-10-09). A crash part-way leaves a header with fewer leaves: ``resolve_collection``
+    then refuses ``card_read_collection_incomplete`` (no PREPARE can use it) until a sweep finishes.
     """
     import asyncio
 
     root = _collection_dir(store, collection_id)
     leaves = root / "leaves"
-    removed = 0
+    removed, failed = 0, 0
     for name in await list_child_names(leaves):
         try:
             await asyncio.to_thread((leaves / name).unlink, missing_ok=True)
             removed += 1
         except OSError:
-            pass
+            failed += 1
+    if failed or await list_child_names(leaves):
+        raise CardStorageError("card_read_collection_delete_incomplete")
     await asyncio.to_thread(header_path(store, collection_id).unlink, missing_ok=True)
     for directory in (leaves, root):
         try:
             await asyncio.to_thread(directory.rmdir)
         except OSError:
-            pass  # absent already, or an unsealed registration retry wrote into it: the next sweep looks again
+            pass  # absent already: the next sweep looks again
     return removed
 
 

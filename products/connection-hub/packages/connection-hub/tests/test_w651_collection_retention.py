@@ -305,3 +305,45 @@ def test_the_collection_id_includes_the_deadline_so_a_deleted_id_is_never_sealed
     first = collection_id_for(service_id="pb", scope="work:project:p", request_id="r", deadline=DEADLINE)
     assert first == collection_id_for(service_id="pb", scope="work:project:p", request_id="r", deadline=DEADLINE)
     assert first != collection_id_for(service_id="pb", scope="work:project:p", request_id="r", deadline=DEADLINE + 1)
+
+
+@pytest.mark.asyncio
+async def test_registration_seals_under_the_collection_lock_and_rechecks_the_deadline_under_it(tmp_path):
+    """A sweep holding the lock past the deadline makes a waiting registration refuse, never reseal."""
+    from test_w502_card_read_collection_register import DEADLINE as REQUEST_DEADLINE
+    from test_w502_card_read_collection_register import PEER, PROJECT, _request, _verified, _world
+    operation, _, store, *_ = await _world(tmp_path)
+    locks: dict[str, asyncio.Lock] = {}
+    entered: list[str] = []
+
+    @asynccontextmanager
+    async def collection_lock(collection_id):
+        async with locks.setdefault(collection_id, asyncio.Lock()):
+            entered.append(collection_id)
+            yield
+
+    operation._collection_lock = collection_lock
+    collection_id = collection_id_for(service_id=PEER, scope=PROJECT, request_id="zero-1", deadline=REQUEST_DEADLINE)
+    first = _request()
+    assert _verified(await operation.answer(first), first)["kind"] == "collection"
+    assert entered == [collection_id]
+    held, release = asyncio.Event(), asyncio.Event()
+
+    async def sweep_holding_the_lock():
+        async with collection_lock(collection_id):
+            held.set()
+            await release.wait()
+            operation._clock = lambda: REQUEST_DEADLINE  # the deadline passed while the sweep held the lock
+            await collections.delete_collection(store, collection_id)
+
+    sweep = asyncio.create_task(sweep_holding_the_lock())
+    await held.wait()
+    retry = _request()
+    registration = asyncio.create_task(operation.answer(retry))
+    await asyncio.sleep(0.05)
+    assert not registration.done()  # waits on the lock the sweep holds
+    release.set()
+    await sweep
+    assert _verified(await registration, retry) == {"kind": "refused", "code": "card_read_collection_expired",
+                                                    "status": 409}
+    assert await collections.load_header(store, collection_id) is None
