@@ -7,6 +7,10 @@ This module selects no backend, installs no schema and creates no decision.
 It uses the host's already activated authorities and the Hub's sole issuance
 decision. A configured-but-unavailable binding remains present and closed;
 it must never fall through to the older consume-and-mint path.
+
+No issued bearer is kept in secret custody (operator, 2026-10-09: "i need the stronger version now"):
+the SDK re-signs the claims PostgreSQL stores and compares them with the sealed fingerprints, so the
+binding needs only the two signing keys, never a runtime-custody namespace.
 """
 from __future__ import annotations
 
@@ -45,23 +49,6 @@ def configured_issuer(value: object) -> str:
     if not valid:
         raise OriginalExchangeHostingUnavailable("original_exchange_issuer_not_configured")
     return value.rstrip("/")
-
-
-# The SDK's secrets runtime contract (infra/secrets/runtime_contract.py, runtime_file.py): a
-# namespace is [a-z0-9][a-z0-9-]{0,63}. "chub-oauth-" (11) + 52 hex digits = 63 characters.
-CUSTODY_NAMESPACE = "oauth-refresh-tokens"
-
-
-def custody_namespace(tenant: str, project: str) -> str:
-    """The Hub's readable custody purpose for original OAuth refresh tokens.
-
-    Records are owned by the Hub bundle and stored by the configured secrets manager under
-    that owner and purpose (file backend: <runtime root>/<bundle>/oauth-refresh-tokens/<ref>.json).
-    Tenant/project isolation comes from the deployment's own runtime root or provider prefix,
-    not from this string. The arguments are kept for the existing call signature.
-    """
-    del tenant, project
-    return CUSTODY_NAMESPACE
 
 
 async def consumed_candidate_inputs(*, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -173,9 +160,9 @@ class OriginalTarget:
 class OriginalPairHost:
     """Select kind only from the original immutable, authenticated candidate."""
 
-    def __init__(self, *, target: OriginalTarget, refresh_store: Any, custody: Any,
+    def __init__(self, *, target: OriginalTarget, refresh_store: Any,
                  signer: Any, refresh_ttl_seconds: int, authority_factory: Any):
-        self.target, self.refresh_store, self.custody = target, refresh_store, custody
+        self.target, self.refresh_store = target, refresh_store
         self.signer, self.refresh_ttl_seconds = signer, refresh_ttl_seconds
         self.authority_factory = authority_factory
 
@@ -183,8 +170,7 @@ class OriginalPairHost:
         from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.original_pair_provider import OriginalCredentialPairProvider
         _, candidate = await self.target.candidate(plan)
         return OriginalCredentialPairProvider(
-            refresh_store=self.refresh_store, custody=self.custody,
-            custody_namespace=self.custody.namespace, refresh_signer=self.signer,
+            refresh_store=self.refresh_store, refresh_signer=self.signer,
             card_kind=candidate.card_kind, refresh_ttl_seconds=self.refresh_ttl_seconds,
             authority_factory=self.authority_factory)
 
@@ -200,6 +186,9 @@ class OriginalPairHost:
     async def retire_pair(self, *, plan, result, access_expires_at):
         return await (await self._provider(plan)).retire_pair(plan=plan, result=result,
                                                              access_expires_at=access_expires_at)
+
+    async def bearers(self, *, plan, result, pair):
+        return await (await self._provider(plan)).bearers(plan=plan, result=result, pair=pair)
 
 
 async def bind_original_exchange(request: Any, *, tenant: str, project: str, pg_pool: Any,
@@ -217,7 +206,6 @@ async def bind_original_exchange(request: Any, *, tenant: str, project: str, pg_
         raise OriginalExchangeHostingUnavailable("original_exchange_signer_not_configured")
     from kdcube_ai_app.auth.bundle import get_bundle_session_authority
     from kdcube_ai_app.auth.session_authority_runtime import bundle_session_store_for
-    from kdcube_ai_app.infra.secrets.issuance import issuance_secret_custody
     from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.original_code_flow import OriginalCodeExchangeFlow
     from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.original_exchange_store import PostgresOriginalExchangeStore
     from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.original_refresh_store import PostgresOriginalRefreshStore
@@ -226,22 +214,29 @@ async def bind_original_exchange(request: Any, *, tenant: str, project: str, pg_
         raise OriginalExchangeHostingUnavailable("original_exchange_session_authority_not_bound")
     if type(owner_bundle_id) is not str or not owner_bundle_id or owner_bundle_id != owner_bundle_id.strip():
         raise OriginalExchangeHostingUnavailable("original_exchange_host_not_bound")
-    custody = issuance_secret_custody(namespace=custody_namespace(tenant, project), settings=settings,
-                                      bundle_id=owner_bundle_id)
-    await custody.qualify()
 
     async def signing_key():
         value = await resolve_secret(refresh_signing_secret_ref)
         return value.encode("utf-8") if type(value) is str else value
 
+    # The gate that replaces custody qualification: the refresh signing key must resolve now, else the
+    # binding stays closed. (The bundle session key fails closed in the SDK's own resolver.)
+    try:
+        key = await signing_key()
+    except Exception:
+        raise OriginalExchangeHostingUnavailable("original_exchange_signer_unavailable") from None
+    if type(key) is not bytes or not 32 <= len(key) <= 4096:
+        raise OriginalExchangeHostingUnavailable("original_exchange_signer_unavailable")
+    del key
+
     target = OriginalTarget(tenant=tenant, project=project, hub=hub, issuance_store=issuance_store, cards=cards)
     provider = OriginalPairHost(target=target,
         refresh_store=PostgresOriginalRefreshStore(pg_pool=pg_pool, tenant=tenant, project=project),
-        custody=custody, signer=HmacOriginalRefreshSigner(tenant, project, signing_key),
+        signer=HmacOriginalRefreshSigner(tenant, project, signing_key),
         refresh_ttl_seconds=grant_store.refresh_ttl, authority_factory=get_bundle_session_authority)
     flow = OriginalCodeExchangeFlow(
         ledger=PostgresOriginalExchangeStore(pg_pool=pg_pool, tenant=tenant, project=project),
-        grant_store=grant_store, hub=hub, provider=provider, custody=custody,
+        grant_store=grant_store, hub=hub, provider=provider,
         candidate_inputs=consumed_candidate_inputs, fence_target=target.fence)
     request.state.oauth_delegated_issuer = issuer
     request.state.oauth_original_exchange_factory = flow.handler
