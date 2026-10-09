@@ -431,6 +431,8 @@ class DelegatedToKdcubeBroker:
             # refreshed credential is then never written over.
             account = await self.store.get_account(account_id)
             incarnation = as_str(getattr(account, "incarnation", "")) if account is not None else ""
+            if account is not None and not incarnation:
+                incarnation = await self._legacy_incarnation(account_id)
             current = await self.store.get_credential(credential_id) or credential
             if self._refreshed_elsewhere(adapter, seen=credential, current=current):
                 return current
@@ -462,6 +464,25 @@ class DelegatedToKdcubeBroker:
                 credential_id=credential_id,
                 incarnation=incarnation,
             )
+
+    async def _legacy_incarnation(self, account_id: str) -> str:
+        """The incarnation of an account stored before incarnations existed, minted once under the account lock.
+
+        Without one, ``set_account_credential`` cannot tell which connection a refreshed credential belongs
+        to and writes nothing, and a provider that rotates refresh tokens (GitHub Apps) has already
+        invalidated the old one: the connection would be lost. Minting it here, before the token is used,
+        keeps W578's guarantee: a disconnect or reconnect after this point still makes the write a no-op.
+        A store without the shared account lock cannot mint; the refresh then behaves as before.
+        """
+
+        ensure = getattr(self.store, "ensure_incarnation", None)
+        if not callable(ensure):
+            return ""
+        try:
+            return as_str(await ensure(account_id))
+        except Exception:
+            LOGGER.warning("[delegated.broker] account incarnation unavailable account=%s", account_id)
+            return ""
 
     def _refreshed_elsewhere(self, adapter: Any, *, seen: dict[str, Any], current: dict[str, Any]) -> bool:
         """Another holder refreshed after this caller read the credential."""
@@ -495,6 +516,12 @@ class DelegatedToKdcubeBroker:
         if callable(write):
             # W578: never recreate the credential of an account disconnected meanwhile.
             if not await write(account_id, credential_id, refreshed, incarnation=incarnation):
+                LOGGER.warning(
+                    "[delegated.broker] refreshed credential not stored provider=%s account=%s credential_id=%s "
+                    "reason=%s",
+                    provider_id, account_id, credential_id,
+                    "connection_changed" if incarnation else "incarnation_missing",
+                )
                 return refreshed
         else:
             await self.store.set_credential(credential_id, refreshed)
