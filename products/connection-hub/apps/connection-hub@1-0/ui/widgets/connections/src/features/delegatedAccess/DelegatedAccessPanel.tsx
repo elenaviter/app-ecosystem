@@ -5,6 +5,7 @@ import { CopyButton, DoorRef } from '../../components/CopyControls';
 import { mergeBundleProps, operationUrl, publicMcpUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
+import { MANAGED_GRANT_NOTE, managedGrantsOf, withManagedGrantsAsHeld } from './managedGrants';
 import {
   ApplicationApiCatalog,
   useApplicationApiCatalog,
@@ -1401,14 +1402,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       namedServiceOperations[resource],
     ));
   }, [namedServiceOperations, resourceGrants, resourceOperations]);
+  // A new Card never carries an application-managed grant: only the application sets it (W661 S5).
+  const createManagedFor = (resource: string) => managedGrantsOf(createResources.find((item) => item.resource === resource));
   const effectiveResourceGrants = useMemo(
-    () => materializeSelectionRouteGrants(
+    () => withManagedGrantsAsHeld(materializeSelectionRouteGrants(
       createResources,
       createSelectionIndex,
       resourceGrants,
       (resource) => resource,
       createAuthorityResources,
-    ),
+    ), {}, (resource) => managedGrantsOf(createResources.find((item) => item.resource === resource))),
     [createAuthorityResources, createResources, createSelectionIndex, resourceGrants],
   );
   const selectedResourceEntries = useMemo(
@@ -3084,7 +3087,16 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       editNamedServiceOperations[resource],
     );
 
+  // An edit keeps every application-managed grant exactly as the Card holds it (W661 S5).
+  const editManagedFor = (resource: string) => managedGrantsOf(catalogRowFor(resources, resource, editRowFor));
   const editKeptClaims = (item: DelegatedAccessRecord, resource: string): string[] => {
+    const claims = editKeptClaimsSelected(item, resource);
+    const managed = editManagedFor(resource);
+    if (!managed.size) return claims;
+    const held = ((item.resource_grants || {})[resource] || []).filter((grant: string) => managed.has(grant));
+    return Array.from(new Set([...claims.filter((claim) => !managed.has(claim)), ...held]));
+  };
+  const editKeptClaimsSelected = (item: DelegatedAccessRecord, resource: string): string[] => {
     if (resource === APPLICATION_API_RESOURCE) {
       return editApplicationRolePolicy.defaultRole
         ? [editApplicationRolePolicy.defaultRole]
@@ -3659,11 +3671,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                               >
                                 <input
                                   type="checkbox"
-                                  disabled={scopeBlocked}
-                                  checked={(resourceGrants[item.resource] || []).includes(grant)}
+                                  disabled={scopeBlocked || createManagedFor(item.resource).has(grant)}
+                                  checked={(resourceGrants[item.resource] || []).includes(grant)
+                                    && !createManagedFor(item.resource).has(grant)}
                                   onChange={(event) => toggleResourceGrant(item.resource, grant, event.target.checked)}
                                 />
                                 <span>{verb || grant}</span>
+                                {createManagedFor(item.resource).has(grant)
+                                  ? <small className="grant-chip-managed">{MANAGED_GRANT_NOTE}</small> : null}
                                 {requestedByConnection ? <small>requested</small> : null}
                               </label>
                             );
@@ -4352,14 +4367,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         >
                           <input
                             type="checkbox"
-                            checked={callerSelected}
-                            disabled={stale}
+                            checked={editManagedFor(resource).has(claim)
+                              ? ((item.resource_grants || {})[resource] || []).includes(claim)
+                              : callerSelected}
+                            disabled={stale || editManagedFor(resource).has(claim)}
                             onChange={(event) => {
                               if (event.target.checked) ensureCallerResource();
                               toggleEditClaim(resource, claim, event.target.checked);
                             }}
                           />
                           <span>{verb || claim}</span>
+                          {editManagedFor(resource).has(claim)
+                            ? <small className="grant-chip-managed">{MANAGED_GRANT_NOTE}</small> : null}
                           {stale ? <span className="badge badge-warn">withdrawn</span> : null}
                           {diffState === 'added' ? <span className="badge badge-ok">added by {controlLabel}</span> : null}
                           {diffState === 'removed' ? <span className="badge badge-error">removed by {controlLabel}</span> : null}

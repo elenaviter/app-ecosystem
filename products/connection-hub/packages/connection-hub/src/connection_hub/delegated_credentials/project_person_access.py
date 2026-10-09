@@ -843,6 +843,7 @@ class ProjectPersonControlLifecycle:
         try:
             updated = await self._host.update_access(
                 self._project_user(identity),
+                _client_upsert=True,
                 access_id=identity.control_id,
                 resource_grants=(
                     resource_grants

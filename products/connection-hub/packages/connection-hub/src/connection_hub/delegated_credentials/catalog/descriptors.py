@@ -144,20 +144,23 @@ def resource_row_digest(row: Any) -> str:
         key=lambda item: item["name"],
     )
     named_services = getattr(row, "named_services", None)
-    return canonical_digest(
-        {
-            "resource": _clean(getattr(row, "resource", "")),
-            "label": _clean(getattr(row, "label", "")),
-            "identity_scope": _clean(getattr(row, "identity_scope", "")),
-            "admin_only": bool(getattr(row, "admin_only", False)),
-            "grants": list(_strings(getattr(row, "grants", ()))),
-            "tools": tools,
-            # Grouping is presentation: regrouping must not change the digest.
-            "named_services": without_grouping(copy.deepcopy(dict(named_services)))
-            if isinstance(named_services, Mapping)
-            else {},
-        }
-    )
+    projection = {
+        "resource": _clean(getattr(row, "resource", "")),
+        "label": _clean(getattr(row, "label", "")),
+        "identity_scope": _clean(getattr(row, "identity_scope", "")),
+        "admin_only": bool(getattr(row, "admin_only", False)),
+        "grants": list(_strings(getattr(row, "grants", ()))),
+        "tools": tools,
+        # Grouping is presentation: regrouping must not change the digest.
+        "named_services": without_grouping(copy.deepcopy(dict(named_services)))
+        if isinstance(named_services, Mapping)
+        else {},
+    }
+    managed = sorted(_strings(getattr(row, "managed_grants", ())))
+    if managed:
+        # Only when declared: a row without managed grants keeps its existing digest.
+        projection["managed_grants"] = managed
+    return canonical_digest(projection)
 
 
 @dataclass(frozen=True)

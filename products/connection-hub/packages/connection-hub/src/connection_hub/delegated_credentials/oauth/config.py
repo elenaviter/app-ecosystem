@@ -133,6 +133,10 @@ class OAuthDelegatedResourceConfig:
     # How this resource's operations are grouped for a Card editor (see
     # parse_operation_groups); presentation only, outside every digest.
     operation_groups: tuple[Mapping[str, Any], ...] = ()
+    # Grants of this resource that only the owning application sets, through its own
+    # operations. A Card editor shows them but cannot change them, and a client Card
+    # upsert that adds or removes one is refused (managed_grant_not_editable).
+    managed_grants: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -602,6 +606,12 @@ def _nested_named_service_grants(raw: Any) -> tuple[str, ...]:
     return _ordered_union(grants)
 
 
+def _managed_grants(raw: Any, grants: tuple[str, ...]) -> tuple[str, ...]:
+    """A resource's application-managed grants: declared, and only among the resource's own grants."""
+    declared = set(_coerce_string_tuple(raw))
+    return tuple(grant for grant in grants if grant in declared)
+
+
 def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
     if raw is None:
         return ()
@@ -668,6 +678,8 @@ def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
                     or item.get("authorizationProfiles")
                 ),
                 operation_groups=parse_operation_groups(item.get("operation_groups")),
+                managed_grants=_managed_grants(item.get("managed_grants"), explicit_grants or _ordered_union(
+                    [*(grant for tool in tools for grant in tool.grants), *namespace_grants])),
             )
         )
     return tuple(out)

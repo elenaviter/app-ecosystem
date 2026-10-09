@@ -6254,6 +6254,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             access_service = await _automation_access_service(self, request)
             result = await access_service.create_access(
                 user,
+                _client_upsert=True,
                 label=str(payload.get("label") or "").strip(),
                 resource_grants=dict(payload.get("resource_grants") or {}),
                 operations=_safe_list(payload.get("operations")),
@@ -6390,6 +6391,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             else:
                 _result = await access_service.update_access(
                     user,
+                    _client_upsert=True,
                     access_id=_access_id_for_log,
                     resource_grants=dict(payload.get("resource_grants") or {}),
                     resource_operations=(
@@ -6867,6 +6869,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             try:
                 result = await access_service.create_access(
                     user,
+                    _client_upsert=True,
                     label=str(payload.get("label") or "").strip() or client_id,
                     resource_grants={resource: claims},
                     resource_operations=resource_operations,

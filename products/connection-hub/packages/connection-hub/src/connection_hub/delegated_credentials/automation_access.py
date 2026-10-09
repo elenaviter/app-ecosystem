@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from connection_hub.concurrency import bounded_gather
+from connection_hub.delegated_credentials.managed_grants import managed_grant_changes, managed_grant_refusal
 from connection_hub.delegated_credentials.issuer_gate import (
     IssuerDecision, IssuerRegistry, IssuerRequest, IssuerWriteRefused,
     change_digest, issuer_write_refusal,
@@ -3585,6 +3586,10 @@ class AutomationAccessService:
                 # The "admin" mark is for a platform admin: anyone else sees the
                 # row as an ordinary one, bounded to the grants that are theirs.
                 "admin_only": bool(resource.admin_only) and platform_admin,
+                # Grants the owning application alone sets: shown, never editable here.
+                **({"managed_grants": list(managed)} if (managed := tuple(
+                    grant for grant in (getattr(resource, "managed_grants", ()) or ())
+                    if grant in delegable)) else {}),
                 "operations": [
                     {
                         "name": tool.name,
@@ -4139,6 +4144,7 @@ class AutomationAccessService:
         ttl_seconds: Any = None,
         client_id: str | None = None,
         merge_existing: bool = True,
+        _client_upsert: bool = False,
     ) -> dict[str, Any]:
         """Create a delegated-access grant the current user grants to a client.
 
@@ -4175,6 +4181,11 @@ class AutomationAccessService:
         catalog_config = await self._catalog_config(
             active, owner_subject=grantor_subject
         )
+        if _client_upsert:
+            # A client Card editor never assigns an application-managed grant.
+            changes = managed_grant_changes(catalog_config, self._resource_grants(resource_grants), {})
+            if changes:
+                return managed_grant_refusal(changes)
 
         selected_resource_grants = self._resource_grants(resource_grants)
         selected_resource_grants, host_pinned = self._declared_resource_keys(
@@ -5591,6 +5602,7 @@ class AutomationAccessService:
         _issuer_context_ref: str = "",
         _caller_write_action: str = "update",
         _caller_actor_subject: str = "",
+        _client_upsert: bool = False,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -5719,6 +5731,12 @@ class AutomationAccessService:
             active,
             owner_subject=grantor_subject,
         )
+        if _client_upsert:
+            # A client Card edit keeps every application-managed grant exactly as the Card holds it.
+            changes = managed_grant_changes(
+                catalog_config, self._resource_grants(resource_grants), self._resource_grants(existing.resource_grants))
+            if changes:
+                return managed_grant_refusal(changes)
         if existing.source == ACCESS_SOURCE_OAUTH:
             entry_resource = self._entry_resource_for(
                 existing,

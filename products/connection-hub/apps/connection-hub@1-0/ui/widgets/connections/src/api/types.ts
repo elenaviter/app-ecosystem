@@ -130,6 +130,8 @@ export interface DelegatedAccessResourceOption {
   identity_scope?: string;
   grants?: string[];
   admin_only?: boolean;
+  /** Grants only the owning application sets; shown, never editable or sent as a change (W661 S5). */
+  managed_grants?: string[];
   resource_selection?: boolean;
   selectable_resources?: string[];
   selector_type?: string;
