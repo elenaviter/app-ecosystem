@@ -20,6 +20,8 @@ policy code receives this contract instead of building the pieces itself.
 
 from __future__ import annotations
 
+import logging
+import re
 import time
 from typing import Any, Mapping, Protocol
 
@@ -109,6 +111,16 @@ class CardPersistence(Protocol):
     async def load_initial(
         self, access_id: str, *, subject_hash: str
     ) -> CardAuthority | None: ...
+
+
+_log = logging.getLogger(__name__)
+_REASON_CODE = re.compile(r"[a-z][a-z0-9_.]{0,79}")
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """A fixed failure code for the log: a storage reason code, else the exception type, never its text."""
+    reason = getattr(exc, "reason", None)
+    return reason if isinstance(reason, str) and _REASON_CODE.fullmatch(reason) else type(exc).__name__
 
 
 class DurableCardPersistence:
@@ -348,13 +360,17 @@ class DurableCardPersistence:
         # Authorities only: these listings (identity lookup, the owner's Cards) never use credential
         # handles, so one Card whose handles cannot be read (an agent Card's resident bearer) must not make
         # every other Card of the owner unlistable. A Card that needs its handles reads them when used.
+        # A Card inside a Card transaction (another refresh rotating it) lists as its last committed
+        # revision: its identity fields never change in a transaction, so this listing need not wait for
+        # the coordinator's decision or the transaction's effects. Its own use still waits for them.
         found: list[CardAuthority] = []
         for access_id in durable_ids:
             try:
                 current = await self._store.read_current_authority(
-                    subject_hash=subject_hash, access_id=access_id
+                    subject_hash=subject_hash, access_id=access_id, consult_decision=False
                 )
             except Exception as exc:
+                _log.warning("Card listing could not read a Card (reason=%s)", _failure_reason(exc))
                 raise CardUnavailable("durable_card_unreadable") from exc
             if current is None:
                 continue
