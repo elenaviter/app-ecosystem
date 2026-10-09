@@ -1,8 +1,8 @@
-"""W676: the Hub binds Card transactions with its handle store and its OAuth issuance authority.
+"""W676: the Hub binds Card transactions with its OAuth issuance authority and no Card handle store.
 
-Without the handle store a committed Card edit (a refresh rotation included) left the Card's handle row
-behind (card_handle_revision_mismatch); without the issuance authority an original OAuth code exchange
-refused card_transactions_unavailable (W603). Both come from the same composition call.
+Without the issuance authority an original OAuth code exchange refused card_transactions_unavailable (W603).
+A Card edit never moves or depends on a credential's handle row (operator, 2026-10-09: "changing something on
+teh card does not change the credential"), so no handle store is bound into Card transactions.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ def _entrypoint_module():
 
 
 @pytest.mark.asyncio
-async def test_card_transactions_bind_the_handle_store_and_the_issuance_authority(monkeypatch):
+async def test_card_transactions_bind_the_issuance_authority_and_no_handle_store(monkeypatch):
     module = _entrypoint_module()
     handles, issuance, decisions = object(), object(), object()
     captured = {}
@@ -51,6 +51,6 @@ async def test_card_transactions_bind_the_handle_store_and_the_issuance_authorit
     persistence = SimpleNamespace(credential_handles=handles)
     await module._bind_card_transactions(SimpleNamespace(pg_pool=object()), service,
                                          persistence=persistence, grant_store=None)
-    assert captured["credential_handles"] is handles
+    assert captured.get("credential_handles") is None
     assert captured["issuance_store"] is issuance
     assert captured["decisions"] is decisions

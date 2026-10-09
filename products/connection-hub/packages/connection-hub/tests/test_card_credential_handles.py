@@ -138,7 +138,7 @@ def _store() -> tuple[
 
 
 @pytest.mark.asyncio
-async def test_resident_bearer_uses_host_custody_and_exact_card_binding() -> None:
+async def test_resident_bearer_uses_host_custody_and_survives_a_card_edit() -> None:
     store, metadata, resident = _store()
     authority = _authority(card_kind=CARD_KIND_AGENT)
 
@@ -164,9 +164,10 @@ async def test_resident_bearer_uses_host_custody_and_exact_card_binding() -> Non
         b"resident-bearer"
     ).hexdigest()
 
+    # Operator, 2026-10-09: "changing something on teh card does not change the credential". A Card edit
+    # moves the Card's revision; the same bearer keeps resolving (its own row and envelope are unchanged).
     moved = dataclasses.replace(authority, card_revision=authority.card_revision + 1)
-    with pytest.raises(CardCredentialHandleUnavailable, match="revision_mismatch"):
-        await store.read(moved)
+    assert (await store.read(moved)).access_token == "resident-bearer"
 
 
 @pytest.mark.asyncio

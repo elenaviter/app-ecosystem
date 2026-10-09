@@ -141,10 +141,6 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
     also binds the service's original OAuth issuance; without it
     ``begin_oauth_issuance`` refuses ``card_transactions_unavailable``.
     """
-    if credential_handles is None:
-        # W606: the handle store is the persistence's own. Without it a coordinated edit commits a new Card
-        # revision while its handle row stays behind, and the strict handle reader then refuses that Card.
-        credential_handles = getattr(persistence, "credential_handles", None)
     coordinator, intents = card_transaction_coordinator(persistence=persistence, decisions=decisions,
                                                         grant_store=grant_store, policies=policies,
                                                         authorities=authorities, catalog_store=catalog_store,

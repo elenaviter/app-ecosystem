@@ -160,11 +160,6 @@ class DurableCardPersistence:
         """The Card store the transaction participant stages in (W502 composition)."""
         return self._store
 
-    @property
-    def credential_handles(self) -> CardCredentialHandleStore:
-        """The Card handle store (W606 composition): a coordinated edit moves its handle row through it."""
-        return self._handles
-
     async def load(self, access_id: str, *, subject_hash: str) -> LoadedCard | None:
         authority = await self._resolver.resolve(
             subject_hash=subject_hash, access_id=access_id

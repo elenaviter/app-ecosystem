@@ -1699,8 +1699,6 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
                            catalog_store=_delegated_catalog_store(entrypoint),
                            accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
                            managed_control_scopes=managed_scopes,
-                           # W606: a coordinated edit (a refresh rotation included) moves its handle row.
-                           credential_handles=getattr(persistence, "credential_handles", None),
                            # W603: an original code exchange plans and activates its credentials in this
                            # authority; without it begin_oauth_issuance refuses card_transactions_unavailable.
                            issuance_store=_durable_authority(entrypoint).oauth)
