@@ -130,7 +130,7 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
                            policies: Any, authorities: Mapping[str, Any] | None = None,
                            catalog_store: Any = None, accounts_for: Any = None,
                            managed_control_scopes: Any = (), issuance_store: Any = None,
-                           credential_handles: Any = None) -> Coordinator:
+                           credential_handles: Any = None, issue_credential_handles: Any = None) -> Coordinator:
     """Bind one coordinator, participant, verifier and effect applier to this service's Card store.
 
     ``accounts_for(grantor)`` (W578) is the grantor's connected-account store
@@ -141,11 +141,16 @@ def bind_card_transactions(service: Any, *, persistence: Any, decisions: Any, gr
     also binds the service's original OAuth issuance; without it
     ``begin_oauth_issuance`` refuses ``card_transactions_unavailable``.
     """
+    # ``issue_credential_handles``: the handle store only the original issuance effect writes through (a new
+    # Card's row at issue). It is never bound to the writer, so a Card edit plans no handle effect and a
+    # credential never depends on a Card revision (operator, 2026-10-09).
     coordinator, intents = card_transaction_coordinator(persistence=persistence, decisions=decisions,
                                                         grant_store=grant_store, policies=policies,
                                                         authorities=authorities, catalog_store=catalog_store,
                                                         accounts_for=accounts_for, issuance_store=issuance_store,
-                                                        credential_handles=credential_handles)
+                                                        credential_handles=(credential_handles
+                                                                            if credential_handles is not None
+                                                                            else issue_credential_handles))
     service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions)
     if callable(getattr(service, "bind_managed_control_scopes", None)):
         service.bind_managed_control_scopes(managed_control_scopes)

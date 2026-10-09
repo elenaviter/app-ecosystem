@@ -1701,7 +1701,9 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
                            managed_control_scopes=managed_scopes,
                            # W603: an original code exchange plans and activates its credentials in this
                            # authority; without it begin_oauth_issuance refuses card_transactions_unavailable.
-                           issuance_store=_durable_authority(entrypoint).oauth)
+                           issuance_store=_durable_authority(entrypoint).oauth,
+                           # A new Card's handle row is written at issue; Card edits never touch it.
+                           issue_credential_handles=getattr(persistence, "credential_handles", None))
     # W638: a managed Card edit is forwarded to the host that plans its scope,
     # signed with that caller's authority request signer. A caller whose
     # signer secret is unavailable gets no forwarder: its edits stay refused.

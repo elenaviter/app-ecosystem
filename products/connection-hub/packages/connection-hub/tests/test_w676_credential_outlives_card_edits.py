@@ -41,6 +41,14 @@ class _Metadata:
     async def read_current(self, access_id):
         return self.row if self.row is not None and self.row.access_id == access_id else None
 
+    async def put(self, metadata, *, expected_revision):
+        current_revision = self.row.revision if self.row is not None else 0
+        if current_revision != expected_revision:
+            raise RuntimeError("card_handle_metadata_conflict")
+        self.row = dataclasses.replace(metadata, revision=current_revision + 1)
+        self.puts = getattr(self, "puts", 0) + 1
+        return self.row
+
 
 class _Resident:
     def __init__(self):
@@ -80,12 +88,101 @@ async def test_an_edited_or_refreshed_oauth_card_still_loads_its_credential(read
 
 
 @pytest.mark.asyncio
-async def test_a_new_oauth_card_issued_without_a_handle_row_loads_on_its_first_refresh():
-    # Original OAuth exchange under Card transactions binds no handle store, so the new Card has no row
-    # (effect_targets.py CredentialIssueTarget writes one only with a bound store); its first refresh loads it.
+async def test_a_card_issued_without_a_row_gets_its_row_on_first_read_and_keeps_working():
+    # A Card the original exchange issued before issue-time rows (e7b3c18a live) has NO row: its first read
+    # writes it from the current Card, exactly as issue does now, and later reads use that row.
     card = _card(CARD_KIND_AUTOMATION, revision=1, expires_at=NOW + 7200)
     store, resident = _store(None)
-    assert (await store.read(card)).access_id == card.access_id and resident.resolved == []
+    assert (await store.read(card)).access_id == card.access_id
+    row = store._metadata.row
+    assert (row.access_id, row.card_revision, row.expires_at, row.state) == (
+        card.access_id, card.card_revision, card.expires_at, HANDLE_STATE_ACTIVE)
+    edited = dataclasses.replace(card, card_revision=2)
+    assert (await store.read(edited)).access_id == card.access_id  # a later edit still reads, no rewrite
+    assert store._metadata.puts == 1 and resident.resolved == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ended", ["revoked", "expired"])
+async def test_an_ended_credential_row_is_never_recreated(ended):
+    card = _card(CARD_KIND_AUTOMATION, revision=1, expires_at=NOW + 7200)
+    row = _row(card, revision=1, expires_at=(NOW - 10 if ended == "expired" else NOW + 3600),
+               state=HANDLE_STATE_REVOKED if ended == "revoked" else HANDLE_STATE_ACTIVE)
+    store, _ = _store(row)
+    with pytest.raises(CardCredentialHandleUnavailable, match="card_handle_metadata_missing"):
+        await store.read(card)
+    assert getattr(store._metadata, "puts", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_an_agent_card_without_its_row_is_refused_never_created():
+    card = _card(CARD_KIND_AGENT, revision=1, expires_at=NOW + 7200)
+    store, resident = _store(None)
+    with pytest.raises(CardCredentialHandleUnavailable, match="card_handle_metadata_missing"):
+        await store.read(card)
+    assert store._metadata.row is None and resident.resolved == []
+
+
+@pytest.mark.asyncio
+async def test_two_first_reads_racing_both_succeed_with_one_row():
+    import asyncio
+
+    card = _card(CARD_KIND_AUTOMATION, revision=1, expires_at=NOW + 7200)
+    store, _ = _store(None)
+    real_read_current = store._metadata.read_current
+
+    async def both_see_no_row(access_id):
+        value = await real_read_current(access_id)
+        await asyncio.sleep(0)
+        return value
+
+    store._metadata.read_current = both_see_no_row
+    results = await asyncio.gather(store.read(card), store.read(card))
+    assert [handles.access_id for handles in results] == [card.access_id, card.access_id]
+    assert store._metadata.puts == 1
+
+
+@pytest.mark.asyncio
+async def test_the_handle_store_reaches_only_the_issuance_effect_never_the_card_writer():
+    from types import SimpleNamespace
+
+    from connection_hub.delegated_credentials.cards import composition, effect_targets
+
+    class _Service:
+        def __init__(self):
+            self.handle_store_bound = None
+
+        def bind_card_coordinator(self, coordinator, *, intents, decisions):
+            pass
+
+        def bind_oauth_issuance_store(self, store):
+            pass
+
+        def bind_card_credential_handles(self, handles):
+            self.handle_store_bound = handles
+
+    class _CardService:
+        def bind_effect_applier(self, applier):
+            self.apply = applier
+
+        def bind_effect_preparer(self, preparer):
+            self.prepare = preparer
+
+        def bind_effect_releaser(self, releaser):
+            self.release = releaser
+
+    class _CardStore:
+        root = None
+
+    handles, issuance = object(), object()
+    service, cards = _Service(), _CardService()
+    composition.bind_card_transactions(
+        service, persistence=SimpleNamespace(card_store=_CardStore(), card_service=cards), decisions=object(),
+        grant_store=object(), policies=None, issuance_store=issuance, issue_credential_handles=handles)
+    targets = cards.prepare.__self__._targets
+    assert isinstance(targets["credential_issue"], effect_targets.CredentialIssueTarget)
+    assert targets["credential_issue"]._credential_handles is handles  # a new Card's row is written at issue
+    assert service.handle_store_bound is None  # a Card edit plans no handle effect: the credential never moves
 
 
 @pytest.mark.asyncio
