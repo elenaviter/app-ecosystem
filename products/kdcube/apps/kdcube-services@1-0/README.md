@@ -34,7 +34,7 @@ external clients may access through Connection Hub delegated credentials.
 
 The app source is maintained here under the KDCube product boundary. It was
 extracted from `kdcube/kdcube` commit
-`c101ba873bb1ea049216339056f60a02c780cd92`, preserving its app ID, interfaces,
+`de146a8f4427f17359bc8b38c7303ea2418a51bb`, preserving its app ID, interfaces,
 service logic and SDK-provided widget sources. The platform copy is retained
 during migration of existing installations; this external app loads independently.
 
