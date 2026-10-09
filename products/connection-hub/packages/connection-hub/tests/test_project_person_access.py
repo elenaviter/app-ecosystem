@@ -1685,3 +1685,35 @@ async def test_a_refused_read_still_refuses_with_the_edit_question_asked_alongsi
     refused = await _lifecycle(host, port).get(
         actor_subject="someone-else", project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read")
     assert refused["ok"] is False and "viewer" not in refused
+
+
+@pytest.mark.asyncio
+async def test_a_decided_read_refusal_returns_without_waiting_for_the_edit_question() -> None:
+    # CodeApp return on #719: a refused read must not wait for the optional edit question, which is cancelled.
+    import asyncio
+
+    class SplitPort(_Port):
+        def __init__(self):
+            super().__init__(deny_actor="someone-else")
+            self.edit_started = self.edit_cancelled = self.edit_answered = False
+
+        async def authorize_project_person_control(self, request):
+            if request.operation == PROJECT_PERSON_CONTROL_UPDATE:
+                self.edit_started = True
+                try:
+                    await asyncio.Event().wait()  # never answers
+                except asyncio.CancelledError:
+                    self.edit_cancelled = True
+                    raise
+                self.edit_answered = True
+            return await super().authorize_project_person_control(request)
+
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    port = SplitPort()
+    refused = await asyncio.wait_for(_lifecycle(host, port).get(
+        actor_subject="someone-else", project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read"),
+        timeout=2)
+    assert refused["ok"] is False and "viewer" not in refused
+    # Retired: cancelled while waiting, or never started at all; never left running and never answered.
+    assert port.edit_answered is False and (port.edit_cancelled or not port.edit_started)

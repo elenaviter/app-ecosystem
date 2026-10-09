@@ -189,6 +189,19 @@ def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
 _LOG = logging.getLogger(__name__)
 
 
+async def _retire(task: "asyncio.Future") -> None:
+    """Cancel a question this read owns but no longer needs, and wait for it to finish."""
+    if task.done():
+        if not task.cancelled():
+            task.exception()  # consumed: an unneeded answer's failure is not this read's failure
+        return
+    task.cancel()
+    try:
+        await task
+    except BaseException:  # noqa: BLE001 - its cancellation or failure belongs to no caller
+        pass
+
+
 class ProjectPersonControlLifecycle:
     """Project-authorized lifecycle over the ordinary durable Card store."""
 
@@ -437,34 +450,42 @@ class ProjectPersonControlLifecycle:
             finally:
                 timings[name] = (time.monotonic() - begin) * 1000.0
 
-        authorized, viewer_answer = await asyncio.gather(
-            timed("read_authorize", self._authorize(
+        async def ask_edit() -> dict[str, Any]:
+            # The question is created inside the task, so a task retired before it starts creates nothing.
+            return await timed("edit_authorize", self._viewer(
+                actor_subject=actor_subject,
+                project_ref=project_ref,
+                target_subject=target_subject,
+                request_id=request_id,
+            ))
+
+        edit_question = asyncio.ensure_future(ask_edit())
+        try:
+            authorized = await timed("read_authorize", self._authorize(
                 viewer=viewer,
                 actor_subject=actor_subject,
                 project_ref=project_ref,
                 target_subject=target_subject,
                 operation=PROJECT_PERSON_CONTROL_READ,
                 request_id=request_id,
-            )),
-            timed("edit_authorize", self._viewer(
-                actor_subject=actor_subject,
-                project_ref=project_ref,
-                target_subject=target_subject,
-                request_id=request_id,
-            )),
-        )
-        try:
+            ))
             if isinstance(authorized, dict):
+                # A decided refusal returns at once; the edit question cannot contribute (CodeApp return).
+                await _retire(edit_question)
                 return authorized
             _request, decision = authorized
             identity = ProjectPersonControlIdentity.build(
                 project_ref=project_ref,
                 target_subject=target_subject,
             )
-            view = await timed("view", self._view(identity=identity, decision=decision))
+            view, viewer_answer = await asyncio.gather(
+                timed("view", self._view(identity=identity, decision=decision)), edit_question)
             if view.get("ok") is True:
                 view["viewer"] = viewer_answer
             return view
+        except BaseException:
+            await _retire(edit_question)
+            raise
         finally:
             _LOG.info("person control read timing total_ms=%.1f read_authorize_ms=%.1f edit_authorize_ms=%.1f "
                       "view_ms=%.1f", (time.monotonic() - started) * 1000.0, timings.get("read_authorize", 0.0),
