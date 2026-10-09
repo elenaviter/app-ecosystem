@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import dataclasses
+import logging
 import time
 from typing import Any, Callable, Iterable, Mapping
 
@@ -182,6 +184,9 @@ def _serving_state_unavailable(exc: CardServingUnavailable) -> dict[str, Any]:
         "retryable": True,
         "status": 503,
     }
+
+
+_LOG = logging.getLogger(__name__)
 
 
 class ProjectPersonControlLifecycle:
@@ -419,30 +424,51 @@ class ProjectPersonControlLifecycle:
         target_subject: str,
         request_id: str,
     ) -> dict[str, Any]:
-        authorized = await self._authorize(
-            viewer=viewer,
-            actor_subject=actor_subject,
-            project_ref=project_ref,
-            target_subject=target_subject,
-            operation=PROJECT_PERSON_CONTROL_READ,
-            request_id=request_id,
-        )
-        if isinstance(authorized, dict):
-            return authorized
-        _request, decision = authorized
-        identity = ProjectPersonControlIdentity.build(
-            project_ref=project_ref,
-            target_subject=target_subject,
-        )
-        view = await self._view(identity=identity, decision=decision)
-        if view.get("ok") is True:
-            view["viewer"] = await self._viewer(
+        # Live 2026-10-09 (operator: "waiting 10 seconds for card retrieval is unacceptable"): the read's
+        # authorization and the viewer's edit question are independent policy-port questions, so they are
+        # asked together instead of one after the other; the view needs only the read's decision.
+        started = time.monotonic()
+        timings: dict[str, float] = {}
+
+        async def timed(name: str, call):
+            begin = time.monotonic()
+            try:
+                return await call
+            finally:
+                timings[name] = (time.monotonic() - begin) * 1000.0
+
+        authorized, viewer_answer = await asyncio.gather(
+            timed("read_authorize", self._authorize(
+                viewer=viewer,
+                actor_subject=actor_subject,
+                project_ref=project_ref,
+                target_subject=target_subject,
+                operation=PROJECT_PERSON_CONTROL_READ,
+                request_id=request_id,
+            )),
+            timed("edit_authorize", self._viewer(
                 actor_subject=actor_subject,
                 project_ref=project_ref,
                 target_subject=target_subject,
                 request_id=request_id,
+            )),
+        )
+        try:
+            if isinstance(authorized, dict):
+                return authorized
+            _request, decision = authorized
+            identity = ProjectPersonControlIdentity.build(
+                project_ref=project_ref,
+                target_subject=target_subject,
             )
-        return view
+            view = await timed("view", self._view(identity=identity, decision=decision))
+            if view.get("ok") is True:
+                view["viewer"] = viewer_answer
+            return view
+        finally:
+            _LOG.info("person control read timing total_ms=%.1f read_authorize_ms=%.1f edit_authorize_ms=%.1f "
+                      "view_ms=%.1f", (time.monotonic() - started) * 1000.0, timings.get("read_authorize", 0.0),
+                      timings.get("edit_authorize", 0.0), timings.get("view", 0.0))
 
     async def _viewer(
         self,
