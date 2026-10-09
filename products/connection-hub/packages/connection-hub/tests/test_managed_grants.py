@@ -292,3 +292,39 @@ async def test_a_consent_extension_adding_a_managed_grant_is_refused():
     plain = await service.extend_client_access(USER, client_id="dcr-synthetic", access_id=card.access_id,
         resource=DECLARED_RESOURCE, claims=["app:read"])
     assert plain.get("error") != "managed_grant_not_editable", plain
+
+
+# L2, decided fail-CLOSED (Main 10:39Z): with the catalog unavailable no managed grant is known, so an OAuth
+# consent that changes the Card's authority is refused (retryable); a refresh and the application write pass.
+def _catalog_down(service):
+    from connection_hub.delegated_credentials.catalog.resolver import CatalogUnavailable
+
+    async def unavailable(*args, **kwargs):
+        raise CatalogUnavailable("synthetic_outage")
+    service._active_catalog = unavailable
+
+
+@pytest.mark.asyncio
+async def test_an_oauth_consent_during_a_catalog_outage_is_refused_retryably():
+    from connection_hub.delegated_credentials.caller_writer_gate import CallerWriteRefused
+    persistence = _Persistence()
+    service = _service(_GrantStore({}), persistence, connections=_connections())
+    _catalog_down(service)
+    with pytest.raises(CallerWriteRefused) as refused:
+        await service.record_oauth_grant(grantor_subject=GRANTOR, client_id="dcr-outage",
+            scopes=["app:read"], operations=["item.read"], resource=CONCRETE_RESOURCE)
+    assert refused.value.reason == "managed_grants_unknown_catalog_unavailable"
+    assert not getattr(persistence, "current", {})
+
+
+@pytest.mark.asyncio
+async def test_a_refresh_and_the_application_write_pass_during_a_catalog_outage():
+    service, card = await _card(_connections(), scopes=("app:read", "app:steward"), operations=("item.read", "item.steward"))
+    _catalog_down(service)
+    rotated = await service.record_oauth_grant(grantor_subject=GRANTOR, client_id="dcr-synthetic", resource=CONCRETE_RESOURCE)
+    assert rotated is not None and "app:steward" in rotated.resource_grants[DECLARED_RESOURCE]
+    fresh = _service(_GrantStore({}), _Persistence(), connections=_connections())
+    _catalog_down(fresh)
+    applied = await fresh.record_oauth_grant(grantor_subject=GRANTOR, client_id="dcr-app", scopes=["app:read"],
+        operations=["item.read"], resource=CONCRETE_RESOURCE, _application_write=True)
+    assert applied is not None

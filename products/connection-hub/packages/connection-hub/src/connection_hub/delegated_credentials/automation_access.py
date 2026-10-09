@@ -36,6 +36,7 @@ from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 from connection_hub.concurrency import bounded_gather
 from connection_hub.delegated_credentials.managed_grants import (
     MANAGED_GRANT_NOT_EDITABLE,
+    MANAGED_GRANTS_UNKNOWN,
     managed_grant_changes,
     managed_grant_refusal,
     managed_operation_changes,
@@ -9559,6 +9560,16 @@ class AutomationAccessService:
                     self._resource_grants(held_operations))
                 if changes:
                     raise CallerWriteRefused(MANAGED_GRANT_NOT_EDITABLE)
+        elif not _application_write:
+            # L2, decided fail-CLOSED (Main, 2026-10-09 10:39Z): with the catalog unavailable no managed
+            # grant is known, so a consent that changes the Card's authority is refused (retryable); a refresh
+            # that carries the Card forward unchanged still passes.
+            held_grants = self._resource_grants(dict(existing_card.resource_grants)) if existing_card is not None else {}
+            held_operations = (self._resource_grants(dict(existing_card.resource_operations))
+                               if existing_card is not None else {})
+            if (self._resource_grants(dict(record.resource_grants)) != held_grants
+                    or self._resource_grants(dict(record.resource_operations)) != held_operations):
+                raise CallerWriteRefused(MANAGED_GRANTS_UNKNOWN)
         return record, existing_card_revision, is_initial_consent, merged_account_scope
 
     async def record_oauth_grant(
