@@ -145,6 +145,7 @@ def _valid_request(data: Any) -> bool:
 
 
 def _unsigned_refusal(code: str, status: int) -> dict[str, Any]:
+    _LOG.warning("card census read refused unsigned: code=%s status=%s", code, status)
     return {"ok": False, "status": status, "error": {"code": code}}
 
 
@@ -197,7 +198,8 @@ class CardCensusReadOperation:
             result = await self._census(caller, data, digest)
         except _Refused as exc:
             result = {"kind": "refused", "code": exc.code, "status": exc.status}
-        except Exception:  # noqa: BLE001 - authenticated, so signed; never internal text
+        except Exception as exc:  # noqa: BLE001 - authenticated, so signed; never internal text
+            _LOG.warning("card census read failed: %s", type(exc).__name__)
             result = {"kind": "refused", "code": "card_participant_unavailable", "status": 503}
         return self._signed(caller, data, digest, result)
 
@@ -339,7 +341,18 @@ class CardCensusReadOperation:
             _LOG.error("card census answer not signable: a value at %s cannot be carried", _non_wire_path(unsigned))
             raise
         if len(encoded) > MAX_ANSWER_BYTES:
+            _LOG.warning("card census answer over the bound: %d bytes > %d (catalog %d bytes, %d person(s))",
+                         len(encoded), MAX_ANSWER_BYTES, _catalog_bytes(result), len(data["persons"]))
             unsigned = unsigned_for({"kind": "refused", "code": "card_census_too_large", "status": 413})
+        refused = unsigned["result"]
+        if refused.get("kind") == "refused":
+            # Every signed refusal names its fixed code here: the caller folds all of them into one
+            # "unavailable" (live 2026-10-09 Fit to role: nothing on either side named the cause).
+            _LOG.warning("card census read refused: code=%s status=%s persons=%d", refused.get("code"),
+                         refused.get("status"), len(data["persons"]))
+        else:
+            _LOG.info("card census read answered: %d bytes, catalog %d bytes, %d person(s)", len(encoded),
+                      _catalog_bytes(result), len(data["persons"]))
         proof = sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=caller.receipt_secret,
                                         signer_id=caller.receipt_signer_id, timestamp=str(int(self._clock())),
                                         contract=AnswerContract.CENSUS)
@@ -348,6 +361,14 @@ class CardCensusReadOperation:
 
 
 _LOG = logging.getLogger(__name__)
+
+
+def _catalog_bytes(result: Mapping[str, Any]) -> int:
+    catalog = result.get("catalog") if isinstance(result, Mapping) else None
+    try:
+        return len(canonical_json_bytes(catalog)) if catalog is not None else 0
+    except Exception:  # noqa: BLE001 - a size for the log only
+        return -1
 
 
 def _non_wire_path(value: Any, path: str = "answer") -> str:
