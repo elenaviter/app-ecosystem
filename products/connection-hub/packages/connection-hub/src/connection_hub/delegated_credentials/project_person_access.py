@@ -70,6 +70,7 @@ from connection_hub.delegated_credentials.project_authorization import (
     ProjectAuthorizationError,
     ProjectAuthorizationPort,
     ProjectAuthorizationRequest,
+    shared_membership_scope,
 )
 from connection_hub.delegated_credentials import project_control_binding
 from connection_hub.delegated_credentials.card_lifecycle_plan import build_project_person_control
@@ -440,6 +441,19 @@ class ProjectPersonControlLifecycle:
         # Live 2026-10-09 (operator: "waiting 10 seconds for card retrieval is unacceptable"): the read's
         # authorization and the viewer's edit question are independent policy-port questions, so they are
         # asked together instead of one after the other; the view needs only the read's decision.
+        with shared_membership_scope():
+            return await self._get(viewer=viewer, actor_subject=actor_subject, project_ref=project_ref,
+                                   target_subject=target_subject, request_id=request_id)
+
+    async def _get(
+        self,
+        *,
+        viewer: ViewerAuthority | None,
+        actor_subject: str,
+        project_ref: str,
+        target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
         started = time.monotonic()
         timings: dict[str, float] = {}
 

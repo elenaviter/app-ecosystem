@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -624,6 +627,22 @@ class ProjectAuthorizationPort(Protocol):
     ) -> ProjectAuthorizationDecision: ...
 
 
+# One read asks the project's policy port more than once for the same person (its read and its viewer's edit
+# question, concurrently). Within that read the membership answer is shared: one question to the project,
+# not one per policy question. The scope lives only for that read; nothing is kept across requests.
+_SHARED_MEMBERSHIP: ContextVar[dict | None] = ContextVar("connection_hub_shared_membership", default=None)
+
+
+@contextmanager
+def shared_membership_scope() -> Iterator[None]:
+    """Within this block, each (project, subject) membership is asked of the project once."""
+    token = _SHARED_MEMBERSHIP.set({})
+    try:
+        yield
+    finally:
+        _SHARED_MEMBERSHIP.reset(token)
+
+
 class ResolverBackedProjectAuthorizationPort:
     """Authorize project-held Control Card changes from membership evidence."""
 
@@ -643,10 +662,21 @@ class ResolverBackedProjectAuthorizationPort:
         subject: str,
     ) -> ProjectMembershipEvidence | None:
         assert self._resolver is not None
-        membership = await self._resolver.resolve_project_membership(
-            project_ref=request.project_ref,
-            subject=subject,
-        )
+        shared = _SHARED_MEMBERSHIP.get()
+        if shared is None:
+            membership = await self._resolver.resolve_project_membership(
+                project_ref=request.project_ref,
+                subject=subject,
+            )
+        else:
+            key = (request.project_ref, subject)
+            if key not in shared:
+                shared[key] = asyncio.ensure_future(self._resolver.resolve_project_membership(
+                    project_ref=request.project_ref,
+                    subject=subject,
+                ))
+            # Shielded: retiring one question (e.g. the viewer's edit question) never cancels the shared answer.
+            membership = await asyncio.shield(shared[key])
         if membership is None:
             return None
         if not isinstance(membership, ProjectMembershipEvidence):
