@@ -34,15 +34,6 @@ def test_explicit_existing_public_or_local_issuer_is_preserved(host, issuer):
     assert host.configured_issuer(issuer) == issuer.rstrip("/")
 
 
-def test_custody_namespace_is_the_readable_hub_purpose(host):
-    """Records live under the Hub bundle and this purpose; isolation comes from the deployment root."""
-    from kdcube_ai_app.infra.secrets.runtime_contract import valid_namespace
-    assert host.CUSTODY_NAMESPACE == "oauth-refresh-tokens"
-    assert valid_namespace(host.CUSTODY_NAMESPACE)
-    for tenant, project in [("demo-tenant", "demo-project"), ("ab", "c"), ("t" * 200, "p" * 200)]:
-        assert host.custody_namespace(tenant, project) == "oauth-refresh-tokens"
-
-
 @pytest.mark.asyncio
 async def test_full_consumed_candidate_choices_are_preserved_without_aliasing(host):
     payload = {"sub": "human", "client_id": "client", "card_label": "Reviewed label",
@@ -239,19 +230,15 @@ async def test_host_fences_refuse_changed_or_unavailable_original_evidence(host,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["issuer", "pool", "signer", "session", "custody", "owner", "none"])
+@pytest.mark.parametrize("failure", ["issuer", "pool", "signer", "session", "key_missing", "key_short", "owner", "none"])
 async def test_real_sdk_flow_is_bound_only_after_host_qualification(host, monkeypatch, failure):
     from kdcube_ai_app.auth import session_authority_runtime
     from kdcube_ai_app.infra.secrets import issuance
     from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.http.original_code import OriginalCodeExchangeHandler
     request = SimpleNamespace(state=SimpleNamespace())
-    scope = host.custody_namespace("tenant", "project")
-    custody = SimpleNamespace(namespace=scope, qualify=AsyncMock())
-    if failure == "custody":
-        custody.qualify.side_effect = RuntimeError("not qualified")
     custody_calls = []
     monkeypatch.setattr(issuance, "issuance_secret_custody",
-                        lambda **kwargs: custody_calls.append(kwargs) or custody)
+                        lambda **kwargs: custody_calls.append(kwargs) or pytest.fail("no OAuth bearer custody"))
     monkeypatch.setattr(session_authority_runtime, "bundle_session_store_for",
                         lambda **kwargs: None if failure == "session" else object())
     scene = _scene(host)
@@ -259,16 +246,20 @@ async def test_real_sdk_flow_is_bound_only_after_host_qualification(host, monkey
         configured_public_issuer=None if failure == "issuer" else "https://configured.test/public/oauth",
         hub=scene.hub, grant_store=SimpleNamespace(refresh_ttl=3600), issuance_store=scene.store,
         cards=scene.cards, settings=object(), refresh_signing_secret_ref="" if failure == "signer" else "protected.ref",
-        resolve_secret=AsyncMock(return_value=b"test-only-signing-key-more-than-32-bytes"),
+        resolve_secret=AsyncMock(return_value=b"short" if failure == "key_short" else
+                                 b"test-only-signing-key-more-than-32-bytes",
+                                 side_effect=RuntimeError("unresolvable") if failure == "key_missing" else None),
         owner_bundle_id="" if failure == "owner" else "connection-hub@1-0")
     if failure != "none":
-        with pytest.raises((host.OriginalExchangeHostingUnavailable, RuntimeError)):
+        with pytest.raises((host.OriginalExchangeHostingUnavailable, RuntimeError)) as refused:
             await host.bind_original_exchange(request, **kwargs)
         assert request.state.oauth_original_exchange_factory is None
+        if failure.startswith("key_"):
+            assert str(refused.value) == "original_exchange_signer_unavailable"
+            assert "unresolvable" not in repr(refused.value.__context__ or "") or refused.value.__suppress_context__
         return
     await host.bind_original_exchange(request, **kwargs)
-    assert custody_calls == [{"namespace": "oauth-refresh-tokens", "settings": kwargs["settings"],
-                              "bundle_id": "connection-hub@1-0"}]
+    assert custody_calls == []
     bound = request.state.oauth_original_exchange_factory()
     assert type(bound) is OriginalCodeExchangeHandler
     assert (bound.tenant, bound.project) == ("tenant", "project")
@@ -278,8 +269,8 @@ async def test_real_sdk_flow_is_bound_only_after_host_qualification(host, monkey
     assert flow.ledger._pool is kwargs["pg_pool"]
     assert flow.provider.refresh_store._db._pool is kwargs["pg_pool"]
     assert flow.provider.authority_factory.__name__ == "get_bundle_session_authority"
-    kwargs["resolve_secret"].assert_not_awaited()
-    assert custody.qualify.await_count == 1
+    # The refresh signing key must resolve at binding (the gate that replaced custody qualification).
+    kwargs["resolve_secret"].assert_awaited_once_with("protected.ref")
 
 
 @pytest.mark.asyncio
@@ -418,3 +409,26 @@ async def test_existing_disabled_and_nontransaction_local_mount_behavior_is_pres
     if enabled:
         assert request.state.oauth_delegated_issuer == "http://localhost:3000/public/oauth"
         assert json.loads(response.body) == {"keys": []}
+
+
+@pytest.mark.asyncio
+async def test_pair_host_serves_every_sdk_provider_method_and_reads_bearers_by_resigning(host, monkeypatch):
+    """No custody: the code flow reads both bearers through the provider, so the host must pass it through."""
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.original_code_flow import OriginalPairProvider
+    required = {name for name in vars(OriginalPairProvider) if not name.startswith("_")}
+    assert "bearers" in required and required <= set(vars(host.OriginalPairHost))
+    pair_host = host.OriginalPairHost(target=None, refresh_store=None, signer=None,
+                                      refresh_ttl_seconds=3600, authority_factory=None)
+    calls = []
+
+    class Provider:
+        async def bearers(self, **kwargs):
+            calls.append(kwargs)
+            return {"access": "unit-access", "refresh": "unit-refresh"}
+
+    async def provider(plan):
+        return Provider()
+    monkeypatch.setattr(pair_host, "_provider", provider)
+    assert await pair_host.bearers(plan="plan", result="result", pair="pair") == {
+        "access": "unit-access", "refresh": "unit-refresh"}
+    assert calls == [{"plan": "plan", "result": "result", "pair": "pair"}]

@@ -5,8 +5,11 @@ SDK original-exchange capability before token handling. Unavailable composition
 leaves a present, closed binding: there is no legacy consume-and-mint fallback.
 
 The host uses its activated PostgreSQL OAuth authority, actual Card persistence,
-configured session authority and qualified issuance custody. It creates no
-decision protocol. The existing governed bundle-load preparation path prepares
+configured session authority and the two signing keys. It keeps no issued
+bearer in secret custody (operator, 2026-10-09: "i need the stronger version
+now"): the SDK re-signs the claims PostgreSQL stores and must match the sealed
+digests, so a retry returns the same bearers and a changed key refuses. It
+creates no decision protocol. The existing governed bundle-load preparation path prepares
 the SDK original-exchange and refresh metadata schemas when Card transactions
 and PostgreSQL authority are selected. A token request never installs a schema
 or changes provider selection or activation.
@@ -16,7 +19,14 @@ The public issuer must be explicitly configured in
 forwarded header cannot supply this production requirement. Refresh signing uses
 the protected descriptor named by
 `connections.delegated_credentials.oauth.original_exchange.refresh_signing_secret_ref`.
-This is a reference, never inline signing material. Existing provider selection
+This is a reference, never inline signing material. Binding resolves it once
+and stays closed (`original_exchange_signer_unavailable`) when it is missing or
+shorter than 32 bytes; this replaced the former custody qualification gate.
+The referenced refresh signing secret and the platform session secret
+(`platform.services.session_token.secret`) must not change while an original
+issuance is being delivered (until its delivery deadline): a change refuses the
+retry with `original_exchange_signing_mismatch`, and re-authorization is the
+recovery (operator, 2026-10-09). There is no key versioning. Existing provider selection
 and activation are unchanged; configuring or qualifying them is a separate
 deployment action.
 
