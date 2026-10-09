@@ -347,3 +347,22 @@ async def test_registration_seals_under_the_collection_lock_and_rechecks_the_dea
     assert _verified(await registration, retry) == {"kind": "refused", "code": "card_read_collection_expired",
                                                     "status": 409}
     assert await collections.load_header(store, collection_id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_that_cannot_remove_a_leaf_counts_nothing_deleted_and_retries_next_pass(tmp_path, monkeypatch):
+    from pathlib import Path
+    store, service, before, _ = await _setup(tmp_path)
+    await _seal(store, before)
+    original_unlink = Path.unlink
+
+    def refuse_leaves(self, *args, **kwargs):
+        if self.parent.name == "leaves":
+            raise PermissionError("synthetic")
+        return original_unlink(self, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "unlink", refuse_leaves)
+        assert await _sweep(service) == {"deleted": 0, "leaves": 0, "protected": 0, "skipped": 1}
+    assert await collections.load_header(store, COLLECTION) is not None  # the deadline stays for the retry
+    assert await _sweep(service) == {"deleted": 1, "leaves": 2, "protected": 0, "skipped": 0}
