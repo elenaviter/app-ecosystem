@@ -47,3 +47,32 @@ test('the panel uses them, and the field label wraps', () => {
   assert.match(label, /white-space: normal;/)
   assert.match(label, /overflow-wrap: anywhere;/)
 })
+
+// W681 (operator, 2026-10-09: "the section with github dissappeared from this card"; after Cancel + Edit
+// "for a momemnt i saw section with github"). Opening the editor changes nothing, and Edit never hides
+// the My Card's GitHub link or calls an existing account "no accounts yet".
+test('opening the editor is not a pending change; a change is', async () => {
+  const { callerEditNote } = await import('../src/features/delegatedAccess/cardLabels.ts')
+  assert.equal(callerEditNote(false, 'Maintenance Control remains linked.'),
+    'Editing the caller Card. Maintenance Control remains linked.')
+  assert.equal(callerEditNote(true, 'Maintenance Control remains linked.'),
+    'Pending changes to the caller Card. Maintenance Control remains linked.')
+})
+
+test('an existing account not chosen for this Card is 0/1, never "no accounts yet"', async () => {
+  const { providerAccountsSummary } = await import('../src/features/delegatedAccess/cardLabels.ts')
+  assert.equal(providerAccountsSummary(0, 1), '0/1 accounts')
+  assert.equal(providerAccountsSummary(1, 2), '1/2 accounts')
+  assert.equal(providerAccountsSummary(0, 0), 'no accounts yet')
+})
+
+test("the editor shows the My Card's GitHub section and every caller-edit note follows the draft", () => {
+  const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
+  const workbench = panel.slice(panel.indexOf('const renderWorkbench'))
+  assert.match(workbench.slice(0, workbench.indexOf('className="rename-row"')),
+    /isMyCard\(record\)\s*\?\s*<MyCardGithubSection projectRef=\{myCardProjectRef\(record\)\}/,
+    'the editor renders the GitHub section for a My Card')
+  assert.doesNotMatch(panel, /!editing && isMyCard/, 'no view hides it while editing')
+  assert.doesNotMatch(panel, /`Pending changes to the caller Card\./, 'no unconditional "Pending changes" note')
+  assert.doesNotMatch(panel, /'no accounts yet'/, 'the provider summary comes from providerAccountsSummary')
+})
