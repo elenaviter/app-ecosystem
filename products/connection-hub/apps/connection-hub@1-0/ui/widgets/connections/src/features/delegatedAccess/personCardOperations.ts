@@ -68,6 +68,20 @@ export function resourceForPersonCard(option: DelegatedAccessResourceOption): De
   };
 }
 
+/** W667: the held grants a hidden held operation needs; Save keeps them exactly as the Card holds them, so
+ *  hiding never removes authority a person cannot see. */
+export function hiddenHeldGrants(
+  option: DelegatedAccessResourceOption | undefined,
+  heldOperations: readonly string[],
+  heldGrants: readonly string[],
+): string[] {
+  const held = new Set(heldOperations);
+  const needed = new Set((option?.operations || [])
+    .filter((operation) => operation.hidden === true && held.has(operation.name))
+    .flatMap((operation) => operation.grants || []));
+  return heldGrants.filter((grant) => needed.has(grant));
+}
+
 /** The operations an editor shows: everything but the W667 hidden ones. */
 export function visibleOperations<T extends { hidden?: boolean }>(operations: T[] | undefined): T[] {
   return (operations || []).filter((operation) => operation.hidden !== true);

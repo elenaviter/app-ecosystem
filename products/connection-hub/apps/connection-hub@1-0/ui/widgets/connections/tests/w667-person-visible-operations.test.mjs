@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { withManagedGrantsAsHeld } from '../src/features/delegatedAccess/managedGrants.ts'
 import {
+  hiddenHeldGrants,
   notOfferedOnPersonCard,
   resourceForPersonCard,
   resourcesForPersonMyCard,
@@ -20,7 +21,7 @@ const ROW = {
   operations: [
     { name: 'review.assign', group: 'review' },
     { name: 'plan.item.create', group: 'plan' },
-    { name: 'plan.notes.list', group: 'plan' },            // decided by membership: not declared
+    { name: 'plan.notes.list', group: 'plan', grants: ['work:read'] },  // decided by membership: not declared
     { name: 'project.github.use', group: 'project' },      // agent channel: not declared
     { name: 'project.people.invite', group: 'people', person_card: false },  // managed, even if declared
   ],
@@ -60,4 +61,11 @@ test("a person's My Card hides the same set when declared; an agent Card is neve
   const [mine] = resourcesForPersonMyCard([ROW])
   assert.deepEqual(visibleOperations(mine.operations).map((operation) => operation.name), ['review.assign', 'plan.item.create'])
   assert.equal(visibleOperations(ROW.operations).length, ROW.operations.length)  // the raw catalog (agent Cards)
+})
+
+test('a grant only a hidden held operation needs is kept exactly as held on Save', () => {
+  const row = resourceForPersonCard(ROW)
+  assert.deepEqual(hiddenHeldGrants(row, ['plan.notes.list', 'review.assign'], ['work:read', 'work:write']), ['work:read'])
+  assert.deepEqual(hiddenHeldGrants(row, ['review.assign'], ['work:read']), [])  // not held: nothing kept
+  assert.deepEqual(hiddenHeldGrants(row, ['plan.notes.list'], []), [])          // never adds a grant not held
 })

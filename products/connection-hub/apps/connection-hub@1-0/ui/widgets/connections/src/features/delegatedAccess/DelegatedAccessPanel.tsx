@@ -183,7 +183,8 @@ import {
   projectPersonControlCoordinates,
 } from './projectPersonControl';
 import {
-  catalogDriftForPersonCard, notOfferedOnPersonCard, resourcesForPersonCard, resourcesForPersonMyCard, visibleOperations,
+  catalogDriftForPersonCard, hiddenHeldGrants, notOfferedOnPersonCard, resourcesForPersonCard, resourcesForPersonMyCard,
+  visibleOperations,
 } from './personCardOperations';
 import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
@@ -3103,7 +3104,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // An edit keeps every application-managed grant exactly as the Card holds it (W661 S5).
   const editManagedFor = (resource: string) => managedGrantsOf(catalogRowFor(resources, resource, editRowFor));
   const editKeptClaims = (item: DelegatedAccessRecord, resource: string): string[] => {
-    const claims = editKeptClaimsSelected(item, resource);
+    // W667: a grant a hidden held operation needs stays exactly as the Card holds it.
+    const hidden = hiddenHeldGrants(catalogRowFor(resources, resource, editRowFor),
+      (item.resource_operations || {})[resource] || [], (item.resource_grants || {})[resource] || []);
+    const claims = Array.from(new Set([...editKeptClaimsSelected(item, resource), ...hidden]));
     const managed = editManagedFor(resource);
     if (!managed.size) return claims;
     const held = ((item.resource_grants || {})[resource] || []).filter((grant: string) => managed.has(grant));

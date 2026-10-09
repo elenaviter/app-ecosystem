@@ -44,8 +44,9 @@ test('a declared group with no offered operation is not shown', () => {
 
 test('all three operation lists render through the declared groups', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
-  assert.match(panel, /renderOperationGroups\(item\.operations, \(operation\) => operation\.group, item\.operation_groups,/)
-  assert.match(panel, /renderOperationGroups\(resourceOption\.operations, \(operation\) => operation\.group, resourceOption\.operation_groups,/)
+  // W667: both editor lists render only the visible operations (a person's Card hides what it does not decide).
+  assert.match(panel, /renderOperationGroups\(visibleOperations\(item\.operations\), \(operation\) => operation\.group, item\.operation_groups,/)
+  assert.match(panel, /renderOperationGroups\(visibleOperations\(resourceOption\.operations\), \(operation\) => operation\.group, resourceOption\.operation_groups,/)
   const catalog = source('src/features/delegatedAccess/DelegatedResourceCatalog.tsx')
   assert.match(catalog, /renderOperationGroups\(rows, \(row\) => row\.group, namespace\.operation_groups,/)
   assert.match(catalog, /group: String\(policy\.group \|\| tool\.group \|\| ''\)/)
