@@ -843,6 +843,7 @@ class ProjectPersonControlLifecycle:
         try:
             updated = await self._host.update_access(
                 self._project_user(identity),
+                _person_control=True,
                 access_id=identity.control_id,
                 resource_grants=(
                     resource_grants
@@ -1350,6 +1351,7 @@ class ProjectPersonControlLifecycle:
         try:
             updated = await self._host.update_access(
                 {"user_id": target_subject, "roles": [], "permissions": []},
+                _application_write=True,  # W661 S5: the Reset copies the Control's grants
                 access_id=identity.my_card_id,
                 resource_grants=normalized["resource_grants"],
                 resource_operations=normalized["resource_operations"],

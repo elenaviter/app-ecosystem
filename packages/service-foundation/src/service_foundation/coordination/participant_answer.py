@@ -32,6 +32,12 @@ PLAN_REQUEST_FIELDS = frozenset({
 })
 PLAN_ECHO_FIELDS = PLAN_REQUEST_FIELDS - {"schema"}
 PLAN_ANSWER_FIELDS = PLAN_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
+# W502 lane D: register a Hub-sealed Card read collection (Connection Hub's card_read_collection_register).
+COLLECTION_REQUEST_FIELDS = frozenset({
+    "schema", "request_echo", "scope", "persons", "exclude", "actor_subject", "request_id", "deadline",
+})
+COLLECTION_ECHO_FIELDS = COLLECTION_REQUEST_FIELDS - {"schema"}
+COLLECTION_ANSWER_FIELDS = COLLECTION_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
 PROOF_FIELDS = frozenset({"service_id", "timestamp", "signature"})
 _ECHO = re.compile(r"[0-9a-f]{32,128}\Z")
 _TIMESTAMP = re.compile(r"(?:0|[1-9][0-9]{0,19})\Z")
@@ -61,6 +67,7 @@ class AnswerContract(Enum):
     PARTICIPANT = "participant"
     CENSUS = "census"
     PLAN = "plan"
+    COLLECTION = "collection"
 
 
 def _fields(contract: AnswerContract) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
@@ -70,6 +77,8 @@ def _fields(contract: AnswerContract) -> tuple[frozenset[str], frozenset[str], f
         return CENSUS_REQUEST_FIELDS, CENSUS_ECHO_FIELDS, CENSUS_ANSWER_FIELDS
     if contract is AnswerContract.PLAN:
         return PLAN_REQUEST_FIELDS, PLAN_ECHO_FIELDS, PLAN_ANSWER_FIELDS
+    if contract is AnswerContract.COLLECTION:
+        return COLLECTION_REQUEST_FIELDS, COLLECTION_ECHO_FIELDS, COLLECTION_ANSWER_FIELDS
     raise ParticipantAnswerRefused("answer_configuration_invalid")
 
 
@@ -205,6 +214,7 @@ def verify_participant_answer(answer: Mapping[str, Any], *, schema: str,
 
 __all__ = ["ANSWER_FIELDS", "ECHO_FIELDS", "PROOF_FIELDS", "REQUEST_FIELDS",
            "CENSUS_ANSWER_FIELDS", "CENSUS_ECHO_FIELDS", "CENSUS_REQUEST_FIELDS", "AnswerContract",
+           "COLLECTION_ANSWER_FIELDS", "COLLECTION_ECHO_FIELDS", "COLLECTION_REQUEST_FIELDS",
            "PLAN_ANSWER_FIELDS", "PLAN_ECHO_FIELDS", "PLAN_REQUEST_FIELDS",
            "ParticipantAnswerRefused", "request_digest", "sign_participant_answer",
            "verify_participant_answer"]

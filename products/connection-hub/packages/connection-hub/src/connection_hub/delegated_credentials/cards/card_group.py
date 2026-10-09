@@ -54,7 +54,8 @@ MAX_GROUP_MEMBERS = 8
 MAX_GROUP_CANDIDATE_BYTES = 256 * 1024
 _MEMBER_FIELDS = frozenset({"subject_hash", "access_id", "action", "original_revision", "original_absent",
                             "candidate"})
-_ACTIONS = frozenset({"create", "update", "attach", "revoke", "recreate"})
+# W639: an agent Card leaving a project is a group member with action detach.
+_ACTIONS = frozenset({"create", "update", "attach", "detach", "revoke", "recreate"})
 
 
 def _refuse(reason: str) -> DecisionRefused:
@@ -77,10 +78,23 @@ def _member_key(member: Mapping[str, Any]) -> tuple[str, str]:
 
 
 def group_candidate_value(members: Sequence[Mapping[str, Any]],
-                          effects: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
-    """The canonical group candidate: members sorted by (subject_hash, access_id), effects in order."""
-    return {"schema": GROUP_SCHEMA, "cards": sorted((dict(member) for member in members), key=_member_key),
-            "effects": [dict(effect) for effect in effects]}
+                          effects: Sequence[Mapping[str, Any]] = (), *,
+                          collection: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The canonical group candidate: members sorted by (subject_hash, access_id), effects in order.
+
+    W502 lane D: ``collection`` (a card-read-collection reference) names the group's read
+    dependencies by reference; the candidate's digest then binds it.
+    """
+    value = {"schema": GROUP_SCHEMA, "cards": sorted((dict(member) for member in members), key=_member_key),
+             "effects": [dict(effect) for effect in effects]}
+    if collection is not None:
+        value["collection"] = dict(collection)
+    return value
+
+
+def group_targets(value: Mapping[str, Any]) -> set[tuple[str, str]]:
+    """The (subject_hash, access_id) the group writes; a collection it reads must not contain them."""
+    return {_member_key(member) for member in value["cards"]}
 
 
 def group_binding_ref(value: Mapping[str, Any]) -> str:
@@ -130,9 +144,20 @@ def _validate_member(member: Any) -> None:
 
 def validate_group_candidate(value: Any, *, reads: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
     """The canonical group candidate, or a named refusal; ``reads`` are the group's dependency reads."""
-    if not isinstance(value, Mapping) or set(value) != {"schema", "cards", "effects"} \
-            or value["schema"] != GROUP_SCHEMA:
+    if (not isinstance(value, Mapping) or set(value) - {"collection"} != {"schema", "cards", "effects"}
+            or value["schema"] != GROUP_SCHEMA):
         raise _refuse("card_group_invalid")
+    by_reference = "collection" in value
+    if by_reference:
+        # W502 lane D: the reads are the Hub's sealed collection, never also enumerated. The overlap
+        # and parent-read rules need the leaves, so the stage applies them (stage_group_transaction).
+        from .card_read_set import validate_read_collection_ref
+        try:
+            validate_read_collection_ref(value["collection"])
+        except DecisionRefused as exc:
+            raise _refuse("card_group_collection_invalid") from exc
+        if reads:
+            raise _refuse("card_group_dependencies_mixed")
     members = value["cards"]
     if type(members) is not list or not members:
         raise _refuse("card_group_empty")
@@ -167,8 +192,9 @@ def validate_group_candidate(value: Any, *, reads: Sequence[Mapping[str, Any]] =
         raise _refuse("card_group_dependency_contradiction")
     if set(read_keys) & set(keys):
         raise _refuse("card_group_read_overlaps_target")
-    present = {(read["subject_hash"], read["access_id"]) for read in reads if read["revision"] >= 1}
-    _require_parent_reads(members, set(keys), present)
+    if not by_reference:
+        present = {(read["subject_hash"], read["access_id"]) for read in reads if read["revision"] >= 1}
+        _require_parent_reads(members, set(keys), present)
     return dict(value)
 
 
@@ -193,18 +219,30 @@ def _require_parent_reads(members: Sequence[Mapping[str, Any]], targets: set, re
 def hub_group_participant_input(*, members: Sequence[Mapping[str, Any]], actor_subject: str, actor_kind: str,
                                 effects: Sequence[Mapping[str, Any]] = (),
                                 reads: Sequence[Mapping[str, Any]] = (),
-                                catalog_version_digest: str = "") -> dict[str, Any]:
-    """The Hub's group ``participant_inputs[PARTICIPANT]``; refuses a group the Hub would never stage."""
+                                catalog_version_digest: str = "",
+                                collection: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The Hub's group ``participant_inputs[PARTICIPANT]``; refuses a group the Hub would never stage.
+
+    W502 lane D: with ``collection`` the dependencies are the collection's bounded form
+    (``read_collection_dependencies``), constant in the number of reads.
+    """
     if (actor_kind not in ("caller", "grantor") or type(actor_subject) is not str or not actor_subject.strip()
             or actor_subject != actor_subject.strip()):
         raise _refuse("card_group_actor_invalid")
-    value = validate_group_candidate(group_candidate_value(members, effects), reads=reads)
+    value = validate_group_candidate(group_candidate_value(members, effects, collection=collection), reads=reads)
+    if collection is not None:
+        from .card_read_set import read_collection_dependencies
+        if catalog_version_digest and catalog_version_digest != value["collection"]["catalog"]:
+            raise _refuse("card_group_collection_invalid")
+        dependencies = read_collection_dependencies(value["collection"])
+    else:
+        dependencies = dependency_revisions(reads, catalog_version_digest=catalog_version_digest)
     return {
         "participant": PARTICIPANT, "binding_kind": GROUP_BINDING_KIND, "binding_ref": group_binding_ref(value),
         "target_scope": group_target_scope(value), "target_incarnation": 1, "action": "create",
         "before_revision": 0, "candidate_revision": 1,
         "candidate_digest": sha256_hex(canonical_json_bytes(value)),
-        "dependency_revisions": dependency_revisions(reads, catalog_version_digest=catalog_version_digest),
+        "dependency_revisions": dependencies,
         "actor_subject": actor_subject, "actor_kind": actor_kind, "provisioning": {},
     }
 
@@ -213,8 +251,22 @@ def verify_group_projection(projection: Mapping[str, Any], value: Any) -> dict[s
     """The group candidate a verified projection names, or a named refusal (every field compared)."""
     if projection.get("binding_kind") != GROUP_BINDING_KIND:
         raise _refuse("card_group_binding_invalid")
-    reads = reads_from_dependencies(projection.get("dependency_revisions"))
-    checked = validate_group_candidate(value, reads=reads)
+    dependencies = projection.get("dependency_revisions")
+    if isinstance(dependencies, Mapping) and any(type(key) is str and key.startswith("card-collection:")
+                                                 for key in dependencies):
+        # W502 lane D: exactly the candidate's collection, in its bounded form, exact integers only.
+        if not isinstance(value, Mapping) or "collection" not in value:
+            raise _refuse("card_group_dependencies_mixed")
+        checked = validate_group_candidate(value)
+        from .card_read_set import read_collection_dependencies
+        if (any(type(item) is not int for item in dependencies.values())
+                or dict(dependencies) != read_collection_dependencies(checked["collection"])):
+            raise _refuse("card_group_not_bound")
+    else:
+        if isinstance(value, Mapping) and "collection" in value:
+            raise _refuse("card_group_dependencies_mixed")
+        reads = reads_from_dependencies(dependencies)
+        checked = validate_group_candidate(value, reads=reads)
     if (projection.get("participant") != PARTICIPANT
             or projection.get("binding_ref") != group_binding_ref(checked)
             or projection.get("target_scope") != group_target_scope(checked)
@@ -278,4 +330,4 @@ async def compose_group_chains(members: Sequence[Mapping[str, Any]], load_live: 
 
 __all__ = ["GROUP_BINDING_KIND", "compose_group_chains", "GROUP_SCHEMA", "MAX_GROUP_CANDIDATE_BYTES", "MAX_GROUP_MEMBERS",
            "group_binding_ref", "group_candidate_value", "group_member", "group_target_scope",
-           "hub_group_participant_input", "validate_group_candidate", "verify_group_projection"]
+           "group_targets", "hub_group_participant_input", "validate_group_candidate", "verify_group_projection"]

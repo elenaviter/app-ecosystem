@@ -692,6 +692,7 @@ class ProjectInvitationPendingCards:
         try:
             updated = await self._host.update_access(
                 self._project_user(project_ref),
+                _person_control=True,
                 access_id=identity.control_id,
                 resource_grants=(
                     resource_grants

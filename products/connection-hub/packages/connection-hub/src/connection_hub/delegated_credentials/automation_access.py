@@ -34,12 +34,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from connection_hub.concurrency import bounded_gather
+from connection_hub.delegated_credentials.managed_grants import (
+    MANAGED_GRANT_NOT_EDITABLE,
+    MANAGED_GRANTS_UNKNOWN,
+    ManagedGrantsUnknown,
+    managed_grant_changes,
+    managed_grant_refusal,
+    managed_operation_changes,
+    managed_operations,
+)
 from connection_hub.delegated_credentials.issuer_gate import (
     IssuerDecision, IssuerRegistry, IssuerRequest, IssuerWriteRefused,
     change_digest, issuer_write_refusal,
 )
 from connection_hub.delegated_credentials.caller_writer_gate import (
-    CallerWrite, CallerWriteRefused, binding_of, caller_write_outcome, caller_writer_before_commit, reset_candidate,
+    CallerWrite, CallerWriteRefused, binding_of, caller_write_outcome, caller_writer_before_commit,
+    control_named_services_entry, reset_candidate,
 )
 from connection_hub.authority_inventory import (
     AuthorityGrantInventory,
@@ -2485,6 +2495,137 @@ class AutomationAccessService:
                 "card_revision": candidate.card_revision, "expires_at": candidate.expires_at}})
         return effects
 
+    def bind_managed_card_edit(self, forwarders: Mapping[str, Any]) -> None:
+        """W638: per plan scope prefix, the project host that coordinates a managed Card edit.
+
+        Bound with the Card transactions (bundle props, never a request). A
+        managed write the direct writers refuse is forwarded to that host's
+        transaction instead; without a forwarder it stays refused.
+        """
+        self._managed_card_edit_forwarders = tuple(sorted(
+            (prefix, forwarder) for prefix, forwarder in dict(forwarders).items()
+            if isinstance(prefix, str) and prefix and callable(getattr(forwarder, "forward", None))
+        ))
+
+    def _managed_card_edit_forwarder(self, project_ref: str) -> Any:
+        for prefix, forwarder in getattr(self, "_managed_card_edit_forwarders", ()):
+            if isinstance(project_ref, str) and project_ref.startswith(prefix):
+                return forwarder
+        return None
+
+    async def _forward_person_control_edit(
+        self, user: Mapping[str, Any], *, project_ref: str, target_subject: str, request_id: str,
+        selection: Mapping[str, Any], expected_card_revision: int | None, properties: Any,
+        composition_mode: str | None,
+    ) -> dict[str, Any] | None:
+        """The managed person-Control edit, made by the project's own transaction."""
+        from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
+        forwarder = self._managed_card_edit_forwarder(project_ref)
+        actor_subject = _subject_from_user(user)
+        if forwarder is None or not _clean(target_subject) or not actor_subject:
+            return None
+        if properties is not None:
+            # The editor sends the Card's properties back with every Save.
+            # They are not part of this edit: only an unchanged copy may travel.
+            from .managed_card_edit_forward import managed_card_location
+            try:
+                access_id, grantor = managed_card_location(
+                    "person_control", project_ref=project_ref, ref=_clean(target_subject))
+                stored = await self._load_record(access_id, grantor_subject=grantor)
+            except ValueError:
+                stored = None
+            if stored is None or dict(properties) != dict(stored.properties or {}):
+                properties = {"changed": True}
+            else:
+                properties = None
+        if properties or composition_mode not in (None, "and"):
+            # Changing properties or composition here would not be the change
+            # the person saw for this selection.
+            return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
+                    "message": "Composition and Card properties are not changed by this edit. Nothing was saved."}
+        if type(expected_card_revision) is not int:
+            return {"ok": False, "error": "managed_card_edit_revision_required", "status": 409,
+                    "message": "Reload the Card and save again. Nothing was saved."}
+        try:
+            body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
+                request_id=request_id, kind="person_control", principal_key="user:" + _clean(target_subject),
+                original_revision=expected_card_revision, selection=selection)
+            outcome = await forwarder.forward(body)
+        except ManagedCardEditError as exc:
+            return exc.to_dict()
+        return {"ok": outcome["state"] == "committed", "managed_card_edit": outcome,
+                **({} if outcome["state"] == "committed" else {
+                    "error": "managed_card_edit_" + outcome["state"], "status": 409,
+                    "message": "The project did not save this change. Your draft is kept."})}
+
+    async def _forward_agent_card_edit(
+        self, user: Mapping[str, Any], *, record: AutomationAccessRecord, project_ref: str, request_id: str,
+        changes: Mapping[str, Any], kind: str = "agent_card",
+    ) -> dict[str, Any] | None:
+        """W638: a project agent Card's (or a pending invitation Control's) Save, made by the project's transaction."""
+        from .cards.store import subject_hash_for
+        from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
+        forwarder = self._managed_card_edit_forwarder(project_ref)
+        actor_subject = _subject_from_user(user)
+        if forwarder is None or not actor_subject or (kind == "agent_card" and record.control_card is None):
+            return None
+        unchanged = (
+            ("properties", dict(record.properties or {})),
+            ("composition_mode", record.composition_mode),
+            ("label", record.label),
+        )
+        for field, stored in unchanged:
+            value = changes.get(field)
+            if field == "composition_mode":
+                value, stored = (value or "and") if value is not None else None, stored or "and"
+            if value is not None and (dict(value) if isinstance(value, Mapping) else value) != stored:
+                return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
+                        "message": "Only the Card's selection is changed by this edit. Nothing was saved."}
+        revision = changes.get("expected_card_revision")
+        if type(revision) is not int:
+            return {"ok": False, "error": "managed_card_edit_revision_required", "status": 409,
+                    "message": "Reload the Card and save again. Nothing was saved."}
+        selection = {field: changes[field] for field in
+                     ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
+                     if changes.get(field) is not None}
+        try:
+            body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
+                request_id=request_id, kind=kind, principal_key="card:" + record.access_id,
+                original_revision=revision, selection=selection,
+                access_id=record.access_id, subject_hash=subject_hash_for(record.grantor_subject))
+            outcome = await forwarder.forward(body)
+        except ManagedCardEditError as exc:
+            return exc.to_dict()
+        return {"ok": outcome["state"] == "committed", "managed_card_edit": outcome,
+                **({} if outcome["state"] == "committed" else {
+                    "error": "managed_card_edit_" + outcome["state"], "status": 409,
+                    "message": "The project did not save this change. Your draft is kept."})}
+
+    async def _forward_managed_project_control(
+        self, user: Mapping[str, Any], *, record: AutomationAccessRecord, request_id: str | None,
+        changes: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """W638: a managed project Control's (P) Save, made by the project's own transaction.
+
+        None when ``record`` is not a managed P or no forwarder is configured:
+        the caller then keeps its direct-write refusal. A Save without a route
+        request id gets one stable per Save (actor, P, expected revision and the
+        selection sent), so retrying the same Save replays the project's one
+        decision and never makes a second.
+        """
+        if self._managed_project_control_refused(record) is None:
+            return None
+        if not request_id:
+            selection = {field: changes[field] for field in
+                         ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
+                         if changes.get(field) is not None}
+            digest = hashlib.sha256(json.dumps(
+                [_subject_from_user(user), record.access_id, changes.get("expected_card_revision"), selection],
+                sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+            request_id = "project-control-save:" + digest[:48]
+        return await self._forward_agent_card_edit(user, record=record, project_ref=_clean(record.issuer_ref),
+                                                   request_id=request_id, changes=changes, kind="project_control")
+
     def bind_managed_control_scopes(self, prefixes: Iterable[str]) -> None:
         """W578: the scopes in which a configured coordinator plans a project's Control Card (P).
 
@@ -3044,10 +3185,7 @@ class AutomationAccessService:
                 card_authority_from_record(existing), resource=resource,
                 control_operations=control_authority.resource_operations.get(resource, ()),
                 control_grants=control_authority.resource_grants.get(resource, ()),
-                control_named_services=(control_authority.named_service_operations.operations.get(resource)
-                                        if not (control_authority.named_service_operations.is_all
-                                                or control_authority.named_service_operations.is_unknown)
-                                        else None),
+                control_named_services=control_named_services_entry(control_authority, resource),
             )
         except CallerWriteRefused as exc:
             return exc.to_dict()
@@ -3058,6 +3196,7 @@ class AutomationAccessService:
                            else {key: dict(value) for key, value in selection.operations.items()})
         return await self.update_access(
             user, access_id=existing.access_id,
+            _application_write=True,  # W661 S5: the Reset copies the Control's grants, managed ones included
             resource_grants={key: list(value) for key, value in candidate["resource_grants"].items()},
             resource_operations={key: list(value) for key, value in candidate["resource_operations"].items()},
             named_service_operations=forwarded_named,
@@ -3456,6 +3595,13 @@ class AutomationAccessService:
                 # The "admin" mark is for a platform admin: anyone else sees the
                 # row as an ordinary one, bounded to the grants that are theirs.
                 "admin_only": bool(resource.admin_only) and platform_admin,
+                # Grants the owning application alone sets: shown, never editable here.
+                **({"managed_grants": list(managed)} if (managed := tuple(
+                    grant for grant in (getattr(resource, "managed_grants", ()) or ())
+                    if grant in delegable)) else {}),
+                # W667: the operations a person's Card decides; a person's editor hides the rest.
+                **({"person_card_operations": list(person_ops)} if (person_ops := tuple(
+                    getattr(resource, "person_card_operations", ()) or ())) else {}),
                 "operations": [
                     {
                         "name": tool.name,
@@ -3464,6 +3610,8 @@ class AutomationAccessService:
                         "grants": list(tool.grants),
                         **({"group": tool.group} if getattr(tool, "group", "") else {}),
                         **({} if getattr(tool, "person_card", True) else {"person_card": False}),
+                        # Needs a managed grant: shown as the Card holds it, never changed by an editor.
+                        **({"managed": True} if tool.name in managed_operations(resource) else {}),
                     }
                     for tool in resource.tools
                     if _grants_delegable(tool.grants, delegable)
@@ -4010,6 +4158,7 @@ class AutomationAccessService:
         ttl_seconds: Any = None,
         client_id: str | None = None,
         merge_existing: bool = True,
+        _application_write: bool = False,
     ) -> dict[str, Any]:
         """Create a delegated-access grant the current user grants to a client.
 
@@ -4046,6 +4195,12 @@ class AutomationAccessService:
         catalog_config = await self._catalog_config(
             active, owner_subject=grantor_subject
         )
+        if not _application_write:
+            # Only the application's own write may assign an application-managed grant (default: refused).
+            changes = managed_grant_changes(catalog_config, self._resource_grants(resource_grants), {})
+            changes += managed_operation_changes(catalog_config, self._resource_grants(resource_operations or {}), {})
+            if changes:
+                return managed_grant_refusal(changes)
 
         selected_resource_grants = self._resource_grants(resource_grants)
         selected_resource_grants, host_pinned = self._declared_resource_keys(
@@ -5457,10 +5612,13 @@ class AutomationAccessService:
         | None = None,
         _notification_subject: str = "",
         _issuer_decision: IssuerDecision | None = None,
+        request_id: str | None = None,
         _issuer_request_id: str = "",
         _issuer_context_ref: str = "",
         _caller_write_action: str = "update",
         _caller_actor_subject: str = "",
+        _application_write: bool = False,
+        _person_control: bool = False,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -5500,7 +5658,13 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_not_owned"}
         refused = self._managed_project_control_refused(existing)
         if refused is not None:
-            return refused
+            # W638: the owner's Save of a managed P goes through the project's own transaction.
+            forwarded = await self._forward_managed_project_control(user, record=existing, request_id=request_id,
+                changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
+                         "named_service_operations": named_service_operations, "account_scope": account_scope,
+                         "properties": properties, "composition_mode": composition_mode, "label": label,
+                         "expected_card_revision": expected_card_revision})
+            return forwarded if forwarded is not None else refused
         try:
             descriptor_marker = descriptor_control(existing.properties)
         except AgentCapabilityPolicyError as exc:
@@ -5583,6 +5747,19 @@ class AutomationAccessService:
             active,
             owner_subject=grantor_subject,
         )
+        if not _application_write:
+            # A Card write keeps every application-managed grant exactly as the Card holds it, unless it is
+            # the application's own write (explicit opt-out; every client route is guarded by default).
+            changes = managed_grant_changes(
+                catalog_config, self._resource_grants(resource_grants), self._resource_grants(existing.resource_grants))
+            if resource_operations is not None:
+                # An operation that needs a managed grant (every Card), and on a person's Control Card an
+                # operation the application decides for a person (W560), stays as the Card holds it.
+                changes += managed_operation_changes(
+                    catalog_config, self._resource_grants(resource_operations),
+                    self._resource_grants(existing.resource_operations), person_control=_person_control)
+            if changes:
+                return managed_grant_refusal(changes)
         if existing.source == ACCESS_SOURCE_OAUTH:
             entry_resource = self._entry_resource_for(
                 existing,
@@ -7136,6 +7313,7 @@ class AutomationAccessService:
         expected_card_revision: int | None = None,
         expected_catalog_version: str | None = None,
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
+        request_id: str | None = None,
         _delegable_grants: Iterable[str] | None = None,
         _record_transform: Callable[
             [AutomationAccessRecord, AutomationAccessRecord],
@@ -7172,7 +7350,13 @@ class AutomationAccessService:
             return {"ok": False, "error": "control_card_not_found", "status": 404}
         refused = self._managed_project_control_refused(existing)
         if refused is not None:
-            return refused
+            # W638: a managed P's Save goes through the project's own transaction.
+            forwarded = await self._forward_managed_project_control(user, record=existing, request_id=request_id,
+                changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
+                         "named_service_operations": named_service_operations, "account_scope": account_scope,
+                         "properties": properties, "composition_mode": composition_mode, "label": label,
+                         "expected_card_revision": expected_card_revision})
+            return forwarded if forwarded is not None else refused
         updated = await self.update_access(
             user,
             access_id=existing.access_id,
@@ -7352,8 +7536,32 @@ class AutomationAccessService:
         """Replace one live or pending project selection under host policy."""
 
         refused = self._managed_direct_write_refused()
+        if refused is not None and _clean(invitation_ref) and self._managed_card_edit_forwarder(project_ref) is not None:
+            # W638: a pending invitation's Control, edited by the project's own transaction.
+            from .managed_card_edit_forward import ManagedCardEditError, managed_card_location
+            try:
+                access_id, grantor = managed_card_location(
+                    "invitation_control", project_ref=project_ref, ref=_clean(invitation_ref))
+            except ManagedCardEditError as exc:
+                return exc.to_dict()
+            stored = await self._load_record(access_id, grantor_subject=grantor)
+            forwarded = None if stored is None else await self._forward_agent_card_edit(
+                user, record=stored, project_ref=project_ref, request_id=request_id, kind="invitation_control",
+                changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
+                         "named_service_operations": named_service_operations, "account_scope": account_scope,
+                         "properties": properties, "composition_mode": composition_mode, "label": label,
+                         "expected_card_revision": expected_card_revision})
+            return refused if forwarded is None else forwarded
         if refused is not None:
-            return refused
+            forwarded = await self._forward_person_control_edit(
+                user, project_ref=project_ref, target_subject=target_subject, request_id=request_id,
+                selection={field: value for field, value in (
+                    ("resource_grants", resource_grants), ("resource_operations", resource_operations),
+                    ("named_service_operations", named_service_operations), ("account_scope", account_scope),
+                ) if value is not None},
+                expected_card_revision=expected_card_revision, properties=properties,
+                composition_mode=composition_mode)
+            return refused if forwarded is None else forwarded
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
@@ -9078,6 +9286,7 @@ class AutomationAccessService:
         replace_authority: bool = False,
         expected_card_revision: int | None = None,
         now: int | None = None,
+        _application_write: bool = False,
     ) -> tuple[AutomationAccessRecord, int, bool, dict[str, Any]] | None:
         """The Card ``record_oauth_grant`` writes: (record, committed revision, initial consent, account scope).
 
@@ -9343,6 +9552,28 @@ class AutomationAccessService:
                 record,
                 config=authority_config,
             )
+            if not _application_write:
+                # W661 S5 (G2): an OAuth consent never adds or removes an application-managed grant or
+                # operation; refused before the Card is persisted (the route then withholds the tokens).
+                held_grants = dict(existing_card.resource_grants) if existing_card is not None else {}
+                held_operations = dict(existing_card.resource_operations) if existing_card is not None else {}
+                changes = managed_grant_changes(
+                    authority_config, self._resource_grants(record.resource_grants), self._resource_grants(held_grants))
+                changes += managed_operation_changes(
+                    authority_config, self._resource_grants(record.resource_operations),
+                    self._resource_grants(held_operations))
+                if changes:
+                    raise CallerWriteRefused(MANAGED_GRANT_NOT_EDITABLE)
+        elif not _application_write:
+            # L2, decided fail-CLOSED (Main, 2026-10-09 10:39Z): with the catalog unavailable no managed
+            # grant is known, so a consent that changes the Card's authority is refused (retryable); a refresh
+            # that carries the Card forward unchanged still passes.
+            held_grants = self._resource_grants(dict(existing_card.resource_grants)) if existing_card is not None else {}
+            held_operations = (self._resource_grants(dict(existing_card.resource_operations))
+                               if existing_card is not None else {})
+            if (self._resource_grants(dict(record.resource_grants)) != held_grants
+                    or self._resource_grants(dict(record.resource_operations)) != held_operations):
+                raise ManagedGrantsUnknown()
         return record, existing_card_revision, is_initial_consent, merged_account_scope
 
     async def record_oauth_grant(
@@ -9368,6 +9599,7 @@ class AutomationAccessService:
         properties: Mapping[str, Any] | None = None,
         replace_authority: bool = False,
         expected_card_revision: int | None = None,
+        _application_write: bool = False,
     ) -> AutomationAccessRecord | None:
         """Register (or update) an OAuth-flow delegated grant in the registry.
 
@@ -9407,6 +9639,7 @@ class AutomationAccessService:
             properties=properties,
             replace_authority=replace_authority,
             expected_card_revision=expected_card_revision,
+            _application_write=_application_write,
         )
         if built is None:
             return None
@@ -10666,6 +10899,15 @@ class AutomationAccessService:
             label=new_label or record.label,
             card_revision=record.card_revision + 1,
         )
+        # W661 S5 (G2): a consent extension never adds or removes an application-managed grant or operation.
+        changes = managed_grant_changes(
+            extend_config, self._resource_grants(dict(updated.resource_grants)),
+            self._resource_grants(dict(record.resource_grants)))
+        changes += managed_operation_changes(
+            extend_config, self._resource_grants(dict(updated.resource_operations)),
+            self._resource_grants(dict(record.resource_operations)))
+        if changes:
+            return managed_grant_refusal(changes)
         try:
             await self._persist_record(updated, expected_revision=record.card_revision,
                                        caller_write=CallerWrite("extend", self._caller_actor_subject(user)))

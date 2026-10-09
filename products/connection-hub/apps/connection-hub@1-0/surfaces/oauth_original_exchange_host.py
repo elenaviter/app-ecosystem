@@ -10,7 +10,6 @@ it must never fall through to the older consume-and-mint path.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any, Mapping
 from urllib.parse import urlsplit
@@ -48,10 +47,21 @@ def configured_issuer(value: object) -> str:
     return value.rstrip("/")
 
 
+# The SDK's secrets runtime contract (infra/secrets/runtime_contract.py, runtime_file.py): a
+# namespace is [a-z0-9][a-z0-9-]{0,63}. "chub-oauth-" (11) + 52 hex digits = 63 characters.
+CUSTODY_NAMESPACE = "oauth-refresh-tokens"
+
+
 def custody_namespace(tenant: str, project: str) -> str:
-    scope = json.dumps({"tenant": tenant, "project": project}, sort_keys=True,
-                       separators=(",", ":"), ensure_ascii=True)
-    return "connection-hub.oauth-original." + hashlib.sha256(scope.encode()).hexdigest()
+    """The Hub's readable custody purpose for original OAuth refresh tokens.
+
+    Records are owned by the Hub bundle and stored by the configured secrets manager under
+    that owner and purpose (file backend: <runtime root>/<bundle>/oauth-refresh-tokens/<ref>.json).
+    Tenant/project isolation comes from the deployment's own runtime root or provider prefix,
+    not from this string. The arguments are kept for the existing call signature.
+    """
+    del tenant, project
+    return CUSTODY_NAMESPACE
 
 
 async def consumed_candidate_inputs(*, payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -195,7 +205,8 @@ class OriginalPairHost:
 async def bind_original_exchange(request: Any, *, tenant: str, project: str, pg_pool: Any,
                                  configured_public_issuer: object, hub: Any, grant_store: Any,
                                  issuance_store: Any, cards: Any, settings: Any,
-                                 refresh_signing_secret_ref: object, resolve_secret: Any) -> None:
+                                 refresh_signing_secret_ref: object, resolve_secret: Any,
+                                 owner_bundle_id: str) -> None:
     """Bind real capabilities after configuration checks, never perform DDL."""
     request.state.oauth_original_exchange_factory = None
     issuer = configured_issuer(configured_public_issuer)
@@ -213,7 +224,10 @@ async def bind_original_exchange(request: Any, *, tenant: str, project: str, pg_
     from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.oauth.original_refresh_issuer import HmacOriginalRefreshSigner
     if bundle_session_store_for(tenant=tenant, project=project) is None:
         raise OriginalExchangeHostingUnavailable("original_exchange_session_authority_not_bound")
-    custody = issuance_secret_custody(namespace=custody_namespace(tenant, project), settings=settings)
+    if type(owner_bundle_id) is not str or not owner_bundle_id or owner_bundle_id != owner_bundle_id.strip():
+        raise OriginalExchangeHostingUnavailable("original_exchange_host_not_bound")
+    custody = issuance_secret_custody(namespace=custody_namespace(tenant, project), settings=settings,
+                                      bundle_id=owner_bundle_id)
     await custody.qualify()
 
     async def signing_key():

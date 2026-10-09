@@ -76,6 +76,10 @@ export interface DelegatedAccessOperationOption {
   group?: string;
   /** False when the service decides this operation for a person by role alone (W360). */
   person_card?: boolean;
+  /** W560: listed on a person's Control Card as the Card holds it, never editable there. */
+  managed?: boolean;
+  /** W667: on a person's Card, an operation that Card does not decide: not shown, kept as the Card holds it. */
+  hidden?: boolean;
 }
 
 /** One operation group a service declares, in display order (W260). */
@@ -130,6 +134,10 @@ export interface DelegatedAccessResourceOption {
   identity_scope?: string;
   grants?: string[];
   admin_only?: boolean;
+  /** Grants only the owning application sets; shown, never editable or sent as a change (W661 S5). */
+  managed_grants?: string[];
+  /** W667: the operations a person's Card decides, as the application declares them; absent = all shown. */
+  person_card_operations?: string[];
   resource_selection?: boolean;
   selectable_resources?: string[];
   selector_type?: string;

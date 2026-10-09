@@ -43,8 +43,11 @@ see_also:
   owner's included), and each agent's project Card. A member reads their own Control Card and
   edits only their own My Card, within their Control Card.
 - **A new permission reaches people already in the project only when a
-  project admin ticks it** on their Cards; a person's role preset applies only
-  when their Card is created.
+  project admin ticks it** on their Cards. A role is a minimum, not a Card
+  preset: a promotion establishes the admin minimum on both of the person's
+  current Cards, and nothing rewrites the person's other selections.
+  `project.cards.manage` is the explicit permission to manage project Cards in
+  Connection Hub; no role preset ticks it.
 - **The project Control Card caps every agent Card on the project** while its
   access rule is AND (the default), and a Card Refresh is capped by it too:
   after new operations reach the catalog, a project admin ticks them on the

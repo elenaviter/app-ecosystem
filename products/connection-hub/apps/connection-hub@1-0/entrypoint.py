@@ -57,6 +57,7 @@ from connection_hub.delegated_credentials.cards.composition import (
     recover_card_transactions,
 )
 from connection_hub.delegated_credentials.cards.census_read import CardCensusReadOperation
+from connection_hub.delegated_credentials.cards.card_read_collection_operation import CardReadCollectionOperation
 from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import CardLifecyclePlanOperation
 from connection_hub.delegated_credentials.card_lifecycle_plan import plan_card_lifecycle
 from connection_hub.delegated_credentials.cards.participant_descriptor import (
@@ -364,6 +365,7 @@ CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     # establishes authority (test_w502_peer_endpoints_ignore_the_browser_session).
     "card_census_read",
     "card_lifecycle_plan",
+    "card_read_collection_register",
     "card_transaction_participant",
     "delegated_admission",
     "federated_data_bus_claim",
@@ -1199,7 +1201,8 @@ async def _bind_delegated_client_request_config(
                         issuance_store=_durable_authority(entrypoint).oauth,
                         cards=persistence.card_store, settings=get_settings(),
                         refresh_signing_secret_ref=original.get("refresh_signing_secret_ref"),
-                        resolve_secret=original_signing_secret)
+                        resolve_secret=original_signing_secret,
+                        owner_bundle_id=_entrypoint_bundle_id(entrypoint))
                 except Exception:
                     # Exception text may contain a provider value. The SDK
                     # returns a finite 503 from the present closed binding.
@@ -1696,6 +1699,35 @@ async def _bind_card_transactions(entrypoint: Any, service: Any, *, persistence:
                            catalog_store=_delegated_catalog_store(entrypoint),
                            accounts_for=lambda owner: _delegated_to_kdcube_store(entrypoint, owner),
                            managed_control_scopes=managed_scopes)
+    # W638: a managed Card edit is forwarded to the host that plans its scope,
+    # signed with that caller's authority request signer. A caller whose
+    # signer secret is unavailable gets no forwarder: its edits stay refused.
+    service.bind_managed_card_edit(await _managed_card_edit_forwarders(entrypoint))
+
+
+async def _managed_card_edit_forwarders(entrypoint: Any) -> dict[str, Any]:
+    from connection_hub.delegated_credentials.managed_card_edit_forward import PeerManagedCardEdit
+    from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_operation
+
+    async def call(**kwargs: Any) -> Any:
+        # The host authenticates the forward by the Hub's proof, as a public operation.
+        return await call_bundle_operation(route="public", **kwargs)
+
+    forwarders: dict[str, Any] = {}
+    for descriptor in participant_caller_descriptors(_connections_config(entrypoint)).values():
+        if not descriptor.plan_scope_prefix:
+            continue
+        try:
+            secret = str(await _bundle_secret_value(entrypoint, secret_path=descriptor.authority_request_secret_ref,
+                                                    trace_scope="managed-card-edit", warn_missing=False) or "")
+        except Exception:  # noqa: BLE001 - a secret store failure leaves this scope refused
+            secret = ""
+        if len(secret.encode("utf-8")) < 32:
+            continue
+        forwarders[descriptor.plan_scope_prefix] = PeerManagedCardEdit(
+            call=call, bundle_id=descriptor.binding.bundle_id,
+            signer_id=descriptor.authority_request_signer_id, secret=secret)
+    return forwarders
 
 
 async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
@@ -1778,6 +1810,7 @@ def _delegated_to_kdcube_oauth_state_store(entrypoint: Any) -> RedisOAuthStateSt
         secret_store=ephemeral_secret_store(
             namespace="login-attempts",
             settings=settings,
+            bundle_id=_entrypoint_bundle_id(entrypoint),
         ),
     )
 
@@ -3929,7 +3962,18 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             await redis.set(cursor_key, report["next_after"])
         except Exception:  # noqa: BLE001
             LOGGER.warning("[connection-hub.card-transactions] recovery cursor not saved")
-        return {"enabled": True, **report, "stale_catalog_marker_cleared": stale_marker_age is not None}
+        # W651 retention: after recovery finished what it could, delete the sealed read collections whose
+        # deadline passed and that no in-flight transaction names; bounded per tick.
+        collections = None
+        card_service = getattr(persistence, "card_service", None)
+        if callable(getattr(card_service, "sweep_expired_collections", None)):
+            try:
+                collections = await card_service.sweep_expired_collections(now=int(time.time()))
+            except Exception as exc:  # noqa: BLE001 - retention retries next tick; recovery's report stands
+                LOGGER.warning("[connection-hub.card-transactions] collection retention failed reason=%s",
+                               type(exc).__name__)
+        return {"enabled": True, **report, "stale_catalog_marker_cleared": stale_marker_age is not None,
+                "collections": collections}
 
     # ── named-service over HTTP (serves the whole contract) ──────────────────
 
@@ -4299,6 +4343,44 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         operation = CardCensusReadOperation(
             callers=built.callers, card_store=persistence.card_store, catalog_store=_delegated_catalog_store(self),
             nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-census:nonce:")
+        return await operation.answer(payload)
+
+    @api(method="POST", alias="card_read_collection_register", route="public")
+    async def card_read_collection_register(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W502 lane D: seal a project-wide Card read collection; answer its bounded reference.
+
+        Same peer authentication and scope entitlement as card_census_read. The
+        caller names the persons and owns completeness; the Hub derives their
+        Cards itself and seals them once, so the caller's decision intent holds
+        only the reference (card_read_collection_operation.py).
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] collection callers unavailable")
+            return unavailable
+        if not built.callers:
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        card_service = getattr(persistence, "card_service", None)
+        if not callable(getattr(card_service, "collection_section", None)):
+            return unavailable  # W651: never seal without the collection lock retention takes
+        operation = CardReadCollectionOperation(
+            callers=built.callers, card_store=persistence.card_store, catalog_store=_delegated_catalog_store(self),
+            nonces=redis, clock=time.time, nonce_prefix=f"connection-hub:{tenant}:{project}:card-collection:nonce:",
+            collection_lock=card_service.collection_section)
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_lifecycle_plan", route="public")
