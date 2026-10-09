@@ -183,3 +183,53 @@ async def test_targets_come_from_problem_boards_committed_admins_project_card_fi
     assert (targets[1].access_id, targets[1].subject_hash) == (alice.control_id, subject_hash_for(alice.project_subject))
     assert (targets[2].access_id, targets[2].subject_hash) == (alice.my_card_id, subject_hash_for("alice"))
     assert targets[0].access_id == "control-pa" and targets[0].subject_hash == ""  # resolved from the Hub store
+
+
+@pytest.mark.asyncio
+async def test_a_backfilled_card_also_accepts_the_operation_at_the_active_digest_and_nothing_else(tmp_path):
+    # Live 2026-10-09 22:13Z: the 21:07Z backfill added the operation but not its acceptance, so the editor
+    # showed it as "newly advertised, not granted" and the save sent it as an addition.
+    from connection_hub.delegated_credentials.catalog.descriptors import ResourceAcceptance
+
+    prior = ResourceAcceptance(kind="catalog", revision="delegated_catalog_old", digest="a" * 64,
+                               grants=("work:admin",), operations={"review.accept": "b" * 64})
+    held = dataclasses.replace(_card("aut_control1", grantor="project:x",
+                                     operations=("review.accept", backfill.OPERATION)),
+                               resource_acceptance={PB: prior})
+    store, service, targets = await _world(tmp_path, ("control", held))
+    digest = "c" * 64
+    plan = {"schema": backfill.PLAN_SCHEMA,
+            "rows": await backfill.check(store, targets, now=NOW, digest_for=lambda resource: digest)}
+    assert [row["change"] for row in plan["rows"]] == [True]
+    rows = await backfill.apply(store, service, targets, plan, now=NOW, digest_for=lambda resource: digest)
+    assert rows[0]["applied"] is True and rows[0]["revision"] == 2
+    after = (await store.read_current_authority(subject_hash=targets[0].subject_hash, access_id="aut_control1"))[1]
+    accepted = after.resource_acceptance[PB]
+    assert accepted.operations == {"review.accept": "b" * 64, backfill.OPERATION: digest}
+    assert (accepted.revision, accepted.digest, accepted.grants) == (prior.revision, prior.digest, prior.grants)
+    assert after.resource_operations == held.resource_operations and after.resource_grants == held.resource_grants
+    again = await backfill.check(store, targets, now=NOW, digest_for=lambda resource: digest)
+    assert [row["change"] for row in again] == [False]  # idempotent
+
+
+@pytest.mark.asyncio
+async def test_without_an_active_digest_or_a_prior_acceptance_only_the_operation_is_added(tmp_path):
+    card = _card("aut_control1", grantor="project:x")  # no acceptance recorded at all
+    store, service, targets = await _world(tmp_path, ("control", card))
+    candidate, state = backfill.with_operation(card, now=NOW, accepted_digest="c" * 64)
+    assert state == "change" and candidate.resource_acceptance == card.resource_acceptance
+    assert backfill.OPERATION in candidate.resource_operations[PB]
+
+
+def test_the_accepted_digest_is_the_active_catalog_rows_own_for_a_card_selector():
+    # The row a Card's selector governs (card_selector_config, as a save's acceptance uses), not a guess.
+    from connection_hub.delegated_credentials.catalog.models import CatalogDocument
+
+    pattern = "*/api/integrations/bundles/*/*/problem-board@1-0/public/mcp/problem_board*"
+    document = CatalogDocument.build({"delegated_credentials": {"oauth": {"enabled": True, "resources": [{
+        "resource": pattern, "grants": ["work:admin", "work:review"],
+        "tools": {backfill.OPERATION: {"label": "Manage project Cards", "grants": ["work:admin"]},
+                  "review.accept": {"label": "Accept", "grants": ["work:review"]}}}]}}})
+    digest = backfill.accepted_operation_digest(document, pattern)
+    assert len(digest) == 64
+    assert backfill.accepted_operation_digest(document, "https://elsewhere.test/mcp") == ""

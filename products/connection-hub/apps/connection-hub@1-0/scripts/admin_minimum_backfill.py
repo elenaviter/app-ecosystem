@@ -72,12 +72,16 @@ class BackfillRefused(Exception):
         self.code = code
 
 
-def with_operation(authority: Any, *, now: int) -> tuple[Any, str]:
-    """The next revision holding ``project.cards.manage`` on the Problem Board resource, or the Card itself.
+def with_operation(authority: Any, *, now: int, accepted_digest: str = "") -> tuple[Any, str]:
+    """The next revision holding AND having accepted ``project.cards.manage`` on the Problem Board resource.
 
     The same delta as Problem Board's ``minimal_bootstrap_candidate`` without the grant (already held):
-    the resource's operations and the flat operations gain the one operation; every other field stays.
-    Returns (candidate, state): state is "change", "unchanged" (already holds it) or a refusal code.
+    the resource's operations and the flat operations gain the one operation. With ``accepted_digest`` (the
+    operation's descriptor digest in the ACTIVE catalog row) the resource's acceptance also records the
+    operation as accepted at that digest (live 2026-10-09 22:13Z: without it the editor showed the held
+    operation as "newly advertised, not granted" and sent it as an addition). The acceptance's row-level
+    revision and digest stay as they were, so every OTHER changed tool still reads as awaiting review.
+    Every other field stays. Returns (candidate, state): "change" or "unchanged".
     """
     if authority.state != "active":
         raise BackfillRefused("card_not_active")
@@ -85,17 +89,35 @@ def with_operation(authority: Any, *, now: int) -> tuple[Any, str]:
         raise BackfillRefused("card_expired")
     resource = problem_board_resource(authority)
     held = set(authority.resource_operations.get(resource, ()))
-    if OPERATION in held:
+    prior = authority.resource_acceptance.get(resource)
+    needs_operation = OPERATION not in held
+    needs_acceptance = bool(accepted_digest) and prior is not None and prior.operations.get(OPERATION) != accepted_digest
+    if not needs_operation and not needs_acceptance:
         return authority, "unchanged"
-    operations = dict(authority.resource_operations)
-    operations[resource] = tuple(sorted(held | {OPERATION}))
-    candidate = dataclasses.replace(
-        authority,
-        card_revision=int(authority.card_revision) + 1,
-        operations=tuple(sorted(set(authority.operations) | {OPERATION})),
-        resource_operations=operations,
-    )
-    return candidate, "change"
+    changes: dict[str, Any] = {"card_revision": int(authority.card_revision) + 1}
+    if needs_operation:
+        operations = dict(authority.resource_operations)
+        operations[resource] = tuple(sorted(held | {OPERATION}))
+        changes["operations"] = tuple(sorted(set(authority.operations) | {OPERATION}))
+        changes["resource_operations"] = operations
+    if needs_acceptance:
+        acceptance = dict(authority.resource_acceptance)
+        acceptance[resource] = dataclasses.replace(
+            prior, operations={**dict(prior.operations), OPERATION: accepted_digest})
+        changes["resource_acceptance"] = acceptance
+    return dataclasses.replace(authority, **changes), "change"
+
+
+def accepted_operation_digest(document: Any, resource: str) -> str:
+    """``project.cards.manage``'s descriptor digest in the ACTIVE catalog row for ``resource``, or ""."""
+    from connection_hub.delegated_credentials.catalog.descriptors import row_acceptance
+    from connection_hub.delegated_credentials.oauth.config import oauth_delegated_config_from_connections
+
+    config = oauth_delegated_config_from_connections(getattr(document, "connections", None) or {})
+    row = config.card_selector_config(resource)
+    if row is None:
+        return ""
+    return row_acceptance(row, catalog_version=getattr(document, "version", "")).operations.get(OPERATION, "")
 
 
 def holds_admin_grant(authority: Any) -> bool:
@@ -127,7 +149,7 @@ async def read_card(store: Any, target: Target) -> Any | None:
     return None if loaded is None else loaded[1]
 
 
-async def check(store: Any, targets: Iterable[Target], *, now: int) -> list[dict[str, Any]]:
+async def check(store: Any, targets: Iterable[Target], *, now: int, digest_for=lambda resource: "") -> list[dict[str, Any]]:
     """Per Card: what apply would do. Writes nothing."""
     rows = []
     for target in targets:
@@ -140,7 +162,7 @@ async def check(store: Any, targets: Iterable[Target], *, now: int) -> list[dict
             row["revision"] = int(authority.card_revision)
             row["content_hash"] = authority.content_hash()
             row["admin_grant"] = holds_admin_grant(authority)
-            _, state = with_operation(authority, now=now)
+            _, state = with_operation(authority, now=now, accepted_digest=digest_for(problem_board_resource(authority)))
             row["change"] = state == "change"
         except BackfillRefused as exc:
             row["refused"] = exc.code
@@ -151,7 +173,7 @@ async def check(store: Any, targets: Iterable[Target], *, now: int) -> list[dict
 
 
 async def apply(store: Any, service: Any, targets: Iterable[Target], plan: dict[str, Any], *,
-                now: int) -> list[dict[str, Any]]:
+                now: int, digest_for=lambda resource: "") -> list[dict[str, Any]]:
     """Commit each planned change, only when the Card is still exactly what check saw."""
     planned = {row["key"]: row for row in plan["rows"]}
     rows = []
@@ -171,7 +193,8 @@ async def apply(store: Any, service: Any, targets: Iterable[Target], plan: dict[
                 raise BackfillRefused("card_absent")
             if int(authority.card_revision) != seen["revision"] or authority.content_hash() != seen["content_hash"]:
                 raise BackfillRefused("card_changed_since_check")
-            candidate, state = with_operation(authority, now=now)
+            candidate, state = with_operation(authority, now=now,
+                                              accepted_digest=digest_for(problem_board_resource(authority)))
             if state != "change":
                 raise BackfillRefused("card_changed_since_check")
             await service.commit(candidate, subject_hash=target.subject_hash,
@@ -276,9 +299,24 @@ async def _main(argv: list[str]) -> int:
     store = BundleStorageDelegatedCardStore(env["HUB_STORAGE_ROOT"],
                                             lifecycle_lock_scope=env.get("HUB_LIFECYCLE_LOCK_SCOPE", ""))
     targets = await resolve_project_cards(store, targets)
+    from connection_hub.delegated_credentials.catalog.store import BundleStorageDelegatedCatalogStore
+    active = await BundleStorageDelegatedCatalogStore(env["HUB_STORAGE_ROOT"]).read_active()
+    if active is None:
+        print("refused: no active catalog", file=sys.stderr)
+        return 2
+    digests: dict[str, str] = {}
+
+    def digest_for(resource: str) -> str:
+        if resource not in digests:
+            digests[resource] = accepted_operation_digest(active, resource)
+        if not digests[resource]:
+            # Never a silent partial fix: the operation must be in the active catalog row to be accepted.
+            raise BackfillRefused("active_catalog_operation_missing")
+        return digests[resource]
+
     now = int(time.time())
     if args.mode == "check":
-        rows = await check(store, targets, now=now)
+        rows = await check(store, targets, now=now, digest_for=digest_for)
         with open(args.plan, "w", encoding="utf-8") as handle:
             json.dump({"schema": PLAN_SCHEMA, "rows": rows}, handle, sort_keys=True)
         print_rows(rows, mode="check")
@@ -292,7 +330,8 @@ async def _main(argv: list[str]) -> int:
     try:
         persistence = DurableCardPersistence(redis=redis, tenant=env["HUB_TENANT"], project=env["HUB_PROJECT"],
                                              card_store=store)
-        rows = await apply(persistence.card_store, persistence.card_service, targets, plan, now=now)
+        rows = await apply(persistence.card_store, persistence.card_service, targets, plan, now=now,
+                           digest_for=digest_for)
     finally:
         await redis.aclose()
     print_rows(rows, mode="apply")
