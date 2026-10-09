@@ -43,26 +43,51 @@ function namespaceForPersonCard(
   return { ...namespace, tools };
 }
 
-/** One catalog row as a person's Control Card is offered it. W560 (operator, 2026-10-05: "simply selected
- *  and non-editable"): an outer operation the service decides for a person stays LISTED, marked "managed",
- *  shown as the Card holds it and never changed by the editor or its Save. */
+/** W667 (operator, 2026-10-09: "eveyrthing that is not controlled and cannot be controlled must be hidden!";
+ *  managed ones: "not viisble."): when the application declares `person_card_operations`, a person's Card
+ *  shows only those it decides; every other operation, managed ones included, is hidden. */
+function declaredPersonOperations(option: DelegatedAccessResourceOption): Set<string> | null {
+  return Array.isArray(option.person_card_operations) && option.person_card_operations.length
+    ? new Set(option.person_card_operations) : null;
+}
+
+/** One catalog row as a person's Card is offered it. W560 (operator, 2026-10-05: "simply selected and
+ *  non-editable"): an outer operation the service decides for a person is marked "managed", shown as the
+ *  Card holds it and never changed by the editor or its Save. W667: with a declaration, it and every
+ *  operation outside the declared set are also "hidden": not shown, still kept exactly as held on Save. */
 export function resourceForPersonCard(option: DelegatedAccessResourceOption): DelegatedAccessResourceOption {
+  const declared = declaredPersonOperations(option);
   return {
     ...option,
-    ...(option.operations ? { operations: option.operations.map((operation) => (
-      offeredOnPersonCard(operation) ? operation : { ...operation, managed: true })) } : {}),
+    ...(option.operations ? { operations: option.operations.map((operation) => {
+      const decided = offeredOnPersonCard(operation) && (!declared || declared.has(operation.name));
+      if (decided) return operation;
+      return declared ? { ...operation, managed: true, hidden: true } : { ...operation, managed: true };
+    }) } : {}),
     ...(option.named_services ? { named_services: option.named_services.map(namespaceForPersonCard) } : {}),
   };
+}
+
+/** The operations an editor shows: everything but the W667 hidden ones. */
+export function visibleOperations<T extends { hidden?: boolean }>(operations: T[] | undefined): T[] {
+  return (operations || []).filter((operation) => operation.hidden !== true);
 }
 
 export function resourcesForPersonCard(options: DelegatedAccessResourceOption[]): DelegatedAccessResourceOption[] {
   return options.map(resourceForPersonCard);
 }
 
+/** W667: a person's own My Card hides what it does not decide, only where the application declares it
+ *  (a row without a declaration is shown exactly as before). */
+export function resourcesForPersonMyCard(options: DelegatedAccessResourceOption[]): DelegatedAccessResourceOption[] {
+  return options.map((option) => (declaredPersonOperations(option) ? resourceForPersonCard(option) : option));
+}
+
 /** The outer operations of a catalog row a person's Card is not offered, for the drift review. */
 export function notOfferedOnPersonCard(catalogRow: DelegatedAccessResourceOption | undefined): string[] {
+  const declared = catalogRow ? declaredPersonOperations(catalogRow) : null;
   return (catalogRow?.operations || [])
-    .filter((operation) => !offeredOnPersonCard(operation))
+    .filter((operation) => !offeredOnPersonCard(operation) || (declared !== null && !declared.has(operation.name)))
     .map((operation) => operation.name);
 }
 

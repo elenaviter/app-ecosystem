@@ -137,6 +137,11 @@ class OAuthDelegatedResourceConfig:
     # operations. A Card editor shows them but cannot change them, and a client Card
     # upsert that adds or removes one is refused (managed_grant_not_editable).
     managed_grants: tuple[str, ...] = ()
+    # The operations a PERSON's Card decides for this resource, as the application declares
+    # them (W667). A person's Card editor shows only these (minus person_card: false); every
+    # other operation is hidden there, never edited. Empty: not declared, every operation shown.
+    # Presentation only, outside every digest.
+    person_card_operations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -606,6 +611,12 @@ def _nested_named_service_grants(raw: Any) -> tuple[str, ...]:
     return _ordered_union(grants)
 
 
+def _person_card_operations(raw: Any, tools: tuple[Any, ...]) -> tuple[str, ...]:
+    """The declared person-Card operations, in catalog order and only among the resource's own tools."""
+    declared = set(_coerce_string_tuple(raw))
+    return tuple(tool.name for tool in tools if tool.name in declared)
+
+
 def _managed_grants(raw: Any, grants: tuple[str, ...]) -> tuple[str, ...]:
     """A resource's application-managed grants: declared, and only among the resource's own grants."""
     declared = set(_coerce_string_tuple(raw))
@@ -680,6 +691,7 @@ def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
                 operation_groups=parse_operation_groups(item.get("operation_groups")),
                 managed_grants=_managed_grants(item.get("managed_grants"), explicit_grants or _ordered_union(
                     [*(grant for tool in tools for grant in tool.grants), *namespace_grants])),
+                person_card_operations=_person_card_operations(item.get("person_card_operations"), tools),
             )
         )
     return tuple(out)

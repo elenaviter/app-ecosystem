@@ -3599,6 +3599,9 @@ class AutomationAccessService:
                 **({"managed_grants": list(managed)} if (managed := tuple(
                     grant for grant in (getattr(resource, "managed_grants", ()) or ())
                     if grant in delegable)) else {}),
+                # W667: the operations a person's Card decides; a person's editor hides the rest.
+                **({"person_card_operations": list(person_ops)} if (person_ops := tuple(
+                    getattr(resource, "person_card_operations", ()) or ())) else {}),
                 "operations": [
                     {
                         "name": tool.name,

@@ -182,7 +182,9 @@ import {
   linkedControlOpenTarget,
   projectPersonControlCoordinates,
 } from './projectPersonControl';
-import { catalogDriftForPersonCard, notOfferedOnPersonCard, resourcesForPersonCard } from './personCardOperations';
+import {
+  catalogDriftForPersonCard, notOfferedOnPersonCard, resourcesForPersonCard, resourcesForPersonMyCard, visibleOperations,
+} from './personCardOperations';
 import { cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
 import {
@@ -1198,9 +1200,18 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const record = freshestCard(items, focusedCard, editingAccessId);
     return Boolean(record && projectPersonControlCoordinates(record));
   }, [editingAccessId, focusedCard, items]);
+  // W667: a person's own My Card under its project Control Card (never an agent's Card).
+  const editingPersonMy = useMemo(() => {
+    if (!editingAccessId || editingPersonControl) return false;
+    const record = freshestCard(items, focusedCard, editingAccessId);
+    const binding = record?.control_card?.binding;
+    return Boolean(record && binding && !isAgentCapabilityCard(record)
+      && linkedControlOpenTarget(record, binding)?.targetSubject);
+  }, [editingAccessId, editingPersonControl, focusedCard, items]);
   const resources = useMemo(
-    () => (editingPersonControl ? resourcesForPersonCard(catalogResources) : catalogResources),
-    [catalogResources, editingPersonControl],
+    () => (editingPersonMy ? resourcesForPersonMyCard(catalogResources)
+      : (editingPersonControl ? resourcesForPersonCard(catalogResources) : catalogResources)),
+    [catalogResources, editingPersonControl, editingPersonMy],
   );
   // The Card-level drift notice of a project person's or invitation's Control
   // Card leaves out what that Card is not offered (W360).
@@ -3745,7 +3756,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       </span>
                     </summary>
                     <div className="edit-section__body resource-grants resource-operations">
-                      {renderOperationGroups(item.operations, (operation) => operation.group, item.operation_groups, (operation) => {
+                      {renderOperationGroups(visibleOperations(item.operations), (operation) => operation.group, item.operation_groups, (operation) => {
                         const selected = (resourceOperations[item.resource] || []).includes(operation.name);
                         return (
                           <div
@@ -4481,7 +4492,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               </span>
             </summary>
             <div className="edit-section__body resource-grants resource-operations">
-              {renderOperationGroups(resourceOption.operations, (operation) => operation.group, resourceOption.operation_groups, (operation) => {
+              {renderOperationGroups(visibleOperations(resourceOption.operations), (operation) => operation.group, resourceOption.operation_groups, (operation) => {
                 const selected = (editResourceOperations[resource] || []).includes(operation.name);
                 const alreadyGranted = editGrantedOperations(item, resource).includes(operation.name);
                 const policy = invocationPolicyFor(item, resource, operation.name);
