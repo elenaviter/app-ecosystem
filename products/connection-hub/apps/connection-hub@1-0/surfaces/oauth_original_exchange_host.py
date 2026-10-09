@@ -48,10 +48,23 @@ def configured_issuer(value: object) -> str:
     return value.rstrip("/")
 
 
+# The SDK's secrets runtime contract (infra/secrets/runtime_contract.py, runtime_file.py): a
+# namespace is [a-z0-9][a-z0-9-]{0,63}. "chub-oauth-" (11) + 52 hex digits = 63 characters.
+CUSTODY_NAMESPACE_PREFIX = "chub-oauth-"
+CUSTODY_NAMESPACE_DIGEST_HEX = 52
+
+
 def custody_namespace(tenant: str, project: str) -> str:
+    """One deterministic custody namespace per tenant/project, valid under the SDK contract.
+
+    The previous "connection-hub.oauth-original.<64 hex>" (94 characters, with periods) could
+    never qualify. The scope digest is unchanged; 52 hex digits (208 bits) keep tenants and
+    projects apart. No stored record binds the namespace string (it never qualified).
+    """
     scope = json.dumps({"tenant": tenant, "project": project}, sort_keys=True,
                        separators=(",", ":"), ensure_ascii=True)
-    return "connection-hub.oauth-original." + hashlib.sha256(scope.encode()).hexdigest()
+    digest = hashlib.sha256(scope.encode()).hexdigest()[:CUSTODY_NAMESPACE_DIGEST_HEX]
+    return CUSTODY_NAMESPACE_PREFIX + digest
 
 
 async def consumed_candidate_inputs(*, payload: Mapping[str, Any]) -> dict[str, Any]:

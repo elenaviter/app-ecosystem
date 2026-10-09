@@ -34,6 +34,26 @@ def test_explicit_existing_public_or_local_issuer_is_preserved(host, issuer):
     assert host.configured_issuer(issuer) == issuer.rstrip("/")
 
 
+@pytest.mark.parametrize("tenant, project", [
+    ("demo-tenant", "demo-project"), ("ab", "c"), ("t" * 200, "p" * 200),
+    ("Tenant.With.Dots", "Project/With:Odd chars"), ("", ""), ("ünïcode", "проект"),
+])
+def test_namespace_satisfies_the_sdk_runtime_secret_contract(host, tenant, project):
+    """W595: the namespace must pass the SDK's own validator, or custody.qualify can never succeed."""
+    from kdcube_ai_app.infra.secrets.runtime_contract import valid_namespace
+    namespace = host.custody_namespace(tenant, project)
+    assert valid_namespace(namespace), namespace
+    assert len(namespace) <= 64 and namespace.startswith("chub-oauth-")
+
+
+def test_namespace_keeps_the_previous_scope_digest_prefix(host):
+    import hashlib
+    scope = json.dumps({"tenant": "demo-tenant", "project": "demo-project"}, sort_keys=True,
+                       separators=(",", ":"), ensure_ascii=True)
+    assert host.custody_namespace("demo-tenant", "demo-project") == \
+        "chub-oauth-" + hashlib.sha256(scope.encode()).hexdigest()[:52]
+
+
 def test_namespace_is_stable_and_scope_separated(host):
     first = host.custody_namespace("ab", "c")
     assert first == host.custody_namespace("ab", "c")
