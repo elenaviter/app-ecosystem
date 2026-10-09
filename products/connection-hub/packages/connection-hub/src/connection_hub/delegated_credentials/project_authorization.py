@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from collections.abc import Iterable, Iterator, Mapping
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterable, Mapping
+from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -633,14 +633,24 @@ class ProjectAuthorizationPort(Protocol):
 _SHARED_MEMBERSHIP: ContextVar[dict | None] = ContextVar("connection_hub_shared_membership", default=None)
 
 
-@contextmanager
-def shared_membership_scope() -> Iterator[None]:
-    """Within this block, each (project, subject) membership is asked of the project once."""
-    token = _SHARED_MEMBERSHIP.set({})
+@asynccontextmanager
+async def shared_membership_scope() -> AsyncIterator[None]:
+    """Within this block, each (project, subject) membership is asked of the project once.
+
+    A question still in flight when the block ends (the read was cancelled) is cancelled and awaited
+    here, so no project-host call outlives the read (Spark review of 49341d76).
+    """
+    shared: dict = {}
+    token = _SHARED_MEMBERSHIP.set(shared)
     try:
         yield
     finally:
         _SHARED_MEMBERSHIP.reset(token)
+        pending = [task for task in shared.values() if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 class ResolverBackedProjectAuthorizationPort:

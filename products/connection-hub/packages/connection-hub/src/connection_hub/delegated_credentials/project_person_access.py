@@ -441,7 +441,7 @@ class ProjectPersonControlLifecycle:
         # Live 2026-10-09 (operator: "waiting 10 seconds for card retrieval is unacceptable"): the read's
         # authorization and the viewer's edit question are independent policy-port questions, so they are
         # asked together instead of one after the other; the view needs only the read's decision.
-        with shared_membership_scope():
+        async with shared_membership_scope():
             return await self._get(viewer=viewer, actor_subject=actor_subject, project_ref=project_ref,
                                    target_subject=target_subject, request_id=request_id)
 

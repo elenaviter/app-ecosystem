@@ -124,7 +124,7 @@ async def test_the_shared_answer_decides_exactly_as_separate_answers(actor: str)
                  (PROJECT_PERSON_CONTROL_READ, PROJECT_PERSON_CONTROL_UPDATE)]
     separate = [public(await _port(_CountingResolver()).authorize_project_person_control(q)) for q in questions]
     port = _port(_CountingResolver())
-    with shared_membership_scope():
+    async with shared_membership_scope():
         shared = [public(d) for d in await asyncio.gather(
             *(port.authorize_project_person_control(q) for q in questions))]
     assert shared == separate
@@ -136,7 +136,7 @@ async def test_retiring_one_question_never_cancels_the_shared_answer() -> None:
 
     resolver = _CountingResolver(gate=asyncio.Event())
     port = _port(resolver)
-    with shared_membership_scope():
+    async with shared_membership_scope():
         edit = asyncio.ensure_future(port.authorize_project_person_control(
             _request(PROJECT_PERSON_CONTROL_UPDATE, request_id="r:viewer")))
         read = asyncio.ensure_future(port.authorize_project_person_control(_request(PROJECT_PERSON_CONTROL_READ)))
@@ -153,3 +153,27 @@ async def test_retiring_one_question_never_cancels_the_shared_answer() -> None:
     assert edit.cancelled()
     assert decision.allowed is True
     assert resolver.calls == Counter({ADMIN: 1, TARGET: 1})
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_whole_read_leaves_no_project_host_call_running() -> None:
+    """Spark review of 49341d76: the shield keeps one question from cancelling the other, but a
+    cancelled read cancels and awaits its shared membership call; none outlives the read."""
+
+    resolver = _CountingResolver(gate=asyncio.Event())
+    host = _Host()
+    await _create(_lifecycle(host, _Port()))
+    read = asyncio.ensure_future(_lifecycle(host, _port(resolver)).get(
+        actor_subject=ADMIN, project_ref=PROJECT_REF, target_subject=TARGET, request_id="request-read",
+    ))
+    while not resolver.calls:
+        await asyncio.sleep(0)
+    for _ in range(3):
+        await asyncio.sleep(0)
+    read.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await read
+    calls = [task for task in asyncio.all_tasks()
+             if task is not asyncio.current_task() and "resolve_project_membership" in repr(task.get_coro())]
+    assert calls == [], "no membership call outlives the cancelled read"
+    assert resolver.calls == Counter({ADMIN: 1})
