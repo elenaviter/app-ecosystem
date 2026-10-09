@@ -1,0 +1,51 @@
+bundle:
+  repo: "elenaviter/app-ecosystem"
+  ref: "unreleased"
+  description: |
+    External KDCube services application.
+    Extracted from kdcube/kdcube commit de146a8f4427f17359bc8b38c7303ea2418a51bb;
+    stable application ID and service interfaces are preserved.
+
+    Highlights
+
+    - Serves the privileged `bundle_storage` operational storage browser,
+      built from `sdk://solutions/storage/ui.widget.storage`.
+    - Adds managed MCP surface public/mcp/conversations.
+    - Adds conversations_export as the platform-native replacement for the old
+      root /mcp conversation export shortcut.
+    - Publishes configured named-service namespaces through the managed
+      public/mcp/named_services resource and the idempotent named-service relay.
+    - Serves privileged platform administration widgets from one stable app.
+    - Supports signed out-of-band conversation, mail, Slack, Sheets snapshot,
+      and staged-upload transfer without placing file bytes in model context.
+    - Uses Connection Hub delegated credentials and descriptor-managed
+      tool-centric grants.
+    - Adds Google Sheets discovery, read, values, tab, and bounded mutation
+      tools to the managed productivity MCP surface. Google credentials remain
+      behind the connected-account boundary and optional dependencies remain
+      in the app-owned venv.
+    - Publishes the same spreadsheet capability through the provider-neutral
+      `sheets` named-service namespace, with stable spreadsheet/tab refs and
+      per-operation read/write grants.
+    - Adds Google Docs find, read, export, typed edit (insert/append/replace
+      text, styles, page breaks, embedded images, import), and comment tools to
+      the managed productivity MCP surface, split into `docs:read`, `docs:write`,
+      and `docs:comment` claims. Docs runs async in-proc over raw REST (Docs and
+      Drive APIs), no venv, and Google credentials stay behind the
+      connected-account boundary.
+    - Publishes the same document capability through the provider-neutral `docs`
+      named-service namespace, with stable document refs, typed `batchUpdate`
+      edits, and per-operation read/write/comment grants.
+    - Streams complete `kdcube.sheets.snapshot.v1` artifacts so consumer apps
+      can resolve spreadsheet and tab refs through the generic harness pull
+      path.
+    - Gives turnless named-service clients a signed URL for the same complete
+      snapshot, bound to the exact user, scope, and Sheets ref.
+    - Projects whole snapshot reads into compact workbook inventory while
+      preserving exact `react.rg` and ranged-read access to the local JSON.
+    - Declares the complete interface in OpenAPI and documents storage
+      ownership, retention, backup, cleanup, and temporary staging constraints.
+
+    Known follow-ups
+
+    - Add more KDCube service families as separate modules and MCP aliases.

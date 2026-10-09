@@ -122,6 +122,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-07 | Original OAuth credentials are issued under their Card decision | Reserved before COMMIT in a table no reader uses, activated only by the decision's effect against the exact committed Card; process-cut recovery returns the original credentials. SDK custody, delivery and session activation stay SDK-owned. |
 
+| 2026-10-09 | KDCube services has an independent application source | Stable service identity and interfaces move under the KDCube product app directory, with explicit Git deployment and migration qualification before removing the platform compatibility copy. |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).
