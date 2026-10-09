@@ -42,6 +42,8 @@ empty, ``include_catalog`` true).
 
 from __future__ import annotations
 
+import asyncio
+
 import base64
 import hashlib
 import hmac
@@ -77,6 +79,9 @@ MAX_PERSONS = 500
 # Problem Board's consumer refuses an answer over 512 KiB (EMain 20:19); keep
 # headroom for the proof and transport wrapper.
 MAX_ANSWER_BYTES = 512 * 1024 - 4096
+# Persons read at once, in request order (W502 census linearization). A constant, never scaled by the
+# request: each person is still read and re-validated in full, exactly as serially.
+PERSON_READ_CONCURRENCY = 16
 CAPABILITY_FIELDS = (
     "schema", "access_id", "client_id", "grantor_subject", "delegate_subject", "issuer_kind", "issuer_ref",
     "card_revision", "card_kind", "source", "state", "catalog_version",
@@ -188,21 +193,58 @@ class CardCensusReadOperation:
             if not prefix or not data["scope"].startswith(prefix):
                 # Only scopes the caller's descriptor entitles it to read (EMain #616).
                 raise _Refused("card_census_scope_forbidden", 403)
-            result = {"kind": "census", "persons": [await self._person(data["scope"], person)
-                                                    for person in data["persons"]],
-                      "catalog": await self._active_catalog() if data["include_catalog"] else None}
+            result = await self._census(caller, data, digest)
         except _Refused as exc:
             result = {"kind": "refused", "code": exc.code, "status": exc.status}
         except Exception:  # noqa: BLE001 - authenticated, so signed; never internal text
             result = {"kind": "refused", "code": "card_participant_unavailable", "status": 503}
         return self._signed(caller, data, digest, result)
 
-    async def _person(self, scope: str, person: str) -> dict[str, Any]:
+    async def _census(self, caller: ParticipantCaller, data: Mapping[str, Any], digest: str) -> dict[str, Any]:
+        """Every person in request order, then the catalog; or the too-large refusal, decided early.
+
+        Identities are checked for every person first (pure, no IO), so an invalid person refuses 400
+        whatever the reads would do. Persons are then read PERSON_READ_CONCURRENCY at a time in
+        request order (a failure fails the whole read, the first in request order winning, as
+        serially). The answer's exact canonical size is kept as a running total: a list's encoding is
+        its entries joined by commas inside brackets, and the catalog only adds bytes (any document is
+        longer than ``null``), so once the persons alone exceed MAX_ANSWER_BYTES the answer can never
+        fit, and the same 413 the final check would sign is answered without reading the rest.
+        The reads take no lock and no fence: they read committed current pointers, a staged Card
+        surfacing as ``in_transaction``, so their order is free and nothing is shared between them.
+        """
+        scope, persons = data["scope"], data["persons"]
+        for person in persons:
+            self._identity(scope, person)
+        too_large = {"kind": "refused", "code": "card_census_too_large", "status": 413}
+        empty = self._unsigned(caller, data, digest, {"kind": "census", "persons": [], "catalog": None})
+        size = len(canonical_json_bytes(empty))  # with "[]" persons and a null catalog: the lower bound
+        entries: list[dict[str, Any]] = []
+        for start in range(0, len(persons), PERSON_READ_CONCURRENCY):
+            window = persons[start:start + PERSON_READ_CONCURRENCY]
+            results = await asyncio.gather(*(self._person(scope, person) for person in window),
+                                           return_exceptions=True)
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result  # the first failing person in request order
+                size += len(canonical_json_bytes(result)) + (1 if entries else 0)
+                entries.append(result)
+            if size > MAX_ANSWER_BYTES:
+                return too_large
+        return {"kind": "census", "persons": entries,
+                "catalog": await self._active_catalog() if data["include_catalog"] else None}
+
+    @staticmethod
+    def _identity(scope: str, person: str) -> ProjectPersonCardIdentity:
         try:
             expected = ProjectPersonCardIdentity.build(project_ref=scope, person_subject=person)
             ProjectPersonControlIdentity.build(project_ref=scope, target_subject=person)
         except (ProjectIdentityLifecycleError, ProjectPersonControlError):
             raise _Refused("card_census_person_invalid", 400) from None
+        return expected
+
+    async def _person(self, scope: str, person: str) -> dict[str, Any]:
+        expected = self._identity(scope, person)
         my_entry, my = await self._read(subject_hash_for(person), expected.my_card_id, my_card=True)
         control_entry, control = await self._read(subject_hash_for(expected.project_subject), expected.control_id)
         result = {"person": person, "my": my_entry, "control": control_entry,
@@ -275,13 +317,18 @@ class CardCensusReadOperation:
             return None
         return {"version": active.version, "content_hash": active.content_hash, "document": active.to_dict()}
 
+    @staticmethod
+    def _unsigned(caller: ParticipantCaller, data: Mapping[str, Any], digest: str,
+                  value: Mapping[str, Any]) -> dict[str, Any]:
+        return {"schema": ANSWER_SCHEMA, "direction": DIRECTION, "audience": caller.audience,
+                "request_echo": data["request_echo"], "request_digest": digest, "scope": data["scope"],
+                "persons": list(data["persons"]), "include_catalog": data["include_catalog"],
+                "result": dict(value)}
+
     def _signed(self, caller: ParticipantCaller, data: Mapping[str, Any], digest: str,
                 result: Mapping[str, Any]) -> dict[str, Any]:
         def unsigned_for(value: Mapping[str, Any]) -> dict[str, Any]:
-            return {"schema": ANSWER_SCHEMA, "direction": DIRECTION, "audience": caller.audience,
-                    "request_echo": data["request_echo"], "request_digest": digest, "scope": data["scope"],
-                    "persons": list(data["persons"]), "include_catalog": data["include_catalog"],
-                    "result": dict(value)}
+            return self._unsigned(caller, data, digest, value)
 
         unsigned = unsigned_for(result)
         if len(canonical_json_bytes(unsigned)) > MAX_ANSWER_BYTES:
