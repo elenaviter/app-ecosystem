@@ -95,10 +95,24 @@ def test_a_resource_the_live_card_dropped_is_refused_although_the_issued_record_
     assert _allowed(_call(monkeypatch, live, "/guard"))  # the resource the live Card keeps still works
 
 
-def test_a_resource_removed_with_its_operations_is_refused_by_the_live_outer_operation_guard(monkeypatch):
-    """The downstream guard that already made the stale map harmless in the common edit."""
+def test_a_resource_removed_with_its_operations_is_refused(monkeypatch):
+    """Before W652's reader fix the live outer-operation guard refused this one downstream; now the
+    resource boundary refuses it first, exactly as for a record that never named the resource."""
     live = _live({H.GUARD_RESOURCE: ("records:read",)}, {H.GUARD_RESOURCE: ("records_export",)})
-    assert _tool_error(_call(monkeypatch, live, "/second")) == "delegated_capability_not_granted"
+    status, body = _call(monkeypatch, live, "/second")
+    assert status == 403 and body["error_description"] == "delegated credential resource mismatch"
+
+
+def test_the_live_outer_operation_guard_refuses_an_operation_the_live_card_dropped(monkeypatch):
+    """The downstream live guard (acceptance 3): the resource and its grant are still on the live Card,
+    its outer operation is not, while the stored record still names it."""
+    live = _live({H.GUARD_RESOURCE: ("records:read",), SECOND: ("records:read",)},
+                 {H.GUARD_RESOURCE: ("records_export",)})
+    status, body = _call(monkeypatch, live, "/second")
+    assert status == 200 and body["result"]["isError"] is True, (status, body)
+    error = json.loads(body["result"]["content"][0]["text"])
+    assert error["error"]["code"] == "delegated_capability_not_granted"
+    assert error["ret"]["requested_capability"]["kind"] == "outer_operation"
 
 
 def test_a_claim_narrowed_inside_a_kept_resource_is_refused(monkeypatch):
