@@ -193,3 +193,15 @@ def test_a_legacy_record_without_any_map_still_synthesizes_its_single_resource()
     record = {"resource": "https://a.example/mcp", "scopes": ["read"], "credential": {"attrs": {}}}
     view = DelegatedCredentialView.from_parts(record["credential"], record)
     assert view.resource_grants == {"https://a.example/mcp": ("read",)}
+
+
+def test_an_empty_live_map_ignores_a_stored_single_resource_through_the_guard(monkeypatch):
+    """Main's probe (02:15Z): live resource_grants {} with the live grants still listed, behind a stored
+    record carrying an issued top-level ``resource`` and NO map. The resource must not be re-synthesized."""
+    stored = _issued(resource=H.GUARD_RESOURCE)
+    del stored["resource_grants"]
+    status, body = _call(monkeypatch, _live({}, {H.GUARD_RESOURCE: ("records_export",)}), "/guard", stored=stored)
+    assert status == 403 and body["error_description"] in (
+        "delegated credential resource is missing", "delegated credential resource mismatch"), (status, body)
+    record = {"resource": "https://a.example/mcp", "credential": {"attrs": {"resource_grants": {}, "grants": ["read"]}}}
+    assert DelegatedCredentialView.from_parts(record["credential"], record).resource_grants == {}
