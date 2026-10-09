@@ -43,6 +43,26 @@ def managed_grant_changes(config: Any, requested: Mapping[str, Any], existing: M
     return changes
 
 
+def managed_operation_changes(config: Any, requested: Mapping[str, Any], existing: Mapping[str, Any]) -> list[str]:
+    """Every resource:operation the catalog marks person_card: false (the application decides it for
+    a person) whose presence differs between the requested selection and the Card as it stands. Used for a
+    person's Control Card only; other Cards keep the whole catalog editable."""
+    changes: list[str] = []
+    requested = requested if isinstance(requested, Mapping) else {}
+    existing = existing if isinstance(existing, Mapping) else {}
+    for resource in sorted({str(key) for key in (*requested, *existing)}):
+        row = config.resource_config(resource) if config is not None else None
+        managed = {getattr(tool, "name", "") for tool in (getattr(row, "tools", ()) or ())
+                   if getattr(tool, "person_card", True) is False} if row is not None else set()
+        managed.discard("")
+        if not managed:
+            continue
+        before = _grants(existing.get(resource)) & managed
+        after = _grants(requested.get(resource)) & managed
+        changes.extend(f"{resource}:{operation}" for operation in sorted(before ^ after))
+    return changes
+
+
 def managed_grant_refusal(changes: list[str]) -> dict[str, Any]:
     return {
         "ok": False,
@@ -56,4 +76,4 @@ def managed_grant_refusal(changes: list[str]) -> dict[str, Any]:
     }
 
 
-__all__ = ["MANAGED_GRANT_NOT_EDITABLE", "managed_grant_changes", "managed_grant_refusal"]
+__all__ = ["MANAGED_GRANT_NOT_EDITABLE", "managed_grant_changes", "managed_grant_refusal", "managed_operation_changes"]

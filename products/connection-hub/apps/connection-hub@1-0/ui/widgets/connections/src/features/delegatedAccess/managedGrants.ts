@@ -5,6 +5,8 @@
  * upsert (managed_grant_not_editable). Generic: nothing here names an application or a grant.
  */
 export const MANAGED_GRANT_NOTE = 'Managed by the application';
+/** W560: an operation the application decides for a person (catalog `person_card: false`), on their Control Card. */
+export const MANAGED_OPERATION_NOTE = 'Set by the application';
 
 export function managedGrantsOf(option?: { managed_grants?: string[] } | null): Set<string> {
   return new Set((option?.managed_grants || []).filter((grant) => typeof grant === 'string' && grant));

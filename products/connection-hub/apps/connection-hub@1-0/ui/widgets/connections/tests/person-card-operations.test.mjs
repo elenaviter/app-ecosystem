@@ -49,9 +49,16 @@ test('only an explicit false leaves an operation off a person\'s Card', () => {
   assert.equal(offeredOnPersonCard({ person_card: false }), false)
 })
 
-test('a person\'s Control Card is offered every operation except the role-only ones', () => {
+// W560 (operator, 2026-10-05: "they still must be shown on the card but made non-editable. simply seletced
+// and non-editable"): the role-only outer operations stay listed, marked managed (shown as the Card holds
+// them, never changed by the editor or its Save). Named-service tools keep the W360 narrowing for now.
+test('a person\'s Control Card lists every outer operation; the role-only ones are managed, not hidden', () => {
   const offered = resourceForPersonCard(ROW)
-  assert.deepEqual(offered.operations.map((op) => op.name), ['review.assign', 'plan.item.create', 'project.plan.index'])
+  assert.deepEqual(offered.operations.map((op) => op.name), ROW.operations.map((op) => op.name))
+  assert.deepEqual(offered.operations.filter((op) => op.managed).map((op) => op.name).sort(),
+    ['project.coordinator.hand_over', 'project.people.invite'])
+  assert.deepEqual(offered.operations.filter((op) => !op.managed).map((op) => op.name),
+    ['review.assign', 'plan.item.create', 'project.plan.index'])
   const tools = offered.named_services[0].tools
   assert.deepEqual(Object.keys(tools), ['get', 'action'], 'a tool with no offered operation, or marked itself, is not offered')
   assert.deepEqual(Object.keys(tools.action.operations), ['object.action.review.assign'])

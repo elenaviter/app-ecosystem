@@ -43,11 +43,14 @@ function namespaceForPersonCard(
   return { ...namespace, tools };
 }
 
-/** One catalog row as a person's Control Card is offered it. */
+/** One catalog row as a person's Control Card is offered it. W560 (operator, 2026-10-05: "simply selected
+ *  and non-editable"): an outer operation the service decides for a person stays LISTED, marked "managed",
+ *  shown as the Card holds it and never changed by the editor or its Save. */
 export function resourceForPersonCard(option: DelegatedAccessResourceOption): DelegatedAccessResourceOption {
   return {
     ...option,
-    ...(option.operations ? { operations: option.operations.filter(offeredOnPersonCard) } : {}),
+    ...(option.operations ? { operations: option.operations.map((operation) => (
+      offeredOnPersonCard(operation) ? operation : { ...operation, managed: true })) } : {}),
     ...(option.named_services ? { named_services: option.named_services.map(namespaceForPersonCard) } : {}),
   };
 }

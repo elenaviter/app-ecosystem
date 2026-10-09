@@ -5,7 +5,7 @@ import { CopyButton, DoorRef } from '../../components/CopyControls';
 import { mergeBundleProps, operationUrl, publicMcpUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
-import { MANAGED_GRANT_NOTE, managedGrantsOf, withManagedGrantsAsHeld } from './managedGrants';
+import { MANAGED_GRANT_NOTE, MANAGED_OPERATION_NOTE, managedGrantsOf, withManagedGrantsAsHeld } from './managedGrants';
 import {
   ApplicationApiCatalog,
   useApplicationApiCatalog,
@@ -3299,8 +3299,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const focusedAdditions = Object.entries(splits).flatMap(([resource, split]) => (
       split.focused.map(({ operation, mode }) => ({ resource, operation, mode }))
     ));
-    const savedResourceOperations = Object.fromEntries(
-      Object.entries(splits).map(([resource, split]) => [resource, split.kept]),
+    // W560: an operation the application decides for a person stays exactly as the Card holds it.
+    const savedResourceOperations = withManagedGrantsAsHeld(
+      Object.fromEntries(Object.entries(splits).map(([resource, split]) => [resource, split.kept])),
+      item.resource_operations || {},
+      (resource) => new Set((catalogRowFor(resources, resource, editRowFor)?.operations || [])
+        .filter((operation) => operation.managed).map((operation) => operation.name)),
     );
     if (focusedAdditions.length && !item.client_id) {
       setEditActionError(
@@ -4508,7 +4512,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       >
                         <input
                           type="checkbox"
-                          checked={selected}
+                          checked={operation.managed
+                            ? ((item.resource_operations || {})[resource] || []).includes(operation.name)
+                            : selected}
+                          disabled={operation.managed === true}
                           onChange={(event) => {
                             if (event.target.checked) ensureCallerResource();
                             toggleEditResourceOperation(
@@ -4521,6 +4528,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         />
                         <span className="operation-name">
                           <span>{operation.label || operation.name}</span>
+                          {operation.managed ? <small className="grant-chip-managed">{MANAGED_OPERATION_NOTE}</small> : null}
                           {operation.label && operation.label !== operation.name ? (
                             <code className="operation-id">{operation.name}</code>
                           ) : null}

@@ -147,3 +147,37 @@ async def test_the_editor_receives_the_managed_grants_of_a_resource():
     plain = _service(_GrantStore({}), _Persistence(), connections=_connections(managed=None))
     row = next(item for item in await plain.resource_options(USER) if item["resource"] == DECLARED_RESOURCE)
     assert "managed_grants" not in row
+
+
+# W560: on a person's Control Card the application decides the operations it marks person_card: false.
+def _person_connections():
+    connections = _connections(managed=None)
+    row = connections["delegated_credentials"]["oauth"]["resources"][0]
+    row["tools"]["item.role_only"] = {"label": "Role only", "grants": ["app:read"], "person_card": False}
+    return connections
+
+
+def test_a_person_control_change_is_any_role_decided_operation_whose_presence_differs():
+    from connection_hub.delegated_credentials.managed_grants import managed_operation_changes
+    config = oauth_delegated_config_from_connections(_person_connections())
+    held = {DECLARED_RESOURCE: ["item.read", "item.role_only"]}
+    assert managed_operation_changes(config, held, held) == []
+    assert managed_operation_changes(config, {DECLARED_RESOURCE: ["item.read"]}, held) == [f"{DECLARED_RESOURCE}:item.role_only"]
+    assert managed_operation_changes(config, {DECLARED_RESOURCE: ["item.read", "item.role_only"]},
+                                     {DECLARED_RESOURCE: ["item.read"]}) == [f"{DECLARED_RESOURCE}:item.role_only"]
+    assert managed_operation_changes(config, {DECLARED_RESOURCE: ["item.steward"]}, held) == [f"{DECLARED_RESOURCE}:item.role_only"]
+
+
+@pytest.mark.asyncio
+async def test_a_person_control_client_edit_cannot_tick_a_role_decided_operation_but_other_cards_can():
+    service, card = await _card(_person_connections())
+    person = await service.update_access(USER, access_id=card.access_id, _client_upsert=True, _person_control=True,
+        resource_grants={DECLARED_RESOURCE: ["app:read"]},
+        resource_operations={DECLARED_RESOURCE: ["item.read", "item.role_only"]})
+    assert person["ok"] is False and person["error"] == "managed_grant_not_editable", person
+    assert person["grants"] == [f"{DECLARED_RESOURCE}:item.role_only"]
+    # Not a person's Control Card: the whole catalog stays editable (W360).
+    other = await service.update_access(USER, access_id=card.access_id, _client_upsert=True,
+        resource_grants={DECLARED_RESOURCE: ["app:read"]},
+        resource_operations={DECLARED_RESOURCE: ["item.read", "item.role_only"]})
+    assert other["ok"] is True, other

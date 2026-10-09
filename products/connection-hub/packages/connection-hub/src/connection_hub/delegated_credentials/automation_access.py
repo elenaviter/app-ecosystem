@@ -34,7 +34,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Iterable, Mapping, Sequence
 
 from connection_hub.concurrency import bounded_gather
-from connection_hub.delegated_credentials.managed_grants import managed_grant_changes, managed_grant_refusal
+from connection_hub.delegated_credentials.managed_grants import (
+    managed_grant_changes,
+    managed_grant_refusal,
+    managed_operation_changes,
+)
 from connection_hub.delegated_credentials.issuer_gate import (
     IssuerDecision, IssuerRegistry, IssuerRequest, IssuerWriteRefused,
     change_digest, issuer_write_refusal,
@@ -5603,6 +5607,7 @@ class AutomationAccessService:
         _caller_write_action: str = "update",
         _caller_actor_subject: str = "",
         _client_upsert: bool = False,
+        _person_control: bool = False,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -5735,6 +5740,12 @@ class AutomationAccessService:
             # A client Card edit keeps every application-managed grant exactly as the Card holds it.
             changes = managed_grant_changes(
                 catalog_config, self._resource_grants(resource_grants), self._resource_grants(existing.resource_grants))
+            if _person_control and resource_operations is not None:
+                # W560: on a person's Control Card the application decides the operations it marks
+                # person_card: false; a client edit keeps them exactly as the Card holds them.
+                changes += managed_operation_changes(
+                    catalog_config, self._resource_grants(resource_operations),
+                    self._resource_grants(existing.resource_operations))
             if changes:
                 return managed_grant_refusal(changes)
         if existing.source == ACCESS_SOURCE_OAUTH:

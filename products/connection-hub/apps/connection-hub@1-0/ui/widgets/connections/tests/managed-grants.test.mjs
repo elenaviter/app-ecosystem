@@ -41,3 +41,17 @@ test('the editor disables managed grants with the generic note and keeps them ou
   // Generic: no application or grant named in the editor code for this.
   assert.doesNotMatch(readFileSync(new URL('../src/features/delegatedAccess/managedGrants.ts', import.meta.url), 'utf8'), /work:|problem.board/i)
 })
+
+test('W560: an operation the application decides for a person is shown as held, disabled, and kept as held on Save', () => {
+  const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /checked=\{operation\.managed\s*\? \(\(item\.resource_operations \|\| \{\}\)\[resource\] \|\| \[\]\)\.includes\(operation\.name\)\s*: selected\}/)
+  assert.match(panel, /disabled=\{operation\.managed === true\}/)
+  assert.match(panel, /\{operation\.managed \? <small className="grant-chip-managed">\{MANAGED_OPERATION_NOTE\}<\/small> : null\}/)
+  assert.match(panel, /const savedResourceOperations = withManagedGrantsAsHeld\([\s\S]*?item\.resource_operations \|\| \{\},[\s\S]*?\.filter\(\(operation\) => operation\.managed\)/)
+  // Held operations of one resource never leak into another, and a new manual choice still saves.
+  const managedOps = (resource) => new Set(resource === R ? ['project.people.invite'] : [])
+  assert.deepEqual(withManagedGrantsAsHeld({ [R]: ['review.assign'] }, { [R]: ['project.people.invite'] }, managedOps),
+    { [R]: ['review.assign', 'project.people.invite'] })
+  assert.deepEqual(withManagedGrantsAsHeld({ [R]: ['review.assign', 'project.people.invite'] }, { [R]: [] }, managedOps),
+    { [R]: ['review.assign'] })
+})

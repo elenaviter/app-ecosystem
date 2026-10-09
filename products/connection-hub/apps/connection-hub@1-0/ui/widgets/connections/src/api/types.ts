@@ -76,6 +76,8 @@ export interface DelegatedAccessOperationOption {
   group?: string;
   /** False when the service decides this operation for a person by role alone (W360). */
   person_card?: boolean;
+  /** W560: listed on a person's Control Card as the Card holds it, never editable there. */
+  managed?: boolean;
 }
 
 /** One operation group a service declares, in display order (W260). */
