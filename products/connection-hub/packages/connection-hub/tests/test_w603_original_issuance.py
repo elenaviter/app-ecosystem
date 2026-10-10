@@ -78,7 +78,6 @@ async def _world(tmp_path, *, postgres_handles: bool = False, with_policies: boo
 
     store = BundleStorageDelegatedCardStore(tmp_path)
     tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
-    cards = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
     metadata = None
     if postgres_handles:  # W606: the PostgreSQL handle store, whose rows bind the Card revision
         from connection_hub.delegated_credentials.authority_config import AUTHORITY_BACKEND_POSTGRESQL
@@ -94,7 +93,8 @@ async def _world(tmp_path, *, postgres_handles: bool = False, with_policies: boo
         handles = RedisCardCredentialHandleStore(redis_client, tenant=authority.tenant, project=authority.project)
         persistence = DurableCardPersistence(redis=redis_client, tenant=authority.tenant, project=authority.project,
                                              card_store=store, mutation_lock=mutation_lock, credential_handles=handles)
-    persistence._cards = cards  # only the serving projection is fake
+    cards = persistence.card_service
+    cards._cache = _Cache()  # only the serving projection is fake; one composed service per store
     policies = None
     if with_policies:  # W585: the real invocation policy service, on bundle storage
         from connection_hub.invocation_policy import BundleStorageInvocationPolicyStore, InvocationPolicyService
