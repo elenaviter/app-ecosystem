@@ -32,6 +32,7 @@ from typing import Any, AsyncIterator, Mapping
 from connection_hub.delegated_credentials.oauth.authority_schema import (
     TABLE_ACCESS_BINDINGS,
     TABLE_FAMILIES,
+    TABLE_ISSUANCE_PLAN_ATTEMPTS,
     TABLE_ISSUANCE_PLANS,
     TABLE_ISSUANCE_RESERVATIONS,
     TABLE_REFRESH_GENERATIONS,
@@ -52,6 +53,10 @@ class IssuanceStoreRefused(ValueError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
         super().__init__(reason)
+
+
+def _clock_or_none(value: Any) -> int | None:
+    return None if value is None else int(value)
 
 
 def _canonical(value: Any) -> str:
@@ -503,6 +508,74 @@ class IssuanceReservationStore:
                 self.tenant, self.project, max(1, min(int(limit), 1000)),
             )
         return int(str(status or "UPDATE 0").rsplit(" ", 1)[-1] or 0)
+
+    async def read_plan_attempt(self, decision_request_id: str) -> dict[str, Any] | None:
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                f"""SELECT planned_at, expires_at <= clock_timestamp() AS expired, candidate
+                    FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3""",
+                self.tenant, self.project, decision_request_id)
+        if row is None:
+            return None
+        candidate = row["candidate"]
+        return {"planned_at": int(row["planned_at"]), "expired": bool(row["expired"]),
+                "candidate": json.loads(candidate) if isinstance(candidate, str) else candidate}
+
+    async def pin_plan_attempt(self, *, decision_request_id: str, planned_at: int, expires_at: int) -> int | None:
+        """Record a planning attempt unless one exists; the FIRST writer's clock wins and is returned, so
+        concurrent planners build the same candidate and name the same version file (no lock is held).
+        None when the row is already gone again: a concurrent planner stored its plan and deleted the attempt
+        between the two statements (Infra, r10 HOLD); the caller replays that stored plan."""
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                f"""INSERT INTO {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                        (tenant, project, decision_request_id, planned_at, expires_at, candidate)
+                    VALUES ($1, $2, $3, $4, to_timestamp($5::bigint), NULL)
+                    ON CONFLICT (tenant, project, decision_request_id) DO NOTHING""",
+                self.tenant, self.project, decision_request_id, int(planned_at), int(expires_at))
+            return _clock_or_none(await connection.fetchval(
+                f"""SELECT planned_at FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3""",
+                self.tenant, self.project, decision_request_id))
+
+    async def renew_expired_plan_attempt(self, *, decision_request_id: str, expected_planned_at: int,
+                                         planned_at: int, expires_at: int) -> int | None:
+        """Start an expired attempt over, only if it is still the one read (C2); returns the clock in force,
+        or None when the row is gone (a concurrent planner stored its plan; the caller replays it)."""
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                    SET planned_at = $5, expires_at = to_timestamp($6::bigint), candidate = NULL
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND planned_at = $4
+                      AND expires_at <= clock_timestamp()""",
+                self.tenant, self.project, decision_request_id, int(expected_planned_at), int(planned_at),
+                int(expires_at))
+            return _clock_or_none(await connection.fetchval(
+                f"""SELECT planned_at FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3""",
+                self.tenant, self.project, decision_request_id))
+
+    async def record_attempt_candidate(self, *, decision_request_id: str, planned_at: int,
+                                       candidate: Mapping[str, Any]) -> bool:
+        """The attempt's candidate file (link + Card ids), recorded BEFORE the file is written, on the attempt
+        of exactly this clock (C2). False when that attempt is gone: its plan was stored by another planner,
+        so no file may be written for it."""
+        async with self._pool.acquire() as connection:
+            updated = await connection.fetchval(
+                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} SET candidate = ($5::text)::jsonb
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND planned_at = $4
+                    RETURNING 1""",
+                self.tenant, self.project, decision_request_id, int(planned_at), _canonical(dict(candidate)))
+        return updated is not None
+
+    async def delete_plan_attempt(self, decision_request_id: str, *, planned_at: int) -> None:
+        """Once the plan is stored: the attempt of exactly this clock only (C2)."""
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                f"""DELETE FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND planned_at = $4""",
+                self.tenant, self.project, decision_request_id, int(planned_at))
 
     async def issuance_reservations(self, transaction_id: str) -> dict[str, dict[str, str]]:
         """Each slot's reservation of one transaction: state, outcome, bearer digest and pin."""

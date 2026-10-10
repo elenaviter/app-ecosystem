@@ -125,6 +125,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-09 | KDCube services has an independent application source | Stable service identity and interfaces move under the KDCube product app directory, with explicit Git deployment and migration qualification before removing the platform compatibility copy. |
 
+| 2026-10-10 | Frozen links must reach the first consumer, not only restart recovery | Recording an immutable candidate link is insufficient when the authority's first call returns its earlier in-memory intent; exact first-PREPARE receipt comparison detects the duplicate-version path that restart tests miss. [Public contract](../docs/connection-hub/package/card-version-store.md). |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).

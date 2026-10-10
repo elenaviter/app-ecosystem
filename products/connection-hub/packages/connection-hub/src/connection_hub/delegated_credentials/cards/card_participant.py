@@ -23,7 +23,7 @@ import re
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol, Sequence
 
@@ -212,6 +212,11 @@ class CardIntent:
     # W502: the active catalog version digest this transaction reserves ("" when none).
     catalog: str = ""
 
+    # Frozen version supplied by a pre-begin plan. These are storage inputs,
+    # never part of the kernel's candidate value or authority serialization.
+    candidate_link: Mapping[str, Any] | None = None
+    candidate_staging_tag: str = ""
+
     def to_dict(self) -> dict[str, Any]:
         return {"schema": INTENT_RECORD_SCHEMA, "transaction_id": self.transaction_id,
                 "intent_digest": self.intent_digest, "subject_hash": self.subject_hash,
@@ -247,6 +252,8 @@ class CardGroupMemberIntent:
     original: CardAuthority | None
     candidate: CardAuthority
     action: str
+    candidate_link: Mapping[str, Any] | None = None
+    candidate_staging_tag: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {"subject_hash": self.subject_hash, "action": self.action, "candidate": self.candidate.to_dict(),
@@ -415,30 +422,42 @@ class CardIntentSource(Protocol):
 class LocalCardIntentSource:
     """The durable intent of an edit the Hub itself initiates; written once, before prepare."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, *, service: Any = None, decisions: Any = None, now: Any = None) -> None:
         self._store = store
+        self._service = service
+        self._decisions = decisions
+        self._now = now or (lambda: datetime.now(timezone.utc))
 
     def _path(self, transaction_id: str):
         from .transaction_store import _checked_id
         return self._store.root / "card-transactions" / "intents" / f"{_checked_id(transaction_id)}.json"
 
-    async def record(self, intent: "CardIntent | CardGroupIntent") -> None:
-        path = self._path(intent.transaction_id)
-        existing = await read_json_or_none(path)
-        if existing is not None:
-            if existing != intent.to_dict():
-                raise DecisionRefused("card_intent_conflict")  # immutable: an exact replay only
-            return
-        await write_json_atomic(path, intent.to_dict())
+    async def record(self, intent: "CardIntent | CardGroupIntent", *,
+                     candidate_link: Mapping[str, Any] | None = None, candidate_staging_tag: str = "") -> None:
+        from .intent_links import record_links
+        if candidate_link is not None or candidate_staging_tag:
+            if not isinstance(intent, CardIntent):
+                raise DecisionRefused("card_intent_invalid")
+            intent = replace(intent, candidate_link=candidate_link, candidate_staging_tag=candidate_staging_tag)
+        await record_links(self, intent)
 
     async def load(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
         raw = await read_json_or_none(self._path(transaction_id))
         if raw is None:
+            from ..durable_io import path_is_file
+            if await path_is_file(self._path(transaction_id)):
+                raise DecisionRefused("card_intent_invalid")
             raise DecisionRefused("card_intent_unknown")
-        intent = intent_from_mapping(raw)
+        from .intent_links import is_link_record, load_links
+        intent = await load_links(self, raw) if is_link_record(raw) else intent_from_mapping(raw)
         if intent.transaction_id != transaction_id:
             raise DecisionRefused("card_intent_invalid")
         return intent
+
+    async def binding(self, transaction_id: str) -> Any:
+        """Bounded authority/scope metadata, including a finished receipt; no Card hydration."""
+        from .intent_links import read_binding
+        return await read_binding(self, transaction_id)
 
 
 class DecisionStorePort:
@@ -479,8 +498,18 @@ class HubCardParticipant:
 
     async def _bound_intent(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
         """The Hub intent, refused unless it is exactly what the coordinator's Intent names."""
-        intent = await self._intents.load(transaction_id)
         record = await self._decisions.read(transaction_id)
+        if record is not None and record.terminal:
+            from .transaction_store import read_receipt, tombstone_path
+            local = await read_receipt(self._store, transaction_id)
+            aborted = record.state == "aborted" and (local is not None or await read_json_or_none(tombstone_path(self._store, transaction_id)) is not None)
+            raise DecisionRefused("card_transaction_aborted" if aborted else "card_transaction_late_stage")
+        intent = await self._intents.load(transaction_id)
+        return self._check_bound(intent, record)
+
+    @classmethod
+    def _check_bound(cls, intent: Any, record: Any) -> Any:
+        """The same target/candidate binding before durable record and before STAGE."""
         if record is None:
             raise DecisionRefused("transaction_unknown")
         if record.intent.digest != intent.intent_digest or PARTICIPANT not in record.intent.participants:
@@ -491,11 +520,11 @@ class HubCardParticipant:
             # W502 lane D (CodeApp 23:37Z): the decision never outlives the collection it holds.
             raise DecisionRefused("card_intent_not_bound")
         if isinstance(intent, CardGroupIntent):
-            return self._bound_group(intent, projection)
+            return cls._bound_group(intent, projection)
         if isinstance(intent, CardReadSetIntent):
-            return self._bound_read_set(intent, projection)
+            return cls._bound_read_set(intent, projection)
         if isinstance(intent, CardEffectsIntent):
-            return self._bound_effects(intent, projection)
+            return cls._bound_effects(intent, projection)
         expected = card_intent_payload_digest(original=intent.original, candidate=intent.candidate,
                                               effects=intent.effects)
         # The global intent names exactly this Card change. Every projection
@@ -608,7 +637,8 @@ class HubCardParticipant:
                     now=self._now(), effects=intent.effects, reads=intent.reads, catalog=intent.catalog,
                     collection=intent.collection,
                     actor_subject=intent.actor_subject if intent.collection is not None else None,
-                    now_epoch=int(self._now().timestamp()) if intent.collection is not None else None)
+                    now_epoch=int(self._now().timestamp()) if intent.collection is not None else None,
+                    candidate_links=[member.candidate_link for member in intent.members])
             except CardTransactionRefused as exc:
                 raise DecisionRefused(str(exc)) from exc
             return await self._receipt(prepared)
@@ -616,12 +646,67 @@ class HubCardParticipant:
             prepared = await self._service.stage_transaction(
                 transaction_id=transaction_id, intent_digest=intent.intent_digest, participant=PARTICIPANT,
                 subject_hash=intent.subject_hash, original=intent.original, candidate=intent.candidate,
-                now=self._now(), effects=intent.effects, reads=intent.reads, catalog=intent.catalog)
+                now=self._now(), effects=intent.effects, reads=intent.reads, catalog=intent.catalog,
+                candidate_link=intent.candidate_link)
         except CardTransactionRefused as exc:
             raise DecisionRefused(str(exc)) from exc
         return await self._receipt(prepared)
 
     async def finish(self, transaction_id: str, decision: str) -> Receipt:
+        """Authenticate the terminal decision first; retire only after service FINISH succeeds."""
+        from .intent_links import is_link_record, retire_intent, terminal, validate_link_record
+        source = self._intents if isinstance(self._intents, LocalCardIntentSource) else getattr(self._intents, "_local", None)
+        record = await self._decisions.read(transaction_id)
+        if record is None:
+            raise DecisionRefused("card_intent_not_bound")
+        if not record.terminal or record.state != decision:
+            if source is not None and await read_json_or_none(source._path(transaction_id)) is None:
+                raise DecisionRefused("card_intent_unknown")
+            raise DecisionRefused("card_transaction_decision_not_recorded")
+        if source is None:
+            return await self._finish_loaded(transaction_id, decision)
+        raw = await read_json_or_none(source._path(transaction_id))
+        if raw is None:
+            from ..durable_io import path_is_file
+            if await path_is_file(source._path(transaction_id)):
+                raise DecisionRefused("card_intent_invalid")
+        if raw is not None and not isinstance(raw, Mapping):
+            raise DecisionRefused("card_intent_invalid")
+        if is_link_record(raw):
+            validate_link_record(raw)
+        ended = await terminal(source, transaction_id)
+        if raw is not None and raw.get("intent_digest") != record.intent.digest:
+            raise DecisionRefused("card_intent_not_bound")
+        if ended is not None and ended.get("intent_finished") is True:
+            if ended.get("intent_digest", record.intent.digest) != record.intent.digest or ended["state"] != decision:
+                raise DecisionRefused("card_intent_not_bound")
+            finished = await retire_intent(source, transaction_id, decision)
+        elif is_link_record(raw) and raw.get("status") == "staging":
+            if decision != "aborted":
+                raise DecisionRefused("card_intent_incomplete")
+            # A partially recorded candidate set is never loaded or staged.
+            # An interrupted STAGE's receipt is finished by its own metadata.
+            local = await read_state(self._store, transaction_id=transaction_id)
+            members = raw["members"] if "members" in raw else [raw]
+            lead = members[0]
+            if local is None:
+                await self._service.abort_unstaged_transaction(transaction_id=transaction_id,
+                    subject_hash=lead["subject_hash"], access_id=lead["access_id"], intent_digest=record.intent.digest)
+            elif "members" in raw:
+                await self._service.decide_group_transaction(transaction_id=transaction_id,
+                    intent_digest=record.intent.digest, decision=decision)
+            else:
+                await self._service.decide_transaction(transaction_id=transaction_id, intent_digest=record.intent.digest,
+                    decision=decision, subject_hash=lead["subject_hash"], access_id=lead["access_id"])
+            finished = await retire_intent(source, transaction_id, decision)
+        else:
+            result = await self._finish_loaded(transaction_id, decision)
+            if raw is None:
+                return result  # genuinely never recorded: no binding is inferred
+            finished = await retire_intent(source, transaction_id, decision)
+        return await self._receipt(finished) if "schema" in finished else await self._tombstone_receipt(record, finished)
+
+    async def _finish_loaded(self, transaction_id: str, decision: str) -> Receipt:
         try:
             intent = await self._intents.load(transaction_id)
         except DecisionRefused as exc:

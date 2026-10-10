@@ -176,7 +176,7 @@ async def _world(tmp_path, monkeypatch, *, peer_decision="committed"):
     authority = _PeerAuthority(
         hub_participant_input(original=peer_before, candidate=peer_after, subject_hash=SUBJECT_HASH,
                               action="update", actor_subject="user:pb-admin", actor_kind="caller"),
-        candidate_value(original=peer_before, candidate=peer_after), decision=peer_decision)
+        candidate_value(original=peer_before, candidate=peer_after), decision=None)
     binding = CardAuthorityBinding(secret=AUTHORITY_SECRET, service_id=PEER, audience=HUB)
     reader = AuthorityDecisionReader(fetch=authority.fetch, authority=binding)
     peer_participant = HubCardParticipant(
@@ -184,6 +184,9 @@ async def _world(tmp_path, monkeypatch, *, peer_decision="committed"):
         intents=AuthorityCardIntentSource(store=store, fetch=authority.fetch, authority=binding,
                                           authority_id=PEER, scope_field="project_ref"))
     await peer_participant.prepare(authority.record.intent.transaction_id)
+    # A peer drives PREPARE before its one terminal decision; recovery then
+    # observes that decision. A first STAGE after it is terminal must refuse.
+    authority.decision = peer_decision
 
     # The Hub's own transaction: prepared and decided COMMITTED, then the crash before finish.
     coordinator, local_tx = await _staged(composition, decisions, persistence, store, before, after,

@@ -244,6 +244,11 @@ A successful plan is input to prepare, not permission to commit.
 
 ## Editing a managed Card from the Hub
 
+The Hub participant's durable single/group intents store only exact Card
+version links, reuse the same candidate at STAGE, and retire after all FINISH
+duties succeed. The manifest, compatibility and terminal binding contract is
+in [Card version store](card-version-store.md#hub-transaction-intent-links-and-retirement).
+
 While enabled, a person's Save of a person Control bound under a project's
 Control (`project_person_control_update` for a person, not a pending
 invitation) is not written by the Hub. The Hub forwards it to the project

@@ -101,6 +101,91 @@ answers `already_published`, with or without links. A partly current group is re
 (`card_version_effects_pending`); a writer never runs another txn's effects. Only that txn's own PUBLISH
 retry or ROLLBACK runs them. Readers treat the version `current.json` names as final.
 
+## Links held by other records (W661 scope B)
+
+A record that has to name a Card version keeps a LINK, never a copy of the body:
+`{card_revision, revision_name, content_hash}`. The record itself names the Card. The helper is
+`cards/version_link.py`:
+- `load_version` reads that one version file by name, strips `version_record`, and requires the full
+  content hash, the access id and the revision to match. It is not a serving read: `read_revision`
+  still hides staged files.
+- A version that does not exist yet is written once by `write_hidden_version`, as its own txn-tagged
+  file behind a `.card-transaction.json` marker that names its tag. `load_version(..., marker=tag)`
+  then requires exactly that marker.
+
+The OAuth issuance plan holds two links:
+- the original: the committed version that `current.json` names;
+- the candidate: written once behind `staging_tag("oauth-issuance-candidate", decision_request_id)`.
+  The tag is `stg-` plus the SHA-256 of a length-prefixed encoding of scope and request id, so it is
+  structurally outside the 64-hex transaction-id namespace. The store treats a `stg-` marker as never
+  committed, so the file never becomes history. STAGE adopts that same file for the real transaction
+  with `adopt_hidden_version`; only the marker moves.
+- Before the candidate file is written, an attempt row (`connection_hub_oauth_issuance_plan_attempts`)
+  records the planned clock and the file's link. The first planner's clock wins
+  (`INSERT ... ON CONFLICT DO NOTHING`), so a retry, or a concurrent planner of the same request, builds
+  the same candidate and names the same file, which is reused. An expired attempt is renewed only if it
+  is still the one read, and its row is deleted once the plan is stored, for exactly that clock. No lock
+  is held across these calls.
+- A stored plan always wins. Another planner of the same request can finish the whole begin while this one
+  is between two calls. Then this planner's pin reads no row, its candidate record updates no row, a
+  stored plan is found after the pin, or its file is already adopted. In each case it writes no file and
+  replays the stored plan instead (bounded rounds, then the retryable `issuance_plan_unavailable`).
+- The original is read through the store's own committed read and checked against its link. A
+  candidate with no marker is accepted only when the bound decision is COMMITTED in the decision log.
+  `load_version` with no owner named refuses any marked file. Presence is decided in one read, so a
+  concurrent writer is never mistaken for corruption.
+- **Cleanup is disabled in this release: nothing is deleted.** `release_unbegun_oauth_issuance_plans`
+  returns 0, and the reservation sweep does not call it. An outcome read still answers after an abort;
+  plan reads and reserve answer `issuance_decision_closed` once the candidate is gone. A candidate file
+  can stay unreferenced only after a crashed attempt whose Card base moved before its retry, or after an
+  aborted decision. Such a file is hidden (a `stg-` or uncommitted-transaction marker), never history.
+  A bounded cleanup on a per-request KDCube Redis lock, linearized with plan, begin, record and bind,
+  is a separate follow-up.
+
+A plan stored before this change still holds bodies and is read as before, until its decision finishes.
+
+The one-off cutover step `cards/intent_purge.purge_finished_v1_intents` deletes v1 intent files. A
+v1 intent is one that stores a Card body. It is deleted only when its decision is terminal and every
+participant has finished. It is a dry run unless `apply=True`, and it reports transaction ids and
+counts only. In-flight v1 intents stay until their transaction finishes.
+
+## Hub transaction intent links and retirement
+
+`LocalCardIntentSource` keeps single/group intent schema v2 at
+`card-transactions/intents/<transaction_id>.json`. Each member contains its
+Card coordinates and only the exact `original` and `candidate` links. An
+absent creation has `original: null`. Card authorities are hydrated by exact
+filename, full checksum, access id and revision only in memory; there is no
+current/latest substitution or version-directory scan.
+
+The same intent path first holds a `staging` manifest: every candidate name,
+owner and the first accepted staging instant, before any candidate write.
+Only a `ready` record can load for preparation; a partial manifest refuses
+`card_intent_incomplete`. A replay resumes its exact files with the frozen
+instant. The composed service's member Card sections, in sorted order with
+started writes drained before release, cover recording and retirement.
+Candidate sidecars are written before version bodies, so planned candidates
+are not serving authority or history.
+
+The W578 participant stages that SAME candidate file. A pre-begin OAuth plan
+may supply `candidate_link` and `candidate_staging_tag` on `CardIntent` or on
+each `CardGroupMemberIntent`: recording adopts the sidecar to the transaction
+id (or its derived member id), never rewriting the body. These fields are
+storage inputs; the kernel's in-memory candidate value and digests do not
+change. Older unfinished v1 body intents remain readable and use their old
+stage path.
+
+FINISH authenticates the coordinator's terminal decision first. After every
+service finish duty succeeds, the existing receipt or abort tombstone gains
+bounded `intent_binding` (`authority`, `scope`, `record_digest`) and
+`intent_finished: true`. Only then is the intent removed. An abort also
+removes only its own exact unpublished candidate files and markers; it never
+removes a current version. A failed finish or cleanup leaves retry evidence.
+Terminal FINISH retries use the receipt without Card hydration; signed
+retries and page cursors require its exact authority/scope binding. A legacy
+receipt whose intent is gone and whose binding is absent fails closed.
+Exact terminal record replay writes nothing; late STAGE is refused.
+
 ## Hub-local operations in flight
 
 An issuer update or lifecycle intent writes `<card>/inflight.json` under the Card's lock before its
@@ -146,7 +231,7 @@ which comes under R. TTL expiry is not a proof that the old process died.
 
 **What R does NOT serialize.** R covers the Card mutation sections, the service's critical sections around a
 Card or its txn, collection and account fence. Some writes under the Card store root happen outside any such section:
-- intent records (`card_participant.record`);
+- read-set and effects-only intent records (single/group recording and retirement take their member Card locks);
 - read-collection seal and sweep;
 - agent shares;
 - account-fence marks;
@@ -159,4 +244,3 @@ therefore NOT retired by R.
 Outside it, the Card lock, every write and every deletion refuse `card_store_write_wrong_process_role`. On the
 Docker Desktop runtime the single-writer condition stays: exactly one proc-labelled container mounts the Card share
 (the VM pause is exactly the residual above). It is retired only after R is qualified on a cluster deployment.
-
