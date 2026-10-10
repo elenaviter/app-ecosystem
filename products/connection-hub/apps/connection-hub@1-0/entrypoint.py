@@ -1254,6 +1254,22 @@ async def _repair_legacy_project_bindings(entrypoint: Any) -> dict[str, int]:
     return await repair_legacy_project_bindings(host, store)
 
 
+def _card_version_store(entrypoint: Any, persistence: Any) -> Any:
+    """W661: piece 1's Card version store over this deployment's Card service and catalog.
+
+    STAGE reads the active catalog under the Card locks (EMain D1), so the
+    store is bound with the catalog store; None when either is missing.
+    """
+    from connection_hub.delegated_credentials.cards.card_version_port import ServiceCardVersionStore
+    from connection_hub.delegated_credentials.cards.participant_card_version import CardVersionRefused
+
+    card_service = getattr(persistence, "card_service", None)
+    catalog_store = _delegated_catalog_store(entrypoint)
+    if card_service is None or catalog_store is None:
+        return None
+    return ServiceCardVersionStore(card_service, refused=CardVersionRefused, catalog_store=catalog_store)
+
+
 async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
     """Durable card persistence, or ``None`` when bundle storage is
     unavailable — card operations then fail closed."""
@@ -4476,13 +4492,15 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
         redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
         persistence = await _delegated_card_persistence(self, redis)
-        store = getattr(persistence, "card_versions", None)
-        if store is None:
+        if persistence is None:
             return unavailable
         try:
+            store = _card_version_store(self, persistence)
             built = await _card_participant_callers(self, persistence)
         except Exception:  # noqa: BLE001 - never internal text to a peer
-            LOGGER.exception("[connection-hub.card-version] callers unavailable")
+            LOGGER.exception("[connection-hub.card-version] store or callers unavailable")
+            return unavailable
+        if store is None:
             return unavailable
         if not built.callers:
             return unavailable

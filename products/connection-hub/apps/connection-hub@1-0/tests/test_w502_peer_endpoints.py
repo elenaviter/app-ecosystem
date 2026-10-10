@@ -64,8 +64,7 @@ def entrypoint(monkeypatch):
 
     async def persistence(_entrypoint, _redis):
         # W651: registration seals under the Card service's collection lock (collection_section).
-        return SimpleNamespace(card_store=object(), card_service=SimpleNamespace(collection_section=_collection_section),
-                               card_versions=_NeverStore())
+        return SimpleNamespace(card_store=object(), card_service=SimpleNamespace(collection_section=_collection_section))
 
     async def callers(_entrypoint, _persistence):
         return BuiltCallers(callers={"problem-board": caller}, authorities={})
@@ -79,6 +78,7 @@ def entrypoint(monkeypatch):
     monkeypatch.setattr(module, "_delegated_authority_config", lambda _e: SimpleNamespace(uses_postgresql=True))
     monkeypatch.setattr(module, "_delegated_catalog_store", lambda _e: None)
     monkeypatch.setattr(module, "_runtime_tenant_project", lambda _e: ("t", "p"))
+    monkeypatch.setattr(module, "_card_version_store", lambda _e, _p: _NeverStore())
 
     async def host(_entrypoint, _request):
         return object()

@@ -107,9 +107,9 @@ class CardVersionStore(Protocol):
     runs drained, under the Card locks. ``scope`` and ``caller`` are the
     authenticated binding: STAGE records them in the marker, and a replay,
     PUBLISH or ROLLBACK that names another refuses ``txn_scope_mismatch``.
-    ROLLBACK also gets STAGE's answer ``links``: a completed PUBLISH removes
-    the marker, and the version file found by its link (carrying this txn)
-    then answers ``already_published`` (EMain D2).
+    ROLLBACK also gets STAGE's answer ``links`` and STAGE's ``at``: a
+    completed PUBLISH removes the marker, and the version file they name
+    (carrying this txn) then answers ``already_published`` (EMain D2).
     """
 
     async def stage(self, txn: str, *, request_id: str, request_digest: str, catalog: Mapping[str, Any],
@@ -121,7 +121,7 @@ class CardVersionStore(Protocol):
                       apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]]) -> Mapping[str, Any]: ...
 
     async def rollback(self, txn: str, *, scope: str, caller: str, links: Sequence[Mapping[str, Any]],
-                       apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]],
+                       at: datetime, apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]],
                        release: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[None]]
                        ) -> Mapping[str, Any]: ...
 
@@ -204,9 +204,11 @@ def _valid_request(data: Any) -> bool:
         return _valid_stage(data) and data["links"] is None
     # PUBLISH names the txn alone (its marker names the members). ROLLBACK also carries STAGE's answer
     # links, so it can find a version whose marker a completed PUBLISH already removed (EMain D2).
-    if any(data[name] is not None for name in STAGE_FIELDS):
-        return False
-    return data["links"] is None if data["op"] == "publish" else _valid_links(data["links"])
+    if data["op"] == "publish":
+        return data["links"] is None and all(data[name] is None for name in STAGE_FIELDS)
+    # ROLLBACK also carries STAGE's `at`: the version file name derives from it (Ops, D2).
+    return (_valid_links(data["links"]) and _at(data["at"]) is not None
+            and all(data[name] is None for name in STAGE_FIELDS if name != "at"))
 
 
 def _unsigned_refusal(code: str, status: int) -> dict[str, Any]:
@@ -320,8 +322,8 @@ class CardVersionOperation:
         if data["op"] == "publish":
             answer = await self._store.publish(txn, **binding, apply=self._apply)
             return {"kind": "published", "members": _links(answer)}
-        answer = await self._store.rollback(txn, **binding, links=data["links"], apply=self._apply,
-                                            release=self._release)
+        answer = await self._store.rollback(txn, **binding, links=data["links"], at=_at(data["at"]),
+                                            apply=self._apply, release=self._release)
         state = answer.get("state") if isinstance(answer, Mapping) else None
         if state not in ("rolled_back", "already_published", "unknown_txn"):
             raise CardVersionRefused("storage_unavailable")

@@ -106,8 +106,8 @@ class _Store:
                 effect["result"] = await apply(effect, marker)
         return {"members": marker["members"]}
 
-    async def rollback(self, txn, *, scope, caller, links, apply, release):
-        self.rollback_links = links
+    async def rollback(self, txn, *, scope, caller, links, at, apply, release):
+        self.rollback_links, self.rollback_at = links, at
         marker = self._bound(txn, scope, caller)
         if marker is not None and self.rollback_state == "rolled_back":
             for effect in marker["effects"]:
@@ -179,7 +179,7 @@ def _operation(*, prefix="work:project:", planner=None, store=None, host=None, h
 
 def _request(op="stage", *, scope=PROJECT, updates=(UPDATE,), creations=(), nonce=None, **override):
     data = {"schema": REQUEST_SCHEMA, "op": op, "request_echo": os.urandom(16).hex(), "scope": scope, "txn": TXN,
-            "request_id": None, "at": None, "catalog": None, "actor_subject": None, "actor_kind": None,
+            "request_id": None, "at": AT if op == "rollback" else None, "catalog": None, "actor_subject": None, "actor_kind": None,
             "delegable_grants": None, "project_control": None, "creations": None, "updates": None,
             "links": [LINK] if op == "rollback" else None}
     if op == "stage":
@@ -459,11 +459,13 @@ async def test_rollback_carries_stages_links_and_only_rollback_does():
     operation, _, store = _operation()
     request = _request("rollback")
     assert (await operation.answer(request))["ok"] is True and store.rollback_links == [LINK]
+    assert store.rollback_at.isoformat() == AT
     assert (await operation.answer(_request("rollback", links=[])))["ok"] is True and store.rollback_links == []
-    for op, links in (("stage", [LINK]), ("publish", [LINK]), ("rollback", None),
-                      ("rollback", [{**LINK, "body": {}}])):
-        response = await operation.answer(_request(op, links=links))
-        assert response["error"]["code"] == "card_version_request_invalid", (op, links)
+    for op, override in (("stage", {"links": [LINK]}), ("publish", {"links": [LINK]}), ("publish", {"at": AT}),
+                         ("rollback", {"links": None}), ("rollback", {"links": [{**LINK, "body": {}}]}),
+                         ("rollback", {"at": None}), ("rollback", {"request_id": "save-1"})):
+        response = await operation.answer(_request(op, **override))
+        assert response["error"]["code"] == "card_version_request_invalid", (op, override)
 
 
 @pytest.mark.asyncio

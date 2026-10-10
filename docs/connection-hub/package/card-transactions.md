@@ -70,10 +70,14 @@ whole request, so no edit value is repeated.
 - **`op: publish` and `op: rollback`.** PUBLISH carries `txn` alone, because the
   store's transaction marker names its members. ROLLBACK also carries `links`,
   the `{card, version, checksum}` links from STAGE's answer (PB keeps them),
-  or `[]` when STAGE never answered. A completed PUBLISH removes the marker,
+  or `[]` when STAGE never answered, and STAGE's `at`, from which the version
+  file name derives. A completed PUBLISH removes the marker,
   and a version file that its link finds and that carries this txn is
   published history. ROLLBACK answers `rolled_back`, `already_published` or
   `unknown_txn`.
+- **Store.** The endpoint binds piece 1's `ServiceCardVersionStore` over the
+  Card service and the catalog store, so STAGE re-reads the active catalog
+  under the Card locks. Without either one, the endpoint answers unavailable.
 - **Binding.** STAGE records the authenticated caller and scope in the
   marker. A replay, PUBLISH or ROLLBACK from another caller or scope is
   refused `request_scope_invalid` and touches nothing.
