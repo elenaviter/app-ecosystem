@@ -12,7 +12,7 @@ import re
 from datetime import datetime
 from typing import Any, Mapping
 
-from ..durable_io import cancellation_safe_await, read_json_or_none, require_publish_before, write_json_atomic
+from ..durable_io import cancellation_safe_await, read_json_or_none, require_publish_before, write_json_atomic, unlink_guarded
 from ..issuer_gate import change_digest
 from ..issuer_update import IssuerUpdateQuery, IssuerUpdateRefused
 from .model import CardCurrentPointer, card_revision_name
@@ -81,7 +81,7 @@ async def retire(store, receipt):
     if receipt["state"] == "prepared" or receipt["serving_state"] == "pending":
         return
     try:
-        await cancellation_safe_await(asyncio.to_thread(active_path(store, receipt["transaction_id"]).unlink, missing_ok=True))
+        await cancellation_safe_await(asyncio.to_thread(unlink_guarded, active_path(store, receipt["transaction_id"])))
     except OSError:
         pass  # terminal receipt remains authoritative
     from .inflight import release_inflight

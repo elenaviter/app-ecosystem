@@ -84,3 +84,22 @@ An issuer update or lifecycle intent writes `<card>/inflight.json` under the Car
 queue entry and clears it after it retires. A pointer writer reads that one file
 (`issuer_update_preparation_unresolved`, `lifecycle_preparation_unresolved`) instead of listing the
 queues. The queues remain for those flows' own crash recovery until the scope-B follow-up.
+
+## The Card lock and who may write (K1, phase 1)
+
+K1 on the live Docker Desktop host (10 October) showed that `flock` on the shared `/bundle-storage` bind
+is not exclusive between processes (1 overlap in 600). Phase 1 therefore:
+
+- takes the Card mutation lock (the SDK `flock`) on a **container-local** file, one per Card, under
+  `delegated_credentials.lifecycle_storage.lock_root` (default `/run/kdcube-card-locks`); the Card files
+  stay on bundle storage;
+- writes Cards **only in the chat-proc process role** (`GATEWAY_COMPONENT=proc`, set by the platform).
+  Outside it the Card lock, every JSON write under the Card store root and every deletion there refuse
+  `card_store_write_wrong_process_role`; the legacy repair on bundle load is skipped outside proc.
+
+This holds while exactly ONE container both runs in role `proc` and mounts the Card share. `proc` is not
+unique to chat-proc (the platform also labels metrics `proc`), so the condition is about every
+proc-labelled container that can reach the Card root: on the live host (10 October) only chat-proc
+mounts `/bundle-storage`; metrics does not. A second such container needs the PostgreSQL lock. PostgreSQL advisory locks with a
+session-held check replace it before W661 is Done.
+

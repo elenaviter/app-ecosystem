@@ -35,7 +35,7 @@ import re
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
-from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic
+from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic, unlink_guarded
 from ..issuer_gate import change_digest
 from .model import CardAuthority, CardCurrentPointer, card_authority_payload_hash, card_revision_name
 from .store import VERSION_RECORD_KEY, CardStorageError
@@ -184,7 +184,7 @@ async def abort_unstaged(store: Any, transaction_id: str, *, intent_digest: str 
     # terminal decision, so this exact intent's fence is released (CodeApp 19:29).
     await _release_catalog(store, transaction_id, intent_digest)
     try:
-        active_path(store, transaction_id).unlink(missing_ok=True)
+        unlink_guarded(active_path(store, transaction_id))
     except OSError:
         pass  # an unstaged entry holds no fence; recovery lists it until removed
     return tombstone
@@ -334,7 +334,7 @@ async def _release_reads(store: Any, receipt: Mapping[str, Any], reads: Any = No
         raw = await read_json_or_none(path)
         if isinstance(raw, Mapping) and raw.get("transaction_id") == receipt["transaction_id"]:
             try:
-                path.unlink(missing_ok=True)
+                unlink_guarded(path)
             except OSError:
                 pass  # a decided transaction's fence holds nothing
 
@@ -655,7 +655,7 @@ async def _clear_marker(store: Any, receipt: Mapping[str, Any]) -> None:
     raw = await read_json_or_none(path)
     if isinstance(raw, Mapping) and raw.get("transaction_id") == receipt["transaction_id"]:
         try:
-            path.unlink(missing_ok=True)
+            unlink_guarded(path)
         except OSError:
             pass  # the decided receipt already releases the fence
     if receipt["state"] in DECISIONS:
@@ -663,7 +663,7 @@ async def _clear_marker(store: Any, receipt: Mapping[str, Any]) -> None:
         if receipt.get("catalog"):
             await _release_catalog(store, receipt["transaction_id"], receipt["intent_digest"])
         try:
-            active_path(store, receipt["transaction_id"]).unlink(missing_ok=True)
+            unlink_guarded(active_path(store, receipt["transaction_id"]))
         except OSError:
             pass  # a stale entry only lists a decided transaction, which recovery skips
 
@@ -685,7 +685,7 @@ async def _retire_pointer(store: Any, receipt: Mapping[str, Any]) -> None:
             # An aborted create of a newly minted id: the slot is absent again. The
             # staged revision keeps its marker, so it never appears in history.
             try:
-                path.unlink(missing_ok=True)
+                unlink_guarded(path)
             except OSError as exc:
                 raise CardStorageError("card_transaction_retire_failed") from exc
         else:
@@ -699,7 +699,7 @@ async def _retire_pointer(store: Any, receipt: Mapping[str, Any]) -> None:
         raw = await read_json_or_none(marker)
         if isinstance(raw, Mapping) and raw.get("transaction_id") == receipt["transaction_id"]:
             try:
-                marker.unlink(missing_ok=True)
+                unlink_guarded(marker)
             except OSError:
                 pass  # it still resolves through the committed receipt
 
@@ -1202,7 +1202,7 @@ async def finish_group(store: Any, *, transaction_id: str, intent_digest: str, d
 async def _clear_group(store: Any, receipt: Mapping[str, Any]) -> None:
     if receipt["state"] in DECISIONS:
         try:
-            active_path(store, receipt["transaction_id"]).unlink(missing_ok=True)
+            unlink_guarded(active_path(store, receipt["transaction_id"]))
         except OSError:
             pass  # a stale entry lists a decided group, which recovery re-finishes idempotently
 
@@ -1354,7 +1354,7 @@ async def _release_read_set(store: Any, receipt: Mapping[str, Any]) -> None:
     if receipt.get("catalog"):
         await _release_catalog(store, receipt["transaction_id"], receipt["intent_digest"])
     try:
-        active_path(store, receipt["transaction_id"]).unlink(missing_ok=True)
+        unlink_guarded(active_path(store, receipt["transaction_id"]))
     except OSError:
         pass  # a stale entry lists a decided read set, which recovery re-finishes idempotently
 
@@ -1435,7 +1435,7 @@ async def decide_effects(store: Any, *, transaction_id: str, intent_digest: str,
 def retire_effects(store: Any, transaction_id: str) -> None:
     """The effects-only transaction is finished: its in-doubt entry goes (a stale one is re-finished)."""
     try:
-        active_path(store, transaction_id).unlink(missing_ok=True)
+        unlink_guarded(active_path(store, transaction_id))
     except OSError:
         pass
 
@@ -1547,7 +1547,7 @@ async def _mark_published(store: Any, marker: dict[str, Any]) -> None:
         path = card_version_revision_marker_path(store, subject_hash=m["subject_hash"], access_id=m["access_id"],
                                                  revision_name=m["revision_name"])
         try:
-            path.unlink(missing_ok=True)
+            unlink_guarded(path)
         except OSError:
             pass  # it still resolves as committed: published marker, or no marker at all
 
@@ -1556,7 +1556,7 @@ async def _finish_published(store: Any, marker: dict[str, Any], run_effect: Any)
     """Each unrecorded effect once; once every effect is recorded the marker goes (D2: only the version stays)."""
     await _run_effects(store, marker, run_effect)
     try:
-        card_version_marker_path(store, marker["txn"]).unlink(missing_ok=True)
+        unlink_guarded(card_version_marker_path(store, marker["txn"]))
     except OSError as exc:
         raise CardStorageError("card_version_marker_cleanup_failed") from exc
     from ..durable_io import _fsync_directory
@@ -1813,7 +1813,7 @@ async def _release_and_forget(store: Any, marker: Mapping[str, Any], *, release:
                                        revision_name=m["revision_name"])
         for path in (revision, revision.with_suffix(".card-version.json")):
             try:
-                path.unlink(missing_ok=True)
+                unlink_guarded(path)
             except OSError as exc:
                 raise CardStorageError("card_version_rollback_failed") from exc
         folders.add(revision.parent)
@@ -1823,7 +1823,7 @@ async def _release_and_forget(store: Any, marker: Mapping[str, Any], *, release:
         await _write_card_version_marker(store, {**marker, "state": "rolled_back"})
         return
     try:
-        card_version_marker_path(store, marker["txn"]).unlink(missing_ok=True)
+        unlink_guarded(card_version_marker_path(store, marker["txn"]))
     except OSError as exc:
         raise CardStorageError("card_version_rollback_failed") from exc
     _fsync_directory(card_version_marker_path(store, marker["txn"]).parent)

@@ -904,6 +904,36 @@ def _lifecycle_lock_scope(entrypoint: Any) -> str:
     return scope if scope in ("same-host-flock", "shared-flock-verified") else ""
 
 
+def _guarded_card_store(storage_root: Any, **kwargs: Any) -> BundleStorageDelegatedCardStore:
+    """W661 K1: every Card store the Hub builds is write-guarded: Card files are written only in chat-proc."""
+    from connection_hub.delegated_credentials.cards.locks import guard_card_store_writes
+
+    return guard_card_store_writes(BundleStorageDelegatedCardStore(storage_root, **kwargs))
+
+
+def _card_lock_root(entrypoint: Any) -> str:
+    """W661 K1: the container-local root of the Card lock files (Card files stay on bundle storage)."""
+    from connection_hub.delegated_credentials.cards.locks import DEFAULT_CARD_LOCK_ROOT
+
+    delegated = _connections_config(entrypoint).get("delegated_credentials")
+    storage = delegated.get("lifecycle_storage") if isinstance(delegated, Mapping) else None
+    root = storage.get("lock_root") if isinstance(storage, Mapping) else None
+    return root if isinstance(root, str) and root.startswith("/") else DEFAULT_CARD_LOCK_ROOT
+
+
+def _card_mutation_lock(entrypoint: Any) -> Any:
+    """W661 K1 phase 1 (EMain 18:40Z): the SDK flock on a container-local file, granted only in role proc.
+
+    K1 showed flock on the shared /bundle-storage bind is not exclusive; chat-ingress also loads this bundle.
+    """
+    from connection_hub.delegated_credentials.cards.locks import hub_card_mutation_lock
+    from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.cards.service import (
+        _kdcube_card_mutation_lock,
+    )
+
+    return hub_card_mutation_lock(_kdcube_card_mutation_lock, _card_lock_root(entrypoint))
+
+
 def _edge_store(entrypoint: Any) -> ConnectionEdgeStore:
     return ConnectionEdgeStore(_storage_root_or_error(entrypoint))
 
@@ -1244,12 +1274,19 @@ def _delegated_catalog_store(entrypoint: Any) -> Any:
 
 async def _repair_legacy_project_bindings(entrypoint: Any) -> dict[str, int]:
     """P0 (10 Oct 2026): legacy C under its project's one P, and My pointers, exactly as new Cards are bound."""
+    from connection_hub.delegated_credentials.cards.locks import CARD_WRITER_ROLE, current_process_role
     from connection_hub.delegated_credentials.legacy_binding_repair import repair_legacy_project_bindings
 
+    role = current_process_role()
+    if role != CARD_WRITER_ROLE:
+        # W661 K1 (EMain 18:40Z): Cards are written only in chat-proc. chat-ingress loads this bundle for
+        # request_authenticate; it must not repair (the Card lock would refuse it there anyway).
+        LOGGER.info("[connection-hub] legacy project binding repair skipped in process role=%s", role or "unset")
+        return {}
     storage_root = entrypoint.bundle_storage_root()
     if storage_root is None:
         return {}
-    store = BundleStorageDelegatedCardStore(storage_root, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint))
+    store = _guarded_card_store(storage_root, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint))
     host = await _automation_access_service(entrypoint, None)
     return await repair_legacy_project_bindings(host, store)
 
@@ -1287,8 +1324,9 @@ async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
         redis=redis,
         tenant=tenant,
         project=project,
-        card_store=BundleStorageDelegatedCardStore(storage_root, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint)),
+        card_store=_guarded_card_store(storage_root, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint)),
         settings=DelegatedCacheSettings.from_connections(_connections_config(entrypoint)),
+        mutation_lock=_card_mutation_lock(entrypoint),
         credential_handles=credential_handles,
         authority_backend=config.backend,
     )
@@ -3940,7 +3978,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         tenant, project = _runtime_tenant_project(self)
         report = await CardProjectionReconciler(
             cache=DelegatedCardRuntimeCache(redis, tenant=tenant, project=project),
-            store=BundleStorageDelegatedCardStore(storage_root),
+            store=_guarded_card_store(storage_root),
         ).reconcile()
         if report is None:
             return {"ok": True, "swept": False}
@@ -5353,7 +5391,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         storage_root = self.bundle_storage_root()
         if storage_root is None:
             return None
-        return AgentCardShares(BundleStorageDelegatedCardStore(storage_root))
+        return AgentCardShares(_guarded_card_store(storage_root))
 
     async def _agent_card_share_call(self, user_id: Optional[str], run: Any) -> Dict[str, Any]:
         user = _platform_user_payload(self, user_id=user_id)
