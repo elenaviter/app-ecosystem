@@ -21,6 +21,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from .model import CardAuthority
 from .service import CardConflict
+from .store import CardStorageError
 from .transaction_store import CardTransactionRefused
 
 # Store-internal codes and the contract code each one answers as (contract v6.2, sections 3-5).
@@ -32,6 +33,13 @@ _CONTRACT_CODES = {
     "card_version_txn_invalid": "edit_invalid",
     "card_mutation_lock_timeout": "storage_unavailable",
     "card_version_members_moved": "storage_unavailable",
+}
+
+
+# Store-state refusals raised as CardStorageError (shared with the Hub-local writers) and their contract code.
+_STORE_REFUSALS = {
+    "card_version_effects_pending": "effects_pending",  # a predecessor's effects are not recorded yet (D3)
+    "card_version_unresolved": "storage_unavailable",  # a partly published group (phase 2): fail closed
 }
 
 
@@ -56,6 +64,11 @@ class ServiceCardVersionStore:
             raise self._refused(_CONTRACT_CODES.get(exc.reason, exc.reason)) from exc
         except CardConflict as exc:
             raise self._refused(_CONTRACT_CODES.get(exc.reason, "storage_unavailable")) from exc
+        except CardStorageError as exc:
+            # Spark App M1: the D3 refusals of finalize_current_version reach PB with their contract code.
+            if exc.reason in _STORE_REFUSALS:
+                raise self._refused(_STORE_REFUSALS[exc.reason]) from exc
+            raise
 
     async def stage(self, txn: str, *, request_id: str, request_digest: str, catalog: Mapping[str, Any],
                     actor_subject: str, actor_kind: str, members: Sequence[Mapping[str, Any]],
