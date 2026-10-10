@@ -73,3 +73,14 @@ async def test_only_a_manual_reselect_carries_protected_grants():
               "protected_grants": PROTECTED}
     result = await _plan(_Host(project, control, my), [update])
     assert result["ok"] is False and result["error"] == "card_plan_update_invalid"
+
+
+@pytest.mark.asyncio
+async def test_removing_the_only_protected_grant_is_refused_by_its_own_name_before_resolution():
+    """Infra/CodeApp: a selection that empties the resource would otherwise fail resolution with another code."""
+    project, control, my = _cards()
+    control = _with(control, ["work:admin"])
+    for selection in ({"resource_grants": {"service-a": []}}, {"resource_grants": {}}):
+        update = {**_update(control, selection), "protected_grants": PROTECTED}
+        result = await _plan(_Host(project, control, my), [update])
+        assert result == {"ok": False, "error": "card_edit_admin_grant_role_only", "status": 409}, selection

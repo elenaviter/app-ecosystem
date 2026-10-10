@@ -871,6 +871,13 @@ async def plan_card_lifecycle(
                 from connection_hub.delegated_credentials.existing_card_selection_plan import (
                     build_existing_card_selection_update,
                 )
+                # S5 first on what the person submitted, so a protected-grant change is refused by its own
+                # name before catalog resolution can refuse it for another reason; then on the candidate.
+                submitted = raw["selection"].get("resource_grants")
+                if isinstance(submitted, Mapping):
+                    # A supplied dimension replaces the whole map (W607), so compare the map as submitted.
+                    _require_protected_grants_kept(raw.get("protected_grants"), original,
+                                                   {"resource_grants": dict(submitted)})
                 built = await build_existing_card_selection_update(
                     host, original=original, selection=raw["selection"], active=active, decision=decision,
                     project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now)
