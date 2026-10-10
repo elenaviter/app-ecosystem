@@ -143,6 +143,36 @@ async def test_plan_candidate_is_adopted_without_a_new_file(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reconsent", [False, True])
+async def test_composed_oauth_uses_the_plan_file_for_intent_stage_and_finish(tmp_path, reconsent):
+    """The actual OAuth caller must carry the link, for creation and reconsent."""
+    from test_w603_original_issuance import _begin, _reserve, _world
+
+    async with _world(tmp_path) as world:
+        if reconsent:
+            first = await _begin(world)
+            await _reserve(world, first)
+            assert (await world.service.complete_oauth_issuance(transaction_id=first.transaction_id)).state == "committed"
+        plan = await _begin(world, request="w697-plan-file", scopes=["memories:read", "memories:write"])
+        stored = await world.authority.read_issuance_plan(plan.transaction_id)
+        link = stored["plan"]["intent"]["candidate"]
+        source = LocalCardIntentSource(world.store)
+        manifest = await read_json_or_none(source._path(plan.transaction_id))
+        member = manifest if reconsent else manifest["members"][0]
+        assert member["candidate"] == link  # fails when the caller omitted its planned link
+        versions = set(world.store.card_path(subject_hash=world.subject_hash, access_id=plan.access_id)
+                       .glob("revisions/*[0-9a-f].json"))
+        assert len(versions) == (2 if reconsent else 1)
+        await _reserve(world, plan)
+        assert (await world.service.complete_oauth_issuance(transaction_id=plan.transaction_id)).state == "committed"
+        receipt_id = plan.transaction_id if reconsent else tx.member_transaction_id(plan.transaction_id, 0)
+        assert (await tx.read_receipt(world.store, receipt_id))["after"]["revision_name"] == link["revision_name"]
+        assert set(world.store.card_path(subject_hash=world.subject_hash, access_id=plan.access_id)
+                   .glob("revisions/*[0-9a-f].json")) == versions
+        assert not source._path(plan.transaction_id).exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("changed", ["label", "hash", "revision", "access_id"])
 async def test_exact_link_checks_refuse_substituted_or_changed_versions(tmp_path, changed):
     store, _, source, intent, _, _ = await _unrecorded(tmp_path)
