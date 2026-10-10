@@ -68,9 +68,9 @@ Before any writer (STAGE, PUBLISH, any pointer write) builds on a Card, it reads
 version's record and that txn's marker. A `staged` marker whose versions are all current is set
 `published` first and left for that txn's own PUBLISH retry or ROLLBACK to remove, so its ROLLBACK
 answers `already_published`, with or without links. A partly current group is refused
-`card_version_unresolved`. A predecessor whose effects are not all recorded is finished first when the
-writer holds the effect executor (a single-Card PUBLISH); otherwise the writer is refused
-`card_version_effects_pending`. Readers treat the version `current.json` names as final.
+`card_version_unresolved`. A predecessor whose effects are not all recorded refuses every other writer
+(`card_version_effects_pending`); a writer never runs another txn's effects. Only that txn's own PUBLISH
+retry or ROLLBACK runs them. Readers treat the version `current.json` names as final.
 
 ## Hub-local operations in flight
 

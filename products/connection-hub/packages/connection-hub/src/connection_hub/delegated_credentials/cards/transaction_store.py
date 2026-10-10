@@ -1575,8 +1575,7 @@ async def _current_txn(store: Any, current: Any, *, subject_hash: str, access_id
     return sidecar["txn"] if isinstance(sidecar, Mapping) and type(sidecar.get("txn")) is str else ""
 
 
-async def finalize_current_version(store: Any, *, subject_hash: str, access_id: str, own_txn: str = "",
-                                   run_effect: Any = None) -> str:
+async def finalize_current_version(store: Any, *, subject_hash: str, access_id: str, own_txn: str = "") -> str:
     """D3 (EMain, Infra's K2 cut): before building on a Card, finalize the txn its current.json names.
 
     current.json naming a version means that txn IS published, even if its PUBLISH stopped before the
@@ -1602,12 +1601,10 @@ async def finalize_current_version(store: Any, *, subject_hash: str, access_id: 
             if named is None or named.revision_name != m["revision_name"]:
                 raise CardStorageError("card_version_unresolved")
         await _mark_published(store, marker)
-    if run_effect is not None and len(marker["members"]) == 1:
-        await _run_effects(store, marker, run_effect)
     if any(str(index) not in marker["effect_outcomes"] for index in range(len(marker["effects"]))):
-        # Infra 17:37Z: D3 is "complete or refuse" before admitting the next base. Without an executor for the
-        # predecessor's effects (STAGE, a pointer writer, or a group), refuse; its own PUBLISH retry/ROLLBACK
-        # finishes them.
+        # Infra 17:37Z, EMain 17:43Z: never run another txn's effects, always refuse before admitting the next
+        # base. Only that txn's own PUBLISH retry or ROLLBACK runs them (a later operation finishing earlier work
+        # is open with the operator, W693 Q4).
         raise CardStorageError("card_version_effects_pending")
     # The marker stays `published`: only the txn's own PUBLISH retry or ROLLBACK (which PB's error path always
     # sends) deletes it, so that ROLLBACK answers already_published even without its links (Infra red 2).
@@ -1833,7 +1830,7 @@ async def card_version_publish(store: Any, *, txn: str, run_effect: Any = None,
     if marker["state"] == "staged":
         for m in marker["members"]:
             await finalize_current_version(store, subject_hash=m["subject_hash"], access_id=m["access_id"],
-                                           own_txn=txn, run_effect=run_effect)
+                                           own_txn=txn)
             current = await store.read_current(subject_hash=m["subject_hash"], access_id=m["access_id"])
             observed = current.revision_name if current is not None else None
             if observed == m["revision_name"]:
