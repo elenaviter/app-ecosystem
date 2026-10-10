@@ -23,7 +23,7 @@ import os
 import pathlib
 import re
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
@@ -36,6 +36,7 @@ from connection_hub.delegated_credentials.durable_io import (
     DurableStorageError,
     list_child_names,
     read_json_or_none,
+    unlink_guarded,
     write_json_atomic,
 )
 
@@ -134,6 +135,9 @@ class BundleStorageDelegatedCardStore:
         # shared NFS/SMB mount is not proof of coherent cross-host flock.
         self.lifecycle_lock_scope = lifecycle_lock_scope if lifecycle_lock_scope in (
             "same-host-flock", "shared-flock-verified") else ""
+        # W661 lock (b) b-core: PostgresCardRows when the host runs lock_backend=postgres. Then the pointer row
+        # is the authority and current.json a hint written after it; without it the file is the pointer.
+        self.card_rows: Any = None
 
     @property
     def root(self) -> pathlib.Path:
@@ -157,6 +161,45 @@ class BundleStorageDelegatedCardStore:
             / validated_revision_name(revision_name)
         )
 
+    async def read_pointer_document(self, *, subject_hash: str, access_id: str) -> dict | None:
+        """The Card's raw pointer document (any current.json schema), or None when the Card has none.
+
+        b-core: the row decides once it exists; current.json is never preferred over it (C2). Without a row,
+        nobody wrote this Card since the cutover: a writer holding THIS Card's lock adopts the file into a row
+        (first touch, no scan); a reader without that lock reads the file and creates nothing.
+        """
+        path = self.current_path(subject_hash=subject_hash, access_id=access_id)
+        rows = self.card_rows
+        if rows is None:
+            return await read_json_or_none(path)
+        from .locks import current_lock_session
+        from .pointer_authority import ABSENT_POINTER
+
+        document, _revision = await rows.read_pointer(subject_hash=subject_hash, access_id=access_id)
+        if document is None:
+            hint = await read_json_or_none(path)
+            if hint is None:
+                return None
+            session = current_lock_session()
+            if session is None or not session.holds(f"delegated-card:{validated_access_id(access_id)}"):
+                return hint
+            document, _revision = await rows.adopt_pointer(subject_hash=subject_hash, access_id=access_id,
+                                                           document=hint)
+        return None if document == ABSENT_POINTER else document
+
+    async def write_pointer_document(self, *, subject_hash: str, access_id: str, document: dict | None) -> None:
+        """Replace (or with None remove) the Card's pointer. b-core: the row CAS first, then the file hint."""
+        path = self.current_path(subject_hash=subject_hash, access_id=access_id)
+        if self.card_rows is not None:
+            from .pointer_authority import ABSENT_POINTER
+
+            await self.card_rows.write_pointer(subject_hash=subject_hash, access_id=access_id,
+                                               document=ABSENT_POINTER if document is None else dict(document))
+        if document is None:
+            unlink_guarded(path)
+        else:
+            await write_json_atomic(path, dict(document))
+
     async def read_current(
         self, *, subject_hash: str, access_id: str, consult_decision: bool = True
     ) -> CardCurrentPointer | None:
@@ -166,9 +209,7 @@ class BundleStorageDelegatedCardStore:
         grants: a Card inside a Card transaction then reads as its last locally committed revision instead
         of refusing while the coordinator's decision or its effects are outstanding.
         """
-        payload = await read_json_or_none(
-            self.current_path(subject_hash=subject_hash, access_id=access_id)
-        )
+        payload = await self.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
         if payload is None:
             return None
         # Old readers reject this schema. New readers resolve staged pointers
@@ -330,10 +371,8 @@ class BundleStorageDelegatedCardStore:
     async def advance_current(self, *, subject_hash: str, pointer: CardCurrentPointer) -> None:
         from .lifecycle_store import assert_pointer_replaceable
         await assert_pointer_replaceable(self, subject_hash=subject_hash, access_id=pointer.access_id)
-        await write_json_atomic(
-            self.current_path(subject_hash=subject_hash, access_id=pointer.access_id),
-            pointer.to_dict(),
-        )
+        await self.write_pointer_document(subject_hash=subject_hash, access_id=pointer.access_id,
+                                          document=pointer.to_dict())
 
     async def list_card_ids(self, *, subject_hash: str) -> list[str]:
         names = await list_child_names(self.grantor_path(subject_hash))
