@@ -23,6 +23,7 @@ import logging
 import os
 import pathlib
 import time
+import uuid
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -46,6 +47,18 @@ PROJECT_PREFIX = "work:project:"
 # population on every load). Written only when a run left nothing outstanding; a later load reads this
 # one file and no Card. Any refusal, error or skip leaves it unwritten, so the next load retries.
 MARKER_NAME = "legacy-binding-repair.complete.json"
+# Counters are fixed labels (codex-infra review): an outcome or refusal code is logged only when it is one
+# of these literals, whatever a policy or peer returned; anything else counts as "other".
+OUTCOMES = frozenset({"bound", "already_bound", "not_bound", "no_project_control", "control_missing",
+                      "p_invalid", "p_conflict"})
+REFUSAL_CODES = frozenset({
+    "card_transactions_direct_write_refused", "control_card_already_attached", "control_card_binding_invalid",
+    "control_card_grantor_mismatch", "control_card_invalid", "control_card_unavailable",
+    "delegated_access_not_found", "delegated_access_precondition_failed", "delegated_card_not_committed",
+    "project_control_absent", "project_control_conflict", "project_control_locator_invalid",
+    "project_control_locator_mismatch", "project_control_not_exact", "project_control_not_root",
+    "project_control_unavailable", "project_person_control_not_active", "project_person_control_not_found",
+})
 MARKER_SCHEMA = "connection-hub.legacy-binding-repair.v1"
 DONE_KEYS = frozenset({"c_bound", "c_already_bound", "my_repaired", "my_already_bound"})
 
@@ -64,7 +77,8 @@ def _complete(store: Any) -> bool:
 
 def _write_marker(store: Any, counts: dict[str, int]) -> None:
     path = _marker_path(store)
-    temporary = path.with_name(path.name + ".tmp")
+    # One temporary per writer: two loaders publishing at once never consume each other's file.
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     temporary.write_text(json.dumps({"schema": MARKER_SCHEMA, "completed_at": int(time.time()),
                                      "counts": dict(sorted(counts.items()))}, sort_keys=True), encoding="utf-8")
     os.replace(temporary, path)
@@ -140,9 +154,10 @@ async def _repair(host: Any, store: Any) -> dict[str, int]:
         except Exception as exc:  # noqa: BLE001 - counted by class; the next Card is still repaired
             counts["c_error_" + type(exc).__name__] += 1
             continue
-        counts["c_" + str(outcome.get("outcome") or "refused")] += 1
-        if outcome.get("ok") is not True and isinstance(outcome.get("error"), str):
-            counts["c_refused_" + outcome["error"]] += 1
+        counts["c_" + (outcome.get("outcome") if outcome.get("outcome") in OUTCOMES else "refused")] += 1
+        if outcome.get("ok") is not True:
+            error = outcome.get("error")
+            counts["c_refused_" + (error if error in REFUSAL_CODES else "other")] += 1
 
     lifecycle = ProjectIdentityLifecycle(host=host, authority_from_record=card_authority_from_record,
                                          record_from_authority=record_from_card)
@@ -172,8 +187,12 @@ async def _repair_my(host: Any, lifecycle: ProjectIdentityLifecycle, card: Any, 
     control = authority_of(loaded[0])
     if control.control_card is None:
         return "my_skipped_unbound_c"
-    if (control.control_card.control_id != project_roots[0].access_id
-            or control.control_card.issuer_ref != mine.project_ref):
+    root, binding = project_roots[0], control.control_card
+    # The FULL C -> P locator (codex-infra review): application issuer kind, this project, the selected P's
+    # id and its holder (attach records the holder whenever it is not C's own grantor).
+    if (binding.issuer_kind != PROJECT_CONTROL_ISSUER_KIND or binding.issuer_ref != mine.project_ref
+            or binding.control_id != root.access_id
+            or (binding.holder_subject or control.grantor_subject) != root.grantor_subject):
         return "my_skipped_c_not_under_root_p"
     my_loaded = await host._load_record_any_state(card.access_id, grantor_subject=card.grantor_subject)
     if my_loaded is None or my_loaded[1] != CARD_STATE_ACTIVE:
