@@ -928,14 +928,27 @@ def _card_lock_backend(entrypoint: Any) -> str:
     return "redis" if _card_lock_settings(entrypoint).get("lock_backend") == "redis" else "local"
 
 
-def _card_lock_root(entrypoint: Any) -> str:
-    """W661 K1: the container-local root of the Card lock files (Card files stay on bundle storage)."""
-    from connection_hub.delegated_credentials.cards.locks import DEFAULT_CARD_LOCK_ROOT
+def _card_lock_root(entrypoint: Any) -> str | None:
+    """W661: the Card file-lock root is this bundle's platform storage root plus "_card_locks" (operator, 10 Oct:
+    "read kdcube docs on bundle storage"; sdk/bundle/bundle-storage-and-cache-README.md). No host path, no config
+    root: a host path (/run) broke every Card write for the non-root app user. None when there is no storage root."""
+    from connection_hub.delegated_credentials.cards.locks import card_lock_root
 
-    delegated = _connections_config(entrypoint).get("delegated_credentials")
-    storage = delegated.get("lifecycle_storage") if isinstance(delegated, Mapping) else None
-    root = storage.get("lock_root") if isinstance(storage, Mapping) else None
-    return root if isinstance(root, str) and root.startswith("/") else DEFAULT_CARD_LOCK_ROOT
+    storage_root = entrypoint.bundle_storage_root()
+    return None if storage_root is None else str(card_lock_root(storage_root))
+
+
+def _refusing_card_lock(code: str) -> Any:
+    from contextlib import asynccontextmanager
+
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+
+    @asynccontextmanager
+    async def lock(**kwargs: Any) -> Any:
+        raise CardStorageError(code)
+        yield  # pragma: no cover - never reached
+
+    return lock
 
 
 def _card_mutation_lock(entrypoint: Any) -> Any:
@@ -948,6 +961,9 @@ def _card_mutation_lock(entrypoint: Any) -> Any:
         _kdcube_card_mutation_lock,
     )
 
+    root = _card_lock_root(entrypoint)
+    if root is None:
+        return _refusing_card_lock("card_lock_root_unavailable")  # fail closed: no storage root, no Card write
     if _card_lock_backend(entrypoint) == "redis":
         # Option R (operator 10 Oct: "R now, with P"): critical-section-README "Git Bundle Materialization": the
         # shared Redis lock, then the observed file lock. Fail closed: no Redis client refuses every Card mutation.
@@ -961,10 +977,10 @@ def _card_mutation_lock(entrypoint: Any) -> Any:
                      if isinstance(settings.get(key), (int, float)) and not isinstance(settings.get(key), bool)}
         redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
         tenant, project = _runtime_tenant_project(entrypoint)
-        return hub_redis_card_mutation_lock(redis, _kdcube_card_mutation_lock, _card_lock_root(entrypoint),
+        return hub_redis_card_mutation_lock(redis, _kdcube_card_mutation_lock, root,
                                             tenant=tenant, project=project, observed_lock=observed_redis_lock_async,
                                             make_metadata=make_lock_metadata, **overrides)
-    return hub_card_mutation_lock(_kdcube_card_mutation_lock, _card_lock_root(entrypoint))
+    return hub_card_mutation_lock(_kdcube_card_mutation_lock, root)
 
 
 def _edge_store(entrypoint: Any) -> ConnectionEdgeStore:
