@@ -24,7 +24,6 @@ requires that exact marker, so a candidate is only ever read as the one its reco
 from __future__ import annotations
 
 import hashlib
-import json
 from datetime import datetime
 from typing import Any, Mapping
 
@@ -59,17 +58,26 @@ def pointer_link(pointer: CardCurrentPointer) -> dict[str, Any]:
                         content_hash=pointer.content_hash)
 
 
-def staging_tag(scope: str, request_id: str) -> str:
-    """A 64-hex tag for one planned version: SHA-256 of canonical tagged fields.
+STAGING_TAG_PREFIX = "stg-"
 
-    Real transaction ids are 256 random bits, so a collision is negligible, not impossible; the marker
-    and content checks below refuse rather than overwrite if a file ever has another owner.
+
+def staging_tag(scope: str, request_id: str) -> str:
+    """The tag of one planned (pre-begin) version: ``stg-`` plus SHA-256 of a length-prefixed encoding.
+
+    Structurally outside the transaction-id namespace (those are 64 lowercase hex, never ``stg-``), and
+    unambiguous: each field is length-prefixed, so no (scope, request_id) pair encodes like another.
     """
     if type(scope) is not str or not scope or type(request_id) is not str or not request_id:
         raise CardRecordError("version_link_tag_invalid")
-    canonical = json.dumps({"kind": "card-version-staging-tag.v1", "scope": scope, "request_id": request_id},
-                           sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    encoded = b"card-version-staging-tag.v1"
+    for field in (scope, request_id):
+        raw = field.encode("utf-8")
+        encoded += len(raw).to_bytes(8, "big") + raw
+    return STAGING_TAG_PREFIX + hashlib.sha256(encoded).hexdigest()
+
+
+def is_staging_tag(value: Any) -> bool:
+    return type(value) is str and value.startswith(STAGING_TAG_PREFIX)
 
 
 _ABSENT = object()
@@ -156,6 +164,37 @@ async def adopt_hidden_version(store: Any, *, subject_hash: str, access_id: str,
     return link
 
 
+async def discard_hidden_version(store: Any, *, subject_hash: str, access_id: str, link: Any, tag: str) -> bool:
+    """Delete a planned version whose plan ended before any transaction adopted it; True if it was there.
+
+    Only a file still owned by exactly ``tag`` (a staging tag) and still exactly the link's content is
+    deleted: the version file FIRST, then its marker, both through ``unlink_guarded`` (the store's writer
+    guard decides), so a crash never leaves an unmarked, history-visible file. An adopted file (any other
+    owner) refuses ``version_link_owner_conflict``; a changed file refuses; nothing is repaired.
+    """
+    from connection_hub.delegated_credentials.durable_io import unlink_guarded
+
+    if not is_staging_tag(tag) or not is_version_link(link):
+        raise CardRecordError("version_link_invalid")
+    marker_path = _marker_path(store, subject_hash=subject_hash, access_id=access_id,
+                               revision_name=link["revision_name"])
+    file_path = store.revision_path(subject_hash=subject_hash, access_id=access_id,
+                                    revision_name=link["revision_name"])
+    marker = await _read_present(marker_path)
+    if marker is _ABSENT:
+        if await _read_present(file_path) is not _ABSENT:
+            raise CardRecordError("version_link_owner_conflict")  # unmarked: history, never ours
+        return False
+    if marker != {"transaction_id": tag}:
+        raise CardRecordError("version_link_owner_conflict")
+    present = await _read_present(file_path)
+    if present is not _ABSENT:
+        await load_version(store, subject_hash=subject_hash, access_id=access_id, link=link, marker=tag)
+        unlink_guarded(file_path)
+    unlink_guarded(marker_path)
+    return present is not _ABSENT
+
+
 async def load_version(store: Any, *, subject_hash: str, access_id: str, link: Any,
                        marker: str | None = None, owners: Any = (), allow_unmarked: bool = False) -> CardAuthority:
     """The Card a link names, read directly by name; refuses unless content hash, card and revision match.
@@ -192,5 +231,6 @@ async def load_version(store: Any, *, subject_hash: str, access_id: str, link: A
     return authority
 
 
-__all__ = ["LINK_KEYS", "adopt_hidden_version", "is_version_link", "load_version", "pointer_link", "staging_tag", "version_link",
+__all__ = ["LINK_KEYS", "STAGING_TAG_PREFIX", "adopt_hidden_version", "discard_hidden_version", "is_staging_tag",
+           "is_version_link", "load_version", "pointer_link", "staging_tag", "version_link",
            "write_hidden_version"]

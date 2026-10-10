@@ -318,3 +318,75 @@ async def test_the_purge_apply_obeys_the_card_store_writer_guard(tmp_path):
             durable_io._WRITE_GUARDS.pop(os.path.join(os.path.abspath(os.fspath(w.store.root)), ""), None)
         assert (await purge_finished_v1_intents(w.store, w.decisions, apply=True))["deleted"] == [done.transaction_id]
         assert not path.exists()
+
+
+def test_a_staging_tag_is_structurally_outside_the_transaction_namespace():
+    """r5 (Ops): ``stg-`` plus a digest of a length-prefixed encoding; never 64-hex, never ambiguous."""
+    import re
+
+    tag = links.staging_tag("oauth-issuance-candidate", "a" * 64)
+    assert tag.startswith("stg-") and not re.fullmatch(r"[0-9a-f]{64}", tag) and links.is_staging_tag(tag)
+    assert links.staging_tag("a:b", "c") != links.staging_tag("a", "b:c")
+    assert links.staging_tag("ab", "c") != links.staging_tag("a", "bc")
+    with pytest.raises(CardRecordError):
+        links.staging_tag("", "x")
+
+
+@pytest.mark.asyncio
+async def test_a_planned_version_stays_hidden_on_every_by_name_read(tmp_path):
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)
+        link = (await _stored(w, plan))["intent"]["candidate"]
+        assert await w.store.read_revision(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                           revision_name=link["revision_name"]) is None
+        assert link["revision_name"] not in [name for name in await w.store.list_revision_names(
+            subject_hash=w.subject_hash, access_id=plan.access_id)
+            if await w.store.read_revision(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                           revision_name=name) is not None]
+
+
+async def _unbegun_plan(w, request):
+    """A stored plan whose decision never began, already past its deadline."""
+    from connection_hub.delegated_credentials.oauth_issuance import decision_request_id, original_input_digest
+    from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
+    from test_w603_original_issuance import CLIENT, GRANTOR, RESOURCE, SCOPES
+
+    _c, _i, _d, ttl, store = w.service._issuance_parts()
+    request_id = decision_request_id(scope=f"{PARTICIPANT}:oauth-issuance", grantor_subject=GRANTOR,
+                                     client_id=CLIENT, original_request_id=request)
+    inputs = {"client_label": "Claude Code", "scopes": SCOPES, "operations": None, "resource_grants": None,
+              "resource_operations": None, "resource": RESOURCE, "access_id": "", "card_kind": "",
+              "identity_scope": "", "account_scope": None, "named_service_operations": None,
+              "catalog_version": "", "client_metadata": None, "properties": None, "replace_authority": True,
+              "expected_card_revision": None}
+    digest = original_input_digest({"grantor_subject": GRANTOR, "client_id": CLIENT, **inputs})
+    planned = await w.service._plan_oauth_issuance(store=store, ttl=ttl, request=request_id, input_digest=digest,
+                                                   grantor=GRANTOR, client=CLIENT, record_inputs=inputs)
+    await store.put_issuance_plan(decision_request_id=request_id, original_input_digest=digest, plan=planned,
+                                  reserved_until=1)
+    return request_id, planned
+
+
+@pytest.mark.asyncio
+async def test_an_unbegun_plan_ends_with_its_deadline_and_takes_its_planned_version_with_it(tmp_path):
+    """r5 (Ops): no scan; the plan names its file. An adopted candidate is never this sweep's."""
+    from connection_hub.delegated_credentials.cards.transaction_store import revision_marker_path
+
+    async with _world(tmp_path) as w:
+        request_id, planned = await _unbegun_plan(w, "never-begun")
+        kept_id, kept = await _unbegun_plan(w, "adopted-meanwhile")
+        files = {}
+        for rid, plan in ((request_id, planned), (kept_id, kept)):
+            link = plan["intent"]["candidate"]
+            files[rid] = (w.store.revision_path(subject_hash=w.subject_hash, access_id=plan["access_id"],
+                                                revision_name=link["revision_name"]),
+                          revision_marker_path(w.store, subject_hash=w.subject_hash, access_id=plan["access_id"],
+                                               revision_name=link["revision_name"]))
+            assert all(path.exists() for path in files[rid])
+        files[kept_id][1].write_text(json.dumps({"transaction_id": "c" * 64}))  # adopted by a transaction
+        assert await w.service.release_unbegun_oauth_issuance_plans() == 1
+        assert not any(path.exists() for path in files[request_id])  # file and marker gone
+        assert await w.authority.read_issuance_plan_request(request_id) is None
+        assert all(path.exists() for path in files[kept_id])  # not ours: kept, plan kept
+        assert await w.authority.read_issuance_plan_request(kept_id) is not None
+        assert await w.service.release_unbegun_oauth_issuance_plans() == 0  # idempotent

@@ -809,6 +809,8 @@ async def revision_is_committed(store: Any, marker: Any, *, subject_hash: str, a
                                 revision_name: str) -> bool:
     if not isinstance(marker, Mapping) or set(marker) != {"transaction_id"}:
         raise CardStorageError("card_transaction_revision_binding_invalid")
+    if str(marker["transaction_id"]).startswith("stg-"):
+        return False  # W661 scope B: a planned version (version_link.staging_tag) no transaction adopted yet
     receipt = await read_receipt(store, marker["transaction_id"])
     if receipt is None:
         return False  # a stage that crashed before its receipt: never committed

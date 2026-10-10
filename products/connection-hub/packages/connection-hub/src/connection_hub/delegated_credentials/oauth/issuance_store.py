@@ -504,6 +504,41 @@ class IssuanceReservationStore:
             )
         return int(str(status or "UPDATE 0").rsplit(" ", 1)[-1] or 0)
 
+    async def expired_unbegun_plans(self, *, limit: int = 100) -> list[dict[str, Any]]:
+        """W661 scope B: plans whose decision never began and whose deadline passed, oldest first.
+
+        One bounded, deadline-ordered query (as ``expire_issuance_reservations``), never a file listing.
+        """
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                f"""
+                SELECT decision_request_id, plan FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
+                 WHERE tenant = $1 AND project = $2 AND transaction_id IS NULL
+                   AND reserved_until <= clock_timestamp()
+                 ORDER BY reserved_until
+                 LIMIT $3
+                """,
+                self.tenant, self.project, max(1, min(int(limit), 1000)),
+            )
+        return [{"decision_request_id": str(row["decision_request_id"]),
+                 "plan": json.loads(row["plan"]) if isinstance(row["plan"], str) else dict(row["plan"])}
+                for row in rows]
+
+    async def delete_unbegun_plan(self, *, decision_request_id: str) -> bool:
+        """Delete one plan only while it is still unbound and past its deadline; False when a begin won."""
+        if not _HEX64.fullmatch(str(decision_request_id)):
+            raise IssuanceStoreRefused("issuance_plan_invalid")
+        async with self._pool.acquire() as connection:
+            status = await connection.execute(
+                f"""
+                DELETE FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
+                 WHERE tenant = $1 AND project = $2 AND decision_request_id = $3
+                   AND transaction_id IS NULL AND reserved_until <= clock_timestamp()
+                """,
+                self.tenant, self.project, decision_request_id,
+            )
+        return str(status or "") == "DELETE 1"
+
     async def issuance_reservations(self, transaction_id: str) -> dict[str, dict[str, str]]:
         """Each slot's reservation of one transaction: state, outcome, bearer digest and pin."""
         async with self._pool.acquire() as connection:
