@@ -31,6 +31,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
+from connection_hub.delegated_credentials.durable_io import unlink_guarded
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
 )
@@ -428,7 +429,7 @@ class DelegatedCardService:
                     # under it, which has passed: registration and a first PREPARE refuse, a sweep finds
                     # nothing, and a replay of a prepared receipt would have protected the collection.
                     try:
-                        collection_lock_path(self._store, collection_id).unlink(missing_ok=True)
+                        unlink_guarded(collection_lock_path(self._store, collection_id))
                     except OSError:
                         pass
             except CardMutationLockTimeout:

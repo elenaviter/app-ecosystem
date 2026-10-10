@@ -19,7 +19,7 @@ import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Mapping
 
-from ..durable_io import DurableStorageError, cancellation_safe_await, read_json_or_none, require_publish_before, write_json_atomic
+from ..durable_io import DurableStorageError, cancellation_safe_await, read_json_or_none, require_publish_before, write_json_atomic, unlink_guarded
 from .lifecycle import LifecycleRefused, LifecycleRequest
 from .model import CARD_STATE_REVOKED, CardCurrentPointer, card_revision_name
 from .store import CardStorageError
@@ -152,7 +152,7 @@ async def _retire_active_intent(store: Any, transaction_id: str) -> None:
     if receipt is None or receipt["state"] == "prepared" or receipt["serving_state"] == "pending":
         return
     try:
-        await cancellation_safe_await(asyncio.to_thread(active_intent_path(store, transaction_id).unlink, missing_ok=True))
+        await cancellation_safe_await(asyncio.to_thread(unlink_guarded, active_intent_path(store, transaction_id)))
     except OSError:
         pass
     from .inflight import release_inflight

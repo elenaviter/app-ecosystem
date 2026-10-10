@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic
+from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic, unlink_guarded
 from .store import CardStorageError
 
 INFLIGHT_FILENAME = "inflight.json"
@@ -81,7 +81,7 @@ async def release_inflight(store: Any, *, subject_hash: str, access_id: str, txn
     if not isinstance(raw, dict) or raw.get("txn") != txn:
         return
     try:
-        await cancellation_safe_await(asyncio.to_thread(path.unlink, missing_ok=True))
+        await cancellation_safe_await(asyncio.to_thread(unlink_guarded, path))
     except OSError:
         pass  # a stale file is ignored by read_inflight: the terminal receipt stays authoritative
 

@@ -24,6 +24,20 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 _DEFERRED_WRITES: ContextVar[list[asyncio.Task] | None] = ContextVar("delegated_lifecycle_writes", default=None)
+# W661 K1: roots whose writes must pass a guard first (the Hub registers its Card store root: proc-only).
+_WRITE_GUARDS: dict[str, Any] = {}
+
+
+def guard_writes_under(root: os.PathLike[str] | str, guard: Any) -> None:
+    """Every write_json_atomic under ``root`` calls ``guard()`` first; a guard refuses by raising."""
+    _WRITE_GUARDS[os.path.join(os.path.abspath(os.fspath(root)), "")] = guard
+
+
+def _check_write_guards(path: pathlib.Path) -> None:
+    target = os.path.abspath(os.fspath(path))
+    for prefix, guard in list(_WRITE_GUARDS.items()):
+        if target.startswith(prefix):
+            guard()
 _PUBLISH_BEFORE: ContextVar[datetime | None] = ContextVar("delegated_lifecycle_publish_before", default=None)
 
 
@@ -93,6 +107,12 @@ class DurableDecodeError(ValueError):
         self.reason = reason
 
 
+def unlink_guarded(path: pathlib.Path) -> None:
+    """W661 K1: delete one file (missing is fine), after the write guard of its root: deletions are writes too."""
+    _check_write_guards(path)
+    pathlib.Path(path).unlink(missing_ok=True)
+
+
 async def read_json_or_none(path: pathlib.Path) -> Any | None:
     """Parsed JSON, or ``None`` when the object is confirmed absent."""
     result = await asyncio.to_thread(_read_text, path)
@@ -107,6 +127,7 @@ async def read_json_or_none(path: pathlib.Path) -> Any | None:
 
 
 async def write_json_atomic(path: pathlib.Path, payload: Mapping[str, Any]) -> None:
+    _check_write_guards(path)  # before any byte is written
     text = json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
     try:
         await cancellation_safe_await(asyncio.to_thread(_write_text_atomic, path, text))
@@ -182,8 +203,10 @@ def _list_children(path: pathlib.Path) -> list[str] | OSError:
 __all__ = [
     "DurableDecodeError",
     "DurableStorageError",
+    "guard_writes_under",
     "list_child_names",
     "path_is_file",
     "read_json_or_none",
+    "unlink_guarded",
     "write_json_atomic",
 ]
