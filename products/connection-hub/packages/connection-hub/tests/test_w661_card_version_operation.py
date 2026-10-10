@@ -470,10 +470,15 @@ async def test_rollback_carries_stages_links_and_only_rollback_does():
 
 
 @pytest.mark.asyncio
-async def test_an_invitation_recreating_an_existing_card_is_the_plain_upsert():
+async def test_an_invitation_recreating_an_existing_card_is_fenced_on_the_version_read():
+    """Operator, W661 Q2 B: a racing save refuses card_changed; the inviter's retry overwrites."""
     plan = _plan()
     plan["plan"]["candidate_value"]["cards"][0]["action"] = "recreate"
     operation, _, store = _operation(planner=_Planner(plan))
+    assert (await operation.answer(_request()))["ok"] is True
+    assert store.staged[0]["members"][0]["base_version"] == 3
+    absent = _plan(original_absent=True)
+    operation, _, store = _operation(planner=_Planner(absent))
     assert (await operation.answer(_request()))["ok"] is True
     assert store.staged[0]["members"][0]["base_version"] is None
 

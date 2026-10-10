@@ -62,9 +62,9 @@ whole request, so no edit value is repeated.
     except the per-call `request_echo`. A different edit under the same `txn`
     is refused `stage_txn_conflict`.
   - A person's C or My that already exists on its stable id, revoked or
-    active, is created again at its next revision with no base version, so the
-    store overwrites whatever is current. Operator, 10 Oct: "UPSERT.
-    overwrite".
+    active, is created again at its next revision. It is fenced on the version
+    the planner read, so a racing save refuses `card_changed` and the inviter's
+    retry overwrites. Operator: "UPSERT. overwrite" and W661 "Q2: B".
   - The answer holds only links: `{card: {subject_hash, access_id}, version,
     checksum, base_version}`. `base_version` is the exact version STAGE fenced,
     or null for a creation or an upsert. PUBLISH's links omit it.
