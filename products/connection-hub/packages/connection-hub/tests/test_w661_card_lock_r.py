@@ -307,3 +307,77 @@ async def test_each_lock_instance_verifies_the_policy_itself_never_by_client_id(
     finally:
         await redis.config_set("maxmemory-policy", "noeviction")
         await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_publish_stalled_past_the_ttl_is_refused_and_the_retry_publishes(tmp_path):
+    """Mint's open point: the W661 card-version path under R. A's PUBLISH stalls past the TTL just before its
+    pointer write; B (the same txn's retry, another process) takes the key and publishes; A's resumed write is
+    refused card_lock_lost and the published version is current exactly once."""
+    from dataclasses import replace
+
+    from connection_hub.delegated_credentials.cards import transaction_store as tx
+    from connection_hub.delegated_credentials.cards.redis_lock import guard_card_store_lock_owner
+    from connection_hub.delegated_credentials.cards.service import DelegatedCardService
+    from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+    from test_card_service import _Cache
+    from test_card_transaction_store import Decisions, SUBJECT_HASH, _authority
+    from test_w661_card_versions import WHEN, _stage
+
+    redis = _client()
+    lock = _lock(redis, ttl_seconds=1, renew_seconds=None)
+    store = guard_card_store_lock_owner(BundleStorageDelegatedCardStore(tmp_path))
+    tx.bind_transaction_decisions(store, Decisions())
+
+    @asynccontextmanager
+    async def no_lock(**kwargs):
+        yield
+
+    seed = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=no_lock)
+    before = _authority()
+    await seed.commit(before, subject_hash=SUBJECT_HASH, expected_revision=0, now=1_780_000_000)
+    after = replace(before, card_revision=2, label="published by the retry")
+    service_a = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=lock)
+    await _stage(service_a, [(SUBJECT_HASH, before.access_id, 1, after)])
+
+    original_advance = store.advance_current
+    stalled, retried = asyncio.Event(), asyncio.Event()
+    calls = {"n": 0}
+
+    async def advance_current(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:  # A: stalled past the TTL right before its guarded pointer write
+            stalled.set()
+            await retried.wait()
+        return await original_advance(**kwargs)
+
+    store.advance_current = advance_current
+    outcome = {}
+
+    async def a():
+        try:
+            await service_a.publish_card_version(txn=tx_id())
+        except Exception as exc:  # noqa: BLE001 - the refusal may be wrapped; its cause chain names it
+            chain, cause = [], exc
+            while cause is not None:
+                chain.append(str(cause))
+                cause = cause.__cause__ or cause.__context__
+            outcome["a"] = chain
+
+    def tx_id():
+        from test_w661_card_versions import TXN
+        return TXN
+
+    async def b():
+        await stalled.wait()
+        await asyncio.sleep(1.2)  # A's key has expired
+        service_b = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=lock)
+        await service_b.publish_card_version(txn=tx_id())
+        retried.set()
+
+    await asyncio.wait_for(asyncio.gather(asyncio.create_task(a()), asyncio.create_task(b())), timeout=10)
+    assert any("card_lock_lost" in item for item in outcome["a"]), outcome
+    found = await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    assert found[1] == after
+    assert [k async for k in redis.scan_iter(match=lock.keys)] == []
+    await redis.aclose()

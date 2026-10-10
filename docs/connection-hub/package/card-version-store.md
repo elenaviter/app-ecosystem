@@ -128,8 +128,10 @@ Materialization"): the per-key Redis lock first, THEN the observed file lock. Th
   `:issuer-update-txn:`, `:account:` and `:collection:`, taken in the service's existing order.
 - **Renewal:** an owner-checked Lua `PEXPIRE` every 20 s (TTL 120 s) in a task bound to the operation. A failure
   marks the operation lost.
-- **The write check:** before every write and deletion under the Card store root, the operation must still own
-  every Card key it holds. Otherwise it refuses `card_lock_lost`, or `card_lock_not_held` outside any operation.
+- **The write check:** before every write and deletion under the Card store root made INSIDE an R operation,
+  the operation must still own every Card key it holds and not be marked lost; otherwise it refuses
+  `card_lock_lost`. A write outside any R operation carries no Card-lock claim (the proc-only guard applies). A
+  task that outlived its operation is refused `card_lock_session_closed`.
 - **Fail closed:** an unreachable Redis refuses `card_lock_unavailable` at once. A Redis whose
   `maxmemory-policy` is not `noeviction` refuses before any lock. A key held past the 30 s wait refuses
   `card_mutation_lock_timeout`.
