@@ -106,7 +106,8 @@ class _Store:
                 effect["result"] = await apply(effect, marker)
         return {"members": marker["members"]}
 
-    async def rollback(self, txn, *, scope, caller, apply, release):
+    async def rollback(self, txn, *, scope, caller, links, apply, release):
+        self.rollback_links = links
         marker = self._bound(txn, scope, caller)
         if marker is not None and self.rollback_state == "rolled_back":
             for effect in marker["effects"]:
@@ -179,7 +180,8 @@ def _operation(*, prefix="work:project:", planner=None, store=None, host=None, h
 def _request(op="stage", *, scope=PROJECT, updates=(UPDATE,), creations=(), nonce=None, **override):
     data = {"schema": REQUEST_SCHEMA, "op": op, "request_echo": os.urandom(16).hex(), "scope": scope, "txn": TXN,
             "request_id": None, "at": None, "catalog": None, "actor_subject": None, "actor_kind": None,
-            "delegable_grants": None, "project_control": None, "creations": None, "updates": None}
+            "delegable_grants": None, "project_control": None, "creations": None, "updates": None,
+            "links": [LINK] if op == "rollback" else None}
     if op == "stage":
         data.update(request_id="save-1", at=AT, catalog=dict(CATALOG), actor_subject=ACTOR, actor_kind="caller",
                     delegable_grants=["memories:read"], creations=list(creations), updates=list(updates))
@@ -450,3 +452,15 @@ async def test_a_cancelled_publish_still_finishes_its_handle_write_before_the_lo
     with pytest.raises(asyncio.CancelledError):
         await task
     assert order == ["write_finished", "locks_released"]
+
+
+@pytest.mark.asyncio
+async def test_rollback_carries_stages_links_and_only_rollback_does():
+    operation, _, store = _operation()
+    request = _request("rollback")
+    assert (await operation.answer(request))["ok"] is True and store.rollback_links == [LINK]
+    assert (await operation.answer(_request("rollback", links=[])))["ok"] is True and store.rollback_links == []
+    for op, links in (("stage", [LINK]), ("publish", [LINK]), ("rollback", None),
+                      ("rollback", [{**LINK, "body": {}}])):
+        response = await operation.answer(_request(op, links=links))
+        assert response["error"]["code"] == "card_version_request_invalid", (op, links)

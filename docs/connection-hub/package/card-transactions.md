@@ -66,9 +66,13 @@ whole request, so no edit value is repeated.
     overwrite".
   - The answer holds only links: `{card: {subject_hash, access_id}, version,
     checksum}`.
-- **`op: publish` and `op: rollback`.** These carry `txn` alone, because the
-  store's transaction marker names its members. ROLLBACK answers
-  `rolled_back`, `already_published` or `unknown_txn`.
+- **`op: publish` and `op: rollback`.** PUBLISH carries `txn` alone, because the
+  store's transaction marker names its members. ROLLBACK also carries `links`,
+  the `{card, version, checksum}` links from STAGE's answer (PB keeps them),
+  or `[]` when STAGE never answered. A completed PUBLISH removes the marker,
+  and a version file that its link finds and that carries this txn is
+  published history. ROLLBACK answers `rolled_back`, `already_published` or
+  `unknown_txn`.
 - **Binding.** STAGE records the authenticated caller and scope in the
   marker. A replay, PUBLISH or ROLLBACK from another caller or scope is
   refused `request_scope_invalid` and touches nothing.

@@ -42,7 +42,7 @@ COLLECTION_ANSWER_FIELDS = COLLECTION_ECHO_FIELDS | {"schema", "direction", "aud
 # echoes only the call's identity; request_digest binds the whole request, so no edit value is repeated.
 CARD_VERSION_REQUEST_FIELDS = frozenset({
     "schema", "op", "request_echo", "scope", "txn", "request_id", "at", "catalog", "actor_subject",
-    "actor_kind", "delegable_grants", "project_control", "creations", "updates",
+    "actor_kind", "delegable_grants", "project_control", "creations", "updates", "links",
 })
 CARD_VERSION_ECHO_FIELDS = frozenset({"op", "request_echo", "scope", "txn"})
 CARD_VERSION_ANSWER_FIELDS = CARD_VERSION_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}

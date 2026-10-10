@@ -55,7 +55,7 @@ REQUEST_SCHEMA = "card-version-request.v1"
 ANSWER_SCHEMA = "card-version-answer.v1"
 DIRECTION = "hub-to-authority"
 REQUEST_FIELDS = ("schema", "op", "request_echo", "scope", "txn", "request_id", "at", "catalog", "actor_subject",
-                  "actor_kind", "delegable_grants", "project_control", "creations", "updates")
+                  "actor_kind", "delegable_grants", "project_control", "creations", "updates", "links")
 STAGE_FIELDS = ("request_id", "at", "catalog", "actor_subject", "actor_kind", "delegable_grants", "project_control",
                 "creations", "updates")
 # The answer echoes only the call's identity (AnswerContract.CARD_VERSION); request_digest binds the rest.
@@ -107,6 +107,9 @@ class CardVersionStore(Protocol):
     runs drained, under the Card locks. ``scope`` and ``caller`` are the
     authenticated binding: STAGE records them in the marker, and a replay,
     PUBLISH or ROLLBACK that names another refuses ``txn_scope_mismatch``.
+    ROLLBACK also gets STAGE's answer ``links``: a completed PUBLISH removes
+    the marker, and the version file found by its link (carrying this txn)
+    then answers ``already_published`` (EMain D2).
     """
 
     async def stage(self, txn: str, *, request_id: str, request_digest: str, catalog: Mapping[str, Any],
@@ -117,7 +120,7 @@ class CardVersionStore(Protocol):
     async def publish(self, txn: str, *, scope: str, caller: str,
                       apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]]) -> Mapping[str, Any]: ...
 
-    async def rollback(self, txn: str, *, scope: str, caller: str,
+    async def rollback(self, txn: str, *, scope: str, caller: str, links: Sequence[Mapping[str, Any]],
                        apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]],
                        release: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[None]]
                        ) -> Mapping[str, Any]: ...
@@ -154,7 +157,7 @@ def stage_digest(data: Mapping[str, Any]) -> str:
     binds the exact call through ``request_digest``.
     """
     return sha256_hex(canonical_json_bytes({name: data[name] for name in REQUEST_FIELDS
-                                            if name not in ("schema", "op", "request_echo")}))
+                                            if name not in ("schema", "op", "request_echo", "links")}))
 
 
 def _valid_stage(data: Mapping[str, Any]) -> bool:
@@ -174,6 +177,16 @@ def _valid_stage(data: Mapping[str, Any]) -> bool:
             and all(isinstance(item, Mapping) for item in (*creations, *updates)))
 
 
+def _valid_links(links: Any) -> bool:
+    """ROLLBACK's links: exactly STAGE's answer, which PB keeps in its DECIDED row (EMain D2); [] when it has none."""
+    return (type(links) is list and len(links) <= MAX_STEPS and all(
+        isinstance(link, Mapping) and set(link) == {"card", "version", "checksum"}
+        and isinstance(link["card"], Mapping) and set(link["card"]) == {"subject_hash", "access_id"}
+        and _bounded(link["card"]["subject_hash"]) and _bounded(link["card"]["access_id"])
+        and type(link["version"]) is int and link["version"] >= 1 and _bounded(link["checksum"])
+        for link in links))
+
+
 def _valid_request(data: Any) -> bool:
     if not isinstance(data, Mapping) or set(data) != set(REQUEST_FIELDS) | {"service_proof"}:
         return False
@@ -188,9 +201,12 @@ def _valid_request(data: Any) -> bool:
     if len(canonical_json_bytes({name: data[name] for name in REQUEST_FIELDS})) > MAX_REQUEST_BYTES:
         return False
     if data["op"] == "stage":
-        return _valid_stage(data)
-    # PUBLISH and ROLLBACK name the txn alone: the marker names its members.
-    return all(data[name] is None for name in STAGE_FIELDS)
+        return _valid_stage(data) and data["links"] is None
+    # PUBLISH names the txn alone (its marker names the members). ROLLBACK also carries STAGE's answer
+    # links, so it can find a version whose marker a completed PUBLISH already removed (EMain D2).
+    if any(data[name] is not None for name in STAGE_FIELDS):
+        return False
+    return data["links"] is None if data["op"] == "publish" else _valid_links(data["links"])
 
 
 def _unsigned_refusal(code: str, status: int) -> dict[str, Any]:
@@ -304,7 +320,8 @@ class CardVersionOperation:
         if data["op"] == "publish":
             answer = await self._store.publish(txn, **binding, apply=self._apply)
             return {"kind": "published", "members": _links(answer)}
-        answer = await self._store.rollback(txn, **binding, apply=self._apply, release=self._release)
+        answer = await self._store.rollback(txn, **binding, links=data["links"], apply=self._apply,
+                                            release=self._release)
         state = answer.get("state") if isinstance(answer, Mapping) else None
         if state not in ("rolled_back", "already_published", "unknown_txn"):
             raise CardVersionRefused("storage_unavailable")
