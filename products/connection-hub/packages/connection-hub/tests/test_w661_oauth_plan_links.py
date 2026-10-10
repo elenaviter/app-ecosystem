@@ -149,6 +149,26 @@ async def test_the_version_link_helper_refuses_a_wrong_marker_card_or_shape(tmp_
         assert first == again
 
 
+async def _seed_legacy_v1_intent(w, plan):
+    """An explicit legacy v1 intent (Card BODIES) for this plan's transaction, as written before intent v2.
+
+    Lane 3 (W697) retires a new intent at FINISH, so the purge tests seed the files they purge instead of
+    relying on a new intent to remain (CodeApp, 22:35Z)."""
+    stored = await _stored(w, plan)
+    tag = links.staging_tag("oauth-issuance-candidate", plan.decision_request_id)
+    try:
+        body = (await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
+                                         link=stored["intent"]["candidate"], owners={tag},
+                                         allow_unmarked=True)).to_dict()
+    except CardRecordError:
+        body = {"card_revision": plan.candidate_revision, "access_id": plan.access_id}
+    path = w.store.root / "card-transactions" / "intents" / f"{plan.transaction_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"transaction_id": plan.transaction_id, "subject_hash": w.subject_hash,
+                                "original": None, "candidate": body}))
+    return path
+
+
 @pytest.mark.asyncio
 async def test_the_cutover_purge_deletes_only_finished_v1_intents(tmp_path):
     """W661 scope B (c): one-off; a dry run lists, apply deletes; an in-flight v1 intent stays readable."""
@@ -160,7 +180,7 @@ async def test_the_cutover_purge_deletes_only_finished_v1_intents(tmp_path):
         pending = await _begin(w, request="exchange-in-flight")  # begun, never completed
         directory = w.store.root / "card-transactions" / "intents"
         for plan in (done, pending):
-            assert is_v1_intent(json.loads((directory / f"{plan.transaction_id}.json").read_text()))
+            assert is_v1_intent(json.loads((await _seed_legacy_v1_intent(w, plan)).read_text()))
         dry = await purge_finished_v1_intents(w.store, w.decisions)
         assert (dry["applied"], dry["deleted"], dry["kept_in_flight"]) \
             == (False, [done.transaction_id], [pending.transaction_id])
@@ -306,7 +326,7 @@ async def test_the_purge_apply_obeys_the_card_store_writer_guard(tmp_path):
     async with _world(tmp_path) as w:
         done = await _begin(w)
         assert (await _complete(w, done)).state == "committed"
-        path = w.store.root / "card-transactions" / "intents" / f"{done.transaction_id}.json"
+        path = await _seed_legacy_v1_intent(w, done)
         before = path.read_bytes()
 
         def refuse():
