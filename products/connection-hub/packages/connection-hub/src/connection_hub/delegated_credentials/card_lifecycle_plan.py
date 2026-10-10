@@ -42,6 +42,7 @@ from connection_hub.delegated_credentials.controls.project_person import (
     ProjectPersonControlIdentity,
     ProjectPersonControlError,
     bind_project_person_control,
+    project_authority_subject,
 )
 from connection_hub.delegated_credentials.controls.snapshot import materialize_control_snapshot
 from connection_hub.delegated_credentials.project_authorization import (
@@ -63,7 +64,10 @@ from connection_hub.delegated_credentials.project_identity_lifecycle import (
     new_project_person_my_card,
 )
 from connection_hub.delegated_credentials.controls.project_invitation import (
+    PROJECT_INVITATION_CONTROL_ISSUER_KIND,
     PROJECT_INVITATION_CONTROL_PROPERTY,
+    ProjectInvitationControlAudit,
+    bind_project_invitation_control,
     ProjectInvitationControlError,
     ProjectInvitationControlIdentity,
 )
@@ -587,6 +591,7 @@ async def plan_card_lifecycle(
                 "project_person_control": {"target_subject", "label", "manage_url", "composition_mode", "seed_origin",
                                            "invitation"},
                 "project_person_my_card": {"person_subject", "label", "manage_url"},
+                "project_invitation_control": {"invitation_ref", "target_email", "label", "manage_url"},
             }
             if raw["kind"] not in identity_fields or set(raw["identity"]) - identity_fields[raw["kind"]]:
                 raise CardLifecyclePlanRefused("card_plan_creation_identity_invalid", 400)
@@ -791,6 +796,60 @@ async def plan_card_lifecycle(
                                 resource, config=row_config[owner]
                             ),
                         )
+                elif kind == "project_invitation_control":
+                    # W661 P4: the pending invitation Card, built exactly as the direct create builds it
+                    # (project_invitation_pending): credentialless, AND, bound to the invitation identity, the
+                    # PB-chosen selection resolved under PB's delegable grants, snapshot "created", audited.
+                    if parent is not None:
+                        raise CardLifecyclePlanRefused("card_plan_invitation_identity_invalid", 400)
+                    try:
+                        invitation = ProjectInvitationControlIdentity.build(
+                            project_ref=scope,
+                            invitation_ref=_required_text(identity.get("invitation_ref"),
+                                                          "card_plan_invitation_identity_invalid"),
+                            target_email=_required_text(identity.get("target_email"),
+                                                        "card_plan_invitation_identity_invalid"))
+                    except (ProjectInvitationControlError, ValueError) as exc:
+                        raise CardLifecyclePlanRefused("card_plan_invitation_identity_invalid", 400) from exc
+                    if invitation.invitation_ref != decision.target_subject:
+                        raise CardLifecyclePlanRefused("card_plan_authorization_target_mismatch", 403)
+                    base = bind_project_invitation_control(new_credentialless_card(
+                        control_id=invitation.control_id, grantor_subject=invitation.project_subject,
+                        catalog_version=catalog_version, issuer_ref=invitation.invitation_ref,
+                        issuer_kind=PROJECT_INVITATION_CONTROL_ISSUER_KIND,
+                        issuer_label=str(identity.get("label") or "") or "Pending project invitation",
+                        manage_url=str(identity.get("manage_url") or ""), properties=selection.get("properties"),
+                        composition_mode="and", now=now), identity=invitation)
+                    if selected:
+                        from connection_hub.delegated_credentials.automation_access import record_from_card
+                        resolved = await host._resolve_card_authority(
+                            user={"user_id": project_authority_subject(scope), "roles": [], "permissions": []},
+                            existing=record_from_card(base), active=active,
+                            resource_grants=selection.get("resource_grants") or {},
+                            resource_operations=selection.get("resource_operations"), operations=(),
+                            named_service_operations=selection.get("named_service_operations"),
+                            account_scope=selection.get("account_scope"), properties=base.properties,
+                            _delegable_grants=decision.delegable_grants,
+                            _platform_admin=decision.platform_admin,
+                        )
+                        if resolved.error is not None:
+                            return dict(resolved.error)
+                        if resolved.revoke:
+                            return {"ok": False, "error": "project_invitation_control_selection_empty",
+                                    "status": 409}
+                        row_config[invitation.project_subject] = await host._catalog_config(
+                            active, owner_subject=invitation.project_subject)
+                        base = _with_selection(
+                            base, resolved=resolved, catalog_version=catalog_version,
+                            resource_row_for=lambda resource, owner=invitation.project_subject:
+                                host._configured_resource(resource, config=row_config[owner]))
+                    created = bind_project_invitation_control(
+                        materialize_control_snapshot(base, basis_catalog_version=catalog_version, origin="created"),
+                        identity=invitation)
+                    base = bind_project_invitation_control(created, identity=invitation,
+                        audit=ProjectInvitationControlAudit.build(
+                            action="created", actor_subject=actor, identity=invitation, request_id=request_id,
+                            occurred_at=now, before=None, after=created))
                 else:
                     raise CardLifecyclePlanRefused("card_plan_kind_invalid", 400)
                 key = (subject_hash_for(base.grantor_subject), base.access_id)

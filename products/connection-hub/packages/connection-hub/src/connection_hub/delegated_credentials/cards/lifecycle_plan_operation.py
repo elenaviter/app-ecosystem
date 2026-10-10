@@ -39,7 +39,7 @@ from service_foundation.coordination.participant_answer import sign_participant_
 
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
 from ..project_authorization import (
-    PROJECT_AGENT_CARD_UPDATE, PROJECT_CONTROL_CREATE, PROJECT_CONTROL_UPDATE, PROJECT_INVITATION_CONTROL_REVOKE, PROJECT_INVITATION_CONTROL_UPDATE, PROJECT_PERSON_CONTROL_BIND_PROJECT,
+    PROJECT_AGENT_CARD_UPDATE, PROJECT_CONTROL_CREATE, PROJECT_CONTROL_UPDATE, PROJECT_INVITATION_CONTROL_CREATE, PROJECT_INVITATION_CONTROL_REVOKE, PROJECT_INVITATION_CONTROL_UPDATE, PROJECT_PERSON_CONTROL_BIND_PROJECT,
     PROJECT_PERSON_CONTROL_CREATE, PROJECT_PERSON_CONTROL_REVOKE, PROJECT_PERSON_CONTROL_UPDATE, LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest,
     LifecyclePlanStep, ProjectAuthorizationError,
 )
@@ -64,6 +64,8 @@ CREATION_STEPS = {
     "application_control": (PROJECT_CONTROL_CREATE, "holder_subject"),
     "project_person_control": (PROJECT_PERSON_CONTROL_CREATE, "target_subject"),
     "project_person_my_card": (PROJECT_PERSON_CONTROL_CREATE, "person_subject"),
+    # W661 P4 (EMain 20:02Z): an invitation's pending Control Card, created on the link-only save.
+    "project_invitation_control": (PROJECT_INVITATION_CONTROL_CREATE, "invitation_ref"),
 }
 UPDATE_STEPS = {"revoke": PROJECT_INVITATION_CONTROL_REVOKE, "attach": PROJECT_PERSON_CONTROL_BIND_PROJECT,
                 # W607: an existing person Control or My Card takes a PB-supplied selection.
