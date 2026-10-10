@@ -816,3 +816,26 @@ async def test_a_publish_holding_an_executor_still_refuses_and_never_runs_anothe
     assert ran == [(TXN, "a")]
     with pytest.raises(tx.CardTransactionRefused, match="card_changed"):  # then B meets the ordinary fence
         await service.publish_card_version(txn=b, run_effect=apply)
+
+
+@pytest.mark.asyncio
+async def test_the_port_answers_a_pending_predecessor_with_the_contract_code_effects_pending(tmp_path):
+    """Spark App M1 (17:44Z): finalize's refusal reaches PB as effects_pending, not storage_unavailable."""
+    from connection_hub.delegated_credentials.cards.card_version_port import ServiceCardVersionStore
+
+    store, service, before, after = await _setup(tmp_path)
+
+    class _Catalog:
+        async def read_active(self):
+            return type("Doc", (), {"version": "v1", "content_hash": "c" * 64})()
+    port = ServiceCardVersionStore(service, refused=_PortRefused, catalog_store=_Catalog())
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], effects=[{"kind": "handle_binding", "key": "a"}])
+    with pytest.raises(tx.CardTransactionRefused, match="effects_pending"):
+        await service.publish_card_version(txn=TXN)
+    v3 = replace(after, card_revision=3, label="successor")
+    with pytest.raises(_PortRefused) as refused:
+        await port.stage("w661-txn-" + "b" * 32, request_id="r", request_digest=DIGEST,
+                         catalog={"version": "v1", "content_hash": "c" * 64}, actor_subject="p", actor_kind="caller",
+                         members=[{"subject_hash": SUBJECT_HASH, "access_id": before.access_id, "base_version": 2,
+                                   "value": v3.to_dict()}], effects=[], prepare=None, at=WHEN, scope="s", caller="c")
+    assert refused.value.code == "effects_pending"
