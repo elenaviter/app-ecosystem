@@ -159,6 +159,8 @@ async def test_the_planner_runs_a_reset_update_under_pbs_role_decision_and_refus
     assert plan["ok"] is True, plan
     [card] = plan["plan"]["candidate_value"]["cards"]
     assert card["action"] == "update" and card["access_id"] == my.access_id
+    assert {"subject_hash": subject_hash_for(control.grantor_subject), "access_id": control.access_id,
+            "revision": control.card_revision} in plan["plan"]["reads"]
     bad = {**update, "selection": {"resource_grants": {}}}
     refused = await plan_card_lifecycle(_PlannerHost(control, my, project), project_ref=PROJECT, creations=[], updates=[bad],
                                         actor_subject=ACTOR, actor_kind="caller", request_id=REQUEST,

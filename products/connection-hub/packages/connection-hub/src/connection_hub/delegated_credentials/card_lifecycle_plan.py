@@ -873,6 +873,7 @@ async def plan_card_lifecycle(
                     actor_subject=actor, request_id=request_id)
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
+                reads_by_key[(built["read"]["subject_hash"], built["read"]["access_id"])] = built["read"]
                 continue
             if ("display_digest" in raw or "control" in raw
                     or ("profile" in raw or "resource" in raw) and raw["kind"] != "apply_agent_profile"):

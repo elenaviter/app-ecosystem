@@ -21,6 +21,7 @@ from service_foundation.coordination.durable_decision_log import DecisionRefused
 
 from .cards.card_group import group_member
 from .cards.model import CardAuthority
+from .cards.store import subject_hash_for
 from .existing_card_selection_plan import _target_identity
 from .managed_card_reset import RESET_FIELDS, ManagedCardResetError, managed_card_reset_display
 from .project_authorization import PROJECT_PERSON_CONTROL_UPDATE, ProjectAuthorizationDecision
@@ -65,6 +66,10 @@ async def build_reset_to_control_update(
         raise DecisionRefused("card_plan_reset_control_moved") from exc
     if control is None:
         raise DecisionRefused("card_plan_reset_control_moved")
+    read = {"subject_hash": subject_hash_for(control.grantor_subject), "access_id": control.access_id,
+            "revision": control.card_revision}
+    if (read["subject_hash"], read["access_id"]) != (update["control"]["subject_hash"], update["control"]["access_id"]):
+        raise DecisionRefused("card_plan_reset_control_moved")
     try:
         fields, _display, digest = managed_card_reset_display(
             original, card_authority_from_record(control), resource=update["resource"])
@@ -78,7 +83,8 @@ async def build_reset_to_control_update(
                                             "card_revision": original.card_revision + 1})
     if dataclasses.replace(candidate, card_revision=original.card_revision) == original:
         raise DecisionRefused("card_plan_reset_unchanged")
-    return {"member": group_member(original=original, candidate=candidate, action="update")}
+    # ``read``: C's exact link, which STAGE fences under C's lock through PUBLISH (store read member).
+    return {"member": group_member(original=original, candidate=candidate, action="update"), "read": read}
 
 
 __all__ = ["RESET_KEYS", "build_reset_to_control_update", "reset_update_shape_valid"]

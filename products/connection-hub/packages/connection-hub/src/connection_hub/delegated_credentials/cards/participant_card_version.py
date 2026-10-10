@@ -116,7 +116,8 @@ class CardVersionStore(Protocol):
     async def stage(self, txn: str, *, request_id: str, request_digest: str, catalog: Mapping[str, Any],
                     actor_subject: str, actor_kind: str, members: Sequence[Mapping[str, Any]],
                     effects: Sequence[Mapping[str, Any]], prepare: Callable[[], Awaitable[None]],
-                    at: datetime, scope: str, caller: str) -> Mapping[str, Any]: ...
+                    at: datetime, scope: str, caller: str,
+                    reads: Sequence[Mapping[str, Any]] = ()) -> Mapping[str, Any]: ...
 
     async def publish(self, txn: str, *, scope: str, caller: str,
                       apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]]) -> Mapping[str, Any]: ...
@@ -235,6 +236,22 @@ def _links(answer: Mapping[str, Any]) -> list[dict[str, Any]]:
         links.append({"card": {"subject_hash": card["subject_hash"], "access_id": card["access_id"]},
                       "version": member["version"], "checksum": member["checksum"]})
     return links
+
+
+def _reset_reads(updates: Sequence[Mapping[str, Any]], plan_reads: Sequence[Mapping[str, Any]]
+                 ) -> list[dict[str, Any]]:
+    """The Controls a My Reset was computed from, as store read members: locked and fenced, never written.
+
+    Only a reset's own Control is fenced (EMain, 18:10Z); the planner's other reads (chain parents) are not.
+    """
+    wanted = {(update["control"]["subject_hash"], update["control"]["access_id"])
+              for update in updates if update.get("kind") == "reset_to_control"}
+    reads = [{"card": {"subject_hash": read["subject_hash"], "access_id": read["access_id"]},
+              "version": read["revision"]}
+             for read in plan_reads if (read.get("subject_hash"), read.get("access_id")) in wanted]
+    if len(reads) != len(wanted):
+        raise CardVersionRefused("edit_invalid")  # a reset whose Control the planner did not read: never unfenced
+    return reads
 
 
 def stage_authorization(data: Mapping[str, Any], digest: str) -> LifecyclePlanAuthorization:
@@ -359,6 +376,7 @@ class CardVersionOperation:
                     "value": card["candidate"]}
                    for card in cards]
         effects = await self._effects(cards, at=_at(data["at"]))
+        reads = _reset_reads(data["updates"], plan.get("reads") or ())
 
         async def prepare() -> None:
             for effect in effects:
@@ -367,7 +385,7 @@ class CardVersionOperation:
         answer = await self._store.stage(
             txn, request_id=data["request_id"], request_digest=digest, catalog=dict(catalog),
             actor_subject=data["actor_subject"], actor_kind=data["actor_kind"], members=members,
-            effects=effects, prepare=prepare, at=_at(data["at"]), **binding)
+            effects=effects, prepare=prepare, at=_at(data["at"]), **binding, **({"reads": reads} if reads else {}))
         return _links(answer)
 
     async def _effects(self, cards: Sequence[Mapping[str, Any]], *, at: datetime) -> list[dict[str, Any]]:
