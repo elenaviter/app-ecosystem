@@ -153,3 +153,34 @@ def test_a_deletion_under_the_card_root_is_refused_outside_proc(tmp_path):
         assert not marker.exists()
     finally:
         durable_io._WRITE_GUARDS.clear()
+
+
+@pytest.mark.asyncio
+async def test_direct_stage_and_rollback_without_the_service_lock_are_refused_outside_proc(tmp_path):
+    """Infra 18:46Z: the marker write, the revision sidecar and the unlinks in transaction_store bypass
+    store.write_revision; the store-level guard refuses them too, called directly with no Card lock at all."""
+    from connection_hub.delegated_credentials import durable_io
+    from connection_hub.delegated_credentials.cards import transaction_store as tx
+    from connection_hub.delegated_credentials.cards.locks import guard_card_store_writes
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+    from test_w661_card_versions import DIGEST, SUBJECT_HASH, TXN, WHEN, _setup
+
+    store, _, before, after = await _setup(tmp_path)  # seeded before the guard exists
+    role = {"value": "ingress"}
+    guard_card_store_writes(store, role=lambda: role["value"])
+    try:
+        files = sorted(p.relative_to(store.root) for p in store.root.rglob("*"))
+        with pytest.raises(CardStorageError, match="card_store_write_wrong_process_role"):
+            await tx.card_version_stage(store, txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,
+                                        members=[(SUBJECT_HASH, before.access_id, 1, after)])
+        assert sorted(p.relative_to(store.root) for p in store.root.rglob("*")) == files  # nothing written
+        role["value"] = "proc"
+        await tx.card_version_stage(store, txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,
+                                    members=[(SUBJECT_HASH, before.access_id, 1, after)])
+        staged = sorted(p.relative_to(store.root) for p in store.root.rglob("*"))
+        role["value"] = "ingress"
+        with pytest.raises(CardStorageError, match="card_store_write_wrong_process_role"):
+            await tx.card_version_rollback(store, txn=TXN)  # the first unlink refuses
+        assert sorted(p.relative_to(store.root) for p in store.root.rglob("*")) == staged  # nothing removed
+    finally:
+        durable_io._WRITE_GUARDS.clear()
