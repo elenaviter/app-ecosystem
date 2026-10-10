@@ -579,12 +579,7 @@ async def test_admin_update_uses_exact_decision_ceiling_and_appends_audit() -> N
     assert audit["action"] == "updated"
     assert audit["actor_subject"] == ADMIN
     assert audit["request_id"] == "request-update"
-    assert audit["changes"] == {
-        "label": {
-            "before": "Quickstart member",
-            "after": "Narrowed member",
-        }
-    }
+    assert audit["changed_fields"] == ["label"] and "Narrowed member" not in str(audit)
     assert host.notifications == [(TARGET, "updated")]
 
 
@@ -1048,9 +1043,7 @@ async def test_admin_revoke_is_audited_and_removes_live_authority() -> None:
     assert audit["action"] == "revoked"
     assert audit["actor_subject"] == ADMIN
     assert audit["request_id"] == "request-revoke"
-    assert audit["changes"] == {
-        "state": {"before": "active", "after": "revoked"},
-    }
+    assert audit["changed_fields"] == ["state"] and "changes" not in audit
     assert port.requests[-1].operation == PROJECT_PERSON_CONTROL_REVOKE
     assert host.notifications == [(TARGET, "project_person_control_revoked")]
     assert await host._load_record(
