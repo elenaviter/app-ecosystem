@@ -28,7 +28,8 @@ from connection_hub.delegated_credentials.legacy_binding_repair import repair_le
 from connection_hub.delegated_credentials.project_identity_lifecycle import ProjectPersonCardIdentity
 
 from test_project_person_access import PROJECT_REF, TARGET
-from test_w502_my_card_fence_real_path import _control
+from test_w502_my_card_fence_real_path import ADMIN, GRANT, OPERATION, _control
+from test_w580_bound_card_writers import _memories
 from test_w502_person_control_binding import _create, _locator, _project_control, _service
 from test_w580_bound_card_writers import redis_client  # noqa: F401 - fixture
 
@@ -163,5 +164,96 @@ async def test_with_card_transactions_on_as_live_the_legacy_cards_are_still_boun
         assert (await repair_legacy_project_bindings(h.service, h.store)) == {"my_already_bound": 1}
         # The switch is the repair's alone: it is off again afterwards.
         assert LEGACY_BINDING_REPAIR.get() is False
+    finally:
+        await pool.close()
+
+
+def _reselect(card, selection):
+    return {"kind": "reselect", "target_subject": TARGET, "access_id": card.access_id,
+            "subject_hash": subject_hash_for(card.grantor_subject), "original_revision": card.card_revision,
+            "selection": selection}
+
+
+async def _plan_save(h, card, selection, request_id):
+    """The Card-edit PLAN exactly as the Hub's card_lifecycle_plan handler runs it, host-authorized."""
+    from connection_hub.delegated_credentials.card_lifecycle_plan import plan_card_lifecycle
+    from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import UPDATE_STEPS
+    from connection_hub.delegated_credentials.project_authorization import (
+        LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest, LifecyclePlanStep, ProjectAuthorizationDecision,
+    )
+    updates = [_reselect(card, selection)]
+    steps = (LifecyclePlanStep(ref="update:0", operation=UPDATE_STEPS["reselect"], target_subject=TARGET),)
+    request = LifecyclePlanAuthorizationRequest(actor_subject=ADMIN, project_ref=PROJECT_REF, request_id=request_id,
+                                                request_digest="a" * 64, steps=steps)
+    authorization = LifecyclePlanAuthorization(request=request, decisions=tuple(
+        (step.ref, ProjectAuthorizationDecision.allow(request.step_request(step), delegable_grants=(GRANT,),
+                                                      platform_admin=True)) for step in steps))
+    return await plan_card_lifecycle(h.service, project_ref=PROJECT_REF, creations=[], updates=updates,
+                                     actor_subject=ADMIN, actor_kind="caller", request_id=request_id,
+                                     authorization=authorization)
+
+
+@pytest.mark.asyncio
+async def test_after_the_repair_a_legacy_c_save_plans_and_commits_with_card_transactions_on(tmp_path, redis_client):  # noqa: F811
+    """Main (#725): the operator's own save, end to end on the Hub, with Card transactions on as live."""
+    from datetime import datetime, timezone
+    from connection_hub.delegated_credentials.cards import transaction_store as tx
+    from connection_hub.delegated_credentials.cards.model import CardAuthority
+    from test_card_transaction_store import Decisions
+
+    if not _dsn():
+        pytest.skip("needs CONNECTION_HUB_TEST_POSTGRES_DSN(_FILE): a disposable PostgreSQL")
+    h = await _service(tmp_path, redis_client)
+    await _legacy_world(h)
+    pool = await _live_card_transactions(h)
+    try:
+        legacy = await _control(h)
+        resource = _memories()
+        # An operator-like edit of the legacy C: select the project's grant and operation for one service.
+        selection = {"resource_grants": {resource: [GRANT]}, "resource_operations": {resource: [OPERATION]}}
+        refused = await _plan_save(h, legacy, selection, "save-before-repair")
+        assert refused["ok"] is False and refused.get("error") == "card_plan_update_scope_invalid", refused
+
+        await repair_legacy_project_bindings(h.service, h.store)
+        bound = await _control(h)
+        planned = await _plan_save(h, bound, selection, "save-after-repair")
+        assert planned["ok"] is True, planned
+        plan = planned["plan"]
+        # As the participant stages it: each member with its exact original (here the repaired C).
+        assert [(m["original_revision"], m["original_absent"]) for m in plan["candidate_value"]["cards"]] == [
+            (bound.card_revision, False)]
+        members = [(member["subject_hash"], bound, CardAuthority.from_mapping(member["candidate"]), member["action"])
+                   for member in plan["candidate_value"]["cards"]]
+        assert [(m[2].access_id, m[3]) for m in members] == [(bound.access_id, "update")]
+
+        decisions = Decisions()
+        tx.bind_transaction_decisions(h.store, decisions)  # the coordinator's recorded decision, as PB records it
+
+        class _Reservations:  # live: the Hub's catalog store (entrypoint passes catalog_store)
+            def __init__(self):
+                self.held = []
+
+            async def reserve(self, **kwargs):
+                self.held.append(kwargs)
+
+            async def release(self, transaction_id, *, intent_digest):
+                self.held = [item for item in self.held if item["transaction_id"] != transaction_id]
+
+        tx.bind_catalog_reservations(h.store, _Reservations())
+        group_id, intent = "e" * 64, "f" * 64
+        now = int(time.time())
+        staged = await h.cards.stage_group_transaction(
+            transaction_id=group_id, intent_digest=intent, participant="project", members=members,
+            now=datetime.fromtimestamp(now, timezone.utc), reads=plan["reads"], catalog=plan["catalog_digest"])
+        assert staged["staged"] is True, staged
+        decisions.recorded[group_id] = "committed"
+        decided = await h.cards.decide_group_transaction(transaction_id=group_id, intent_digest=intent,
+                                                         decision="committed", now=now)
+        assert decided["state"] == "committed", decided
+        saved = await _control(h)
+        assert saved.card_revision == bound.card_revision + 1
+        assert list(saved.resource_grants.get(resource, ())) == [GRANT]
+        assert list(saved.resource_operations.get(resource, ())) == [OPERATION]
+        assert saved.control_card == bound.control_card, "the save keeps the repaired link"
     finally:
         await pool.close()
