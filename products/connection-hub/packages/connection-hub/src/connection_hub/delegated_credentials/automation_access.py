@@ -10221,9 +10221,44 @@ class AutomationAccessService:
             raise IssuanceRefused(exc.reason) from None
 
     async def expire_oauth_issuance_reservations(self, *, limit: int = 100) -> int:
-        """W603: the scheduled sweep: never-bound reservations past their deadline end ``expired``."""
+        """W603: the scheduled sweep: never-bound reservations past their deadline end ``expired``.
+
+        W661 scope B: the same sweep releases plans whose decision never began, with their planned
+        candidate version (``release_unbegun_oauth_issuance_plans``). Returns the reservation count.
+        """
         *_parts, store = self._issuance_parts()
-        return await store.expire_issuance_reservations(limit=limit)
+        expired = await store.expire_issuance_reservations(limit=limit)
+        await self.release_unbegun_oauth_issuance_plans(limit=limit)
+        return expired
+
+    async def release_unbegun_oauth_issuance_plans(self, *, limit: int = 100) -> int:
+        """W661 scope B: a plan whose decision never began ends with its deadline, and so does its planned
+        candidate version. The plan names its file, so nothing is listed: the hidden version file, then its
+        marker, then the plan row (a crash in between leaves the plan to the next sweep, never an orphan).
+        A candidate already adopted by a transaction is not this sweep's; the plan then is left as it is."""
+        from .cards.version_link import discard_hidden_version, is_version_link, staging_tag
+
+        *_parts, store = self._issuance_parts()
+        card_store = getattr(self._cards(), "card_store", None)
+        released = 0
+        for row in await store.expired_unbegun_plans(limit=limit):
+            plan = row["plan"]
+            link = (plan.get("intent") or {}).get("candidate")
+            if is_version_link(link):
+                if card_store is None:
+                    break
+                try:
+                    await discard_hidden_version(card_store, subject_hash=plan["intent"]["subject_hash"],
+                                                 access_id=plan["access_id"], link=link,
+                                                 tag=staging_tag("oauth-issuance-candidate",
+                                                                 row["decision_request_id"]))
+                except CardRecordError:
+                    _LOGGER.warning("[connection_hub.oauth_issuance] unbegun plan kept: candidate not ours "
+                                    "request=%s", row["decision_request_id"])
+                    continue
+            if await store.delete_unbegun_plan(decision_request_id=row["decision_request_id"]):
+                released += 1
+        return released
 
     async def read_oauth_issuance(self, *, transaction_id: str) -> Any:
         """W603: the issuance's outcome as it stands now, READ ONLY; returns the ``OAuthIssuanceResult``.
