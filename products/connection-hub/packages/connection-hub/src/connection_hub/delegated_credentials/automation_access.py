@@ -10100,19 +10100,29 @@ class AutomationAccessService:
     async def _issuance_intent(self, plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
         from .cards.card_participant import CardGroupIntent, CardGroupMemberIntent, CardIntent
 
+        from .cards.version_link import is_version_link, staging_tag
+
         spec = plan["intent"]
         candidate = await self._plan_card(plan, "candidate", transaction_id)
         effects = tuple(dict(effect) for effect in spec["effects"])
+        # W661 scope B (lane 3 + lane 4): a linked plan hands its planned candidate file to the intent record,
+        # which ADOPTS that same file for the real transaction (member 0 of a group) under the Card section:
+        # no second version. A legacy body plan sets neither field and keeps the old path.
+        frozen = {}
+        if is_version_link(spec["candidate"]):
+            frozen = {"candidate_link": dict(spec["candidate"]),
+                      "candidate_staging_tag": staging_tag("oauth-issuance-candidate", plan["decision_request_id"])}
         if spec["shape"] == "group":
             return CardGroupIntent(
                 transaction_id=transaction_id, intent_digest=intent_digest,
                 members=(CardGroupMemberIntent(subject_hash=spec["subject_hash"], original=None, candidate=candidate,
-                                               action=spec["action"]),),
+                                               action=spec["action"], **frozen),),
                 effects=effects, actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
         return CardIntent(transaction_id=transaction_id, intent_digest=intent_digest, subject_hash=spec["subject_hash"],
                           original=await self._plan_card(plan, "original", transaction_id), candidate=candidate,
                           effects=effects,
-                          action=spec["action"], actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
+                          action=spec["action"], actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"],
+                          **frozen)
 
     async def _issuance_plan(self, plan: Mapping[str, Any], transaction_id: str, intent_digest: str,
                              snapshot: bool = True) -> Any:
