@@ -35,7 +35,7 @@ import re
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
-from ..durable_io import read_json_or_none, write_json_atomic
+from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic
 from ..issuer_gate import change_digest
 from .model import CardAuthority, CardCurrentPointer, card_revision_name
 from .store import CardStorageError
@@ -838,20 +838,6 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
                              "before": receipt["before"], "after": receipt["after"]})
 
 
-async def _slot_has_history(store: Any, *, subject_hash: str, access_id: str) -> bool:
-    """Whether an id ever had a committed revision; an aborted staged revision is not history."""
-    from ..durable_io import list_child_names
-    from .store import REVISIONS_DIRNAME
-
-    directory = store.card_path(subject_hash=subject_hash, access_id=access_id) / REVISIONS_DIRNAME
-    for name in await list_child_names(directory):
-        if name.endswith(".card-transaction.json") or name.startswith("."):
-            continue
-        if await store._revision_is_committed(subject_hash=subject_hash, access_id=access_id, revision_name=name):
-            return True
-    return False
-
-
 async def stage(store: Any, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
                 original: CardAuthority | None, candidate: CardAuthority, now: datetime,
                 effects: Any = (), reads: Any = (), catalog: str = "",
@@ -962,9 +948,10 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     await assert_pointer_replaceable(store, subject_hash=subject_hash, access_id=access_id)
     current = await store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
     if original is None:
-        # A newly minted id: no current Card and no committed history (never a recreate).
-        if current is not None or await _slot_has_history(store, subject_hash=subject_hash, access_id=access_id):
-            raise CardTransactionRefused("card_transaction_absent_slot_used")
+        # An absent original: no current Card. W661 (operator, 10 Oct: "never nothing is being scanned";
+        # an invitation "IS new card ... UPSERT. overwrite"): no history scan and no "slot used" refusal.
+        if current is not None:
+            raise CardTransactionRefused("card_transaction_base_moved")
         if candidate.card_revision != 1:
             raise CardTransactionRefused("card_transaction_candidate_invalid")
         before = None
@@ -1459,7 +1446,9 @@ async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
     return await read_receipt(store, transaction_id)
 
 
-__all__ = ["CardTransactionRefused", "DECISIONS", "GROUP_RECEIPT_SCHEMA", "TRANSACTION_POINTER_SCHEMA",
+__all__ = ["finalize_current_version", "CARD_VERSION_MARKER_SCHEMA", "card_version_marker_path", "card_version_publish", "card_version_revision_committed",
+           "card_version_rollback", "card_version_stage", "card_version_txn_id", "read_card_version_marker",
+           "CardTransactionRefused", "DECISIONS", "GROUP_RECEIPT_SCHEMA", "TRANSACTION_POINTER_SCHEMA",
            "TRANSACTION_RECEIPT_SCHEMA", "begin_group", "complete_group", "finish_group", "group_member_ref",
            "is_group_receipt", "member_transaction_id", "READ_SET_RECEIPT_SCHEMA", "finish_read_set",
            "is_read_set_receipt", "prepare_read_set", "EFFECTS_RECEIPT_SCHEMA", "decide_effects",
@@ -1467,3 +1456,446 @@ __all__ = ["CardTransactionRefused", "DECISIONS", "GROUP_RECEIPT_SCHEMA", "TRANS
            "TransactionDecisionPort", "abort_unstaged", "active_path", "protected_collections", "read_fence_path", "apply_effects", "assert_replaceable", "bind_transaction_decisions", "decide",
            "effect_outcomes", "effects_path", "list_in_doubt", "marker_path", "pending_effects",
            "read_receipt", "resolve_pointer", "stage", "state"]
+
+
+# ---------------------------------------------------------------------------------------------------
+# W661 contract v6: STAGE / PUBLISH / ROLLBACK of Card versions, PB to Hub (the reduced core).
+#
+# Operator, 10 Oct: "each card has it data ONCE. others LINK"; "no any memeory. we are distributed
+# system"; "never nothing is being scanned"; "that error must call callbacl also which will rollback the
+# garbage"; D2: "not yet final version does not work until theres final arrives. before that olf
+# version works and is active."
+#
+# Contract v6.2 (EMain, 16:3xZ): ROLLBACK deletes the not-yet-final versions AND the txn marker, so nothing
+# of a failed save remains; an absent marker is answered unknown_txn and nothing is written.
+#
+# Every function below runs while the caller (DelegatedCardService) holds the mutation lock of EVERY
+# member Card, taken in sorted order: a flock that never expires or is stolen, so two operations on one
+# Card never interleave and a delayed call cannot act after a later one. current.json is the one truth;
+# a staged version is a revision file that no current.json names and whose `.card-version.json` marker
+# keeps it out of history until its txn is published. The txn marker holds links only: card ids,
+# versions, revision names, content hashes and the request digest; never a Card field.
+# ---------------------------------------------------------------------------------------------------
+
+CARD_VERSION_MARKER_SCHEMA = "connection_hub.card-version-txn.v1"
+CARD_VERSION_STATES = ("staging", "staged", "published", "rolled_back")
+# EMain 16:35Z: v6.2 leaves NO marker after ROLLBACK; this one-line switch keeps a terminal `rolled_back`
+# marker instead, until Infra's K4 probe decides whether a late call can exist.
+KEEP_ROLLBACK_MARKER = False
+_TXN = re.compile(r"[a-z0-9][a-z0-9-]{30,126}[a-z0-9]")
+
+
+def card_version_txn_id(txn: Any) -> str:
+    if type(txn) is not str or not _TXN.fullmatch(txn):
+        raise CardTransactionRefused("card_version_txn_invalid")
+    return txn
+
+
+def card_version_marker_path(store: Any, txn: str):
+    return store.root / "card-versions" / f"{card_version_txn_id(txn)}.json"
+
+
+def card_version_revision_marker_path(store: Any, *, subject_hash: str, access_id: str, revision_name: str):
+    """Beside a staged revision: names its txn, so the revision is committed only once that txn is."""
+    return store.revision_path(subject_hash=subject_hash, access_id=access_id,
+                               revision_name=revision_name).with_suffix(".card-version.json")
+
+
+async def read_card_version_marker(store: Any, txn: str) -> dict[str, Any] | None:
+    raw = await read_json_or_none(card_version_marker_path(store, txn))
+    if raw is None:
+        return None
+    if (not isinstance(raw, Mapping) or raw.get("schema") != CARD_VERSION_MARKER_SCHEMA
+            or raw.get("txn") != txn or raw.get("state") not in CARD_VERSION_STATES
+            or not isinstance(raw.get("members"), list)):
+        raise CardStorageError("card_version_marker_invalid")
+    return dict(raw)
+
+
+async def _write_card_version_marker(store: Any, marker: Mapping[str, Any]) -> None:
+    await write_json_atomic(card_version_marker_path(store, marker["txn"]), dict(marker))
+
+
+async def card_version_revision_committed(store: Any, marker: Any, *, subject_hash: str, access_id: str,
+                                          revision_name: str) -> bool:
+    """A staged revision is history only once its txn is published (never while staged or rolled back)."""
+    if not isinstance(marker, Mapping) or set(marker) != {"txn"}:
+        raise CardStorageError("card_version_revision_binding_invalid")
+    txn = await read_card_version_marker(store, marker["txn"])
+    if txn is None:
+        # D2 (EMain 17:1xZ): PUBLISH deletes the marker once done, and ROLLBACK deletes a txn's files BEFORE its
+        # marker, so a version file whose txn marker is gone is published history.
+        return True
+    if txn["state"] == "staged":
+        # Infra 17:2xZ red 3: current.json naming this version is the truth (D3): a PUBLISH stopped between its
+        # pointer write and its marker write has published it, so readers must not see a missing revision.
+        current = await store.read_current(subject_hash=subject_hash, access_id=access_id)
+        return current is not None and current.revision_name == revision_name and any(
+            (m["subject_hash"], m["access_id"], m["revision_name"]) == (subject_hash, access_id, revision_name)
+            for m in txn["members"])
+    if txn["state"] != "published":
+        return False
+    return any((m["subject_hash"], m["access_id"], m["revision_name"]) == (subject_hash, access_id, revision_name)
+               for m in txn["members"])
+
+
+async def _mark_published(store: Any, marker: dict[str, Any]) -> None:
+    """Every member's current.json names this txn's version: the txn IS published. Record it, drop the sidecars."""
+    marker["state"] = "published"
+    await _write_card_version_marker(store, marker)
+    for m in marker["members"]:
+        path = card_version_revision_marker_path(store, subject_hash=m["subject_hash"], access_id=m["access_id"],
+                                                 revision_name=m["revision_name"])
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass  # it still resolves as committed: published marker, or no marker at all
+
+
+async def _finish_published(store: Any, marker: dict[str, Any], run_effect: Any) -> None:
+    """Each unrecorded effect once; once every effect is recorded the marker goes (D2: only the version stays)."""
+    await _run_effects(store, marker, run_effect)
+    try:
+        card_version_marker_path(store, marker["txn"]).unlink(missing_ok=True)
+    except OSError as exc:
+        raise CardStorageError("card_version_marker_cleanup_failed") from exc
+    from ..durable_io import _fsync_directory
+    _fsync_directory(card_version_marker_path(store, marker["txn"]).parent)
+
+
+async def _current_txn(store: Any, current: Any, *, subject_hash: str, access_id: str) -> str:
+    """The card-version txn that wrote the current version: its record, else its sidecar; "" for older writers."""
+    record = await store.read_version_record(subject_hash=subject_hash, access_id=access_id,
+                                             revision_name=current.revision_name) \
+        if hasattr(store, "read_version_record") else None
+    if record and type(record.get("txn")) is str:
+        return record["txn"]
+    sidecar = await read_json_or_none(card_version_revision_marker_path(
+        store, subject_hash=subject_hash, access_id=access_id, revision_name=current.revision_name))
+    return sidecar["txn"] if isinstance(sidecar, Mapping) and type(sidecar.get("txn")) is str else ""
+
+
+async def finalize_current_version(store: Any, *, subject_hash: str, access_id: str, own_txn: str = "",
+                                   run_effect: Any = None) -> str:
+    """D3 (EMain, Infra's K2 cut): before building on a Card, finalize the txn its current.json names.
+
+    current.json naming a version means that txn IS published, even if its PUBLISH stopped before the
+    `published` marker. Every writer (STAGE, PUBLISH, any pointer writer) records that here, so that txn's
+    later ROLLBACK answers already_published and never deletes a version a successor built on. One direct
+    read of current.json, the version's record and the txn marker; nothing is listed. A group whose other
+    members do not name their versions (a partial group, phase 2) is refused card_version_unresolved, never
+    guessed. The finalized marker is left `published` for its own txn to clean up. Returns the txn current
+    names ("" if none).
+    """
+    current = await store.read_current(subject_hash=subject_hash, access_id=access_id)
+    if current is None:
+        return ""
+    txn = await _current_txn(store, current, subject_hash=subject_hash, access_id=access_id)
+    if not txn or txn == own_txn:
+        return txn
+    marker = await read_card_version_marker(store, txn)
+    if marker is None or marker["state"] not in ("staged", "published"):
+        return txn
+    if marker["state"] == "staged":
+        for m in marker["members"]:
+            named = await store.read_current(subject_hash=m["subject_hash"], access_id=m["access_id"])
+            if named is None or named.revision_name != m["revision_name"]:
+                raise CardStorageError("card_version_unresolved")
+        await _mark_published(store, marker)
+    if run_effect is not None and len(marker["members"]) == 1:
+        await _run_effects(store, marker, run_effect)
+    # The marker stays `published`: only the txn's own PUBLISH retry or ROLLBACK (which PB's error path always
+    # sends) deletes it, so that ROLLBACK answers already_published even without its links (Infra red 2).
+    return txn
+
+
+def _member_link(subject_hash: str, access_id: str, base: int | None, pointer: CardCurrentPointer,
+                 observed: CardCurrentPointer | None) -> dict[str, Any]:
+    return {"subject_hash": subject_hash, "access_id": access_id, "base_version": base,
+            "observed_version": observed.card_revision if observed is not None else None,
+            "observed_revision_name": observed.revision_name if observed is not None else None,
+            "version": pointer.card_revision, "revision_name": pointer.revision_name,
+            "content_hash": pointer.content_hash, "pointer": pointer.to_dict()}
+
+
+def _answer(marker: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return [{"subject_hash": m["subject_hash"], "access_id": m["access_id"], "version": m["version"],
+             "checksum": m["content_hash"]} for m in marker["members"]]
+
+
+def _card_version_binding(binding: Any) -> dict[str, str] | None:
+    """The authenticated scope and caller that staged a txn (Infra W691 finding 2); None for internal callers."""
+    if binding is None:
+        return None
+    if (not isinstance(binding, Mapping) or set(binding) != {"scope", "caller"}
+            or not all(type(value) is str and value for value in binding.values())):
+        raise CardTransactionRefused("card_version_request_invalid")
+    return dict(binding)
+
+
+def _require_binding(marker: Mapping[str, Any], binding: Any) -> None:
+    """Every replay, PUBLISH and ROLLBACK names the binding its STAGE recorded, else it touches nothing."""
+    if marker.get("binding") != _card_version_binding(binding):
+        raise CardTransactionRefused("txn_scope_mismatch")
+
+
+async def card_version_stage(store: Any, *, txn: str, request_digest: str, catalog: Any,
+                             members: Any, effects: Any = (), now: datetime, request_id: str = "",
+                             actor: Any = None, prepare: Any = None, binding: Any = None,
+                             active_catalog: Any = None) -> list[dict[str, Any]]:
+    """STAGE: write each member's next version (not yet final) and the txn marker `staged`.
+
+    ``members`` are ``(subject_hash, access_id, base_version, candidate)``: ``base_version`` is the
+    version PB authorized against, ``None`` for an invitation upsert ("UPSERT. overwrite"), which takes
+    whatever exists on the stable id. ``candidate`` is the new Card value (piece 2 builds it). ``now`` is
+    the request's time: the revision name derives from it, so a retry after a crash between the version
+    write and the marker write rewrites the SAME file instead of leaving a stray second version (EMain,
+    16:35Z: "the old resume path that writes again goes"). Order (Infra K4, 16:45Z): base checks, the
+    marker `staging` naming every file, ``prepare()`` (piece 2's effect preparation), the files, the marker
+    `staged`. A refusal of ``prepare()`` writes no Card file; ROLLBACK clears the `staging` marker.
+    ``catalog`` is PB's catalog link and ``actor`` = {subject, kind}: who and when, links only.
+    """
+    card_version_txn_id(txn)
+    if not isinstance(now, datetime) or now.utcoffset() is None:
+        raise CardTransactionRefused("card_version_request_invalid")
+    if type(request_digest) is not str or not _HEX64.fullmatch(request_digest) or type(request_id) is not str:
+        raise CardTransactionRefused("card_version_request_invalid")
+    if isinstance(catalog, Mapping):
+        catalog = dict(catalog)
+        if not all(type(key) is str and type(value) is str for key, value in catalog.items()):
+            raise CardTransactionRefused("card_version_request_invalid")
+    elif type(catalog) is not str:
+        raise CardTransactionRefused("card_version_request_invalid")
+    actor = dict(actor) if isinstance(actor, Mapping) else None
+    if actor is not None and (set(actor) != {"subject", "kind"} or not all(type(v) is str for v in actor.values())):
+        raise CardTransactionRefused("card_version_request_invalid")
+    binding = _card_version_binding(binding)
+    members = list(members)
+    if not 1 <= len(members) <= MAX_GROUP_MEMBERS or len({(m[0], m[1]) for m in members}) != len(members):
+        raise CardTransactionRefused("card_version_members_invalid")
+    existing = await read_card_version_marker(store, txn)
+    if existing is not None:
+        _require_binding(existing, binding)
+        if existing["state"] not in ("staging", "staged"):
+            raise CardTransactionRefused("txn_closed")
+        if existing["request_digest"] != request_digest or existing.get("at") != now.isoformat():
+            raise CardTransactionRefused("stage_txn_conflict")
+        if existing["state"] == "staged":
+            for m in existing["members"]:  # a same-txn retry: the same answer, once every file is still there
+                if await read_json_or_none(store.revision_path(subject_hash=m["subject_hash"], access_id=m["access_id"],
+                                                               revision_name=m["revision_name"])) is None:
+                    raise CardStorageError("card_version_staged_revision_missing")
+            return _answer(existing)
+        # `staging`: an earlier attempt stopped mid-write. Its file names are recorded and deterministic, so
+        # the retry finishes the SAME files (it never adds a second version).
+        by_card = {(m[0], m[1]): m[3] for m in members}
+        if set(by_card) != {(m["subject_hash"], m["access_id"]) for m in existing["members"]}:
+            raise CardTransactionRefused("stage_txn_conflict")
+        if prepare is not None:
+            # Infra 17:2xZ red 1: a `staging` marker is no evidence that preparation succeeded; the retry
+            # completes it (piece 2's preparation is idempotent per txn) before any file or `staged`.
+            await cancellation_safe_await(prepare())
+        await _write_staged_versions(store, existing, by_card, now)
+        existing["state"] = "staged"
+        await _write_card_version_marker(store, existing)
+        return _answer(existing)
+    if active_catalog is not None:
+        # D1 (EMain): the ACTIVE catalog, read directly under the Card locks, must be PB's catalog.
+        active = await active_catalog()
+        if not isinstance(catalog, Mapping) or active is None or dict(active) != {
+                "version": catalog.get("version"), "content_hash": catalog.get("content_hash")}:
+            raise CardTransactionRefused("stage_catalog_moved")
+    checked = []
+    for subject_hash, access_id, base_version, candidate in members:
+        if not isinstance(candidate, CardAuthority) or candidate.access_id != access_id:
+            raise CardTransactionRefused("card_version_candidate_invalid")
+        if await finalize_current_version(store, subject_hash=subject_hash, access_id=access_id) == txn:
+            raise CardTransactionRefused("txn_closed")  # this txn already published (its marker is gone, D2)
+        current = await store.read_current(subject_hash=subject_hash, access_id=access_id)
+        if base_version is None:
+            expected = (current.card_revision if current is not None else 0) + 1
+        else:
+            if type(base_version) is not int or base_version < 1:
+                raise CardTransactionRefused("card_version_base_invalid")
+            if current is None or current.card_revision != base_version:
+                raise CardTransactionRefused("card_changed")
+            expected = base_version + 1
+        if candidate.card_revision != expected:
+            # An upsert built on a revision that has since moved: the Card changed (Spark App, 17:1xZ).
+            raise CardTransactionRefused("card_changed" if base_version is None else "card_version_candidate_invalid")
+        content_hash = candidate.content_hash()
+        pointer = CardCurrentPointer.for_revision(candidate, content_hash=content_hash, updated_at=now,
+                                                  revision_name=card_revision_name(card_revision=candidate.card_revision,
+                                                                                   content_hash=content_hash, updated_at=now,
+                                                                                   txn=txn))
+        checked.append(_member_link(subject_hash, access_id, base_version, pointer, current))
+    # Infra K4 (16:45Z): the marker FIRST, as `staging`, naming every file this STAGE may write, so a
+    # cancellation or failure at ANY later point leaves files that ROLLBACK can locate ("that error must call
+    # callbacl also which will rollback the garbage").
+    marker = {"schema": CARD_VERSION_MARKER_SCHEMA, "txn": txn, "state": "staging", "request_digest": request_digest,
+              "request_id": request_id, "actor": actor, "binding": binding, "at": now.isoformat(), "catalog": catalog,
+              "members": checked,
+              "effects": [dict(effect) for effect in effects], "effect_outcomes": {}}
+    await _write_card_version_marker(store, marker)
+    if prepare is not None:
+        # A refusal here leaves only the `staging` marker: PB's error path calls ROLLBACK (contract K2), which
+        # releases every effect (also a partly prepared one) and removes the marker. No Card file is written.
+        await cancellation_safe_await(prepare())  # a started preparation finishes before the locks go (K4)
+    await _write_staged_versions(store, marker, {(m[0], m[1]): m[3] for m in members}, now)
+    marker["state"] = "staged"
+    await _write_card_version_marker(store, marker)
+    return _answer(marker)
+
+
+async def _write_staged_versions(store: Any, marker: Mapping[str, Any], candidates: Mapping[tuple[str, str], Any],
+                                 now: datetime) -> None:
+    for m in marker["members"]:
+        candidate = candidates[(m["subject_hash"], m["access_id"])]
+        if not isinstance(candidate, CardAuthority) or candidate.content_hash() != m["content_hash"]:
+            raise CardTransactionRefused("stage_txn_conflict")
+        # The revision marker before the file: the file is never readable as history before its txn publishes.
+        await write_json_atomic(card_version_revision_marker_path(store, subject_hash=m["subject_hash"],
+                                                                  access_id=m["access_id"],
+                                                                  revision_name=m["revision_name"]), {"txn": marker["txn"]})
+        record = {"txn": marker["txn"], "actor": marker.get("actor"), "at": marker["at"],
+                  "catalog": marker.get("catalog"), "binding": marker.get("binding")}
+        # D2: who and when are fields of the version record ("each card version -> one record").
+        pointer = await store.write_revision(subject_hash=m["subject_hash"], authority=candidate, updated_at=now,
+                                             record=record, txn=marker["txn"])
+        if pointer.revision_name != m["revision_name"]:
+            raise CardStorageError("card_version_revision_mismatch")
+
+
+async def _release_and_forget(store: Any, marker: Mapping[str, Any], *, release: Any) -> None:
+    """Delete every file the txn may have written (missing ones are fine), then the marker (or close it)."""
+    if release is not None:  # piece 2: a prepared effect (an agent row's re-wrap) is discarded first
+        for effect in marker["effects"]:
+            await cancellation_safe_await(release(dict(effect), dict(marker)))
+    from ..durable_io import _fsync_directory
+    folders = set()
+    for m in marker["members"]:
+        revision = store.revision_path(subject_hash=m["subject_hash"], access_id=m["access_id"],
+                                       revision_name=m["revision_name"])
+        for path in (revision, revision.with_suffix(".card-version.json")):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as exc:
+                raise CardStorageError("card_version_rollback_failed") from exc
+        folders.add(revision.parent)
+    for folder in sorted(folders):  # Spark App F3: the deletions are durable before the marker goes
+        _fsync_directory(folder)
+    if KEEP_ROLLBACK_MARKER:
+        await _write_card_version_marker(store, {**marker, "state": "rolled_back"})
+        return
+    try:
+        card_version_marker_path(store, marker["txn"]).unlink(missing_ok=True)
+    except OSError as exc:
+        raise CardStorageError("card_version_rollback_failed") from exc
+    _fsync_directory(card_version_marker_path(store, marker["txn"]).parent)
+
+
+async def _run_effects(store: Any, marker: dict[str, Any], run_effect: Any) -> None:
+    """Each recorded effect once, in order; its named outcome recorded in the marker before the next.
+
+    ``run_effect(effect, marker)`` is piece 2's executor (idempotent by (txn, kind, key), W580); it returns
+    the effect's named outcome. A raise leaves the marker `published` with that effect unrecorded.
+    """
+    for index, effect in enumerate(marker["effects"]):
+        key = str(index)
+        if key in marker["effect_outcomes"]:
+            continue
+        if run_effect is None:
+            raise CardTransactionRefused("effects_pending")
+        outcome = await cancellation_safe_await(run_effect(dict(effect), dict(marker)))
+        if type(outcome) is not str or not outcome:
+            raise CardTransactionRefused("effects_pending")
+        marker["effect_outcomes"][key] = outcome
+        await _write_card_version_marker(store, marker)
+
+
+async def card_version_publish(store: Any, *, txn: str, run_effect: Any = None,
+                               binding: Any = None) -> list[dict[str, Any]]:
+    """PUBLISH: finalize what current names, the base fence, each member's current.json, the marker `published`,
+    then each effect once; once every effect is recorded the marker is deleted (D2)."""
+    marker = await read_card_version_marker(store, txn)
+    if marker is None:
+        raise CardTransactionRefused("txn_unknown")  # D5: before any binding check
+    _require_binding(marker, binding)
+    if marker["state"] == "rolled_back":
+        raise CardTransactionRefused("txn_closed")
+    if marker["state"] == "staging":
+        raise CardTransactionRefused("txn_not_staged")  # STAGE never answered; only ROLLBACK or its retry apply
+    if marker["state"] == "staged":
+        for m in marker["members"]:
+            await finalize_current_version(store, subject_hash=m["subject_hash"], access_id=m["access_id"],
+                                           own_txn=txn, run_effect=run_effect)
+            current = await store.read_current(subject_hash=m["subject_hash"], access_id=m["access_id"])
+            observed = current.revision_name if current is not None else None
+            if observed == m["revision_name"]:
+                continue  # this txn's own earlier write (a PUBLISH that stopped before its marker)
+            if observed != m["observed_revision_name"]:
+                raise CardTransactionRefused("card_changed")  # the lost-update fence
+        for m in marker["members"]:
+            current = await store.read_current(subject_hash=m["subject_hash"], access_id=m["access_id"])
+            if current is not None and current.revision_name == m["revision_name"]:
+                continue  # written by this txn's earlier PUBLISH
+            await store.advance_current(subject_hash=m["subject_hash"],
+                                        pointer=CardCurrentPointer.from_mapping(m["pointer"]))
+        await _mark_published(store, marker)
+    await _finish_published(store, marker, run_effect)
+    return _answer(marker)
+
+
+async def card_version_rollback(store: Any, *, txn: str, run_effect: Any = None, release: Any = None,
+                                binding: Any = None, links: Any = (), at: Any = None) -> str:
+    """ROLLBACK: remove the not-yet-final versions; never a published one. Also the probe after a lost reply.
+
+    ``links`` are STAGE's answer {subject_hash, access_id, version, checksum} and ``at`` the request's time:
+    with the marker gone (D2), the version file name is a pure function of them
+    (card_revision_<utc_stamp(at)>_<version:08d>_<checksum[:12]>_<sha256(txn)[:12]>.json), read directly,
+    never listed.
+    """
+    marker = await read_card_version_marker(store, txn)
+    if marker is None:
+        if await _published_by_links(store, txn=txn, links=links, at=at, binding=binding):
+            return "already_published"
+        if KEEP_ROLLBACK_MARKER:
+            await _write_card_version_marker(store, {"schema": CARD_VERSION_MARKER_SCHEMA, "txn": txn,
+                                                     "state": "rolled_back", "request_digest": "", "catalog": "",
+                                                     "members": [], "effects": [], "effect_outcomes": {}})
+        return "unknown_txn"  # contract v6.2: nothing of a failed save remains, so nothing is written
+    _require_binding(marker, binding)
+    if marker["state"] == "rolled_back":
+        return "rolled_back"
+    if marker["state"] == "staged":
+        for m in marker["members"]:
+            current = await store.read_current(subject_hash=m["subject_hash"], access_id=m["access_id"])
+            if current is not None and current.revision_name == m["revision_name"]:
+                # A PUBLISH stopped between its pointer write and its marker write: it IS published.
+                await card_version_publish(store, txn=txn, run_effect=run_effect, binding=binding)
+                return "already_published"
+    if marker["state"] in ("staging", "staged"):
+        await _release_and_forget(store, marker, release=release)
+        return "rolled_back"
+    await _finish_published(store, marker, run_effect)  # published: finish what the lost PUBLISH left
+    return "already_published"
+
+
+async def _published_by_links(store: Any, *, txn: str, links: Any, at: Any, binding: Any) -> bool:
+    """The marker is gone: is each linked version file there and written by this txn? (D2, one read per link)"""
+    links = list(links or ())
+    if not links or not isinstance(at, datetime) or at.utcoffset() is None:
+        return False
+    found = []
+    for link in links:
+        try:
+            name = card_revision_name(card_revision=int(link["version"]), content_hash=str(link["checksum"]),
+                                      updated_at=at, txn=txn)
+            record = await store.read_version_record(subject_hash=link["subject_hash"], access_id=link["access_id"],
+                                                     revision_name=name)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CardTransactionRefused("card_version_request_invalid") from exc
+        found.append(record is not None and record.get("txn") == txn)
+        if found[-1] and record.get("binding") != _card_version_binding(binding):
+            raise CardTransactionRefused("txn_scope_mismatch")
+    return all(found)

@@ -318,14 +318,15 @@ async def test_cancellation_drains_started_intent_writer_before_releasing_either
             held.pop()
 
     monkeypatch.setattr(durable_io, "_write_text_atomic", write)
-    monkeypatch.setattr(service_module, "CARD_LOCK_WAIT_SECONDS", 0.03)
+    # W661: each target Card's inflight.json is written (fsynced) before the intent; leave room for both under load.
+    monkeypatch.setattr(service_module, "CARD_LOCK_WAIT_SECONDS", 0.2)
     service = service_module.DelegatedCardService(store=store, cache=_service_cache(), mutation_lock=locks)
     gate = AsyncMock(return_value=datetime.now(timezone.utc) + timedelta(seconds=30))
     task = asyncio.create_task(service.revoke_lifecycle(request, actor_subject=ACTOR,
                                                        before_commit=gate, after_commit=AsyncMock()))
     try:
         assert await asyncio.to_thread(started.wait, 1)
-        await asyncio.sleep(0.08)  # past the shortened fixture progress deadline
+        await asyncio.sleep(0.3)  # past the shortened fixture progress deadline
         assert not task.done() and len(held) == 3
     finally:
         finish.set()
