@@ -126,6 +126,10 @@ The OAuth issuance plan holds two links:
   the same candidate and names the same file, which is reused. An expired attempt is renewed only if it
   is still the one read, and its row is deleted once the plan is stored, for exactly that clock. No lock
   is held across these calls.
+- A stored plan always wins. Another planner of the same request can finish the whole begin while this one
+  is between two calls. Then this planner's pin reads no row, its candidate record updates no row, a
+  stored plan is found after the pin, or its file is already adopted. In each case it writes no file and
+  replays the stored plan instead (bounded rounds, then the retryable `issuance_plan_unavailable`).
 - The original is read through the store's own committed read and checked against its link. A
   candidate with no marker is accepted only when the bound decision is COMMITTED in the decision log.
   `load_version` with no owner named refuses any marked file. Presence is decided in one read, so a
