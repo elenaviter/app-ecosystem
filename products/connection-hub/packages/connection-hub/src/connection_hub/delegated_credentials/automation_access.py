@@ -10159,7 +10159,8 @@ class AutomationAccessService:
                           effects=effects,
                           action=spec["action"], actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
 
-    async def _issuance_plan(self, plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
+    async def _issuance_plan(self, plan: Mapping[str, Any], transaction_id: str, intent_digest: str,
+                             snapshot: bool = True) -> Any:
         """The SDK-facing ``OAuthIssuancePlan``. W661 scope B: the candidate's authority snapshot
         (operations, resource grants and operations) is read from the linked candidate, never stored
         twice; a legacy plan that stored it keeps it."""
@@ -10167,11 +10168,18 @@ class AutomationAccessService:
 
         derived = {}
         if "operations" not in plan:
-            candidate = await self._plan_card(plan, "candidate", transaction_id)
-            derived = {"operations": list(candidate.operations),
-                       "resource_grants": {key: list(items) for key, items in candidate.resource_grants.items()},
-                       "resource_operations": {key: list(items)
-                                               for key, items in candidate.resource_operations.items()}}
+            try:
+                candidate = await self._plan_card(plan, "candidate", transaction_id)
+            except IssuanceRefused as exc:
+                if snapshot or exc.reason != "issuance_decision_closed":
+                    raise
+                derived = {"operations": [], "resource_grants": {}, "resource_operations": {}}
+                candidate = None
+            if candidate is not None:
+                derived = {"operations": list(candidate.operations),
+                           "resource_grants": {key: list(items) for key, items in candidate.resource_grants.items()},
+                           "resource_operations": {key: list(items)
+                                                   for key, items in candidate.resource_operations.items()}}
         try:
             return OAuthIssuancePlan.from_mapping({**plan, **derived, "transaction_id": transaction_id,
                                                    "intent_digest": intent_digest})
@@ -10205,8 +10213,14 @@ class AutomationAccessService:
             raise IssuanceRefused(exc.reason) from None
         return await self._issuance_plan(plan, row.transaction_id, row.intent.digest)
 
-    async def _trusted_issuance(self, transaction_id: str, *, decisions: Any, store: Any) -> tuple[Any, Any, Any]:
-        """(stored plan, the plan as the Hub would return it, the decision row) for a transaction id."""
+    async def _trusted_issuance(self, transaction_id: str, *, decisions: Any, store: Any,
+                                snapshot: bool = True) -> tuple[Any, Any, Any]:
+        """(stored plan, the plan as the Hub would return it, the decision row) for a transaction id.
+
+        ``snapshot=False`` is for outcome reads (complete, read the result): an ABORTED decision whose
+        candidate was released (the sweep, or lane 3's FINISH) still answers its outcome, with an empty
+        authority snapshot that is never compared or returned as a plan. Plan reads and reserve keep
+        ``True`` and refuse ``issuance_decision_closed`` then."""
         from .oauth_issuance import IssuanceRefused
 
         if type(transaction_id) is not str:
@@ -10216,7 +10230,7 @@ class AutomationAccessService:
         if stored is None or row is None:
             raise IssuanceRefused("issuance_plan_unknown")
         plan = stored["plan"]
-        return plan, await self._issuance_plan(plan, transaction_id, row.intent.digest), row
+        return plan, await self._issuance_plan(plan, transaction_id, row.intent.digest, snapshot=snapshot), row
 
     @staticmethod
     def _checked_issuance_record(plan: Mapping[str, Any], slot: str, record: Any) -> dict[str, Any]:
@@ -10405,7 +10419,8 @@ class AutomationAccessService:
         Refuses ``issuance_plan_unknown`` for a transaction with no plan.
         """
         _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
-        plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
+        plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store,
+                                                           snapshot=False)
         return await self._issuance_result(plan, trusted, decisions=decisions, store=store)
 
     async def read_oauth_issuance_plan(self, *, transaction_id: str) -> Any:
@@ -10468,18 +10483,19 @@ class AutomationAccessService:
         from .oauth_issuance import IssuanceRefused
 
         coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
-        plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store)
+        plan, trusted, _row = await self._trusted_issuance(transaction_id, decisions=decisions, store=store,
+                                                           snapshot=False)
         if expect is not None:
             reservations = await store.issuance_reservations(transaction_id)
             if not isinstance(expect, Mapping) or any(
                     reservations.get(slot, {}).get("token_sha256") != digest for slot, digest in expect.items()):
                 raise IssuanceRefused("issuance_expect_mismatch")
-        candidate = await self._plan_card(plan, "candidate", transaction_id)
         decided_here, abort_reason = False, ""
         try:
             async with store.issuance_completion_section(transaction_id) as renew:
                 row = await decisions.read(transaction_id)  # read again under the claim
                 if row is not None and not row.terminal:
+                    candidate = await self._plan_card(plan, "candidate", transaction_id)  # only while open
                     decided_here, abort_reason = await self._decide_issuance(
                         plan, trusted, candidate, coordinator=coordinator, renew=renew)
                 try:

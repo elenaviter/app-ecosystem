@@ -497,6 +497,9 @@ async def test_an_aborted_decision_releases_its_planned_candidate(tmp_path):
         assert not path.exists() and _staged_files(w, plan.access_id) == []
         with pytest.raises(IssuanceRefused, match="issuance_decision_closed"):
             await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)
+        # Outcome reads still answer (the SDK's retry after a crash): aborted, not a refusal.
+        assert (await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)).state == "aborted"
+        assert (await w.service.read_oauth_issuance(transaction_id=plan.transaction_id)).state == "aborted"
         assert await w.service.release_unbegun_oauth_issuance_plans() == 0  # released once (flag)
 
 
