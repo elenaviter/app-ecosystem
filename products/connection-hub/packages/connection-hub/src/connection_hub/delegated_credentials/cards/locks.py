@@ -14,6 +14,13 @@ layer. EMain 18:40Z: phase 1 pairs it with ``proc_only_lock``: a Card mutation l
 platform's "proc" process role, so a Card writer anywhere else (chat-ingress) fails loudly instead of racing.
 PostgreSQL advisory locks (option b) follow before W661 Done.
 
+10 Oct, live defect and operator binding (verbatim: "read kdcube docs on bundle storage", "pb is a bundle"): the
+/run root was an invented host path that the app user (uid 1000) could not create, so every Card write failed.
+The lock root is now the bundle's own storage root from the platform plus ``_card_locks``
+(sdk/bundle/bundle-storage-and-cache-README.md: "use self.bundle_storage_root() and create a subdirectory below
+it"). With option R the per-Card Redis lock (redis_lock.py) is the cross-container guard and this file lock the
+second layer, the critical-section doc's git-bundle order.
+
 The role signal is the platform's GATEWAY_COMPONENT: the SDK sets "proc" in apps/chat/proc/web_app.py and
 "ingress" in apps/chat/ingress/web_app.py (os.environ.setdefault, before the workers spawn). It is not unique
 to chat-proc (apps/metrics/web_app.py also defaults to "proc"; Infra 18:57Z), so the guard is correct only
@@ -26,14 +33,21 @@ from __future__ import annotations
 import hashlib
 import os
 import pathlib
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, AsyncIterator
 
 from .service import CardMutationLock
 from .store import CardStorageError
 
 CONTAINER_LOCK_SUFFIX = ".lock"
-DEFAULT_CARD_LOCK_ROOT = "/run/kdcube-card-locks"
+CARD_LOCK_SUBDIR = "_card_locks"
+
+
+def card_lock_root(bundle_storage_root: os.PathLike[str] | str | None) -> pathlib.Path:
+    """The Card file-lock root: the bundle's platform storage root plus ``_card_locks``; none refuses by name."""
+    if bundle_storage_root is None or not os.fspath(bundle_storage_root):
+        raise CardStorageError("card_lock_root_unavailable")
+    return pathlib.Path(os.path.abspath(os.fspath(bundle_storage_root))) / CARD_LOCK_SUBDIR
 PROCESS_ROLE_ENV = "GATEWAY_COMPONENT"
 CARD_WRITER_ROLE = "proc"
 
@@ -54,8 +68,13 @@ def container_local_lock(base_lock: CardMutationLock, root: os.PathLike[str] | s
     @asynccontextmanager
     async def lock(*, lock_path: pathlib.Path, resource_id: str, operation: str,
                    wait_seconds: float) -> AsyncIterator[Any]:
-        async with base_lock(lock_path=container_local_lock_path(local_root, lock_path), resource_id=resource_id,
-                             operation=operation, wait_seconds=wait_seconds) as held:
+        async with AsyncExitStack() as stack:
+            try:
+                held = await stack.enter_async_context(base_lock(
+                    lock_path=container_local_lock_path(local_root, lock_path), resource_id=resource_id,
+                    operation=operation, wait_seconds=wait_seconds))
+            except OSError as exc:  # e.g. the process user cannot create the lock root: refuse by name
+                raise CardStorageError("card_lock_root_unwritable") from exc
             yield held
 
     return lock
@@ -104,12 +123,26 @@ def guard_card_store_writes(store: Any, *, role: Any = current_process_role) -> 
     return store
 
 
-def hub_card_mutation_lock(base_lock: CardMutationLock, root: os.PathLike[str] | str = DEFAULT_CARD_LOCK_ROOT,
+def hub_card_mutation_lock(base_lock: CardMutationLock, root: os.PathLike[str] | str,
                            *, role: Any = current_process_role) -> CardMutationLock:
     """Phase 1 (EMain 18:40Z): proc-only, on a container-local lock file."""
     return proc_only_lock(container_local_lock(base_lock, root), role=role)
 
 
-__all__ = ["CARD_WRITER_ROLE", "CONTAINER_LOCK_SUFFIX", "DEFAULT_CARD_LOCK_ROOT", "PROCESS_ROLE_ENV",
+def hub_redis_card_mutation_lock(redis: Any, base_lock: CardMutationLock,
+                                 root: os.PathLike[str] | str, *, tenant: str, project: str,
+                                 observed_lock: Any, make_metadata: Any, role: Any = current_process_role,
+                                 **settings: Any) -> CardMutationLock:
+    """Option R (operator 10 Oct, "R now, with P"): proc-only, then the per-Card KDCube Redis lock, then the
+    container-local observed file lock (the critical-section doc's git-bundle order: Redis, then the file lock)."""
+    from .redis_lock import redis_card_mutation_lock
+
+    return proc_only_lock(redis_card_mutation_lock(redis, observed_lock=observed_lock, make_metadata=make_metadata,
+                                                   tenant=tenant, project=project,
+                                                   base_lock=container_local_lock(base_lock, root), **settings),
+                          role=role)
+
+
+__all__ = ["CARD_LOCK_SUBDIR", "CARD_WRITER_ROLE", "CONTAINER_LOCK_SUFFIX", "PROCESS_ROLE_ENV", "card_lock_root",
            "container_local_lock", "container_local_lock_path", "current_process_role", "guard_card_store_writes",
-           "hub_card_mutation_lock", "proc_only_lock", "refuse_outside_proc"]
+           "hub_card_mutation_lock", "hub_redis_card_mutation_lock", "proc_only_lock", "refuse_outside_proc"]
