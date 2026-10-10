@@ -425,7 +425,20 @@ class CardVersionOperation:
                 raise CardVersionRefused("edit_invalid") from None
 
     async def _apply(self, effect: Mapping[str, Any], marker: Mapping[str, Any]) -> str:
-        """PUBLISH: move the row only while current.json still names this txn's version of the Card."""
+        """PUBLISH: one effect, answered by its named result or ``effects_pending`` (contract section 4).
+
+        Any failure of the handle store is ``effects_pending``: the effect stays unrecorded, and the txn's
+        PUBLISH retry or ROLLBACK runs it again (it is idempotent by txn and key).
+        """
+        try:
+            return await self._apply_once(effect, marker)
+        except CardVersionRefused:
+            raise
+        except Exception:  # noqa: BLE001 - the handle store's own fault, never internal text to PB
+            raise CardVersionRefused("effects_pending") from None
+
+    async def _apply_once(self, effect: Mapping[str, Any], marker: Mapping[str, Any]) -> str:
+        """Move the row only while current.json still names this txn's version of the Card."""
         payload, txn = effect["payload"], marker["txn"]
         member = next((member for member in marker["members"]
                        if member["card"]["access_id"] == effect["access_id"]), None)

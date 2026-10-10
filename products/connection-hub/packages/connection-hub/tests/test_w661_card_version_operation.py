@@ -500,3 +500,25 @@ async def test_a_retried_stage_prepares_the_identical_rewrap():
     first, again = prepared
     assert first == again
     assert first[2]["prepared_at"] == int(datetime.fromisoformat(AT).timestamp())
+
+
+@pytest.mark.asyncio
+async def test_a_failing_handle_write_answers_effects_pending_and_the_retry_applies_it():
+    class _Flaky(_Handles):
+        failures = 1
+
+        async def advance_binding(self, access_id, **kwargs):
+            if self.failures:
+                self.failures -= 1
+                raise RuntimeError("handle store down")
+            return await super().advance_binding(access_id, **kwargs)
+
+    handles = _Flaky(identity=ROW)
+    operation, _, store = _operation(host=_Host(effects=[AGENT_EFFECT]), handles=handles)
+    await operation.answer(_request())
+    publish = _request("publish")
+    assert _verified(await operation.answer(publish), publish) == {
+        "kind": "refused", "code": "effects_pending", "status": 503}
+    retry = _request("publish")
+    assert _verified(await operation.answer(retry), retry)["kind"] == "published"
+    assert [call[0] for call in handles.calls] == ["advance"]
