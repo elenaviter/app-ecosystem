@@ -300,7 +300,7 @@ class DelegatedCardService:
     async def stage_card_version(self, *, txn: str, request_digest: str, catalog: str, members: Any,
                                  now: datetime, effects: Any = (), request_id: str = "", actor: Any = None,
                                  prepare: Any = None, binding: Any = None,
-                                 active_catalog: Any = None) -> list[dict[str, Any]]:
+                                 active_catalog: Any = None, reads: Any = ()) -> list[dict[str, Any]]:
         """W661 STAGE: the members' next versions, not yet final; ``members`` = (subject_hash, access_id,
         base_version | None, candidate). Answers links only: card, version, checksum.
 
@@ -308,13 +308,14 @@ class DelegatedCardService:
         host's clock: a same-request retry then names the same revision file and cannot leave a stray one."""
         from .transaction_store import card_version_stage
 
-        members = list(members)
+        members, reads = list(members), list(reads or ())
         try:
-            async with self._card_version_sections((m[0], m[1]) for m in members):
+            # Read members (never written) are locked with the written ones, in the one sorted order.
+            async with self._card_version_sections([(m[0], m[1]) for m in members] + [(r[0], r[1]) for r in reads]):
                 return await card_version_stage(self._store, txn=txn, request_digest=request_digest, catalog=catalog,
                                                 members=members, effects=effects, now=now,
                                                 request_id=request_id, actor=actor, prepare=prepare,
-                                                binding=binding, active_catalog=active_catalog)
+                                                binding=binding, active_catalog=active_catalog, reads=reads)
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
 
@@ -322,7 +323,9 @@ class DelegatedCardService:
         from .transaction_store import read_card_version_marker
 
         marker = await read_card_version_marker(self._store, txn)
-        return [] if marker is None else [(m["subject_hash"], m["access_id"]) for m in marker["members"]]
+        if marker is None:
+            return []
+        return [(m["subject_hash"], m["access_id"]) for m in marker["members"] + marker.get("reads", [])]
 
     async def _under_txn_locks(self, txn: str, operation: Any) -> Any:
         """Run ``operation`` under the locks of exactly the txn marker's members.

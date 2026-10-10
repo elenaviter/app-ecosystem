@@ -1641,10 +1641,36 @@ def _require_binding(marker: Mapping[str, Any], binding: Any) -> None:
         raise CardTransactionRefused("txn_scope_mismatch")
 
 
+def _read_links(reads: Any, members: Any) -> list[dict[str, Any]]:
+    """The read members' links {subject_hash, access_id, version}: distinct, never also a written member."""
+    links = []
+    try:
+        for subject_hash, access_id, version in list(reads or ()):
+            if type(subject_hash) is not str or type(access_id) is not str or type(version) is not int or version < 1:
+                raise ValueError
+            links.append({"subject_hash": subject_hash, "access_id": access_id, "version": version})
+    except (TypeError, ValueError) as exc:
+        raise CardTransactionRefused("card_version_members_invalid") from exc
+    cards = [(r["subject_hash"], r["access_id"]) for r in links]
+    written = {(m[0], m[1]) for m in members}
+    if len(set(cards)) != len(cards) or written.intersection(cards) or len(cards) > MAX_GROUP_MEMBERS:
+        raise CardTransactionRefused("card_version_members_invalid")
+    return sorted(links, key=lambda r: (r["subject_hash"], r["access_id"]))
+
+
+async def _check_reads(store: Any, read_links: Any) -> None:
+    """Under each read Card's lock: a pending predecessor refuses (D3), and current must still be the version."""
+    for r in read_links:
+        await finalize_current_version(store, subject_hash=r["subject_hash"], access_id=r["access_id"])
+        current = await store.read_current(subject_hash=r["subject_hash"], access_id=r["access_id"])
+        if current is None or current.card_revision != r["version"]:
+            raise CardTransactionRefused("card_changed")
+
+
 async def card_version_stage(store: Any, *, txn: str, request_digest: str, catalog: Any,
                              members: Any, effects: Any = (), now: datetime, request_id: str = "",
                              actor: Any = None, prepare: Any = None, binding: Any = None,
-                             active_catalog: Any = None) -> list[dict[str, Any]]:
+                             active_catalog: Any = None, reads: Any = ()) -> list[dict[str, Any]]:
     """STAGE: write each member's next version (not yet final) and the txn marker `staged`.
 
     ``members`` are ``(subject_hash, access_id, base_version, candidate)``: ``base_version`` is the
@@ -1656,6 +1682,9 @@ async def card_version_stage(store: Any, *, txn: str, request_digest: str, catal
     marker `staging` naming every file, ``prepare()`` (piece 2's effect preparation), the files, the marker
     `staged`. A refusal of ``prepare()`` writes no Card file; ROLLBACK clears the `staging` marker.
     ``catalog`` is PB's catalog link and ``actor`` = {subject, kind}: who and when, links only.
+    ``reads`` are ``(subject_hash, access_id, version)``: Cards this save reads but never writes (My Reset's
+    Control C, EMain 18:10Z). They are locked with the members, must still be at ``version`` (card_changed),
+    and are re-checked by PUBLISH; the marker records their links only.
     """
     card_version_txn_id(txn)
     if not isinstance(now, datetime) or now.utcoffset() is None:
@@ -1675,9 +1704,12 @@ async def card_version_stage(store: Any, *, txn: str, request_digest: str, catal
     members = list(members)
     if not 1 <= len(members) <= MAX_GROUP_MEMBERS or len({(m[0], m[1]) for m in members}) != len(members):
         raise CardTransactionRefused("card_version_members_invalid")
+    read_links = _read_links(reads, members)
     existing = await read_card_version_marker(store, txn)
     if existing is not None:
         _require_binding(existing, binding)
+        if existing.get("reads", []) != read_links:
+            raise CardTransactionRefused("stage_txn_conflict")
         if existing["state"] not in ("staging", "staged"):
             raise CardTransactionRefused("txn_closed")
         if existing["request_digest"] != request_digest or existing.get("at") != now.isoformat():
@@ -1701,6 +1733,7 @@ async def card_version_stage(store: Any, *, txn: str, request_digest: str, catal
         existing["state"] = "staged"
         await _write_card_version_marker(store, existing)
         return _answer(existing)
+    await _check_reads(store, read_links)
     if active_catalog is not None:
         # D1 (EMain): the ACTIVE catalog, read directly under the Card locks, must be PB's catalog.
         active = await active_catalog()
@@ -1736,7 +1769,7 @@ async def card_version_stage(store: Any, *, txn: str, request_digest: str, catal
     # callbacl also which will rollback the garbage").
     marker = {"schema": CARD_VERSION_MARKER_SCHEMA, "txn": txn, "state": "staging", "request_digest": request_digest,
               "request_id": request_id, "actor": actor, "binding": binding, "at": now.isoformat(), "catalog": catalog,
-              "members": checked,
+              "members": checked, "reads": read_links,
               "effects": [dict(effect) for effect in effects], "effect_outcomes": {}}
     await _write_card_version_marker(store, marker)
     if prepare is not None:
@@ -1828,6 +1861,7 @@ async def card_version_publish(store: Any, *, txn: str, run_effect: Any = None,
     if marker["state"] == "staging":
         raise CardTransactionRefused("txn_not_staged")  # STAGE never answered; only ROLLBACK or its retry apply
     if marker["state"] == "staged":
+        await _check_reads(store, marker.get("reads", []))  # a read Card must not have moved since STAGE
         for m in marker["members"]:
             await finalize_current_version(store, subject_hash=m["subject_hash"], access_id=m["access_id"],
                                            own_txn=txn)
