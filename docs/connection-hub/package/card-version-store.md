@@ -128,6 +128,43 @@ v1 intent is one that stores a Card body. It is deleted only when its decision i
 participant has finished. It is a dry run unless `apply=True`, and it reports transaction ids and
 counts only. In-flight v1 intents stay until their transaction finishes.
 
+## Hub transaction intent links and retirement
+
+`LocalCardIntentSource` keeps single/group intent schema v2 at
+`card-transactions/intents/<transaction_id>.json`. Each member contains its
+Card coordinates and only the exact `original` and `candidate` links. An
+absent creation has `original: null`. Card authorities are hydrated by exact
+filename, full checksum, access id and revision only in memory; there is no
+current/latest substitution or version-directory scan.
+
+The same intent path first holds a `staging` manifest: every candidate name,
+owner and the first accepted staging instant, before any candidate write.
+Only a `ready` record can load for preparation; a partial manifest refuses
+`card_intent_incomplete`. A replay resumes its exact files with the frozen
+instant. The composed service's member Card sections, in sorted order with
+started writes drained before release, cover recording and retirement.
+Candidate sidecars are written before version bodies, so planned candidates
+are not serving authority or history.
+
+The W578 participant stages that SAME candidate file. A pre-begin OAuth plan
+may supply `candidate_link` and `candidate_staging_tag` on `CardIntent` or on
+each `CardGroupMemberIntent`: recording adopts the sidecar to the transaction
+id (or its derived member id), never rewriting the body. These fields are
+storage inputs; the kernel's in-memory candidate value and digests do not
+change. Older unfinished v1 body intents remain readable and use their old
+stage path.
+
+FINISH authenticates the coordinator's terminal decision first. After every
+service finish duty succeeds, the existing receipt or abort tombstone gains
+bounded `intent_binding` (`authority`, `scope`, `record_digest`) and
+`intent_finished: true`. Only then is the intent removed. An abort also
+removes only its own exact unpublished candidate files and markers; it never
+removes a current version. A failed finish or cleanup leaves retry evidence.
+Terminal FINISH retries use the receipt without Card hydration; signed
+retries and page cursors require its exact authority/scope binding. A legacy
+receipt whose intent is gone and whose binding is absent fails closed.
+Exact terminal record replay writes nothing; late STAGE is refused.
+
 ## Hub-local operations in flight
 
 An issuer update or lifecycle intent writes `<card>/inflight.json` under the Card's lock before its
@@ -152,4 +189,3 @@ unique to chat-proc (the platform also labels metrics `proc`), so the condition 
 proc-labelled container that can reach the Card root: on the live host (10 October) only chat-proc
 mounts `/bundle-storage`; metrics does not. A second such container needs the PostgreSQL lock. PostgreSQL advisory locks with a
 session-held check replace it before W661 is Done.
-

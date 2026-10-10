@@ -121,14 +121,15 @@ def intent_scope(intent: GlobalIntent, scope_field: str) -> str:
 
 
 class AuthorityCardIntentSource(_AuthorityReads):
-    def __init__(self, *, store: Any, authority_id: str = "", scope_field: str = "", **kwargs: Any) -> None:
+    def __init__(self, *, store: Any, authority_id: str = "", scope_field: str = "", service: Any = None,
+                 decisions: Any = None, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._store = store
         # Recorded with the intent so readers route its decision to this
         # authority, and the inbound operation binds later calls to its scope.
         self._authority_id = authority_id
         self._scope_field = scope_field
-        self._local = LocalCardIntentSource(store)
+        self._local = LocalCardIntentSource(store, service=service, decisions=decisions)
 
     async def load(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
         try:

@@ -177,6 +177,9 @@ class DelegatedCardService:
         self._cache = cache
         self._mutation_lock = mutation_lock
         self._settings = (settings or DelegatedCacheSettings()).cards
+        # The recorder reuses this EXACT composed mutation section; it never
+        # constructs a separate file-only lock over the same Card storage.
+        self._store._card_intent_service = self
 
     def _lock_path(self, *, subject_hash: str, access_id: str) -> pathlib.Path:
         return (
@@ -562,7 +565,7 @@ class DelegatedCardService:
         self, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
         original: CardAuthority | None, candidate: CardAuthority, now: Any, effects: Any = (), reads: Any = (),
         catalog: str = "", group: Mapping[str, Any] | None = None, collection: Mapping[str, Any] | None = None,
-        collection_reads: Any = (),
+        collection_reads: Any = (), candidate_link: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """W578: stage one Card of a cross-realm transaction under its mutation fence; nothing is served.
 
@@ -619,7 +622,7 @@ class DelegatedCardService:
                                          participant=participant, subject_hash=subject_hash, original=original,
                                          candidate=candidate, now=now, effects=effects, reads=reads,
                                          catalog=catalog, group=group, collection=collection,
-                                         collection_reads=collection_reads)
+                                         collection_reads=collection_reads, candidate_link=candidate_link)
                     await self._run_effect_hook("_effect_preparer", staged, refusal="card_effect_prepare_failed")
                     return staged
                 except (CardStorageError, CardTransactionRefused):
@@ -724,7 +727,7 @@ class DelegatedCardService:
         self, *, transaction_id: str, intent_digest: str, participant: str,
         members: Sequence[tuple[str, CardAuthority | None, CardAuthority, str]], now: Any,
         effects: Any = (), reads: Any = (), catalog: str = "", collection: Mapping[str, Any] | None = None,
-        actor_subject: str | None = None, now_epoch: int | None = None,
+        actor_subject: str | None = None, now_epoch: int | None = None, candidate_links: Any = None,
     ) -> dict[str, Any]:
         """W578: stage a card group (several Cards) under ONE transaction decision.
 
@@ -763,13 +766,13 @@ class DelegatedCardService:
             return await self._stage_group(
                 transaction_id=transaction_id, intent_digest=intent_digest, participant=participant,
                 members=members, now=now, effects=effects, reads=reads, catalog=catalog, collection=collection,
-                actor_subject=actor_subject, now_epoch=now_epoch)
+                actor_subject=actor_subject, now_epoch=now_epoch, candidate_links=candidate_links)
 
     async def _stage_group(
         self, *, transaction_id: str, intent_digest: str, participant: str,
         members: Sequence[tuple[str, CardAuthority | None, CardAuthority, str]], now: Any,
         effects: Any, reads: Any, catalog: str, collection: Mapping[str, Any] | None,
-        actor_subject: str | None, now_epoch: int | None,
+        actor_subject: str | None, now_epoch: int | None, candidate_links: Any = None,
     ) -> dict[str, Any]:
         from ..caller_writer_gate import binding_change_refusal, candidate_shape_refusal
         from .model import CARD_STATE_ACTIVE
@@ -780,6 +783,8 @@ class DelegatedCardService:
         ordered = [(str(subject_hash), original, candidate, str(action))
                    for subject_hash, original, candidate, action in members]
         if not ordered:
+            raise CardTransactionRefused("card_transaction_group_invalid")
+        if candidate_links is not None and len(candidate_links) != len(ordered):
             raise CardTransactionRefused("card_transaction_group_invalid")
         # W502 lane D: the group's dependencies by reference to the Hub's own sealed collection.
         collection_ref, collection_reads = None, []
@@ -873,7 +878,8 @@ class DelegatedCardService:
                 participant=participant, subject_hash=subject_hash, original=original, candidate=candidate,
                 now=now, effects=effects if lead else (), reads=reads if lead else (),
                 catalog=catalog if lead else "", group=group_member_ref(group, index),
-                collection=collection_ref if lead else None, collection_reads=collection_reads if lead else ())
+                collection=collection_ref if lead else None, collection_reads=collection_reads if lead else (),
+                candidate_link=candidate_links[index] if candidate_links is not None else None)
         return await complete_group(self._store, transaction_id=transaction_id, intent_digest=intent_digest)
 
     async def decide_group_transaction(

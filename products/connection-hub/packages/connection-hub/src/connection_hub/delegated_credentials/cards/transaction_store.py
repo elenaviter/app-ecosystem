@@ -351,6 +351,18 @@ def _group_ref_valid(group: Any, transaction_id: str) -> bool:
 
 
 def _validate(raw: Any, transaction_id: str) -> dict[str, Any]:
+    # Bounded routing/replay evidence survives removal of the intent. Keep all
+    # existing receipt codecs strict; only these two optional fields are added.
+    if isinstance(raw, Mapping) and ("intent_binding" in raw or "intent_finished" in raw):
+        binding = raw.get("intent_binding")
+        if (not isinstance(binding, Mapping) or set(binding) != {"authority", "scope", "record_digest"}
+                or type(binding["authority"]) is not str or type(binding["scope"]) is not str
+                or type(binding["record_digest"]) is not str or not _HEX64.fullmatch(binding["record_digest"])
+                or raw.get("intent_finished") is not True or raw.get("state") not in DECISIONS):
+            raise CardStorageError("card_transaction_receipt_invalid")
+        _validate({key: value for key, value in raw.items() if key not in ("intent_binding", "intent_finished")},
+                  transaction_id)
+        return dict(raw)
     if isinstance(raw, Mapping) and raw.get("schema") == GROUP_RECEIPT_SCHEMA:
         return _validate_group(raw, transaction_id)
     if isinstance(raw, Mapping) and raw.get("schema") == READ_SET_RECEIPT_SCHEMA:
@@ -824,7 +836,23 @@ async def revision_is_committed(store: Any, marker: Any, *, subject_hash: str, a
         return False
 
 
-async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardAuthority, now: datetime) -> None:
+async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardAuthority, now: datetime,
+                        candidate_link: Mapping[str, Any] | None = None) -> None:
+    if candidate_link is not None:
+        from .intent_links import pointer_link_from_mapping
+        from .version_link import load_version
+        if pointer_link_from_mapping(receipt["after"]) != dict(candidate_link):
+            raise CardTransactionRefused("card_transaction_replay_changed")
+        # The intent already wrote/adopted this one immutable candidate. STAGE
+        # verifies it and publishes only the transaction pointer, not a copy.
+        frozen = await load_version(store, subject_hash=receipt["subject_hash"], access_id=receipt["access_id"],
+                                    link=candidate_link, marker=receipt["transaction_id"])
+        if frozen.to_dict() != candidate.to_dict():
+            raise CardTransactionRefused("card_transaction_replay_changed")
+        await write_json_atomic(store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"]),
+                                {"schema": TRANSACTION_POINTER_SCHEMA, "transaction_id": receipt["transaction_id"],
+                                 "before": receipt["before"], "after": receipt["after"]})
+        return
     # The revision marker first: a staged AFTER never appears in history or a
     # by-name revision read before its transaction commits, and an aborted one
     # never appears at all.
@@ -844,7 +872,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
                 original: CardAuthority | None, candidate: CardAuthority, now: datetime,
                 effects: Any = (), reads: Any = (), catalog: str = "",
                 group: Mapping[str, Any] | None = None, collection: Mapping[str, Any] | None = None,
-                collection_reads: Any = ()) -> dict[str, Any]:
+                collection_reads: Any = (), candidate_link: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Stage ``candidate`` behind a transaction pointer; nothing becomes visible. Caller holds the fence.
 
     W502 lane D: ``collection`` ({collection_id, root, count}) holds this
@@ -921,6 +949,10 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
         raise CardTransactionRefused("card_transaction_aborted" if existing["state"] == "aborted"
                                      else "card_transaction_late_stage")
     if existing is not None:
+        if candidate_link is not None:
+            from .intent_links import pointer_link_from_mapping
+            if pointer_link_from_mapping(existing["after"]) != dict(candidate_link):
+                raise CardTransactionRefused("card_transaction_replay_changed")
         if (existing["intent_digest"] != intent_digest
                 or existing.get("effects", []) != recorded_effects
                 or existing.get("reads", []) != recorded_reads
@@ -942,7 +974,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
         if held:  # a crash may have left one unwritten
             await _reserve_reads(store, transaction_id, held,
                                  collection_id=recorded_collection["collection_id"] if recorded_collection else "")
-        await _write_staged(store, existing, candidate, now)
+        await _write_staged(store, existing, candidate, now, candidate_link)
         return existing
     # A fresh stage passes the FULL shared fence: an unresolved issuer UPDATE
     # or lifecycle intent awaiting recovery is never overwritten (Ops F2).
@@ -964,8 +996,19 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
             raise CardTransactionRefused("card_transaction_candidate_invalid")
         before = current[0]
     digest = candidate.content_hash()
-    after = CardCurrentPointer.for_revision(candidate, content_hash=digest, revision_name=card_revision_name(
-        card_revision=candidate.card_revision, content_hash=digest, updated_at=now), updated_at=now)
+    if candidate_link is not None:
+        from .version_link import is_version_link, load_version
+        if (not is_version_link(candidate_link) or candidate_link["card_revision"] != candidate.card_revision
+                or candidate_link["content_hash"] != digest):
+            raise CardTransactionRefused("card_transaction_candidate_invalid")
+        frozen = await load_version(store, subject_hash=subject_hash, access_id=access_id,
+                                    link=candidate_link, marker=transaction_id)
+        if frozen.to_dict() != candidate.to_dict():
+            raise CardTransactionRefused("card_transaction_candidate_invalid")
+    after = CardCurrentPointer.for_revision(candidate, content_hash=digest,
+                                           revision_name=candidate_link["revision_name"] if candidate_link is not None else card_revision_name(
+                                               card_revision=candidate.card_revision, content_hash=digest, updated_at=now),
+                                           updated_at=now)
     receipt = {"schema": TRANSACTION_RECEIPT_SCHEMA, "transaction_id": transaction_id,
                "intent_digest": intent_digest, "participant": participant.strip(), "subject_hash": subject_hash,
                "access_id": access_id, "state": "prepared", "reason": "",
@@ -1009,7 +1052,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
     await write_json_atomic(receipt_path(store, transaction_id), receipt)
     await write_json_atomic(marker_path(store, subject_hash=subject_hash, access_id=access_id),
                             {"transaction_id": transaction_id})
-    await _write_staged(store, receipt, candidate, now)
+    await _write_staged(store, receipt, candidate, now, candidate_link)
     return receipt
 
 

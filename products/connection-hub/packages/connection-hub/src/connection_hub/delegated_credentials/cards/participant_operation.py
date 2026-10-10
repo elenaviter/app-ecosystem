@@ -253,7 +253,7 @@ class CardTransactionParticipantOperation:
 
     async def _local_intent(self, transaction_id: str):
         try:
-            return await self._intents.load(transaction_id)
+            return await self._intents.binding(transaction_id)
         except DecisionRefused as exc:
             if str(exc) != "card_intent_unknown":
                 raise
@@ -267,6 +267,12 @@ class CardTransactionParticipantOperation:
         if caller.scope_field and intent_scope(record.intent, caller.scope_field) != scope:
             raise _Refused("card_intent_not_bound")
         local = await self._local_intent(transaction_id)
+        if local is None:
+            from .transaction_store import read_receipt, tombstone_path
+            from ..durable_io import read_json_or_none
+            if (await read_receipt(self._card_store, transaction_id) is not None
+                    or await read_json_or_none(tombstone_path(self._card_store, transaction_id)) is not None):
+                raise _Refused("card_intent_not_bound")
         if local is not None and (local.authority != caller.service_id or local.scope != (
                 scope if caller.scope_field else "")):
             raise _Refused("card_intent_not_bound")
@@ -348,10 +354,12 @@ class RoutedDecisionPort:
 
     async def decision(self, receipt: Mapping[str, Any]) -> str:
         try:
-            intent = await self._intents.load(receipt["transaction_id"])
+            intent = await self._intents.binding(receipt["transaction_id"])
+            if intent is None:
+                raise DecisionRefused("card_intent_unknown")
             authority, scope = intent.authority, intent.scope
         except DecisionRefused:
-            authority, scope = "", ""
+            return "undecided"  # missing legacy route evidence never becomes a local decision
         if not authority:
             reader = self._local
         else:

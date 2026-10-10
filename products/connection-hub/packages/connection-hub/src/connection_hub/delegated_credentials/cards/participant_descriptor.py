@@ -172,7 +172,8 @@ async def build_participant_callers(
         def bind(scope: str, *, fetch_for=fetch_for, authority=authority, descriptor=descriptor):
             fetch = fetch_for(scope)
             decisions = AuthorityDecisionReader(fetch=fetch, authority=authority)
-            intents = AuthorityCardIntentSource(store=card_store, fetch=fetch, authority=authority,
+            intents = AuthorityCardIntentSource(store=card_store, service=card_service, decisions=decisions,
+                                                fetch=fetch, authority=authority,
                                                 authority_id=descriptor.service_id,
                                                 scope_field=descriptor.scope_field)
             return ScopeBinding(participant=HubCardParticipant(service=card_service, store=card_store,
