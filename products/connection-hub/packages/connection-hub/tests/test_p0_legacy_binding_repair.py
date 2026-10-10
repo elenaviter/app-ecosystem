@@ -317,3 +317,32 @@ async def test_a_my_card_whose_c_is_bound_to_a_foreign_p_is_not_touched(tmp_path
     assert counts == {"my_skipped_c_not_under_root_p": 1}, counts
     assert (await _my(h)).card_revision == older.card_revision
     assert (await _control(h)).control_card.control_id == old_p
+
+
+@pytest.mark.asyncio
+async def test_a_legacy_c_with_extra_property_keys_saves_and_keeps_them(tmp_path, redis_client):  # noqa: F811
+    """Live probe 11:3xZ: C_with_other_property_keys=3. PB's save sends only its SELECTION_FIELDS (grants,
+    operations, named-service operations, accounts; never properties), so the PLAN keeps the Card's own
+    properties and card_plan_undisplayed_change does not fire."""
+    if not _dsn():
+        pytest.skip("needs CONNECTION_HUB_TEST_POSTGRES_DSN(_FILE): a disposable PostgreSQL")
+    h = await _service(tmp_path, redis_client)
+    await _legacy_world(h)
+    c = await _control(h)
+    identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=TARGET)
+    extra = dataclasses.replace(c, card_revision=c.card_revision + 1,
+                                properties={**c.properties, "kdcube.legacy_example": {"kept": True}})
+    await h.cards.commit(extra, subject_hash=subject_hash_for(identity.project_subject),
+                         expected_revision=c.card_revision, now=int(time.time()))
+    pool = await _live_card_transactions(h)
+    try:
+        await repair_legacy_project_bindings(h.service, h.store)
+        bound = await _control(h)
+        assert bound.properties["kdcube.legacy_example"] == {"kept": True}, "the repair keeps every property"
+        planned = await _plan_save(h, bound, {"resource_grants": {_memories(): [GRANT]},
+                                              "resource_operations": {_memories(): [OPERATION]}}, "save-extra-keys")
+        assert planned["ok"] is True, planned
+        [member] = planned["plan"]["candidate_value"]["cards"]
+        assert member["candidate"]["properties"]["kdcube.legacy_example"] == {"kept": True}
+    finally:
+        await pool.close()
