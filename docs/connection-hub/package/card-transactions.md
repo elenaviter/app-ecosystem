@@ -108,7 +108,10 @@ whole request, so no edit value is repeated.
   Hub writes nothing, records no txn, and answers the signed result
   `{kind: already_applied}`. This is the same-request retry after a PUBLISH
   whose answer PB lost: PB then commits the role or membership change under
-  its row lock and CAS, without PUBLISH. A STAGE where some updates are no-ops
+  its row lock and CAS, without PUBLISH. No marker is left, so `outcome` for
+  that txn answers `unknown_txn`: the signed `already_applied` answer is itself
+  the evidence, and PB keeps it rather than asking `outcome` later. A STAGE
+  where some updates are no-ops
   and others are not is staged as usual, without the no-op Cards. Any other
   STAGE that changes nothing is refused (`edit_invalid`).
 - **`op: publish` and `op: rollback`.** PUBLISH carries `txn` alone, because the

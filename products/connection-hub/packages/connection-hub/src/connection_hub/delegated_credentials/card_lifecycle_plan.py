@@ -841,17 +841,17 @@ async def plan_card_lifecycle(
             # loads now; the member carries it and PREPARE fences exactly that.
             # W661: a role_selection likewise applies PB's policy delta to the Card's current version.
             # W661 P4: a person's removal likewise ends the C and My the Hub reads now (PB reads no Card).
-            current_agent = (raw.get("kind") in {"attach_agent", "detach_agent", "apply_agent_profile",
-                                                 "role_selection", "remove_person"}
-                             and original_revision == 0)
-            if type(original_revision) is not int or (original_revision < 1 and not current_agent):
+            read_current = (raw.get("kind") in {"attach_agent", "detach_agent", "apply_agent_profile",
+                                                "role_selection", "remove_person"}
+                            and original_revision == 0)
+            if type(original_revision) is not int or (original_revision < 1 and not read_current):
                 raise CardLifecyclePlanRefused("card_plan_revision_invalid", 400)
             loaded = await cards.load_current(access_id, subject_hash=subject_hash)
             if loaded is None:
                 raise CardLifecyclePlanRefused("card_plan_update_target_absent")
             original = loaded[0]
             if (subject_hash_for(original.grantor_subject) != subject_hash
-                    or not current_agent and original.card_revision != original_revision):
+                    or not read_current and original.card_revision != original_revision):
                 raise CardLifecyclePlanRefused("card_plan_original_revision_changed")
             try:
                 person_identity = ProjectPersonControlIdentity.from_authority(original)
@@ -950,7 +950,7 @@ async def plan_card_lifecycle(
                 parent = await parent_for(raw["parent"]) if raw["kind"] == "attach_agent" else None
                 built = await build_agent_lifecycle_update(
                     host, original=original,
-                    update={**raw, "original_revision": original.card_revision} if current_agent else raw, active=active, decision=decision,
+                    update={**raw, "original_revision": original.card_revision} if read_current else raw, active=active, decision=decision,
                     project_ref=scope, actor_subject=actor, request_id=request_id, now=now,
                     parent=parent)
                 members.append(built["member"])
@@ -959,7 +959,7 @@ async def plan_card_lifecycle(
             if raw["kind"] == "remove_person":
                 if "parent" in raw:
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
-                if current_agent and original.state == CARD_STATE_REVOKED:
+                if read_current and original.state == CARD_STATE_REVOKED:
                     # W661 v6.3 item 6: the same-request retry of a removal whose PUBLISH already happened. The
                     # Card is exactly this person's (checked as if active), already revoked: nothing to write.
                     removed_person_card(replace_state(original, CARD_STATE_ACTIVE), project_ref=scope,
