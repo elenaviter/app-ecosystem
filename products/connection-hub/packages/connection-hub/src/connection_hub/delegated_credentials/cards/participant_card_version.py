@@ -39,6 +39,7 @@ from service_foundation.coordination.participant_answer import sign_participant_
 
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
 from ..catalog.reservations import catalog_version_digest
+from ..durable_io import cancellation_safe_await
 from ..project_authorization import (
     LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest, ProjectAuthorizationDecision,
     ProjectAuthorizationError, ProjectControlLocator,
@@ -369,6 +370,14 @@ class CardVersionOperation:
             raise CardVersionRefused("edit_invalid")  # card_effect_adapter_unavailable
         return operation
 
+    async def _mutate(self, name: str, *args: Any, **kwargs: Any) -> Any:
+        """One handle-store write, finished even if the caller is cancelled (Infra K4).
+
+        Inside the store's drain scope the write is tracked, so the Card locks are
+        not released until it has returned; a cancellation never leaves half of it.
+        """
+        return await cancellation_safe_await(self._operation(name)(*args, **kwargs))
+
     async def _prepare(self, txn: str, effect: Mapping[str, Any]) -> None:
         """STAGE: the row is still exactly the pinned identity; an agent row's AFTER envelope is prepared now."""
         payload = effect["payload"]
@@ -379,7 +388,7 @@ class CardVersionOperation:
             raise CardVersionRefused("card_changed")
         if payload["from_fingerprint"]:
             try:
-                await self._operation("stage_rewrap")(txn, payload["access_id"], payload)
+                await self._mutate("stage_rewrap", txn, payload["access_id"], payload)
             except ParticipantEffectRefused:
                 raise CardVersionRefused("edit_invalid") from None
 
@@ -395,12 +404,12 @@ class CardVersionOperation:
                 == (member["version"], member["checksum"]))
         if not live:
             if payload["from_fingerprint"]:
-                await self._operation("discard_rewrap")(txn, payload["access_id"], payload)
+                await self._mutate("discard_rewrap", txn, payload["access_id"], payload)
             return CREDENTIAL_ISSUE_SUPERSEDED
         if payload["from_fingerprint"]:
-            outcome = await self._operation("commit_rewrap")(txn, payload["access_id"], payload)
+            outcome = await self._mutate("commit_rewrap", txn, payload["access_id"], payload)
         else:
-            outcome = await self._operation("advance_binding")(
+            outcome = await self._mutate("advance_binding",
                 payload["access_id"], from_identity=payload["from_identity"], from_revision=payload["from_revision"],
                 from_expires_at=payload["from_expires_at"], to_revision=payload["card_revision"],
                 to_expires_at=payload["expires_at"])
@@ -412,7 +421,7 @@ class CardVersionOperation:
         """ROLLBACK of a staged txn: an agent row's prepared envelope goes; the active row never moved."""
         payload = effect["payload"]
         if payload["from_fingerprint"]:
-            await self._operation("discard_rewrap")(marker["txn"], payload["access_id"], payload)
+            await self._mutate("discard_rewrap", marker["txn"], payload["access_id"], payload)
 
     def _signed(self, caller: ParticipantCaller, data: Mapping[str, Any], digest: str,
                 result: Mapping[str, Any]) -> dict[str, Any]:

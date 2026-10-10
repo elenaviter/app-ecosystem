@@ -413,3 +413,40 @@ async def test_stage_needs_the_requests_own_time_with_an_offset(at):
     operation, _, _ = _operation()
     response = await operation.answer(_request(at=at))
     assert response == {"ok": False, "status": 400, "error": {"code": "card_version_request_invalid"}}
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_publish_still_finishes_its_handle_write_before_the_locks_go():
+    """Infra K4: the store's drain scope holds the Card locks until a started handle write has returned."""
+    import asyncio
+
+    from connection_hub.delegated_credentials.durable_io import drain_writes_before_release
+
+    order, started = [], asyncio.Event()
+
+    class _SlowHandles(_Handles):
+        async def advance_binding(self, access_id, **kwargs):
+            started.set()
+            await asyncio.sleep(0.05)
+            order.append("write_finished")
+            return "applied"
+
+    handles = _SlowHandles(identity=ROW)
+    operation, _, store = _operation(host=_Host(effects=[AGENT_EFFECT]), handles=handles)
+    await operation.answer(_request())
+    marker = store.markers[TXN]
+    store.current[ACCESS] = {"version": LINK["version"], "checksum": LINK["checksum"]}
+
+    async def locked_publish():
+        try:
+            async with drain_writes_before_release():  # entered inside the Card locks by the store
+                await operation._apply(marker["effects"][0], marker)
+        finally:
+            order.append("locks_released")
+
+    task = asyncio.create_task(locked_publish())
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert order == ["write_finished", "locks_released"]
