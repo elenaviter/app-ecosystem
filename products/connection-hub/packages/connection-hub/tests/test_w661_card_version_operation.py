@@ -209,7 +209,7 @@ async def test_stage_plans_under_pbs_grants_and_answers_links_only():
     request = _request()
     response = await operation.answer(request)
     assert response["ok"] is True
-    assert _verified(response, request) == {"kind": "staged", "members": [LINK]}
+    assert _verified(response, request) == {"kind": "staged", "members": [{**LINK, "base_version": 3}]}
     [call] = planner.calls
     authorization = call["authorization"]
     assert [(s.operation, s.target_subject) for s in authorization.request.steps] == [
@@ -544,3 +544,13 @@ async def test_a_reset_fences_exactly_its_control_as_a_store_read():
     operation, _, store = _operation(planner=_Planner(_plan()))
     request = _request(updates=[RESET])
     assert _verified(await operation.answer(request), request)["code"] == "edit_invalid" and store.staged == []
+
+
+@pytest.mark.asyncio
+async def test_a_protected_grant_refusal_is_its_own_signed_code():
+    operation, _, store = _operation(planner=_Planner({"ok": False, "error": "card_edit_admin_grant_role_only",
+                                                      "status": 409}))
+    request = _request()
+    assert _verified(await operation.answer(request), request) == {
+        "kind": "refused", "code": "card_edit_admin_grant_role_only", "status": 409}
+    assert store.staged == []

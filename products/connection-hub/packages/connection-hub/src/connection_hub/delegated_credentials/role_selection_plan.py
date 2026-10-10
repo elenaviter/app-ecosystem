@@ -22,7 +22,8 @@ from .cards.model import CardAuthority
 
 ROLE_KEYS = frozenset({"kind", "target_subject", "access_id", "subject_hash", "original_revision", "resource",
                        "add_grants", "add_operations", "remove_operations", "operation_grants"})
-_MAX_ITEMS = 64
+_MAX_ITEMS = 128  # a list's entries
+_MAX_OPERATIONS = 256  # operation_grants: PB declares every operation it has (94 today)
 
 
 def _names(value: Any) -> bool:
@@ -43,7 +44,7 @@ def role_update_shape_valid(raw: Mapping[str, Any]) -> bool:
     if adding == removing:
         return False
     if removing:
-        return (isinstance(grants, Mapping) and len(grants) <= _MAX_ITEMS
+        return (isinstance(grants, Mapping) and len(grants) <= _MAX_OPERATIONS
                 and all(type(op) is str and op and _names(values) for op, values in grants.items()))
     return grants is None
 

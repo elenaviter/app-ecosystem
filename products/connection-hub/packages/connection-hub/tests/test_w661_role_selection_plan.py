@@ -137,3 +137,11 @@ def test_only_the_closed_one_direction_shape_is_accepted():
                 {**good_remove, "operation_grants": None},
                 {**good_add, "selection": {}}):
         assert not role_update_shape_valid(bad)
+
+
+def test_a_demotion_map_may_declare_every_pb_operation():
+    _, control, _ = _world()
+    every = {f"project.op{index}": ["work:read"] for index in range(94)}
+    assert role_update_shape_valid(_role(control, remove_operations=["project.op1"], operation_grants=every))
+    assert not role_update_shape_valid(_role(control, remove_operations=["a"],
+                                             operation_grants={f"op{i}": ["g"] for i in range(257)}))
