@@ -285,6 +285,12 @@ DELEGATED_ACCESS_CHANGED_EVENT = "connection_hub.delegated_access.changed"
 RESIDENT_MIGRATION_CONFLICT = "resident_profile_migration_conflict"
 
 _LOGGER = __import__("logging").getLogger("connection_hub.delegated_access")
+# W661 scope B (Infra r10 HOLD): planning rounds per begin when another planner's stored plan consumed the attempt.
+_PLAN_ROUNDS = 3
+
+
+class _PlanAttemptConsumed(Exception):
+    """This planner's attempt was consumed by another planner's stored plan: replay that plan, plan no file."""
 
 
 def _live_sessions_key(tenant: str, project: str, grantor_subject: str) -> str:
@@ -9864,11 +9870,19 @@ class AutomationAccessService:
         # W661 scope B: the attempt (clock + candidate link) is recorded before the candidate file, and the
         # first planner's clock wins, so a retry or a concurrent planner names the same file. No lock is held
         # across these calls (Spark C1).
-        stored = await store.read_issuance_plan_request(request)
-        if stored is None:
-            planned = await self._plan_oauth_issuance(store=store, ttl=ttl, request=request,
-                                                      input_digest=input_digest, grantor=grantor, client=client,
-                                                      record_inputs=record_inputs, invocation_policies=policies)
+        # A planner that finds its attempt consumed re-reads the stored plan and replays it (Infra r10 HOLD).
+        planned_here = False
+        for _round in range(_PLAN_ROUNDS):
+            stored = await store.read_issuance_plan_request(request)
+            if stored is not None:
+                break
+            try:
+                planned = await self._plan_oauth_issuance(store=store, ttl=ttl, request=request,
+                                                          input_digest=input_digest, grantor=grantor,
+                                                          client=client, record_inputs=record_inputs,
+                                                          invocation_policies=policies)
+            except _PlanAttemptConsumed:
+                continue
             try:
                 stored = await store.put_issuance_plan(decision_request_id=request,
                                                        original_input_digest=input_digest, plan=planned,
@@ -9876,7 +9890,11 @@ class AutomationAccessService:
             except IssuanceStoreRefused as exc:
                 raise IssuanceRefused(exc.reason) from None
             await store.delete_plan_attempt(request, planned_at=planned["planned_at"])
-        elif stored["original_input_digest"] != input_digest:
+            planned_here = True  # put_issuance_plan already refused another digest
+            break
+        else:
+            raise IssuanceRefused("issuance_plan_unavailable", retryable=True)
+        if not planned_here and stored["original_input_digest"] != input_digest:
             raise IssuanceRefused("issuance_replay_changed")
         return await self._begin_planned_issuance(stored["plan"], intents=intents, decisions=decisions, store=store)
 
@@ -9909,6 +9927,14 @@ class AutomationAccessService:
                                                          planned_at=now, expires_at=now + ttl)
         else:
             now = attempt["planned_at"]
+        # Infra r10 HOLD: no lock is held, so another planner of this request may have stored its plan and
+        # deleted the attempt meanwhile (the pin then reads no row, or pins a NEW row after that delete). A
+        # stored plan always wins: never build a second candidate for it; begin replays the stored plan.
+        if now is None:
+            raise _PlanAttemptConsumed("attempt_gone")
+        if await store.read_issuance_plan_request(request) is not None:
+            await store.delete_plan_attempt(request, planned_at=now)  # only a row of exactly this clock
+            raise _PlanAttemptConsumed("plan_stored")
         try:
             built = await self._oauth_grant_record(grantor_subject=grantor, client_id=client, access_token="",
                                                    refresh_token="", now=now, **record_inputs)
@@ -9969,9 +9995,18 @@ class AutomationAccessService:
         at, tag = datetime.fromtimestamp(now, tz=timezone.utc), staging_tag("oauth-issuance-candidate", request)
         link = planned_link(authority=candidate, at=at, tag=tag)
         recorded = {"link": link, "subject_hash": subject_hash, "access_id": candidate.access_id}
-        await store.record_attempt_candidate(decision_request_id=request, planned_at=now, candidate=recorded)
-        candidate_link = await write_hidden_version(card_store, subject_hash=subject_hash, authority=candidate,
-                                                    at=at, tag=tag)
+        recorded_row = await store.record_attempt_candidate(decision_request_id=request, planned_at=now,
+                                                            candidate=recorded)
+        if recorded_row is False:  # only an explicit False: the attempt is gone, its plan stored elsewhere
+            raise _PlanAttemptConsumed("attempt_gone")
+        try:
+            candidate_link = await write_hidden_version(card_store, subject_hash=subject_hash, authority=candidate,
+                                                        at=at, tag=tag)
+        except CardRecordError as exc:
+            if str(exc) != "version_link_owner_conflict":
+                raise
+            # The same file, already adopted by the stored plan's transaction: that plan won.
+            raise _PlanAttemptConsumed("candidate_adopted") from None
         return {
             "schema": ISSUANCE_PLAN_SCHEMA,
             "draft": {"replay_scope": f"{PARTICIPANT}:{subject_hash}:{grantor}:oauth-issuance", "request_id": request,

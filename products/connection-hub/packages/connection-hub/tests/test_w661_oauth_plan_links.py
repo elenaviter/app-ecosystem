@@ -605,3 +605,42 @@ async def test_begin_holds_no_connection_across_its_calls(tmp_path, monkeypatch,
         link = (await _stored(w, results[0]))["intent"]["candidate"]
         assert _version_files(w, results[0].access_id) == [link["revision_name"]]
         assert (await asyncio.wait_for(_complete(w, results[0]), timeout=60)).state == "committed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gap", ["pin_select", "before_record", "before_write"])
+async def test_a_planner_whose_attempt_another_planner_consumed_replays_the_stored_plan(tmp_path, monkeypatch, gap):
+    """Infra r10 HOLD: no lock is held, so planner B can run the whole begin (plan, store, delete attempt, begin,
+    record, bind) inside planner A's gap. A then replays B's stored plan: no TypeError, no second file."""
+    async with _world(tmp_path) as w:
+        store = w.authority
+        original_pin, original_record = store.pin_plan_attempt, store.record_attempt_candidate
+        state = {"b": None, "armed": True}
+
+        async def run_b():
+            state["armed"] = False
+            state["b"] = await _begin(w, request="consumed")
+
+        async def pin(**kwargs):
+            clock = await original_pin(**kwargs)
+            if state["armed"] and gap == "pin_select":
+                await run_b()
+                return await store.read_plan_attempt(kwargs["decision_request_id"])  # the SELECT after B: None
+            if state["armed"] and gap == "before_record":
+                await run_b()
+            return clock
+
+        async def record(**kwargs):
+            done = await original_record(**kwargs)
+            if state["armed"] and gap == "before_write":
+                await run_b()
+            return done
+
+        monkeypatch.setattr(store, "pin_plan_attempt", pin)
+        monkeypatch.setattr(store, "record_attempt_candidate", record)
+        first = await _begin(w, request="consumed")
+        assert state["b"] is not None and first == state["b"]
+        link = (await _stored(w, first))["intent"]["candidate"]
+        assert _version_files(w, first.access_id) == [link["revision_name"]]
+        assert await store.read_plan_attempt(first.decision_request_id) is None
+        assert (await _complete(w, first)).state == "committed"
