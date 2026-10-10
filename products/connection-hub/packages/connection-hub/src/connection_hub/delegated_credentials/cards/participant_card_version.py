@@ -89,11 +89,15 @@ class CardVersionRefused(Exception):
 class CardVersionStore(Protocol):
     """Piece 1's (Ops) store, as piece 2 calls it. Every call runs under the members' Card locks.
 
-    ``effects`` are opaque to the store: it writes them into the marker at
-    STAGE, hands each one without a recorded result to ``apply`` (PUBLISH, or
-    ROLLBACK finding ``published``) or ``release`` (ROLLBACK of ``staged``),
-    and records the returned named result. ``prepare`` runs after the base and
-    catalog checks and before any write; a refusal there writes nothing.
+    ``effects`` are opaque to the store. STAGE writes the marker ``staging``
+    first, naming the members and the effects (Infra K4), and only then calls
+    ``prepare``, writes the not-yet-final bodies and sets ``staged``. So
+    nothing ``prepare`` writes (an agent's re-wrap) exists without a marker
+    that names it. The store hands each effect without a recorded result to
+    ``apply`` (PUBLISH, or ROLLBACK finding ``published``) and records the
+    named result. ROLLBACK of ``staging`` or ``staged`` hands every effect to
+    ``release``, then deletes the bodies and the marker. Every mutating path
+    runs drained, under the Card locks.
     """
 
     async def stage(self, txn: str, *, request_id: str, request_digest: str, catalog: Mapping[str, Any],
