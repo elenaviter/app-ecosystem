@@ -79,6 +79,20 @@ whole request, so no edit value is repeated.
   - The new My takes that one service's selection from the Control; everything
     else is unchanged.
   - C is read, never written.
+- **A role change's Cards (`role_selection`).** One `updates` entry per Card (C, or
+  C and My): `kind`, `target_subject`, `access_id`, `subject_hash`,
+  `original_revision: 0`, the PB `resource`, and either `add_grants` and
+  `add_operations` (a promotion) or `remove_operations` plus `operation_grants`
+  (a demotion). PB sends a fixed policy delta, never Card content.
+  - The Hub reads the current Card (its version becomes the base), applies the
+    delta to that one resource, and builds the candidate with the ordinary
+    reselect builder.
+  - A demotion recomputes the resource's grants from the remaining operations
+    through PB's map. An operation missing from it is refused
+    (`card_plan_role_operation_unknown`).
+  - An unchanged Card stays a read. If nothing changes, the update is refused
+    (`card_plan_role_unchanged`).
+  - The Hub knows nothing about roles or admins.
 - **`op: publish` and `op: rollback`.** PUBLISH carries `txn` alone, because the
   store's transaction marker names its members. ROLLBACK also carries `links`,
   the `{card, version, checksum}` links from STAGE's answer (PB keeps them),

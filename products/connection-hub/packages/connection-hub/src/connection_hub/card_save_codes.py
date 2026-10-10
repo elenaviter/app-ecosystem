@@ -63,6 +63,8 @@ CARD_SAVE_CODES = frozenset({
     "card_plan_reset_display_moved",
     "card_plan_reset_not_held",
     "card_plan_reset_unchanged",
+    "card_plan_role_operation_unknown",
+    "card_plan_role_unchanged",
     "card_plan_revision_invalid",
     "card_plan_revoke_not_active",
     "card_plan_scope_forbidden",
