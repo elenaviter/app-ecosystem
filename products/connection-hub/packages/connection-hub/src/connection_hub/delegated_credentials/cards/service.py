@@ -164,6 +164,21 @@ def transaction_mutation_id(transaction_id: str) -> str:
     return "tx-" + str(transaction_id)
 
 
+TXN_SECTION_SHARDS = 256
+
+
+def txn_section_lock_path(store: Any, txn: str) -> Any:
+    """The file of a card-version txn's own section: one of TXN_SECTION_SHARDS fixed files chosen by the txn's
+    digest, so lock files stay bounded (Mint N-P1: a per-txn file would grow with every late rollback). The lock
+    resource stays per txn (under R its Redis key expires with its TTL); unrelated txns on one shard only wait."""
+    import hashlib
+
+    from .transaction_store import card_version_txn_id
+
+    shard = hashlib.sha256(card_version_txn_id(txn).encode("utf-8")).digest()[0] % TXN_SECTION_SHARDS
+    return store.root / "card-versions" / f"txn-section-{shard:02x}.lock"
+
+
 class DelegatedCardService:
     def __init__(
         self,
@@ -290,10 +305,9 @@ class DelegatedCardService:
         """The card-version txn's own mutation section, for an operation on a txn that names no member Card.
         Started writes drain inside it, as in _card_version_sections."""
         from ..durable_io import drain_writes_before_release
-        from .transaction_store import card_version_marker_path
 
         async with self._mutation_lock(
-                lock_path=card_version_marker_path(self._store, txn).with_suffix(".lock"),
+                lock_path=txn_section_lock_path(self._store, txn),
                 resource_id=f"card-version-txn:{txn}", operation="card-version-txn",
                 wait_seconds=CARD_LOCK_WAIT_SECONDS):
             async with drain_writes_before_release():
