@@ -4421,7 +4421,20 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             callers=built.callers, authorization=None, planner=plan_card_lifecycle,
             host=await _automation_access_service(self, None), nonces=redis, clock=time.time,
             nonce_prefix=f"connection-hub:{tenant}:{project}:card-plan:nonce:")
-        return await operation.answer(payload)
+        # Operator, 10 Oct: the PLAN hop of a Card save is traced by the plan's own request id
+        # (the project logged its pairing with the save); a refusal names the Hub's fixed code.
+        from connection_hub.card_save_trace import answer_outcome, hop, trace_scope
+        started = time.monotonic()
+        with trace_scope(payload.get("request_id")):
+            hop("hub.lifecycle_plan", "entry")
+            try:
+                answer = await operation.answer(payload)
+            except Exception:
+                hop("hub.lifecycle_plan", "error", started=started)
+                raise
+            outcome, code = answer_outcome(answer)
+            hop("hub.lifecycle_plan", outcome, code=code, started=started)
+            return answer
 
     @api(method="POST", alias="delegated_admission", route="public")
     async def delegated_admission(
@@ -5585,6 +5598,22 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
+        # Operator, 10 Oct: one trace id for the whole Card save (the UI request's own audit id); the
+        # forward to the project carries it, so every later hop logs under the same id.
+        from connection_hub.card_save_trace import answer_outcome, hop, trace_scope
+        started = time.monotonic()
+        with trace_scope(_audit_request_id(request)):
+            hop("hub.person_control_update", "entry")
+            try:
+                answer = await self._person_control_update(payload, user, request)
+            except Exception:
+                hop("hub.person_control_update", "error", started=started)
+                raise
+            outcome, code = answer_outcome(answer)
+            hop("hub.person_control_update", outcome, code=code, started=started)
+            return answer
+
+    async def _person_control_update(self, payload: Dict[str, Any], user: Any, request: Any) -> Dict[str, Any]:
         return await (
             await _automation_access_service(self, request)
         ).project_person_control_update(

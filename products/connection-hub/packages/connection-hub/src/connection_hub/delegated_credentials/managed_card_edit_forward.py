@@ -157,6 +157,22 @@ class PeerManagedCardEdit:
             call, bundle_id, signer_id, secret, clock)
 
     async def forward(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        from ..card_save_trace import hop, trace_scope
+        started = time.monotonic()
+        with trace_scope(body.get("request_id")):
+            hop("hub.card_edit_forward", "entry")
+            try:
+                outcome = await self._forward(body)
+            except ManagedCardEditError as exc:
+                hop("hub.card_edit_forward", "refused", code=exc.reason, started=started)
+                raise
+            except Exception:
+                hop("hub.card_edit_forward", "error", started=started)
+                raise
+            hop("hub.card_edit_forward", "ok", started=started)
+            return outcome
+
+    async def _forward(self, body: Mapping[str, Any]) -> dict[str, Any]:
         proof = sign_managed_card_edit(body, bundle_id=self._bundle_id, signer_id=self._signer_id,
                                        secret=self._secret, clock=self._clock)
         try:

@@ -83,6 +83,24 @@ class PeerLifecyclePlanAuthorization:
 
     async def authorize_lifecycle_plan(
             self, request: LifecyclePlanAuthorizationRequest) -> LifecyclePlanAuthorization:
+        # Operator, 10 Oct: trace the PLAN callback into the project host (its refusal reached the
+        # project only as card_plan_authorization_refused). The plan's request id is the trace.
+        from ...card_save_trace import hop, trace_scope
+        started = time.monotonic()
+        with trace_scope(request.request_id):
+            hop("hub.plan_authorize_callback", "entry")
+            try:
+                authorization = await self._authorize(request)
+            except ProjectAuthorizationError as exc:
+                hop("hub.plan_authorize_callback", "refused", code=exc.reason, started=started)
+                raise
+            except Exception:
+                hop("hub.plan_authorize_callback", "error", started=started)
+                raise
+            hop("hub.plan_authorize_callback", "ok", started=started)
+            return authorization
+
+    async def _authorize(self, request: LifecyclePlanAuthorizationRequest) -> LifecyclePlanAuthorization:
         body = plan_authorization_body(request)
         proof = sign_plan_authorization(body, bundle_id=self._bundle_id, signer_id=self._signer_id,
                                         secret=self._secret, clock=self._clock)
