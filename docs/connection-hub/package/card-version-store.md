@@ -64,8 +64,9 @@ ROLLBACK never deletes a published version.
 
 Before any writer (STAGE, PUBLISH, any pointer write) builds on a Card, it reads `current.json`, the
 version's record and that txn's marker. A `staged` marker whose versions are all current is set
-`published` first, so a later ROLLBACK of that txn answers `already_published`. A partly current group
-is refused `card_version_unresolved`.
+`published` first and left for that txn's own PUBLISH retry or ROLLBACK to remove, so its ROLLBACK
+answers `already_published`, with or without links. A partly current group is refused
+`card_version_unresolved`. Readers treat the version `current.json` names as final.
 
 ## Hub-local operations in flight
 

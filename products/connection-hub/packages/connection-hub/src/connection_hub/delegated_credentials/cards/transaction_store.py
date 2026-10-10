@@ -1584,7 +1584,8 @@ async def finalize_current_version(store: Any, *, subject_hash: str, access_id: 
     later ROLLBACK answers already_published and never deletes a version a successor built on. One direct
     read of current.json, the version's record and the txn marker; nothing is listed. A group whose other
     members do not name their versions (a partial group, phase 2) is refused card_version_unresolved, never
-    guessed. Returns the txn current names ("" if none).
+    guessed. The finalized marker is left `published` for its own txn to clean up. Returns the txn current
+    names ("" if none).
     """
     current = await store.read_current(subject_hash=subject_hash, access_id=access_id)
     if current is None:
@@ -1602,9 +1603,9 @@ async def finalize_current_version(store: Any, *, subject_hash: str, access_id: 
                 raise CardStorageError("card_version_unresolved")
         await _mark_published(store, marker)
     if run_effect is not None and len(marker["members"]) == 1:
-        await _finish_published(store, marker, run_effect)
-    elif all(str(index) in marker["effect_outcomes"] for index in range(len(marker["effects"]))):
-        await _finish_published(store, marker, None)
+        await _run_effects(store, marker, run_effect)
+    # The marker stays `published`: only the txn's own PUBLISH retry or ROLLBACK (which PB's error path always
+    # sends) deletes it, so that ROLLBACK answers already_published even without its links (Infra red 2).
     return txn
 
 

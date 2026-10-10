@@ -696,7 +696,9 @@ async def test_a_writer_finalizes_a_stopped_publish_so_its_rollback_never_delete
     else:
         await service.commit(v3, subject_hash=SUBJECT_HASH, expected_revision=2, now=NOW)
     assert await _current(store, before) == v3
-    assert not tx.card_version_marker_path(store, TXN).exists()  # A was finalized (no effects): only its version
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "published"  # finalized, left for A
+    assert await service.rollback_card_version(txn=TXN) == "already_published"  # even without its links
+    assert not tx.card_version_marker_path(store, TXN).exists()  # A's own ROLLBACK removed it
     assert await service.rollback_card_version(txn=TXN, links=_links(answer), at=WHEN) == "already_published"
     assert staged in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
     assert await store.read_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id,
