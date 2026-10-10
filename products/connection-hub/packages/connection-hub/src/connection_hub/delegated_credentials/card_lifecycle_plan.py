@@ -125,18 +125,19 @@ def invitation_seeded_person_control(
     return dataclasses.replace(live, control_card=_parent_binding(parent)), marker
 
 
-def fresh_card_over_revoked(fresh: CardAuthority, revoked: CardAuthority, *, actor_subject: str,
-                            request_id: str, now: int) -> CardAuthority:
-    """W502: the freshly built ``fresh`` Card, placed at ``revoked``'s next revision.
+def fresh_card_over_existing(fresh: CardAuthority, existing: CardAuthority, *, actor_subject: str,
+                             request_id: str, now: int) -> CardAuthority:
+    """W502/W661: the freshly built ``fresh`` Card, placed at ``existing``'s next revision.
 
-    Only the revision moves onto the revoked Card's chain, so (access_id,
-    revision) never repeats; every other field is the fresh Card's own. A
-    person Control's "created" audit is rebuilt for that revision.
+    Operator, 10 Oct: an invitation "IS new card. even if something existed fine. we simply now
+    UPSERT. overwrite". Whatever is on the stable id (revoked or still active) is overwritten.
+    Only the revision moves onto the existing Card's chain, so (access_id, revision) never
+    repeats; every other field is the fresh Card's own. A person Control's "created" audit is
+    rebuilt for that revision.
     """
-    if (fresh.access_id != revoked.access_id or fresh.grantor_subject != revoked.grantor_subject
-            or revoked.state != CARD_STATE_REVOKED):
+    if fresh.access_id != existing.access_id or fresh.grantor_subject != existing.grantor_subject:
         raise CardLifecyclePlanRefused("card_plan_target_exists")
-    candidate = dataclasses.replace(fresh, card_revision=revoked.card_revision + 1)
+    candidate = dataclasses.replace(fresh, card_revision=existing.card_revision + 1)
     if candidate.issuer_kind == PROJECT_PERSON_CONTROL_ISSUER_KIND:
         identity = ProjectPersonControlIdentity.from_authority(candidate)
         from connection_hub.delegated_credentials.controls.project_person import (
@@ -398,6 +399,31 @@ def _parent_binding(parent: CardAuthority) -> ControlCardBinding:
         control_revision=parent.card_revision,
         holder_subject=parent.grantor_subject,
     )
+
+
+def _protected_grants_valid(value: Any) -> bool:
+    """W661 S5 (EMain 18:22Z): a fixed PB policy, never Card data: at most 4 resources x 16 grants."""
+    # Entry types first: a dict or list entry is valid JSON but unhashable (Infra 18:36Z).
+    return (isinstance(value, Mapping) and 0 < len(value) <= 4 and all(
+        type(resource) is str and resource and type(grants) is list and 0 < len(grants) <= 16
+        and all(type(grant) is str and grant and grant == grant.strip() for grant in grants)
+        and len(set(grants)) == len(grants)
+        for resource, grants in value.items()))
+
+
+def _require_protected_grants_kept(protected: Mapping[str, Any] | None, original: CardAuthority,
+                                   candidate: Mapping[str, Any]) -> None:
+    """A manual edit leaves each listed grant exactly as the original Card holds it (added or removed refuses).
+
+    The Hub only compares the grants it is given; it learns nothing about roles. A role change takes
+    role_selection, the one path that may change them.
+    """
+    for resource, grants in (protected or {}).items():
+        listed = set(grants)
+        before = listed & set((original.resource_grants or {}).get(resource, ()))
+        after = listed & set((candidate.get("resource_grants") or {}).get(resource, ()))
+        if before != after:
+            raise CardLifecyclePlanRefused("card_edit_admin_grant_role_only")
 
 
 def _require_project_parent(
@@ -774,15 +800,15 @@ async def plan_card_lifecycle(
                 original = None
                 if existing is not None:
                     # W502 (operator, 7 Oct: a removed person is simply "newly invited" and
-                    # gets fresh Cards): a person's C or My revoked by an earlier removal is
-                    # created again, freshly built, at its next revision. Nothing of the
-                    # revoked Card is carried over.
+                    # gets fresh Cards) and W661 (operator, 10 Oct: "UPSERT. overwrite"): a
+                    # person's C or My on its stable id is created again, freshly built, at
+                    # its next revision, whether revoked or still active. Nothing of the old
+                    # Card is carried over. A project Control is never overwritten this way.
                     original = existing[0]
-                    if (raw["kind"] not in ("project_person_control", "project_person_my_card")
-                            or original.state != CARD_STATE_REVOKED):
+                    if raw["kind"] not in ("project_person_control", "project_person_my_card"):
                         raise CardLifecyclePlanRefused("card_plan_target_exists")
-                    base = fresh_card_over_revoked(base, original, actor_subject=actor, request_id=request_id,
-                                                   now=now)
+                    base = fresh_card_over_existing(base, original, actor_subject=actor, request_id=request_id,
+                                                    now=now)
                 planned[ref] = base
                 members.append(group_member(original=original, candidate=base,
                                             action="create" if original is None else "recreate"))
@@ -794,11 +820,14 @@ async def plan_card_lifecycle(
                 raise CardLifecyclePlanRefused("card_plan_parent_cycle")
 
         removals: dict[str, dict[str, CardAuthority]] = {}
+        already_applied = 0
         for index, raw in enumerate(updates):
             if (not isinstance(raw, Mapping)
                     or not {"kind", "target_subject", "access_id", "subject_hash", "original_revision"} <= set(raw)
                     or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent",
-                                   "selection", "profile", "resource"}
+                                   "selection", "profile", "resource", "display_digest", "control",
+                                   "add_grants", "add_operations", "remove_operations", "operation_grants",
+                                   "protected_grants"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control"})):
@@ -810,16 +839,19 @@ async def plan_card_lifecycle(
             # W639: the project host knows an agent Card's id, not its revision.
             # For the agent lifecycle kinds, 0 plans against the revision the Hub
             # loads now; the member carries it and PREPARE fences exactly that.
-            current_agent = (raw.get("kind") in {"attach_agent", "detach_agent", "apply_agent_profile"}
-                             and original_revision == 0)
-            if type(original_revision) is not int or (original_revision < 1 and not current_agent):
+            # W661: a role_selection likewise applies PB's policy delta to the Card's current version.
+            # W661 P4: a person's removal likewise ends the C and My the Hub reads now (PB reads no Card).
+            read_current = (raw.get("kind") in {"attach_agent", "detach_agent", "apply_agent_profile",
+                                                "role_selection", "remove_person"}
+                            and original_revision == 0)
+            if type(original_revision) is not int or (original_revision < 1 and not read_current):
                 raise CardLifecyclePlanRefused("card_plan_revision_invalid", 400)
             loaded = await cards.load_current(access_id, subject_hash=subject_hash)
             if loaded is None:
                 raise CardLifecyclePlanRefused("card_plan_update_target_absent")
             original = loaded[0]
             if (subject_hash_for(original.grantor_subject) != subject_hash
-                    or not current_agent and original.card_revision != original_revision):
+                    or not read_current and original.card_revision != original_revision):
                 raise CardLifecyclePlanRefused("card_plan_original_revision_changed")
             try:
                 person_identity = ProjectPersonControlIdentity.from_authority(original)
@@ -830,6 +862,9 @@ async def plan_card_lifecycle(
             except ProjectInvitationControlError:
                 invitation_identity = None
             target = _required_text(raw["target_subject"], "card_plan_target_invalid")
+            if "protected_grants" in raw and (raw["kind"] != "reselect"
+                                              or not _protected_grants_valid(raw["protected_grants"])):
+                raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             if raw["kind"] == "reselect":
                 # W607: an existing person Control or My Card takes a PB-supplied selection. The helper
                 # checks its identity, project, person and the step's decision; nothing is written.
@@ -838,9 +873,17 @@ async def plan_card_lifecycle(
                 from connection_hub.delegated_credentials.existing_card_selection_plan import (
                     build_existing_card_selection_update,
                 )
+                # S5 first on what the person submitted, so a protected-grant change is refused by its own
+                # name before catalog resolution can refuse it for another reason; then on the candidate.
+                submitted = raw["selection"].get("resource_grants")
+                if isinstance(submitted, Mapping):
+                    # A supplied dimension replaces the whole map (W607), so compare the map as submitted.
+                    _require_protected_grants_kept(raw.get("protected_grants"), original,
+                                                   {"resource_grants": dict(submitted)})
                 built = await build_existing_card_selection_update(
                     host, original=original, selection=raw["selection"], active=active, decision=decision,
                     project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now)
+                _require_protected_grants_kept(raw.get("protected_grants"), original, built["member"]["candidate"])
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
@@ -859,7 +902,44 @@ async def plan_card_lifecycle(
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
-            if ("profile" in raw or "resource" in raw) and raw["kind"] != "apply_agent_profile":
+            if raw["kind"] == "role_selection":
+                # W661 (EMain 18:16Z): a role change's Card side. PB sends a fixed policy delta, never Card
+                # content; the Hub applies it to the Card it just read and builds through the reselect builder.
+                from connection_hub.delegated_credentials.existing_card_selection_plan import (
+                    build_existing_card_selection_update,
+                )
+                from connection_hub.delegated_credentials.role_selection_plan import (
+                    role_selection, role_update_shape_valid,
+                )
+                if not role_update_shape_valid(raw):
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                selection = role_selection(original, raw)
+                if selection is None:
+                    already_applied += 1  # unchanged: the Card stays a read, never a synthetic revision
+                    continue
+                built = await build_existing_card_selection_update(
+                    host, original=original, selection=selection, active=active, decision=decision,
+                    project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now)
+                members.append(built["member"])
+                originals[(subject_hash, access_id)] = original.to_dict()
+                continue
+            if raw["kind"] == "reset_to_control":
+                # W661 (EMain 18:07Z): My Reset as a STAGE-owned step; the Hub reads My and its Control and
+                # recomputes the display the person saw. Only the shape PB may send is accepted.
+                from connection_hub.delegated_credentials.managed_card_reset_plan import (
+                    build_reset_to_control_update, reset_update_shape_valid,
+                )
+                if not reset_update_shape_valid(raw):
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                built = await build_reset_to_control_update(
+                    host, original=original, update=raw, decision=decision, project_ref=scope,
+                    actor_subject=actor, request_id=request_id)
+                members.append(built["member"])
+                originals[(subject_hash, access_id)] = original.to_dict()
+                reads_by_key[(built["read"]["subject_hash"], built["read"]["access_id"])] = built["read"]
+                continue
+            if ("display_digest" in raw or "control" in raw
+                    or ("profile" in raw or "resource" in raw) and raw["kind"] != "apply_agent_profile"):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             if raw["kind"] in {"attach_agent", "detach_agent", "apply_agent_profile"}:
                 if ("parent" in raw) != (raw["kind"] == "attach_agent"):
@@ -870,7 +950,7 @@ async def plan_card_lifecycle(
                 parent = await parent_for(raw["parent"]) if raw["kind"] == "attach_agent" else None
                 built = await build_agent_lifecycle_update(
                     host, original=original,
-                    update={**raw, "original_revision": original.card_revision} if current_agent else raw, active=active, decision=decision,
+                    update={**raw, "original_revision": original.card_revision} if read_current else raw, active=active, decision=decision,
                     project_ref=scope, actor_subject=actor, request_id=request_id, now=now,
                     parent=parent)
                 members.append(built["member"])
@@ -879,6 +959,14 @@ async def plan_card_lifecycle(
             if raw["kind"] == "remove_person":
                 if "parent" in raw:
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                if read_current and original.state == CARD_STATE_REVOKED:
+                    # W661 v6.3 item 6: the same-request retry of a removal whose PUBLISH already happened. The
+                    # Card is exactly this person's (checked as if active), already revoked: nothing to write.
+                    removed_person_card(replace_state(original, CARD_STATE_ACTIVE), project_ref=scope,
+                                        target_subject=target, decision=decision, actor_subject=actor,
+                                        request_id=request_id, now=now)
+                    already_applied += 1
+                    continue
                 card_kind, candidate = removed_person_card(
                     original, project_ref=scope, target_subject=target, decision=decision,
                     actor_subject=actor, request_id=request_id, now=now)
@@ -927,6 +1015,12 @@ async def plan_card_lifecycle(
             members.append(group_member(original=original, candidate=candidate, action=action))
             originals[(subject_hash, access_id)] = original.to_dict()
 
+        if not members:
+            # W661 v6.3 item 6: every update already holds (a role already applied, a person already removed).
+            # The card_version handler answers a signed already_applied; nothing is written.
+            raise CardLifecyclePlanRefused(
+                "card_plan_already_applied" if already_applied == len(updates) and not creations
+                else "card_plan_role_unchanged")
         # An invitation-built C consumes its pending Card in this same decision.
         revoked_here = {(member["access_id"], member["original_revision"]) for member in members
                         if member["action"] == "revoke"}

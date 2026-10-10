@@ -17,6 +17,7 @@ hold before it is switched on. Everything here is **off by default**:
 | Participant endpoint | `card_transaction_participant` (route public) | Another application's coordinator drives `prepare`, `finish`, `read_pending` and `list_prepared`. Every authenticated answer is signed. |
 | Census read | `card_census_read` (route public) | A signed, optimistic read of a project's person Cards, their full Control chains and the active catalog, for the initiator's business check. |
 | Lifecycle plan | `card_lifecycle_plan` (route public) | A signed, non-writing plan of one Card lifecycle change (a new project's P, C and My; a person joining; an invitation's redemption): the exact Card candidates the initiator freezes into its transaction. Same peer authentication as the census read; a caller plans only under its descriptor's `plan_scope_prefix`. |
+| Card version save | `card_version` (route public), `cards/participant_card_version.py` | W661: Problem Board's STAGE, PUBLISH and ROLLBACK of one Card save. See "Saving a Card version" below. |
 | Plan authorization | `cards/lifecycle_plan_authorization.py` | Before planning, the Hub asks the calling application's own host (`project_lifecycle_plan_authorize` on its authority bundle) for one decision per step. The body is `actor_subject`, `project_ref`, `request_id`, the plan's `request_digest` and the ordered `steps`, signed with the descriptor's authority request signer under protocol `card-lifecycle-plan-authorize.v1`. A missing, extra, repeated or mismatched step, or a step decision for another plan's digest, refuses the plan. |
 | Managed Card edit forward | `managed_card_edit_forward.py` | A managed edit a direct writer refuses is forwarded, signed, to the project host that plans its scope (`project_card_edit`), which makes it in its own transaction. |
 | Decision routing | `RoutedDecisionPort` | A Card staged by another application's transaction reads its decision from that application's authority. |
@@ -35,6 +36,127 @@ and the managed Card edit forward:
   `{status: ok, <operation>: answer}`; a local call returns it bare. A
   wrapper outside that contract is an invalid answer, never an allow or a
   refusal.
+
+## Saving a Card version (W661)
+
+`card_version` serves Problem Board's save. PB calls the Hub, and the Hub calls
+nothing back during the save. It has the same peer authentication and
+`plan_scope_prefix` entitlement as `card_lifecycle_plan`. The request schema is
+`card-version-request.v1`, and every authenticated answer is signed
+(`card-version-answer.v1`, `AnswerContract.CARD_VERSION`). The answer echoes
+only `op`, `request_echo`, `scope` and `txn`. Its `request_digest` binds the
+whole request, so no edit value is repeated.
+
+- **`op: stage`.** The request carries `txn`, `request_id`, `at` (the
+  request's own time, ISO 8601 with an offset; a retry sends the same), the `catalog`
+  (`version`, `content_hash`) PB authorized under, the actor, PB's
+  `delegable_grants`, the project Control locator, and the planner's
+  `creations` and `updates`. An update's `original_revision` is the base
+  version.
+  - PB authorized the save by role before STAGE. The Hub turns PB's grants into
+    one allow per step and builds the new versions with `plan_card_lifecycle`.
+    A base that moved is `card_changed`, and another catalog is
+    `stage_catalog_moved`.
+  - The Card store then writes each version once, not yet final, under the
+    Card's lock. It compares a retry by the STAGE digest: every request field
+    except the per-call `request_echo`. A different edit under the same `txn`
+    is refused `stage_txn_conflict`.
+  - A person's C or My that already exists on its stable id, revoked or
+    active, is created again at its next revision. It is fenced on the version
+    the planner read, so a racing save refuses `card_changed` and the inviter's
+    retry overwrites. Operator: "UPSERT. overwrite" and W661 "Q2: B".
+  - The answer holds only links: `{card: {subject_hash, access_id}, version,
+    checksum, base_version}`. `base_version` is the exact version STAGE fenced,
+    or null for a creation or an upsert. PUBLISH's links omit it.
+- **My Reset (`reset_to_control`).** One `updates` entry: `kind`,
+  `target_subject`, the My Card's `access_id`, `subject_hash` and
+  `original_revision`, the `resource`, the `display_digest` the person saw, and
+  `control: {access_id, subject_hash}`. No selection travels.
+  - The Hub reads My and its effective Control and recomputes the display with
+    `managed_card_reset_display`.
+  - A different digest is refused `card_changed`
+    (`card_plan_reset_display_moved`), and so is another Control
+    (`card_plan_reset_control_moved`).
+  - The new My takes that one service's selection from the Control; everything
+    else is unchanged.
+  - C is read, never written.
+- **Protected grants on a manual edit.** A person Control or My `reselect` may
+  carry `protected_grants: {<resource>: [<grant>, ...]}` (at most 4 resources x
+  16 grants). PB sends `{<its resource>: ["work:admin"]}`.
+  - The Hub compares, for each listed grant, whether the original Card holds it
+    and whether the candidate does. Any difference refuses
+    `card_edit_admin_grant_role_only`, a fixed signed refusal code (409) with no
+    free text.
+  - Only `role_selection` changes those grants.
+- **A role change's Cards (`role_selection`).** One `updates` entry per Card (C, or
+  C and My): `kind`, `target_subject`, `access_id`, `subject_hash`,
+  `original_revision: 0`, the PB `resource`, and either `add_grants` and
+  `add_operations` (a promotion) or `remove_operations` plus `operation_grants`
+  (a demotion). PB sends a fixed policy delta, never Card content.
+  - The Hub reads the current Card (its version becomes the base), applies the
+    delta to that one resource, and builds the candidate with the ordinary
+    reselect builder.
+  - A demotion recomputes the resource's grants from the remaining operations
+    through PB's map. An operation missing from it is refused
+    (`card_plan_role_operation_unknown`).
+  - An unchanged Card stays a read.
+  - The Hub knows nothing about roles or admins.
+- **Already applied (v6.3 item 6).** When every update of a STAGE already
+  holds (each `role_selection` Card already equals its target, each
+  `remove_person` Card sent with `original_revision: 0` is already revoked and
+  is that person's C or My in this scope), and the STAGE creates nothing, the
+  Hub writes nothing, records no txn, and answers the signed result
+  `{kind: already_applied}`. This is the same-request retry after a PUBLISH
+  whose answer PB lost: PB then commits the role or membership change under
+  its row lock and CAS, without PUBLISH. No marker is left, so `outcome` for
+  that txn answers `unknown_txn`: the signed `already_applied` answer is itself
+  the evidence, and PB keeps it rather than asking `outcome` later. A STAGE
+  where some updates are no-ops
+  and others are not is staged as usual, without the no-op Cards. Any other
+  STAGE that changes nothing is refused (`edit_invalid`).
+- **`op: publish` and `op: rollback`.** PUBLISH carries `txn` alone, because the
+  store's transaction marker names its members. ROLLBACK also carries `links`,
+  the `{card, version, checksum}` links from STAGE's answer (PB keeps them),
+  or `[]` when STAGE never answered, and STAGE's `at`, from which the version
+  file name derives. A completed PUBLISH removes the marker,
+  and a version file that its link finds and that carries this txn is
+  published history. ROLLBACK answers `rolled_back`, `already_published` or
+  `unknown_txn`.
+- **`op: outcome` and `op: compensate` (v6.3 items 5 and 7).** Both carry
+  `txn`, STAGE's `links` (as returned, `base_version` included) and STAGE's
+  `at`. `compensate` also carries `compensation_at`, a 16th request field that
+  is null for every other op and outside the stage digest; the other STAGE
+  fields are null.
+  - OUTCOME writes nothing. Under the linked Cards' locks it answers `{kind:
+    outcome, state, members}`, where `state` is `published`, `staged`,
+    `staging` or `unknown_txn`, and each member link adds `current`: whether
+    that Card's current version is this txn's. `links` may be `[]` when STAGE
+    never answered.
+  - COMPENSATE runs only after PB has conclusively not committed, under its
+    row lock. It restores each Card's pre-txn content as a new version, only
+    while every Card's current version is exactly this txn's. It answers
+    `{kind: compensation, state: compensated | already_compensated, members}`.
+    A successor version refuses `compensation_superseded`; a version with no
+    recorded base, or a credential-bearing Card, refuses
+    `compensation_unsupported`; a link that is not its version file refuses
+    `card_version_link_mismatch`. Each is 409, and nothing is written.
+  - A store without these ports answers `storage_unavailable`.
+- **Store.** The endpoint binds piece 1's `ServiceCardVersionStore` over the
+  Card service and the catalog store, so STAGE re-reads the active catalog
+  under the Card locks. Without either one, the endpoint answers unavailable.
+- **Binding.** STAGE records the authenticated caller and scope in the
+  marker. A replay, PUBLISH or ROLLBACK from another caller or scope is
+  refused `request_scope_invalid` and touches nothing.
+- **Effects.** A person Card save has none. An edited agent Card has only
+  `handle_binding`:
+  - its row identity is checked, and an agent's re-wrap prepared, at STAGE;
+  - it is applied at PUBLISH only while `current.json` names this txn's
+    version, and is otherwise `superseded`;
+  - a ROLLBACK of a staged txn discards the prepared re-wrap.
+
+  Any other effect kind refuses the save (`edit_invalid`). The store records
+  each effect's named result in the marker, so a retried PUBLISH applies
+  nothing twice.
 
 ## The person Control under the project Control (C -> P)
 
