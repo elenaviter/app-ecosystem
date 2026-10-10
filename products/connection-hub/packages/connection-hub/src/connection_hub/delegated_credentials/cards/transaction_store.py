@@ -37,7 +37,7 @@ import re
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
-from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic, unlink_guarded
+from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic, unlink_guarded, unlink_guarded_async
 from ..issuer_gate import change_digest
 from .model import CardAuthority, CardCurrentPointer, card_authority_payload_hash, card_revision_name
 from .store import VERSION_RECORD_KEY, CardStorageError
@@ -186,7 +186,7 @@ async def abort_unstaged(store: Any, transaction_id: str, *, intent_digest: str 
     # terminal decision, so this exact intent's fence is released (CodeApp 19:29).
     await _release_catalog(store, transaction_id, intent_digest)
     try:
-        unlink_guarded(active_path(store, transaction_id))
+        await unlink_guarded_async(active_path(store, transaction_id))
     except OSError:
         pass  # an unstaged entry holds no fence; recovery lists it until removed
     return tombstone
@@ -336,7 +336,7 @@ async def _release_reads(store: Any, receipt: Mapping[str, Any], reads: Any = No
         raw = await read_json_or_none(path)
         if isinstance(raw, Mapping) and raw.get("transaction_id") == receipt["transaction_id"]:
             try:
-                unlink_guarded(path)
+                await unlink_guarded_async(path)
             except OSError:
                 pass  # a decided transaction's fence holds nothing
 
@@ -657,7 +657,7 @@ async def _clear_marker(store: Any, receipt: Mapping[str, Any]) -> None:
     raw = await read_json_or_none(path)
     if isinstance(raw, Mapping) and raw.get("transaction_id") == receipt["transaction_id"]:
         try:
-            unlink_guarded(path)
+            await unlink_guarded_async(path)
         except OSError:
             pass  # the decided receipt already releases the fence
     if receipt["state"] in DECISIONS:
@@ -665,7 +665,7 @@ async def _clear_marker(store: Any, receipt: Mapping[str, Any]) -> None:
         if receipt.get("catalog"):
             await _release_catalog(store, receipt["transaction_id"], receipt["intent_digest"])
         try:
-            unlink_guarded(active_path(store, receipt["transaction_id"]))
+            await unlink_guarded_async(active_path(store, receipt["transaction_id"]))
         except OSError:
             pass  # a stale entry only lists a decided transaction, which recovery skips
 
@@ -687,7 +687,7 @@ async def _retire_pointer(store: Any, receipt: Mapping[str, Any]) -> None:
             # An aborted create of a newly minted id: the slot is absent again. The
             # staged revision keeps its marker, so it never appears in history.
             try:
-                unlink_guarded(path)
+                await unlink_guarded_async(path)
             except OSError as exc:
                 raise CardStorageError("card_transaction_retire_failed") from exc
         else:
@@ -701,7 +701,7 @@ async def _retire_pointer(store: Any, receipt: Mapping[str, Any]) -> None:
         raw = await read_json_or_none(marker)
         if isinstance(raw, Mapping) and raw.get("transaction_id") == receipt["transaction_id"]:
             try:
-                unlink_guarded(marker)
+                await unlink_guarded_async(marker)
             except OSError:
                 pass  # it still resolves through the committed receipt
 
@@ -1206,7 +1206,7 @@ async def finish_group(store: Any, *, transaction_id: str, intent_digest: str, d
 async def _clear_group(store: Any, receipt: Mapping[str, Any]) -> None:
     if receipt["state"] in DECISIONS:
         try:
-            unlink_guarded(active_path(store, receipt["transaction_id"]))
+            await unlink_guarded_async(active_path(store, receipt["transaction_id"]))
         except OSError:
             pass  # a stale entry lists a decided group, which recovery re-finishes idempotently
 
@@ -1358,7 +1358,7 @@ async def _release_read_set(store: Any, receipt: Mapping[str, Any]) -> None:
     if receipt.get("catalog"):
         await _release_catalog(store, receipt["transaction_id"], receipt["intent_digest"])
     try:
-        unlink_guarded(active_path(store, receipt["transaction_id"]))
+        await unlink_guarded_async(active_path(store, receipt["transaction_id"]))
     except OSError:
         pass  # a stale entry lists a decided read set, which recovery re-finishes idempotently
 
@@ -1551,7 +1551,7 @@ async def _mark_published(store: Any, marker: dict[str, Any]) -> None:
         path = card_version_revision_marker_path(store, subject_hash=m["subject_hash"], access_id=m["access_id"],
                                                  revision_name=m["revision_name"])
         try:
-            unlink_guarded(path)
+            await unlink_guarded_async(path)
         except OSError:
             pass  # it still resolves as committed: published marker, or no marker at all
 
@@ -1560,7 +1560,7 @@ async def _finish_published(store: Any, marker: dict[str, Any], run_effect: Any)
     """Each unrecorded effect once; once every effect is recorded the marker goes (D2: only the version stays)."""
     await _run_effects(store, marker, run_effect)
     try:
-        unlink_guarded(card_version_marker_path(store, marker["txn"]))
+        await unlink_guarded_async(card_version_marker_path(store, marker["txn"]))
     except OSError as exc:
         raise CardStorageError("card_version_marker_cleanup_failed") from exc
     from ..durable_io import _fsync_directory
@@ -1663,7 +1663,10 @@ def _read_links(reads: Any, members: Any) -> list[dict[str, Any]]:
 
 
 async def _check_reads(store: Any, read_links: Any) -> None:
-    """Under each read Card's lock: a pending predecessor refuses (D3), and current must still be the version."""
+    """Under each read Card's lock: a pending predecessor refuses (D3), and current must still be the version.
+
+    finalize_current_version may finish ANOTHER txn's already-published version on a read Card: that is
+    maintenance of someone else's committed PUBLISH, never a write of the read Card by this save."""
     for r in read_links:
         await finalize_current_version(store, subject_hash=r["subject_hash"], access_id=r["access_id"])
         current = await store.read_current(subject_hash=r["subject_hash"], access_id=r["access_id"])
@@ -1820,7 +1823,7 @@ async def _release_and_forget(store: Any, marker: Mapping[str, Any], *, release:
                                        revision_name=m["revision_name"])
         for path in (revision, revision.with_suffix(".card-version.json")):
             try:
-                unlink_guarded(path)
+                await unlink_guarded_async(path)
             except OSError as exc:
                 raise CardStorageError("card_version_rollback_failed") from exc
         folders.add(revision.parent)
@@ -1830,7 +1833,7 @@ async def _release_and_forget(store: Any, marker: Mapping[str, Any], *, release:
         await _write_card_version_marker(store, {**marker, "state": "rolled_back"})
         return
     try:
-        unlink_guarded(card_version_marker_path(store, marker["txn"]))
+        await unlink_guarded_async(card_version_marker_path(store, marker["txn"]))
     except OSError as exc:
         raise CardStorageError("card_version_rollback_failed") from exc
     _fsync_directory(card_version_marker_path(store, marker["txn"]).parent)
@@ -1944,8 +1947,9 @@ async def card_version_outcome(store: Any, *, txn: str, binding: Any = None, lin
                                ) -> dict[str, Any]:
     """v6.3 item 5, READ-ONLY: what became of ``txn``, by the exact request PB persisted (links + at).
 
-    state: published | staged | staging | rolled_back | unknown_txn; per member, whether current.json names
-    exactly this txn's version. Nothing is written, nothing is listed.
+    state: published | staged | staging | unknown_txn; per member, whether current.json names exactly this
+    txn's version. A rolled-back txn leaves no marker (KEEP_ROLLBACK_MARKER is off), so it answers unknown_txn.
+    Nothing is written, nothing is listed.
     """
     card_version_txn_id(txn)
     marker = await read_card_version_marker(store, txn)

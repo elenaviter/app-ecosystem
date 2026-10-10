@@ -15,6 +15,7 @@ on shared mounts such as EFS.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 import pathlib
@@ -24,20 +25,38 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 _DEFERRED_WRITES: ContextVar[list[asyncio.Task] | None] = ContextVar("delegated_lifecycle_writes", default=None)
-# W661 K1: roots whose writes must pass a guard first (the Hub registers its Card store root: proc-only).
-_WRITE_GUARDS: dict[str, Any] = {}
+# W661 K1: roots whose writes must pass guards first (the Hub registers its Card store root: proc-only, and with
+# lock backend redis the Card-lock owner check). One entry per root and guard name: nothing grows.
+_WRITE_GUARDS: dict[str, dict[str, Any]] = {}
 
 
-def guard_writes_under(root: os.PathLike[str] | str, guard: Any) -> None:
-    """Every write_json_atomic under ``root`` calls ``guard()`` first; a guard refuses by raising."""
-    _WRITE_GUARDS[os.path.join(os.path.abspath(os.fspath(root)), "")] = guard
+def guard_writes_under(root: os.PathLike[str] | str, guard: Any, *, name: str = "role") -> None:
+    """Every write or delete under ``root`` calls ``guard()`` first; a guard refuses by raising. It may be async."""
+    _WRITE_GUARDS.setdefault(os.path.join(os.path.abspath(os.fspath(root)), ""), {})[name] = guard
+
+
+def _guards_for(path: pathlib.Path) -> list[Any]:
+    target = os.path.abspath(os.fspath(path))
+    return [guard for prefix, guards in list(_WRITE_GUARDS.items()) if target.startswith(prefix)
+            for guard in list(guards.values())]
 
 
 def _check_write_guards(path: pathlib.Path) -> None:
-    target = os.path.abspath(os.fspath(path))
-    for prefix, guard in list(_WRITE_GUARDS.items()):
-        if target.startswith(prefix):
-            guard()
+    """Synchronous callers only: an async guard (the Card-lock owner check) cannot run here, so refuse rather than
+    skip it. Every Card-store deletion uses unlink_guarded_async."""
+    for guard in _guards_for(path):
+        sync = getattr(guard, "sync", None)  # an async guard may offer a synchronous form (no I/O)
+        result = sync() if callable(sync) else guard()
+        if inspect.isawaitable(result):
+            result.close()
+            raise DurableStorageError("durable_write_guard_requires_async")
+
+
+async def _check_write_guards_async(path: pathlib.Path) -> None:
+    for guard in _guards_for(path):
+        result = guard()
+        if inspect.isawaitable(result):
+            await result
 _PUBLISH_BEFORE: ContextVar[datetime | None] = ContextVar("delegated_lifecycle_publish_before", default=None)
 
 
@@ -113,6 +132,12 @@ def unlink_guarded(path: pathlib.Path) -> None:
     pathlib.Path(path).unlink(missing_ok=True)
 
 
+async def unlink_guarded_async(path: pathlib.Path) -> None:
+    """Delete one file (missing is fine) after ALL guards of its root, the async Card-lock owner check included."""
+    await _check_write_guards_async(path)
+    pathlib.Path(path).unlink(missing_ok=True)
+
+
 async def read_json_or_none(path: pathlib.Path) -> Any | None:
     """Parsed JSON, or ``None`` when the object is confirmed absent."""
     result = await asyncio.to_thread(_read_text, path)
@@ -127,7 +152,7 @@ async def read_json_or_none(path: pathlib.Path) -> Any | None:
 
 
 async def write_json_atomic(path: pathlib.Path, payload: Mapping[str, Any]) -> None:
-    _check_write_guards(path)  # before any byte is written
+    await _check_write_guards_async(path)  # before any byte is written
     text = json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2) + "\n"
     try:
         await cancellation_safe_await(asyncio.to_thread(_write_text_atomic, path, text))
