@@ -33,6 +33,8 @@ _CONTRACT_CODES = {
     "card_version_txn_invalid": "edit_invalid",
     "card_mutation_lock_timeout": "storage_unavailable",
     "card_version_members_moved": "storage_unavailable",
+    # A ROLLBACK link that does not match the exact version its file holds: outcome unknown, PB keeps its rows.
+    "card_version_link_mismatch": "storage_unavailable",
 }
 
 

@@ -839,3 +839,25 @@ async def test_the_port_answers_a_pending_predecessor_with_the_contract_code_eff
                          members=[{"subject_hash": SUBJECT_HASH, "access_id": before.access_id, "base_version": 2,
                                    "value": v3.to_dict()}], effects=[], prepare=None, at=WHEN, scope="s", caller="c")
     assert refused.value.code == "effects_pending"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["checksum", "version"])
+async def test_a_rollback_link_must_match_the_exact_version_in_its_file(tmp_path, field):
+    """Infra 17:52Z: the file name carries checksum[:12]; a link differing in the rest of the checksum (or the
+    version) is never confirmed already_published. It fails closed."""
+    store, service, before, after = await _setup(tmp_path)
+    answer = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    await service.publish_card_version(txn=TXN)
+    link = _links(answer)[0]
+    if field == "checksum":
+        link["checksum"] = link["checksum"][:-1] + ("0" if link["checksum"][-1] != "0" else "1")
+    else:
+        link["version"] = 3
+    if field == "checksum":
+        with pytest.raises(tx.CardTransactionRefused, match="card_version_link_mismatch"):
+            await service.rollback_card_version(txn=TXN, links=[link], at=WHEN)
+    else:  # another version names another file: nothing of this txn there
+        assert await service.rollback_card_version(txn=TXN, links=[link], at=WHEN) == "unknown_txn"
+    assert await service.rollback_card_version(txn=TXN, links=_links(answer), at=WHEN) == "already_published"
+    assert await _current(store, before) == after

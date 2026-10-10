@@ -58,7 +58,8 @@ only the version itself remains. A `staging` marker refuses `txn_not_staged`; no
   published (`already_published`); otherwise every effect is released, the files are deleted, then
   the marker (`rolled_back`);
 - marker gone: the linked version files are read by name; files written by this txn mean
-  `already_published`, otherwise `unknown_txn`.
+  `already_published`, otherwise `unknown_txn`. A link whose full checksum or version differs from the
+  Card in that file is refused `card_version_link_mismatch` (the name carries only `checksum[:12]`).
 
 ROLLBACK never deletes a published version.
 
