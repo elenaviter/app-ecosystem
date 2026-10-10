@@ -36,7 +36,7 @@ from connection_hub.delegated_credentials.durable_io import (
     DurableStorageError,
     list_child_names,
     read_json_or_none,
-    unlink_guarded,
+    unlink_guarded_async,
     write_json_atomic,
 )
 
@@ -196,7 +196,7 @@ class BundleStorageDelegatedCardStore:
             await self.card_rows.write_pointer(subject_hash=subject_hash, access_id=access_id,
                                                document=ABSENT_POINTER if document is None else dict(document))
         if document is None:
-            unlink_guarded(path)
+            await unlink_guarded_async(path)
         else:
             await write_json_atomic(path, dict(document))
 
@@ -234,7 +234,7 @@ class BundleStorageDelegatedCardStore:
         """R1: removal is a CAS too (a stale deleter never removes a newer state), then the file hint."""
         if self.card_rows is not None:
             await self.card_rows.delete_marker(txn)
-        unlink_guarded(self.card_version_marker_path(txn))
+        await unlink_guarded_async(self.card_version_marker_path(txn))
 
     async def read_current(
         self, *, subject_hash: str, access_id: str, consult_decision: bool = True

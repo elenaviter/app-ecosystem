@@ -342,9 +342,9 @@ async def test_a_late_activation_after_a_newer_card_with_no_family_is_superseded
         with pytest.raises(CardStorageError, match="card_effects_pending"):
             await w.store.advance_current(subject_hash=w.subject_hash, pointer=pointer)
         # ... so an out-of-band writer forces it, to show the fence holds even then.
-        from connection_hub.delegated_credentials.durable_io import write_json_atomic
-        await write_json_atomic(w.store.current_path(subject_hash=w.subject_hash, access_id=plan.access_id),
-                                pointer.to_dict())
+        # Forced past the store's fence (W661 P: through the pointer authority, the row when on).
+        await w.store.write_pointer_document(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                            document=pointer.to_dict())
         assert isinstance(newer, CardAuthority)
         w.authority.activate_issued_credential = real
         result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
@@ -405,7 +405,6 @@ async def test_a_replacement_card_at_the_same_revision_supersedes_the_old_reserv
         from datetime import datetime, timezone
 
         from connection_hub.delegated_credentials.cards.model import CardCurrentPointer
-        from connection_hub.delegated_credentials.durable_io import write_json_atomic
         receipt = await tx.read_receipt(w.store, tx.member_transaction_id(plan.transaction_id, 0))
         committed = await w.store.read_revision(
             subject_hash=w.subject_hash, access_id=plan.access_id,
@@ -416,8 +415,9 @@ async def test_a_replacement_card_at_the_same_revision_supersedes_the_old_reserv
         assert replacement.content_hash() != committed.content_hash()
         pointer = await w.store.write_revision(subject_hash=w.subject_hash, authority=replacement,
                                                updated_at=datetime.now(timezone.utc))
-        await write_json_atomic(w.store.current_path(subject_hash=w.subject_hash, access_id=plan.access_id),
-                                pointer.to_dict())  # forced past the store's own fence, as an out-of-band writer
+        # Forced past the store's fence (W661 P: through the pointer authority, the row when on).
+        await w.store.write_pointer_document(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                            document=pointer.to_dict())
         w.authority.activate_issued_credential = real
         result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)
         assert {slot: o.outcome for slot, o in result.per_slot.items()} == {"access": "superseded",

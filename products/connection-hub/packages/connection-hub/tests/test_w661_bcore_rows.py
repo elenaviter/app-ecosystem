@@ -1,4 +1,9 @@
-"""W661 lock (b), b-core: the pointer and txn-marker rows fenced by compare-and-swap, on a REAL PostgreSQL.
+"""W661 option P (b-core under R): the pointer and txn-marker rows fenced by compare-and-swap, on a REAL PostgreSQL.
+
+The lock here is a stand-in for the per-Card mutation lock (the local flock, or the KDCube Redis cluster lock of
+option R) that can be LOST, as a Redis key is when its TTL expires during a stall: the row CAS must still
+refuse the stale holder (kdcube docs service/comm/data-bus-README.md: "the storage layer must reject stale
+updates").
 
 Set W661_TEST_PG_DSN to a disposable database. Each test uses its own tenant/project schema.
 """
@@ -6,6 +11,7 @@ Set W661_TEST_PG_DSN to a disposable database. Each test uses its own tenant/pro
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import uuid
 
@@ -20,14 +26,45 @@ PLAIN = {"schema": "connection_hub.card-current.v1", "access_id": "a-1", "card_r
 async def _world(size=6):
     import asyncpg
 
-    from connection_hub.delegated_credentials.cards.locks import postgres_advisory_lock
+    from connection_hub.delegated_credentials.cards.locks import row_fenced_lock
     from connection_hub.delegated_credentials.cards.pointer_authority import PostgresCardRows
 
     pool = await asyncpg.create_pool(DSN, min_size=1, max_size=size)
     project = "p" + uuid.uuid4().hex[:12]
     rows = PostgresCardRows(pool, schema="kdcube_t_" + project, tenant="t", project=project)
     await rows.ensure_schema()
-    return pool, rows, postgres_advisory_lock(pool, tenant="t", project=project)
+    base = LosableLock()
+    fenced = row_fenced_lock(base)
+    fenced.losable = base
+    return pool, rows, fenced
+
+
+class LosableLock:
+    """A per-resource mutation lock whose hold can be LOST (a Redis key's TTL expiring during a stall): after
+    lose(resource_id) the next waiter gets the lock while the old holder's code keeps running."""
+
+    def __init__(self):
+        self._locks: dict = {}
+        self._lost: set = set()
+
+    def lose(self, resource_id):
+        self._lost.add(resource_id)
+        lock = self._locks[resource_id]
+        if lock.locked():
+            lock.release()
+
+    @contextlib.asynccontextmanager
+    async def __call__(self, *, lock_path, resource_id, operation, wait_seconds):
+        lock = self._locks.setdefault(resource_id, asyncio.Lock())
+        await asyncio.wait_for(lock.acquire(), timeout=wait_seconds)
+        self._lost.discard(resource_id)
+        try:
+            yield {"resource_id": resource_id}
+        finally:
+            if resource_id in self._lost:
+                self._lost.discard(resource_id)  # already released when it was lost
+            elif lock.locked():
+                lock.release()
 
 
 def _held(lock, tmp_path, resource="delegated-card:a-1", wait=2.0):
@@ -87,30 +124,26 @@ async def test_a_stale_writer_is_refused_by_the_row_whatever_its_lock_state(tmp_
 
 
 @pytest.mark.asyncio
-async def test_a_killed_session_cannot_write_after_another_writer_published(tmp_path):
-    """The deterministic stale-writer schedule: A reads under its lock and pauses; its session is terminated
-    (the lock is gone); B locks, reads and publishes; A resumes and its write is refused. The row is B's."""
-    import asyncpg
-
-    from connection_hub.delegated_credentials.cards.locks import current_lock_session
-
+async def test_a_holder_whose_lock_expired_cannot_write_after_another_writer_published(tmp_path):
+    """The deterministic stale-writer schedule for option R's residual: A reads under its lock and stalls; its
+    lock is LOST (the Redis key's TTL expired); B takes the lock, reads and publishes; A resumes and its write is
+    refused by the row (card_pointer_moved). The row is B's, and the stale document never lands."""
     pool, rows, lock = await _world()
-    admin = await asyncpg.connect(DSN)
     try:
         a_paused, b_done = asyncio.Event(), asyncio.Event()
+        from connection_hub.delegated_credentials.cards.store import CardStorageError
 
         async def stale_a():
-            with pytest.raises(Exception):
-                async with _held(lock, tmp_path):
-                    await rows.read_pointer(subject_hash="s", access_id="a-1")
-                    pid = await current_lock_session().fetchval("SELECT pg_backend_pid()")
-                    a_paused.set()
-                    await admin.execute("SELECT pg_terminate_backend($1)", pid)
-                    await b_done.wait()
+            async with _held(lock, tmp_path):
+                await rows.read_pointer(subject_hash="s", access_id="a-1")
+                a_paused.set()
+                await b_done.wait()
+                with pytest.raises(CardStorageError, match="card_pointer_moved"):
                     await rows.write_pointer(subject_hash="s", access_id="a-1", document=_doc(9))
 
         async def live_b():
             await a_paused.wait()
+            _losable(lock).lose("delegated-card:a-1")  # A stalled past the TTL: its key expired
             async with _held(lock, tmp_path, wait=5.0):
                 await rows.read_pointer(subject_hash="s", access_id="a-1")
                 await rows.write_pointer(subject_hash="s", access_id="a-1", document=_doc(1))
@@ -119,8 +152,12 @@ async def test_a_killed_session_cannot_write_after_another_writer_published(tmp_
         await asyncio.gather(asyncio.create_task(stale_a()), asyncio.create_task(live_b()))
         assert await rows.read_pointer(subject_hash="s", access_id="a-1") == (_doc(1), 1)
     finally:
-        await admin.close()
         await pool.close()
+
+
+def _losable(fenced_lock):
+    """The LosableLock under row_fenced_lock."""
+    return fenced_lock.losable
 
 
 @pytest.mark.asyncio
@@ -197,7 +234,7 @@ async def test_the_marker_row_moves_only_by_cas_and_a_stale_delete_is_refused(tm
 
 
 @pytest.mark.asyncio
-async def test_a_child_task_that_outlives_its_operation_cannot_use_the_session(tmp_path):
+async def test_a_child_task_that_outlives_its_operation_cannot_use_its_observations(tmp_path):
     from connection_hub.delegated_credentials.cards.store import CardStorageError
 
     pool, rows, lock = await _world()
@@ -209,7 +246,7 @@ async def test_a_child_task_that_outlives_its_operation_cannot_use_the_session(t
             await rows.read_pointer(subject_hash="s", access_id="a-1")
 
         async with _held(lock, tmp_path):
-            task = asyncio.create_task(child())  # inherits the operation's session
+            task = asyncio.create_task(child())  # inherits the operation's row context
         release.set()
         with pytest.raises(CardStorageError, match="card_lock_session_closed"):
             await task

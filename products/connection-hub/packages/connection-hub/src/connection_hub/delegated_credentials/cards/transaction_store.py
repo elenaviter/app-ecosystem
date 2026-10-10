@@ -1620,6 +1620,17 @@ async def _current_txn(store: Any, current: Any, *, subject_hash: str, access_id
     return sidecar["txn"] if isinstance(sidecar, Mapping) and type(sidecar.get("txn")) is str else ""
 
 
+def _may_write_markers(store: Any) -> bool:
+    """Without option P's rows the marker is a file and the phase-1 behaviour stands; with rows, only an
+    operation inside a Card lock (its row context) writes one."""
+    if getattr(store, "card_rows", None) is None:
+        return True
+    from .locks import current_lock_session
+
+    session = current_lock_session()
+    return session is not None and bool(session.resources)
+
+
 async def finalize_current_version(store: Any, *, subject_hash: str, access_id: str, own_txn: str = "") -> str:
     """D3 (EMain, Infra's K2 cut): before building on a Card, finalize the txn its current.json names.
 
@@ -1645,7 +1656,11 @@ async def finalize_current_version(store: Any, *, subject_hash: str, access_id: 
             named = await store.read_current(subject_hash=m["subject_hash"], access_id=m["access_id"])
             if named is None or named.revision_name != m["revision_name"]:
                 raise CardStorageError("card_version_unresolved")
-        await _mark_published(store, marker)
+        if _may_write_markers(store):
+            await _mark_published(store, marker)
+        # Otherwise a lock-free precondition read (service.current_revision): the check above is the same, and
+        # the writer's own commit, under the Card lock, runs this again and marks it (W661 option P: a row is
+        # never written outside a Card operation).
     if any(str(index) not in marker["effect_outcomes"] for index in range(len(marker["effects"]))):
         # Infra 17:37Z, EMain 17:43Z: never run another txn's effects, always refuse before admitting the next
         # base. Only that txn's own PUBLISH retry or ROLLBACK runs them (a later operation finishing earlier work

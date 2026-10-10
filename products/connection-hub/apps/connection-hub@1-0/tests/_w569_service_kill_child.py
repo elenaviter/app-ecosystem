@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 import redis.asyncio as redis_asyncio
 
 from connection_hub.delegated_credentials.cards import lifecycle_store
+from connection_hub.delegated_credentials.cards import store as store_module
 from connection_hub.delegated_credentials.cards.cache import DelegatedCardRuntimeCache
 from connection_hub.delegated_credentials.cards.credential_handles import RedisCardCredentialHandleStore
 from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore, subject_hash_for
@@ -56,24 +57,27 @@ def _install_kill(stage: str, store) -> None:
 
         RedisCardCredentialHandleStore.remove = remove_then_die
         return
-    original_write = lifecycle_store.write_json_atomic
     pointers = 0
 
-    async def write_then_die(path, payload):
-        nonlocal pointers
-        await original_write(path, payload)
-        schema = payload.get("schema") if isinstance(payload, dict) else None
-        if stage == "intent" and path == lifecycle_store.active_intent_path(store, payload.get("transaction_id", "")):
-            _die()
-        if schema == lifecycle_store.LIFECYCLE_POINTER_SCHEMA:
-            pointers += 1
-            if stage == f"pointer{pointers}":
+    def write_then_die(original_write):
+        async def write(path, payload):
+            nonlocal pointers
+            await original_write(path, payload)
+            schema = payload.get("schema") if isinstance(payload, dict) else None
+            if stage == "intent" and path == lifecycle_store.active_intent_path(store, payload.get("transaction_id", "")):
                 _die()
-        if (stage == "committed" and schema == lifecycle_store.LIFECYCLE_RECEIPT_SCHEMA
-                and payload.get("state") == "committed"):
-            _die()
+            if schema == lifecycle_store.LIFECYCLE_POINTER_SCHEMA:
+                pointers += 1
+                if stage == f"pointer{pointers}":
+                    _die()
+            if (stage == "committed" and schema == lifecycle_store.LIFECYCLE_RECEIPT_SCHEMA
+                    and payload.get("state") == "committed"):
+                _die()
+        return write
 
-    lifecycle_store.write_json_atomic = write_then_die
+    # W661 b-core: Card pointers are written by the store (store.write_pointer_document), the rest here.
+    lifecycle_store.write_json_atomic = write_then_die(lifecycle_store.write_json_atomic)
+    store_module.write_json_atomic = write_then_die(store_module.write_json_atomic)
 
 
 async def _decision(_authorities):

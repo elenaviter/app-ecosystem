@@ -286,6 +286,20 @@ class DelegatedCardService:
         )
 
     @asynccontextmanager
+    async def _txn_section(self, txn: str):
+        """The card-version txn's own mutation section, for an operation on a txn that names no member Card.
+        Started writes drain inside it, as in _card_version_sections."""
+        from ..durable_io import drain_writes_before_release
+        from .transaction_store import card_version_marker_path
+
+        async with self._mutation_lock(
+                lock_path=card_version_marker_path(self._store, txn).with_suffix(".lock"),
+                resource_id=f"card-version-txn:{txn}", operation="card-version-txn",
+                wait_seconds=CARD_LOCK_WAIT_SECONDS):
+            async with drain_writes_before_release():
+                yield
+
+    @asynccontextmanager
     async def _card_version_sections(self, cards: Any):
         """W661 v6.2: every member Card's mutation lock, in sorted (subject_hash, access_id) order.
 
@@ -342,7 +356,9 @@ class DelegatedCardService:
         for _ in range(3):
             expected = sorted(set(await self._card_version_members(txn)))
             try:
-                async with self._card_version_sections(expected):
+                # No members (an unknown or late txn): the txn's own section, so a closing marker written under
+                # KEEP_ROLLBACK_MARKER is still a locked, row-fenced write (W661 P), never a lock-free one.
+                async with (self._card_version_sections(expected) if expected else self._txn_section(txn)):
                     if sorted(set(await self._card_version_members(txn))) != expected:
                         continue
                     return await operation()

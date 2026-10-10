@@ -73,10 +73,13 @@ class _LazyPool:
 class _LazyRows:
     """PostgresCardRows whose schema is created on first use in the running loop."""
 
-    def __init__(self, pool: _LazyPool) -> None:
+    def __init__(self, pool: _LazyPool, root: str) -> None:
+        import hashlib
+
         from connection_hub.delegated_credentials.cards.pointer_authority import PostgresCardRows
 
-        project = "p" + uuid.uuid4().hex[:12]
+        # One schema per storage root, the same in every process (a test's child processes share its rows).
+        project = "p" + hashlib.sha256(root.encode()).hexdigest()[:12]
         self._rows = PostgresCardRows(pool, schema="kdcube_t_" + project, tenant="t", project=project)
         self._ready: set = set()
 
@@ -95,11 +98,44 @@ class _LazyRows:
         return call
 
 
+
+def _audit_unlocked_write(kind: str) -> None:
+    """W661_PG_AUDIT=<file>: record each pointer/marker write made outside any Card row operation, as
+    "<kind> <entry> <- <test>". The entry is the first source frame below the test: a store or transaction_store
+    function means the test drives the store directly (a fixture seeding it); a service, participant or Hub
+    method there would be a production writer outside the Card lock, which P refuses (Ops' N1)."""
+    path = os.environ.get("W661_PG_AUDIT")
+    if not path:
+        return
+    import traceback
+
+    frames = [frame for frame in traceback.extract_stack()[:-2] if "conftest.py" not in frame.filename]
+    test_index = max((i for i, frame in enumerate(frames) if "/tests/" in frame.filename), default=-1)
+    below = [frame for frame in frames[test_index + 1:] if "/src/" in frame.filename]
+    entry = below[0] if below else None
+    test = frames[test_index] if test_index >= 0 else None
+    with open(path, "a") as out:
+        if os.environ.get("W661_PG_AUDIT_STACK") == "1":
+            out.write("".join(f"  {frame.filename.split('/src/')[-1]}:{frame.lineno} {frame.name}\n"
+                              for frame in frames[max(test_index, 0):] if "/src/" in frame.filename
+                              or "/tests/" in frame.filename))
+        out.write(f"{kind} {entry.filename.split('/src/')[-1] + ':' + entry.name if entry else '-'} <- "
+                  f"{test.filename.split('/tests/')[-1] + ':' + test.name if test else '-'}\n")
+
+
 @pytest.fixture(autouse=True)
 def _w661_bcore_pg_mode(monkeypatch):
     if not _PG_MODE:
         yield
         return
+    pool = install_pg_mode(lambda target, name, value: monkeypatch.setattr(target, name, value, raising=False))
+    yield
+    pool.terminate()
+
+
+def install_pg_mode(set_attr):
+    """Patch the store and service classes for PG mode; ``set_attr`` is monkeypatch.setattr, or setattr in a
+    test's child process (a child runs without this conftest, and must not write file-only next to rows)."""
     from connection_hub.delegated_credentials.cards import service as service_module
     from connection_hub.delegated_credentials.cards import store as store_module
     from connection_hub.delegated_credentials.cards.locks import row_fenced_lock
@@ -110,7 +146,6 @@ def _w661_bcore_pg_mode(monkeypatch):
 
     pool = _LazyPool(os.environ["W661_TEST_PG_DSN"])
     original_store_init = store_module.BundleStorageDelegatedCardStore.__init__
-    original_service_init = service_module.DelegatedCardService.__init__
     rows_by_root: dict = {}
 
     fixture_lock = row_fenced_lock(_no_extra_lock)
@@ -118,7 +153,7 @@ def _w661_bcore_pg_mode(monkeypatch):
     def store_init(self, storage_root, *args, **kwargs):
         original_store_init(self, storage_root, *args, **kwargs)
         # Stores over the same root share one authority, as two processes over one bundle storage would.
-        self.card_rows = rows_by_root.setdefault(str(self.root), _LazyRows(pool))
+        self.card_rows = rows_by_root.get(str(self.root)) or rows_by_root.setdefault(str(self.root), _LazyRows(pool, str(self.root)))
         _lock_fixture_writes(self)
 
     def _lock_fixture_writes(store):
@@ -133,6 +168,7 @@ def _w661_bcore_pg_mode(monkeypatch):
         async def locked_pointer(*, subject_hash, access_id, document):
             if current_lock_session() is not None:
                 return await write_pointer(subject_hash=subject_hash, access_id=access_id, document=document)
+            _audit_unlocked_write("pointer")
             async with fixture_lock(lock_path=store.root / ".fixture-lock", resource_id=f"delegated-card:{access_id}",
                                     operation="test-fixture", wait_seconds=5.0):
                 await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
@@ -141,6 +177,7 @@ def _w661_bcore_pg_mode(monkeypatch):
         async def locked_marker(write, txn, *args):
             if current_lock_session() is not None:
                 return await write(txn, *args)
+            _audit_unlocked_write("marker")
             async with fixture_lock(lock_path=store.root / ".fixture-lock", resource_id=f"card-version-txn:{txn}",
                                     operation="test-fixture", wait_seconds=5.0):
                 await store.card_rows.read_marker(txn)
@@ -152,23 +189,33 @@ def _w661_bcore_pg_mode(monkeypatch):
 
     pg_lock = row_fenced_lock(_no_extra_lock)
 
-    def service_init(self, *args, mutation_lock=None, **kwargs):
-        if mutation_lock is not None:
-            test_lock = mutation_lock
+    def with_rows(test_lock):
+        if test_lock is None or getattr(test_lock, "_w661_rows", False):
+            return test_lock
 
-            @contextlib.asynccontextmanager
-            async def mutation_lock(**kwargs_):
-                # The test's own lock stays OUTSIDE (its pause points model "before the lock"); the row context
-                # (option P's observations) is inside it, as under the production lock stack.
-                async with test_lock(**kwargs_) as held:
-                    async with pg_lock(**kwargs_):
-                        yield held
-        original_service_init(self, *args, mutation_lock=mutation_lock, **kwargs)
+        @contextlib.asynccontextmanager
+        async def mutation_lock(**kwargs_):
+            # The test's own lock stays OUTSIDE (its pause points model "before the lock"); the row context
+            # (option P's observations) is inside it, as under the production lock stack.
+            async with test_lock(**kwargs_) as held:
+                async with pg_lock(**kwargs_):
+                    yield held
 
-    monkeypatch.setattr(store_module.BundleStorageDelegatedCardStore, "__init__", store_init)
-    monkeypatch.setattr(service_module.DelegatedCardService, "__init__", service_init)
-    yield
-    pool.terminate()
+        mutation_lock._w661_rows = True
+        return mutation_lock
+
+    # A property, so a lock a test assigns after construction (service._mutation_lock = ...) is wrapped too. The
+    # wrapped lock is also the instance's own attribute: a test's monkeypatch.undo() removes this class property,
+    # and the instance then keeps using the wrapped lock it already had.
+    def get_lock(self):
+        return self.__dict__.get("_mutation_lock")
+
+    def set_lock(self, lock):
+        self.__dict__["_mutation_lock"] = with_rows(lock)
+
+    set_attr(store_module.BundleStorageDelegatedCardStore, "__init__", store_init)
+    set_attr(service_module.DelegatedCardService, "_mutation_lock", property(get_lock, set_lock))
+    return pool
 
 
 @pytest.fixture(autouse=True)
