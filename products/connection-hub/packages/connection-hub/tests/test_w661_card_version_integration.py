@@ -198,3 +198,32 @@ async def test_a_successor_is_refused_while_a_predecessors_effect_is_pending_and
     assert await _call(operation, "rollback", links=staged["members"]) == {
         "kind": "rollback", "state": "already_published"}
     assert [call[0] for call in handles.calls] == ["advance"]
+
+
+@pytest.mark.asyncio
+async def test_a_reset_fences_its_control_on_the_real_store_from_stage_through_publish(tmp_path):
+    """P2 passes a reset's Control as a store read member (P1 9f2bf68a): C moving after STAGE stops the PUBLISH."""
+    from dataclasses import replace
+
+    store, service, control, _ = await _setup(tmp_path)  # C: the Card the reset is computed from
+    my = replace(control, access_id="my-card-1", card_revision=1, label="my")
+    await service.commit(my, subject_hash=SUBJECT_HASH, expected_revision=0, now=1_800_000_000)
+    after = replace(my, card_revision=2, label="reset my")
+    plan = {"ok": True, "plan": {
+        "catalog_digest": catalog_version_digest(CATALOG["version"], CATALOG["content_hash"]),
+        "reads": [{"subject_hash": SUBJECT_HASH, "access_id": control.access_id, "revision": control.card_revision}],
+        "candidate_value": {"cards": [{"subject_hash": SUBJECT_HASH, "access_id": my.access_id, "action": "update",
+                                       "original_revision": 1, "original_absent": False,
+                                       "candidate": after.to_dict()}]}}}
+    card_versions = ServiceCardVersionStore(service, refused=CardVersionRefused, catalog_store=_Catalogs())
+    operation, _, _ = p2._operation(planner=p2._Planner(plan), store=card_versions)
+    reset = {**p2.RESET, "access_id": my.access_id, "subject_hash": SUBJECT_HASH, "original_revision": 1,
+             "control": {"access_id": control.access_id, "subject_hash": SUBJECT_HASH}}
+    staged = await _call(operation, "stage", updates=[reset])
+    assert staged["kind"] == "staged" and [m["card"]["access_id"] for m in staged["members"]] == [my.access_id]
+    # C changes after STAGE: the reset was computed from the old C, so it must not publish.
+    await service.commit(replace(control, card_revision=control.card_revision + 1, label="C moved"),
+                         subject_hash=SUBJECT_HASH, expected_revision=control.card_revision, now=1_800_000_000)
+    assert (await _call(operation, "publish"))["code"] == "card_changed"
+    assert await _call(operation, "rollback", links=staged["members"]) == {"kind": "rollback", "state": "rolled_back"}
+    assert await _current(store, my) == my
