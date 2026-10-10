@@ -314,7 +314,7 @@ async def test_every_write_is_fsynced_and_the_marker_holds_links_only(tmp_path, 
     raw = tx.card_version_marker_path(store, TXN).read_text(encoding="utf-8")
     marker = json.loads(raw)
     assert set(marker) == {"schema", "txn", "state", "request_digest", "request_id", "actor", "binding", "at",
-                           "catalog", "members", "effects", "effect_outcomes"}
+                           "catalog", "members", "reads", "effects", "effect_outcomes"}
     assert set(marker["members"][0]) == {"subject_hash", "access_id", "base_version", "observed_version",
                                          "observed_revision_name", "version", "revision_name", "content_hash",
                                          "pointer"}
@@ -861,3 +861,96 @@ async def test_a_rollback_link_must_match_the_exact_version_in_its_file(tmp_path
         assert await service.rollback_card_version(txn=TXN, links=[link], at=WHEN) == "unknown_txn"
     assert await service.rollback_card_version(txn=TXN, links=_links(answer), at=WHEN) == "already_published"
     assert await _current(store, before) == after
+
+
+async def _control_card(service, before):
+    """A second Card of the same person, standing in for the Control C that My Reset reads."""
+    control = replace(before, access_id="aut_control_c", card_revision=1, label="control C")
+    await service.commit(control, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
+    return control
+
+
+@pytest.mark.asyncio
+async def test_a_read_member_that_moved_before_stage_refuses_card_changed_and_writes_nothing(tmp_path):
+    """EMain 18:10Z: My Reset reads C under C's lock; a C changed between the plan and the lock refuses."""
+    store, service, before, after = await _setup(tmp_path)
+    control = await _control_card(service, before)
+    await service.commit(replace(control, card_revision=2, label="C moved"), subject_hash=SUBJECT_HASH,
+                         expected_revision=1, now=NOW)
+    files = _revision_files(store, before)
+    with pytest.raises(tx.CardTransactionRefused, match="card_changed"):
+        await service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,
+                                         members=[(SUBJECT_HASH, before.access_id, 1, after)],
+                                         reads=[(SUBJECT_HASH, control.access_id, 1)])
+    assert _revision_files(store, before) == files and not tx.card_version_marker_path(store, TXN).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_read_member_that_moves_between_stage_and_publish_refuses_publish(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    control = await _control_card(service, before)
+    await service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,
+                                     members=[(SUBJECT_HASH, before.access_id, 1, after)],
+                                     reads=[(SUBJECT_HASH, control.access_id, 1)])
+    assert (await tx.read_card_version_marker(store, TXN))["reads"] == [
+        {"subject_hash": SUBJECT_HASH, "access_id": control.access_id, "version": 1}]  # links only
+    await service.commit(replace(control, card_revision=2, label="C moved"), subject_hash=SUBJECT_HASH,
+                         expected_revision=1, now=NOW)
+    with pytest.raises(tx.CardTransactionRefused, match="card_changed"):
+        await service.publish_card_version(txn=TXN)
+    assert await _current(store, before) == before
+    assert await service.rollback_card_version(txn=TXN) == "rolled_back"
+
+
+@pytest.mark.asyncio
+async def test_read_members_are_locked_in_the_one_sorted_order_with_the_written_members(tmp_path):
+    taken = []
+
+    @asynccontextmanager
+    async def mutation_lock(*, lock_path, resource_id, operation, wait_seconds):
+        taken.append(resource_id)
+        yield
+
+    store, base_service, before, after = await _setup(tmp_path)
+    control = replace(before, access_id="aut_aa_control", card_revision=1)
+    await base_service.commit(control, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    await service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,
+                                     members=[(SUBJECT_HASH, before.access_id, 1, after)],
+                                     reads=[(SUBJECT_HASH, control.access_id, 1)])
+    assert taken == sorted(taken) and set(taken) == {f"delegated-card:{control.access_id}",
+                                                     f"delegated-card:{before.access_id}"}
+    taken.clear()
+    await service.publish_card_version(txn=TXN)
+    assert set(taken) == {f"delegated-card:{control.access_id}", f"delegated-card:{before.access_id}"}
+
+
+@pytest.mark.asyncio
+async def test_a_read_member_is_never_written_and_answers_no_link(tmp_path):
+    from connection_hub.delegated_credentials.cards.card_version_port import ServiceCardVersionStore
+
+    store, service, before, after = await _setup(tmp_path)
+    control = await _control_card(service, before)
+    control_files = _revision_files(store, control)
+    control_pointer = store.current_path(subject_hash=SUBJECT_HASH, access_id=control.access_id).read_bytes()
+
+    class _Catalog:
+        async def read_active(self):
+            return type("Doc", (), {"version": "v1", "content_hash": "c" * 64})()
+    port = ServiceCardVersionStore(service, refused=_PortRefused, catalog_store=_Catalog())
+    answer = await port.stage(TXN, request_id="r", request_digest=DIGEST,
+                              catalog={"version": "v1", "content_hash": "c" * 64}, actor_subject="p",
+                              actor_kind="caller", members=[{"subject_hash": SUBJECT_HASH, "access_id": before.access_id,
+                                                             "base_version": 1, "value": after.to_dict()}],
+                              effects=[], prepare=None, at=WHEN, scope="s", caller="c",
+                              reads=[{"card": {"subject_hash": SUBJECT_HASH, "access_id": control.access_id},
+                                      "version": 1}])
+    assert [m["card"]["access_id"] for m in answer["members"]] == [before.access_id]  # no link for C
+    await port.publish(TXN, scope="s", caller="c", apply=None)
+    assert await _current(store, before) == after
+    assert _revision_files(store, control) == control_files
+    assert store.current_path(subject_hash=SUBJECT_HASH, access_id=control.access_id).read_bytes() == control_pointer
+    with pytest.raises(tx.CardTransactionRefused, match="card_version_members_invalid"):  # read and written at once
+        await service.stage_card_version(txn="w661-txn-" + "f" * 32, request_digest=DIGEST, catalog="c", now=WHEN,
+                                         members=[(SUBJECT_HASH, control.access_id, 1, replace(control, card_revision=2))],
+                                         reads=[(SUBJECT_HASH, control.access_id, 1)])

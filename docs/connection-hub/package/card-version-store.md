@@ -42,6 +42,11 @@ before the locks go:
 5. the version files (sidecar first);
 6. the marker `staged`.
 
+**Read members** (`reads`, `{card, version}`; My Reset's Control C) are Cards a save reads but never
+writes. They are locked in the same sorted order as the written members, a pending predecessor on them
+refuses, and they must still be at `version` at STAGE and again at PUBLISH (`card_changed`). The
+marker keeps only their links; they get no answer link and no effect.
+
 A same-txn retry with the same request finishes the same files; a different request or binding
 refuses (`stage_txn_conflict`, `txn_scope_mismatch`).
 

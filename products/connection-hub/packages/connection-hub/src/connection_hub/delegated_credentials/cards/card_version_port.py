@@ -75,12 +75,14 @@ class ServiceCardVersionStore:
     async def stage(self, txn: str, *, request_id: str, request_digest: str, catalog: Mapping[str, Any],
                     actor_subject: str, actor_kind: str, members: Sequence[Mapping[str, Any]],
                     effects: Sequence[Mapping[str, Any]], prepare: Any, at: datetime, scope: str,
-                    caller: str) -> Mapping[str, Any]:
+                    caller: str, reads: Sequence[Mapping[str, Any]] = ()) -> Mapping[str, Any]:
         """``at`` is the request's own time (a request field), never this host's clock: a retry then names
         the same version file (EMain 16:41Z: "STAGE takes 'at' from the request")."""
         try:
             rows = [(m["subject_hash"], m["access_id"], m["base_version"], CardAuthority.from_mapping(m["value"]))
                     for m in members]
+            # Read members: {card: {subject_hash, access_id}, version}; locked and version-checked, never written.
+            read_rows = [(r["card"]["subject_hash"], r["card"]["access_id"], r["version"]) for r in reads]
         except Exception as exc:  # noqa: BLE001 - a malformed value is the caller's edit, never a store fault
             raise self._refused("edit_invalid") from exc
         if self._catalog_store is None:
@@ -89,7 +91,7 @@ class ServiceCardVersionStore:
             txn=txn, request_digest=request_digest, catalog=dict(catalog), members=rows, now=at,
             effects=[dict(effect) for effect in effects], request_id=request_id,
             actor={"subject": actor_subject, "kind": actor_kind}, prepare=prepare,
-            binding={"scope": scope, "caller": caller}, active_catalog=self._active_catalog))
+            binding={"scope": scope, "caller": caller}, active_catalog=self._active_catalog, reads=read_rows))
         return {"members": _links(answer)}
 
     async def publish(self, txn: str, *, scope: str, caller: str, apply: Any) -> Mapping[str, Any]:
