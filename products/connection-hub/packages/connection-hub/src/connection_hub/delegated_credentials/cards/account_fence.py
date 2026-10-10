@@ -50,7 +50,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterable, Mapping
 
-from ..durable_io import read_json_or_none, write_json_atomic
+from ..durable_io import read_json_or_none, write_json_atomic, unlink_guarded
 from .model import CardAuthority
 
 FENCES_DIRNAME = "account-fences"
@@ -96,7 +96,7 @@ def _index_path(store: Any, transaction_id: str):
 
 def _remove(path) -> None:
     try:
-        path.unlink(missing_ok=True)
+        unlink_guarded(path)
     except OSError:
         pass
 

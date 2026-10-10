@@ -43,6 +43,13 @@ def _collection_section(collection_id):
     return held()
 
 
+class _NeverStore:
+    """W661: piece 1's Card version store; an unauthenticated request never reaches it."""
+
+    def __getattr__(self, name):
+        raise AssertionError("an unauthenticated request reached the Card version store")
+
+
 class _Nonces:
     async def set(self, key, value, *, ex, nx):
         return True
@@ -71,6 +78,7 @@ def entrypoint(monkeypatch):
     monkeypatch.setattr(module, "_delegated_authority_config", lambda _e: SimpleNamespace(uses_postgresql=True))
     monkeypatch.setattr(module, "_delegated_catalog_store", lambda _e: None)
     monkeypatch.setattr(module, "_runtime_tenant_project", lambda _e: ("t", "p"))
+    monkeypatch.setattr(module, "_card_version_store", lambda _e, _p: _NeverStore())
 
     async def host(_entrypoint, _request):
         return object()
@@ -127,6 +135,22 @@ async def test_w578_lifecycle_plan_endpoint_ignores_the_browser_session(entrypoi
     plan = await entrypoint.card_lifecycle_plan(data=forged, request=_browser_request())
     assert plan["ok"] is False and plan["error"]["code"] == "card_participant_unauthenticated"
     assert "plan_answer" not in plan
+
+
+@pytest.mark.asyncio
+async def test_w661_card_version_endpoint_ignores_the_browser_session(entrypoint):
+    """W661: card_version is a peer endpoint like card_lifecycle_plan."""
+    module = _module()
+    assert "card_version" in module.CSRF_EXEMPT_PUBLIC_POST_ALIASES
+    answer = await entrypoint.card_version(data={"op": "publish"}, request=_browser_request())
+    assert answer["ok"] is False and answer["error"]["code"] == "card_version_request_invalid"
+    forged = _forged("card-version-request.v1", {
+        "op": "publish", "scope": "work:project:one", "txn": "t" * 40, "request_id": None, "at": None, "catalog": None,
+        "actor_subject": None, "actor_kind": None, "delegable_grants": None, "project_control": None,
+        "creations": None, "updates": None, "links": None, "compensation_at": None})
+    answer = await entrypoint.card_version(data=forged, request=_browser_request())
+    assert answer["ok"] is False and answer["error"]["code"] == "card_participant_unauthenticated"
+    assert "participant_answer" not in answer
 
 
 @pytest.mark.asyncio

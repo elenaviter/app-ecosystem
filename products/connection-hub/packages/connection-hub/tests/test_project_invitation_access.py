@@ -427,10 +427,8 @@ async def test_pending_selection_is_editable_and_audited_by_project_admin() -> N
     assert audit["action"] == "updated"
     assert audit["actor_subject"] == ADMIN
     assert audit["request_id"] == "request-update"
-    assert audit["changes"]["label"] == {
-        "before": "Invited project member",
-        "after": "Reviewed invitation access",
-    }
+    assert "label" in audit["changed_fields"] and "changes" not in audit
+    assert "Reviewed invitation access" not in str(audit)
 
 
 @pytest.mark.asyncio

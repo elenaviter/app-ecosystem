@@ -56,6 +56,8 @@ _ECHO = re.compile(r"[0-9a-f]{32,128}\Z")
 _BOUNDED = 256
 # The Hub reasons an answer may carry; anything else is card_participant_refused.
 HUB_REFUSALS = frozenset({
+    # W661 S5: card_version's fixed refusal for a manual edit that would change a protected grant.
+    "card_edit_admin_grant_role_only",
     "transaction_unknown", "card_intent_unknown", "card_intent_not_bound", "card_intent_base_moved",
     "card_intent_invalid", "card_decision_mismatch", "card_dependency_moved", "card_dependency_reserved",
     "card_dependency_invalid", "card_transaction_undecided", "card_transaction_prepared",

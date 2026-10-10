@@ -19,7 +19,7 @@ import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Mapping
 
-from ..durable_io import DurableStorageError, cancellation_safe_await, read_json_or_none, require_publish_before, write_json_atomic
+from ..durable_io import DurableStorageError, cancellation_safe_await, read_json_or_none, require_publish_before, write_json_atomic, unlink_guarded
 from .lifecycle import LifecycleRefused, LifecycleRequest
 from .model import CARD_STATE_REVOKED, CardCurrentPointer, card_revision_name
 from .store import CardStorageError
@@ -152,9 +152,13 @@ async def _retire_active_intent(store: Any, transaction_id: str) -> None:
     if receipt is None or receipt["state"] == "prepared" or receipt["serving_state"] == "pending":
         return
     try:
-        await cancellation_safe_await(asyncio.to_thread(active_intent_path(store, transaction_id).unlink, missing_ok=True))
+        await cancellation_safe_await(asyncio.to_thread(unlink_guarded, active_intent_path(store, transaction_id)))
     except OSError:
         pass
+    from .inflight import release_inflight
+    for entry in receipt["targets"]:
+        await release_inflight(store, subject_hash=entry["subject_hash"], access_id=entry["access_id"],
+                               txn=transaction_id)
 
 
 async def resolve_pointer(store: Any, payload: Mapping[str, Any], *,
@@ -178,13 +182,12 @@ async def assert_pointer_replaceable(store: Any, *, subject_hash: str, access_id
     # W578: no ordinary write publishes around an undecided staged transaction.
     from .transaction_store import assert_replaceable as assert_transaction_replaceable
     await assert_transaction_replaceable(store, subject_hash=subject_hash, access_id=access_id)
-    # The shared intent exists BEFORE either pointer is staged. This covers
-    # the otherwise unguarded participant after an intent-only/first-pointer
-    # kill. Production callers check inside the same Card's mutation fence.
-    async for receipt in _active_intents(store):
-        if any((entry["subject_hash"], entry["access_id"]) == (subject_hash, access_id)
-               for entry in receipt["targets"]):
-            raise CardStorageError("lifecycle_preparation_unresolved")
+    # W661 D3 (Infra K2 cut): finalize the card-version txn current.json names before replacing it.
+    from .transaction_store import finalize_current_version
+    await finalize_current_version(store, subject_hash=subject_hash, access_id=access_id)
+    # The shared intent exists BEFORE either pointer is staged, and each target Card names it in its own
+    # in-flight file before that (W661: one direct read per Card, nothing listed). The update store's check
+    # above read that same file, so an in-flight lifecycle intent has already refused there.
     raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
     if raw is None or raw.get("schema") != LIFECYCLE_POINTER_SCHEMA:
         return
@@ -260,7 +263,12 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
     receipt = {"schema": LIFECYCLE_RECEIPT_SCHEMA, "transaction_id": transaction_id,
                "binding": request.binding(actor_subject), "state": "prepared", "reason": "", "targets": entries,
                "serving_state": "pending" if after_prepare is not None else "not_required"}
-    # Intent precedes every revision/pointer write and exists across a kill.
+    # Each target Card names the intent first (W661 per-Card in-flight read), then the intent precedes every
+    # revision/pointer write and exists across a kill.
+    from .inflight import LIFECYCLE, claim_inflight
+    for entry in entries:
+        await claim_inflight(store, subject_hash=entry["subject_hash"], access_id=entry["access_id"],
+                             kind=LIFECYCLE, txn=transaction_id)
     await write_json_atomic(active_intent_path(store, transaction_id), receipt)
     try:
         if after_prepare is not None:

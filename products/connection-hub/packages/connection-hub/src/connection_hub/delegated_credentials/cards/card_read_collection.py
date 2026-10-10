@@ -33,7 +33,7 @@ from typing import Any, Mapping, Sequence
 
 from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
 
-from ..durable_io import list_child_names, read_json_or_none, write_json_atomic
+from ..durable_io import list_child_names, read_json_or_none, write_json_atomic, unlink_guarded
 from .store import CardStorageError
 
 COLLECTION_HEADER_SCHEMA = "connection-hub.card-read-collection-header.v1"
@@ -233,13 +233,13 @@ async def delete_collection(store: Any, collection_id: str) -> int:
     removed, failed = 0, 0
     for name in await list_child_names(leaves):
         try:
-            await asyncio.to_thread((leaves / name).unlink, missing_ok=True)
+            await asyncio.to_thread(unlink_guarded, (leaves / name))
             removed += 1
         except OSError:
             failed += 1
     if failed or await list_child_names(leaves):
         raise CardStorageError("card_read_collection_delete_incomplete")
-    await asyncio.to_thread(header_path(store, collection_id).unlink, missing_ok=True)
+    await asyncio.to_thread(unlink_guarded, header_path(store, collection_id))
     for directory in (leaves, root):
         try:
             await asyncio.to_thread(directory.rmdir)

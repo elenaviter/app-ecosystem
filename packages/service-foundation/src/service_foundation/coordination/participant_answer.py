@@ -38,6 +38,14 @@ COLLECTION_REQUEST_FIELDS = frozenset({
 })
 COLLECTION_ECHO_FIELDS = COLLECTION_REQUEST_FIELDS - {"schema"}
 COLLECTION_ANSWER_FIELDS = COLLECTION_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
+# W661: PB's STAGE / PUBLISH / ROLLBACK (v6.3: and OUTCOME / COMPENSATE) of one Card save (Connection Hub's card_version). The answer
+# echoes only the call's identity; request_digest binds the whole request, so no edit value is repeated.
+CARD_VERSION_REQUEST_FIELDS = frozenset({
+    "schema", "op", "request_echo", "scope", "txn", "request_id", "at", "catalog", "actor_subject",
+    "actor_kind", "delegable_grants", "project_control", "creations", "updates", "links", "compensation_at",
+})
+CARD_VERSION_ECHO_FIELDS = frozenset({"op", "request_echo", "scope", "txn"})
+CARD_VERSION_ANSWER_FIELDS = CARD_VERSION_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
 PROOF_FIELDS = frozenset({"service_id", "timestamp", "signature"})
 _ECHO = re.compile(r"[0-9a-f]{32,128}\Z")
 _TIMESTAMP = re.compile(r"(?:0|[1-9][0-9]{0,19})\Z")
@@ -68,6 +76,7 @@ class AnswerContract(Enum):
     CENSUS = "census"
     PLAN = "plan"
     COLLECTION = "collection"
+    CARD_VERSION = "card_version"
 
 
 def _fields(contract: AnswerContract) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
@@ -79,6 +88,8 @@ def _fields(contract: AnswerContract) -> tuple[frozenset[str], frozenset[str], f
         return PLAN_REQUEST_FIELDS, PLAN_ECHO_FIELDS, PLAN_ANSWER_FIELDS
     if contract is AnswerContract.COLLECTION:
         return COLLECTION_REQUEST_FIELDS, COLLECTION_ECHO_FIELDS, COLLECTION_ANSWER_FIELDS
+    if contract is AnswerContract.CARD_VERSION:
+        return CARD_VERSION_REQUEST_FIELDS, CARD_VERSION_ECHO_FIELDS, CARD_VERSION_ANSWER_FIELDS
     raise ParticipantAnswerRefused("answer_configuration_invalid")
 
 
