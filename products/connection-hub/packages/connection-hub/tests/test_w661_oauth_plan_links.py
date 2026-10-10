@@ -225,3 +225,31 @@ async def test_a_hidden_version_is_never_overwritten_and_is_adopted_by_moving_on
         with pytest.raises(CardRecordError, match="version_link_owner_conflict"):
             await links.adopt_hidden_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
                                              link=link, from_tag=tag, to_transaction_id="e" * 64)
+
+
+@pytest.mark.asyncio
+async def test_the_plan_reads_its_candidate_after_adoption_and_after_commit_but_never_a_foreign_owner(tmp_path):
+    """r3: lane 3 adopts the candidate (txn, or member 0 of a first-consent group) and FINISH may drop the
+    marker; the plan still reads exactly that file. Any other owner refuses."""
+    from connection_hub.delegated_credentials.cards.transaction_store import member_transaction_id, revision_marker_path
+
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)  # first consent: a group creation
+        link = (await _stored(w, plan))["intent"]["candidate"]
+        tag = links.staging_tag("oauth-issuance-candidate", plan.decision_request_id)
+        member = member_transaction_id(plan.transaction_id, 0)
+        await links.adopt_hidden_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id, link=link,
+                                         from_tag=tag, to_transaction_id=member)
+        trusted = await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)
+        assert trusted.operations == plan.operations  # read by the adopted owner
+        marker = revision_marker_path(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
+                                      revision_name=link["revision_name"])
+        marker.write_text(json.dumps({"transaction_id": "d" * 64}))  # a foreign owner
+        with pytest.raises(IssuanceRefused) as refused:
+            await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)
+        assert refused.value.reason == "issuance_plan_card_unavailable"
+        marker.unlink()  # committed and finished: the marker is gone
+        assert (await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)).operations \
+            == plan.operations
+        marker.write_text(json.dumps({"transaction_id": member}))
+        assert (await _complete(w, plan)).state == "committed"

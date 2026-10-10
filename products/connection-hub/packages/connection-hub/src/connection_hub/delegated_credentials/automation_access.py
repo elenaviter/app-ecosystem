@@ -10009,9 +10009,15 @@ class AutomationAccessService:
                                             "expected_revision": revisions.get((resource, operation), 0)}})
         return effects
 
-    async def _plan_card(self, plan: Mapping[str, Any], which: str) -> Any:
+    async def _plan_card(self, plan: Mapping[str, Any], which: str, transaction_id: str = "") -> Any:
         """A plan's ``original`` or ``candidate`` Card: read by its link (W661 scope B), or a legacy v1
-        plan's stored body. The candidate must still carry its plan's staging marker."""
+        plan's stored body.
+
+        The candidate's marker must name exactly one of its owners: the plan's staging tag; once the plan is
+        bound to ``transaction_id``, the transaction that adopted it (``transaction_id`` for a single Card,
+        its member id ``member_transaction_id(transaction_id, 0)`` for a first-consent group); or no marker
+        at all once committed and finished. Any other owner refuses."""
+        from .cards.transaction_store import member_transaction_id
         from .cards.version_link import is_version_link, load_version, staging_tag
         from .oauth_issuance import IssuanceRefused
 
@@ -10021,10 +10027,16 @@ class AutomationAccessService:
         card_store = getattr(self._cards(), "card_store", None)
         if card_store is None:
             raise IssuanceRefused("card_transactions_unavailable", retryable=True)
-        marker = staging_tag("oauth-issuance-candidate", plan["decision_request_id"]) if which == "candidate" else None
+        owners: set[str] = set()
+        if which == "candidate":
+            owners.add(staging_tag("oauth-issuance-candidate", plan["decision_request_id"]))
+            if transaction_id:
+                owners.add(member_transaction_id(transaction_id, 0) if plan["intent"]["shape"] == "group"
+                           else transaction_id)
         try:
             return await load_version(card_store, subject_hash=plan["intent"]["subject_hash"],
-                                      access_id=plan["access_id"], link=value, marker=marker)
+                                      access_id=plan["access_id"], link=value, owners=owners,
+                                      allow_unmarked=which == "candidate" and bool(transaction_id))
         except CardRecordError:
             raise IssuanceRefused("issuance_plan_card_unavailable") from None
 
@@ -10037,7 +10049,7 @@ class AutomationAccessService:
         from .cards.card_participant import CardGroupIntent, CardGroupMemberIntent, CardIntent
 
         spec = plan["intent"]
-        candidate = await self._plan_card(plan, "candidate")
+        candidate = await self._plan_card(plan, "candidate", transaction_id)
         effects = tuple(dict(effect) for effect in spec["effects"])
         if spec["shape"] == "group":
             return CardGroupIntent(
@@ -10046,7 +10058,8 @@ class AutomationAccessService:
                                                action=spec["action"]),),
                 effects=effects, actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
         return CardIntent(transaction_id=transaction_id, intent_digest=intent_digest, subject_hash=spec["subject_hash"],
-                          original=await self._plan_card(plan, "original"), candidate=candidate, effects=effects,
+                          original=await self._plan_card(plan, "original", transaction_id), candidate=candidate,
+                          effects=effects,
                           action=spec["action"], actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
 
     async def _issuance_plan(self, plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
@@ -10057,7 +10070,7 @@ class AutomationAccessService:
 
         derived = {}
         if "operations" not in plan:
-            candidate = await self._plan_card(plan, "candidate")
+            candidate = await self._plan_card(plan, "candidate", transaction_id)
             derived = {"operations": list(candidate.operations),
                        "resource_grants": {key: list(items) for key, items in candidate.resource_grants.items()},
                        "resource_operations": {key: list(items)
@@ -10293,7 +10306,7 @@ class AutomationAccessService:
             if not isinstance(expect, Mapping) or any(
                     reservations.get(slot, {}).get("token_sha256") != digest for slot, digest in expect.items()):
                 raise IssuanceRefused("issuance_expect_mismatch")
-        candidate = await self._plan_card(plan, "candidate")
+        candidate = await self._plan_card(plan, "candidate", transaction_id)
         decided_here, abort_reason = False, ""
         try:
             async with store.issuance_completion_section(transaction_id) as renew:

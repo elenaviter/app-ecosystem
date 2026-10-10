@@ -145,18 +145,25 @@ async def adopt_hidden_version(store: Any, *, subject_hash: str, access_id: str,
 
 
 async def load_version(store: Any, *, subject_hash: str, access_id: str, link: Any,
-                       marker: str | None = None) -> CardAuthority:
+                       marker: str | None = None, owners: Any = (), allow_unmarked: bool = False) -> CardAuthority:
     """The Card a link names, read directly by name; refuses unless content hash, card and revision match.
 
     ``marker``: an uncommitted candidate's tag. When given, the version file's ``.card-transaction.json``
-    marker must name exactly that tag (``version_link_marker_mismatch``).
+    marker must name exactly that tag (``version_link_marker_mismatch``). ``owners`` accepts one of several
+    exact owners instead (a staging tag, or the transaction that adopted it); ``allow_unmarked`` also
+    accepts a file whose marker is gone (a committed version after FINISH), never a different owner.
     """
     if not is_version_link(link):
         raise CardRecordError("version_link_invalid")
-    if marker is not None:
+    accepted = {marker} if marker is not None else set(owners or ())
+    if accepted or allow_unmarked:
         found = await read_json_or_none(_marker_path(store, subject_hash=subject_hash, access_id=access_id,
                                                      revision_name=link["revision_name"]))
-        if found != {"transaction_id": marker}:
+        if found is None:
+            if not allow_unmarked:
+                raise CardRecordError("version_link_marker_mismatch")
+        elif not (isinstance(found, Mapping) and set(found) == {"transaction_id"}
+                  and found["transaction_id"] in accepted):
             raise CardRecordError("version_link_marker_mismatch")
     payload = await read_json_or_none(store.revision_path(subject_hash=subject_hash, access_id=access_id,
                                                           revision_name=link["revision_name"]))
