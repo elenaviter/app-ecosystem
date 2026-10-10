@@ -1526,6 +1526,13 @@ async def card_version_revision_committed(store: Any, marker: Any, *, subject_ha
         # D2 (EMain 17:1xZ): PUBLISH deletes the marker once done, and ROLLBACK deletes a txn's files BEFORE its
         # marker, so a version file whose txn marker is gone is published history.
         return True
+    if txn["state"] == "staged":
+        # Infra 17:2xZ red 3: current.json naming this version is the truth (D3): a PUBLISH stopped between its
+        # pointer write and its marker write has published it, so readers must not see a missing revision.
+        current = await store.read_current(subject_hash=subject_hash, access_id=access_id)
+        return current is not None and current.revision_name == revision_name and any(
+            (m["subject_hash"], m["access_id"], m["revision_name"]) == (subject_hash, access_id, revision_name)
+            for m in txn["members"])
     if txn["state"] != "published":
         return False
     return any((m["subject_hash"], m["access_id"], m["revision_name"]) == (subject_hash, access_id, revision_name)
@@ -1683,6 +1690,10 @@ async def card_version_stage(store: Any, *, txn: str, request_digest: str, catal
         by_card = {(m[0], m[1]): m[3] for m in members}
         if set(by_card) != {(m["subject_hash"], m["access_id"]) for m in existing["members"]}:
             raise CardTransactionRefused("stage_txn_conflict")
+        if prepare is not None:
+            # Infra 17:2xZ red 1: a `staging` marker is no evidence that preparation succeeded; the retry
+            # completes it (piece 2's preparation is idempotent per txn) before any file or `staged`.
+            await cancellation_safe_await(prepare())
         await _write_staged_versions(store, existing, by_card, now)
         existing["state"] = "staged"
         await _write_card_version_marker(store, existing)

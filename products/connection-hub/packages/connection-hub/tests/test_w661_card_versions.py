@@ -701,3 +701,38 @@ async def test_a_writer_finalizes_a_stopped_publish_so_its_rollback_never_delete
     assert staged in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
     assert await store.read_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id,
                                      revision_name=staged) == after
+
+
+@pytest.mark.asyncio
+async def test_a_staging_retry_completes_the_preparation_before_answering_staged(tmp_path):
+    """Infra 17:2xZ red 1: a `staging` marker is no evidence that preparation succeeded."""
+    store, service, before, after = await _setup(tmp_path)
+    attempts = []
+
+    async def prepare():
+        attempts.append("prepare")
+        if len(attempts) == 1:
+            raise RuntimeError("preparation unavailable")
+    args = dict(txn=TXN, request_digest=DIGEST, catalog="c", members=[(SUBJECT_HASH, before.access_id, 1, after)],
+                now=WHEN, effects=[{"kind": "handle_binding", "key": "k1"}], prepare=prepare)
+    with pytest.raises(RuntimeError):
+        await service.stage_card_version(**args)
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "staging"
+    await service.stage_card_version(**args)
+    assert attempts == ["prepare", "prepare"]
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
+
+
+@pytest.mark.asyncio
+async def test_a_reader_sees_the_new_version_once_current_names_it_even_before_the_published_marker(tmp_path):
+    """Infra 17:2xZ red 3: the pointer-before-marker cut of a real PUBLISH is not a missing revision."""
+    from connection_hub.delegated_credentials.cards.model import CardCurrentPointer
+
+    store, service, before, after = await _setup(tmp_path)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    marker = await tx.read_card_version_marker(store, TXN)
+    assert await _current(store, before) == before
+    await store.advance_current(subject_hash=SUBJECT_HASH,
+                                pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
+    assert await _current(store, before) == after
