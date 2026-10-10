@@ -47,12 +47,31 @@ def _w661_card_lock_r_mode(monkeypatch):
                                                    make_metadata=make_lock_metadata, tenant="t",
                                                    project=project, base_lock=no_file_lock)
 
+    def _record_outside():
+        # Diagnostic (W661_CARD_LOCK_R_AUDIT=<file>): which SOURCE caller wrote outside any R operation.
+        audit = os.environ.get("W661_CARD_LOCK_R_AUDIT")
+        if not audit:
+            return
+        import traceback
+        frames = [f for f in traceback.extract_stack()[:-2]
+                  if "/src/connection_hub/" in f.filename and "durable_io.py" not in f.filename
+                  and "redis_lock.py" not in f.filename]
+        if frames:
+            top = frames[-1]
+            with open(audit, "a", encoding="utf-8") as fh:
+                fh.write(f"{top.filename.split('/src/')[-1]}:{top.lineno}:{top.name}\n")
+
     async def owner_guard():
         if redis_lock._OPERATION.get() is None:
-            return None  # a fixture write outside any R operation
-        await redis_lock.assert_card_lock_owned()
+            _record_outside()
+        await redis_lock.assert_card_lock_owned()  # the production guard, unchanged
 
-    owner_guard.sync = lambda: None if redis_lock._OPERATION.get() is None else redis_lock._assert_card_lock_held()
+    def owner_guard_sync():
+        if redis_lock._OPERATION.get() is None:
+            _record_outside()
+        return redis_lock._assert_card_lock_held()
+
+    owner_guard.sync = owner_guard_sync
     original_store_init = store_module.BundleStorageDelegatedCardStore.__init__
     original_service_init = service_module.DelegatedCardService.__init__
 

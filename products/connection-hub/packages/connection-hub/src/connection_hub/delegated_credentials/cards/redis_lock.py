@@ -230,18 +230,25 @@ def redis_card_mutation_lock(redis: Any, *, observed_lock: Callable[..., Any], m
     return lock
 
 
-def _assert_card_lock_held() -> _Held:
+def _assert_card_lock_held() -> _Held | None:
+    """None outside any R operation: that write was never under a Card lock (intent records, read collections,
+    shares, fixtures), so R adds no claim and the phase-1 proc-only guard still applies. Inside one, ownership."""
     held = _OPERATION.get()
-    if held is None or held.closed or not held.keys:
-        raise CardStorageError("card_lock_not_held")
+    if held is None:
+        return None
+    if held.closed:
+        raise CardStorageError("card_lock_session_closed")  # a task that outlived its operation
     if held.lost:
         raise CardStorageError("card_lock_lost")
     return held
 
 
 async def assert_card_lock_owned() -> None:
-    """R-4, the write guard: before each Card file write, this operation still owns EVERY key it holds."""
+    """R-4, the write guard: a write made inside an R operation needs that operation to still own EVERY key it
+    holds (GET == its value) and not be marked lost; otherwise card_lock_lost."""
     held = _assert_card_lock_held()
+    if held is None:
+        return
     for key, value in list(held.keys.items()):
         try:
             current = await held.redis.get(key)

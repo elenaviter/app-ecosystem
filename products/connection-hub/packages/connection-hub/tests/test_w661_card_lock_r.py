@@ -216,15 +216,14 @@ async def test_an_evicting_redis_is_refused_before_any_lock(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_writes_need_an_owned_lock_and_reentry_and_child_tasks_are_safe(tmp_path):
+async def test_writes_inside_an_operation_need_ownership_and_reentry_and_child_tasks_are_safe(tmp_path):
     from connection_hub.delegated_credentials.cards.store import CardStorageError
     from connection_hub.delegated_credentials.durable_io import unlink_guarded, unlink_guarded_async
 
     redis = _client()
     lock = _lock(redis)
     store = _store(tmp_path)
-    with pytest.raises(CardStorageError, match="card_lock_not_held"):
-        await _write(store)
+    await _write(store, "outside.json")  # outside any R operation: no Card-lock claim, phase-1 rules only
     release = asyncio.Event()
 
     async def child():
@@ -239,7 +238,7 @@ async def test_writes_need_an_owned_lock_and_reentry_and_child_tasks_are_safe(tm
         unlink_guarded(store.root / "outer.json")  # the synchronous form: held, not closed, not lost
         task = asyncio.create_task(child())
     release.set()
-    with pytest.raises(CardStorageError, match="card_lock_not_held"):
+    with pytest.raises(CardStorageError, match="card_lock_session_closed"):
         await task
     assert not (store.root / "late.json").exists()
     await redis.aclose()
