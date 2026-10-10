@@ -1891,6 +1891,12 @@ def _render_inspect(result: Mapping[str, Any]) -> list[str]:
     session = result.get("session") or {}
     worker = result.get("worker") or {}
     channel = result.get("channel") or {}
+    # A detach answers ``worker`` (and older clients ``channel``) as plain strings; read
+    # them as the worker name and the channel state instead of failing the whole view.
+    if not isinstance(worker, Mapping):
+        worker = {"worker_name": str(worker)}
+    if not isinstance(channel, Mapping):
+        channel = {"state": str(channel)}
     authorization = result.get("authorization") or {}
     subscription = session.get("subscription") or {}
     lines = [
