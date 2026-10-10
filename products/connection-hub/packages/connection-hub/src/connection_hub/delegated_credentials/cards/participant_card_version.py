@@ -357,7 +357,7 @@ class CardVersionOperation:
                                      else card["original_revision"]),
                     "value": card["candidate"]}
                    for card in cards]
-        effects = await self._effects(cards)
+        effects = await self._effects(cards, at=_at(data["at"]))
 
         async def prepare() -> None:
             for effect in effects:
@@ -369,8 +369,13 @@ class CardVersionOperation:
             effects=effects, prepare=prepare, at=_at(data["at"]), **binding)
         return _links(answer)
 
-    async def _effects(self, cards: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-        """The save's Hub effects: ``handle_binding`` per edited credential-bearing Card, nothing else."""
+    async def _effects(self, cards: Sequence[Mapping[str, Any]], *, at: datetime) -> list[dict[str, Any]]:
+        """The save's Hub effects: ``handle_binding`` per edited credential-bearing Card, nothing else.
+
+        An agent row's re-wrap envelope is prepared at the request's own ``at``, never this host's
+        clock: a STAGE retry (the store calls ``prepare`` again on a ``staging`` marker) then prepares
+        the identical envelope under the same ref, which the resident secret store answers as a replay.
+        """
         produce = getattr(self._host, "_handle_binding_effects", None)
         if produce is None:
             return []
@@ -385,8 +390,11 @@ class CardVersionOperation:
         for effect in effects:
             if effect.get("kind") != HANDLE_BINDING:
                 raise CardVersionRefused("edit_invalid")  # card_effect_adapter_unavailable: fail closed
+        prepared_at = int(at.timestamp())
         return [{"kind": effect["kind"], "key": effect["key"], "access_id": effect["payload"]["access_id"],
-                 "payload": dict(effect["payload"])} for effect in effects]
+                 "payload": {**effect["payload"],
+                             "prepared_at": prepared_at if effect["payload"]["from_fingerprint"] else 0}}
+                for effect in effects]
 
     def _operation(self, name: str) -> Any:
         operation = getattr(self._handles, name, None)

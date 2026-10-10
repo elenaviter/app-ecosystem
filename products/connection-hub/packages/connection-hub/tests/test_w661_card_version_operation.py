@@ -475,3 +475,28 @@ async def test_an_invitation_recreating_an_existing_card_is_the_plain_upsert():
     operation, _, store = _operation(planner=_Planner(plan))
     assert (await operation.answer(_request()))["ok"] is True
     assert store.staged[0]["members"][0]["base_version"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_retried_stage_prepares_the_identical_rewrap():
+    """Infra P1 finding 1: a `staging` retry calls prepare again; the agent envelope must be the same one."""
+    from datetime import datetime
+
+    payload = {**AGENT_EFFECT["payload"], "from_fingerprint": "fp", "prepared_at": 111}
+    prepared = []
+
+    class _Recording(_Handles):
+        async def stage_rewrap(self, txn, access_id, binding):
+            prepared.append((txn, access_id, dict(binding)))
+
+    class _RetryStore(_Store):
+        async def stage(self, txn, **kwargs):
+            await kwargs["prepare"]()  # the first attempt stopped after prepare, before `staged`
+            return await super().stage(txn, **kwargs)
+
+    host = _Host(effects=[{**AGENT_EFFECT, "payload": payload}])
+    operation, _, _ = _operation(host=host, handles=_Recording(identity=ROW), store=_RetryStore())
+    assert (await operation.answer(_request()))["ok"] is True
+    first, again = prepared
+    assert first == again
+    assert first[2]["prepared_at"] == int(datetime.fromisoformat(AT).timestamp())
