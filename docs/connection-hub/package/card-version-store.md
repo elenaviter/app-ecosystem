@@ -108,21 +108,42 @@ queue entry and clears it after it retires. A pointer writer reads that one file
 (`issuer_update_preparation_unresolved`, `lifecycle_preparation_unresolved`) instead of listing the
 queues. The queues remain for those flows' own crash recovery until the scope-B follow-up.
 
-## The Card lock and who may write (K1, phase 1)
+## The Card lock and who may write (option R, with phase-1 guards)
 
-K1 on the live Docker Desktop host (10 October) showed that `flock` on the shared `/bundle-storage` bind
-is not exclusive between processes (1 overlap in 600). Phase 1 therefore:
+**The Card file-lock root.** It is the Hub bundle's own platform storage root plus `_card_locks`
+(`bundle_storage_root()/_card_locks`; KDCube `sdk/bundle/bundle-storage-and-cache-README.md`: "use
+self.bundle_storage_root() and create a subdirectory below it"). It is the shared local filesystem: local disk
+here, EFS in the cloud. Each Card lock file is `<root>/_card_locks/<sha256 of the absolute Card lock path>.lock`.
+There is no host path and no config root: phase 1's `/run/kdcube-card-locks` could not be created by the non-root
+app user, and every Card write failed (10 October). No storage root refuses `card_lock_root_unavailable`; a root
+the process cannot create refuses `card_lock_root_unwritable`.
 
-- takes the Card mutation lock (the SDK `flock`) on a **container-local** file, one per Card, under
-  `delegated_credentials.lifecycle_storage.lock_root` (default `/run/kdcube-card-locks`); the Card files
-  stay on bundle storage;
-- writes Cards **only in the chat-proc process role** (`GATEWAY_COMPONENT=proc`, set by the platform).
-  Outside it the Card lock, every JSON write under the Card store root and every deletion there refuse
-  `card_store_write_wrong_process_role`; the legacy repair on bundle load is skipped outside proc.
+**Option R** (operator, 10 October: "R now, with P"), selected by `delegated_credentials.lifecycle_storage.lock_backend:
+"redis"`. It follows KDCube's own pattern (`service/synch-mechanisms/critical-section-README.md`, "Git Bundle
+Materialization"): the per-key Redis lock first, THEN the observed file lock. The Redis lock is the SDK's
+`observed_redis_lock_async`, reused unchanged:
 
-This holds while exactly ONE container both runs in role `proc` and mounts the Card share. `proc` is not
-unique to chat-proc (the platform also labels metrics `proc`), so the condition is about every
-proc-labelled container that can reach the Card root: on the live host (10 October) only chat-proc
-mounts `/bundle-storage`; metrics does not. A second such container needs the PostgreSQL lock. PostgreSQL advisory locks with a
-session-held check replace it before W661 is Done.
+- **The key:** `kdcube:cards:lock:<tenant>:<project>:card:<subject_hash>:<access_id>`; the owner goes in the value
+  (lock metadata with a per-operation owner token). The service's other sections use `:lifecycle-txn:`,
+  `:issuer-update-txn:`, `:account:` and `:collection:`, taken in the service's existing order.
+- **Renewal:** an owner-checked Lua `PEXPIRE` every 20 s (TTL 120 s) in a task bound to the operation. A failure
+  marks the operation lost.
+- **The write check:** before every write and deletion under the Card store root, the operation must still own
+  every Card key it holds. Otherwise it refuses `card_lock_lost`, or `card_lock_not_held` outside any operation.
+- **Fail closed:** an unreachable Redis refuses `card_lock_unavailable` at once. A Redis whose
+  `maxmemory-policy` is not `noeviction` refuses before any lock. A key held past the 30 s wait refuses
+  `card_mutation_lock_timeout`.
+- **The bounds stay ordered:** wait 30 s < PB lock_timeout 40 s < statement 45 s < idle-in-transaction 60 s <
+  TTL 120 s.
+- **One Redis node per deployment is assumed:** a replica promotion could grant a key twice.
+
+**The residual.** A stall longer than the TTL between the owner check and a write lets one stale write land: an
+expired lease can be reacquired while old code still acts (`sdk/bundle/bundle-scheduled-jobs-README.md`). KDCube's
+data-bus guidance asks for a storage-level optimistic check in addition. That is P (the PostgreSQL version check),
+which comes under R. TTL expiry is not a proof that the old process died.
+
+**Phase-1 guards that stay.** Cards are written only in the chat-proc process role (`GATEWAY_COMPONENT=proc`).
+Outside it, the Card lock, every write and every deletion refuse `card_store_write_wrong_process_role`. On the
+Docker Desktop runtime the single-writer condition stays: exactly one proc-labelled container mounts the Card share
+(the VM pause is exactly the residual above). It is retired only after R is qualified on a cluster deployment.
 
