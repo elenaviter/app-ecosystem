@@ -348,3 +348,29 @@ export function composeApplicationOperationRolePolicies(
   });
   return { operations, policy: { defaultRole, operationRoles } };
 }
+
+function sameValue(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return Array.isArray(left) && Array.isArray(right) && left.length === right.length
+      && left.every((value, index) => sameValue(value, right[index]));
+  }
+  if (left && right && typeof left === 'object' && typeof right === 'object') {
+    const a = left as Record<string, unknown>;
+    const b = right as Record<string, unknown>;
+    const keys = Object.keys(a);
+    return keys.length === Object.keys(b).length
+      && keys.every((key) => key in b && sameValue(a[key], b[key]));
+  }
+  return left === right;
+}
+
+/** W661 save #2 (live 10 Oct 22:49Z): a managed person-Control Save changes only the selection, and the server
+ *  refuses any properties that differ from the stored Card. The editor rebuilds the application policy whenever
+ *  the application row is routed (a stored V1 marker comes back as V2), so the Save sends properties only when
+ *  they differ from what the same editor builds from the stored Card itself: a choice the person changed. */
+export function changedCardProperties(
+  selected: Record<string, unknown>,
+  seeded: Record<string, unknown>,
+): Record<string, unknown> | undefined {
+  return sameValue(selected, seeded) ? undefined : selected;
+}

@@ -2587,13 +2587,17 @@ class AutomationAccessService:
         if properties is not None:
             # The editor sends the Card's properties back with every Save.
             # They are not part of this edit: only an unchanged copy may travel.
+            # Compared with the durable current revision, the one the editor
+            # read, never the serving projection (live 10 Oct 22:49Z: a
+            # projection behind the committed revision refused a fresh Save).
             from .managed_card_edit_forward import managed_card_location
             try:
                 access_id, grantor = managed_card_location(
                     "person_control", project_ref=project_ref, ref=_clean(target_subject))
-                stored = await self._load_record(access_id, grantor_subject=grantor)
+                current = await self._load_record_any_state(access_id, grantor_subject=grantor)
             except ValueError:
-                stored = None
+                current = None
+            stored = current[0] if current is not None else None
             if stored is None or dict(properties) != dict(stored.properties or {}):
                 properties = {"changed": True}
             else:

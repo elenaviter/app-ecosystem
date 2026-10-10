@@ -1,7 +1,7 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
-import { withNewerCard } from './cardFreshness';
+import { isStaleEditRefusal, withNewerCard } from './cardFreshness';
 import {
   applyDelegatedAccessRevokeResult,
   delegatedAccessRevokePayload,
@@ -632,9 +632,12 @@ const delegatedAccessSlice = createSlice({
         }
         if (action.payload.status === 409) {
           // The card the server returned is the current one; the editor reopens
-          // on it instead of retrying against the view it had.
-          state.error =
-            'This access changed while you were editing it. The latest version is shown; review and save again.';
+          // on it instead of retrying against the view it had. Any other 409
+          // names its own reason (live 10 Oct 22:49Z: a managed refusal read as
+          // "changed" and hid which check refused).
+          state.error = isStaleEditRefusal(action.payload)
+            ? 'This access changed while you were editing it. The latest version is shown; review and save again.'
+            : action.payload.message || `Save was not applied: ${action.payload.error || 'request refused'}`;
         }
         if (action.payload.access) {
           const updated = action.payload.access;

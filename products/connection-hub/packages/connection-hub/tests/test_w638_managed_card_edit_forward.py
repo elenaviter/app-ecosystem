@@ -42,12 +42,21 @@ class Stored:
     properties = {"kept": "as stored"}
 
 
+class ServedBehind:
+    # The serving projection one revision behind the durable Card (live 10 Oct 22:49Z).
+    properties = {"kept": "as served before the last commit"}
+
+
 def service(host=None):
     value = AutomationAccessService.__new__(AutomationAccessService)
 
     async def load_record(access_id, *, grantor_subject):
-        return Stored()
+        return ServedBehind()
+
+    async def load_record_any_state(access_id, *, grantor_subject):
+        return Stored(), "active"
     value._load_record = load_record
+    value._load_record_any_state = load_record_any_state
     if host is not None:
         value.bind_managed_card_edit({"work:project:": PeerManagedCardEdit(
             call=host.call, bundle_id="problem-board@1-0", signer_id="synthetic-hub", secret=SECRET)})
@@ -103,6 +112,15 @@ def test_the_cards_unchanged_properties_sent_back_with_save_still_forward():
     result = forward(service(host), properties={"kept": "as stored"})
     assert result["ok"] is True and len(host.calls) == 1
     assert "properties" not in host.calls[0][2]
+
+
+def test_sent_back_properties_compare_with_the_durable_card_the_editor_read_not_the_serving_projection():
+    # Live 10 Oct 22:49Z: a fresh Save echoed the committed revision; a projection still on the one
+    # before it refused the Save in this pre-check, with no forward.
+    host = Host()
+    assert forward(service(host), properties={"kept": "as stored"})["ok"] is True
+    refused = forward(service(host), properties={"kept": "as served before the last commit"})
+    assert refused["error"] == "managed_card_edit_fields_unsupported" and len(host.calls) == 1
 
 
 @pytest.mark.parametrize("state", ["aborted", "pending"])
