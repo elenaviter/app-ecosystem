@@ -270,11 +270,17 @@ def _links(answer: Mapping[str, Any]) -> list[dict[str, Any]]:
     return links
 
 
-def _outcome_links(answer: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """OUTCOME's member links, each with ``current``: whether the Card's current version is this txn's."""
+def _outcome_links(answer: Mapping[str, Any], sent: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """OUTCOME's member links, each with ``current``: whether the Card's current version is this txn's.
+
+    When both PB and the store name members, they are the same links (Mint, 19:45Z): another Card or version
+    is refused, never passed through. ``unknown_txn`` names none; with ``links: []`` the marker names its own.
+    """
     members = answer.get("members")
     links = _links(answer)
     if any(type(member.get("current")) is not bool for member in members):
+        raise CardVersionRefused("storage_unavailable")
+    if sent and links and sorted(map(canonical_json_bytes, links)) != sorted(map(canonical_json_bytes, sent)):
         raise CardVersionRefused("storage_unavailable")
     return [{**link, "current": member["current"]} for link, member in zip(links, members)]
 
@@ -391,7 +397,7 @@ class CardVersionOperation:
             state = answer.get("state") if isinstance(answer, Mapping) else None
             if state not in ("published", "staged", "staging", "unknown_txn"):
                 raise CardVersionRefused("storage_unavailable")
-            return {"kind": "outcome", "state": state, "members": _outcome_links(answer)}
+            return {"kind": "outcome", "state": state, "members": _outcome_links(answer, links)}
         if data["op"] == "compensate":
             answer = await self._store.compensate(txn, **binding, links=links, at=_at(data["at"]),
                                                   compensation_at=_at(data["compensation_at"]))

@@ -655,3 +655,13 @@ async def test_v63_a_store_without_the_new_ports_fails_closed_as_unavailable():
     for op in ("outcome", "compensate"):
         request = _request(op)
         assert _verified(await operation.answer(request), request)["code"] == "storage_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_v63_an_outcome_naming_another_card_or_version_is_refused_not_passed_through():
+    class _Foreign(_Store):
+        async def outcome(self, txn, *, scope, caller, links, at):
+            return {"state": "published", "members": [{**LINK, "version": LINK["version"] + 1, "current": True}]}
+    operation, _, _ = _operation(store=_Foreign())
+    request = _request("outcome")
+    assert _verified(await operation.answer(request), request)["code"] == "storage_unavailable"
