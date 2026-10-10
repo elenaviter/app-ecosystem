@@ -975,3 +975,26 @@ def test_a_txn_section_uses_one_of_a_bounded_set_of_lock_files(tmp_path):
     assert len(paths) <= TXN_SECTION_SHARDS
     txn = "w661-txn-" + "a" * 32
     assert txn_section_lock_path(store, txn) == txn_section_lock_path(store, txn)
+
+
+@pytest.mark.asyncio
+async def test_many_late_rollbacks_leave_a_bounded_set_of_lock_files(tmp_path, monkeypatch):
+    """Mint N-P1 / EMain: after many late ROLLBACKs (txns naming no member) through the Hub's container-local lock
+    mapping, the lock root holds at most the 256 txn-section shards: no per-txn file growth."""
+    from connection_hub.delegated_credentials.cards.locks import container_local_lock
+    from connection_hub.delegated_credentials.cards.service import TXN_SECTION_SHARDS
+
+    monkeypatch.setattr(tx, "KEEP_ROLLBACK_MARKER", True)
+    lock_root = tmp_path / "_card_locks"
+    lock_root.mkdir()
+
+    @asynccontextmanager
+    async def file_lock(*, lock_path, resource_id, operation, wait_seconds):
+        pathlib.Path(lock_path).touch()  # a flock leaves its file behind, as the SDK's observed file lock does
+        yield {}
+
+    store = BundleStorageDelegatedCardStore(tmp_path / "cards")
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=container_local_lock(file_lock, lock_root))
+    for i in range(600):
+        assert await service.rollback_card_version(txn="w661-txn-" + f"{i:032x}") == "unknown_txn"
+    assert 0 < len(list(lock_root.iterdir())) <= TXN_SECTION_SHARDS
