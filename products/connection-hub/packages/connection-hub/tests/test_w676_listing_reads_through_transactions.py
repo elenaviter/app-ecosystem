@@ -7,6 +7,7 @@ Reading that Card for use still waits for the decision and its effects.
 """
 from __future__ import annotations
 
+import os
 import logging
 from dataclasses import replace
 
@@ -58,6 +59,8 @@ async def test_using_the_card_inside_its_transaction_still_waits(tmp_path, effec
         await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id)
 
 
+@pytest.mark.skipif(os.environ.get("W661_BCORE_PG_MODE") == "1",
+                    reason="corrupts current.json, which is only a hint once the pointer row exists (b-core C2)")
 @pytest.mark.asyncio
 async def test_a_listing_that_still_fails_logs_its_fixed_reason_only(tmp_path, caplog):
     store, persistence, before, _, _ = await _owner(tmp_path, effects_pending=False)

@@ -203,9 +203,24 @@ class PostgresCardRows:
         self._observe("marker", (txn,), int(row["row_revision"]))
         return parse_canonical_json_bytes(bytes(row["document"])), int(row["row_revision"])
 
+    async def adopt_marker(self, txn: str, document: dict) -> tuple[dict, int]:
+        """First touch of a marker written before the cutover: only an operation holding a Card lock adopts."""
+        self._observed("marker", (txn,), required=True)
+        encoded = _encode(document, limit=MARKER_DOCUMENT_MAX_BYTES)
+        await self._fetchrow(
+            f"""INSERT INTO {self.schema}.{TABLE_CARD_VERSION_TXNS} (tenant, project, txn, document, row_revision)
+                VALUES ($1, $2, $3, $4, 1) ON CONFLICT DO NOTHING RETURNING row_revision""",
+            self.tenant, self.project, txn, encoded)
+        found, revision = await self.read_marker(txn)
+        if found is None or revision is None:
+            raise CardStorageError("card_version_marker_adoption_failed")
+        return found, revision
+
     async def write_marker(self, txn: str, document: dict) -> int:
-        """R1: INSERT when this operation saw no row, else CAS on the revision it read."""
-        expected = self._observed("marker", (txn,), required=True)
+        """R1: INSERT when this operation saw no row, else CAS on the revision it read. Outside any lock only a
+        create is possible (a ROLLBACK of a txn with no links holds no Card lock): INSERT ... ON CONFLICT DO
+        NOTHING is itself the fence, so it never replaces a marker someone else wrote."""
+        expected = 0 if _session() is None else self._observed("marker", (txn,), required=True)
         encoded = _encode(document, limit=MARKER_DOCUMENT_MAX_BYTES)
         if expected == 0:
             row = await self._fetchrow(

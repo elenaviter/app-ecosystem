@@ -1,4 +1,6 @@
-"""W661 Card lock option R: an opt-in mode that re-runs the Hub suites with the per-Card KDCube Redis lock.
+"""Two opt-in modes that re-run the Hub Card suites under the W661 lock stack; both may be on at once.
+
+W661 Card lock option R: an opt-in mode that re-runs the Hub suites with the per-Card KDCube Redis lock.
 
 With W661_CARD_LOCK_R_MODE=1 and W661_TEST_REDIS_URL set, every DelegatedCardService takes the R lock (the SDK's
 observed_redis_lock_async per Card, renewed) INSIDE the test's own lock (its pause points model "before the lock"),
@@ -6,10 +8,18 @@ and every BundleStorageDelegatedCardStore checks, before each write made inside 
 still owns every Card key it holds. Writes outside any R operation are test fixtures seeding the store; production
 Card writers all run inside the lock (the b-core PG-mode run showed the only unlocked writes were fixtures). Off by
 default.
+
+W661 option P (b-core): an opt-in mode that re-runs the Card suites with PostgreSQL pointer and marker rows.
+
+With W661_BCORE_PG_MODE=1 and W661_TEST_PG_DSN set, every BundleStorageDelegatedCardStore gets PostgreSQL pointer
+and marker rows (its own schema per store) and every DelegatedCardService's lock opens the row context
+(locks.row_fenced_lock) inside the test's own lock. The same assertions then run against the row authority. Off by default.
 """
+
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import os
 import uuid
@@ -17,6 +27,148 @@ import uuid
 import pytest
 
 _R_MODE = os.environ.get("W661_CARD_LOCK_R_MODE") == "1" and bool(os.environ.get("W661_TEST_REDIS_URL"))
+_PG_MODE = os.environ.get("W661_BCORE_PG_MODE") == "1" and bool(os.environ.get("W661_TEST_PG_DSN"))
+
+
+class _LazyPool:
+    """A pool stand-in for pytest-asyncio's loop-per-test: ONE connection per running loop, reused across
+    acquires and serialized by a per-loop lock (a real asyncpg pool reuses its connections too). No connection
+    outlives its loop: a loop that ended leaves a stale entry that is replaced, never used."""
+
+    def __init__(self, dsn: str) -> None:
+        self._dsn = dsn
+        self._per_loop: dict = {}
+
+    async def _slot(self):
+        loop = asyncio.get_running_loop()
+        slot = self._per_loop.get(id(loop))
+        if slot is None or slot[0] is not loop or slot[2].is_closed():
+            import asyncpg
+
+            slot = (loop, asyncio.Lock(), await asyncpg.connect(self._dsn))
+            self._per_loop[id(loop)] = slot
+        return slot
+
+    def acquire(self):
+        pool = self
+
+        class _Acquire:
+            async def __aenter__(self):
+                _loop, self._lock, connection = await pool._slot()
+                await self._lock.acquire()
+                return connection
+
+            async def __aexit__(self, *exc):
+                self._lock.release()
+
+        return _Acquire()
+
+    async def release(self, connection) -> None:
+        return None
+
+    def terminate(self) -> None:
+        self._per_loop.clear()
+
+
+class _LazyRows:
+    """PostgresCardRows whose schema is created on first use in the running loop."""
+
+    def __init__(self, pool: _LazyPool) -> None:
+        from connection_hub.delegated_credentials.cards.pointer_authority import PostgresCardRows
+
+        project = "p" + uuid.uuid4().hex[:12]
+        self._rows = PostgresCardRows(pool, schema="kdcube_t_" + project, tenant="t", project=project)
+        self._ready: set = set()
+
+    def __getattr__(self, name):
+        method = getattr(self._rows, name)
+        if not callable(method) or name.startswith("_"):
+            return method
+
+        async def call(*args, **kwargs):
+            loop = asyncio.get_running_loop()
+            if loop not in self._ready:
+                await self._rows.ensure_schema()
+                self._ready.add(loop)
+            return await method(*args, **kwargs)
+
+        return call
+
+
+@pytest.fixture(autouse=True)
+def _w661_bcore_pg_mode(monkeypatch):
+    if not _PG_MODE:
+        yield
+        return
+    from connection_hub.delegated_credentials.cards import service as service_module
+    from connection_hub.delegated_credentials.cards import store as store_module
+    from connection_hub.delegated_credentials.cards.locks import row_fenced_lock
+
+    @contextlib.asynccontextmanager
+    async def _no_extra_lock(**_kwargs):
+        yield {}
+
+    pool = _LazyPool(os.environ["W661_TEST_PG_DSN"])
+    original_store_init = store_module.BundleStorageDelegatedCardStore.__init__
+    original_service_init = service_module.DelegatedCardService.__init__
+    rows_by_root: dict = {}
+
+    fixture_lock = row_fenced_lock(_no_extra_lock)
+
+    def store_init(self, storage_root, *args, **kwargs):
+        original_store_init(self, storage_root, *args, **kwargs)
+        # Stores over the same root share one authority, as two processes over one bundle storage would.
+        self.card_rows = rows_by_root.setdefault(str(self.root), _LazyRows(pool))
+        _lock_fixture_writes(self)
+
+    def _lock_fixture_writes(store):
+        """Test fixtures seed and corrupt the store directly, outside any service. Production writers always
+        hold the Card lock (the strict refusal has its own tests); here a direct write outside a lock runs as a
+        locked writer would: it takes that Card's lock and reads the row first, then CASes."""
+        from connection_hub.delegated_credentials.cards.locks import current_lock_session
+
+        write_pointer, write_marker = store.write_pointer_document, store.write_marker_document
+        delete_marker = store.delete_marker_document
+
+        async def locked_pointer(*, subject_hash, access_id, document):
+            if current_lock_session() is not None:
+                return await write_pointer(subject_hash=subject_hash, access_id=access_id, document=document)
+            async with fixture_lock(lock_path=store.root / ".fixture-lock", resource_id=f"delegated-card:{access_id}",
+                                    operation="test-fixture", wait_seconds=5.0):
+                await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
+                return await write_pointer(subject_hash=subject_hash, access_id=access_id, document=document)
+
+        async def locked_marker(write, txn, *args):
+            if current_lock_session() is not None:
+                return await write(txn, *args)
+            async with fixture_lock(lock_path=store.root / ".fixture-lock", resource_id=f"card-version-txn:{txn}",
+                                    operation="test-fixture", wait_seconds=5.0):
+                await store.card_rows.read_marker(txn)
+                return await write(txn, *args)
+
+        store.write_pointer_document = locked_pointer
+        store.write_marker_document = lambda txn, document: locked_marker(write_marker, txn, document)
+        store.delete_marker_document = lambda txn: locked_marker(delete_marker, txn)
+
+    pg_lock = row_fenced_lock(_no_extra_lock)
+
+    def service_init(self, *args, mutation_lock=None, **kwargs):
+        if mutation_lock is not None:
+            test_lock = mutation_lock
+
+            @contextlib.asynccontextmanager
+            async def mutation_lock(**kwargs_):
+                # The test's own lock stays OUTSIDE (its pause points model "before the lock"); the row context
+                # (option P's observations) is inside it, as under the production lock stack.
+                async with test_lock(**kwargs_) as held:
+                    async with pg_lock(**kwargs_):
+                        yield held
+        original_service_init(self, *args, mutation_lock=mutation_lock, **kwargs)
+
+    monkeypatch.setattr(store_module.BundleStorageDelegatedCardStore, "__init__", store_init)
+    monkeypatch.setattr(service_module.DelegatedCardService, "__init__", service_init)
+    yield
+    pool.terminate()
 
 
 @pytest.fixture(autouse=True)

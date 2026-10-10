@@ -255,17 +255,15 @@ async def test_a_crash_mid_stage_is_fenced_and_a_replay_resumes_it(tmp_path, mon
 
         monkeypatch.setattr(store, "write_revision", crash)
     else:
-        original_write = tx.write_json_atomic
-        calls = {"n": 0}
+        original_write = store.write_pointer_document
 
-        async def crash_on_pointer(path, payload):
-            if payload.get("schema") == tx.TRANSACTION_POINTER_SCHEMA:
+        async def crash_on_pointer(*, subject_hash, access_id, document):
+            # The crash precedes the pointer write itself: before the b-core row and before current.json.
+            if isinstance(document, dict) and document.get("schema") == tx.TRANSACTION_POINTER_SCHEMA:
                 raise RuntimeError("killed")
-            return await original_write(path, payload)
+            return await original_write(subject_hash=subject_hash, access_id=access_id, document=document)
 
-        monkeypatch.setattr(tx, "write_json_atomic", crash_on_pointer)
-
-        monkeypatch.setattr(card_store_module, "write_json_atomic", crash_on_pointer)  # b-core: the pointer is written by the store
+        monkeypatch.setattr(store, "write_pointer_document", crash_on_pointer)
     with pytest.raises(RuntimeError):
         await _stage(store, before, after)
     # F1: the Card is fenced before the pointer exists.

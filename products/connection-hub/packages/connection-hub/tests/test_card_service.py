@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import hashlib
 from contextlib import asynccontextmanager
 from dataclasses import replace
@@ -110,6 +111,8 @@ def test_state_change_preserves_entry_door_and_client_metadata() -> None:
     assert revoked.client_metadata == authority.client_metadata
 
 
+@pytest.mark.skipif(os.environ.get("W661_BCORE_PG_MODE") == "1",
+                    reason="asserts the exact host-lock arguments; the PG-mode harness wraps the host lock")
 @pytest.mark.asyncio
 async def test_service_uses_host_lock_and_commits_authority(tmp_path):
     calls = []

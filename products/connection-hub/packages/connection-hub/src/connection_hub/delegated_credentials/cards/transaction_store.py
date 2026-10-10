@@ -1537,7 +1537,7 @@ def card_version_txn_id(txn: Any) -> str:
 
 
 def card_version_marker_path(store: Any, txn: str):
-    return store.root / "card-versions" / f"{card_version_txn_id(txn)}.json"
+    return store.card_version_marker_path(card_version_txn_id(txn))
 
 
 def card_version_revision_marker_path(store: Any, *, subject_hash: str, access_id: str, revision_name: str):
@@ -1547,7 +1547,7 @@ def card_version_revision_marker_path(store: Any, *, subject_hash: str, access_i
 
 
 async def read_card_version_marker(store: Any, txn: str) -> dict[str, Any] | None:
-    raw = await read_json_or_none(card_version_marker_path(store, txn))
+    raw = await store.read_marker_document(card_version_txn_id(txn))
     if raw is None:
         return None
     if (not isinstance(raw, Mapping) or raw.get("schema") != CARD_VERSION_MARKER_SCHEMA
@@ -1558,7 +1558,7 @@ async def read_card_version_marker(store: Any, txn: str) -> dict[str, Any] | Non
 
 
 async def _write_card_version_marker(store: Any, marker: Mapping[str, Any]) -> None:
-    await write_json_atomic(card_version_marker_path(store, marker["txn"]), dict(marker))
+    await store.write_marker_document(card_version_txn_id(marker["txn"]), dict(marker))
 
 
 async def card_version_revision_committed(store: Any, marker: Any, *, subject_hash: str, access_id: str,
@@ -1601,7 +1601,7 @@ async def _finish_published(store: Any, marker: dict[str, Any], run_effect: Any)
     """Each unrecorded effect once; once every effect is recorded the marker goes (D2: only the version stays)."""
     await _run_effects(store, marker, run_effect)
     try:
-        await unlink_guarded_async(card_version_marker_path(store, marker["txn"]))
+        await store.delete_marker_document(card_version_txn_id(marker["txn"]))
     except OSError as exc:
         raise CardStorageError("card_version_marker_cleanup_failed") from exc
     from ..durable_io import _fsync_directory
@@ -1874,7 +1874,7 @@ async def _release_and_forget(store: Any, marker: Mapping[str, Any], *, release:
         await _write_card_version_marker(store, {**marker, "state": "rolled_back"})
         return
     try:
-        await unlink_guarded_async(card_version_marker_path(store, marker["txn"]))
+        await store.delete_marker_document(card_version_txn_id(marker["txn"]))
     except OSError as exc:
         raise CardStorageError("card_version_rollback_failed") from exc
     _fsync_directory(card_version_marker_path(store, marker["txn"]).parent)
