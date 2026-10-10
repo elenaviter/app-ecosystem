@@ -66,7 +66,8 @@ whole request, so no edit value is repeated.
     store overwrites whatever is current. Operator, 10 Oct: "UPSERT.
     overwrite".
   - The answer holds only links: `{card: {subject_hash, access_id}, version,
-    checksum}`.
+    checksum, base_version}`. `base_version` is the exact version STAGE fenced,
+    or null for a creation or an upsert. PUBLISH's links omit it.
 - **My Reset (`reset_to_control`).** One `updates` entry: `kind`,
   `target_subject`, the My Card's `access_id`, `subject_hash` and
   `original_revision`, the `resource`, the `display_digest` the person saw, and

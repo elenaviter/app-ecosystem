@@ -209,7 +209,7 @@ async def test_stage_plans_under_pbs_grants_and_answers_links_only():
     request = _request()
     response = await operation.answer(request)
     assert response["ok"] is True
-    assert _verified(response, request) == {"kind": "staged", "members": [LINK]}
+    assert _verified(response, request) == {"kind": "staged", "members": [{**LINK, "base_version": 3}]}
     [call] = planner.calls
     authorization = call["authorization"]
     assert [(s.operation, s.target_subject) for s in authorization.request.steps] == [

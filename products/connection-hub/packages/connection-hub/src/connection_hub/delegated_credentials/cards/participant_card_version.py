@@ -386,7 +386,14 @@ class CardVersionOperation:
             txn, request_id=data["request_id"], request_digest=digest, catalog=dict(catalog),
             actor_subject=data["actor_subject"], actor_kind=data["actor_kind"], members=members,
             effects=effects, prepare=prepare, at=_at(data["at"]), **binding, **({"reads": reads} if reads else {}))
-        return _links(answer)
+        # Each STAGE link also names the exact version STAGE fenced (null for a creation or an upsert): PB needs
+        # it for an update whose base the Hub read itself (role_selection), and keeps it for ROLLBACK.
+        bases = {(member["subject_hash"], member["access_id"]): member["base_version"] for member in members}
+        links = _links(answer)
+        if {(link["card"]["subject_hash"], link["card"]["access_id"]) for link in links} != set(bases):
+            raise CardVersionRefused("storage_unavailable")
+        return [{**link, "base_version": bases[(link["card"]["subject_hash"], link["card"]["access_id"])]}
+                for link in links]
 
     async def _effects(self, cards: Sequence[Mapping[str, Any]], *, at: datetime) -> list[dict[str, Any]]:
         """The save's Hub effects: ``handle_binding`` per edited credential-bearing Card, nothing else.
