@@ -10003,9 +10003,10 @@ class AutomationAccessService:
             candidate_link = await write_hidden_version(card_store, subject_hash=subject_hash, authority=candidate,
                                                         at=at, tag=tag)
         except CardRecordError as exc:
-            if str(exc) != "version_link_owner_conflict":
+            # The same file already adopted by THIS request's stored plan (another planner won): replay it.
+            # Any other owner, with no stored plan, is still refused exactly as before.
+            if str(exc) != "version_link_owner_conflict" or await store.read_issuance_plan_request(request) is None:
                 raise
-            # The same file, already adopted by the stored plan's transaction: that plan won.
             raise _PlanAttemptConsumed("candidate_adopted") from None
         return {
             "schema": ISSUANCE_PLAN_SCHEMA,

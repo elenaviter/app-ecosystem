@@ -644,3 +644,31 @@ async def test_a_planner_whose_attempt_another_planner_consumed_replays_the_stor
         assert _version_files(w, first.access_id) == [link["revision_name"]]
         assert await store.read_plan_attempt(first.decision_request_id) is None
         assert (await _complete(w, first)).state == "committed"
+
+
+@pytest.mark.asyncio
+async def test_a_foreign_owner_on_the_planned_file_is_still_refused_with_no_stored_plan(tmp_path, monkeypatch):
+    """r11 replays only THIS request's stored plan: a planned file owned by anyone else, with no stored plan,
+    still refuses version_link_owner_conflict (never loosened into a replay)."""
+    async with _world(tmp_path) as w:
+        store = w.authority
+        from connection_hub.delegated_credentials.cards.transaction_store import revision_marker_path
+
+        original_record = store.record_attempt_candidate
+        seen = {}
+
+        async def record_then_foreign_owner(**kwargs):
+            done = await original_record(**kwargs)
+            seen["request"] = kwargs["decision_request_id"]
+            link = kwargs["candidate"]["link"]
+            marker = revision_marker_path(w.store, subject_hash=kwargs["candidate"]["subject_hash"],
+                                          access_id=kwargs["candidate"]["access_id"],
+                                          revision_name=link["revision_name"])
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(json.dumps({"transaction_id": "f" * 64}))
+            return done
+
+        monkeypatch.setattr(store, "record_attempt_candidate", record_then_foreign_owner)
+        with pytest.raises(CardRecordError, match="version_link_owner_conflict"):
+            await _begin(w, request="foreign")
+        assert await store.read_issuance_plan_request(seen["request"]) is None  # no plan stored, none replayed
