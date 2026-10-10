@@ -142,6 +142,17 @@ expired lease can be reacquired while old code still acts (`sdk/bundle/bundle-sc
 data-bus guidance asks for a storage-level optimistic check in addition. That is P (the PostgreSQL version check),
 which comes under R. TTL expiry is not a proof that the old process died.
 
+**What R does NOT serialize.** R covers the Card mutation sections, the service's critical sections around a
+Card or its txn, collection and account fence. Some writes under the Card store root happen outside any such section:
+- intent records (`card_participant.record`);
+- read-collection seal and sweep;
+- agent shares;
+- account-fence marks;
+- effects-only receipts.
+They carry no Card-lock claim; the owner check applies only to writes made inside an R operation. They rely on
+their own rules (immutable exact-replay records, ids, receipts) and on the single-writer guard below, which is
+therefore NOT retired by R.
+
 **Phase-1 guards that stay.** Cards are written only in the chat-proc process role (`GATEWAY_COMPONENT=proc`).
 Outside it, the Card lock, every write and every deletion refuse `card_store_write_wrong_process_role`. On the
 Docker Desktop runtime the single-writer condition stays: exactly one proc-labelled container mounts the Card share
