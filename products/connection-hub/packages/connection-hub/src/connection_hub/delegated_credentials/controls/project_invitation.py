@@ -246,7 +246,9 @@ class ProjectInvitationControlAudit:
     occurred_at: int
     before_revision: int
     after_revision: int
-    changes: Mapping[str, Mapping[str, Any]]
+    # W661 (operator, 10 Oct: "each card version -> one record"): the audit names WHICH fields changed,
+    # never their old or new values; the values live once, in the Card versions themselves.
+    changed_fields: tuple[str, ...]
 
     @classmethod
     def build(
@@ -288,7 +290,7 @@ class ProjectInvitationControlAudit:
             occurred_at=timestamp,
             before_revision=int(before.card_revision) if before is not None else 0,
             after_revision=int(after.card_revision),
-            changes=changes,
+            changed_fields=tuple(sorted(changes)),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -304,7 +306,7 @@ class ProjectInvitationControlAudit:
             "occurred_at_epoch": self.occurred_at,
             "before_revision": self.before_revision,
             "after_revision": self.after_revision,
-            "changes": copy.deepcopy(dict(self.changes)),
+            "changed_fields": list(self.changed_fields),
         }
 
 

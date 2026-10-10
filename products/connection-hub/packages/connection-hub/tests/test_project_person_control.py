@@ -144,12 +144,9 @@ def test_audit_records_actor_time_request_and_exact_revision_diff() -> None:
     assert evidence["request_id"] == "request-123"
     assert evidence["before_revision"] == 1
     assert evidence["after_revision"] == 2
-    assert evidence["changes"] == {
-        "resource_operations": {
-            "before": {RESOURCE: ["review.accept"]},
-            "after": {RESOURCE: ["review.accept", "review.return"]},
-        }
-    }
+    # W661: the audit names the changed field only; its values live once, in the Card versions.
+    assert evidence["changed_fields"] == ["resource_operations"]
+    assert "changes" not in evidence
     assert PROJECT_PERSON_CONTROL_AUDIT_PROVENANCE not in before.provenance
 
 
@@ -193,6 +190,6 @@ def test_an_accept_only_save_is_an_audited_change() -> None:
     audit = ProjectPersonControlAudit.build(
         action="updated", actor_subject="platform-admin-1", identity=identity,
         request_id="request-accept", occurred_at=1_759_760_000, before=before, after=accepted)
-    assert set(audit.changes) == {"catalog_version", "resource_acceptance"}
-    assert audit.changes["catalog_version"]["after"] == "catalog-10-04"
+    assert audit.changed_fields == ("catalog_version", "resource_acceptance")
+    assert "catalog-10-04" not in str(audit.to_dict())
     assert set(project_invitation_control_diff(before, accepted)) == {"catalog_version", "resource_acceptance"}

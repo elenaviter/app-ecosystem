@@ -125,18 +125,19 @@ def invitation_seeded_person_control(
     return dataclasses.replace(live, control_card=_parent_binding(parent)), marker
 
 
-def fresh_card_over_revoked(fresh: CardAuthority, revoked: CardAuthority, *, actor_subject: str,
-                            request_id: str, now: int) -> CardAuthority:
-    """W502: the freshly built ``fresh`` Card, placed at ``revoked``'s next revision.
+def fresh_card_over_existing(fresh: CardAuthority, existing: CardAuthority, *, actor_subject: str,
+                             request_id: str, now: int) -> CardAuthority:
+    """W502/W661: the freshly built ``fresh`` Card, placed at ``existing``'s next revision.
 
-    Only the revision moves onto the revoked Card's chain, so (access_id,
-    revision) never repeats; every other field is the fresh Card's own. A
-    person Control's "created" audit is rebuilt for that revision.
+    Operator, 10 Oct: an invitation "IS new card. even if something existed fine. we simply now
+    UPSERT. overwrite". Whatever is on the stable id (revoked or still active) is overwritten.
+    Only the revision moves onto the existing Card's chain, so (access_id, revision) never
+    repeats; every other field is the fresh Card's own. A person Control's "created" audit is
+    rebuilt for that revision.
     """
-    if (fresh.access_id != revoked.access_id or fresh.grantor_subject != revoked.grantor_subject
-            or revoked.state != CARD_STATE_REVOKED):
+    if fresh.access_id != existing.access_id or fresh.grantor_subject != existing.grantor_subject:
         raise CardLifecyclePlanRefused("card_plan_target_exists")
-    candidate = dataclasses.replace(fresh, card_revision=revoked.card_revision + 1)
+    candidate = dataclasses.replace(fresh, card_revision=existing.card_revision + 1)
     if candidate.issuer_kind == PROJECT_PERSON_CONTROL_ISSUER_KIND:
         identity = ProjectPersonControlIdentity.from_authority(candidate)
         from connection_hub.delegated_credentials.controls.project_person import (
@@ -774,15 +775,15 @@ async def plan_card_lifecycle(
                 original = None
                 if existing is not None:
                     # W502 (operator, 7 Oct: a removed person is simply "newly invited" and
-                    # gets fresh Cards): a person's C or My revoked by an earlier removal is
-                    # created again, freshly built, at its next revision. Nothing of the
-                    # revoked Card is carried over.
+                    # gets fresh Cards) and W661 (operator, 10 Oct: "UPSERT. overwrite"): a
+                    # person's C or My on its stable id is created again, freshly built, at
+                    # its next revision, whether revoked or still active. Nothing of the old
+                    # Card is carried over. A project Control is never overwritten this way.
                     original = existing[0]
-                    if (raw["kind"] not in ("project_person_control", "project_person_my_card")
-                            or original.state != CARD_STATE_REVOKED):
+                    if raw["kind"] not in ("project_person_control", "project_person_my_card"):
                         raise CardLifecyclePlanRefused("card_plan_target_exists")
-                    base = fresh_card_over_revoked(base, original, actor_subject=actor, request_id=request_id,
-                                                   now=now)
+                    base = fresh_card_over_existing(base, original, actor_subject=actor, request_id=request_id,
+                                                    now=now)
                 planned[ref] = base
                 members.append(group_member(original=original, candidate=base,
                                             action="create" if original is None else "recreate"))

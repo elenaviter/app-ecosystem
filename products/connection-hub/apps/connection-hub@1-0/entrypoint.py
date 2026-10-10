@@ -59,6 +59,7 @@ from connection_hub.delegated_credentials.cards.composition import (
 from connection_hub.delegated_credentials.cards.census_read import CardCensusReadOperation
 from connection_hub.delegated_credentials.cards.card_read_collection_operation import CardReadCollectionOperation
 from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import CardLifecyclePlanOperation
+from connection_hub.delegated_credentials.cards.participant_card_version import CardVersionOperation
 from connection_hub.delegated_credentials.card_lifecycle_plan import plan_card_lifecycle
 from connection_hub.delegated_credentials.cards.participant_descriptor import (
     build_participant_callers,
@@ -368,6 +369,7 @@ CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     "card_lifecycle_plan",
     "card_read_collection_register",
     "card_transaction_participant",
+    "card_version",
     "delegated_admission",
     "federated_data_bus_claim",
     "project_agent_github_token_issue",
@@ -1250,6 +1252,22 @@ async def _repair_legacy_project_bindings(entrypoint: Any) -> dict[str, int]:
     store = BundleStorageDelegatedCardStore(storage_root, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint))
     host = await _automation_access_service(entrypoint, None)
     return await repair_legacy_project_bindings(host, store)
+
+
+def _card_version_store(entrypoint: Any, persistence: Any) -> Any:
+    """W661: piece 1's Card version store over this deployment's Card service and catalog.
+
+    STAGE reads the active catalog under the Card locks (EMain D1), so the
+    store is bound with the catalog store; None when either is missing.
+    """
+    from connection_hub.delegated_credentials.cards.card_version_port import ServiceCardVersionStore
+    from connection_hub.delegated_credentials.cards.participant_card_version import CardVersionRefused
+
+    card_service = getattr(persistence, "card_service", None)
+    catalog_store = _delegated_catalog_store(entrypoint)
+    if card_service is None or catalog_store is None:
+        return None
+    return ServiceCardVersionStore(card_service, refused=CardVersionRefused, catalog_store=catalog_store)
 
 
 async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
@@ -4454,6 +4472,45 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             outcome, code = answer_outcome(answer)
             hop("hub.lifecycle_plan", outcome, code=code, started=started)
             return answer
+
+    @api(method="POST", alias="card_version", route="public")
+    async def card_version(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W661: Problem Board's STAGE / PUBLISH / ROLLBACK of one Card save.
+
+        Same peer authentication and scope entitlement as card_lifecycle_plan.
+        PB authorized the save by role before STAGE; the Hub calls nothing
+        back. The Card store (piece 1) writes each version once under the
+        Card's lock; the answer is links only.
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        try:
+            store = _card_version_store(self, persistence)
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-version] store or callers unavailable")
+            return unavailable
+        if store is None:
+            return unavailable
+        if not built.callers:
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        host = await _automation_access_service(self, None)
+        operation = CardVersionOperation(
+            callers=built.callers, store=store, planner=plan_card_lifecycle, host=host,
+            credential_handles=getattr(host, "_card_credential_handles", None), nonces=redis, clock=time.time,
+            nonce_prefix=f"connection-hub:{tenant}:{project}:card-version:nonce:")
+        return await operation.answer(payload)
 
     @api(method="POST", alias="delegated_admission", route="public")
     async def delegated_admission(

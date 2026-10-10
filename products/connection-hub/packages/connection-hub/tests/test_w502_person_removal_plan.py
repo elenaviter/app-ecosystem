@@ -291,9 +291,18 @@ async def test_a_removed_person_newly_invited_gets_fresh_cards_at_the_next_revis
 
 
 @pytest.mark.asyncio
-async def test_an_active_or_non_person_existing_card_still_refuses_creation():
+async def test_an_active_person_card_is_overwritten_but_a_project_control_still_refuses_creation():
+    """W661 (operator, 10 Oct): an invitation "IS new card. even if something existed fine. we simply now
+    UPSERT. overwrite". A person's still-active C and My are created again at their next revision."""
     p, c, my = _person()
-    assert (await _rejoin(_Host(p, c, my), p))["error"] == "card_plan_target_exists"
+    result = await _rejoin(_Host(p, c, my), p)
+    assert result["ok"] is True, result
+    members = {member["access_id"]: member for member in result["plan"]["candidate_value"]["cards"]}
+    for active in (c, my):
+        member = members[active.access_id]
+        assert member["action"] == "recreate" and member["original_revision"] == active.card_revision
+        assert CardAuthority.from_mapping(member["candidate"]).card_revision == active.card_revision + 1
+    validate_group_candidate(result["plan"]["candidate_value"], reads=result["plan"]["reads"])
     revoked_p = replace_state(p, CARD_STATE_REVOKED)
     from test_w578_card_lifecycle_plan import _p_request
     result = await plan_card_lifecycle(_Host(revoked_p), project_ref=PROJECT, creations=[_p_request()],
