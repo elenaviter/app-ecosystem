@@ -186,6 +186,18 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} (
     PRIMARY KEY (tenant, project, decision_request_id)
 );
 
+-- W704: the bounded cleanup reads only rows past their deadline, oldest first, through these indexes: the
+-- work grows with abandoned requests (each cleaned row is deleted or flagged), never with Cards or files.
+CREATE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plan_attempts_expiry_idx
+    ON {schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} (tenant, project, expires_at);
+-- A plan whose decision never began past its reservation deadline: its planned candidate file is released
+-- ONCE (the flag is the conditional claim) and a later begin of that request refuses issuance_plan_released.
+ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
+    ADD COLUMN IF NOT EXISTS candidate_released BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plans_unbegun_idx
+    ON {schema}.{TABLE_ISSUANCE_PLANS} (tenant, project, reserved_until)
+    WHERE transaction_id IS NULL AND NOT candidate_released;
+
 -- W603: the credentials of an original issuance, reserved under its ONE Card
 -- decision before that decision's COMMIT. A reservation is in no table a
 -- reader looks at: activation inserts the real family/generation or access

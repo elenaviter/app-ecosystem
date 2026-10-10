@@ -54,6 +54,9 @@ _KINDS = {
     "delegated-card-issuer-update": "issuer-update-txn",
     "delegated-account-fence": "account",
     "card-collection": "collection",
+    # W704: one OAuth issuance request (plan -> begin -> record -> bind, and its cleanup). The id is the sha256
+    # of the decision request id; the key never holds a Card id and grows with nothing (TTL, owner-checked delete).
+    "oauth-issuance-request": "oauth-request",
 }
 
 

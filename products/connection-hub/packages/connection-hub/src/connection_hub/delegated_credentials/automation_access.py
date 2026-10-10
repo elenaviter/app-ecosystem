@@ -23,6 +23,7 @@ import dataclasses
 import asyncio
 
 import copy
+from contextlib import asynccontextmanager
 from fnmatch import fnmatchcase
 import hashlib
 import json
@@ -287,6 +288,8 @@ RESIDENT_MIGRATION_CONFLICT = "resident_profile_migration_conflict"
 _LOGGER = __import__("logging").getLogger("connection_hub.delegated_access")
 # W661 scope B (Infra r10 HOLD): planning rounds per begin when another planner's stored plan consumed the attempt.
 _PLAN_ROUNDS = 3
+# W704: the cleanup only TRIES a request's section; a busy request is skipped for the next run.
+_CLEANUP_SECTION_WAIT_SECONDS = 0.2
 
 
 class _PlanAttemptConsumed(Exception):
@@ -9867,9 +9870,46 @@ class AutomationAccessService:
             raise IssuanceRefused("issuance_request_invalid") from None
         request = decision_request_id(scope=f"{PARTICIPANT}:oauth-issuance", grantor_subject=grantor,
                                       client_id=client, original_request_id=original_request_id)
+        # W704: plan -> put -> begin -> record -> bind run inside this request's section (the composed Card
+        # mutation lock: under R the KDCube Redis cluster lock, observed_redis_lock_async), which the cleanup
+        # also takes. It holds no PostgreSQL connection (Spark C1). Without a composed Card service (never in
+        # a hub composition) the lock-free r11 rules below still hold on their own.
+        from contextlib import AsyncExitStack
+
+        from .cards.service import CardMutationLockTimeout
+        from .cards.store import CardStorageError
+
+        async with AsyncExitStack() as stack:
+            section = self._oauth_request_section(request)
+            if section is not None:
+                try:
+                    await stack.enter_async_context(section)
+                except CardMutationLockTimeout:
+                    raise IssuanceRefused("issuance_request_busy", retryable=True) from None
+                except CardStorageError as exc:
+                    raise IssuanceRefused(str(exc), retryable=True) from None
+            return await self._begin_oauth_request(
+                store=store, ttl=ttl, request=request, input_digest=input_digest, grantor=grantor, client=client,
+                record_inputs=record_inputs, policies=policies, intents=intents, decisions=decisions,
+                locked=section is not None)
+
+    def _oauth_request_section(self, request: str, *, wait_seconds: float | None = None) -> Any:
+        """W704: the per-request section of the composed Card service, or None when none is composed."""
+        card_store = getattr(self._cards(), "card_store", None)
+        service = getattr(card_store, "_card_intent_service", None)
+        factory = getattr(service, "oauth_request_section", None)
+        if factory is None:
+            return None
+        return factory(request) if wait_seconds is None else factory(request, wait_seconds=wait_seconds)
+
+    async def _begin_oauth_request(self, *, store: Any, ttl: int, request: str, input_digest: str, grantor: str,
+                                   client: str, record_inputs: Mapping[str, Any], policies: Any, intents: Any,
+                                   decisions: Any, locked: bool) -> Any:
+        from .oauth.issuance_store import IssuanceStoreRefused
+        from .oauth_issuance import IssuanceRefused
+
         # W661 scope B: the attempt (clock + candidate link) is recorded before the candidate file, and the
-        # first planner's clock wins, so a retry or a concurrent planner names the same file. No lock is held
-        # across these calls (Spark C1).
+        # first planner's clock wins, so a retry or a concurrent planner names the same file.
         # A planner that finds its attempt consumed re-reads the stored plan and replays it (Infra r10 HOLD).
         planned_here = False
         for _round in range(_PLAN_ROUNDS):
@@ -9880,7 +9920,7 @@ class AutomationAccessService:
                 planned = await self._plan_oauth_issuance(store=store, ttl=ttl, request=request,
                                                           input_digest=input_digest, grantor=grantor,
                                                           client=client, record_inputs=record_inputs,
-                                                          invocation_policies=policies)
+                                                          invocation_policies=policies, locked=locked)
             except _PlanAttemptConsumed:
                 continue
             try:
@@ -9896,12 +9936,19 @@ class AutomationAccessService:
             raise IssuanceRefused("issuance_plan_unavailable", retryable=True)
         if not planned_here and stored["original_input_digest"] != input_digest:
             raise IssuanceRefused("issuance_replay_changed")
+        if stored.get("candidate_released"):
+            # W704: the cleanup released this unbegun plan's candidate after its deadline; it never begins.
+            raise IssuanceRefused("issuance_plan_released")
         return await self._begin_planned_issuance(stored["plan"], intents=intents, decisions=decisions, store=store)
 
     async def _plan_oauth_issuance(self, *, store: Any, ttl: int, request: str, input_digest: str, grantor: str,
                                    client: str, record_inputs: Mapping[str, Any],
-                                   invocation_policies: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        """The immutable plan: the candidate Card, the decision draft, both effects and every deadline."""
+                                   invocation_policies: Mapping[str, Any] | None = None,
+                                   locked: bool = False) -> dict[str, Any]:
+        """The immutable plan: the candidate Card, the decision draft, both effects and every deadline.
+
+        ``locked`` (W704): the caller holds this request's section, so the attempt row is this planner's
+        alone: a file the row names and this plan will not use is discarded before the row is re-pointed."""
         from connection_hub.authority_registry import DELEGATED_CLIENT_AUTHORITY_ID
 
         from .cards.card_group import group_member, hub_group_participant_input
@@ -9920,8 +9967,11 @@ class AutomationAccessService:
         if attempt is None:
             now = await store.pin_plan_attempt(decision_request_id=request, planned_at=now, expires_at=now + ttl)
         elif attempt["expired"]:
-            # A crashed attempt past its deadline starts over (only if still the one read). Its file, if any,
-            # is kept: cleanup is disabled in this release (no deletion).
+            # A crashed attempt past its deadline starts over (only if still the one read), at a strictly later
+            # clock, so it never names the old file. Under the section its old file goes first (W704);
+            # without it the old file is kept (the documented residual).
+            if locked and attempt.get("candidate"):
+                await self._discard_planned_candidate(attempt["candidate"], request)
             now = await store.renew_expired_plan_attempt(decision_request_id=request,
                                                          expected_planned_at=attempt["planned_at"],
                                                          planned_at=now, expires_at=now + ttl)
@@ -9995,10 +10045,18 @@ class AutomationAccessService:
         at, tag = datetime.fromtimestamp(now, tz=timezone.utc), staging_tag("oauth-issuance-candidate", request)
         link = planned_link(authority=candidate, at=at, tag=tag)
         recorded = {"link": link, "subject_hash": subject_hash, "access_id": candidate.access_id}
+        if locked and attempt is not None and not attempt["expired"] and attempt.get("candidate") \
+                and attempt["candidate"] != recorded:
+            # A retry of a crashed attempt whose Card base moved builds another file: the old one goes (W704).
+            await self._discard_planned_candidate(attempt["candidate"], request)
         recorded_row = await store.record_attempt_candidate(decision_request_id=request, planned_at=now,
                                                             candidate=recorded)
         if recorded_row is False:  # only an explicit False: the attempt is gone, its plan stored elsewhere
             raise _PlanAttemptConsumed("attempt_gone")
+        if await store.read_issuance_plan_request(request) is not None:
+            # W704 (Infra 23:27Z): a plan stored meanwhile, with the same or CHANGED inputs, wins: no file is
+            # written for this attempt (begin replays it or refuses issuance_replay_changed).
+            raise _PlanAttemptConsumed("plan_stored")
         try:
             candidate_link = await write_hidden_version(card_store, subject_hash=subject_hash, authority=candidate,
                                                         at=at, tag=tag)
@@ -10337,11 +10395,93 @@ class AutomationAccessService:
         *_parts, store = self._issuance_parts()
         return await store.expire_issuance_reservations(limit=limit)
 
-    async def release_unbegun_oauth_issuance_plans(self, *, limit: int = 100) -> int:
-        """W661 scope B: planned-candidate cleanup is DISABLED in this release (EMain, 22:37-22:38Z): nothing is
-        deleted, every file and row is kept. A bounded cleanup on a per-request KDCube Redis lock, linearized
-        with plan -> begin -> record -> bind, is a separate follow-up. Kept so callers and witnesses see 0."""
-        return 0
+    async def _discard_planned_candidate(self, recorded: Mapping[str, Any], request: str) -> bool:
+        """W704: delete one planned candidate file still owned by this request's staging tag; True if deleted.
+
+        Called only inside the request's section. The Card's own section nests inside it (the order begin and
+        record use). An adopted file (any other owner) is never touched: lane 3 owns it."""
+        from .cards.version_link import discard_hidden_version, is_version_link, staging_tag
+
+        link = recorded.get("link") if isinstance(recorded, Mapping) else None
+        card_store = getattr(self._cards(), "card_store", None)
+        service = getattr(card_store, "_card_intent_service", None)
+        if not is_version_link(link) or service is None:
+            return False
+        subject_hash, access_id = str(recorded.get("subject_hash") or ""), str(recorded.get("access_id") or "")
+        async with service._card_version_sections([(subject_hash, access_id)]):
+            try:
+                return await discard_hidden_version(card_store, subject_hash=subject_hash, access_id=access_id,
+                                                    link=link, tag=staging_tag("oauth-issuance-candidate", request))
+            except CardRecordError as exc:
+                if str(exc) == "version_link_owner_conflict":
+                    return False  # adopted by a transaction: not ours to delete
+                raise
+
+    async def release_unbegun_oauth_issuance_plans(self, *, limit: int = 50) -> int:
+        """W704: the bounded cleanup of planned candidate files no plan or transaction will use; how many files.
+
+        An explicit operation: nothing schedules it in this release (enabling it is a separate release
+        decision). It reads at most ``limit`` expired attempt rows and ``limit`` unbound plans past their
+        deadline, index-ordered (never a file or Card scan). Each request is handled inside its section, taken
+        with a short wait: a busy request (a planner or begin running) is skipped for the next run. Inside it:
+        verify the row, delete the file (owned by this request's staging tag only), then claim the row with one
+        conditional statement. A crash between the two leaves the row, so the next run finishes it.
+        A plan whose decision began is never released unless that decision ABORTED; nothing is released without
+        a read-only proof from the decision log. Returns 0 when no section or proof is available."""
+        _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
+        read_request = getattr(decisions, "read_request", None)
+        if read_request is None or self._oauth_request_section("0" * 64) is None:
+            return 0
+        released = 0
+        for row in await store.expired_plan_attempts(limit=limit):
+            request = row["decision_request_id"]
+            async with self._try_oauth_request_section(request) as held:
+                if not held:
+                    continue
+                attempt = await store.read_plan_attempt(request)
+                if attempt is None or not attempt["expired"] or attempt["planned_at"] != row["planned_at"]:
+                    continue
+                stored = await store.read_issuance_plan_request(request)
+                candidate = attempt.get("candidate") or {}
+                if candidate and not (stored is not None and candidate.get("link") == stored["plan"]["intent"]
+                                      .get("candidate")):
+                    released += int(await self._discard_planned_candidate(candidate, request))
+                await store.claim_expired_plan_attempt(request, planned_at=row["planned_at"])
+        for request in await store.unbegun_expired_plans(limit=limit):
+            async with self._try_oauth_request_section(request) as held:
+                if not held:
+                    continue
+                stored = await store.read_issuance_plan_request(request)
+                if stored is None or stored["transaction_id"] or stored.get("candidate_released"):
+                    continue
+                plan = stored["plan"]
+                draft = plan.get("draft") or {}
+                decision = await read_request(str(draft.get("replay_scope") or ""), str(draft.get("request_id") or ""))
+                if decision is not None and not (decision.terminal and decision.state == "aborted"):
+                    continue  # began (or committed): lane 3 owns its candidate
+                intent = plan.get("intent") or {}
+                deleted = await self._discard_planned_candidate(
+                    {"link": intent.get("candidate"), "subject_hash": intent.get("subject_hash"),
+                     "access_id": plan.get("access_id")}, request)
+                if await store.claim_unbegun_plan_candidate(request) is not None:
+                    released += int(deleted)
+        return released
+
+    @asynccontextmanager
+    async def _try_oauth_request_section(self, request: str):
+        """The request's section with a short wait: yields False (and holds nothing) when it is busy."""
+        from contextlib import AsyncExitStack
+
+        from .cards.service import CardMutationLockTimeout
+
+        async with AsyncExitStack() as stack:
+            try:
+                await stack.enter_async_context(
+                    self._oauth_request_section(request, wait_seconds=_CLEANUP_SECTION_WAIT_SECONDS))
+            except CardMutationLockTimeout:
+                yield False
+                return
+            yield True
 
     async def read_oauth_issuance(self, *, transaction_id: str) -> Any:
         """W603: the issuance's outcome as it stands now, READ ONLY; returns the ``OAuthIssuanceResult``.

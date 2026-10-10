@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import logging
 import pathlib
 import time
@@ -57,6 +58,9 @@ CARD_LOCK_FILENAME = ".mutation.lock"
 # Bounds how long a caller waits for another mutation on the same card. The
 # lock itself is held for the owner's lifetime, so this only caps the wait.
 CARD_LOCK_WAIT_SECONDS = 30.0
+# W704: the OAuth issuance request section's file layer: a fixed set of stripe files, never one per request.
+OAUTH_REQUEST_LOCK_DIR = ".oauth-request-locks"
+OAUTH_REQUEST_LOCK_STRIPES = 256
 BeforeCardCommit = Callable[[], Awaitable[None]]
 
 
@@ -283,6 +287,22 @@ class DelegatedCardService:
             resource_id=f"delegated-card:{access_id}",
             operation="delegated-card-mutation",
             wait_seconds=CARD_LOCK_WAIT_SECONDS,
+        )
+
+    def oauth_request_section(self, decision_request_id: str, *, wait_seconds: float = CARD_LOCK_WAIT_SECONDS):
+        """W704: the composed mutation lock (proc-only; under R the KDCube Redis cluster lock, then the observed
+        file lock) for ONE OAuth issuance request. Its plan, begin, record and bind, and the cleanup of its
+        planned candidate, all take this section first; a Card section nests inside it, never the reverse.
+
+        The Redis key is per request (kind ``oauth-request``). The file layer uses one of
+        ``OAUTH_REQUEST_LOCK_STRIPES`` fixed files, so no lock file is created per request."""
+        digest = hashlib.sha256(str(decision_request_id).encode("utf-8")).hexdigest()
+        stripe = int(digest[:4], 16) % OAUTH_REQUEST_LOCK_STRIPES
+        return self._mutation_lock(
+            lock_path=self._store.root / OAUTH_REQUEST_LOCK_DIR / f"stripe-{stripe:03d}.lock",
+            resource_id=f"oauth-issuance-request:{digest}",
+            operation="oauth-issuance-request",
+            wait_seconds=wait_seconds,
         )
 
     @asynccontextmanager
