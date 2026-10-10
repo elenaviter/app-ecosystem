@@ -471,6 +471,18 @@ class PostgresDecisionStore:
         async with self.pool.acquire() as conn:
             return self._decode(await self._row(conn, transaction_id))
 
+    async def read_by_request(self, replay_scope: str, request_id: str) -> DecisionRecord | None:
+        """The decision ``begin`` recorded for one (replay_scope, request_id), READ ONLY: never begins one.
+
+        For a caller that must know whether a durable decision exists for a draft it holds (W661 scope B:
+        an issuance plan's begin can stop between this store's begin and the caller's own binding)."""
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"""SELECT {_ROW_COLUMNS} FROM {self.table} WHERE namespace=$1 AND
+                    replay_scope=$2 AND request_id=$3""",
+                self.namespace, replay_scope, request_id)
+        return None if row is None else self._decode(row)
+
     async def record_prepared(self, receipt: Receipt, *, connection: Any | None = None
                               ) -> DecisionRecord:
         async with self._transaction(connection) as conn:

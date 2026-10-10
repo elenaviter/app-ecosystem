@@ -173,16 +173,27 @@ async def adopt_hidden_version(store: Any, *, subject_hash: str, access_id: str,
     return link
 
 
+async def unlink_guarded_any(path: Any) -> None:
+    """One guarded deletion: ``durable_io.unlink_guarded_async`` where R provides it (its async guard checks
+    the Card lock's Redis owner), else the synchronous ``unlink_guarded``. Either way the store's writer
+    guard decides first."""
+    from connection_hub.delegated_credentials import durable_io
+
+    unlink_async = getattr(durable_io, "unlink_guarded_async", None)
+    if callable(unlink_async):
+        await unlink_async(path)
+    else:
+        durable_io.unlink_guarded(path)
+
+
 async def discard_hidden_version(store: Any, *, subject_hash: str, access_id: str, link: Any, tag: str) -> bool:
     """Delete a planned version whose plan ended before any transaction adopted it; True if it was there.
 
     Only a file still owned by exactly ``tag`` (a staging tag) and still exactly the link's content is
-    deleted: the version file FIRST, then its marker, both through ``unlink_guarded`` (the store's writer
-    guard decides), so a crash never leaves an unmarked, history-visible file. An adopted file (any other
+    deleted: the version file FIRST, then its marker, both through ``unlink_guarded_any`` (the store's
+    writer guard decides; under R, the Card lock's owner too), so a crash never leaves an unmarked, history-visible file. An adopted file (any other
     owner) refuses ``version_link_owner_conflict``; a changed file refuses; nothing is repaired.
     """
-    from connection_hub.delegated_credentials.durable_io import unlink_guarded
-
     if not is_staging_tag(tag) or not is_version_link(link):
         raise CardRecordError("version_link_invalid")
     marker_path = _marker_path(store, subject_hash=subject_hash, access_id=access_id,
@@ -199,8 +210,8 @@ async def discard_hidden_version(store: Any, *, subject_hash: str, access_id: st
     present = await _read_present(file_path)
     if present is not _ABSENT:
         await load_version(store, subject_hash=subject_hash, access_id=access_id, link=link, marker=tag)
-        unlink_guarded(file_path)
-    unlink_guarded(marker_path)
+        await unlink_guarded_any(file_path)
+    await unlink_guarded_any(marker_path)
     return present is not _ABSENT
 
 
@@ -242,6 +253,6 @@ async def load_version(store: Any, *, subject_hash: str, access_id: str, link: A
     return authority
 
 
-__all__ = ["LINK_KEYS", "STAGING_TAG_PREFIX", "adopt_hidden_version", "discard_hidden_version", "is_staging_tag",
+__all__ = ["LINK_KEYS", "STAGING_TAG_PREFIX", "unlink_guarded_any", "adopt_hidden_version", "discard_hidden_version", "is_staging_tag",
            "is_version_link", "load_version", "planned_link", "pointer_link", "staging_tag", "version_link",
            "write_hidden_version"]
