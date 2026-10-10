@@ -99,9 +99,18 @@ whole request, so no edit value is repeated.
   - A demotion recomputes the resource's grants from the remaining operations
     through PB's map. An operation missing from it is refused
     (`card_plan_role_operation_unknown`).
-  - An unchanged Card stays a read. If nothing changes, the update is refused
-    (`card_plan_role_unchanged`).
+  - An unchanged Card stays a read.
   - The Hub knows nothing about roles or admins.
+- **Already applied (v6.3 item 6).** When every update of a STAGE already
+  holds (each `role_selection` Card already equals its target, each
+  `remove_person` Card sent with `original_revision: 0` is already revoked and
+  is that person's C or My in this scope), and the STAGE creates nothing, the
+  Hub writes nothing, records no txn, and answers the signed result
+  `{kind: already_applied}`. This is the same-request retry after a PUBLISH
+  whose answer PB lost: PB then commits the role or membership change under
+  its row lock and CAS, without PUBLISH. A STAGE where some updates are no-ops
+  and others are not is staged as usual, without the no-op Cards. Any other
+  STAGE that changes nothing is refused (`edit_invalid`).
 - **`op: publish` and `op: rollback`.** PUBLISH carries `txn` alone, because the
   store's transaction marker names its members. ROLLBACK also carries `links`,
   the `{card, version, checksum}` links from STAGE's answer (PB keeps them),
@@ -110,6 +119,25 @@ whole request, so no edit value is repeated.
   and a version file that its link finds and that carries this txn is
   published history. ROLLBACK answers `rolled_back`, `already_published` or
   `unknown_txn`.
+- **`op: outcome` and `op: compensate` (v6.3 items 5 and 7).** Both carry
+  `txn`, STAGE's `links` (as returned, `base_version` included) and STAGE's
+  `at`. `compensate` also carries `compensation_at`, a 16th request field that
+  is null for every other op and outside the stage digest; the other STAGE
+  fields are null.
+  - OUTCOME writes nothing. Under the linked Cards' locks it answers `{kind:
+    outcome, state, members}`, where `state` is `published`, `staged`,
+    `staging` or `unknown_txn`, and each member link adds `current`: whether
+    that Card's current version is this txn's. `links` may be `[]` when STAGE
+    never answered.
+  - COMPENSATE runs only after PB has conclusively not committed, under its
+    row lock. It restores each Card's pre-txn content as a new version, only
+    while every Card's current version is exactly this txn's. It answers
+    `{kind: compensation, state: compensated | already_compensated, members}`.
+    A successor version refuses `compensation_superseded`; a version with no
+    recorded base, or a credential-bearing Card, refuses
+    `compensation_unsupported`; a link that is not its version file refuses
+    `card_version_link_mismatch`. Each is 409, and nothing is written.
+  - A store without these ports answers `storage_unavailable`.
 - **Store.** The endpoint binds piece 1's `ServiceCardVersionStore` over the
   Card service and the catalog store, so STAGE re-reads the active catalog
   under the Card locks. Without either one, the endpoint answers unavailable.

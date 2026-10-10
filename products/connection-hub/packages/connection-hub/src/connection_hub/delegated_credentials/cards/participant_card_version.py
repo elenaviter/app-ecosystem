@@ -55,13 +55,14 @@ REQUEST_SCHEMA = "card-version-request.v1"
 ANSWER_SCHEMA = "card-version-answer.v1"
 DIRECTION = "hub-to-authority"
 REQUEST_FIELDS = ("schema", "op", "request_echo", "scope", "txn", "request_id", "at", "catalog", "actor_subject",
-                  "actor_kind", "delegable_grants", "project_control", "creations", "updates", "links")
+                  "actor_kind", "delegable_grants", "project_control", "creations", "updates", "links",
+                  "compensation_at")
 STAGE_FIELDS = ("request_id", "at", "catalog", "actor_subject", "actor_kind", "delegable_grants", "project_control",
                 "creations", "updates")
 # The answer echoes only the call's identity (AnswerContract.CARD_VERSION); request_digest binds the rest.
 ECHO_FIELDS = ("op", "request_echo", "scope", "txn")
 PROOF_FIELDS = frozenset({"service_id", "timestamp", "nonce", "signature"})
-OPS = frozenset({"stage", "publish", "rollback"})
+OPS = frozenset({"stage", "publish", "rollback", "outcome", "compensate"})
 MAX_GRANTS = 256
 _TXN = re.compile(r"[a-z0-9-]{32,128}\Z")
 _ECHO = re.compile(r"[0-9a-f]{32,128}\Z")
@@ -73,6 +74,9 @@ _BOUNDED = 256
 REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_catalog_moved": 409,
             "edit_invalid": 422, "effects_pending": 503, "storage_unavailable": 503,
             "request_scope_invalid": 403, "stage_txn_conflict": 409, "txn_not_staged": 409,
+            # v6.3 items 5 and 7 (Ops 19:21Z): a link that is not its version file; a compensation that a
+            # successor version superseded, or that this version cannot take (no recorded base, or credentials).
+            "card_version_link_mismatch": 409, "compensation_superseded": 409, "compensation_unsupported": 409,
             # S5 (EMain 18:27Z): the person sees why a manual edit was refused; a fixed code, no free text.
             "card_edit_admin_grant_role_only": 409}
 # Store codes PB sees under the contract's name: a txn staged under another scope or caller is out of scope.
@@ -96,6 +100,10 @@ class CardVersionRefused(Exception):
         self.code = code if code in REFUSALS else "storage_unavailable"
 
 
+class _AlreadyApplied(Exception):
+    """STAGE found every update already holding (v6.3 item 6): answered ``already_applied``, not a refusal."""
+
+
 class CardVersionStore(Protocol):
     """Piece 1's (Ops) store, as piece 2 calls it. Every call runs under the members' Card locks.
 
@@ -113,6 +121,11 @@ class CardVersionStore(Protocol):
     ROLLBACK also gets STAGE's answer ``links`` and STAGE's ``at``: a
     completed PUBLISH removes the marker, and the version file they name
     (carrying this txn) then answers ``already_published`` (EMain D2).
+    ``outcome`` (v6.3 item 5) reads, under the linked Cards' locks and writing
+    nothing, whether the txn is ``published``, ``staged``/``staging`` or
+    ``unknown_txn``, and whether each Card's current version is this txn's.
+    ``compensate`` (item 7) restores each Card's pre-txn content as a new
+    version, only while every current version is exactly this txn's.
     """
 
     async def stage(self, txn: str, *, request_id: str, request_digest: str, catalog: Mapping[str, Any],
@@ -128,6 +141,12 @@ class CardVersionStore(Protocol):
                        at: datetime, apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]],
                        release: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[None]]
                        ) -> Mapping[str, Any]: ...
+
+    async def outcome(self, txn: str, *, scope: str, caller: str, links: Sequence[Mapping[str, Any]],
+                      at: datetime) -> Mapping[str, Any]: ...
+
+    async def compensate(self, txn: str, *, scope: str, caller: str, links: Sequence[Mapping[str, Any]],
+                         at: datetime, compensation_at: datetime) -> Mapping[str, Any]: ...
 
     async def read_current(self, subject_hash: str, access_id: str) -> Mapping[str, Any] | None: ...
 
@@ -161,7 +180,8 @@ def stage_digest(data: Mapping[str, Any]) -> str:
     binds the exact call through ``request_digest``.
     """
     return sha256_hex(canonical_json_bytes({name: data[name] for name in REQUEST_FIELDS
-                                            if name not in ("schema", "op", "request_echo", "links")}))
+                                            if name not in ("schema", "op", "request_echo", "links",
+                                                            "compensation_at")}))
 
 
 def _valid_stage(data: Mapping[str, Any]) -> bool:
@@ -209,13 +229,18 @@ def _valid_request(data: Any) -> bool:
         return False
     if len(canonical_json_bytes({name: data[name] for name in REQUEST_FIELDS})) > MAX_REQUEST_BYTES:
         return False
+    if data["op"] != "compensate" and data["compensation_at"] is not None:
+        return False
     if data["op"] == "stage":
         return _valid_stage(data) and data["links"] is None
     # PUBLISH names the txn alone (its marker names the members). ROLLBACK also carries STAGE's answer
     # links, so it can find a version whose marker a completed PUBLISH already removed (EMain D2).
     if data["op"] == "publish":
         return data["links"] is None and all(data[name] is None for name in STAGE_FIELDS)
-    # ROLLBACK also carries STAGE's `at`: the version file name derives from it (Ops, D2).
+    # ROLLBACK also carries STAGE's `at`: the version file name derives from it (Ops, D2). OUTCOME (v6.3 item 5)
+    # carries the same pair; COMPENSATE (item 7) also its own time and at least one link.
+    if data["op"] == "compensate" and (not data["links"] or _at(data["compensation_at"]) is None):
+        return False
     return (_valid_links(data["links"]) and _at(data["at"]) is not None
             and all(data[name] is None for name in STAGE_FIELDS if name != "at"))
 
@@ -243,6 +268,15 @@ def _links(answer: Mapping[str, Any]) -> list[dict[str, Any]]:
         links.append({"card": {"subject_hash": card["subject_hash"], "access_id": card["access_id"]},
                       "version": member["version"], "checksum": member["checksum"]})
     return links
+
+
+def _outcome_links(answer: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """OUTCOME's member links, each with ``current``: whether the Card's current version is this txn's."""
+    members = answer.get("members")
+    links = _links(answer)
+    if any(type(member.get("current")) is not bool for member in members):
+        raise CardVersionRefused("storage_unavailable")
+    return [{**link, "current": member["current"]} for link, member in zip(links, members)]
 
 
 def _reset_reads(updates: Sequence[Mapping[str, Any]], plan_reads: Sequence[Mapping[str, Any]]
@@ -343,11 +377,28 @@ class CardVersionOperation:
         # naming another binding refuses txn_scope_mismatch and touches nothing (Infra finding 2).
         txn, binding = data["txn"], {"scope": data["scope"], "caller": caller.service_id}
         if data["op"] == "stage":
-            return {"kind": "staged", "members": await self._stage(data, binding)}
+            try:
+                return {"kind": "staged", "members": await self._stage(data, binding)}
+            except _AlreadyApplied:
+                # v6.3 item 6: every update already holds; nothing staged, nothing written, no txn marker.
+                return {"kind": "already_applied"}
         if data["op"] == "publish":
             answer = await self._store.publish(txn, **binding, apply=self._apply)
             return {"kind": "published", "members": _links(answer)}
         links = [{key: link[key] for key in ("card", "version", "checksum")} for link in data["links"]]
+        if data["op"] == "outcome":
+            answer = await self._store.outcome(txn, **binding, links=links, at=_at(data["at"]))
+            state = answer.get("state") if isinstance(answer, Mapping) else None
+            if state not in ("published", "staged", "staging", "unknown_txn"):
+                raise CardVersionRefused("storage_unavailable")
+            return {"kind": "outcome", "state": state, "members": _outcome_links(answer)}
+        if data["op"] == "compensate":
+            answer = await self._store.compensate(txn, **binding, links=links, at=_at(data["at"]),
+                                                  compensation_at=_at(data["compensation_at"]))
+            state = answer.get("state") if isinstance(answer, Mapping) else None
+            if state not in ("compensated", "already_compensated"):
+                raise CardVersionRefused("storage_unavailable")
+            return {"kind": "compensation", "state": state, "members": _links(answer)}
         answer = await self._store.rollback(txn, **binding, links=links, at=_at(data["at"]),
                                             apply=self._apply, release=self._release)
         state = answer.get("state") if isinstance(answer, Mapping) else None
@@ -371,6 +422,8 @@ class CardVersionOperation:
                 raise CardVersionRefused("card_changed")
             if code == "card_edit_admin_grant_role_only":
                 raise CardVersionRefused(code)
+            if code == "card_plan_already_applied":
+                raise _AlreadyApplied
             raise CardVersionRefused("storage_unavailable" if code in _UNAVAILABLE else "edit_invalid")
         plan = planned["plan"]
         catalog = data["catalog"]

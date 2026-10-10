@@ -109,10 +109,12 @@ async def test_a_remaining_operation_without_a_declared_grant_is_never_guessed()
 
 
 @pytest.mark.asyncio
-async def test_an_already_applied_role_is_refused_and_an_unchanged_card_is_no_member():
+async def test_an_already_applied_role_is_named_so_and_an_unchanged_card_is_no_member():
     project, control, my = _world()
-    plan = await _plan(_Host(project, control, my), [_role(control, add_grants=["work:read"])])
-    assert plan["ok"] is False and plan["error"] == "card_plan_role_unchanged"
+    # v6.3 item 6: the retry after a PUBLISH whose answer PB lost; the handler answers a signed already_applied.
+    plan = await _plan(_Host(project, control, my), [_role(control, add_grants=["work:read"]),
+                                                     _role(my, add_grants=["work:read"])])
+    assert plan["ok"] is False and plan["error"] == "card_plan_already_applied"
     mixed = await _plan(_Host(project, control, my), [_role(control, add_grants=["work:read"]),
                                                       _role(my, add_grants=["work:admin"])])
     assert mixed["ok"] is True and set(_after(mixed)) == {my.access_id}

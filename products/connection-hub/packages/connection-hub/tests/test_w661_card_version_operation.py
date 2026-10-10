@@ -72,6 +72,7 @@ class _Store:
     def __init__(self, *, rollback_state="rolled_back", stage_refusal=None):
         self.staged, self.markers, self.current = [], {}, {}
         self.rollback_state, self.stage_refusal = rollback_state, stage_refusal
+        self.compensate_refusal = None
 
     def _bound(self, txn, scope, caller):
         """Piece 1's binding: a marker answers only the scope and caller that staged it."""
@@ -114,6 +115,21 @@ class _Store:
             for effect in marker["effects"]:
                 await release(effect, marker)
         return {"state": self.rollback_state}
+
+    async def outcome(self, txn, *, scope, caller, links, at):
+        self.outcome_call = {"links": links, "at": at}
+        marker = self._bound(txn, scope, caller)
+        current = self.current.get(ACCESS) == {"version": LINK["version"], "checksum": LINK["checksum"]}
+        state = marker.get("state", "staged") if marker is not None else ("published" if current else "unknown_txn")
+        return {"state": state, "members": [dict(link, current=current) for link in links]}
+
+    async def compensate(self, txn, *, scope, caller, links, at, compensation_at):
+        self.compensate_call = {"links": links, "at": at, "compensation_at": compensation_at}
+        if self.compensate_refusal:
+            raise CardVersionRefused(self.compensate_refusal)
+        self._bound(txn, scope, caller)
+        return {"state": "compensated",
+                "members": [{**link, "version": link["version"] + 1, "checksum": "m" * 64} for link in links]}
 
     async def read_current(self, subject_hash, access_id):
         return self.current.get(access_id)
@@ -178,11 +194,15 @@ def _operation(*, prefix="work:project:", planner=None, store=None, host=None, h
     return operation, planner, store
 
 
+LINKED_OPS = ("rollback", "outcome", "compensate")
+COMP_AT = "2026-10-10T17:05:00+00:00"
+
+
 def _request(op="stage", *, scope=PROJECT, updates=(UPDATE,), creations=(), nonce=None, **override):
     data = {"schema": REQUEST_SCHEMA, "op": op, "request_echo": os.urandom(16).hex(), "scope": scope, "txn": TXN,
-            "request_id": None, "at": AT if op == "rollback" else None, "catalog": None, "actor_subject": None, "actor_kind": None,
-            "delegable_grants": None, "project_control": None, "creations": None, "updates": None,
-            "links": [LINK] if op == "rollback" else None}
+            "request_id": None, "at": AT if op in LINKED_OPS else None, "catalog": None, "actor_subject": None,
+            "actor_kind": None, "delegable_grants": None, "project_control": None, "creations": None, "updates": None,
+            "links": [LINK] if op in LINKED_OPS else None, "compensation_at": COMP_AT if op == "compensate" else None}
     if op == "stage":
         data.update(request_id="save-1", at=AT, catalog=dict(CATALOG), actor_subject=ACTOR, actor_kind="caller",
                     delegable_grants=["memories:read"], creations=list(creations), updates=list(updates))
@@ -569,3 +589,69 @@ async def test_rollback_accepts_stages_own_links_with_their_base_version():
     assert store.rollback_links == [LINK]  # the store gets the locator links only
     for bad in ({**LINK, "base_version": 0}, {**LINK, "base_version": "3"}, {**LINK, "extra": 1}):
         assert (await operation.answer(_request("rollback", links=[bad])))["error"]["code"] == "card_version_request_invalid"
+
+
+@pytest.mark.asyncio
+async def test_v63_an_already_applied_stage_is_a_signed_answer_and_nothing_is_staged():
+    operation, _, store = _operation(planner=_Planner({"ok": False, "error": "card_plan_already_applied",
+                                                      "status": 409}))
+    request = _request()
+    response = await operation.answer(request)
+    assert response["ok"] is True and _verified(response, request) == {"kind": "already_applied"}
+    assert store.staged == []
+
+
+@pytest.mark.asyncio
+async def test_v63_outcome_reads_the_txn_state_and_each_cards_current_flag_and_writes_nothing():
+    operation, _, store = _operation()
+    request = _request("outcome", links=[{**LINK, "base_version": 3}])
+    response = await operation.answer(request)
+    assert response["ok"] is True and _verified(response, request) == {
+        "kind": "outcome", "state": "unknown_txn", "members": [{**LINK, "current": False}]}
+    assert store.outcome_call["links"] == [LINK] and store.staged == []  # locator links only; nothing staged
+    await operation.answer(_request())
+    await operation.answer(_request("publish"))
+    request = _request("outcome")
+    assert _verified(await operation.answer(request), request) == {
+        "kind": "outcome", "state": "staged", "members": [{**LINK, "current": True}]}
+
+
+@pytest.mark.asyncio
+async def test_v63_compensate_answers_the_new_versions_and_store_refusals_by_name():
+    operation, _, store = _operation()
+    request = _request("compensate")
+    assert _verified(await operation.answer(request), request) == {
+        "kind": "compensation", "state": "compensated",
+        "members": [{**LINK, "version": LINK["version"] + 1, "checksum": "m" * 64}]}
+    assert store.compensate_call["compensation_at"].isoformat() == COMP_AT
+    for code, status in (("compensation_superseded", 409), ("compensation_unsupported", 409),
+                         ("card_version_link_mismatch", 409), ("txn_unknown", 404),
+                         ("txn_scope_mismatch", 403)):
+        store.compensate_refusal = code
+        request = _request("compensate")
+        expected = "request_scope_invalid" if code == "txn_scope_mismatch" else code
+        assert _verified(await operation.answer(request), request) == {
+            "kind": "refused", "code": expected, "status": status}
+
+
+@pytest.mark.asyncio
+async def test_v63_outcome_and_compensate_requests_are_closed():
+    operation, _, _ = _operation()
+    bad = [_request("compensate", links=[]), _request("compensate", compensation_at=None),
+           _request("compensate", compensation_at="yesterday"), _request("outcome", compensation_at=COMP_AT),
+           _request("outcome", at=None), _request("outcome", request_id="save-1"),
+           _request("rollback", compensation_at=COMP_AT), _request(compensation_at=COMP_AT),
+           _request("publish", compensation_at=COMP_AT)]
+    for request in bad:
+        assert (await operation.answer(request))["error"]["code"] == "card_version_request_invalid", request
+    assert (await operation.answer(_request("outcome", links=[])))["ok"] is True  # STAGE never answered
+
+
+@pytest.mark.asyncio
+async def test_v63_a_store_without_the_new_ports_fails_closed_as_unavailable():
+    class _Old(_Store):
+        outcome = compensate = None
+    operation, _, _ = _operation(store=_Old())
+    for op in ("outcome", "compensate"):
+        request = _request(op)
+        assert _verified(await operation.answer(request), request)["code"] == "storage_unavailable"

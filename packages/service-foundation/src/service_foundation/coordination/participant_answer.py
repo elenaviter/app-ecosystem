@@ -38,11 +38,11 @@ COLLECTION_REQUEST_FIELDS = frozenset({
 })
 COLLECTION_ECHO_FIELDS = COLLECTION_REQUEST_FIELDS - {"schema"}
 COLLECTION_ANSWER_FIELDS = COLLECTION_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
-# W661: PB's STAGE / PUBLISH / ROLLBACK of one Card save (Connection Hub's card_version). The answer
+# W661: PB's STAGE / PUBLISH / ROLLBACK (v6.3: and OUTCOME / COMPENSATE) of one Card save (Connection Hub's card_version). The answer
 # echoes only the call's identity; request_digest binds the whole request, so no edit value is repeated.
 CARD_VERSION_REQUEST_FIELDS = frozenset({
     "schema", "op", "request_echo", "scope", "txn", "request_id", "at", "catalog", "actor_subject",
-    "actor_kind", "delegable_grants", "project_control", "creations", "updates", "links",
+    "actor_kind", "delegable_grants", "project_control", "creations", "updates", "links", "compensation_at",
 })
 CARD_VERSION_ECHO_FIELDS = frozenset({"op", "request_echo", "scope", "txn"})
 CARD_VERSION_ANSWER_FIELDS = CARD_VERSION_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
