@@ -103,5 +103,37 @@ async def test_a_same_owner_agent_save_plans_with_card_transactions_on(tmp_path,
                                             actor_subject=ADMIN, actor_kind="caller", request_id="same-owner-save",
                                             authorization=authorization)
         assert planned["ok"] is True, planned
+        # ... and COMMITS: staged as the participant stages it, decided committed.
+        from datetime import datetime, timezone
+        from connection_hub.delegated_credentials.cards import transaction_store as tx
+        from connection_hub.delegated_credentials.cards.model import CardAuthority
+        from test_card_transaction_store import Decisions
+        plan = planned["plan"]
+        members = [(m["subject_hash"], agent, CardAuthority.from_mapping(m["candidate"]), m["action"])
+                   for m in plan["candidate_value"]["cards"]]
+        decisions = Decisions()
+        tx.bind_transaction_decisions(h.store, decisions)
+
+        class _Reservations:
+            async def reserve(self, **kwargs):
+                pass
+
+            async def release(self, transaction_id, *, intent_digest):
+                pass
+
+        tx.bind_catalog_reservations(h.store, _Reservations())
+        group_id, intent, now = "c3" * 32, "d4" * 32, int(time.time())
+        staged = await h.cards.stage_group_transaction(
+            transaction_id=group_id, intent_digest=intent, participant="project", members=members,
+            now=datetime.fromtimestamp(now, timezone.utc), reads=plan["reads"], catalog=plan["catalog_digest"])
+        assert staged["staged"] is True, staged
+        decisions.recorded[group_id] = "committed"
+        decided = await h.cards.decide_group_transaction(transaction_id=group_id, intent_digest=intent,
+                                                         decision="committed", now=now)
+        assert decided["state"] == "committed", decided
+        saved = (await h.store.read_current_authority(subject_hash=subject_hash_for(CREATOR),
+                                                      access_id=agent.access_id))[1]
+        assert saved.card_revision == agent.card_revision + 1 and not saved.resource_operations.get(_memories())
+        assert saved.control_card == agent.control_card, "the same-owner link is kept as it was"
     finally:
         await pool.close()
