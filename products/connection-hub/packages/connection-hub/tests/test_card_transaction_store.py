@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import pytest
 
+from connection_hub.delegated_credentials.cards import store as card_store_module
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.service import CardConflict, CardServingUnavailable, DelegatedCardService
 from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore, CardStorageError
@@ -263,6 +264,8 @@ async def test_a_crash_mid_stage_is_fenced_and_a_replay_resumes_it(tmp_path, mon
             return await original_write(path, payload)
 
         monkeypatch.setattr(tx, "write_json_atomic", crash_on_pointer)
+
+        monkeypatch.setattr(card_store_module, "write_json_atomic", crash_on_pointer)  # b-core: the pointer is written by the store
     with pytest.raises(RuntimeError):
         await _stage(store, before, after)
     # F1: the Card is fenced before the pointer exists.
@@ -704,6 +707,8 @@ async def test_a_stage_that_crashed_before_its_receipt_is_still_listed(tmp_path,
         return await original(path, payload)
 
     monkeypatch.setattr(tx, "write_json_atomic", crash_on_receipt)
+
+    monkeypatch.setattr(card_store_module, "write_json_atomic", crash_on_receipt)  # b-core: the pointer is written by the store
     with pytest.raises(RuntimeError):
         await _stage(store, before, after)
     monkeypatch.undo()

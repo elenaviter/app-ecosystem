@@ -690,20 +690,17 @@ async def _retire_pointer(store: Any, receipt: Mapping[str, Any]) -> None:
     read and no coordinator call (Root and Ops hot-path rule, 11:57).
     """
 
-    path = store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"])
-    raw = await read_json_or_none(path)
+    raw = await store.read_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"])
     if (isinstance(raw, Mapping) and raw.get("schema") == TRANSACTION_POINTER_SCHEMA
             and raw.get("transaction_id") == receipt["transaction_id"]):
         side = receipt["after"] if receipt["state"] == "committed" else receipt["before"]
-        if side is None:
-            # An aborted create of a newly minted id: the slot is absent again. The
-            # staged revision keeps its marker, so it never appears in history.
-            try:
-                await unlink_guarded_async(path)
-            except OSError as exc:
-                raise CardStorageError("card_transaction_retire_failed") from exc
-        else:
-            await write_json_atomic(path, dict(side))
+        # side None: an aborted create of a newly minted id, so the slot is absent again. The
+        # staged revision keeps its marker, so it never appears in history.
+        try:
+            await store.write_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"],
+                                               document=None if side is None else dict(side))
+        except OSError as exc:
+            raise CardStorageError("card_transaction_retire_failed") from exc
     if receipt["state"] == "committed":
         # A committed AFTER is an ordinary revision now: drop its marker so a
         # settled read never touches the receipt (Ops N1/N4). An aborted
@@ -793,7 +790,7 @@ async def assert_replaceable(store: Any, *, subject_hash: str, access_id: str) -
         raise CardStorageError("card_transaction_unresolved")
     if await _live_read_fence(store, subject_hash=subject_hash, access_id=access_id) is not None:
         raise CardStorageError("card_transaction_unresolved")  # a prepared transaction depends on it
-    raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
+    raw = await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
     if raw is None or raw.get("schema") != TRANSACTION_POINTER_SCHEMA:
         return
     await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=access_id, consult_decision=False)
@@ -805,7 +802,7 @@ async def assert_replaceable(store: Any, *, subject_hash: str, access_id: str) -
 
 
 async def _is_staged(store: Any, receipt: Mapping[str, Any]) -> bool:
-    raw = await read_json_or_none(store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"]))
+    raw = await store.read_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"])
     return (isinstance(raw, Mapping) and raw.get("schema") == TRANSACTION_POINTER_SCHEMA
             and raw.get("transaction_id") == receipt["transaction_id"]
             and raw.get("before") == receipt["before"] and raw.get("after") == receipt["after"])
@@ -865,9 +862,10 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
     pointer = await store.write_revision(subject_hash=receipt["subject_hash"], authority=candidate, updated_at=now)
     if pointer.to_dict() != receipt["after"]:
         raise CardStorageError("card_transaction_staged_revision_mismatch")
-    await write_json_atomic(store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"]),
-                            {"schema": TRANSACTION_POINTER_SCHEMA, "transaction_id": receipt["transaction_id"],
-                             "before": receipt["before"], "after": receipt["after"]})
+    await store.write_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"],
+                                       document={"schema": TRANSACTION_POINTER_SCHEMA,
+                                                 "transaction_id": receipt["transaction_id"],
+                                                 "before": receipt["before"], "after": receipt["after"]})
 
 
 async def stage(store: Any, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
@@ -966,7 +964,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
             raise CardTransactionRefused("card_transaction_replay_changed")
         if existing["state"] != "prepared" or await _is_staged(store, existing):
             return existing
-        raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
+        raw = await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
         current = None if raw is None else (
             await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=access_id,
                                   consult_decision=False)
