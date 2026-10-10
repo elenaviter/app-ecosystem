@@ -290,3 +290,20 @@ def test_the_bounds_stay_ordered():
     assert redis_lock.REDIS_LOCK_RENEW_SECONDS < redis_lock.REDIS_LOCK_TTL_SECONDS / 2
     with pytest.raises(ValueError):
         _lock(None, ttl_seconds=10, renew_seconds=6)
+
+
+@pytest.mark.asyncio
+async def test_each_lock_instance_verifies_the_policy_itself_never_by_client_id(tmp_path):
+    """Mint F1: no module-level cache keyed by id(client). A lock built after the policy changed reads it again,
+    even on the very same client object."""
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+
+    redis = _client()
+    await _enter(_lock(redis), tmp_path, wait=1)  # verified for that lock instance only
+    await redis.config_set("maxmemory-policy", "allkeys-lru")
+    try:
+        with pytest.raises(CardStorageError, match="card_lock_redis_policy_not_noeviction"):
+            await _enter(_lock(redis), tmp_path, wait=1)
+    finally:
+        await redis.config_set("maxmemory-policy", "noeviction")
+        await redis.aclose()

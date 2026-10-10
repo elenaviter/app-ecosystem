@@ -95,8 +95,6 @@ class _Held:
 
 
 _OPERATION: ContextVar[_Held | None] = ContextVar("w661_card_redis_lock_operation", default=None)
-# R-3: the eviction policy is verified once per Redis client before its first Card lock (id -> verified).
-_POLICY_VERIFIED: dict[int, bool] = {}
 
 
 def card_lock_key(*, tenant: str, project: str, resource_id: str, lock_path: pathlib.Path | None = None) -> str:
@@ -154,6 +152,9 @@ def redis_card_mutation_lock(redis: Any, *, observed_lock: Callable[..., Any], m
     # renew_seconds=None turns renewal off: ONLY for tests that model a stalled owner (a VM pause stops renewal too).
     if renew_seconds is not None and not 0 < float(renew_seconds) < float(ttl_seconds) / 2:
         raise ValueError("card_lock_renewal_must_be_under_half_the_ttl")
+    # R-3: the eviction policy is verified once per LOCK INSTANCE (one per client), before its first Card lock.
+    # Never a module-level cache keyed by id(client): a new client can reuse a collected client's id (Mint F1).
+    policy = {"verified": False}
 
     @asynccontextmanager
     async def lock(*, lock_path: pathlib.Path, resource_id: str, operation: str,
@@ -162,12 +163,9 @@ def redis_card_mutation_lock(redis: Any, *, observed_lock: Callable[..., Any], m
 
         if redis is None:
             raise CardStorageError("card_lock_unavailable")
-        if require_noeviction and not _POLICY_VERIFIED.get(id(redis)):
-            try:
-                await assert_redis_noeviction(redis)
-            except CardStorageError:
-                raise
-            _POLICY_VERIFIED[id(redis)] = True
+        if require_noeviction and not policy["verified"]:
+            await assert_redis_noeviction(redis)
+            policy["verified"] = True
         key = card_lock_key(tenant=tenant, project=project, resource_id=resource_id, lock_path=lock_path)
         held, token = _OPERATION.get(), None
         if held is not None and held.closed:

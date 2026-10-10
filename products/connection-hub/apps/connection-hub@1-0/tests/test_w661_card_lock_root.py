@@ -62,3 +62,19 @@ async def test_a_non_root_process_takes_the_lock_under_bundle_storage_and_an_unw
                 pass
     finally:
         locked.chmod(0o755)
+
+
+@pytest.mark.asyncio
+async def test_a_configured_ttl_below_the_pb_bounds_refuses_by_name(monkeypatch, tmp_path):
+    """Mint N4 / R-5: lock_ttl_seconds must stay above PB's 60 s idle-in-transaction bound."""
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+
+    m = module()
+    monkeypatch.setenv("GATEWAY_COMPONENT", "proc")
+    monkeypatch.setattr(m, "_card_lock_settings", lambda entrypoint: {"lock_backend": "redis", "lock_ttl_seconds": 30})
+    monkeypatch.setattr(m, "_card_lock_backend", lambda entrypoint: "redis")
+    lock = m._card_mutation_lock(SimpleNamespace(bundle_storage_root=lambda: tmp_path, redis=object()))
+    with pytest.raises(CardStorageError, match="card_lock_settings_invalid"):
+        async with lock(lock_path=tmp_path / "x" / ".lock", resource_id="delegated-card:a", operation="t",
+                        wait_seconds=1):
+            pass

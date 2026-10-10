@@ -975,6 +975,11 @@ def _card_mutation_lock(entrypoint: Any) -> Any:
         overrides = {name: settings[key] for key, name in (("lock_ttl_seconds", "ttl_seconds"),
                                                             ("lock_renew_seconds", "renew_seconds"))
                      if isinstance(settings.get(key), (int, float)) and not isinstance(settings.get(key), bool)}
+        # R-5 (Mint N4): a configured TTL stays above PB's 60 s idle-in-transaction bound, renewal under TTL/2.
+        ttl = overrides.get("ttl_seconds", 120)
+        renew = overrides.get("renew_seconds", 20)
+        if not (ttl > 60 and 0 < renew < ttl / 2):
+            return _refusing_card_lock("card_lock_settings_invalid")
         redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
         tenant, project = _runtime_tenant_project(entrypoint)
         return hub_redis_card_mutation_lock(redis, _kdcube_card_mutation_lock, root,
