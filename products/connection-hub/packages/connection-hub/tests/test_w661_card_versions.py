@@ -1,0 +1,498 @@
+"""W661 contract v6.2: STAGE / PUBLISH / ROLLBACK of Card versions (piece 1, the Hub Card store).
+
+Operator, 10 Oct: "each card has it data ONCE. others LINK"; "never nothing is being scanned"; invitation
+"UPSERT. overwrite"; "that error must call callbacl also which will rollback the garbage"; D2: "not yet
+final version does not work until theres final arrives. before that olf version works and is active."
+
+Covered: a staged version is invisible until PUBLISH; ROLLBACK leaves nothing; the base fence at STAGE
+and at PUBLISH; same-txn retries (no second version, also after a crash before the marker); a lost PUBLISH
+reply and a PUBLISH stopped between its pointer and its marker; upsert over an existing and an absent
+id; effects once each, effects_pending and retry; no folder is listed; fsync; links only in the marker;
+member locks in sorted order; the KEEP_ROLLBACK_MARKER switch.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import pathlib
+from contextlib import asynccontextmanager
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from connection_hub.delegated_credentials import durable_io
+from connection_hub.delegated_credentials.cards import transaction_store as tx
+from connection_hub.delegated_credentials.cards.service import DelegatedCardService
+from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore, CardStorageError
+from test_card_service import _Cache
+from test_card_transaction_store import NOW, SUBJECT_HASH, _setup
+
+TXN = "w661-txn-" + "a" * 32
+DIGEST = "d" * 64
+WHEN = datetime.fromtimestamp(NOW, timezone.utc) if not isinstance(NOW, datetime) else NOW
+
+
+async def _stage(service, members, *, txn=TXN, digest=DIGEST, at=WHEN, effects=()):
+    return await service.stage_card_version(txn=txn, request_digest=digest, catalog="catalog-1", members=members,
+                                            now=at, effects=effects)
+
+
+async def _current(store, card):
+    found = await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=card.access_id)
+    return None if found is None else found[1]
+
+
+def _revision_files(store, card):
+    folder = store.card_path(subject_hash=SUBJECT_HASH, access_id=card.access_id) / "revisions"
+    return sorted(p.name for p in folder.iterdir()) if folder.exists() else []
+
+
+@pytest.mark.asyncio
+async def test_a_staged_version_is_invisible_until_publish_then_it_is_current_and_history(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    answer = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    assert answer == [{"subject_hash": SUBJECT_HASH, "access_id": before.access_id, "version": 2,
+                       "checksum": after.content_hash()}]
+    marker = await tx.read_card_version_marker(store, TXN)
+    staged = marker["members"][0]["revision_name"]
+    # D2: the old version works and is active; the staged one is neither current, history nor readable.
+    assert await _current(store, before) == before
+    assert staged not in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    assert await store.read_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id,
+                                     revision_name=staged) is None
+    assert await service.publish_card_version(txn=TXN) == answer
+    assert await _current(store, before) == after
+    assert staged in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "published"
+    assert not any(name.endswith(".card-version.json") for name in _revision_files(store, before))
+    assert await service.publish_card_version(txn=TXN) == answer  # idempotent
+
+
+@pytest.mark.asyncio
+async def test_rollback_of_a_staged_txn_leaves_nothing_and_a_later_publish_is_unknown(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    files_before = _revision_files(store, before)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    assert await service.rollback_card_version(txn=TXN) == "rolled_back"
+    assert _revision_files(store, before) == files_before
+    assert not tx.card_version_marker_path(store, TXN).exists()
+    assert await _current(store, before) == before
+    with pytest.raises(tx.CardTransactionRefused, match="txn_unknown"):
+        await service.publish_card_version(txn=TXN)
+    assert await service.rollback_card_version(txn=TXN) == "unknown_txn"
+    assert not tx.card_version_marker_path(store, TXN).exists()  # v6.2: an unknown txn writes nothing
+
+
+@pytest.mark.asyncio
+async def test_stage_refuses_a_moved_base_and_publish_refuses_a_card_changed_after_stage(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    with pytest.raises(tx.CardTransactionRefused, match="card_changed"):
+        await _stage(service, [(SUBJECT_HASH, before.access_id, 2, replace(after, card_revision=3))])
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    other = replace(before, card_revision=2, label="another save")
+    await service.commit(other, subject_hash=SUBJECT_HASH, expected_revision=1, now=NOW)
+    with pytest.raises(tx.CardTransactionRefused, match="card_changed"):
+        await service.publish_card_version(txn=TXN)
+    assert await _current(store, before) == other  # the lost-update fence: the other save stands
+    assert await service.rollback_card_version(txn=TXN) == "rolled_back"
+    assert await _current(store, before) == other
+
+
+@pytest.mark.asyncio
+async def test_a_same_txn_retry_answers_again_without_a_second_version_and_a_different_request_conflicts(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    members = [(SUBJECT_HASH, before.access_id, 1, after)]
+    first = await _stage(service, members)
+    files = _revision_files(store, before)
+    assert await _stage(service, members) == first
+    assert _revision_files(store, before) == files
+    with pytest.raises(tx.CardTransactionRefused, match="stage_txn_conflict"):
+        await _stage(service, members, digest="e" * 64)
+    with pytest.raises(tx.CardTransactionRefused, match="stage_txn_conflict"):
+        await _stage(service, members, at=WHEN + timedelta(seconds=5))
+    await service.publish_card_version(txn=TXN)
+    with pytest.raises(tx.CardTransactionRefused, match="txn_closed"):
+        await _stage(service, members)
+
+
+@pytest.mark.asyncio
+async def test_a_stage_stopped_after_its_version_file_is_finished_by_the_retry_without_a_second_version(tmp_path, monkeypatch):
+    """EMain 16:35Z: "the old resume path that writes again goes": the retry finishes the SAME file."""
+    store, service, before, after = await _setup(tmp_path)
+    members = [(SUBJECT_HASH, before.access_id, 1, after)]
+    real, writes = tx._write_card_version_marker, []
+
+    async def stop_before_staged(store_, marker):
+        writes.append(marker["state"])
+        if marker["state"] == "staged":
+            raise CardStorageError("write_failed")
+        await real(store_, marker)
+    monkeypatch.setattr(tx, "_write_card_version_marker", stop_before_staged)
+    with pytest.raises(CardStorageError):
+        await _stage(service, members)
+    assert writes == ["staging", "staged"]
+    after_crash = _revision_files(store, before)
+    monkeypatch.setattr(tx, "_write_card_version_marker", real)
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "staging"
+    with pytest.raises(tx.CardTransactionRefused, match="txn_not_staged"):
+        await service.publish_card_version(txn=TXN)  # STAGE never answered
+    await _stage(service, members)
+    assert _revision_files(store, before) == after_crash  # the same revision file, nothing new
+    await service.publish_card_version(txn=TXN)
+    assert len(await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_stage_cancelled_during_its_version_write_is_fully_removed_by_rollback(tmp_path, monkeypatch):
+    """Infra K4 (16:45Z) marker-gap schedule: cancellation during the body write, a living PB caller, then
+    ROLLBACK. The `staging` marker written first names the file, so nothing of the save remains."""
+    store, service, before, after = await _setup(tmp_path)
+    files_before = _revision_files(store, before)
+    real_write = store.write_revision
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def slow_write(**kwargs):
+        entered.set()
+        await release.wait()
+        return await real_write(**kwargs)
+    monkeypatch.setattr(store, "write_revision", slow_write)
+    task = asyncio.create_task(_stage(service, [(SUBJECT_HASH, before.access_id, 1, after)]))
+    await entered.wait()
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "staging"
+    assert await service.rollback_card_version(txn=TXN) == "rolled_back"
+    assert _revision_files(store, before) == files_before
+    assert not tx.card_version_marker_path(store, TXN).exists()
+    assert await _current(store, before) == before
+
+
+@pytest.mark.asyncio
+async def test_a_refused_preparation_writes_no_card_file_and_rollback_releases_every_effect(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    files_before = _revision_files(store, before)
+    effects = [{"kind": "handle_binding", "key": "k1"}]
+    released = []
+
+    async def refuse():
+        raise tx.CardTransactionRefused("card_changed")
+
+    async def release(effect, marker):
+        released.append((effect["key"], marker["txn"]))
+    with pytest.raises(tx.CardTransactionRefused, match="card_changed"):
+        await service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog={"version": "v1", "content_hash": "h"},
+                                         members=[(SUBJECT_HASH, before.access_id, 1, after)], now=WHEN,
+                                         effects=effects, prepare=refuse)
+    assert _revision_files(store, before) == files_before
+    assert await service.rollback_card_version(txn=TXN, release=release) == "rolled_back"
+    assert released == [("k1", TXN)]
+    assert not tx.card_version_marker_path(store, TXN).exists()
+
+
+@pytest.mark.asyncio
+async def test_rollback_after_a_lost_publish_reply_answers_already_published_and_keeps_the_version(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    await service.publish_card_version(txn=TXN)
+    assert await service.rollback_card_version(txn=TXN) == "already_published"
+    assert await _current(store, before) == after
+
+
+@pytest.mark.asyncio
+async def test_a_publish_stopped_between_pointer_and_marker_is_published_by_rollback_not_deleted(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    marker = await tx.read_card_version_marker(store, TXN)
+    from connection_hub.delegated_credentials.cards.model import CardCurrentPointer
+    await store.advance_current(subject_hash=SUBJECT_HASH,
+                                pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
+    assert await service.rollback_card_version(txn=TXN) == "already_published"
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "published"
+    assert await _current(store, before) == after
+
+
+@pytest.mark.asyncio
+async def test_invitation_upsert_overwrites_an_existing_id_and_creates_an_absent_one(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, None, after)])  # existing at r1: takes r2
+    await service.publish_card_version(txn=TXN)
+    assert await _current(store, before) == after
+    fresh = replace(before, access_id="aut_new_invite", card_revision=1, label="invited")
+    await _stage(service, [(SUBJECT_HASH, fresh.access_id, None, fresh)], txn="w661-txn-" + "b" * 32)
+    await service.publish_card_version(txn="w661-txn-" + "b" * 32)
+    assert await _current(store, fresh) == fresh
+
+
+@pytest.mark.asyncio
+async def test_invite_remove_invite_overwrites_the_same_id_without_any_history_scan(tmp_path):
+    """Operator: the card id "NEVER changes"; invitation "UPSERT. overwrite"; no "slot used" refusal."""
+    store, service, before, after = await _setup(tmp_path)
+    store.current_path(subject_hash=SUBJECT_HASH, access_id=before.access_id).unlink()  # removed
+    again = replace(before, card_revision=1, label="invited again")
+    await _stage(service, [(SUBJECT_HASH, before.access_id, None, again)])
+    await service.publish_card_version(txn=TXN)
+    assert await _current(store, before) == again
+
+
+@pytest.mark.asyncio
+async def test_effects_run_once_each_pending_until_done_and_never_again(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    effects = [{"kind": "handle_binding", "key": "k1"}, {"kind": "handle_binding", "key": "k2"}]
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], effects=effects)
+    runs = []
+
+    async def flaky(effect, marker):
+        runs.append(effect["key"])
+        if effect["key"] == "k2" and runs.count("k2") == 1:
+            raise RuntimeError("binding store unavailable")
+        return "applied"
+    with pytest.raises(tx.CardTransactionRefused, match="effects_pending"):
+        await service.publish_card_version(txn=TXN)  # no executor: the flip is done, effects are pending
+    assert await _current(store, before) == after
+    with pytest.raises(RuntimeError):
+        await service.publish_card_version(txn=TXN, run_effect=flaky)
+    assert runs == ["k1", "k2"]
+    await service.publish_card_version(txn=TXN, run_effect=flaky)
+    assert runs == ["k1", "k2", "k2"]
+    assert await service.rollback_card_version(txn=TXN, run_effect=flaky) == "already_published"
+    await service.publish_card_version(txn=TXN, run_effect=flaky)
+    assert runs == ["k1", "k2", "k2"]
+    assert (await tx.read_card_version_marker(store, TXN))["effect_outcomes"] == {"0": "applied", "1": "applied"}
+
+
+@pytest.mark.asyncio
+async def test_no_operation_lists_a_card_folder_or_anything_that_grows_with_the_cards(tmp_path, monkeypatch):
+    """Operator: "never nothing is being scanned"; "nothing should grow with the cards".
+
+    STAGE and ROLLBACK list nothing. PUBLISH's current.json write still passes the existing
+    `assert_pointer_replaceable` guard of the Hub-local flows (issuer updates, lifecycle intents), which
+    lists their in-flight queues, each capped at 128 entries; it never lists a Card or revision folder.
+    Those queues go with the Hub-local flows (scope B follow-up); pinned here so any other listing fails.
+    """
+    store, service, before, after = await _setup(tmp_path)
+    listed = []
+    real_listdir = os.listdir
+    in_flight_queues = {store.root / "issuer-updates" / "active", store.root / "lifecycle-transactions" / "active"}
+
+    def recording_iterdir(self):
+        listed.append(self)
+        if self not in in_flight_queues:
+            raise AssertionError(f"a W661 operation listed {self}")
+        return iter([self / name for name in real_listdir(self)])
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("a W661 operation listed a folder")
+    monkeypatch.setattr(durable_io, "_list_children", refuse)
+    monkeypatch.setattr(pathlib.Path, "iterdir", recording_iterdir)
+    monkeypatch.setattr(pathlib.Path, "glob", refuse)
+    monkeypatch.setattr(os, "listdir", refuse)
+    monkeypatch.setattr(os, "scandir", refuse)
+    second = "w661-txn-" + "c" * 32
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    await _stage(service, [(SUBJECT_HASH, "aut_other", None, replace(after, access_id="aut_other", card_revision=1))],
+                 txn=second)
+    assert await service.rollback_card_version(txn=second) == "rolled_back"
+    assert listed == []  # STAGE and ROLLBACK of a staged txn list nothing at all
+    await service.publish_card_version(txn=TXN)
+    assert await service.rollback_card_version(txn=TXN) == "already_published"
+    assert set(listed) <= in_flight_queues
+
+
+@pytest.mark.asyncio
+async def test_every_write_is_fsynced_and_the_marker_holds_links_only(tmp_path, monkeypatch):
+    store, service, before, after = await _setup(tmp_path)
+    synced = []
+    real = os.fsync
+    monkeypatch.setattr(durable_io.os, "fsync", lambda fd: (synced.append(fd), real(fd))[1])
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    assert len(synced) >= 6  # revision marker, revision, txn marker: each file and its directory
+    raw = tx.card_version_marker_path(store, TXN).read_text(encoding="utf-8")
+    marker = json.loads(raw)
+    assert set(marker) == {"schema", "txn", "state", "request_digest", "request_id", "actor", "at", "catalog",
+                           "members", "effects", "effect_outcomes"}
+    assert set(marker["members"][0]) == {"subject_hash", "access_id", "base_version", "observed_version",
+                                         "observed_revision_name", "version", "revision_name", "content_hash",
+                                         "pointer"}
+    for card_field in ("staged change", before.grantor_subject, "named_service_operations", "issuer_ref"):
+        assert card_field not in raw  # "each card has it data ONCE. others LINK"
+
+
+@pytest.mark.asyncio
+async def test_member_locks_are_taken_in_sorted_order_and_held_for_every_operation(tmp_path):
+    taken, held = [], set()
+
+    @asynccontextmanager
+    async def mutation_lock(*, lock_path, resource_id, operation, wait_seconds):
+        assert resource_id not in held
+        taken.append(resource_id)
+        held.add(resource_id)
+        try:
+            yield
+        finally:
+            held.discard(resource_id)
+
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    _, _, before, _ = await _setup(tmp_path / "seed")
+    cards = [replace(before, access_id=f"aut_{name}", card_revision=1) for name in ("zz", "aa", "mm")]
+    await _stage(service, [(SUBJECT_HASH, c.access_id, None, c) for c in cards])
+    assert taken == ["delegated-card:aut_aa", "delegated-card:aut_mm", "delegated-card:aut_zz"]
+    taken.clear()
+    await service.publish_card_version(txn=TXN)
+    # read members, take their locks in order, re-read under the locks
+    assert taken == ["delegated-card:aut_aa", "delegated-card:aut_mm", "delegated-card:aut_zz"]
+    assert held == set()
+
+
+@pytest.mark.asyncio
+async def test_stage_and_rollback_of_one_txn_serialize_on_the_card_lock(tmp_path):
+    locks: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def mutation_lock(*, lock_path, resource_id, operation, wait_seconds):
+        lock = locks.setdefault(str(lock_path), asyncio.Lock())
+        async with lock:
+            await asyncio.sleep(0)
+            yield
+
+    store, _, before, after = await _setup(tmp_path)
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    staged, answer = await asyncio.gather(_stage(service, [(SUBJECT_HASH, before.access_id, 1, after)]),
+                                          service.rollback_card_version(txn=TXN))
+    marker = await tx.read_card_version_marker(store, TXN)
+    if answer == "unknown_txn":  # ROLLBACK first: STAGE then stands, staged and inert (R1)
+        assert marker["state"] == "staged"
+    else:  # STAGE first: ROLLBACK removed all of it
+        assert answer == "rolled_back" and marker is None
+    assert await _current(store, before) == before
+
+
+@pytest.mark.asyncio
+async def test_the_keep_rollback_marker_switch_closes_the_txn_for_a_late_call(tmp_path, monkeypatch):
+    """EMain 16:35Z: a one-line switch until Infra's K4 probe decides; off (v6.2) by default."""
+    assert tx.KEEP_ROLLBACK_MARKER is False
+    monkeypatch.setattr(tx, "KEEP_ROLLBACK_MARKER", True)
+    store, service, before, after = await _setup(tmp_path)
+    members = [(SUBJECT_HASH, before.access_id, 1, after)]
+    await _stage(service, members)
+    assert await service.rollback_card_version(txn=TXN) == "rolled_back"
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "rolled_back"
+    with pytest.raises(tx.CardTransactionRefused, match="txn_closed"):
+        await _stage(service, members)
+    with pytest.raises(tx.CardTransactionRefused, match="txn_closed"):
+        await service.publish_card_version(txn=TXN)
+    late = "w661-txn-" + "f" * 32
+    assert await service.rollback_card_version(txn=late) == "unknown_txn"
+    with pytest.raises(tx.CardTransactionRefused, match="txn_closed"):
+        await _stage(service, members, txn=late)
+
+
+@pytest.mark.asyncio
+async def test_a_request_without_its_own_time_or_with_a_bad_txn_is_refused(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    with pytest.raises(tx.CardTransactionRefused, match="card_version_request_invalid"):
+        await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], at=datetime(2026, 10, 10))
+    with pytest.raises(tx.CardTransactionRefused, match="card_version_txn_invalid"):
+        await service.publish_card_version(txn="../escape")
+
+
+class _PortRefused(Exception):
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+@pytest.mark.asyncio
+async def test_the_piece_2_port_answers_links_hands_effects_the_port_marker_and_maps_refusals(tmp_path):
+    from connection_hub.delegated_credentials.cards.card_version_port import ServiceCardVersionStore
+
+    store, service, before, after = await _setup(tmp_path)
+    port = ServiceCardVersionStore(service, refused=_PortRefused)
+    member = {"subject_hash": SUBJECT_HASH, "access_id": before.access_id, "base_version": 1, "value": after.to_dict()}
+    effects = [{"kind": "handle_binding", "key": "k1", "access_id": before.access_id, "payload": {"card_revision": 2}}]
+    seen, prepared = [], []
+
+    async def prepare():
+        prepared.append(True)
+
+    async def apply(effect, marker):
+        seen.append(marker)
+        current = await port.read_current(SUBJECT_HASH, before.access_id)
+        assert current == {"version": 2, "checksum": after.content_hash()}  # the flip happened before effects
+        return "applied"
+
+    link = {"card": {"subject_hash": SUBJECT_HASH, "access_id": before.access_id}, "version": 2,
+            "checksum": after.content_hash()}
+    stage = dict(request_id="r-1", request_digest=DIGEST, catalog={"version": "v1", "content_hash": "c" * 64},
+                 actor_subject="person-1", actor_kind="caller", members=[member], effects=effects, prepare=prepare,
+                 at=WHEN)
+    assert await port.stage(TXN, **stage) == {"members": [link]}
+    assert prepared == [True]
+    assert await port.publish(TXN, apply=apply) == {"members": [link]}
+    assert seen == [{"txn": TXN, "members": [{**link, "base_version": 1}]}]
+    assert await port.rollback(TXN, apply=apply, release=apply) == {"state": "already_published"}
+    assert len(seen) == 1  # effects ran once
+    with pytest.raises(_PortRefused) as refused:
+        await port.stage("w661-txn-" + "e" * 32, **{**stage, "members": [member]})
+    assert refused.value.code == "card_changed"
+    with pytest.raises(_PortRefused) as refused:
+        await port.publish("w661-txn-" + "9" * 32, apply=apply)
+    assert refused.value.code == "txn_unknown"
+    assert await port.rollback("w661-txn-" + "9" * 32, apply=apply, release=apply) == {"state": "unknown_txn"}
+    with pytest.raises(_PortRefused) as refused:
+        await port.stage("w661-txn-" + "8" * 32, **{**stage, "members": [{**member, "value": {"bad": 1}}]})
+    assert refused.value.code == "edit_invalid"
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_stage_drains_its_thread_write_before_rollback_can_run_and_nothing_remains(tmp_path, monkeypatch):
+    """EMain 16:45Z amendment, item 3 (Infra K4): "Cancelling to_thread does not stop its syscall". The paused
+    body write is a real worker-thread write; ROLLBACK waits on the Card lock until it has finished."""
+    import threading
+
+    locks: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def mutation_lock(*, lock_path, resource_id, operation, wait_seconds):
+        async with locks.setdefault(str(lock_path), asyncio.Lock()):
+            yield
+
+    store, _, before, after = await _setup(tmp_path)
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    files_before = _revision_files(store, before)
+    real_write = durable_io._write_text_atomic
+    entered, resume, order = threading.Event(), threading.Event(), []
+
+    def paused_write(path, text):
+        if path.parent.name == "revisions" and path.name.startswith("card_revision_"):
+            entered.set()
+            resume.wait(10)
+            real_write(path, text)
+            order.append("write_finished")
+            return
+        real_write(path, text)
+    monkeypatch.setattr(durable_io, "_write_text_atomic", paused_write)
+    stage = asyncio.create_task(_stage(service, [(SUBJECT_HASH, before.access_id, 1, after)]))
+    await asyncio.to_thread(entered.wait, 10)
+    stage.cancel()
+
+    async def rollback():
+        answer = await service.rollback_card_version(txn=TXN)
+        order.append("rollback_done")
+        return answer
+    rolling = asyncio.create_task(rollback())
+    await asyncio.sleep(0.2)
+    assert not rolling.done() and order == []  # the Card lock is held until the started write returns
+    resume.set()
+    with pytest.raises(asyncio.CancelledError):
+        await stage
+    assert await rolling == "rolled_back"
+    assert order == ["write_finished", "rollback_done"]
+    assert _revision_files(store, before) == files_before
+    assert not tx.card_version_marker_path(store, TXN).exists()

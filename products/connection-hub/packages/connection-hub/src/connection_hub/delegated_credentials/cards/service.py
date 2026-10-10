@@ -280,6 +280,82 @@ class DelegatedCardService:
             wait_seconds=CARD_LOCK_WAIT_SECONDS,
         )
 
+    @asynccontextmanager
+    async def _card_version_sections(self, cards: Any):
+        """W661 v6.2: every member Card's mutation lock, in sorted (subject_hash, access_id) order.
+
+        The lock is a flock that never expires or is stolen (CardMutationLock). Started writes are drained
+        INSIDE the locks (drain_writes_before_release), so a cancelled call's to_thread write cannot land
+        after a lock is released (EMain's late-write question, 16:3xZ).
+        """
+        from contextlib import AsyncExitStack
+        from ..durable_io import drain_writes_before_release
+
+        async with AsyncExitStack() as stack:
+            for subject_hash, access_id in sorted(set(cards)):
+                await stack.enter_async_context(self._critical_section(subject_hash=subject_hash, access_id=access_id))
+            await stack.enter_async_context(drain_writes_before_release())
+            yield
+
+    async def stage_card_version(self, *, txn: str, request_digest: str, catalog: str, members: Any,
+                                 now: datetime, effects: Any = (), request_id: str = "", actor: Any = None,
+                                 prepare: Any = None) -> list[dict[str, Any]]:
+        """W661 STAGE: the members' next versions, not yet final; ``members`` = (subject_hash, access_id,
+        base_version | None, candidate). Answers links only: card, version, checksum.
+
+        ``now`` is the request's own time (contract: "who and when are fields of the record"), never this
+        host's clock: a same-request retry then names the same revision file and cannot leave a stray one."""
+        from .transaction_store import card_version_stage
+
+        members = list(members)
+        try:
+            async with self._card_version_sections((m[0], m[1]) for m in members):
+                return await card_version_stage(self._store, txn=txn, request_digest=request_digest, catalog=catalog,
+                                                members=members, effects=effects, now=now,
+                                                request_id=request_id, actor=actor, prepare=prepare)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def _card_version_members(self, txn: str) -> list[tuple[str, str]]:
+        from .transaction_store import read_card_version_marker
+
+        marker = await read_card_version_marker(self._store, txn)
+        return [] if marker is None else [(m["subject_hash"], m["access_id"]) for m in marker["members"]]
+
+    async def _under_txn_locks(self, txn: str, operation: Any) -> Any:
+        """Run ``operation`` under the locks of exactly the txn marker's members.
+
+        The members are read first to know which locks to take, then read AGAIN under those locks. If a
+        concurrent same-txn STAGE changed them in between, retry (at most 3 times): an operation never acts
+        on a member whose lock it does not hold.
+        """
+        for _ in range(3):
+            expected = sorted(set(await self._card_version_members(txn)))
+            try:
+                async with self._card_version_sections(expected):
+                    if sorted(set(await self._card_version_members(txn))) != expected:
+                        continue
+                    return await operation()
+            except CardMutationLockTimeout as exc:
+                raise CardConflict("card_mutation_lock_timeout") from exc
+        raise CardConflict("card_version_members_moved")
+
+    async def publish_card_version(self, *, txn: str, run_effect: Any = None) -> list[dict[str, Any]]:
+        """W661 PUBLISH: base fence, current.json, marker published, then the recorded effects."""
+        from .transaction_store import card_version_publish, card_version_txn_id
+
+        card_version_txn_id(txn)
+        return await self._under_txn_locks(txn, lambda: card_version_publish(self._store, txn=txn,
+                                                                             run_effect=run_effect))
+
+    async def rollback_card_version(self, *, txn: str, run_effect: Any = None, release: Any = None) -> str:
+        """W661 ROLLBACK: rolled_back | already_published | unknown_txn; never removes a published version."""
+        from .transaction_store import card_version_rollback, card_version_txn_id
+
+        card_version_txn_id(txn)
+        return await self._under_txn_locks(txn, lambda: card_version_rollback(self._store, txn=txn,
+                                                                              run_effect=run_effect, release=release))
+
     def _collection_section(self, collection_id: str):
         """W651 retention: one sealed collection's lock, taken OUTERMOST (before any Card section) by
         every stage and finish that resolves the collection and by the sweep, in that one fixed order."""

@@ -135,15 +135,37 @@ def _read_text(path: pathlib.Path) -> str | OSError | None:
         return exc
 
 
+def _fsync_directory(directory: pathlib.Path) -> None:
+    """Make a rename in ``directory`` durable (W661: "There is no fsync"). Best effort where unsupported."""
+    try:
+        fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass  # some filesystems refuse fsync on a directory; the file itself is already fsynced
+    finally:
+        os.close(fd)
+
+
 def _write_text_atomic(path: pathlib.Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}.{os.urandom(6).hex()}")
     try:
+        # W661: the bytes are durable before the rename makes them visible, and the rename is durable
+        # before the call returns (temp file, fsync, rename, fsync of the directory).
         tmp_path.write_text(text, encoding="utf-8")
+        fd = os.open(tmp_path, os.O_RDONLY)
+        try:
+            os.fsync(fd)  # fsync flushes the file itself, whichever descriptor names it
+        finally:
+            os.close(fd)
         deadline = _PUBLISH_BEFORE.get()
         if deadline is not None and datetime.now(timezone.utc) >= deadline:
             raise DurableStorageError("issuer_decision_expired")
         tmp_path.replace(path)
+        _fsync_directory(path.parent)
     finally:
         tmp_path.unlink(missing_ok=True)
 

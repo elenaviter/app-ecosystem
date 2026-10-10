@@ -7,7 +7,7 @@ finish decides every member and writes the aggregate last. Covered here:
 invisibility while undecided, commit and abort for every member (an absent
 original reads absent again after an abort), every crash point between the
 aggregate and its last member, a fresh restage of an aborted-only slot
-(EMain Q1), the absent-slot guard, the lead's effects gating every member,
+(EMain Q1), the absent-slot base check (W661: no history scan), the lead's effects gating every member,
 and the per-Card fences.
 """
 
@@ -122,24 +122,26 @@ async def test_an_aborted_only_slot_is_restaged_fresh_by_a_new_transaction(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_a_slot_with_committed_history_is_never_staged_as_absent(tmp_path):
+async def test_a_slot_with_a_current_card_is_never_staged_as_absent(tmp_path):
     store, _, before, after = await _setup(tmp_path)
     members = [(None, replace(after, card_revision=1))]  # the harness Card exists at r1
     await _begin(store, members)
-    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_absent_slot_used"):
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_base_moved"):
         await _stage_member(store, members, 0)
 
 
 @pytest.mark.asyncio
-async def test_an_old_id_whose_pointer_is_gone_is_never_recreated(tmp_path):
-    """CodeApp 22:59: an id with committed history is never staged as absent, even without a pointer."""
+async def test_an_old_id_whose_pointer_is_gone_is_overwritten_without_a_history_scan(tmp_path):
+    """W661, operator: "never nothing is being scanned"; the card id "NEVER changes"; invitation "UPSERT.
+    overwrite". Replaces CodeApp 22:59's absent-slot guard, which listed the revision history."""
     store, _, before, after = await _setup(tmp_path)
     store.current_path(subject_hash=SUBJECT_HASH, access_id=before.access_id).unlink()
     assert await store.read_current(subject_hash=SUBJECT_HASH, access_id=before.access_id) is None
     members = [(None, replace(after, card_revision=1))]
     await _begin(store, members)
-    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_absent_slot_used"):
-        await _stage_member(store, members, 0)
+    await _stage_member(store, members, 0)
+    group = await tx.complete_group(store, transaction_id=GROUP, intent_digest=INTENT)
+    assert group["staged"] is True
 
 
 @pytest.mark.asyncio
@@ -382,7 +384,7 @@ async def test_a_group_whose_second_member_moved_never_prepares_and_aborts_clean
     # Another writer creates the "new" id first: its member can no longer stage as absent.
     created = next(member[2] for member in members if member[1] is None)
     await service.commit(created, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
-    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_absent_slot_used"):
+    with pytest.raises(tx.CardTransactionRefused, match="card_transaction_base_moved"):
         await _service_stage(service, members)
     group = await tx.read_receipt(store, GROUP)
     assert group["staged"] is False

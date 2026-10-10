@@ -223,6 +223,13 @@ class BundleStorageDelegatedCardStore:
                     != (subject_hash, access_id, revision_name)):
                 raise CardStorageError("issuer_update_revision_binding_invalid")
             return receipt["state"] == "committed"
+        # W661 v6.2: a staged Card version is history only once its txn is published (D2: "not yet final
+        # version does not work until theres final arrives").
+        version_marker = await read_json_or_none(path.with_suffix(".card-version.json"))
+        if version_marker is not None:
+            from .transaction_store import card_version_revision_committed
+            return await card_version_revision_committed(self, version_marker, subject_hash=subject_hash,
+                                                         access_id=access_id, revision_name=revision_name)
         transaction_marker = await read_json_or_none(path.with_suffix(".card-transaction.json"))
         if transaction_marker is not None:
             from .transaction_store import revision_is_committed
