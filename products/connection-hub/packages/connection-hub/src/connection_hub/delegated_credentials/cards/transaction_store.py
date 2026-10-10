@@ -848,9 +848,11 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
                                     link=candidate_link, marker=receipt["transaction_id"])
         if frozen.to_dict() != candidate.to_dict():
             raise CardTransactionRefused("card_transaction_replay_changed")
-        await write_json_atomic(store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"]),
-                                {"schema": TRANSACTION_POINTER_SCHEMA, "transaction_id": receipt["transaction_id"],
-                                 "before": receipt["before"], "after": receipt["after"]})
+        # W661 P: through the pointer authority (the row when on), as every other pointer writer.
+        await store.write_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"],
+                                           document={"schema": TRANSACTION_POINTER_SCHEMA,
+                                                     "transaction_id": receipt["transaction_id"],
+                                                     "before": receipt["before"], "after": receipt["after"]})
         return
     # The revision marker first: a staged AFTER never appears in history or a
     # by-name revision read before its transaction commits, and an aborted one
