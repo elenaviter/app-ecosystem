@@ -30,6 +30,8 @@ ledger and the reader pinning across realms are the callers'.
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
 import itertools
 import re
 from datetime import datetime
@@ -1446,7 +1448,7 @@ async def state(store: Any, *, transaction_id: str) -> dict[str, Any] | None:
     return await read_receipt(store, transaction_id)
 
 
-__all__ = ["finalize_current_version", "CARD_VERSION_MARKER_SCHEMA", "card_version_marker_path", "card_version_publish", "card_version_revision_committed",
+__all__ = ["card_version_compensation_plan", "card_version_outcome", "compensation_txn_id", "finalize_current_version", "CARD_VERSION_MARKER_SCHEMA", "card_version_marker_path", "card_version_publish", "card_version_revision_committed",
            "card_version_rollback", "card_version_stage", "card_version_txn_id", "read_card_version_marker",
            "CardTransactionRefused", "DECISIONS", "GROUP_RECEIPT_SCHEMA", "TRANSACTION_POINTER_SCHEMA",
            "TRANSACTION_RECEIPT_SCHEMA", "begin_group", "complete_group", "finish_group", "group_member_ref",
@@ -1793,7 +1795,10 @@ async def _write_staged_versions(store: Any, marker: Mapping[str, Any], candidat
                                                                   access_id=m["access_id"],
                                                                   revision_name=m["revision_name"]), {"txn": marker["txn"]})
         record = {"txn": marker["txn"], "actor": marker.get("actor"), "at": marker["at"],
-                  "catalog": marker.get("catalog"), "binding": marker.get("binding")}
+                  "catalog": marker.get("catalog"), "binding": marker.get("binding"),
+                  # v6.3 item 7: the link to the version this one replaced, so a compensation can restore it
+                  # by name (no listing). None for a Card created on an absent id.
+                  "base": m.get("observed_revision_name")}
         # D2: who and when are fields of the version record ("each card version -> one record").
         pointer = await store.write_revision(subject_hash=m["subject_hash"], authority=candidate, updated_at=now,
                                              record=record, txn=marker["txn"])
@@ -1915,6 +1920,108 @@ async def card_version_rollback(store: Any, *, txn: str, run_effect: Any = None,
         return "rolled_back"
     await _finish_published(store, marker, run_effect)  # published: finish what the lost PUBLISH left
     return "already_published"
+
+
+def _expected_revision_name(link: Mapping[str, Any], *, txn: str, at: Any) -> str:
+    try:
+        return card_revision_name(card_revision=int(link["version"]), content_hash=str(link["checksum"]),
+                                  updated_at=at, txn=txn)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CardTransactionRefused("card_version_request_invalid") from exc
+
+
+def _link_cards(links: Any) -> list[dict[str, Any]]:
+    try:
+        return [{"subject_hash": str(link["subject_hash"]), "access_id": str(link["access_id"]),
+                 "version": int(link["version"]), "checksum": str(link["checksum"])} for link in list(links or ())]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CardTransactionRefused("card_version_request_invalid") from exc
+
+
+async def card_version_outcome(store: Any, *, txn: str, binding: Any = None, links: Any = (), at: Any = None
+                               ) -> dict[str, Any]:
+    """v6.3 item 5, READ-ONLY: what became of ``txn``, by the exact request PB persisted (links + at).
+
+    state: published | staged | staging | rolled_back | unknown_txn; per member, whether current.json names
+    exactly this txn's version. Nothing is written, nothing is listed.
+    """
+    card_version_txn_id(txn)
+    marker = await read_card_version_marker(store, txn)
+    if marker is not None:
+        _require_binding(marker, binding)
+        state = marker["state"]
+        members = [{"subject_hash": m["subject_hash"], "access_id": m["access_id"], "version": m["version"],
+                    "checksum": m["content_hash"], "revision_name": m["revision_name"]} for m in marker["members"]]
+    else:
+        cards = _link_cards(links)
+        if not isinstance(at, datetime) or at.utcoffset() is None or not cards:
+            state, members = "unknown_txn", []
+        else:
+            state = "published" if await _published_by_links(store, txn=txn, links=cards, at=at, binding=binding) \
+                else "unknown_txn"
+            members = [{**c, "revision_name": _expected_revision_name(c, txn=txn, at=at)} for c in cards] \
+                if state == "published" else []
+    answer = []
+    for m in members:
+        current = await store.read_current(subject_hash=m["subject_hash"], access_id=m["access_id"])
+        answer.append({"subject_hash": m["subject_hash"], "access_id": m["access_id"], "version": m["version"],
+                       "checksum": m["checksum"],
+                       "current": current is not None and current.revision_name == m["revision_name"]})
+    return {"state": state, "members": answer}
+
+
+def compensation_txn_id(txn: str) -> str:
+    """The deterministic compensation txn of ``txn``: a retry of the same compensation is the same txn."""
+    return "cmp-" + hashlib.sha256(card_version_txn_id(txn).encode("utf-8")).hexdigest()[:40]
+
+
+async def card_version_compensation_plan(store: Any, *, txn: str, binding: Any = None, links: Any = (),
+                                         at: Any = None) -> tuple[str, list[tuple[str, str, int, Any]], bool]:
+    """v6.3 item 7, under the members' locks: what restoring the pre-``txn`` content would stage.
+
+    Every linked Card's current.json must name EXACTLY txn's version, or already the compensation's own version
+    (a retry); anything else is a successor: compensation_superseded, nothing written, nothing rewound.
+    Returns (comp txn, members to stage as (subject_hash, access_id, base_version, candidate), all done).
+    """
+    from .model import authority_is_credential_free
+
+    comp = compensation_txn_id(txn)
+    cards = _link_cards(links)
+    if not cards or not isinstance(at, datetime) or at.utcoffset() is None:
+        raise CardTransactionRefused("card_version_request_invalid")
+    plan, done = [], 0
+    for c in cards:
+        expected = _expected_revision_name(c, txn=txn, at=at)
+        current = await store.read_current(subject_hash=c["subject_hash"], access_id=c["access_id"])
+        if current is None:
+            raise CardTransactionRefused("compensation_superseded")
+        record = await store.read_version_record(subject_hash=c["subject_hash"], access_id=c["access_id"],
+                                                 revision_name=current.revision_name)
+        if current.revision_name != expected:
+            if record is not None and record.get("txn") == comp:
+                if record.get("binding") != _card_version_binding(binding):
+                    raise CardTransactionRefused("txn_scope_mismatch")  # a retry answers only its own scope
+                done += 1  # this Card is already restored by the compensation (a retry)
+                continue
+            raise CardTransactionRefused("compensation_superseded")
+        if record is None or record.get("txn") != txn:
+            raise CardTransactionRefused("card_version_link_mismatch")
+        if record.get("binding") != _card_version_binding(binding):
+            raise CardTransactionRefused("txn_scope_mismatch")
+        published = await store.read_revision(subject_hash=c["subject_hash"], access_id=c["access_id"],
+                                              revision_name=current.revision_name)
+        if published is None or published.content_hash() != c["checksum"]:
+            raise CardTransactionRefused("card_version_link_mismatch")
+        base_name = record.get("base")
+        base = await store.read_revision(subject_hash=c["subject_hash"], access_id=c["access_id"],
+                                         revision_name=base_name) if isinstance(base_name, str) else None
+        if base is None or not authority_is_credential_free(base) or not authority_is_credential_free(published):
+            # No recorded base (written before v6.3, or a Card created on an absent id), or a credential-bearing
+            # Card whose effects a content restore would not redo: fail closed.
+            raise CardTransactionRefused("compensation_unsupported")
+        plan.append((c["subject_hash"], c["access_id"], c["version"],
+                     dataclasses.replace(base, card_revision=c["version"] + 1)))
+    return comp, plan, done == len(cards)
 
 
 async def _published_by_links(store: Any, *, txn: str, links: Any, at: Any, binding: Any) -> bool:

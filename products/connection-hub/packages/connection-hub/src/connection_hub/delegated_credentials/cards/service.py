@@ -365,6 +365,63 @@ class DelegatedCardService:
                                                                               run_effect=run_effect, release=release,
                                                                               binding=binding, links=links, at=at))
 
+    async def outcome_card_version(self, *, txn: str, binding: Any = None, links: Any = (),
+                                   at: Any = None) -> dict[str, Any]:
+        """v6.3 item 5: the read-only outcome of ``txn`` by its exact request, under the linked Cards' locks."""
+        from .transaction_store import _link_cards, card_version_outcome, card_version_txn_id
+
+        card_version_txn_id(txn)
+        cards = [(c["subject_hash"], c["access_id"]) for c in _link_cards(links)]
+        cards += await self._card_version_members(txn)
+        try:
+            async with self._card_version_sections(cards):
+                return await card_version_outcome(self._store, txn=txn, binding=binding, links=links, at=at)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def compensate_card_version(self, *, txn: str, binding: Any = None, links: Any = (), at: Any = None,
+                                      compensation_at: Any = None) -> dict[str, Any]:
+        """v6.3 item 7: restore the pre-``txn`` content as a NEW version, fenced on txn's exact version.
+
+        Runs only for a conclusively uncommitted PB outcome (PB decides under its row lock). Never overwrites a
+        successor (compensation_superseded), never rewinds, copies no Card body out of the Hub. The restore is
+        an ordinary STAGE + PUBLISH of the deterministic compensation txn, so a retry is idempotent.
+        """
+        import hashlib
+        import json
+        from .transaction_store import (
+            CardTransactionRefused, _link_cards, card_version_compensation_plan, read_card_version_marker)
+
+        cards = _link_cards(links)
+        if not isinstance(compensation_at, datetime) or compensation_at.utcoffset() is None:
+            raise CardTransactionRefused("card_version_request_invalid")
+        try:
+            async with self._card_version_sections([(c["subject_hash"], c["access_id"]) for c in cards]):
+                comp, plan, done = await card_version_compensation_plan(self._store, txn=txn, binding=binding,
+                                                                        links=links, at=at)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+        if not done:
+            try:
+                if await read_card_version_marker(self._store, comp) is None:
+                    digest = hashlib.sha256(json.dumps(
+                        {"op": "compensate", "txn": txn, "links": cards, "at": compensation_at.isoformat()},
+                        sort_keys=True).encode("utf-8")).hexdigest()
+                    await self.stage_card_version(txn=comp, request_digest=digest, catalog="compensation",
+                                                  members=plan, now=compensation_at, binding=binding,
+                                                  actor={"subject": "connection-hub", "kind": "compensation"})
+                await self.publish_card_version(txn=comp, binding=binding)
+            except CardTransactionRefused as exc:
+                if exc.reason == "card_changed":  # a successor slipped in between: never overwrite it
+                    raise CardTransactionRefused("compensation_superseded") from exc
+                raise
+        members = []
+        for c in cards:
+            current = await self._store.read_current(subject_hash=c["subject_hash"], access_id=c["access_id"])
+            members.append({"subject_hash": c["subject_hash"], "access_id": c["access_id"],
+                            "version": current.card_revision, "checksum": current.content_hash})
+        return {"state": "already_compensated" if done else "compensated", "members": members}
+
     def _collection_section(self, collection_id: str):
         """W651 retention: one sealed collection's lock, taken OUTERMOST (before any Card section) by
         every stage and finish that resolves the collection and by the sweep, in that one fixed order."""

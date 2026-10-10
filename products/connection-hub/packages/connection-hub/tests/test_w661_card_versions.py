@@ -76,7 +76,9 @@ async def test_a_staged_version_is_invisible_until_publish_then_it_is_current_an
     assert not any(name.endswith(".card-version.json") for name in _revision_files(store, before))
     record = await store.read_version_record(subject_hash=SUBJECT_HASH, access_id=before.access_id,
                                              revision_name=staged)
+    base = record.pop("base")
     assert record == {"txn": TXN, "actor": None, "at": WHEN.isoformat(), "catalog": "catalog-1", "binding": None}
+    assert base == marker["members"][0]["observed_revision_name"]  # v6.3 item 7: the link to the replaced version
     with pytest.raises(tx.CardTransactionRefused, match="txn_unknown"):  # D5: a lost-reply retry goes to ROLLBACK
         await service.publish_card_version(txn=TXN)
     assert await service.rollback_card_version(txn=TXN, links=_links(answer), at=WHEN) == "already_published"

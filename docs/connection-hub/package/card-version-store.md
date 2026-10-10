@@ -68,6 +68,26 @@ only the version itself remains. A `staging` marker refuses `txn_not_staged`; no
 
 ROLLBACK never deletes a published version.
 
+## OUTCOME (contract v6.3, item 5)
+
+A read-only answer to "what became of txn T", by the exact request PB persisted before PUBLISH (STAGE's
+links plus `at`): `published` (the marker says so, or the marker is gone and the linked files carry T),
+`staged`, `staging`, or `unknown_txn`. Per member it also says whether `current.json` names exactly T's
+version. It takes the linked Cards' locks, writes nothing and lists nothing; another scope or caller is
+refused `txn_scope_mismatch`.
+
+## COMPENSATE (contract v6.3, item 7)
+
+After a conclusively uncommitted PB outcome, PB asks the Hub to restore what each Card had before T:
+
+- every linked Card's `current.json` must name EXACTLY T's version; otherwise (a successor) the answer is
+  `compensation_superseded` and nothing is written, nothing rewinds;
+- the earlier content is read by the link T's own version record keeps (`version_record.base`), never by
+  listing, and published as a NEW version N+1 through the ordinary STAGE and PUBLISH of a deterministic
+  compensation txn (`cmp-` + sha256(T)[:40]), so a retry answers `already_compensated` and writes nothing;
+- a Card that is credential-bearing, or a version without a recorded base (written before v6.3, or a Card
+  created on an absent id), is refused `compensation_unsupported`: the restore never guesses effects.
+
 ## Every writer finalizes what `current.json` names (D3)
 
 Before any writer (STAGE, PUBLISH, any pointer write) builds on a Card, it reads `current.json`, the
