@@ -97,6 +97,9 @@ is not exclusive between processes (1 overlap in 600). Phase 1 therefore:
   Outside it the Card lock, every JSON write under the Card store root and every deletion there refuse
   `card_store_write_wrong_process_role`; the legacy repair on bundle load is skipped outside proc.
 
-This holds while exactly one chat-proc container writes Cards. PostgreSQL advisory locks with a
+This holds while exactly ONE container both runs in role `proc` and mounts the Card share. `proc` is not
+unique to chat-proc (the platform also labels metrics `proc`), so the condition is about every
+proc-labelled container that can reach the Card root: on the live host (10 October) only chat-proc
+mounts `/bundle-storage`; metrics does not. A second such container needs the PostgreSQL lock. PostgreSQL advisory locks with a
 session-held check replace it before W661 is Done.
 

@@ -156,7 +156,7 @@ def test_a_deletion_under_the_card_root_is_refused_outside_proc(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_direct_stage_and_rollback_without_the_service_lock_are_refused_outside_proc(tmp_path):
+async def test_direct_stage_publish_and_rollback_without_the_service_lock_are_refused_outside_proc(tmp_path):
     """Infra 18:46Z: the marker write, the revision sidecar and the unlinks in transaction_store bypass
     store.write_revision; the store-level guard refuses them too, called directly with no Card lock at all."""
     from connection_hub.delegated_credentials import durable_io
@@ -178,7 +178,12 @@ async def test_direct_stage_and_rollback_without_the_service_lock_are_refused_ou
         await tx.card_version_stage(store, txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,
                                     members=[(SUBJECT_HASH, before.access_id, 1, after)])
         staged = sorted(p.relative_to(store.root) for p in store.root.rglob("*"))
+        current = store.current_path(subject_hash=SUBJECT_HASH, access_id=before.access_id).read_bytes()
         role["value"] = "ingress"
+        with pytest.raises(CardStorageError, match="card_store_write_wrong_process_role"):
+            await tx.card_version_publish(store, txn=TXN)  # current.json is never moved
+        assert store.current_path(subject_hash=SUBJECT_HASH, access_id=before.access_id).read_bytes() == current
+        assert sorted(p.relative_to(store.root) for p in store.root.rglob("*")) == staged
         with pytest.raises(CardStorageError, match="card_store_write_wrong_process_role"):
             await tx.card_version_rollback(store, txn=TXN)  # the first unlink refuses
         assert sorted(p.relative_to(store.root) for p in store.root.rglob("*")) == staged  # nothing removed

@@ -15,7 +15,10 @@ platform's "proc" process role, so a Card writer anywhere else (chat-ingress) fa
 PostgreSQL advisory locks (option b) follow before W661 Done.
 
 The role signal is the platform's GATEWAY_COMPONENT: the SDK sets "proc" in apps/chat/proc/web_app.py and
-"ingress" in apps/chat/ingress/web_app.py (os.environ.setdefault, before the workers spawn).
+"ingress" in apps/chat/ingress/web_app.py (os.environ.setdefault, before the workers spawn). It is not unique
+to chat-proc (apps/metrics/web_app.py also defaults to "proc"; Infra 18:57Z), so the guard is correct only
+while exactly one proc-labelled container can reach the Card share (live: chat-proc; metrics has no
+/bundle-storage mount).
 """
 
 from __future__ import annotations
