@@ -200,6 +200,42 @@ class BundleStorageDelegatedCardStore:
         else:
             await write_json_atomic(path, dict(document))
 
+    def card_version_marker_path(self, txn: str) -> pathlib.Path:
+        return self._root / "card-versions" / f"{txn}.json"
+
+    async def read_marker_document(self, txn: str) -> dict | None:
+        """The card-version txn marker (R1). b-core: the row decides once it exists; a marker file written before
+        the cutover is adopted only by an operation that holds a Card lock (every marker op does); a lock-free
+        reader reads the file and creates nothing."""
+        path = self.card_version_marker_path(txn)
+        rows = self.card_rows
+        if rows is None:
+            return await read_json_or_none(path)
+        from .locks import current_lock_session
+
+        document, _revision = await rows.read_marker(txn)
+        if document is None:
+            hint = await read_json_or_none(path)
+            if hint is None:
+                return None
+            session = current_lock_session()
+            if session is None or not session.resources:
+                return hint
+            document, _revision = await rows.adopt_marker(txn, hint)
+        return document
+
+    async def write_marker_document(self, txn: str, document: dict) -> None:
+        """R1: the marker's every transition is a CAS on its row, then the file hint."""
+        if self.card_rows is not None:
+            await self.card_rows.write_marker(txn, dict(document))
+        await write_json_atomic(self.card_version_marker_path(txn), dict(document))
+
+    async def delete_marker_document(self, txn: str) -> None:
+        """R1: removal is a CAS too (a stale deleter never removes a newer state), then the file hint."""
+        if self.card_rows is not None:
+            await self.card_rows.delete_marker(txn)
+        unlink_guarded(self.card_version_marker_path(txn))
+
     async def read_current(
         self, *, subject_hash: str, access_id: str, consult_decision: bool = True
     ) -> CardCurrentPointer | None:

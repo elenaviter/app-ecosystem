@@ -225,8 +225,9 @@ async def test_a_publish_stopped_between_pointer_and_marker_is_published_by_roll
     await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
     marker = await tx.read_card_version_marker(store, TXN)
     from connection_hub.delegated_credentials.cards.model import CardCurrentPointer
-    await store.advance_current(subject_hash=SUBJECT_HASH,
-                                pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
+    async with service._critical_section(subject_hash=SUBJECT_HASH, access_id=before.access_id):  # a writer's cut
+        await store.advance_current(subject_hash=SUBJECT_HASH,
+                                    pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
     assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
     assert await service.rollback_card_version(txn=TXN) == "already_published"
     assert not tx.card_version_marker_path(store, TXN).exists()  # finished, so only the version remains
@@ -249,7 +250,9 @@ async def test_invitation_upsert_overwrites_an_existing_id_and_creates_an_absent
 async def test_invite_remove_invite_overwrites_the_same_id_without_any_history_scan(tmp_path):
     """Operator: the card id "NEVER changes"; invitation "UPSERT. overwrite"; no "slot used" refusal."""
     store, service, before, after = await _setup(tmp_path)
-    store.current_path(subject_hash=SUBJECT_HASH, access_id=before.access_id).unlink()  # removed
+    async with service._critical_section(subject_hash=SUBJECT_HASH, access_id=before.access_id):  # removed
+        await store.read_pointer_document(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+        await store.write_pointer_document(subject_hash=SUBJECT_HASH, access_id=before.access_id, document=None)
     again = replace(before, card_revision=1, label="invited again")
     await _stage(service, [(SUBJECT_HASH, before.access_id, None, again)])
     await service.publish_card_version(txn=TXN)
@@ -736,8 +739,9 @@ async def test_a_reader_sees_the_new_version_once_current_names_it_even_before_t
     await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
     marker = await tx.read_card_version_marker(store, TXN)
     assert await _current(store, before) == before
-    await store.advance_current(subject_hash=SUBJECT_HASH,
-                                pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
+    async with service._critical_section(subject_hash=SUBJECT_HASH, access_id=before.access_id):  # a writer's cut
+        await store.advance_current(subject_hash=SUBJECT_HASH,
+                                    pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
     assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
     assert await _current(store, before) == after
 
