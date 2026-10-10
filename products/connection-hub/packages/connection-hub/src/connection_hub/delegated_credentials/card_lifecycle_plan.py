@@ -839,8 +839,9 @@ async def plan_card_lifecycle(
             # For the agent lifecycle kinds, 0 plans against the revision the Hub
             # loads now; the member carries it and PREPARE fences exactly that.
             # W661: a role_selection likewise applies PB's policy delta to the Card's current version.
+            # W661 P4: a person's removal likewise ends the C and My the Hub reads now (PB reads no Card).
             current_agent = (raw.get("kind") in {"attach_agent", "detach_agent", "apply_agent_profile",
-                                                 "role_selection"}
+                                                 "role_selection", "remove_person"}
                              and original_revision == 0)
             if type(original_revision) is not int or (original_revision < 1 and not current_agent):
                 raise CardLifecyclePlanRefused("card_plan_revision_invalid", 400)

@@ -419,3 +419,16 @@ async def test_staging_refuses_a_recreate_not_at_the_revoked_cards_next_revision
             members=[(subject_hash_for(c.grantor_subject), stored[1], fresh, "recreate")],
             now=datetime.fromtimestamp(100, timezone.utc), reads=[], catalog="")
     assert "card_group_recreate_invalid" in str(caught.value)
+
+
+
+@pytest.mark.asyncio
+async def test_w661_a_removal_with_base_zero_ends_the_cards_the_hub_reads_now():
+    """W661 P4: PB reads no Card, so it sends original_revision 0; the Hub pins the version it loaded."""
+    p, c, my = _person()
+    result = await _plan(_Host(p, c, my), [_remove(c, original_revision=0), _remove(my, original_revision=0)])
+    assert result["ok"] is True, result
+    members = {member["access_id"]: member for member in result["plan"]["candidate_value"]["cards"]}
+    for card in (c, my):
+        assert members[card.access_id]["original_revision"] == card.card_revision
+        assert CardAuthority.from_mapping(members[card.access_id]["candidate"]).state == CARD_STATE_REVOKED
