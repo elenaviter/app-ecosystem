@@ -98,6 +98,15 @@ def _marker_path(store: Any, *, subject_hash: str, access_id: str, revision_name
     return revision_marker_path(store, subject_hash=subject_hash, access_id=access_id, revision_name=revision_name)
 
 
+def planned_link(*, authority: CardAuthority, at: datetime, tag: str) -> dict[str, Any]:
+    """The link ``write_hidden_version(authority, at, tag)`` writes, computed WITHOUT writing (for a
+    manifest recorded before the file)."""
+    content_hash = authority.content_hash()
+    return version_link(card_revision=authority.card_revision, content_hash=content_hash,
+                        revision_name=card_revision_name(card_revision=authority.card_revision,
+                                                         content_hash=content_hash, updated_at=at, txn=tag))
+
+
 async def write_hidden_version(store: Any, *, subject_hash: str, authority: CardAuthority, at: datetime,
                                tag: str) -> dict[str, Any]:
     """Write ``authority`` once as its own txn-tagged version file, hidden by ``tag``; return its link.
@@ -200,22 +209,24 @@ async def load_version(store: Any, *, subject_hash: str, access_id: str, link: A
     """The Card a link names, read directly by name; refuses unless content hash, card and revision match.
 
     ``marker``: an uncommitted candidate's tag. When given, the version file's ``.card-transaction.json``
-    marker must name exactly that tag (``version_link_marker_mismatch``). ``owners`` accepts one of several
-    exact owners instead (a staging tag, or the transaction that adopted it); ``allow_unmarked`` also
-    accepts a file whose marker is gone (a committed version after FINISH), never a different owner.
+    marker must name exactly that tag (``version_link_marker_mismatch``; ``version_link_marker_absent``
+    when there is none). ``owners`` accepts one of several exact owners instead (a staging tag, or the
+    transaction that adopted it); ``allow_unmarked`` also accepts a file whose marker is gone, which the
+    caller allows only with evidence that its decision committed. With no owner named, only an unmarked
+    file is accepted (never a marked one).
     """
     if not is_version_link(link):
         raise CardRecordError("version_link_invalid")
     accepted = {marker} if marker is not None else set(owners or ())
-    if accepted or allow_unmarked:
-        found = await _read_present(_marker_path(store, subject_hash=subject_hash, access_id=access_id,
-                                                 revision_name=link["revision_name"]))
-        if found is _ABSENT:
-            if not allow_unmarked:
-                raise CardRecordError("version_link_marker_mismatch")
-        elif not (isinstance(found, Mapping) and set(found) == {"transaction_id"}
-                  and found["transaction_id"] in accepted):
-            raise CardRecordError("version_link_marker_mismatch")
+    found = await _read_present(_marker_path(store, subject_hash=subject_hash, access_id=access_id,
+                                             revision_name=link["revision_name"]))
+    if found is _ABSENT:
+        if accepted and not allow_unmarked:
+            raise CardRecordError("version_link_marker_absent")
+    elif not (accepted and isinstance(found, Mapping) and set(found) == {"transaction_id"}
+              and found["transaction_id"] in accepted):
+        # Spark N2: with no owner named, only an unmarked version is accepted; a marked file never.
+        raise CardRecordError("version_link_marker_mismatch")
     payload = await _read_present(store.revision_path(subject_hash=subject_hash, access_id=access_id,
                                                       revision_name=link["revision_name"]))
     if payload is _ABSENT:
@@ -232,5 +243,5 @@ async def load_version(store: Any, *, subject_hash: str, access_id: str, link: A
 
 
 __all__ = ["LINK_KEYS", "STAGING_TAG_PREFIX", "adopt_hidden_version", "discard_hidden_version", "is_staging_tag",
-           "is_version_link", "load_version", "pointer_link", "staging_tag", "version_link",
+           "is_version_link", "load_version", "planned_link", "pointer_link", "staging_tag", "version_link",
            "write_hidden_version"]

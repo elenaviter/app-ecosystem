@@ -13,6 +13,7 @@ TABLE_ACCESS_BINDINGS = "connection_hub_oauth_access_bindings"
 # W603: an original OAuth issuance's credentials before its Card decision's COMMIT.
 TABLE_ISSUANCE_RESERVATIONS = "connection_hub_oauth_issuance_reservations"
 TABLE_ISSUANCE_PLANS = "connection_hub_oauth_issuance_plans"
+TABLE_ISSUANCE_PLAN_ATTEMPTS = "connection_hub_oauth_issuance_plan_attempts"
 # Compatibility alias for callers that imported the original OAuth-local name.
 TABLE_CUTOVERS = TABLE_AUTHORITY_CUTOVERS
 
@@ -171,6 +172,24 @@ ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
 CREATE UNIQUE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plans_transaction_idx
     ON {schema}.{TABLE_ISSUANCE_PLANS} (tenant, project, transaction_id)
     WHERE transaction_id IS NOT NULL;
+
+-- W661 scope B: a plan's planned candidate version (a hidden Card version file) is released once its
+-- decision is terminal, unless a transaction adopted it; the flag keeps that sweep from repeating.
+ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
+    ADD COLUMN IF NOT EXISTS candidate_released BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- W661 scope B: one planning attempt per request, recorded BEFORE its candidate version file is written:
+-- the planned clock (a retry rebuilds the same candidate and names the same file) and that file's link
+-- (a crashed attempt's file is found by this ONE row, never by listing). Deleted once the plan is stored.
+CREATE TABLE IF NOT EXISTS {schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} (
+    tenant                       TEXT NOT NULL,
+    project                      TEXT NOT NULL,
+    decision_request_id          CHAR(64) NOT NULL,
+    planned_at                   BIGINT NOT NULL,
+    expires_at                   TIMESTAMPTZ NOT NULL,
+    candidate                    JSONB NULL,
+    PRIMARY KEY (tenant, project, decision_request_id)
+);
 
 -- W603: the credentials of an original issuance, reserved under its ONE Card
 -- decision before that decision's COMMIT. A reservation is in no table a
