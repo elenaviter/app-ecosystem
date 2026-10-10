@@ -554,3 +554,13 @@ async def test_a_protected_grant_refusal_is_its_own_signed_code():
     assert _verified(await operation.answer(request), request) == {
         "kind": "refused", "code": "card_edit_admin_grant_role_only", "status": 409}
     assert store.staged == []
+
+
+@pytest.mark.asyncio
+async def test_rollback_accepts_stages_own_links_with_their_base_version():
+    operation, _, store = _operation()
+    request = _request("rollback", links=[{**LINK, "base_version": 3}])
+    assert (await operation.answer(request))["ok"] is True
+    assert store.rollback_links == [LINK]  # the store gets the locator links only
+    for bad in ({**LINK, "base_version": 0}, {**LINK, "base_version": "3"}, {**LINK, "extra": 1}):
+        assert (await operation.answer(_request("rollback", links=[bad])))["error"]["code"] == "card_version_request_invalid"

@@ -57,6 +57,7 @@ async def test_an_ordinary_edit_while_holding_the_protected_grant_is_saved(card_
 @pytest.mark.parametrize("protected", [
     {}, {"service-a": []}, {"service-a": ["work:admin", "work:admin"]}, {"service-a": [" work:admin"]},
     {f"r{i}": ["g"] for i in range(5)}, {"service-a": [f"g{i}" for i in range(17)]}, ["work:admin"],
+    {"service-a": [{}]}, {"service-a": [[]]},  # unhashable entries refuse by name, never TypeError
 ])
 async def test_a_malformed_protected_list_is_refused(protected):
     project, control, my = _cards()

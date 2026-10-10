@@ -182,9 +182,14 @@ def _valid_stage(data: Mapping[str, Any]) -> bool:
 
 
 def _valid_links(links: Any) -> bool:
-    """ROLLBACK's links: exactly STAGE's answer, which PB keeps in its DECIDED row (EMain D2); [] when it has none."""
+    """ROLLBACK's links: exactly STAGE's answer, which PB keeps in its DECIDED row (EMain D2); [] when it has none.
+
+    A STAGE link names its fenced base_version too; ROLLBACK accepts it as returned and does not use it.
+    """
     return (type(links) is list and len(links) <= MAX_STEPS and all(
-        isinstance(link, Mapping) and set(link) == {"card", "version", "checksum"}
+        isinstance(link, Mapping) and set(link) - {"base_version"} == {"card", "version", "checksum"}
+        and (link.get("base_version") is None
+             or type(link["base_version"]) is int and link["base_version"] >= 1)
         and isinstance(link["card"], Mapping) and set(link["card"]) == {"subject_hash", "access_id"}
         and _bounded(link["card"]["subject_hash"]) and _bounded(link["card"]["access_id"])
         and type(link["version"]) is int and link["version"] >= 1 and _bounded(link["checksum"])
@@ -342,7 +347,8 @@ class CardVersionOperation:
         if data["op"] == "publish":
             answer = await self._store.publish(txn, **binding, apply=self._apply)
             return {"kind": "published", "members": _links(answer)}
-        answer = await self._store.rollback(txn, **binding, links=data["links"], at=_at(data["at"]),
+        links = [{key: link[key] for key in ("card", "version", "checksum")} for link in data["links"]]
+        answer = await self._store.rollback(txn, **binding, links=links, at=_at(data["at"]),
                                             apply=self._apply, release=self._release)
         state = answer.get("state") if isinstance(answer, Mapping) else None
         if state not in ("rolled_back", "already_published", "unknown_txn"):
