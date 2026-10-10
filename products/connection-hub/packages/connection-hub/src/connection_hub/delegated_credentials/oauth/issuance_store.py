@@ -523,6 +523,19 @@ class IssuanceReservationStore:
                     f"{self.schema}:{self.tenant}:{self.project}:oauth-issuance-plan:{decision_request_id}")
                 yield
 
+    @asynccontextmanager
+    async def planning_section_if_free(self, decision_request_id: str) -> AsyncIterator[bool]:
+        """The same per-request lock as ``planning_section``, taken only if free (the sweep never waits
+        behind a planner or a begin in progress); yields whether it is held."""
+        if not _HEX64.fullmatch(str(decision_request_id)):
+            raise IssuanceStoreRefused("issuance_plan_invalid")
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                held = await connection.fetchval(
+                    "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
+                    f"{self.schema}:{self.tenant}:{self.project}:oauth-issuance-plan:{decision_request_id}")
+                yield bool(held)
+
     async def read_plan_attempt(self, decision_request_id: str) -> dict[str, Any] | None:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(

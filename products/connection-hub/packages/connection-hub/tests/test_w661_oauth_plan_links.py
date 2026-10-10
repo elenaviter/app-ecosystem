@@ -366,6 +366,7 @@ async def _unbegun_plan(w, request):
     digest = original_input_digest({"grantor_subject": GRANTOR, "client_id": CLIENT, **inputs})
     planned = await w.service._plan_oauth_issuance(store=store, ttl=ttl, request=request_id, input_digest=digest,
                                                    grantor=GRANTOR, client=CLIENT, record_inputs=inputs)
+    planned["draft"]["expires_at"] = 1  # its decision can no longer begin: provably unbegun
     await store.put_issuance_plan(decision_request_id=request_id, original_input_digest=digest, plan=planned,
                                   reserved_until=1)
     return request_id, planned
@@ -495,3 +496,84 @@ async def test_an_expired_attempt_that_never_retried_is_swept_by_its_row(tmp_pat
         for directory in w.store.root.rglob("revisions"):
             assert not [m for m in directory.glob("*.card-transaction.json")
                         if json.loads(m.read_text()).get("transaction_id", "").startswith("stg-")]
+
+
+@pytest.mark.asyncio
+async def test_expiry_cleanup_keeps_an_already_begun_unbound_plan(tmp_path, monkeypatch):
+    """Infra H2 witness (W692, sha256 74a7c9f5), unchanged in substance: a real begin paused AFTER the durable
+    decision begin, past the real deadline; the sweep must keep the plan and its candidate (begin holds the
+    planning section)."""
+    import asyncio
+
+    from connection_hub.delegated_credentials.cards.transaction_store import revision_marker_path
+
+    async with _world(tmp_path) as w:
+        coordinator, intents, decisions, _ttl, _store = w.service._issuance_parts()
+        w.service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions, intent_ttl_seconds=2)
+        reached, resume, captured = asyncio.Event(), asyncio.Event(), {}
+        original_begin = decisions.begin
+
+        async def begin_then_pause(draft):
+            row = await original_begin(draft)
+            captured["row"] = row
+            reached.set()
+            await resume.wait()
+            return row
+
+        monkeypatch.setattr(decisions, "begin", begin_then_pause)
+        task = asyncio.create_task(_begin(w, request="cleanup-durable-begin-gap"))
+        try:
+            await asyncio.wait_for(reached.wait(), timeout=10)
+            row = captured["row"]
+            pending = await w.authority.read_issuance_plan_request(row.intent.request_id)
+            plan = pending["plan"]
+            link = plan["intent"]["candidate"]
+            paths = (w.store.revision_path(subject_hash=w.subject_hash, access_id=plan["access_id"],
+                                           revision_name=link["revision_name"]),
+                     revision_marker_path(w.store, subject_hash=w.subject_hash, access_id=plan["access_id"],
+                                          revision_name=link["revision_name"]))
+            before = tuple(path.read_bytes() for path in paths)
+            while await w.authority.issuance_clock() <= plan["draft"]["expires_at"]:
+                await asyncio.sleep(0.05)
+            released = await w.service.release_unbegun_oauth_issuance_plans()
+            observed = (released, await w.authority.read_issuance_plan_request(plan["decision_request_id"]) is not None,
+                        tuple(path.read_bytes() if path.exists() else None for path in paths) == before)
+        finally:
+            resume.set()
+            result = (await asyncio.gather(task, return_exceptions=True))[0]
+        assert observed == (0, True, True), observed
+        assert not isinstance(result, Exception), type(result).__name__
+
+
+@pytest.mark.asyncio
+async def test_a_begin_that_stopped_before_its_binding_is_bound_by_the_sweep_not_deleted(tmp_path, monkeypatch):
+    """The begin crashed after the durable decision began, before the plan's binding (lock released): the
+    sweep finds the decision by its draft, READ ONLY, and binds it; nothing is deleted."""
+    import asyncio
+
+    async with _world(tmp_path) as w:
+        coordinator, intents, decisions, _ttl, _store = w.service._issuance_parts()
+        w.service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions, intent_ttl_seconds=2)
+
+        async def crash(**_kwargs):
+            raise RuntimeError("synthetic crash before the plan's binding")
+
+        original_bind = w.authority.bind_issuance_plan_transaction
+        monkeypatch.setattr(w.authority, "bind_issuance_plan_transaction", crash)
+        with pytest.raises(Exception):
+            await _begin(w, request="stopped-before-bind")
+        monkeypatch.setattr(w.authority, "bind_issuance_plan_transaction", original_bind)
+        from connection_hub.delegated_credentials.oauth_issuance import decision_request_id
+        from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
+        from test_w603_original_issuance import CLIENT, GRANTOR
+
+        request = decision_request_id(scope=f"{PARTICIPANT}:oauth-issuance", grantor_subject=GRANTOR,
+                                      client_id=CLIENT, original_request_id="stopped-before-bind")
+        stored = await w.authority.read_issuance_plan_request(request)
+        assert stored is not None and not stored["transaction_id"]
+        while await w.authority.issuance_clock() <= stored["plan"]["draft"]["expires_at"]:
+            await asyncio.sleep(0.05)
+        assert await w.service.release_unbegun_oauth_issuance_plans() == 0
+        bound = await w.authority.read_issuance_plan_request(request)
+        began = await decisions.read_by_request(stored["plan"]["draft"]["replay_scope"], request)
+        assert bound["transaction_id"] == began.transaction_id
