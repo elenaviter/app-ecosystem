@@ -29,6 +29,7 @@ from typing import Any
 
 from connection_hub.delegated_credentials import project_control_binding
 from connection_hub.delegated_credentials.cards.model import CARD_STATE_ACTIVE
+from connection_hub.delegated_credentials.controls.model import control_card_id_for_issuer
 from connection_hub.delegated_credentials.controls.project_person import (
     PROJECT_PERSON_CONTROL_ISSUER_KIND,
     ProjectPersonControlIdentity,
@@ -85,8 +86,15 @@ def _write_marker(store: Any, counts: dict[str, int]) -> None:
 
 
 def _is_root_p(card: Any) -> bool:
-    return (card.state == CARD_STATE_ACTIVE and card.issuer_kind == PROJECT_CONTROL_ISSUER_KIND
-            and str(card.issuer_ref).startswith(PROJECT_PREFIX) and card.control_card is None)
+    """An active root project Control at its canonical id (derived from the project and its holder)."""
+    if not (card.state == CARD_STATE_ACTIVE and card.issuer_kind == PROJECT_CONTROL_ISSUER_KIND
+            and str(card.issuer_ref).startswith(PROJECT_PREFIX) and card.control_card is None):
+        return False
+    try:
+        return card.access_id == control_card_id_for_issuer(PROJECT_CONTROL_ISSUER_KIND, card.issuer_ref,
+                                                            grantor_subject=card.grantor_subject)
+    except Exception:  # noqa: BLE001 - an id that cannot be derived is no root P
+        return False
 
 
 async def _active_cards(store: Any, counts: Counter) -> list[Any]:
@@ -194,6 +202,12 @@ async def _repair_my(host: Any, lifecycle: ProjectIdentityLifecycle, card: Any, 
             or binding.control_id != root.access_id
             or (binding.holder_subject or control.grantor_subject) != root.grantor_subject):
         return "my_skipped_c_not_under_root_p"
+    # The shared current-P validator, as the C bind uses it (codex-infra review): rereads P and refuses a
+    # P that is not this project's exact live root, before any My writer runs.
+    if await project_control_binding.check_project_control(
+            host, control_identity, ProjectControlLocator(control_id=root.access_id,
+                                                          holder_subject=root.grantor_subject)) is not None:
+        return "my_skipped_p_not_current"
     my_loaded = await host._load_record_any_state(card.access_id, grantor_subject=card.grantor_subject)
     if my_loaded is None or my_loaded[1] != CARD_STATE_ACTIVE:
         return "my_skipped_not_active"

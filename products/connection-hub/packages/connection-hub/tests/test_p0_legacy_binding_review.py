@@ -157,3 +157,18 @@ def test_two_process_marker_publications_do_not_share_one_consumable_tmp(tmp_pat
         return original_replace(source, destination)
     monkeypatch.setattr(repair.os, "replace", overlap)
     repair._write_marker(host, {"my_already_bound": 1})  # A must not fail after B publishes
+
+
+@pytest.mark.asyncio
+async def test_a_p_at_a_non_canonical_id_is_no_root_and_my_is_untouched(tmp_path):
+    """codex-infra residual case on 9e9cc1e7: the sole "root" P at a non-canonical id, C pointing at it."""
+    host, c, my, primary = world(tmp_path)
+    odd = "synthetic-noncanonical-project-control"
+    host.records.pop((primary.grantor_subject, primary.access_id))
+    host.records[(primary.grantor_subject, odd)] = record_from_card(dataclasses.replace(primary, access_id=odd))
+    c_key = (c.grantor_subject, c.access_id)
+    host.records[c_key] = record_from_card(dataclasses.replace(
+        c, control_card=dataclasses.replace(c.control_card, control_id=odd)))
+    counts = await repair.repair_legacy_project_bindings(host, host)
+    assert counts == {"my_skipped_no_single_p": 1}, counts
+    assert host.writes == [] and not repair._complete(host)
