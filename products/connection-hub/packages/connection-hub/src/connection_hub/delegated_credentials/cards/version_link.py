@@ -28,7 +28,7 @@ import json
 from datetime import datetime
 from typing import Any, Mapping
 
-from connection_hub.delegated_credentials.durable_io import read_json_or_none, write_json_atomic
+from connection_hub.delegated_credentials.durable_io import path_is_file, read_json_or_none, write_json_atomic
 from .model import CardAuthority, CardCurrentPointer, CardRecordError, card_authority_payload_hash, card_revision_name
 from .store import VERSION_RECORD_KEY
 
@@ -72,6 +72,18 @@ def staging_tag(scope: str, request_id: str) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+_ABSENT = object()
+
+
+async def _read_present(path: Any) -> Any:
+    """The parsed object, or ``_ABSENT`` only when the file is confirmed absent. A present JSON ``null``
+    (or any non-object) is returned as it is, so callers refuse it as corruption, never as absence."""
+    value = await read_json_or_none(path)
+    if value is None and not await path_is_file(path):
+        return _ABSENT
+    return value
+
+
 def _marker_path(store: Any, *, subject_hash: str, access_id: str, revision_name: str) -> Any:
     from .transaction_store import revision_marker_path
 
@@ -101,18 +113,18 @@ async def write_hidden_version(store: Any, *, subject_hash: str, authority: Card
                                revision_name=revision_name)
     file_path = store.revision_path(subject_hash=subject_hash, access_id=authority.access_id,
                                     revision_name=revision_name)
-    marker = await read_json_or_none(marker_path)
-    payload = await read_json_or_none(file_path)
-    if marker is not None and marker != {"transaction_id": tag}:
+    marker = await _read_present(marker_path)
+    payload = await _read_present(file_path)
+    if marker is not _ABSENT and marker != {"transaction_id": tag}:
         raise CardRecordError("version_link_owner_conflict")
-    if payload is not None:
+    if payload is not _ABSENT:
         if not isinstance(payload, dict):
-            raise CardRecordError("revision_content_hash_mismatch")
+            raise CardRecordError("revision_content_hash_mismatch")  # a present null or non-object
         payload.pop(VERSION_RECORD_KEY, None)
         if card_authority_payload_hash(payload) != content_hash:
             raise CardRecordError("revision_content_hash_mismatch")
         return link
-    if marker is None:
+    if marker is _ABSENT:
         await write_json_atomic(marker_path, {"transaction_id": tag})
     written = await store.write_revision(subject_hash=subject_hash, authority=authority, updated_at=at, txn=tag)
     if written.revision_name != revision_name:
@@ -132,7 +144,7 @@ async def adopt_hidden_version(store: Any, *, subject_hash: str, access_id: str,
     """
     marker_path = _marker_path(store, subject_hash=subject_hash, access_id=access_id,
                                revision_name=link["revision_name"] if isinstance(link, Mapping) else "")
-    marker = await read_json_or_none(marker_path)
+    marker = await _read_present(marker_path)
     if marker == {"transaction_id": to_transaction_id}:
         await load_version(store, subject_hash=subject_hash, access_id=access_id, link=link,
                            marker=to_transaction_id)
@@ -157,18 +169,20 @@ async def load_version(store: Any, *, subject_hash: str, access_id: str, link: A
         raise CardRecordError("version_link_invalid")
     accepted = {marker} if marker is not None else set(owners or ())
     if accepted or allow_unmarked:
-        found = await read_json_or_none(_marker_path(store, subject_hash=subject_hash, access_id=access_id,
-                                                     revision_name=link["revision_name"]))
-        if found is None:
+        found = await _read_present(_marker_path(store, subject_hash=subject_hash, access_id=access_id,
+                                                 revision_name=link["revision_name"]))
+        if found is _ABSENT:
             if not allow_unmarked:
                 raise CardRecordError("version_link_marker_mismatch")
         elif not (isinstance(found, Mapping) and set(found) == {"transaction_id"}
                   and found["transaction_id"] in accepted):
             raise CardRecordError("version_link_marker_mismatch")
-    payload = await read_json_or_none(store.revision_path(subject_hash=subject_hash, access_id=access_id,
-                                                          revision_name=link["revision_name"]))
-    if not isinstance(payload, dict):
+    payload = await _read_present(store.revision_path(subject_hash=subject_hash, access_id=access_id,
+                                                      revision_name=link["revision_name"]))
+    if payload is _ABSENT:
         raise CardRecordError("version_link_missing")
+    if not isinstance(payload, dict):
+        raise CardRecordError("revision_content_hash_mismatch")
     payload.pop(VERSION_RECORD_KEY, None)
     if card_authority_payload_hash(payload) != link["content_hash"]:
         raise CardRecordError("revision_content_hash_mismatch")

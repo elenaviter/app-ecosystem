@@ -253,3 +253,68 @@ async def test_the_plan_reads_its_candidate_after_adoption_and_after_commit_but_
             == plan.operations
         marker.write_text(json.dumps({"transaction_id": member}))
         assert (await _complete(w, plan)).state == "committed"
+
+
+@pytest.mark.asyncio
+async def test_a_present_json_null_version_or_marker_is_corruption_never_absence(tmp_path):
+    """r4 (Infra F1): read_json_or_none returns None for an absent file AND a present JSON null; a present
+    null is refused and its bytes preserved, never overwritten, never read as "unmarked"."""
+    from connection_hub.delegated_credentials.cards.transaction_store import revision_marker_path
+
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)
+        link = (await _stored(w, plan))["intent"]["candidate"]
+        tag = links.staging_tag("oauth-issuance-candidate", plan.decision_request_id)
+        authority = await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
+                                             link=link, marker=tag)
+        at = datetime(2026, 10, 11, 0, 30, tzinfo=timezone.utc)
+        other = links.staging_tag("test", "null")
+        written = await links.write_hidden_version(w.store, subject_hash=w.subject_hash, authority=authority,
+                                                   at=at, tag=other)
+        path = w.store.revision_path(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                     revision_name=written["revision_name"])
+        path.write_text("null")
+        with pytest.raises(CardRecordError, match="revision_content_hash_mismatch"):
+            await links.write_hidden_version(w.store, subject_hash=w.subject_hash, authority=authority, at=at,
+                                             tag=other)
+        assert path.read_text() == "null"  # preserved, not repaired
+        with pytest.raises(CardRecordError, match="revision_content_hash_mismatch"):
+            await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id, link=written)
+        # A present null marker is not "unmarked": the committed-state read refuses it.
+        marker = revision_marker_path(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
+                                      revision_name=link["revision_name"])
+        marker.write_text("null")
+        with pytest.raises(CardRecordError, match="version_link_marker_mismatch"):
+            await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id, link=link,
+                                     owners={tag}, allow_unmarked=True)
+        assert marker.read_text() == "null"
+
+
+@pytest.mark.asyncio
+async def test_the_purge_apply_obeys_the_card_store_writer_guard(tmp_path):
+    """r4 (Infra F3): deletion goes through durable_io.unlink_guarded; a refusing guard refuses the purge
+    and the intent stays. A dry run stays read-only either way."""
+    import os
+
+    from connection_hub.delegated_credentials import durable_io
+    from connection_hub.delegated_credentials.cards.intent_purge import purge_finished_v1_intents
+
+    async with _world(tmp_path) as w:
+        done = await _begin(w)
+        assert (await _complete(w, done)).state == "committed"
+        path = w.store.root / "card-transactions" / "intents" / f"{done.transaction_id}.json"
+        before = path.read_bytes()
+
+        def refuse():
+            raise PermissionError("writer guard: not the proc")
+
+        durable_io.guard_writes_under(w.store.root, refuse)
+        try:
+            assert (await purge_finished_v1_intents(w.store, w.decisions))["deleted"] == [done.transaction_id]
+            with pytest.raises(PermissionError):
+                await purge_finished_v1_intents(w.store, w.decisions, apply=True)
+            assert path.read_bytes() == before
+        finally:
+            durable_io._WRITE_GUARDS.pop(os.path.join(os.path.abspath(os.fspath(w.store.root)), ""), None)
+        assert (await purge_finished_v1_intents(w.store, w.decisions, apply=True))["deleted"] == [done.transaction_id]
+        assert not path.exists()
