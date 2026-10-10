@@ -87,6 +87,9 @@ After a conclusively uncommitted PB outcome, PB asks the Hub to restore what eac
   compensation txn (`cmp-` + sha256(T)[:40]), so a retry answers `already_compensated` and writes nothing;
 - a Card that is credential-bearing, or a version without a recorded base (written before v6.3, or a Card
   created on an absent id), is refused `compensation_unsupported`: the restore never guesses effects.
+- the compensation txn is staged with the actor `{"subject": "connection-hub", "kind": "compensation"}`
+  and the catalog label `compensation`, both recorded in its marker and version record; its request digest
+  is sha256 over the canonical JSON of `{op, txn, links, at}` (with `at` the persisted `compensation_at`).
 
 ## Every writer finalizes what `current.json` names (D3)
 

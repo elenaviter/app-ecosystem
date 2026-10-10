@@ -1661,7 +1661,10 @@ def _read_links(reads: Any, members: Any) -> list[dict[str, Any]]:
 
 
 async def _check_reads(store: Any, read_links: Any) -> None:
-    """Under each read Card's lock: a pending predecessor refuses (D3), and current must still be the version."""
+    """Under each read Card's lock: a pending predecessor refuses (D3), and current must still be the version.
+
+    finalize_current_version may finish ANOTHER txn's already-published version on a read Card: that is
+    maintenance of someone else's committed PUBLISH, never a write of the read Card by this save."""
     for r in read_links:
         await finalize_current_version(store, subject_hash=r["subject_hash"], access_id=r["access_id"])
         current = await store.read_current(subject_hash=r["subject_hash"], access_id=r["access_id"])
@@ -1942,8 +1945,9 @@ async def card_version_outcome(store: Any, *, txn: str, binding: Any = None, lin
                                ) -> dict[str, Any]:
     """v6.3 item 5, READ-ONLY: what became of ``txn``, by the exact request PB persisted (links + at).
 
-    state: published | staged | staging | rolled_back | unknown_txn; per member, whether current.json names
-    exactly this txn's version. Nothing is written, nothing is listed.
+    state: published | staged | staging | unknown_txn; per member, whether current.json names exactly this
+    txn's version. A rolled-back txn leaves no marker (KEEP_ROLLBACK_MARKER is off), so it answers unknown_txn.
+    Nothing is written, nothing is listed.
     """
     card_version_txn_id(txn)
     marker = await read_card_version_marker(store, txn)

@@ -387,8 +387,7 @@ class DelegatedCardService:
         successor (compensation_superseded), never rewinds, copies no Card body out of the Hub. The restore is
         an ordinary STAGE + PUBLISH of the deterministic compensation txn, so a retry is idempotent.
         """
-        import hashlib
-        import json
+        from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
         from .transaction_store import (
             CardTransactionRefused, _link_cards, card_version_compensation_plan, read_card_version_marker)
 
@@ -404,9 +403,8 @@ class DelegatedCardService:
         if not done:
             try:
                 if await read_card_version_marker(self._store, comp) is None:
-                    digest = hashlib.sha256(json.dumps(
-                        {"op": "compensate", "txn": txn, "links": cards, "at": compensation_at.isoformat()},
-                        sort_keys=True).encode("utf-8")).hexdigest()
+                    digest = sha256_hex(canonical_json_bytes(
+                        {"op": "compensate", "txn": txn, "links": cards, "at": compensation_at.isoformat()}))
                     await self.stage_card_version(txn=comp, request_digest=digest, catalog="compensation",
                                                   members=plan, now=compensation_at, binding=binding,
                                                   actor={"subject": "connection-hub", "kind": "compensation"})
