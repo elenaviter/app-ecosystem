@@ -71,12 +71,13 @@ async def test_a_save_stages_publishes_and_leaves_only_its_version(tmp_path):
     store, operation, before, after = await _world(tmp_path)
     files_before = _files(store, before)
     staged = await _call(operation, "stage", updates=_update(before))
-    assert staged["kind"] == "staged" and staged["members"] == [{
-        "card": {"subject_hash": SUBJECT_HASH, "access_id": before.access_id}, "version": after.card_revision,
-        "checksum": after.content_hash()}]
+    link = {"card": {"subject_hash": SUBJECT_HASH, "access_id": before.access_id}, "version": after.card_revision,
+            "checksum": after.content_hash()}
+    # A STAGE link also names the exact base it fenced; PUBLISH's links do not.
+    assert staged["kind"] == "staged" and staged["members"] == [{**link, "base_version": before.card_revision}]
     assert await _current(store, before) == before  # D2: not yet final, the old version is active
     published = await _call(operation, "publish")
-    assert published == {"kind": "published", "members": staged["members"]}
+    assert published == {"kind": "published", "members": [link]}
     assert await _current(store, before) == after
     assert not tx.card_version_marker_path(store, p2.TXN).exists()  # D2: no marker after PUBLISH
     assert len(_files(store, before)) == len(files_before) + 1
