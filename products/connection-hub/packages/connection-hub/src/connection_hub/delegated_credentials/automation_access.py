@@ -9861,26 +9861,24 @@ class AutomationAccessService:
             raise IssuanceRefused("issuance_request_invalid") from None
         request = decision_request_id(scope=f"{PARTICIPANT}:oauth-issuance", grantor_subject=grantor,
                                       client_id=client, original_request_id=original_request_id)
-        # W661 scope B: one planner per request (the second finds the first's plan); the attempt (clock +
-        # candidate link) is recorded before the candidate file; and begin + record + bind run in the same
-        # section, so the deadline sweep never sees a begun decision as an unbegun plan (Infra H2).
-        async with store.planning_section(request):
-            stored = await store.read_issuance_plan_request(request)
-            if stored is None:
-                planned = await self._plan_oauth_issuance(
-                    store=store, ttl=ttl, request=request, input_digest=input_digest, grantor=grantor,
-                    client=client, record_inputs=record_inputs, invocation_policies=policies)
-                try:
-                    stored = await store.put_issuance_plan(decision_request_id=request,
-                                                           original_input_digest=input_digest, plan=planned,
-                                                           reserved_until=planned["reserved_until"])
-                except IssuanceStoreRefused as exc:
-                    raise IssuanceRefused(exc.reason) from None
-                await store.delete_plan_attempt(request)
-            elif stored["original_input_digest"] != input_digest:
-                raise IssuanceRefused("issuance_replay_changed")
-            return await self._begin_planned_issuance(stored["plan"], intents=intents, decisions=decisions,
-                                                      store=store)
+        # W661 scope B: the attempt (clock + candidate link) is recorded before the candidate file, and the
+        # first planner's clock wins, so a retry or a concurrent planner names the same file. No lock is held
+        # across these calls (Spark C1).
+        stored = await store.read_issuance_plan_request(request)
+        if stored is None:
+            planned = await self._plan_oauth_issuance(store=store, ttl=ttl, request=request,
+                                                      input_digest=input_digest, grantor=grantor, client=client,
+                                                      record_inputs=record_inputs, invocation_policies=policies)
+            try:
+                stored = await store.put_issuance_plan(decision_request_id=request,
+                                                       original_input_digest=input_digest, plan=planned,
+                                                       reserved_until=planned["reserved_until"])
+            except IssuanceStoreRefused as exc:
+                raise IssuanceRefused(exc.reason) from None
+            await store.delete_plan_attempt(request, planned_at=planned["planned_at"])
+        elif stored["original_input_digest"] != input_digest:
+            raise IssuanceRefused("issuance_replay_changed")
+        return await self._begin_planned_issuance(stored["plan"], intents=intents, decisions=decisions, store=store)
 
     async def _plan_oauth_issuance(self, *, store: Any, ttl: int, request: str, input_digest: str, grantor: str,
                                    client: str, record_inputs: Mapping[str, Any],
@@ -9901,11 +9899,14 @@ class AutomationAccessService:
         # W661 scope B: a retry of a crashed attempt plans at that attempt's clock, so the same inputs build
         # the same candidate and name the same version file; an expired attempt starts over (its file goes).
         attempt = await store.read_plan_attempt(request)
-        if attempt is not None and attempt["expired"]:
-            await self._discard_attempt_candidate(request, attempt)
-            attempt = None
         if attempt is None:
-            await store.pin_plan_attempt(decision_request_id=request, planned_at=now, expires_at=now + ttl)
+            now = await store.pin_plan_attempt(decision_request_id=request, planned_at=now, expires_at=now + ttl)
+        elif attempt["expired"]:
+            # A crashed attempt past its deadline starts over (only if still the one read). Its file, if any,
+            # is kept: cleanup is disabled in this release (no deletion).
+            now = await store.renew_expired_plan_attempt(decision_request_id=request,
+                                                         expected_planned_at=attempt["planned_at"],
+                                                         planned_at=now, expires_at=now + ttl)
         else:
             now = attempt["planned_at"]
         try:
@@ -9968,10 +9969,7 @@ class AutomationAccessService:
         at, tag = datetime.fromtimestamp(now, tz=timezone.utc), staging_tag("oauth-issuance-candidate", request)
         link = planned_link(authority=candidate, at=at, tag=tag)
         recorded = {"link": link, "subject_hash": subject_hash, "access_id": candidate.access_id}
-        if attempt is not None and attempt["candidate"] not in (None, recorded):
-            # The crashed attempt built another candidate (its base moved): its file goes first.
-            await self._discard_attempt_candidate(request, attempt)
-        await store.record_attempt_candidate(decision_request_id=request, candidate=recorded)
+        await store.record_attempt_candidate(decision_request_id=request, planned_at=now, candidate=recorded)
         candidate_link = await write_hidden_version(card_store, subject_hash=subject_hash, authority=candidate,
                                                     at=at, tag=tag)
         return {
@@ -9991,6 +9989,7 @@ class AutomationAccessService:
             "base_revision": base_revision, "candidate_revision": candidate.card_revision,
             "expires_at": candidate.expires_at, "card_content_hash": candidate.content_hash(),
             "delivery_deadline": delivery_deadline, "reserved_until": reserved_until, "slots": list(ISSUANCE_SLOTS),
+            "planned_at": now,
             "effect_digests": {effect["key"]: effect_digest(effect) for effect in effects},
         }
 
@@ -10092,50 +10091,6 @@ class AutomationAccessService:
         *_parts, decisions, _ttl, _store = self._issuance_parts()
         row = await decisions.read(transaction_id)
         return row is not None and row.terminal and row.state == "committed"
-
-    async def _discard_attempt_candidate(self, request: str, attempt: Mapping[str, Any]) -> None:
-        """The candidate file a planning attempt recorded, deleted only while it is still that attempt's
-        (staging-owned, exact content); an adopted or changed file is refused and kept."""
-        from .cards.version_link import discard_hidden_version, staging_tag
-
-        recorded = attempt.get("candidate")
-        card_store = getattr(self._cards(), "card_store", None)
-        if not isinstance(recorded, Mapping) or card_store is None:
-            return
-        try:
-            await discard_hidden_version(card_store, subject_hash=recorded["subject_hash"],
-                                         access_id=recorded["access_id"], link=recorded["link"],
-                                         tag=staging_tag("oauth-issuance-candidate", request))
-        except (CardRecordError, KeyError, TypeError):
-            _LOGGER.warning("[connection_hub.oauth_issuance] attempt candidate kept (not ours): request=%s", request)
-
-    def _card_section(self, plan: Mapping[str, Any]) -> Any:
-        """The plan Card's own mutation section (the composed CardMutationLock), so a check-and-delete never
-        races an adoption that runs under the same section (Spark, r5)."""
-        from contextlib import nullcontext
-
-        service = getattr(self._cards(), "card_service", None)
-        section = getattr(service, "_critical_section", None)
-        if not callable(section):
-            return nullcontext()
-        return section(subject_hash=plan["intent"]["subject_hash"], access_id=plan["access_id"])
-
-    async def _release_plan_candidate(self, plan: Mapping[str, Any]) -> None:
-        """An ABORTED decision's planned candidate, released unless a transaction adopted it (then it is
-        that transaction's version, never this plan's to delete)."""
-        from .cards.version_link import discard_hidden_version, is_version_link, staging_tag
-
-        link = plan["intent"].get("candidate")
-        card_store = getattr(self._cards(), "card_store", None)
-        if not is_version_link(link) or card_store is None:
-            return
-        try:
-            async with self._card_section(plan):
-                await discard_hidden_version(card_store, subject_hash=plan["intent"]["subject_hash"],
-                                             access_id=plan["access_id"], link=link,
-                                             tag=staging_tag("oauth-issuance-candidate", plan["decision_request_id"]))
-        except CardRecordError:
-            pass  # adopted (or changed): kept; nothing is repaired
 
     @staticmethod
     def _plan_card_kind(plan: Mapping[str, Any]) -> str:
@@ -10332,80 +10287,15 @@ class AutomationAccessService:
             raise IssuanceRefused(exc.reason) from None
 
     async def expire_oauth_issuance_reservations(self, *, limit: int = 100) -> int:
-        """W603: the scheduled sweep: never-bound reservations past their deadline end ``expired``.
-
-        W661 scope B: the same sweep releases plans whose decision never began, with their planned
-        candidate version (``release_unbegun_oauth_issuance_plans``). Returns the reservation count.
-        """
+        """W603: the scheduled sweep: never-bound reservations past their deadline end ``expired``."""
         *_parts, store = self._issuance_parts()
-        expired = await store.expire_issuance_reservations(limit=limit)
-        await self.release_unbegun_oauth_issuance_plans(limit=limit)
-        return expired
+        return await store.expire_issuance_reservations(limit=limit)
 
     async def release_unbegun_oauth_issuance_plans(self, *, limit: int = 100) -> int:
-        """W661 scope B: a plan whose decision never began ends with its deadline, and so does its planned
-        candidate version. The plan names its file, so nothing is listed: the hidden version file, then its
-        marker, then the plan row (a crash in between leaves the plan to the next sweep, never an orphan).
-        A candidate already adopted by a transaction is not this sweep's; the plan then is left as it is."""
-        from .cards.version_link import discard_hidden_version, is_version_link, staging_tag
-
-        *_parts, store = self._issuance_parts()
-        card_store = getattr(self._cards(), "card_store", None)
-        released = 0
-        *_parts, decisions, _ttl, _store = self._issuance_parts()
-        now = await store.issuance_clock()
-        for row in await store.expired_unbegun_plans(limit=limit):
-            plan, request = row["plan"], row["decision_request_id"]
-            draft = plan.get("draft") or {}
-            if type(draft.get("expires_at")) is not int or draft["expires_at"] > now:
-                continue  # a begin could still record this decision: not yet provably unbegun
-            async with store.planning_section_if_free(request) as held:
-                if not held:
-                    continue  # a planner or a begin of this request is in progress (Infra H2)
-                current = await store.read_issuance_plan_request(request)
-                if current is None or current["transaction_id"]:
-                    continue
-                reader = getattr(decisions, "read_by_request", None)
-                if not callable(reader):
-                    continue  # no way to prove "never begun": keep it
-                began = await reader(draft.get("replay_scope", ""), draft.get("request_id", ""))
-                if began is not None:
-                    # Begun, then stopped before its binding: bind it; the bound-plan path below settles it.
-                    await store.bind_issuance_plan_transaction(decision_request_id=request,
-                                                               transaction_id=began.transaction_id)
-                    continue
-                link = (plan.get("intent") or {}).get("candidate")
-                if is_version_link(link):
-                    if card_store is None:
-                        break
-                    try:
-                        async with self._card_section(plan):
-                            await discard_hidden_version(card_store, subject_hash=plan["intent"]["subject_hash"],
-                                                         access_id=plan["access_id"], link=link,
-                                                         tag=staging_tag("oauth-issuance-candidate", request))
-                    except CardRecordError:
-                        _LOGGER.warning("[connection_hub.oauth_issuance] unbegun plan kept: candidate not ours "
-                                        "request=%s", request)
-                        continue
-                if await store.delete_unbegun_plan(decision_request_id=request):
-                    released += 1
-        # A planner that crashed and never retried: its attempt row names its file (no listing).
-        for row in await store.expired_plan_attempts(limit=limit):
-            if await store.read_issuance_plan_request(row["decision_request_id"]) is None:
-                await self._discard_attempt_candidate(row["decision_request_id"], row)
-            await store.delete_plan_attempt(row["decision_request_id"])
-            released += 1
-        # A begun plan whose decision ABORTED, once the plan's own deadline passed (reads before it still need
-        # the candidate); a committed candidate stays, as its transaction's version (lane 3 adopts it).
-        for row in await store.bound_plans_to_release(limit=limit):
-            decision = await decisions.read(row["transaction_id"])
-            if decision is None or not decision.terminal:
-                continue
-            if decision.state != "committed":
-                await self._release_plan_candidate(row["plan"])
-            await store.mark_candidate_released(decision_request_id=row["decision_request_id"])
-            released += 1
-        return released
+        """W661 scope B: planned-candidate cleanup is DISABLED in this release (EMain, 22:37-22:38Z): nothing is
+        deleted, every file and row is kept. A bounded cleanup on a per-request KDCube Redis lock, linearized
+        with plan -> begin -> record -> bind, is a separate follow-up. Kept so callers and witnesses see 0."""
+        return 0
 
     async def read_oauth_issuance(self, *, transaction_id: str) -> Any:
         """W603: the issuance's outcome as it stands now, READ ONLY; returns the ``OAuthIssuanceResult``.

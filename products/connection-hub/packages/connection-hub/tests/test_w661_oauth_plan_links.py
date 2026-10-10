@@ -393,29 +393,16 @@ async def _unbegun_plan(w, request):
 
 
 @pytest.mark.asyncio
-async def test_an_unbegun_plan_ends_with_its_deadline_and_takes_its_planned_version_with_it(tmp_path):
-    """r5 (Ops): no scan; the plan names its file. An adopted candidate is never this sweep's."""
-    from connection_hub.delegated_credentials.cards.transaction_store import revision_marker_path
-
+async def test_cleanup_is_disabled_so_an_expired_unbegun_plan_keeps_its_plan_and_file(tmp_path):
+    """This release deletes NOTHING (EMain's fallback, 22:38Z); a bounded cleanup is a follow-up."""
     async with _world(tmp_path) as w:
         request_id, planned = await _unbegun_plan(w, "never-begun")
-        kept_id, kept = await _unbegun_plan(w, "adopted-meanwhile")
-        files = {}
-        for rid, plan in ((request_id, planned), (kept_id, kept)):
-            link = plan["intent"]["candidate"]
-            files[rid] = (w.store.revision_path(subject_hash=w.subject_hash, access_id=plan["access_id"],
-                                                revision_name=link["revision_name"]),
-                          revision_marker_path(w.store, subject_hash=w.subject_hash, access_id=plan["access_id"],
-                                               revision_name=link["revision_name"]))
-            assert all(path.exists() for path in files[rid])
-        files[kept_id][1].write_text(json.dumps({"transaction_id": "c" * 64}))  # adopted by a transaction
-        assert await w.service.release_unbegun_oauth_issuance_plans() == 1
-        assert not any(path.exists() for path in files[request_id])  # file and marker gone
-        assert await w.authority.read_issuance_plan_request(request_id) is None
-        assert all(path.exists() for path in files[kept_id])  # not ours: kept, plan kept
-        assert await w.authority.read_issuance_plan_request(kept_id) is not None
-        assert await w.service.release_unbegun_oauth_issuance_plans() == 0  # idempotent
-
+        link = planned["intent"]["candidate"]
+        path = w.store.revision_path(subject_hash=w.subject_hash, access_id=planned["access_id"],
+                                     revision_name=link["revision_name"])
+        assert await w.service.release_unbegun_oauth_issuance_plans() == 0
+        assert await w.service.expire_oauth_issuance_reservations() == 0
+        assert path.exists() and await w.authority.read_issuance_plan_request(request_id) is not None
 
 @pytest.mark.asyncio
 async def test_a_pending_decision_never_treats_a_missing_marker_as_committed(tmp_path):
@@ -430,6 +417,14 @@ async def test_a_pending_decision_never_treats_a_missing_marker_as_committed(tmp
                              revision_name=link["revision_name"]).unlink()
         with pytest.raises(IssuanceRefused, match="issuance_plan_card_unavailable"):
             await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)
+
+
+def _version_files(w, access_id):
+    """Every version file of one Card (TEST-only listing, to prove nothing extra exists)."""
+    directory = w.store.card_path(subject_hash=w.subject_hash, access_id=access_id) / "revisions"
+    return sorted(path.name for path in directory.glob("card_revision_*.json")
+                  if not path.name.endswith((".card-transaction.json", ".card-version.json", ".lifecycle.json",
+                                             ".issuer-update.json")))
 
 
 def _staged_files(w, access_id):
@@ -477,35 +472,28 @@ async def test_concurrent_planners_of_one_request_store_one_plan_and_one_file(tm
 
 
 @pytest.mark.asyncio
-async def test_an_aborted_decision_releases_its_planned_candidate(tmp_path):
+async def test_an_aborted_decision_keeps_its_candidate_and_answers_its_outcome(tmp_path):
     async with _world(tmp_path) as w:
         plan = await _begin(w)
         link = (await _stored(w, plan))["intent"]["candidate"]
         path = w.store.revision_path(subject_hash=w.subject_hash, access_id=plan.access_id,
                                      revision_name=link["revision_name"])
-        assert path.exists()
         result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id, expect=None)
         assert result.state == "aborted"  # nothing was reserved
-        assert path.exists()  # reads before the plan's deadline still need it
         with pytest.raises(IssuanceRefused, match="issuance_decision_closed"):
             await _reserve(w, plan, slots=("access",))
-        async with w.pool.acquire() as connection:
-            await connection.execute(f"UPDATE {w.authority.schema}.connection_hub_oauth_issuance_plans "
-                                     "SET reserved_until = to_timestamp(1) WHERE decision_request_id = $1",
-                                     plan.decision_request_id)
-        assert await w.service.release_unbegun_oauth_issuance_plans() == 1
-        assert not path.exists() and _staged_files(w, plan.access_id) == []
-        with pytest.raises(IssuanceRefused, match="issuance_decision_closed"):
-            await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)
-        # Outcome reads still answer (the SDK's retry after a crash): aborted, not a refusal.
+        assert await w.service.release_unbegun_oauth_issuance_plans() == 0
+        assert path.exists()  # kept: no cleanup in this release
+        assert (await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)).operations \
+            == plan.operations
         assert (await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)).state == "aborted"
-        assert (await w.service.read_oauth_issuance(transaction_id=plan.transaction_id)).state == "aborted"
-        assert await w.service.release_unbegun_oauth_issuance_plans() == 0  # released once (flag)
-
 
 @pytest.mark.asyncio
-async def test_an_expired_attempt_that_never_retried_is_swept_by_its_row(tmp_path, monkeypatch):
+async def test_an_expired_attempt_is_renewed_by_the_next_begin_and_its_file_kept(tmp_path, monkeypatch):
+    """C2: the renewal is conditional on the clock read; the expired attempt's file stays (no deletion)."""
     async with _world(tmp_path) as w:
+        original_put = w.authority.put_issuance_plan
+
         async def crash(**_kwargs):
             raise RuntimeError("synthetic crash before the plan row")
 
@@ -513,13 +501,19 @@ async def test_an_expired_attempt_that_never_retried_is_swept_by_its_row(tmp_pat
         with pytest.raises(RuntimeError):
             await _begin(w, request="abandoned")
         async with w.pool.acquire() as connection:
+            stale = await connection.fetchrow(
+                f"SELECT decision_request_id, candidate FROM {w.authority.schema}.connection_hub_oauth_issuance_plan_attempts")
             await connection.execute(f"UPDATE {w.authority.schema}.connection_hub_oauth_issuance_plan_attempts "
-                                     "SET expires_at = to_timestamp(1)")
-        assert await w.service.release_unbegun_oauth_issuance_plans() >= 1
-        for directory in w.store.root.rglob("revisions"):
-            assert not [m for m in directory.glob("*.card-transaction.json")
-                        if json.loads(m.read_text()).get("transaction_id", "").startswith("stg-")]
-
+                                     "SET expires_at = to_timestamp(1), planned_at = planned_at - 7")
+        stale_link = json.loads(stale["candidate"])["link"] if isinstance(stale["candidate"], str) \
+            else stale["candidate"]["link"]
+        monkeypatch.setattr(w.authority, "put_issuance_plan", original_put)
+        plan = await _begin(w, request="abandoned")
+        assert await w.authority.read_plan_attempt(plan.decision_request_id) is None  # gone once stored
+        assert (await _complete(w, plan)).state == "committed"
+        assert stale_link["revision_name"] in _version_files(w, plan.access_id)  # kept, hidden, never history
+        assert await w.store.read_revision(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                           revision_name=stale_link["revision_name"]) is None
 
 @pytest.mark.asyncio
 async def test_expiry_cleanup_keeps_an_already_begun_unbound_plan(tmp_path, monkeypatch):
@@ -569,34 +563,45 @@ async def test_expiry_cleanup_keeps_an_already_begun_unbound_plan(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_a_begin_that_stopped_before_its_binding_is_bound_by_the_sweep_not_deleted(tmp_path, monkeypatch):
-    """The begin crashed after the durable decision began, before the plan's binding (lock released): the
-    sweep finds the decision by its draft, READ ONLY, and binds it; nothing is deleted."""
-    import asyncio
-
+async def test_a_begin_that_stopped_before_its_binding_is_bound_by_its_retry(tmp_path, monkeypatch):
+    """The begin crashed after the durable decision began, before the plan's binding: the retry's begin
+    returns that same decision (replay identity) and binds it; nothing was deleted meanwhile."""
     async with _world(tmp_path) as w:
-        coordinator, intents, decisions, _ttl, _store = w.service._issuance_parts()
-        w.service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions, intent_ttl_seconds=2)
+        original_bind = w.authority.bind_issuance_plan_transaction
 
         async def crash(**_kwargs):
             raise RuntimeError("synthetic crash before the plan's binding")
 
-        original_bind = w.authority.bind_issuance_plan_transaction
         monkeypatch.setattr(w.authority, "bind_issuance_plan_transaction", crash)
         with pytest.raises(Exception):
             await _begin(w, request="stopped-before-bind")
-        monkeypatch.setattr(w.authority, "bind_issuance_plan_transaction", original_bind)
-        from connection_hub.delegated_credentials.oauth_issuance import decision_request_id
-        from connection_hub.delegated_credentials.cards.card_participant import PARTICIPANT
-        from test_w603_original_issuance import CLIENT, GRANTOR
-
-        request = decision_request_id(scope=f"{PARTICIPANT}:oauth-issuance", grantor_subject=GRANTOR,
-                                      client_id=CLIENT, original_request_id="stopped-before-bind")
-        stored = await w.authority.read_issuance_plan_request(request)
-        assert stored is not None and not stored["transaction_id"]
-        while await w.authority.issuance_clock() <= stored["plan"]["draft"]["expires_at"]:
-            await asyncio.sleep(0.05)
         assert await w.service.release_unbegun_oauth_issuance_plans() == 0
-        bound = await w.authority.read_issuance_plan_request(request)
-        began = await decisions.read_by_request(stored["plan"]["draft"]["replay_scope"], request)
-        assert bound["transaction_id"] == began.transaction_id
+        monkeypatch.setattr(w.authority, "bind_issuance_plan_transaction", original_bind)
+        plan = await _begin(w, request="stopped-before-bind")
+        assert (await w.authority.read_issuance_plan_request(plan.decision_request_id))["transaction_id"] \
+            == plan.transaction_id
+        assert (await _complete(w, plan)).state == "committed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pool_size,planners", [(1, 1), (3, 3)])
+async def test_begin_holds_no_connection_across_its_calls(tmp_path, monkeypatch, pool_size, planners):
+    """Spark C1: no pool connection is held across inner calls, so a one-connection pool completes, and k
+    concurrent planners of one request at max_size=k neither hang nor store more than one plan and file."""
+    import asyncio
+
+    import asyncpg
+
+    real_create_pool = asyncpg.create_pool
+
+    def sized_pool(dsn, **kwargs):
+        return real_create_pool(dsn, **{**kwargs, "min_size": 1, "max_size": pool_size})
+
+    monkeypatch.setattr(asyncpg, "create_pool", sized_pool)
+    async with _world(tmp_path) as w:
+        results = await asyncio.wait_for(asyncio.gather(*(_begin(w, request="pooled") for _ in range(planners))),
+                                         timeout=60)
+        assert all(result == results[0] for result in results)
+        link = (await _stored(w, results[0]))["intent"]["candidate"]
+        assert _version_files(w, results[0].access_id) == [link["revision_name"]]
+        assert (await asyncio.wait_for(_complete(w, results[0]), timeout=60)).state == "committed"

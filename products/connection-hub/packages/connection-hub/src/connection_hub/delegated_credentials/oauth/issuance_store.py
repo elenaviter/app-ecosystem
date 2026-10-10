@@ -505,37 +505,6 @@ class IssuanceReservationStore:
             )
         return int(str(status or "UPDATE 0").rsplit(" ", 1)[-1] or 0)
 
-    @asynccontextmanager
-    async def planning_section(self, decision_request_id: str) -> AsyncIterator[None]:
-        """W661 scope B: one planner per request at a time, across processes.
-
-        A PostgreSQL transaction-scoped advisory lock (KDCube critical-section guidance), held on its own
-        connection only while the plan, its attempt row and its candidate file are written; released on
-        commit, rollback or a lost connection. Concurrent planners of one request serialize here, so the
-        second finds the first's stored plan and plans nothing.
-        """
-        if not _HEX64.fullmatch(str(decision_request_id)):
-            raise IssuanceStoreRefused("issuance_plan_invalid")
-        async with self._pool.acquire() as connection:
-            async with connection.transaction():
-                await connection.execute(
-                    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-                    f"{self.schema}:{self.tenant}:{self.project}:oauth-issuance-plan:{decision_request_id}")
-                yield
-
-    @asynccontextmanager
-    async def planning_section_if_free(self, decision_request_id: str) -> AsyncIterator[bool]:
-        """The same per-request lock as ``planning_section``, taken only if free (the sweep never waits
-        behind a planner or a begin in progress); yields whether it is held."""
-        if not _HEX64.fullmatch(str(decision_request_id)):
-            raise IssuanceStoreRefused("issuance_plan_invalid")
-        async with self._pool.acquire() as connection:
-            async with connection.transaction():
-                held = await connection.fetchval(
-                    "SELECT pg_try_advisory_xact_lock(hashtextextended($1, 0))",
-                    f"{self.schema}:{self.tenant}:{self.project}:oauth-issuance-plan:{decision_request_id}")
-                yield bool(held)
-
     async def read_plan_attempt(self, decision_request_id: str) -> dict[str, Any] | None:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
@@ -549,98 +518,54 @@ class IssuanceReservationStore:
         return {"planned_at": int(row["planned_at"]), "expired": bool(row["expired"]),
                 "candidate": json.loads(candidate) if isinstance(candidate, str) else candidate}
 
-    async def pin_plan_attempt(self, *, decision_request_id: str, planned_at: int, expires_at: int) -> None:
-        """Record a new attempt (replacing an expired one); call inside ``planning_section``."""
+    async def pin_plan_attempt(self, *, decision_request_id: str, planned_at: int, expires_at: int) -> int:
+        """Record a planning attempt unless one exists; the FIRST writer's clock wins and is returned, so
+        concurrent planners build the same candidate and name the same version file (no lock is held)."""
         async with self._pool.acquire() as connection:
             await connection.execute(
                 f"""INSERT INTO {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
                         (tenant, project, decision_request_id, planned_at, expires_at, candidate)
                     VALUES ($1, $2, $3, $4, to_timestamp($5::bigint), NULL)
-                    ON CONFLICT (tenant, project, decision_request_id) DO UPDATE
-                    SET planned_at = EXCLUDED.planned_at, expires_at = EXCLUDED.expires_at, candidate = NULL""",
+                    ON CONFLICT (tenant, project, decision_request_id) DO NOTHING""",
                 self.tenant, self.project, decision_request_id, int(planned_at), int(expires_at))
+            return int(await connection.fetchval(
+                f"""SELECT planned_at FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3""",
+                self.tenant, self.project, decision_request_id))
 
-    async def record_attempt_candidate(self, *, decision_request_id: str, candidate: Mapping[str, Any]) -> None:
-        """The attempt's candidate file (link + Card ids), recorded BEFORE the file is written."""
+    async def renew_expired_plan_attempt(self, *, decision_request_id: str, expected_planned_at: int,
+                                         planned_at: int, expires_at: int) -> int:
+        """Start an expired attempt over, only if it is still the one read (C2); returns the clock in force."""
         async with self._pool.acquire() as connection:
             await connection.execute(
-                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} SET candidate = ($4::text)::jsonb
+                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                    SET planned_at = $5, expires_at = to_timestamp($6::bigint), candidate = NULL
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND planned_at = $4
+                      AND expires_at <= clock_timestamp()""",
+                self.tenant, self.project, decision_request_id, int(expected_planned_at), int(planned_at),
+                int(expires_at))
+            return int(await connection.fetchval(
+                f"""SELECT planned_at FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
                     WHERE tenant = $1 AND project = $2 AND decision_request_id = $3""",
-                self.tenant, self.project, decision_request_id, _canonical(dict(candidate)))
+                self.tenant, self.project, decision_request_id))
 
-    async def delete_plan_attempt(self, decision_request_id: str) -> None:
+    async def record_attempt_candidate(self, *, decision_request_id: str, planned_at: int,
+                                       candidate: Mapping[str, Any]) -> None:
+        """The attempt's candidate file (link + Card ids), recorded BEFORE the file is written, on the attempt
+        of exactly this clock (C2)."""
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} SET candidate = ($5::text)::jsonb
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND planned_at = $4""",
+                self.tenant, self.project, decision_request_id, int(planned_at), _canonical(dict(candidate)))
+
+    async def delete_plan_attempt(self, decision_request_id: str, *, planned_at: int) -> None:
+        """Once the plan is stored: the attempt of exactly this clock only (C2)."""
         async with self._pool.acquire() as connection:
             await connection.execute(
                 f"""DELETE FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
-                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3""",
-                self.tenant, self.project, decision_request_id)
-
-    async def expired_plan_attempts(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        """Attempts past their deadline (a planner that crashed and never retried), oldest first."""
-        async with self._pool.acquire() as connection:
-            rows = await connection.fetch(
-                f"""SELECT decision_request_id, candidate FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
-                    WHERE tenant = $1 AND project = $2 AND expires_at <= clock_timestamp()
-                    ORDER BY expires_at LIMIT $3""",
-                self.tenant, self.project, max(1, min(int(limit), 1000)))
-        return [{"decision_request_id": str(row["decision_request_id"]),
-                 "candidate": json.loads(row["candidate"]) if isinstance(row["candidate"], str) else row["candidate"]}
-                for row in rows]
-
-    async def bound_plans_to_release(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        """Bound plans past their deadline whose planned candidate is not yet released, oldest first."""
-        async with self._pool.acquire() as connection:
-            rows = await connection.fetch(
-                f"""SELECT decision_request_id, transaction_id, plan FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
-                    WHERE tenant = $1 AND project = $2 AND transaction_id IS NOT NULL
-                      AND NOT candidate_released AND reserved_until <= clock_timestamp()
-                    ORDER BY reserved_until LIMIT $3""",
-                self.tenant, self.project, max(1, min(int(limit), 1000)))
-        return [{"decision_request_id": str(row["decision_request_id"]), "transaction_id": str(row["transaction_id"]),
-                 "plan": json.loads(row["plan"]) if isinstance(row["plan"], str) else dict(row["plan"])}
-                for row in rows]
-
-    async def mark_candidate_released(self, *, decision_request_id: str) -> None:
-        async with self._pool.acquire() as connection:
-            await connection.execute(
-                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLANS} SET candidate_released = TRUE
-                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3""",
-                self.tenant, self.project, decision_request_id)
-
-    async def expired_unbegun_plans(self, *, limit: int = 100) -> list[dict[str, Any]]:
-        """W661 scope B: plans whose decision never began and whose deadline passed, oldest first.
-
-        One bounded, deadline-ordered query (as ``expire_issuance_reservations``), never a file listing.
-        """
-        async with self._pool.acquire() as connection:
-            rows = await connection.fetch(
-                f"""
-                SELECT decision_request_id, plan FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
-                 WHERE tenant = $1 AND project = $2 AND transaction_id IS NULL
-                   AND reserved_until <= clock_timestamp()
-                 ORDER BY reserved_until
-                 LIMIT $3
-                """,
-                self.tenant, self.project, max(1, min(int(limit), 1000)),
-            )
-        return [{"decision_request_id": str(row["decision_request_id"]),
-                 "plan": json.loads(row["plan"]) if isinstance(row["plan"], str) else dict(row["plan"])}
-                for row in rows]
-
-    async def delete_unbegun_plan(self, *, decision_request_id: str) -> bool:
-        """Delete one plan only while it is still unbound and past its deadline; False when a begin won."""
-        if not _HEX64.fullmatch(str(decision_request_id)):
-            raise IssuanceStoreRefused("issuance_plan_invalid")
-        async with self._pool.acquire() as connection:
-            status = await connection.execute(
-                f"""
-                DELETE FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
-                 WHERE tenant = $1 AND project = $2 AND decision_request_id = $3
-                   AND transaction_id IS NULL AND reserved_until <= clock_timestamp()
-                """,
-                self.tenant, self.project, decision_request_id,
-            )
-        return str(status or "") == "DELETE 1"
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND planned_at = $4""",
+                self.tenant, self.project, decision_request_id, int(planned_at))
 
     async def issuance_reservations(self, transaction_id: str) -> dict[str, dict[str, str]]:
         """Each slot's reservation of one transaction: state, outcome, bearer digest and pin."""
