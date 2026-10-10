@@ -96,6 +96,10 @@ class CardVersionRefused(Exception):
         self.code = code if code in REFUSALS else "storage_unavailable"
 
 
+class _AlreadyApplied(Exception):
+    """STAGE found every update already holding (v6.3 item 6): answered ``already_applied``, not a refusal."""
+
+
 class CardVersionStore(Protocol):
     """Piece 1's (Ops) store, as piece 2 calls it. Every call runs under the members' Card locks.
 
@@ -343,7 +347,11 @@ class CardVersionOperation:
         # naming another binding refuses txn_scope_mismatch and touches nothing (Infra finding 2).
         txn, binding = data["txn"], {"scope": data["scope"], "caller": caller.service_id}
         if data["op"] == "stage":
-            return {"kind": "staged", "members": await self._stage(data, binding)}
+            try:
+                return {"kind": "staged", "members": await self._stage(data, binding)}
+            except _AlreadyApplied:
+                # v6.3 item 6: every update already holds; nothing staged, nothing written, no txn marker.
+                return {"kind": "already_applied"}
         if data["op"] == "publish":
             answer = await self._store.publish(txn, **binding, apply=self._apply)
             return {"kind": "published", "members": _links(answer)}
@@ -371,6 +379,8 @@ class CardVersionOperation:
                 raise CardVersionRefused("card_changed")
             if code == "card_edit_admin_grant_role_only":
                 raise CardVersionRefused(code)
+            if code == "card_plan_already_applied":
+                raise _AlreadyApplied
             raise CardVersionRefused("storage_unavailable" if code in _UNAVAILABLE else "edit_invalid")
         plan = planned["plan"]
         catalog = data["catalog"]

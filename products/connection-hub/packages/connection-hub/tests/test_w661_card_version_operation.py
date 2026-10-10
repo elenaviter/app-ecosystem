@@ -569,3 +569,13 @@ async def test_rollback_accepts_stages_own_links_with_their_base_version():
     assert store.rollback_links == [LINK]  # the store gets the locator links only
     for bad in ({**LINK, "base_version": 0}, {**LINK, "base_version": "3"}, {**LINK, "extra": 1}):
         assert (await operation.answer(_request("rollback", links=[bad])))["error"]["code"] == "card_version_request_invalid"
+
+
+@pytest.mark.asyncio
+async def test_v63_an_already_applied_stage_is_a_signed_answer_and_nothing_is_staged():
+    operation, _, store = _operation(planner=_Planner({"ok": False, "error": "card_plan_already_applied",
+                                                      "status": 409}))
+    request = _request()
+    response = await operation.answer(request)
+    assert response["ok"] is True and _verified(response, request) == {"kind": "already_applied"}
+    assert store.staged == []

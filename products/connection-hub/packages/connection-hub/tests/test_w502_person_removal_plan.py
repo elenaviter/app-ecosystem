@@ -432,3 +432,37 @@ async def test_w661_a_removal_with_base_zero_ends_the_cards_the_hub_reads_now():
     for card in (c, my):
         assert members[card.access_id]["original_revision"] == card.card_revision
         assert CardAuthority.from_mapping(members[card.access_id]["candidate"]).state == CARD_STATE_REVOKED
+
+
+@pytest.mark.asyncio
+async def test_w661_v63_a_person_already_removed_is_already_applied_and_nothing_is_written():
+    """v6.3 item 6: the same-request retry after PUBLISH; both Cards already revoked, base 0."""
+    p, c, my = _person()
+    revoked = [replace_state(c, CARD_STATE_REVOKED), replace_state(my, CARD_STATE_REVOKED)]
+    host = _Host(p, *revoked)
+    result = await _plan(host, [_remove(card, original_revision=0) for card in revoked])
+    assert result["ok"] is False and result["error"] == "card_plan_already_applied", result
+    assert host.writes == 0
+
+
+@pytest.mark.asyncio
+async def test_w661_v63_a_half_removed_person_stages_only_the_active_card():
+    p, c, my = _person()
+    host = _Host(p, c, replace_state(my, CARD_STATE_REVOKED))
+    result = await _plan(host, [_remove(c, original_revision=0), _remove(my, original_revision=0)])
+    assert result["ok"] is True, result
+    assert [member["access_id"] for member in result["plan"]["candidate_value"]["cards"]] == [c.access_id]
+
+
+@pytest.mark.asyncio
+async def test_w661_v63_an_already_revoked_card_is_still_checked_as_this_persons():
+    p, c, my = _person()
+    revoked_c, revoked_my = replace_state(c, CARD_STATE_REVOKED), replace_state(my, CARD_STATE_REVOKED)
+    other = replace_state(_other_persons_my(p), CARD_STATE_REVOKED)
+    for host, updates in ((_Host(p, c, my, other), [_remove(other, original_revision=0)]),
+                          (_Host(p, revoked_c, revoked_my), [_remove(revoked_c, target="person-2", original_revision=0)])):
+        result = await _plan(host, updates)
+        assert result == {"ok": False, "error": "card_plan_update_scope_invalid", "status": 403}, result
+    # An explicit revision keeps the old rule: a revoked Card is not a removal target.
+    result = await _plan(_Host(p, revoked_c, revoked_my), [_remove(revoked_c), _remove(revoked_my)])
+    assert result["error"] == "card_plan_revoke_not_active"

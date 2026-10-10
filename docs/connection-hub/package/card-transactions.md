@@ -99,9 +99,18 @@ whole request, so no edit value is repeated.
   - A demotion recomputes the resource's grants from the remaining operations
     through PB's map. An operation missing from it is refused
     (`card_plan_role_operation_unknown`).
-  - An unchanged Card stays a read. If nothing changes, the update is refused
-    (`card_plan_role_unchanged`).
+  - An unchanged Card stays a read.
   - The Hub knows nothing about roles or admins.
+- **Already applied (v6.3 item 6).** When every update of a STAGE already
+  holds (each `role_selection` Card already equals its target, each
+  `remove_person` Card sent with `original_revision: 0` is already revoked and
+  is that person's C or My in this scope), and the STAGE creates nothing, the
+  Hub writes nothing, records no txn, and answers the signed result
+  `{kind: already_applied}`. This is the same-request retry after a PUBLISH
+  whose answer PB lost: PB then commits the role or membership change under
+  its row lock and CAS, without PUBLISH. A STAGE where some updates are no-ops
+  and others are not is staged as usual, without the no-op Cards. Any other
+  STAGE that changes nothing is refused (`edit_invalid`).
 - **`op: publish` and `op: rollback`.** PUBLISH carries `txn` alone, because the
   store's transaction marker names its members. ROLLBACK also carries `links`,
   the `{card, version, checksum}` links from STAGE's answer (PB keeps them),

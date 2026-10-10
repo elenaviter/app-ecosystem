@@ -820,6 +820,7 @@ async def plan_card_lifecycle(
                 raise CardLifecyclePlanRefused("card_plan_parent_cycle")
 
         removals: dict[str, dict[str, CardAuthority]] = {}
+        already_applied = 0
         for index, raw in enumerate(updates):
             if (not isinstance(raw, Mapping)
                     or not {"kind", "target_subject", "access_id", "subject_hash", "original_revision"} <= set(raw)
@@ -914,7 +915,8 @@ async def plan_card_lifecycle(
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
                 selection = role_selection(original, raw)
                 if selection is None:
-                    continue  # unchanged: the Card stays a read, never a synthetic revision
+                    already_applied += 1  # unchanged: the Card stays a read, never a synthetic revision
+                    continue
                 built = await build_existing_card_selection_update(
                     host, original=original, selection=selection, active=active, decision=decision,
                     project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now)
@@ -957,6 +959,14 @@ async def plan_card_lifecycle(
             if raw["kind"] == "remove_person":
                 if "parent" in raw:
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                if current_agent and original.state == CARD_STATE_REVOKED:
+                    # W661 v6.3 item 6: the same-request retry of a removal whose PUBLISH already happened. The
+                    # Card is exactly this person's (checked as if active), already revoked: nothing to write.
+                    removed_person_card(replace_state(original, CARD_STATE_ACTIVE), project_ref=scope,
+                                        target_subject=target, decision=decision, actor_subject=actor,
+                                        request_id=request_id, now=now)
+                    already_applied += 1
+                    continue
                 card_kind, candidate = removed_person_card(
                     original, project_ref=scope, target_subject=target, decision=decision,
                     actor_subject=actor, request_id=request_id, now=now)
@@ -1006,7 +1016,11 @@ async def plan_card_lifecycle(
             originals[(subject_hash, access_id)] = original.to_dict()
 
         if not members:
-            raise CardLifecyclePlanRefused("card_plan_role_unchanged")  # every role update was already applied
+            # W661 v6.3 item 6: every update already holds (a role already applied, a person already removed).
+            # The card_version handler answers a signed already_applied; nothing is written.
+            raise CardLifecyclePlanRefused(
+                "card_plan_already_applied" if already_applied == len(updates) and not creations
+                else "card_plan_role_unchanged")
         # An invitation-built C consumes its pending Card in this same decision.
         revoked_here = {(member["access_id"], member["original_revision"]) for member in members
                         if member["action"] == "revoke"}
