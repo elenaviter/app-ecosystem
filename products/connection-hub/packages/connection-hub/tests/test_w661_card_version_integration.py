@@ -228,3 +228,35 @@ async def test_a_reset_fences_its_control_on_the_real_store_from_stage_through_p
     assert (await _call(operation, "publish"))["code"] == "card_changed"
     assert await _call(operation, "rollback", links=staged["members"]) == {"kind": "rollback", "state": "rolled_back"}
     assert await _current(store, my) == my
+
+
+@pytest.mark.asyncio
+async def test_an_invitation_recreate_racing_another_save_is_refused_card_changed_and_its_retry_overwrites(tmp_path):
+    """Operator, W661 Q2 B, on the real store: the recreate is fenced on the version the planner read."""
+    store, service, before, after = await _setup(tmp_path)
+    plan = _plan(before, after)
+    plan["plan"]["candidate_value"]["cards"][0]["action"] = "recreate"
+    card_versions = ServiceCardVersionStore(service, refused=CardVersionRefused, catalog_store=_Catalogs())
+    operation, _, _ = p2._operation(planner=p2._Planner(plan), store=card_versions)
+    staged = await _call(operation, "stage", updates=_update(before))
+    assert staged["members"][0]["base_version"] == before.card_revision
+    # Another save of the same Card lands between the invitation's STAGE and its PUBLISH.
+    other = "txn-" + "d" * 40
+    await _call(operation, "stage", txn=other, updates=_update(before))
+    await _call(operation, "publish", txn=other)
+    assert (await _call(operation, "publish"))["code"] == "card_changed"
+    assert await _call(operation, "rollback", links=staged["members"]) == {"kind": "rollback", "state": "rolled_back"}
+    # The inviter's retry plans again from the current version and overwrites.
+    current = await _current(store, before)
+    retry_plan = _plan(current, replace_card(current))
+    retry_plan["plan"]["candidate_value"]["cards"][0]["action"] = "recreate"
+    retry, _, _ = p2._operation(planner=p2._Planner(retry_plan), store=card_versions)
+    retried = "txn-" + "e" * 40
+    assert (await _call(retry, "stage", txn=retried, updates=_update(current)))["kind"] == "staged"
+    assert (await _call(retry, "publish", txn=retried))["kind"] == "published"
+    assert (await _current(store, before)).card_revision == current.card_revision + 1
+
+
+def replace_card(card):
+    from dataclasses import replace
+    return replace(card, card_revision=card.card_revision + 1, label="re-invited")
