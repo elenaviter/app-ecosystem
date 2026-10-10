@@ -9,7 +9,11 @@ unbound, 4 My Cards with an older holder, one P per project.
 from __future__ import annotations
 
 import dataclasses
+import os
+import pathlib
 import time
+import uuid
+from types import SimpleNamespace
 
 import pytest
 from service_foundation.coordination.durable_decision_log import DecisionRefused
@@ -17,6 +21,9 @@ from service_foundation.coordination.durable_decision_log import DecisionRefused
 from connection_hub.delegated_credentials.cards.model import ControlCardBinding
 from connection_hub.delegated_credentials.cards.store import subject_hash_for
 from connection_hub.delegated_credentials.existing_card_selection_plan import _target_identity
+from connection_hub.delegated_credentials import project_control_binding
+from connection_hub.delegated_credentials.automation_access import LEGACY_BINDING_REPAIR
+from connection_hub.delegated_credentials.controls.project_person import ProjectPersonControlIdentity
 from connection_hub.delegated_credentials.legacy_binding_repair import repair_legacy_project_bindings
 from connection_hub.delegated_credentials.project_identity_lifecycle import ProjectPersonCardIdentity
 
@@ -106,3 +113,55 @@ async def test_a_c_already_bound_to_a_p_is_not_touched(tmp_path, redis_client): 
     counts = await repair_legacy_project_bindings(h.service, h.store)
     assert "c_bound" not in counts and (await _control(h)).card_revision == c.card_revision
     assert isinstance(c.control_card, ControlCardBinding)
+
+
+def _dsn() -> str:
+    path = os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN_FILE", "")
+    return pathlib.Path(path).read_text().strip() if path else os.environ.get("CONNECTION_HUB_TEST_POSTGRES_DSN", "")
+
+
+class _Grants:
+    async def set_card_credentials_expiry(self, *args, **kwargs):
+        return "applied"
+
+
+async def _live_card_transactions(h):
+    """As live (entrypoint._bind_card_transactions): the REAL coordinator on a PostgreSQL decision store,
+    with the project scope managed (W578). Returns the pool to close."""
+    import asyncpg
+    from connection_hub.delegated_credentials.cards import composition
+
+    pool = await asyncpg.create_pool(_dsn(), min_size=1, max_size=4)
+    decisions = await composition.postgres_decision_store(pool, tenant=f"p0b{uuid.uuid4().hex[:10]}",
+                                                          project="legacy-binding")
+    composition.bind_card_transactions(
+        h.service, persistence=SimpleNamespace(card_store=h.store, card_service=h.cards), decisions=decisions,
+        grant_store=_Grants(), policies=None, managed_control_scopes=("work:project:",))
+    return pool
+
+
+@pytest.mark.asyncio
+async def test_with_card_transactions_on_as_live_the_legacy_cards_are_still_bound(tmp_path, redis_client):  # noqa: F811
+    # Review of f5d4d453 (claude-app@spark1, B1): live, attach refused the managed P and the repair bound nothing.
+    if not _dsn():
+        pytest.skip("needs CONNECTION_HUB_TEST_POSTGRES_DSN(_FILE): a disposable PostgreSQL")
+    h = await _service(tmp_path, redis_client)
+    p_id = await _legacy_world(h)
+    pool = await _live_card_transactions(h)
+    try:
+        assert h.service._managed_direct_write_refused() is not None, "Card transactions are on, as live"
+        # Without the repair's switch both gates refuse, as Spark App's probe showed.
+        identity = ProjectPersonControlIdentity.build(project_ref=PROJECT_REF, target_subject=TARGET)
+        plain = await project_control_binding.bind_project_control(h.service, identity, _locator())
+        assert plain.get("error") == "card_transactions_direct_write_refused", plain
+        assert (await _control(h)).control_card is None
+        counts = await repair_legacy_project_bindings(h.service, h.store)
+        assert counts == {"c_bound": 1, "my_repaired": 1}, counts
+        c, my = await _control(h), await _my(h)
+        assert c.control_card.control_id == p_id and _plan_check(c) == "person_control"
+        assert _plan_check(my) == "my_card"
+        assert (await repair_legacy_project_bindings(h.service, h.store)) == {"my_already_bound": 1}
+        # The switch is the repair's alone: it is off again afterwards.
+        assert LEGACY_BINDING_REPAIR.get() is False
+    finally:
+        await pool.close()

@@ -45,26 +45,47 @@ def _is_root_p(card: Any) -> bool:
             and str(card.issuer_ref).startswith(PROJECT_PREFIX) and card.control_card is None)
 
 
-async def _active_cards(store: Any) -> list[Any]:
+async def _active_cards(store: Any, counts: Counter) -> list[Any]:
     cards = []
     for subject_hash in await store.list_grantor_hashes():
         for access_id in await store.list_card_ids(subject_hash=subject_hash):
-            found = await store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+            try:
+                found = await store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+            except Exception as exc:  # noqa: BLE001 - an unreadable Card is counted, never repaired
+                counts["read_error_" + type(exc).__name__] += 1
+                continue
             if found is not None and found[1].state == CARD_STATE_ACTIVE:
                 cards.append(found[1])
     return cards
 
 
 async def repair_legacy_project_bindings(host: Any, store: Any) -> dict[str, int]:
-    """Bind every legacy C under its project's one P and refresh every My pointer; counts only."""
+    """Bind every legacy C under its project's one P and refresh every My pointer; counts only.
 
+    Runs under LEGACY_BINDING_REPAIR, W578's switch for these two writes only. Each Card is repaired on
+    its own: an error is counted by class and the next Card is still repaired.
+    """
+
+    from connection_hub.delegated_credentials.automation_access import LEGACY_BINDING_REPAIR
+
+    token = LEGACY_BINDING_REPAIR.set(True)
+    try:
+        counts = await _repair(host, store)
+    finally:
+        LEGACY_BINDING_REPAIR.reset(token)
+    LOGGER.info("[connection-hub] legacy project binding repair %s",
+                " ".join(f"{key}={value}" for key, value in sorted(counts.items())) or "nothing_to_do")
+    return counts
+
+
+async def _repair(host: Any, store: Any) -> dict[str, int]:
     from connection_hub.delegated_credentials.automation_access import (
         card_authority_from_record,
         record_from_card,
     )
 
     counts: Counter = Counter()
-    cards = await _active_cards(store)
+    cards = await _active_cards(store, counts)
     roots: dict[str, list[Any]] = defaultdict(list)
     for card in cards:
         if _is_root_p(card):
@@ -72,46 +93,54 @@ async def repair_legacy_project_bindings(host: Any, store: Any) -> dict[str, int
     for card in cards:
         if card.issuer_kind != PROJECT_PERSON_CONTROL_ISSUER_KIND or card.control_card is not None:
             continue
-        identity = ProjectPersonControlIdentity.from_authority(card)
-        project_roots = roots.get(identity.project_ref, [])
-        if len(project_roots) != 1:
-            counts["c_skipped_no_single_p"] += 1
+        try:
+            identity = ProjectPersonControlIdentity.from_authority(card)
+            project_roots = roots.get(identity.project_ref, [])
+            if len(project_roots) != 1:
+                counts["c_skipped_no_single_p"] += 1
+                continue
+            p = project_roots[0]
+            outcome = await project_control_binding.bind_project_control(
+                host, identity, ProjectControlLocator(control_id=p.access_id, holder_subject=p.grantor_subject))
+        except Exception as exc:  # noqa: BLE001 - counted by class; the next Card is still repaired
+            counts["c_error_" + type(exc).__name__] += 1
             continue
-        p = project_roots[0]
-        outcome = await project_control_binding.bind_project_control(
-            host, identity, ProjectControlLocator(control_id=p.access_id, holder_subject=p.grantor_subject))
         counts["c_" + str(outcome.get("outcome") or "refused")] += 1
+        if outcome.get("ok") is not True and isinstance(outcome.get("error"), str):
+            counts["c_refused_" + outcome["error"]] += 1
 
     lifecycle = ProjectIdentityLifecycle(host=host, authority_from_record=card_authority_from_record,
                                          record_from_authority=record_from_card)
     for card in cards:
         if card.issuer_kind != PROJECT_PERSON_MY_CARD_ISSUER_KIND:
             continue
-        mine = ProjectPersonCardIdentity.from_my_card(card)
-        control_identity = ProjectPersonControlIdentity.build(project_ref=mine.project_ref,
-                                                              target_subject=mine.person_subject)
-        loaded = await host._load_record_any_state(control_identity.control_id,
-                                                   grantor_subject=control_identity.project_subject)
-        if loaded is None or loaded[1] != CARD_STATE_ACTIVE:
-            counts["my_skipped_no_active_c"] += 1
-            continue
-        control = card_authority_from_record(loaded[0])
-        if control.control_card is None:
-            counts["my_skipped_unbound_c"] += 1
-            continue
-        my_loaded = await host._load_record_any_state(card.access_id, grantor_subject=card.grantor_subject)
-        if my_loaded is None or my_loaded[1] != CARD_STATE_ACTIVE:
-            counts["my_skipped_not_active"] += 1
-            continue
-        before = my_loaded[0]
-        identity = ProjectPersonCardIdentity.build(project_ref=mine.project_ref, person_subject=mine.person_subject,
-                                                   control_revision=control.card_revision)
-        after = await lifecycle._repair_my_card_binding(  # noqa: SLF001 - the one repair ensure() makes
-            before, card_authority_from_record(before), identity=identity, control=control)
-        counts["my_repaired" if after is not before else "my_already_bound"] += 1
-    LOGGER.info("[connection-hub] legacy project binding repair %s",
-                " ".join(f"{key}={value}" for key, value in sorted(counts.items())) or "nothing_to_do")
+        try:
+            counts[await _repair_my(host, lifecycle, card, card_authority_from_record)] += 1
+        except Exception as exc:  # noqa: BLE001 - counted by class; the next Card is still repaired
+            counts["my_error_" + type(exc).__name__] += 1
     return dict(counts)
+
+
+async def _repair_my(host: Any, lifecycle: ProjectIdentityLifecycle, card: Any, authority_of: Any) -> str:
+    mine = ProjectPersonCardIdentity.from_my_card(card)
+    control_identity = ProjectPersonControlIdentity.build(project_ref=mine.project_ref,
+                                                          target_subject=mine.person_subject)
+    loaded = await host._load_record_any_state(control_identity.control_id,
+                                               grantor_subject=control_identity.project_subject)
+    if loaded is None or loaded[1] != CARD_STATE_ACTIVE:
+        return "my_skipped_no_active_c"
+    control = authority_of(loaded[0])
+    if control.control_card is None:
+        return "my_skipped_unbound_c"
+    my_loaded = await host._load_record_any_state(card.access_id, grantor_subject=card.grantor_subject)
+    if my_loaded is None or my_loaded[1] != CARD_STATE_ACTIVE:
+        return "my_skipped_not_active"
+    before = my_loaded[0]
+    identity = ProjectPersonCardIdentity.build(project_ref=mine.project_ref, person_subject=mine.person_subject,
+                                               control_revision=control.card_revision)
+    after = await lifecycle._repair_my_card_binding(  # noqa: SLF001 - the one repair ensure() makes
+        before, authority_of(before), identity=identity, control=control)
+    return "my_repaired" if after is not before else "my_already_bound"
 
 
 __all__ = ["repair_legacy_project_bindings"]

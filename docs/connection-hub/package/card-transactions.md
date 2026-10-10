@@ -431,6 +431,19 @@ obligations, not optional checks.
    `card_transaction_participant`. A person-Control Save reaches that
    transaction through the managed Card edit forward (above). That coordinated path must be live before
    this is switched on. Until then, enabling refuses these edits.
+
+   **The one exception: the legacy binding repair at bundle load** (P0, 10 Oct 2026). Live, this was
+   switched on before rule 8's repair had run, so every person's C still had no binding. The Card-edit
+   PLAN (`existing_card_selection_plan._target_identity`, unchanged) then refused every save with
+   `card_plan_update_scope_invalid`. `on_bundle_load` now runs
+   `legacy_binding_repair.repair_legacy_project_bindings`. For a project with exactly one active root P,
+   it binds each active unbound C under that P through `bind_project_control`, then refreshes each active
+   My Card's pointer with the repair `ensure()` makes. Only that run sets
+   `automation_access.LEGACY_BINDING_REPAIR`; no operation, request or descriptor can. While it is set,
+   W578 allows exactly two things: attaching an unbound C to its own project's root P, and a write to a
+   bound Card whose only changed authority field is `control_card`. Both write the binding a new Card
+   gets at creation. Writes stay fenced, a second load changes nothing, it logs counts only, and a
+   failure never blocks the load.
 10. **Removing v1 waits.** The v1 authority path is removed only after the peer's
    writer switch.
 

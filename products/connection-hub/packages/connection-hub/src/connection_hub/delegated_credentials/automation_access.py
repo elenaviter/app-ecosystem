@@ -18,6 +18,7 @@ The Connection Hub bundle should only adapt UI operations to this service.
 
 from __future__ import annotations
 
+import contextvars
 import dataclasses
 import asyncio
 
@@ -1470,6 +1471,27 @@ def _authority_snapshot(name: str, value: Any) -> Any:
 _MALFORMED = object()
 
 
+# P0 (10 Oct 2026): the bundle-load legacy binding repair's switch. Only
+# legacy_binding_repair.repair_legacy_project_bindings sets it, for its own run; no operation, request
+# or descriptor can. While it is set, W578 makes exactly two exceptions, each for the binding a NEW
+# Card gets at creation and nothing else (see _legacy_unbound_c_to_its_root_p and
+# _refuse_bound_direct_write).
+LEGACY_BINDING_REPAIR: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "connection_hub_legacy_binding_repair", default=False)
+
+
+def _legacy_unbound_c_to_its_root_p(record: Any, control: Any) -> bool:
+    """W578 exception 1: attach an UNBOUND person Control C to its own project's root Control P."""
+    if not LEGACY_BINDING_REPAIR.get() or record.control_card is not None or control.control_card is not None:
+        return False
+    if _clean(record.issuer_kind) != "project" or _clean(control.issuer_kind) != "application":
+        return False
+    # A person Control's issuer_ref IS its project (ProjectPersonControlIdentity.from_authority requires it;
+    # the repair validated that identity, and bind_project_control checked P against it, before attaching).
+    project_ref = _clean(record.issuer_ref)
+    return bool(project_ref) and _clean(control.issuer_ref) == project_ref
+
+
 def card_authority_from_record(record: AutomationAccessRecord) -> CardAuthority:
     """The record's non-secret authorization decision."""
     return CardAuthority(
@@ -2746,6 +2768,11 @@ class AutomationAccessService:
             return  # unbound before and after: not this rule's (a detach is bound before)
         before, after = current.to_dict(), authority.to_dict()
         changed = {name for name in set(before) | set(after) if before.get(name) != after.get(name)}
+        if (LEGACY_BINDING_REPAIR.get() and changed & self._BOUND_AUTHORITY_FIELDS == {"control_card"}
+                and int(after.get("expires_at") or 0) >= int(before.get("expires_at") or 0)
+                and card_handles_unchanged(handles, record)):
+            # W578 exception 2 (P0 legacy repair): only the binding moves, to the value a new Card gets.
+            return
         if (changed & self._BOUND_AUTHORITY_FIELDS
                 or int(after.get("expires_at") or 0) < int(before.get("expires_at") or 0)
                 or not card_handles_unchanged(handles, record)):
@@ -8064,7 +8091,7 @@ class AutomationAccessService:
         if control.grantor_subject != control_holder:
             return {"ok": False, "error": "control_card_grantor_mismatch", "status": 403}
         refused = self._managed_project_control_refused(control)
-        if refused is not None:
+        if refused is not None and not _legacy_unbound_c_to_its_root_p(record, control):
             return refused
         binding = ControlCardBinding(
             control_id=control.access_id,
