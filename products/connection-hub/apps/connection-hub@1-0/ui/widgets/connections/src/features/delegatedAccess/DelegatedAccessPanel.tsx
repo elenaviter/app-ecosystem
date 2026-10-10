@@ -140,6 +140,7 @@ import {
   createDelegatedAccess,
   grantAgentAccess,
   loadControlCard,
+  retireControlReads,
   loadDelegatedAccess,
   renewDelegatedAccess,
   revokeDelegatedAccess,
@@ -169,9 +170,12 @@ import {
   unavailableAccessCardMessage,
 } from './accessCardFocus';
 import {
+  CONTROL_OPEN_READ_SECONDS,
+  CONTROL_OPEN_TIMEOUT_MESSAGE,
   catalogPinAtStart,
   controlFocusRead,
   isStaleEditRefusal,
+  onPendingTooLong,
   pinAfterRefusal,
   pinAfterSave,
   pinAtStart,
@@ -2444,17 +2448,21 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const controlFocusValue = controlFocus ? controlFocusKey(controlFocus) : null;
   // W587 C: "Try again" on a Card that did not open while the board restarted.
   const [focusRetry, setFocusRetry] = useState(0);
+  // The open read did not answer within CONTROL_OPEN_READ_SECONDS: shown with "Try again".
+  const [focusTimedOut, setFocusTimedOut] = useState(false);
   useEffect(() => {
     const read = controlFocusRead(accessCardFocus);
     if (!read || !accessCardFocus) return;
     let current = true;
     const key = controlFocusKey(accessCardFocus);
     setControlFocusReadKey(null);
+    setFocusTimedOut(false);
     setAccessCardFocusState('loading');
-    void dispatch(loadControlCard(read)).unwrap()
+    const reading = dispatch(loadControlCard(read)).unwrap()
       .then((result) => {
         if (!current) return;
         const found = Boolean(result.access && matchesAccessCardFocus(result.access, accessCardFocus));
+        setFocusTimedOut(false);
         setAccessCardFocusState(found ? 'resolved' : 'unavailable');
         if (found) {
           openReadDone.current = accessCardFocus.accessId;
@@ -2462,9 +2470,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         }
       })
       .catch(() => {
-        if (current) setAccessCardFocusState('unavailable');
+        if (!current) return;
+        // A late refusal shows its own reason, not the timeout text.
+        setFocusTimedOut(false);
+        setAccessCardFocusState('unavailable');
       });
-    return () => { current = false; };
+    const cancel = onPendingTooLong(reading, CONTROL_OPEN_READ_SECONDS * 1000, () => {
+      if (!current) return;
+      setFocusTimedOut(true);
+      setAccessCardFocusState('unavailable');
+    });
+    // An explicit retry (focusRetry) or leaving the Card retires this read: it stops holding busy and its
+    // late answer can no longer replace the Card the newer read opened.
+    return () => { current = false; cancel(); dispatch(retireControlReads()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [controlFocusValue, focusRetry, dispatch]);
   // W587, the operator's rule (14:50): "i asked not to refetch! i asked only
@@ -6008,11 +6026,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       {accessCardFocus && accessCardFocusState === 'unavailable' ? (
         <div className="error" role="alert">
           <strong>
-            {isBoardRestarting(delegatedAccessError) ? 'Problem Board is restarting.'
+            {focusTimedOut ? 'Card unavailable.'
+              : isBoardRestarting(delegatedAccessError) ? 'Problem Board is restarting.'
               : isRequestLimitRefusal(delegatedAccessError) ? 'Too many requests.' : 'Card unavailable.'}
           </strong>{' '}
-          {unavailableAccessCardMessage(accessCardFocus, delegatedAccessError)}
-          {isBoardRestarting(delegatedAccessError) && controlFocus ? (
+          {focusTimedOut ? CONTROL_OPEN_TIMEOUT_MESSAGE : unavailableAccessCardMessage(accessCardFocus, delegatedAccessError)}
+          {(focusTimedOut || isBoardRestarting(delegatedAccessError)) && controlFocus ? (
             <>
               {' '}
               <button type="button" className="btn btn-ghost" onClick={() => setFocusRetry((n) => n + 1)}>Try again</button>

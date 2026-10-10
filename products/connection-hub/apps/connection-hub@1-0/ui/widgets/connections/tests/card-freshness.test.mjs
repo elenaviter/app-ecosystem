@@ -123,3 +123,34 @@ test('the catalog is pinned with the revision when the edit starts', () => {
   assert.match(panel, /editBaseCatalog\.current = catalogPinAtStart\(item\);/)
   assert.match(panel, /expectedCatalogVersion: editBaseCatalog\.current \?\? catalogPinAtStart\(item\) \?\? undefined,/)
 })
+
+// Live 2026-10-09 21:23Z: a Control link spun on "Opening the requested Card..." forever because its one
+// read never answered. The open read now gives up waiting after CONTROL_OPEN_READ_SECONDS and offers
+// "Try again"; an answer that arrives later still opens the Card.
+test('an open read that never answers times out once; one that answers in time does not', async () => {
+  const { onPendingTooLong, CONTROL_OPEN_READ_SECONDS, CONTROL_OPEN_TIMEOUT_MESSAGE } =
+    await import('../src/features/delegatedAccess/cardFreshness.ts')
+  assert.equal(CONTROL_OPEN_READ_SECONDS, 45)
+  assert.equal(CONTROL_OPEN_TIMEOUT_MESSAGE, 'Connection Hub did not answer in time. Try again.')
+  let fired = 0
+  onPendingTooLong(new Promise(() => {}), 20, () => { fired += 1 })
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(fired, 1, 'a read that never settles times out exactly once')
+  let early = 0
+  onPendingTooLong(Promise.resolve('card'), 20, () => { early += 1 })
+  onPendingTooLong(Promise.reject(new Error('refused')).catch(() => 'handled'), 20, () => { early += 1 })
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(early, 0, 'an answer or a refusal in time never times out')
+  let cancelled = 0
+  const cancel = onPendingTooLong(new Promise(() => {}), 20, () => { cancelled += 1 })
+  cancel()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(cancelled, 0, 'leaving the Card cancels the wait')
+})
+
+test('the Control open read is bounded and its timeout offers Try again', () => {
+  const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
+  assert.match(panel, /onPendingTooLong\(reading, CONTROL_OPEN_READ_SECONDS \* 1000/)
+  assert.match(panel, /focusTimedOut \? CONTROL_OPEN_TIMEOUT_MESSAGE/)
+  assert.match(panel, /\(focusTimedOut \|\| isBoardRestarting\(delegatedAccessError\)\) && controlFocus/)
+})
