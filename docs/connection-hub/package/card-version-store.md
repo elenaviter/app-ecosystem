@@ -289,7 +289,8 @@ reacquired while old code still acts, so durable effects need a resource-enforce
   (`card-version-txn:<txn>`, R key kind `card-version-txn`), so its marker write is locked and row-fenced too.
   Its local lock file is one of 256 fixed shards chosen by the txn's digest (`txn_section_lock_path`), so late
   rollbacks never grow the lock root; under R the per-txn Redis key expires with its TTL.
-- **Process state.** The scope's rows are registered per Card storage root at `on_bundle_load`, which every proc
+- **Process state.** `_CARD_ROWS_BY_ROOT` is a registry of ACTIVATED SCOPES (a storage root to its row
+  authority), not a cache of Card data: it holds no document, and every read goes to PostgreSQL. The scope's rows are registered per Card storage root at `on_bundle_load`, which every proc
   runs process-locally before admission; an entrypoint instance is not guaranteed to be a singleton, so the
   rows are not held on it. A scope where `card_rows` is not set and was never activated gets no DDL.
 - **Evidence tooling.** `W661_BCORE_PG_MODE=1` re-runs the Hub package suite against the rows;
