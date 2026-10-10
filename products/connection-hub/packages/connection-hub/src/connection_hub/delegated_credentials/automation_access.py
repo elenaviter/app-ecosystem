@@ -2554,6 +2554,25 @@ class AutomationAccessService:
                 return forwarder
         return None
 
+    async def _with_current_person_control(
+        self, user: Mapping[str, Any], result: dict[str, Any], *, project_ref: str, target_subject: str,
+        request_id: str,
+    ) -> dict[str, Any]:
+        """W661 save #2 (operator, 10 Oct: bookkeeping never makes the next edit stale). After a managed
+        person-Control save, committed or refused, the answer carries the Card as it is NOW (the same read the
+        person-Control get route makes, under the caller's own authority), so the editor reloads it: its next
+        save echoes the current revision and properties. A failed read leaves the answer as it was."""
+        if not isinstance(result, dict) or ("managed_card_edit" not in result and result.get("status") != 409):
+            return result
+        try:
+            current = await self.project_person_control_get(
+                user, project_ref=project_ref, target_subject=target_subject, request_id=request_id)
+        except Exception:  # noqa: BLE001 - the save's own answer stands; the editor can still reload
+            return result
+        if isinstance(current, dict) and current.get("ok") is not False and isinstance(current.get("access"), dict):
+            return {**result, "access": current["access"]}
+        return result
+
     async def _forward_person_control_edit(
         self, user: Mapping[str, Any], *, project_ref: str, target_subject: str, request_id: str,
         selection: Mapping[str, Any], expected_card_revision: int | None, properties: Any,
@@ -2568,13 +2587,17 @@ class AutomationAccessService:
         if properties is not None:
             # The editor sends the Card's properties back with every Save.
             # They are not part of this edit: only an unchanged copy may travel.
+            # Compared with the durable current revision, the one the editor
+            # read, never the serving projection (live 10 Oct 22:49Z: a
+            # projection behind the committed revision refused a fresh Save).
             from .managed_card_edit_forward import managed_card_location
             try:
                 access_id, grantor = managed_card_location(
                     "person_control", project_ref=project_ref, ref=_clean(target_subject))
-                stored = await self._load_record(access_id, grantor_subject=grantor)
+                current = await self._load_record_any_state(access_id, grantor_subject=grantor)
             except ValueError:
-                stored = None
+                current = None
+            stored = current[0] if current is not None else None
             if stored is None or dict(properties) != dict(stored.properties or {}):
                 properties = {"changed": True}
             else:
@@ -7607,7 +7630,10 @@ class AutomationAccessService:
                 ) if value is not None},
                 expected_card_revision=expected_card_revision, properties=properties,
                 composition_mode=composition_mode)
-            return refused if forwarded is None else forwarded
+            if forwarded is None:
+                return refused
+            return await self._with_current_person_control(
+                user, forwarded, project_ref=project_ref, target_subject=target_subject, request_id=request_id)
         actor_subject = _subject_from_user(user)
         if not actor_subject:
             return {
