@@ -86,11 +86,11 @@ async def _compose(root: pathlib.Path, pool, redis_client, *, tenant: str):
     await authority.ensure_schema()
     grants = GrantStore(object(), tenant=tenant, project="w603-kill", authority_store=authority)
     store = BundleStorageDelegatedCardStore(root / "cards")
-    cards = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
     handles = RedisCardCredentialHandleStore(redis_client, tenant=tenant, project="w603-kill")
     persistence = DurableCardPersistence(redis=redis_client, tenant=tenant, project="w603-kill", card_store=store,
                                          mutation_lock=mutation_lock, credential_handles=handles)
-    persistence._cards = cards  # only the serving projection is fake
+    cards = persistence.card_service
+    cards._cache = _Cache()  # only the serving projection is fake
     connections = _connections()
     service = AutomationAccessService(redis=_Redis(), tenant=tenant, project="w603-kill",
                                       config=oauth_delegated_config_from_connections(connections),
