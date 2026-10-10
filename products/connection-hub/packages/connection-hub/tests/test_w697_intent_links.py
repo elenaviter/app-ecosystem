@@ -318,22 +318,22 @@ async def test_cleanup_crash_retains_address_and_retry_never_hydrates_deleted_ca
     store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
     await source.record(intent)
     await decisions.decide(TXID, "aborted")
-    unlink = intent_links.unlink_guarded
+    unlink = intent_links.unlink_guarded_async
     raw = await read_json_or_none(source._path(TXID))
     marker_path = tx.revision_marker_path(store, subject_hash=SUBJECT_HASH,
         access_id=intent.candidate.access_id, revision_name=raw["candidate"]["revision_name"])
 
-    def crash_marker(path):
+    async def crash_marker(path):
         if path == marker_path:
             raise OSError("cleanup interrupted")
-        unlink(path)
+        await unlink(path)
 
-    monkeypatch.setattr(intent_links, "unlink_guarded", crash_marker)
+    monkeypatch.setattr(intent_links, "unlink_guarded_async", crash_marker)
     with pytest.raises(OSError, match="cleanup interrupted"):
         await hub.finish(TXID, "aborted")
     assert source._path(TXID).exists() and marker_path.exists()
     assert (await read_json_or_none(tx.tombstone_path(store, TXID)))["intent_finished"] is True
-    monkeypatch.setattr(intent_links, "unlink_guarded", unlink)
+    monkeypatch.setattr(intent_links, "unlink_guarded_async", unlink)
 
     async def no_body(*args, **kwargs):
         raise AssertionError("cleanup retry must not hydrate the deleted body")
@@ -360,11 +360,13 @@ async def test_unfinished_legacy_v1_intent_can_finish_and_be_retired(tmp_path, d
 async def test_concurrent_exact_record_is_serialized_and_preserves_one_frozen_name(tmp_path):
     store, service, source, intent, _, _ = await _unrecorded(tmp_path)
     lock = asyncio.Lock()
+    composed_lock = service._mutation_lock
 
     @asynccontextmanager
     async def card_lock(**kwargs):
         async with lock:
-            yield
+            async with composed_lock(**kwargs):
+                yield
 
     service._mutation_lock = card_lock
     await asyncio.gather(source.record(intent), source.record(intent), source.record(intent))
@@ -396,3 +398,95 @@ async def test_external_first_prepare_uses_recorded_frozen_link_and_finished_cur
     assert _verified(await operation.answer(request), request)["kind"] == "page"
     request = _request("list_prepared", transaction_id=None, limit=1, cursor=TX, scope="work:project:other")
     assert _verified(await operation.answer(request), request)["code"] == "card_participant_cursor_invalid"
+
+
+@pytest.mark.asyncio
+async def test_record_waiting_for_card_lock_rechecks_terminal_decision_before_writing(tmp_path):
+    _, service, source, intent, _, decisions = await _unrecorded(tmp_path)
+    waiting, release = asyncio.Event(), asyncio.Event()
+    composed_lock = service._mutation_lock
+
+    @asynccontextmanager
+    async def paused_lock(**kwargs):
+        waiting.set()
+        await release.wait()
+        async with composed_lock(**kwargs):
+            yield
+
+    service._mutation_lock = paused_lock
+    task = asyncio.create_task(source.record(intent))
+    await waiting.wait()
+    await decisions.decide(TXID, "aborted")
+    release.set()
+    with pytest.raises(DecisionRefused, match="card_transaction_late_stage"):
+        await task
+    assert not source._path(TXID).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", [None, "d" * 64])
+async def test_pending_candidate_needs_exact_owner_and_abort_never_deletes_foreign_candidate(tmp_path, owner):
+    store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
+    await source.record(intent)
+    raw = await read_json_or_none(source._path(TXID))
+    marker = tx.revision_marker_path(store, subject_hash=SUBJECT_HASH,
+        access_id=intent.candidate.access_id, revision_name=raw["candidate"]["revision_name"])
+    if owner is None:
+        marker.unlink()
+    else:
+        await write_json_atomic(marker, {"transaction_id": owner})
+    with pytest.raises(DecisionRefused, match="version_link_marker"):
+        await source.load(TXID)
+    await decisions.decide(TXID, "aborted")
+    with pytest.raises(DecisionRefused):
+        await hub.finish(TXID, "aborted")
+    assert source._path(TXID).exists()
+    assert store.revision_path(subject_hash=SUBJECT_HASH, access_id=intent.candidate.access_id,
+                               revision_name=raw["candidate"]["revision_name"]).exists()
+
+
+@pytest.mark.asyncio
+async def test_committed_candidate_with_foreign_marker_is_not_accepted_as_unmarked(tmp_path):
+    store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
+    await source.record(intent)
+    await hub.prepare(TXID)
+    await decisions.decide(TXID, "committed")
+    # Service duties succeeded, but intent cleanup has not run yet.
+    await hub._service.decide_transaction(transaction_id=TXID, intent_digest=intent.intent_digest,
+        decision="committed", subject_hash=SUBJECT_HASH, access_id=intent.candidate.access_id)
+    raw = await read_json_or_none(source._path(TXID))
+    marker = tx.revision_marker_path(store, subject_hash=SUBJECT_HASH,
+        access_id=intent.candidate.access_id, revision_name=raw["candidate"]["revision_name"])
+    assert (await source.load(TXID)).candidate == intent.candidate
+    await write_json_atomic(marker, {"transaction_id": "d" * 64})
+    with pytest.raises(DecisionRefused, match="version_link_marker_mismatch"):
+        await source.load(TXID)
+
+
+@pytest.mark.asyncio
+async def test_null_intent_cannot_be_treated_as_unknown_by_finish_or_binding(tmp_path):
+    store, _, source, _, hub, decisions = await _unrecorded(tmp_path)
+    source._path(TXID).parent.mkdir(parents=True, exist_ok=True)
+    source._path(TXID).write_text("null")
+    await decisions.decide(TXID, "aborted")
+    for operation in (source.load(TXID), source.binding(TXID), hub.finish(TXID, "aborted")):
+        with pytest.raises(DecisionRefused, match="card_intent_invalid"):
+            await operation
+    assert source._path(TXID).read_text() == "null"
+    assert not tx.tombstone_path(store, TXID).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["intent_digest", "intent_binding", "intent_finished"])
+async def test_finished_tombstone_requires_exact_global_digest_and_valid_binding(tmp_path, field):
+    store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
+    await source.record(intent)
+    await decisions.decide(TXID, "aborted")
+    await hub.finish(TXID, "aborted")
+    path = tx.tombstone_path(store, TXID)
+    raw = await read_json_or_none(path)
+    raw[field] = {"authority": "swapped"} if field == "intent_binding" else ("d" * 64 if field == "intent_digest" else False)
+    await write_json_atomic(path, raw)
+    with pytest.raises(DecisionRefused):
+        await hub.finish(TXID, "aborted")
+    assert await read_json_or_none(path) == raw  # never repairs or overwrites a conflicting terminal proof

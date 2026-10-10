@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
 
-from ..durable_io import drain_writes_before_release, path_is_file, read_json_or_none, unlink_guarded, write_json_atomic
+from ..durable_io import drain_writes_before_release, path_is_file, read_json_or_none, unlink_guarded_async, write_json_atomic
 from .model import CardRecordError, card_revision_name
 from .store import CardStorageError
 from .transaction_store import member_transaction_id, read_receipt, tombstone_path
@@ -164,6 +164,9 @@ async def record_links(source: Any, intent: Any) -> None:
         bound = await source._decisions.read(intent.transaction_id)
         HubCardParticipant._check_bound(intent, bound)
     async with sections(source, keys):
+        if source._decisions is not None:
+            bound = await source._decisions.read(intent.transaction_id)
+            HubCardParticipant._check_bound(intent, bound)
         existing = await read_json_or_none(path)
         if existing is None and await path_is_file(path):
             raise DecisionRefused("card_intent_invalid")  # JSON null is not confirmed absence
@@ -240,6 +243,7 @@ async def record_links(source: Any, intent: Any) -> None:
                 manifest["members"] = raw_members
             else:
                 manifest.update(raw_members[0])
+            validate_link_record(manifest)
             await write_json_atomic(path, manifest)
         raw_members = manifest["members"] if manifest["schema"] == GROUP_SCHEMA else [manifest]
         if len(raw_members) != len(members):
@@ -273,8 +277,14 @@ async def load_links(source: Any, raw: Any) -> Any:
     result = []
     try:
         for index, member in enumerate(members):
-            original = await load_version(source._store, subject_hash=member["subject_hash"],
-                                          access_id=member["access_id"], link=member["original"]) if member["original"] is not None else None
+            original = None
+            if member["original"] is not None:
+                link = member["original"]
+                original = await source._store.read_revision(subject_hash=member["subject_hash"],
+                    access_id=member["access_id"], revision_name=link["revision_name"])
+                if (original is None or original.access_id != member["access_id"]
+                        or original.card_revision != link["card_revision"] or original.content_hash() != link["content_hash"]):
+                    raise DecisionRefused("card_intent_invalid")
             owner = member_transaction_id(raw["transaction_id"], index) if raw["schema"] == GROUP_SCHEMA else raw["transaction_id"]
             if member["owner"] != owner:
                 raise DecisionRefused("card_intent_invalid")
@@ -385,7 +395,7 @@ async def retire_intent(source: Any, transaction_id: str, decision: str) -> dict
                 if pointer is not None and (pointer.get("revision_name") == member["candidate"]["revision_name"]
                                             or (pointer.get("after") or {}).get("revision_name") == member["candidate"]["revision_name"]):
                     raise DecisionRefused("card_intent_cleanup_still_current")
-                unlink_guarded(file_path)
-                unlink_guarded(marker_path)
-        unlink_guarded(source._path(transaction_id))
+                await unlink_guarded_async(file_path)
+                await unlink_guarded_async(marker_path)
+        await unlink_guarded_async(source._path(transaction_id))
         return finished
