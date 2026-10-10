@@ -37,8 +37,8 @@ from typing import Any, Mapping, Protocol
 
 from ..durable_io import cancellation_safe_await, read_json_or_none, write_json_atomic
 from ..issuer_gate import change_digest
-from .model import CardAuthority, CardCurrentPointer, card_revision_name
-from .store import CardStorageError
+from .model import CardAuthority, CardCurrentPointer, card_authority_payload_hash, card_revision_name
+from .store import VERSION_RECORD_KEY, CardStorageError
 
 TRANSACTION_POINTER_SCHEMA = "connection_hub.card-current-transaction.v1"
 TRANSACTION_RECEIPT_SCHEMA = "connection_hub.card-transaction-receipt.v1"
@@ -1893,11 +1893,20 @@ async def _published_by_links(store: Any, *, txn: str, links: Any, at: Any, bind
         try:
             name = card_revision_name(card_revision=int(link["version"]), content_hash=str(link["checksum"]),
                                       updated_at=at, txn=txn)
-            record = await store.read_version_record(subject_hash=link["subject_hash"], access_id=link["access_id"],
-                                                     revision_name=name)
+            payload = await read_json_or_none(store.revision_path(subject_hash=link["subject_hash"],
+                                                                  access_id=link["access_id"], revision_name=name))
+            version, checksum = int(link["version"]), str(link["checksum"])
         except (KeyError, TypeError, ValueError) as exc:
             raise CardTransactionRefused("card_version_request_invalid") from exc
-        found.append(record is not None and record.get("txn") == txn)
-        if found[-1] and record.get("binding") != _card_version_binding(binding):
+        record = payload.get(VERSION_RECORD_KEY) if isinstance(payload, dict) else None
+        found.append(isinstance(record, dict) and record.get("txn") == txn)
+        if not found[-1]:
+            continue
+        if record.get("binding") != _card_version_binding(binding):
             raise CardTransactionRefused("txn_scope_mismatch")
+        # Infra 17:52Z: the name carries only checksum[:12]; the link is exact only if the Card in that same file
+        # has the full checksum and version. A different link is never confirmed: fail closed.
+        card = {key: value for key, value in payload.items() if key != VERSION_RECORD_KEY}
+        if card_authority_payload_hash(card) != checksum or card.get("card_revision") != version:
+            raise CardTransactionRefused("card_version_link_mismatch")
     return all(found)
