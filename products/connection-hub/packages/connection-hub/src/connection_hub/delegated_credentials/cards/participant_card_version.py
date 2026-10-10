@@ -347,8 +347,13 @@ class CardVersionOperation:
         if plan["catalog_digest"] != catalog_version_digest(catalog["version"], catalog["content_hash"]):
             raise CardVersionRefused("stage_catalog_moved")
         cards = plan["candidate_value"]["cards"]
+        # A creation, and an invitation recreating a person's C or My on its stable id, is the plain upsert:
+        # base_version null, so the store overwrites whatever is current (operator: "UPSERT. overwrite";
+        # EMain 17:01Z). Q2(b), a fenced invitation, would pass the existing revision instead.
         members = [{"subject_hash": card["subject_hash"], "access_id": card["access_id"],
-                    "base_version": None if card["original_absent"] else card["original_revision"], "value": card["candidate"]}
+                    "base_version": (None if card["original_absent"] or card["action"] == "recreate"
+                                     else card["original_revision"]),
+                    "value": card["candidate"]}
                    for card in cards]
         effects = await self._effects(cards)
 

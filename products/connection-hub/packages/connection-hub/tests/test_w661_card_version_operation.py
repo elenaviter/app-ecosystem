@@ -464,3 +464,12 @@ async def test_rollback_carries_stages_links_and_only_rollback_does():
                       ("rollback", [{**LINK, "body": {}}])):
         response = await operation.answer(_request(op, links=links))
         assert response["error"]["code"] == "card_version_request_invalid", (op, links)
+
+
+@pytest.mark.asyncio
+async def test_an_invitation_recreating_an_existing_card_is_the_plain_upsert():
+    plan = _plan()
+    plan["plan"]["candidate_value"]["cards"][0]["action"] = "recreate"
+    operation, _, store = _operation(planner=_Planner(plan))
+    assert (await operation.answer(_request()))["ok"] is True
+    assert store.staged[0]["members"][0]["base_version"] is None

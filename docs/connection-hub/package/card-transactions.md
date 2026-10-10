@@ -62,7 +62,8 @@ whole request, so no edit value is repeated.
     except the per-call `request_echo`. A different edit under the same `txn`
     is refused `stage_txn_conflict`.
   - A person's C or My that already exists on its stable id, revoked or
-    active, is created again at its next revision. Operator, 10 Oct: "UPSERT.
+    active, is created again at its next revision with no base version, so the
+    store overwrites whatever is current. Operator, 10 Oct: "UPSERT.
     overwrite".
   - The answer holds only links: `{card: {subject_hash, access_id}, version,
     checksum}`.
