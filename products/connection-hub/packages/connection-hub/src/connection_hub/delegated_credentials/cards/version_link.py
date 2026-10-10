@@ -23,11 +23,14 @@ requires that exact marker, so a candidate is only ever read as the one its reco
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
+import pathlib
 from datetime import datetime
 from typing import Any, Mapping
 
-from connection_hub.delegated_credentials.durable_io import path_is_file, read_json_or_none, write_json_atomic
+from connection_hub.delegated_credentials.durable_io import write_json_atomic
 from .model import CardAuthority, CardCurrentPointer, CardRecordError, card_authority_payload_hash, card_revision_name
 from .store import VERSION_RECORD_KEY
 
@@ -83,13 +86,24 @@ def is_staging_tag(value: Any) -> bool:
 _ABSENT = object()
 
 
-async def _read_present(path: Any) -> Any:
-    """The parsed object, or ``_ABSENT`` only when the file is confirmed absent. A present JSON ``null``
-    (or any non-object) is returned as it is, so callers refuse it as corruption, never as absence."""
-    value = await read_json_or_none(path)
-    if value is None and not await path_is_file(path):
+def _read_text_or_absent(path: Any) -> Any:
+    try:
+        return pathlib.Path(path).read_text(encoding="utf-8")
+    except FileNotFoundError:
         return _ABSENT
-    return value
+
+
+async def _read_present(path: Any) -> Any:
+    """The parsed object, or ``_ABSENT`` only when the file is confirmed absent, in ONE read (no window
+    between "read" and "exists" for a concurrent writer). A present JSON ``null`` (or any non-object) is
+    returned as it is, so callers refuse it as corruption, never as absence."""
+    text = await asyncio.to_thread(_read_text_or_absent, path)
+    if text is _ABSENT:
+        return _ABSENT
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text  # present but not JSON: corruption, refused by the caller
 
 
 def _marker_path(store: Any, *, subject_hash: str, access_id: str, revision_name: str) -> Any:

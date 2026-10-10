@@ -173,14 +173,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plans_transactio
     ON {schema}.{TABLE_ISSUANCE_PLANS} (tenant, project, transaction_id)
     WHERE transaction_id IS NOT NULL;
 
--- W661 scope B: a plan's planned candidate version (a hidden Card version file) is released once its
--- decision is terminal, unless a transaction adopted it; the flag keeps that sweep from repeating.
-ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
-    ADD COLUMN IF NOT EXISTS candidate_released BOOLEAN NOT NULL DEFAULT FALSE;
-
 -- W661 scope B: one planning attempt per request, recorded BEFORE its candidate version file is written:
 -- the planned clock (a retry rebuilds the same candidate and names the same file) and that file's link
--- (a crashed attempt's file is found by this ONE row, never by listing). Deleted once the plan is stored.
+-- (a crashed attempt's file is named by this ONE row, never found by listing). Deleted once the plan is stored.
 CREATE TABLE IF NOT EXISTS {schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} (
     tenant                       TEXT NOT NULL,
     project                      TEXT NOT NULL,

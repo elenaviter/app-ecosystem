@@ -120,32 +120,23 @@ The OAuth issuance plan holds two links:
   structurally outside the 64-hex transaction-id namespace. The store treats a `stg-` marker as never
   committed, so the file never becomes history. STAGE adopts that same file for the real transaction
   with `adopt_hidden_version`; only the marker moves.
-- Planning one request is serialized by a PostgreSQL transaction-scoped advisory lock
-  (`planning_section`; KDCube critical-section guidance), so concurrent planners store one plan and
-  write one file. Before the candidate file is written, an attempt row records the planned clock and the
-  file's link. A retry plans at that clock, so it builds the same candidate and names the same file. A
-  crashed attempt's stale file is found by that one row and deleted, never by listing. The row is deleted
-  once the plan is stored, and an expired attempt is swept by its row.
+- Before the candidate file is written, an attempt row (`connection_hub_oauth_issuance_plan_attempts`)
+  records the planned clock and the file's link. The first planner's clock wins
+  (`INSERT ... ON CONFLICT DO NOTHING`), so a retry, or a concurrent planner of the same request, builds
+  the same candidate and names the same file, which is reused. An expired attempt is renewed only if it
+  is still the one read, and its row is deleted once the plan is stored, for exactly that clock. No lock
+  is held across these calls.
 - The original is read through the store's own committed read and checked against its link. A
   candidate with no marker is accepted only when the bound decision is COMMITTED in the decision log.
-  `load_version` with no owner named refuses any marked file.
-- An ABORTED decision's candidate is released by the same sweep once the plan's deadline has passed;
-  reads before then still need it. After release, a read of that plan answers `issuance_decision_closed`.
-  A committed candidate stays, because it is the committed version once its transaction adopts it.
-- Begin, record and bind also run inside the planning section. The sweep takes the same lock only if it
-  is free, and treats a plan as "never begun" only after its draft has expired (no begin can record it
-  any more). Even then it first checks the decision store, READ ONLY, by the draft's replay scope and
-  request id (`PostgresDecisionStore.read_by_request`). A decision found there is bound to the plan,
-  never deleted. Every delete runs inside the plan Card's own mutation section.
-- A plan whose decision never begins ends at its deadline, and so does its planned candidate.
-  `release_unbegun_oauth_issuance_plans` runs inside the scheduled reservation sweep. It is one
-  deadline-ordered query; the plan names its file, so nothing is listed. It deletes the hidden version
-  file, then its marker, then the plan row. A candidate that a transaction already adopted is not
-  deleted.
-
-The plan stores no other copy of the Card either. `operations`, `resource_grants` and
-`resource_operations`, which the SDK's `OAuthIssuancePlan` exposes, are derived from the linked
-candidate when the plan is read.
+  `load_version` with no owner named refuses any marked file. Presence is decided in one read, so a
+  concurrent writer is never mistaken for corruption.
+- **Cleanup is disabled in this release: nothing is deleted.** `release_unbegun_oauth_issuance_plans`
+  returns 0, and the reservation sweep does not call it. An outcome read still answers after an abort;
+  plan reads and reserve answer `issuance_decision_closed` once the candidate is gone. A candidate file
+  can stay unreferenced only after a crashed attempt whose Card base moved before its retry, or after an
+  aborted decision. Such a file is hidden (a `stg-` or uncommitted-transaction marker), never history.
+  A bounded cleanup on a per-request KDCube Redis lock, linearized with plan, begin, record and bind,
+  is a separate follow-up.
 
 A plan stored before this change still holds bodies and is read as before, until its decision finishes.
 
