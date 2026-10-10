@@ -267,29 +267,15 @@ async def test_effects_run_once_each_pending_until_done_and_never_again(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_no_operation_lists_a_card_folder_or_anything_that_grows_with_the_cards(tmp_path, monkeypatch):
-    """Operator: "never nothing is being scanned"; "nothing should grow with the cards".
-
-    STAGE and ROLLBACK list nothing. PUBLISH's current.json write still passes the existing
-    `assert_pointer_replaceable` guard of the Hub-local flows (issuer updates, lifecycle intents), which
-    lists their in-flight queues, each capped at 128 entries; it never lists a Card or revision folder.
-    Those queues go with the Hub-local flows (scope B follow-up); pinned here so any other listing fails.
-    """
+async def test_no_operation_lists_any_folder(tmp_path, monkeypatch):
+    """Operator: "never nothing is being scanned"; "nothing should grow with the cards". PUBLISH's pointer guard
+    reads each Card's own in-flight file instead of listing the in-flight queues (EMain 16:57Z)."""
     store, service, before, after = await _setup(tmp_path)
-    listed = []
-    real_listdir = os.listdir
-    in_flight_queues = {store.root / "issuer-updates" / "active", store.root / "lifecycle-transactions" / "active"}
-
-    def recording_iterdir(self):
-        listed.append(self)
-        if self not in in_flight_queues:
-            raise AssertionError(f"a W661 operation listed {self}")
-        return iter([self / name for name in real_listdir(self)])
 
     def refuse(*args, **kwargs):
         raise AssertionError("a W661 operation listed a folder")
     monkeypatch.setattr(durable_io, "_list_children", refuse)
-    monkeypatch.setattr(pathlib.Path, "iterdir", recording_iterdir)
+    monkeypatch.setattr(pathlib.Path, "iterdir", refuse)
     monkeypatch.setattr(pathlib.Path, "glob", refuse)
     monkeypatch.setattr(os, "listdir", refuse)
     monkeypatch.setattr(os, "scandir", refuse)
@@ -298,10 +284,8 @@ async def test_no_operation_lists_a_card_folder_or_anything_that_grows_with_the_
     await _stage(service, [(SUBJECT_HASH, "aut_other", None, replace(after, access_id="aut_other", card_revision=1))],
                  txn=second)
     assert await service.rollback_card_version(txn=second) == "rolled_back"
-    assert listed == []  # STAGE and ROLLBACK of a staged txn list nothing at all
     await service.publish_card_version(txn=TXN)
     assert await service.rollback_card_version(txn=TXN) == "already_published"
-    assert set(listed) <= in_flight_queues
 
 
 @pytest.mark.asyncio
@@ -314,8 +298,8 @@ async def test_every_write_is_fsynced_and_the_marker_holds_links_only(tmp_path, 
     assert len(synced) >= 6  # revision marker, revision, txn marker: each file and its directory
     raw = tx.card_version_marker_path(store, TXN).read_text(encoding="utf-8")
     marker = json.loads(raw)
-    assert set(marker) == {"schema", "txn", "state", "request_digest", "request_id", "actor", "at", "catalog",
-                           "members", "effects", "effect_outcomes"}
+    assert set(marker) == {"schema", "txn", "state", "request_digest", "request_id", "actor", "binding", "at",
+                           "catalog", "members", "effects", "effect_outcomes"}
     assert set(marker["members"][0]) == {"subject_hash", "access_id", "base_version", "observed_version",
                                          "observed_revision_name", "version", "revision_name", "content_hash",
                                          "pointer"}
@@ -431,20 +415,28 @@ async def test_the_piece_2_port_answers_links_hands_effects_the_port_marker_and_
             "checksum": after.content_hash()}
     stage = dict(request_id="r-1", request_digest=DIGEST, catalog={"version": "v1", "content_hash": "c" * 64},
                  actor_subject="person-1", actor_kind="caller", members=[member], effects=effects, prepare=prepare,
-                 at=WHEN)
+                 at=WHEN, scope="project-a", caller="pb-service")
+    bound = {"scope": "project-a", "caller": "pb-service"}
     assert await port.stage(TXN, **stage) == {"members": [link]}
     assert prepared == [True]
-    assert await port.publish(TXN, apply=apply) == {"members": [link]}
+    with pytest.raises(_PortRefused) as refused:
+        await port.publish(TXN, scope="project-b", caller="pb-service", apply=apply)  # another entitled scope
+    assert refused.value.code == "txn_scope_mismatch"
+    with pytest.raises(_PortRefused) as refused:
+        await port.rollback(TXN, scope="project-a", caller="other-service", apply=apply, release=apply)
+    assert refused.value.code == "txn_scope_mismatch"
+    assert await port.read_current(SUBJECT_HASH, before.access_id) == {"version": 1, "checksum": before.content_hash()}
+    assert await port.publish(TXN, **bound, apply=apply) == {"members": [link]}
     assert seen == [{"txn": TXN, "members": [{**link, "base_version": 1}]}]
-    assert await port.rollback(TXN, apply=apply, release=apply) == {"state": "already_published"}
+    assert await port.rollback(TXN, **bound, apply=apply, release=apply) == {"state": "already_published"}
     assert len(seen) == 1  # effects ran once
     with pytest.raises(_PortRefused) as refused:
         await port.stage("w661-txn-" + "e" * 32, **{**stage, "members": [member]})
     assert refused.value.code == "card_changed"
     with pytest.raises(_PortRefused) as refused:
-        await port.publish("w661-txn-" + "9" * 32, apply=apply)
+        await port.publish("w661-txn-" + "9" * 32, **bound, apply=apply)
     assert refused.value.code == "txn_unknown"
-    assert await port.rollback("w661-txn-" + "9" * 32, apply=apply, release=apply) == {"state": "unknown_txn"}
+    assert await port.rollback("w661-txn-" + "9" * 32, **bound, apply=apply, release=apply) == {"state": "unknown_txn"}
     with pytest.raises(_PortRefused) as refused:
         await port.stage("w661-txn-" + "8" * 32, **{**stage, "members": [{**member, "value": {"bad": 1}}]})
     assert refused.value.code == "edit_invalid"
@@ -496,3 +488,172 @@ async def test_a_cancelled_stage_drains_its_thread_write_before_rollback_can_run
     assert order == ["write_finished", "rollback_done"]
     assert _revision_files(store, before) == files_before
     assert not tx.card_version_marker_path(store, TXN).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_same_txn_stage_under_another_binding_is_refused_and_touches_nothing(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    members = [(SUBJECT_HASH, before.access_id, 1, after)]
+    a, b = {"scope": "project-a", "caller": "pb"}, {"scope": "project-b", "caller": "pb"}
+    await service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog="c", members=members, now=WHEN, binding=a)
+    marker = tx.card_version_marker_path(store, TXN).read_bytes()
+    for call in (service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog="c", members=members, now=WHEN,
+                                            binding=b),
+                 service.publish_card_version(txn=TXN, binding=b), service.rollback_card_version(txn=TXN, binding=b),
+                 service.publish_card_version(txn=TXN)):
+        with pytest.raises(tx.CardTransactionRefused, match="txn_scope_mismatch"):
+            await call
+    assert tx.card_version_marker_path(store, TXN).read_bytes() == marker
+    assert await _current(store, before) == before
+
+
+def _locked_service(store):
+    locks: dict[str, asyncio.Lock] = {}
+
+    @asynccontextmanager
+    async def mutation_lock(*, lock_path, resource_id, operation, wait_seconds):
+        async with locks.setdefault(str(lock_path), asyncio.Lock()):
+            yield
+    return DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+
+
+@pytest.mark.asyncio
+async def test_a_stage_cancelled_during_prepare_finishes_the_preparation_before_rollback_releases_it(tmp_path):
+    """EMain 17:00Z (Infra K4): prepare runs through cancellation_safe_await, so a cancelled STAGE cannot leave a
+    preparation running after the Card locks are released; ROLLBACK then releases it and removes everything."""
+    store, _, before, after = await _setup(tmp_path)
+    service = _locked_service(store)
+    files_before = _revision_files(store, before)
+    entered, resume, order = asyncio.Event(), asyncio.Event(), []
+
+    async def prepare():
+        entered.set()
+        await resume.wait()
+        order.append("prepared")
+
+    async def release(effect, marker):
+        order.append("released")
+    stage = asyncio.create_task(service.stage_card_version(
+        txn=TXN, request_digest=DIGEST, catalog="c", members=[(SUBJECT_HASH, before.access_id, 1, after)], now=WHEN,
+        effects=[{"kind": "handle_binding", "key": "k1"}], prepare=prepare))
+    await entered.wait()
+    stage.cancel()
+    rolling = asyncio.create_task(service.rollback_card_version(txn=TXN, release=release))
+    await asyncio.sleep(0.05)
+    assert not rolling.done() and order == []
+    resume.set()
+    with pytest.raises(asyncio.CancelledError):
+        await stage
+    assert await rolling == "rolled_back"
+    assert order == ["prepared", "released"]
+    assert _revision_files(store, before) == files_before
+    assert not tx.card_version_marker_path(store, TXN).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_rollback_cancelled_during_release_leaves_its_marker_and_the_retry_finishes(tmp_path):
+    store, _, before, after = await _setup(tmp_path)
+    service = _locked_service(store)
+    files_before = _revision_files(store, before)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], effects=[{"kind": "handle_binding", "key": "k1"}])
+    entered, resume, released = asyncio.Event(), asyncio.Event(), []
+
+    async def slow_release(effect, marker):
+        entered.set()
+        await resume.wait()
+        released.append(effect["key"])
+    rolling = asyncio.create_task(service.rollback_card_version(txn=TXN, release=slow_release))
+    await entered.wait()
+    rolling.cancel()
+    resume.set()
+    with pytest.raises(asyncio.CancelledError):
+        await rolling
+    assert released == ["k1"]  # the started release finished; the locks were held until it did
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"  # the marker still locates the files
+
+    async def release(effect, marker):
+        released.append(effect["key"])  # piece 2's release is a no-op for an already discarded re-wrap
+    assert await service.rollback_card_version(txn=TXN, release=release) == "rolled_back"
+    assert released == ["k1", "k1"]
+    assert _revision_files(store, before) == files_before
+    assert not tx.card_version_marker_path(store, TXN).exists()
+
+
+@pytest.mark.asyncio
+async def test_a_partial_deletion_keeps_the_marker_until_a_retry_removes_the_rest(tmp_path, monkeypatch):
+    store, service, before, after = await _setup(tmp_path)
+    files_before = _revision_files(store, before)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    real_unlink, calls = pathlib.Path.unlink, []
+
+    def failing_unlink(self, missing_ok=False):
+        calls.append(self.name)
+        if len(calls) == 2:
+            raise PermissionError("share refused the delete")
+        return real_unlink(self, missing_ok=missing_ok)
+    monkeypatch.setattr(pathlib.Path, "unlink", failing_unlink)
+    with pytest.raises(CardStorageError, match="card_version_rollback_failed"):
+        await service.rollback_card_version(txn=TXN)
+    monkeypatch.setattr(pathlib.Path, "unlink", real_unlink)
+    assert tx.card_version_marker_path(store, TXN).exists()  # the marker goes last, so it still names the rest
+    assert await service.rollback_card_version(txn=TXN) == "rolled_back"
+    assert _revision_files(store, before) == files_before
+    assert not tx.card_version_marker_path(store, TXN).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind, code", [("issuer_update", "issuer_update_preparation_unresolved"),
+                                        ("lifecycle", "lifecycle_preparation_unresolved")])
+async def test_a_hub_local_operation_in_flight_on_the_card_refuses_publish_by_one_direct_read(tmp_path, monkeypatch,
+                                                                                           kind, code):
+    """EMain 16:57Z: the Card's own inflight.json replaces the queue listing; the refusal codes stay."""
+    from connection_hub.delegated_credentials.cards import inflight, lifecycle_store, update_store
+
+    store, service, before, after = await _setup(tmp_path)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    state = {"state": "prepared", "serving_state": "pending"}
+
+    async def receipt(store_, txn):
+        return dict(state) if txn == "other-op" else None
+    monkeypatch.setattr(update_store if kind == "issuer_update" else lifecycle_store, "read_receipt", receipt)
+    await inflight.claim_inflight(store, subject_hash=SUBJECT_HASH, access_id=before.access_id, kind=kind,
+                                  txn="other-op")
+    with pytest.raises(CardStorageError, match=code):
+        await service.publish_card_version(txn=TXN)
+    with pytest.raises(CardStorageError, match=code):  # a second Hub-local operation is refused too
+        await inflight.claim_inflight(store, subject_hash=SUBJECT_HASH, access_id=before.access_id,
+                                      kind="issuer_update", txn="third-op")
+    assert await _current(store, before) == before
+    state.update(state="committed", serving_state="complete")  # it finished; its cleanup was interrupted
+    await service.publish_card_version(txn=TXN)  # a stale file is not honoured
+    assert await _current(store, before) == after
+
+
+@pytest.mark.asyncio
+async def test_no_writer_builds_on_a_version_whose_publish_stopped_before_its_marker(tmp_path, monkeypatch):
+    """Infra K2 cut (17:02Z): A writes current.json, its `published` marker write fails, the lock is released.
+    No other writer may build v3 on A's version, or A's ROLLBACK would see a successor and delete a published
+    version. Both a later STAGE and an ordinary commit are refused until A's own ROLLBACK resolves it."""
+    store, service, before, after = await _setup(tmp_path)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    real = tx._write_card_version_marker
+
+    async def fail_published(store_, marker):
+        if marker["state"] == "published":
+            raise CardStorageError("write_failed")
+        await real(store_, marker)
+    monkeypatch.setattr(tx, "_write_card_version_marker", fail_published)
+    with pytest.raises(CardStorageError):
+        await service.publish_card_version(txn=TXN)
+    monkeypatch.setattr(tx, "_write_card_version_marker", real)
+    assert (await store.read_current(subject_hash=SUBJECT_HASH, access_id=before.access_id)).card_revision == 2
+    successor = replace(after, card_revision=3, label="successor")
+    with pytest.raises(CardStorageError, match="card_version_unresolved"):
+        await _stage(service, [(SUBJECT_HASH, before.access_id, 2, successor)], txn="w661-txn-" + "d" * 32)
+    with pytest.raises(CardStorageError, match="card_version_unresolved"):
+        await service.commit(successor, subject_hash=SUBJECT_HASH, expected_revision=2, now=NOW)
+    assert await service.rollback_card_version(txn=TXN) == "already_published"
+    assert await _current(store, before) == after  # never deleted
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 2, successor)], txn="w661-txn-" + "d" * 32)
+    await service.publish_card_version(txn="w661-txn-" + "d" * 32)
+    assert await _current(store, before) == successor

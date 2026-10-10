@@ -155,6 +155,10 @@ async def _retire_active_intent(store: Any, transaction_id: str) -> None:
         await cancellation_safe_await(asyncio.to_thread(active_intent_path(store, transaction_id).unlink, missing_ok=True))
     except OSError:
         pass
+    from .inflight import release_inflight
+    for entry in receipt["targets"]:
+        await release_inflight(store, subject_hash=entry["subject_hash"], access_id=entry["access_id"],
+                               txn=transaction_id)
 
 
 async def resolve_pointer(store: Any, payload: Mapping[str, Any], *,
@@ -178,13 +182,12 @@ async def assert_pointer_replaceable(store: Any, *, subject_hash: str, access_id
     # W578: no ordinary write publishes around an undecided staged transaction.
     from .transaction_store import assert_replaceable as assert_transaction_replaceable
     await assert_transaction_replaceable(store, subject_hash=subject_hash, access_id=access_id)
-    # The shared intent exists BEFORE either pointer is staged. This covers
-    # the otherwise unguarded participant after an intent-only/first-pointer
-    # kill. Production callers check inside the same Card's mutation fence.
-    async for receipt in _active_intents(store):
-        if any((entry["subject_hash"], entry["access_id"]) == (subject_hash, access_id)
-               for entry in receipt["targets"]):
-            raise CardStorageError("lifecycle_preparation_unresolved")
+    # W661 (Infra K2 cut): no writer replaces a current version whose card-version txn is unresolved.
+    from .transaction_store import assert_current_version_resolved
+    await assert_current_version_resolved(store, subject_hash=subject_hash, access_id=access_id)
+    # The shared intent exists BEFORE either pointer is staged, and each target Card names it in its own
+    # in-flight file before that (W661: one direct read per Card, nothing listed). The update store's check
+    # above read that same file, so an in-flight lifecycle intent has already refused there.
     raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
     if raw is None or raw.get("schema") != LIFECYCLE_POINTER_SCHEMA:
         return
@@ -260,7 +263,12 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
     receipt = {"schema": LIFECYCLE_RECEIPT_SCHEMA, "transaction_id": transaction_id,
                "binding": request.binding(actor_subject), "state": "prepared", "reason": "", "targets": entries,
                "serving_state": "pending" if after_prepare is not None else "not_required"}
-    # Intent precedes every revision/pointer write and exists across a kill.
+    # Each target Card names the intent first (W661 per-Card in-flight read), then the intent precedes every
+    # revision/pointer write and exists across a kill.
+    from .inflight import LIFECYCLE, claim_inflight
+    for entry in entries:
+        await claim_inflight(store, subject_hash=entry["subject_hash"], access_id=entry["access_id"],
+                             kind=LIFECYCLE, txn=transaction_id)
     await write_json_atomic(active_intent_path(store, transaction_id), receipt)
     try:
         if after_prepare is not None:

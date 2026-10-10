@@ -9,7 +9,9 @@ order) for the whole operation. The answers are links only: ``{card: {subject_ha
 checksum}``, where ``version`` is the Card's ``card_revision`` and ``checksum`` its content hash.
 
 ``refused`` is piece 2's refusal class: a store refusal is raised as ``refused(code)`` with the contract
-code, so neither package imports the other's module.
+code, so neither package imports the other's module. ``scope`` and ``caller`` (the authenticated request
+scope and service id) are recorded at STAGE and required on every replay, PUBLISH and ROLLBACK
+(``txn_scope_mismatch``; Infra's W691 finding 2).
 """
 
 from __future__ import annotations
@@ -49,7 +51,8 @@ class ServiceCardVersionStore:
 
     async def stage(self, txn: str, *, request_id: str, request_digest: str, catalog: Mapping[str, Any],
                     actor_subject: str, actor_kind: str, members: Sequence[Mapping[str, Any]],
-                    effects: Sequence[Mapping[str, Any]], prepare: Any, at: datetime) -> Mapping[str, Any]:
+                    effects: Sequence[Mapping[str, Any]], prepare: Any, at: datetime, scope: str,
+                    caller: str) -> Mapping[str, Any]:
         """``at`` is the request's own time (a request field), never this host's clock: a retry then names
         the same version file (EMain 16:41Z: "STAGE takes 'at' from the request")."""
         try:
@@ -60,16 +63,19 @@ class ServiceCardVersionStore:
         answer = await self._guard(self._service.stage_card_version(
             txn=txn, request_digest=request_digest, catalog=dict(catalog), members=rows, now=at,
             effects=[dict(effect) for effect in effects], request_id=request_id,
-            actor={"subject": actor_subject, "kind": actor_kind}, prepare=prepare))
+            actor={"subject": actor_subject, "kind": actor_kind}, prepare=prepare,
+            binding={"scope": scope, "caller": caller}))
         return {"members": _links(answer)}
 
-    async def publish(self, txn: str, *, apply: Any) -> Mapping[str, Any]:
-        answer = await self._guard(self._service.publish_card_version(txn=txn, run_effect=_port_effect(apply)))
+    async def publish(self, txn: str, *, scope: str, caller: str, apply: Any) -> Mapping[str, Any]:
+        answer = await self._guard(self._service.publish_card_version(
+            txn=txn, run_effect=_port_effect(apply), binding={"scope": scope, "caller": caller}))
         return {"members": _links(answer)}
 
-    async def rollback(self, txn: str, *, apply: Any, release: Any) -> Mapping[str, Any]:
-        state = await self._guard(self._service.rollback_card_version(txn=txn, run_effect=_port_effect(apply),
-                                                                      release=_port_effect(release)))
+    async def rollback(self, txn: str, *, scope: str, caller: str, apply: Any, release: Any) -> Mapping[str, Any]:
+        state = await self._guard(self._service.rollback_card_version(
+            txn=txn, run_effect=_port_effect(apply), release=_port_effect(release),
+            binding={"scope": scope, "caller": caller}))
         return {"state": state}
 
     async def read_current(self, subject_hash: str, access_id: str) -> Mapping[str, Any] | None:
