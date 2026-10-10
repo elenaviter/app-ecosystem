@@ -88,6 +88,16 @@ whole request, so no edit value is repeated.
     `card_edit_admin_grant_role_only`, a fixed signed refusal code (409) with no
     free text.
   - Only `role_selection` changes those grants.
+- **An invitation's pending Card (`project_invitation_control`).** One
+  `creations` entry: `ref`, `kind`, `identity: {invitation_ref, target_email,
+  label?, manage_url?}`, `selection` (PB's role preselection, resolved under
+  PB's delegable grants), and `parent: null`. The step is
+  `project.invitation_control.create`, and its target is the `invitation_ref`.
+  - The Hub builds exactly the Card the direct create builds: credentialless,
+    AND, issued to the invitation, bound to its identity, snapshot `created`,
+    and audited.
+  - An existing Card on that id refuses `card_plan_target_exists`. A pending
+    invitation Card is never overwritten.
 - **A role change's Cards (`role_selection`).** One `updates` entry per Card (C, or
   C and My): `kind`, `target_subject`, `access_id`, `subject_hash`,
   `original_revision: 0`, the PB `resource`, and either `add_grants` and
