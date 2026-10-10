@@ -128,6 +128,8 @@ that concern this repository so the history is discoverable from here.
 
 | 2026-10-10 | Frozen links must reach the first consumer, not only restart recovery | Recording an immutable candidate link is insufficient when the authority's first call returns its earlier in-memory intent; exact first-PREPARE receipt comparison detects the duplicate-version path that restart tests miss. [Public contract](../docs/connection-hub/package/card-version-store.md). |
 
+| 2026-10-10 | Card writes get a storage-level version check under the Redis Card lock | Option P: the Card pointer and card-version txn marker become PostgreSQL rows changed only by compare-and-swap, so a holder whose Redis lock expired is refused at write time; activation is a one-way bundle property. Journals: Problem Board project (W700) and Connection Hub card-locks. |
+
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this
 repository are always reflected in [`docs/`](../docs/README.md).
