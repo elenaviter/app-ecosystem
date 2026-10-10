@@ -67,6 +67,18 @@ whole request, so no edit value is repeated.
     overwrite".
   - The answer holds only links: `{card: {subject_hash, access_id}, version,
     checksum}`.
+- **My Reset (`reset_to_control`).** One `updates` entry: `kind`,
+  `target_subject`, the My Card's `access_id`, `subject_hash` and
+  `original_revision`, the `resource`, the `display_digest` the person saw, and
+  `control: {access_id, subject_hash}`. No selection travels.
+  - The Hub reads My and its effective Control and recomputes the display with
+    `managed_card_reset_display`.
+  - A different digest is refused `card_changed`
+    (`card_plan_reset_display_moved`), and so is another Control
+    (`card_plan_reset_control_moved`).
+  - The new My takes that one service's selection from the Control; everything
+    else is unchanged.
+  - C is read, never written.
 - **`op: publish` and `op: rollback`.** PUBLISH carries `txn` alone, because the
   store's transaction marker names its members. ROLLBACK also carries `links`,
   the `{card, version, checksum}` links from STAGE's answer (PB keeps them),

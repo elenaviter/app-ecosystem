@@ -77,7 +77,8 @@ REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_c
 _ALIASES = {"txn_scope_mismatch": "request_scope_invalid"}
 _CARD_CHANGED = frozenset({"card_plan_original_revision_changed", "card_plan_update_target_absent",
                            "card_plan_target_exists", "card_plan_revision_invalid",
-                           "card_effect_target_revision_moved"})
+                           "card_effect_target_revision_moved", "card_plan_reset_control_moved",
+                           "card_plan_reset_display_moved"})
 _UNAVAILABLE = frozenset({"delegated_catalog_unavailable", "delegated_cards_unavailable"})
 HANDLE_BINDING = "handle_binding"
 

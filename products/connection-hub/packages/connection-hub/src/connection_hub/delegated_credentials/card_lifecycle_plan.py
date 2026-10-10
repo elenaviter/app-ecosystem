@@ -799,7 +799,7 @@ async def plan_card_lifecycle(
             if (not isinstance(raw, Mapping)
                     or not {"kind", "target_subject", "access_id", "subject_hash", "original_revision"} <= set(raw)
                     or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent",
-                                   "selection", "profile", "resource"}
+                                   "selection", "profile", "resource", "display_digest", "control"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control"})):
@@ -860,7 +860,22 @@ async def plan_card_lifecycle(
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
-            if ("profile" in raw or "resource" in raw) and raw["kind"] != "apply_agent_profile":
+            if raw["kind"] == "reset_to_control":
+                # W661 (EMain 18:07Z): My Reset as a STAGE-owned step; the Hub reads My and its Control and
+                # recomputes the display the person saw. Only the shape PB may send is accepted.
+                from connection_hub.delegated_credentials.managed_card_reset_plan import (
+                    build_reset_to_control_update, reset_update_shape_valid,
+                )
+                if not reset_update_shape_valid(raw):
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                built = await build_reset_to_control_update(
+                    host, original=original, update=raw, decision=decision, project_ref=scope,
+                    actor_subject=actor, request_id=request_id)
+                members.append(built["member"])
+                originals[(subject_hash, access_id)] = original.to_dict()
+                continue
+            if ("display_digest" in raw or "control" in raw
+                    or ("profile" in raw or "resource" in raw) and raw["kind"] != "apply_agent_profile"):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             if raw["kind"] in {"attach_agent", "detach_agent", "apply_agent_profile"}:
                 if ("parent" in raw) != (raw["kind"] == "attach_agent"):

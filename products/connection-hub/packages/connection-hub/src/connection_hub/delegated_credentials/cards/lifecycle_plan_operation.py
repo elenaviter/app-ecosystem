@@ -68,6 +68,8 @@ CREATION_STEPS = {
 UPDATE_STEPS = {"revoke": PROJECT_INVITATION_CONTROL_REVOKE, "attach": PROJECT_PERSON_CONTROL_BIND_PROJECT,
                 # W607: an existing person Control or My Card takes a PB-supplied selection.
                 "reselect": PROJECT_PERSON_CONTROL_UPDATE,
+                # W661: a person's per-service Reset of their My Card to its Control (STAGE-owned).
+                "reset_to_control": PROJECT_PERSON_CONTROL_UPDATE,
                 # W502: an active person leaves the project; their Control and My end in one decision.
                 "remove_person": PROJECT_PERSON_CONTROL_REVOKE,
                 # W638: the project's own Control and a project agent Card take a host-authorized selection.
