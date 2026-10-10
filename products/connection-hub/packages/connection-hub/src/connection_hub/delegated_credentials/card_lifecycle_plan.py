@@ -401,6 +401,30 @@ def _parent_binding(parent: CardAuthority) -> ControlCardBinding:
     )
 
 
+def _protected_grants_valid(value: Any) -> bool:
+    """W661 S5 (EMain 18:22Z): a fixed PB policy, never Card data: at most 4 resources x 16 grants."""
+    return (isinstance(value, Mapping) and 0 < len(value) <= 4 and all(
+        type(resource) is str and resource and type(grants) is list and 0 < len(grants) <= 16
+        and len(set(grants)) == len(grants)
+        and all(type(grant) is str and grant and grant == grant.strip() for grant in grants)
+        for resource, grants in value.items()))
+
+
+def _require_protected_grants_kept(protected: Mapping[str, Any] | None, original: CardAuthority,
+                                   candidate: Mapping[str, Any]) -> None:
+    """A manual edit leaves each listed grant exactly as the original Card holds it (added or removed refuses).
+
+    The Hub only compares the grants it is given; it learns nothing about roles. A role change takes
+    role_selection, the one path that may change them.
+    """
+    for resource, grants in (protected or {}).items():
+        listed = set(grants)
+        before = listed & set((original.resource_grants or {}).get(resource, ()))
+        after = listed & set((candidate.get("resource_grants") or {}).get(resource, ()))
+        if before != after:
+            raise CardLifecyclePlanRefused("card_edit_admin_grant_role_only")
+
+
 def _require_project_parent(
     parent: CardAuthority, *, project_ref: str, authorization: ProjectAuthorizationDecision,
     planned_parent: bool,
@@ -800,7 +824,8 @@ async def plan_card_lifecycle(
                     or not {"kind", "target_subject", "access_id", "subject_hash", "original_revision"} <= set(raw)
                     or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent",
                                    "selection", "profile", "resource", "display_digest", "control",
-                                   "add_grants", "add_operations", "remove_operations", "operation_grants"}
+                                   "add_grants", "add_operations", "remove_operations", "operation_grants",
+                                   "protected_grants"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control"})):
@@ -834,6 +859,9 @@ async def plan_card_lifecycle(
             except ProjectInvitationControlError:
                 invitation_identity = None
             target = _required_text(raw["target_subject"], "card_plan_target_invalid")
+            if "protected_grants" in raw and (raw["kind"] != "reselect"
+                                              or not _protected_grants_valid(raw["protected_grants"])):
+                raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             if raw["kind"] == "reselect":
                 # W607: an existing person Control or My Card takes a PB-supplied selection. The helper
                 # checks its identity, project, person and the step's decision; nothing is written.
@@ -845,6 +873,7 @@ async def plan_card_lifecycle(
                 built = await build_existing_card_selection_update(
                     host, original=original, selection=raw["selection"], active=active, decision=decision,
                     project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now)
+                _require_protected_grants_kept(raw.get("protected_grants"), original, built["member"]["candidate"])
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue

@@ -79,6 +79,13 @@ whole request, so no edit value is repeated.
   - The new My takes that one service's selection from the Control; everything
     else is unchanged.
   - C is read, never written.
+- **Protected grants on a manual edit.** A person Control or My `reselect` may
+  carry `protected_grants: {<resource>: [<grant>, ...]}` (at most 4 resources x
+  16 grants). PB sends `{<its resource>: ["work:admin"]}`.
+  - The Hub compares, for each listed grant, whether the original Card holds it
+    and whether the candidate does. Any difference refuses
+    `card_edit_admin_grant_role_only`.
+  - Only `role_selection` changes those grants.
 - **A role change's Cards (`role_selection`).** One `updates` entry per Card (C, or
   C and My): `kind`, `target_subject`, `access_id`, `subject_hash`,
   `original_revision: 0`, the PB `resource`, and either `add_grants` and
