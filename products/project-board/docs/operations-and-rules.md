@@ -48,7 +48,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `project_admin_by_role` | An owner or admin role is the minimum for project administration. The applicable operation must also pass the current effective Card hierarchy using each upstream Control's conjunction; the role is not a bypass. Connection Hub remains the only Card editor. |
 | `project_owner_is_a_person` | A project is registered by, and owned by, a signed-in person. |
 | `owner_exempt_from_card` | Retired historical exception: the owner has no ordinary project-mutation bypass. Their role AND current effective Card hierarchy must permit the applicable operation. Bootstrap and recovery do not silently grant ordinary mutation authority. |
-| `last_admin` | The last admin of a project can be neither removed nor demoted, and the owner is not removed; ownership moves only by transfer to another admin. |
+| `one_owner` | Every project has exactly one owner, its owner_principal_key, and the owner is an admin. The owner's role does not change and the owner is not removed, so an admin always remains; ownership moves only by transfer to another admin, in one transaction. A project without exactly one owner refuses its own membership and ownership writes (project_owner_invalid). |
 | `own_role` | A person does not change their own project role. |
 | `worker_pool_is_its_grantors` | A worker belongs to the pool of the person who authorized it; another person reaches it only through a share or a project it is linked to. |
 | `shared_write_agents_only` | Shared workspace writes are made by agents, each as itself. |
@@ -90,7 +90,7 @@ Which actor should hold each operation is in [Operations By Actor](operations-by
 | `review.cancel` | review | `work:review` | Role AND current effective Card hierarchy | A reason is required. An agent decides a review only as the item's named reviewer or the acting coordinator (work_review_not_reviewer). |
 | `review.assign` | review | `work:coordinate` | Role AND current effective Card hierarchy | Routes only an item in review. The applicable role AND current effective Card hierarchy are required, using each upstream Control's conjunction; owner and admin roles bypass neither requirement. |
 | `project.people.invite` | people | `work:admin` | Role AND current effective Card hierarchy | An existing KDCube user, by email, with a role; their Control Card starts with that role's preselection. |
-| `project.people.set_role` | people | `work:admin` | Role AND current effective Card hierarchy | A role writes no Card. A person does not change their own role while no other admin remains (last_admin, own_role). |
+| `project.people.set_role` | people | `work:admin` | Role AND current effective Card hierarchy | A role writes no Card. The owner's role does not change, so an admin always remains (one_owner, own_role). |
 | `project.people.card.update` | people | `work:admin` | Retired | Answers work_control_card_edit_in_connection_hub: Cards are edited in Connection Hub. |
 | `project.coordinator.get` | coordinator | `work:observe` | Membership (`project_membership`) | Agents also receive it on every heartbeat. |
 | `project.role.get` | roles | `work:observe` | Membership (`project_membership`) | W517: an optional role the board carries (knowledge-keeper) and its holder. |
@@ -200,8 +200,8 @@ canonical Card permission rather than a second permission named after the page c
 | `project.file.view.request` | Role AND current effective Card hierarchy | An operating person role (not viewer) AND control.enqueue through the current effective Card hierarchy, before creating the expiring view or queueing the coordinator. This is a queued request, not a pure read. Only a file on this project's list; the board keeps no durable content. |
 | `project.people.history` | Membership (`project_membership`) | Thread privacy events are not shown. |
 | `project.people.invitation.withdraw` | Identity rule `project_admin_by_role` |  |
-| `project.people.remove` | Identity rule `project_admin_by_role` | The owner and the last admin are not removed; nobody removes themselves (last_admin). |
-| `project.people.transfer_ownership` | Identity rule `last_admin` | Only the current owner, to another admin. |
+| `project.people.remove` | Identity rule `project_admin_by_role` | The owner is not removed; nobody removes themselves (one_owner). |
+| `project.people.transfer_ownership` | Identity rule `one_owner` | Only the current owner, to another admin. |
 | `project.report.request` | Identity rule `person_views_people_only` |  |
 | `project.report.get` | Membership (`project_membership`) |  |
 | `project.reports.list` | Membership (`project_membership`) |  |
