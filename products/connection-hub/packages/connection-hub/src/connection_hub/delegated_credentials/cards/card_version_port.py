@@ -113,11 +113,36 @@ class ServiceCardVersionStore:
             binding={"scope": scope, "caller": caller}, links=flat, at=at))
         return {"state": state}
 
+    async def outcome(self, txn: str, *, scope: str, caller: str, links: Sequence[Mapping[str, Any]] = (),
+                      at: datetime | None = None) -> Mapping[str, Any]:
+        """v6.3 item 5: read-only; {state, members: [{card, version, checksum, current}]}."""
+        answer = await self._guard(self._service.outcome_card_version(
+            txn=txn, binding={"scope": scope, "caller": caller}, links=_flat_links(self._refused, links), at=at))
+        return {"state": answer["state"], "members": [
+            {"card": {"subject_hash": m["subject_hash"], "access_id": m["access_id"]}, "version": m["version"],
+             "checksum": m["checksum"], "current": m["current"]} for m in answer["members"]]}
+
+    async def compensate(self, txn: str, *, scope: str, caller: str, links: Sequence[Mapping[str, Any]],
+                         at: datetime, compensation_at: datetime) -> Mapping[str, Any]:
+        """v6.3 item 7: {state: compensated | already_compensated, members: [{card, version, checksum}]}."""
+        answer = await self._guard(self._service.compensate_card_version(
+            txn=txn, binding={"scope": scope, "caller": caller}, links=_flat_links(self._refused, links), at=at,
+            compensation_at=compensation_at))
+        return {"state": answer["state"], "members": _links(answer["members"])}
+
     async def read_current(self, subject_hash: str, access_id: str) -> Mapping[str, Any] | None:
         current = await self._service._store.read_current(subject_hash=subject_hash, access_id=access_id)
         if current is None:
             return None
         return {"version": current.card_revision, "checksum": current.content_hash}
+
+
+def _flat_links(refused: Any, links: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    try:
+        return [{"subject_hash": link["card"]["subject_hash"], "access_id": link["card"]["access_id"],
+                 "version": link["version"], "checksum": link["checksum"]} for link in links]
+    except (KeyError, TypeError) as exc:
+        raise refused("edit_invalid") from exc
 
 
 def _links(answer: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
