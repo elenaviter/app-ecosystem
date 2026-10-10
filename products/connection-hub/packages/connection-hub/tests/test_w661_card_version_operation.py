@@ -81,7 +81,8 @@ class _Store:
         return marker
 
     async def stage(self, txn, *, request_id, request_digest, catalog, actor_subject, actor_kind, members,
-                    effects, prepare, at, scope, caller):
+                    effects, prepare, at, scope, caller, reads=()):
+        self.reads = list(reads)
         if self.stage_refusal:
             raise CardVersionRefused(self.stage_refusal)
         existing = self._bound(txn, scope, caller)
@@ -522,3 +523,24 @@ async def test_a_failing_handle_write_answers_effects_pending_and_the_retry_appl
     retry = _request("publish")
     assert _verified(await operation.answer(retry), retry)["kind"] == "published"
     assert [call[0] for call in handles.calls] == ["advance"]
+
+
+RESET = {"kind": "reset_to_control", "target_subject": TARGET, "access_id": ACCESS, "subject_hash": SUBJECT,
+         "original_revision": 3, "resource": "service-a", "display_digest": "e" * 64,
+         "control": {"access_id": "control-c", "subject_hash": "s" * 64}}
+
+
+@pytest.mark.asyncio
+async def test_a_reset_fences_exactly_its_control_as_a_store_read():
+    plan = _plan()
+    plan["plan"]["reads"] = [{"subject_hash": "s" * 64, "access_id": "control-c", "revision": 7},
+                             {"subject_hash": "p" * 64, "access_id": "project-p", "revision": 2}]
+    operation, _, store = _operation(planner=_Planner(plan))
+    assert (await operation.answer(_request(updates=[RESET])))["ok"] is True
+    assert store.reads == [{"card": {"subject_hash": "s" * 64, "access_id": "control-c"}, "version": 7}]
+    # An ordinary edit fences no read; a reset whose Control the planner did not read never stages.
+    operation, _, store = _operation()
+    assert (await operation.answer(_request()))["ok"] is True and store.reads == []
+    operation, _, store = _operation(planner=_Planner(_plan()))
+    request = _request(updates=[RESET])
+    assert _verified(await operation.answer(request), request)["code"] == "edit_invalid" and store.staged == []
