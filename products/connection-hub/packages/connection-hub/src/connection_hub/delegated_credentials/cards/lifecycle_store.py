@@ -188,7 +188,7 @@ async def assert_pointer_replaceable(store: Any, *, subject_hash: str, access_id
     # The shared intent exists BEFORE either pointer is staged, and each target Card names it in its own
     # in-flight file before that (W661: one direct read per Card, nothing listed). The update store's check
     # above read that same file, so an in-flight lifecycle intent has already refused there.
-    raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
+    raw = await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
     if raw is None or raw.get("schema") != LIFECYCLE_POINTER_SCHEMA:
         return
     # Resolve even a terminal receipt to catch corrupted pointer bindings.
@@ -217,11 +217,11 @@ async def abort_prepared(store: Any, *, request: LifecycleRequest, actor_subject
     # Cleanup is not necessary for correct reads. Do not replace any pointer
     # another correctly fenced transaction has legitimately superseded.
     for entry in receipt["targets"]:
-        path = store.current_path(subject_hash=entry["subject_hash"], access_id=entry["access_id"])
-        raw = await read_json_or_none(path)
+        raw = await store.read_pointer_document(subject_hash=entry["subject_hash"], access_id=entry["access_id"])
         if raw == {"schema": LIFECYCLE_POINTER_SCHEMA, "transaction_id": transaction_id,
                    "before": entry["before"], "after": entry["after"]}:
-            await write_json_atomic(path, entry["before"])
+            await store.write_pointer_document(subject_hash=entry["subject_hash"], access_id=entry["access_id"],
+                                               document=entry["before"])
     await _retire_active_intent(store, transaction_id)
     return refused
 
@@ -284,9 +284,9 @@ async def atomic_revoke(store: Any, *, request: LifecycleRequest, actor_subject:
             current = await store.read_current(subject_hash=entry["subject_hash"], access_id=entry["access_id"])
             if current is None or current.to_dict() != entry["before"]:
                 raise LifecycleRefused("issuer_lifecycle_revision_moved")
-            await write_json_atomic(store.current_path(subject_hash=entry["subject_hash"], access_id=entry["access_id"]),
-                {"schema": LIFECYCLE_POINTER_SCHEMA, "transaction_id": transaction_id,
-                 "before": entry["before"], "after": entry["after"]})
+            await store.write_pointer_document(subject_hash=entry["subject_hash"], access_id=entry["access_id"],
+                document={"schema": LIFECYCLE_POINTER_SCHEMA, "transaction_id": transaction_id,
+                          "before": entry["before"], "after": entry["after"]})
         deadline = await before_publish()
         committed = {**receipt, "state": "committed"}
         if after_prepare is not None:
