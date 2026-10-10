@@ -790,3 +790,29 @@ async def test_a_successor_is_refused_while_its_predecessor_has_unrecorded_effec
     await _stage(service, [(SUBJECT_HASH, before.access_id, 2, v3)], txn=b)
     await service.publish_card_version(txn=b, run_effect=apply)
     assert await _current(store, before) == v3
+
+
+@pytest.mark.asyncio
+async def test_a_publish_holding_an_executor_still_refuses_and_never_runs_another_txns_effects(tmp_path):
+    """EMain 17:43Z: only a txn's own PUBLISH retry or ROLLBACK runs its effects (W693 Q4 is open)."""
+    store, service, before, after = await _setup(tmp_path)
+    b = "w661-txn-" + "b" * 32
+    other = replace(after, label="B's edit")
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], effects=[{"kind": "handle_binding", "key": "a"}])
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, other)], txn=b, effects=[{"kind": "handle_binding",
+                                                                                       "key": "b"}])
+    with pytest.raises(tx.CardTransactionRefused, match="effects_pending"):
+        await service.publish_card_version(txn=TXN)  # A's pointer moved; its effect is not recorded
+    ran = []
+
+    async def apply(effect, marker):
+        ran.append((marker["txn"], effect["key"]))
+        return "applied"
+    with pytest.raises(CardStorageError, match="card_version_effects_pending"):
+        await service.publish_card_version(txn=b, run_effect=apply)
+    assert ran == []  # B never ran A's effect
+    assert (await tx.read_card_version_marker(store, TXN))["effect_outcomes"] == {}
+    assert await service.rollback_card_version(txn=TXN, run_effect=apply) == "already_published"
+    assert ran == [(TXN, "a")]
+    with pytest.raises(tx.CardTransactionRefused, match="card_changed"):  # then B meets the ordinary fence
+        await service.publish_card_version(txn=b, run_effect=apply)
