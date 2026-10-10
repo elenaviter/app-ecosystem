@@ -9885,6 +9885,7 @@ class AutomationAccessService:
         from .cards.card_group import group_member, hub_group_participant_input
         from .cards.card_participant import PARTICIPANT, hub_participant_input
         from .cards.participant_effects import MAX_EFFECTS
+        from .cards.version_link import pointer_link, staging_tag, write_hidden_version
         from .oauth_issuance import (
             ISSUANCE_DELIVERY_SECONDS, ISSUANCE_PLAN_SCHEMA, ISSUANCE_SLOTS, IssuanceRefused,
             credential_issue_effect, effect_digest,
@@ -9907,14 +9908,16 @@ class AutomationAccessService:
         if self._managed_project_control_refused(record) is not None:
             raise IssuanceRefused("card_transactions_direct_write_refused")
         subject_hash = _subject_key(grantor)
-        original = None
+        original = original_pointer = None
+        card_store = getattr(self._cards(), "card_store", None)
+        if card_store is None:
+            raise IssuanceRefused("card_transactions_unavailable", retryable=True)
         if base_revision > 0:
-            card_store = getattr(self._cards(), "card_store", None)
-            current = None if card_store is None else await card_store.read_current_authority(
-                subject_hash=subject_hash, access_id=candidate.access_id)
+            current = await card_store.read_current_authority(subject_hash=subject_hash,
+                                                              access_id=candidate.access_id)
             if current is None or current[1].card_revision != base_revision:
                 raise IssuanceRefused("card_intent_base_moved", retryable=True)
-            original = current[1]
+            original_pointer, original = current
         effects = [credential_issue_effect(access_id=candidate.access_id, slot=slot, expires_at=candidate.expires_at,
                                            card_revision=candidate.card_revision) for slot in ISSUANCE_SLOTS]
         # W606: a re-consent moves the existing handle row through handle_binding (one writer per row);
@@ -9943,14 +9946,21 @@ class AutomationAccessService:
         reserved_until = min(delivery_deadline, decision_expires)
         if reserved_until <= now:
             raise IssuanceRefused("issuance_card_expired")
+        # W661 scope B (b): the plan holds LINKS, never Card bodies ("each card has it data ONCE. others
+        # LINK"). The original is the committed version current.json names; the candidate is written once
+        # as its own version file, hidden behind a staging tag that no transaction has (cards/version_link).
+        candidate_link = await write_hidden_version(
+            card_store, subject_hash=subject_hash, authority=candidate,
+            at=datetime.fromtimestamp(now, tz=timezone.utc), tag=staging_tag("oauth-issuance-candidate", request))
         return {
             "schema": ISSUANCE_PLAN_SCHEMA,
             "draft": {"replay_scope": f"{PARTICIPANT}:{subject_hash}:{grantor}:oauth-issuance", "request_id": request,
                       "expires_at": decision_expires,
                       "payload": {"participant_inputs": {PARTICIPANT: participant_input}}},
             "intent": {"shape": "group" if original is None else "card", "subject_hash": subject_hash,
-                       "original": None if original is None else original.to_dict(),
-                       "candidate": candidate.to_dict(), "effects": effects, "action": action,
+                       "original": None if original_pointer is None else pointer_link(original_pointer),
+                       "candidate": candidate_link, "card_kind": candidate.card_kind,
+                       "effects": effects, "action": action,
                        "actor_subject": grantor, "actor_kind": actor_kind},
             "decision_request_id": request, "original_input_digest": input_digest,
             "tenant": store.tenant, "project": store.project, "access_id": candidate.access_id,
@@ -10002,12 +10012,35 @@ class AutomationAccessService:
                                             "expected_revision": revisions.get((resource, operation), 0)}})
         return effects
 
+    async def _plan_card(self, plan: Mapping[str, Any], which: str) -> Any:
+        """A plan's ``original`` or ``candidate`` Card: read by its link (W661 scope B), or a legacy v1
+        plan's stored body. The candidate must still carry its plan's staging marker."""
+        from .cards.version_link import is_version_link, load_version, staging_tag
+        from .oauth_issuance import IssuanceRefused
+
+        value = plan["intent"][which]
+        if not is_version_link(value):
+            return CardAuthority.from_mapping(value)
+        card_store = getattr(self._cards(), "card_store", None)
+        if card_store is None:
+            raise IssuanceRefused("card_transactions_unavailable", retryable=True)
+        marker = staging_tag("oauth-issuance-candidate", plan["decision_request_id"]) if which == "candidate" else None
+        try:
+            return await load_version(card_store, subject_hash=plan["intent"]["subject_hash"],
+                                      access_id=plan["access_id"], link=value, marker=marker)
+        except CardRecordError:
+            raise IssuanceRefused("issuance_plan_card_unavailable") from None
+
     @staticmethod
-    def _issuance_intent(plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
+    def _plan_card_kind(plan: Mapping[str, Any]) -> str:
+        spec = plan["intent"]
+        return str(spec.get("card_kind") if "card_kind" in spec else spec["candidate"].get("card_kind") or "")
+
+    async def _issuance_intent(self, plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
         from .cards.card_participant import CardGroupIntent, CardGroupMemberIntent, CardIntent
 
         spec = plan["intent"]
-        candidate = CardAuthority.from_mapping(spec["candidate"])
+        candidate = await self._plan_card(plan, "candidate")
         effects = tuple(dict(effect) for effect in spec["effects"])
         if spec["shape"] == "group":
             return CardGroupIntent(
@@ -10016,7 +10049,7 @@ class AutomationAccessService:
                                                action=spec["action"]),),
                 effects=effects, actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
         return CardIntent(transaction_id=transaction_id, intent_digest=intent_digest, subject_hash=spec["subject_hash"],
-                          original=CardAuthority.from_mapping(spec["original"]), candidate=candidate, effects=effects,
+                          original=await self._plan_card(plan, "original"), candidate=candidate, effects=effects,
                           action=spec["action"], actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
 
     @staticmethod
@@ -10045,7 +10078,7 @@ class AutomationAccessService:
                             payload=draft_value["payload"])
         try:
             row = await decisions.begin(draft)
-            await intents.record(self._issuance_intent(plan, row.transaction_id, row.intent.digest))
+            await intents.record(await self._issuance_intent(plan, row.transaction_id, row.intent.digest))
             await store.bind_issuance_plan_transaction(decision_request_id=plan["decision_request_id"],
                                                        transaction_id=row.transaction_id)
         except DecisionRefused as exc:
@@ -10096,7 +10129,7 @@ class AutomationAccessService:
         except ParticipantEffectRefused:
             raise IssuanceRefused("issuance_record_secret_field") from None
         attrs = credential.get("attrs")
-        candidate_kind = str(plan["intent"]["candidate"].get("card_kind") or "")
+        candidate_kind = AutomationAccessService._plan_card_kind(plan)
         if (record.get("registry_access_id") != plan["access_id"]
                 or credential.get("subject") != plan["credential_subject"]
                 or credential.get("issuer_authority_id") != plan["credential_issuer"]
@@ -10252,7 +10285,7 @@ class AutomationAccessService:
             if not isinstance(expect, Mapping) or any(
                     reservations.get(slot, {}).get("token_sha256") != digest for slot, digest in expect.items()):
                 raise IssuanceRefused("issuance_expect_mismatch")
-        candidate = CardAuthority.from_mapping(plan["intent"]["candidate"])
+        candidate = await self._plan_card(plan, "candidate")
         decided_here, abort_reason = False, ""
         try:
             async with store.issuance_completion_section(transaction_id) as renew:

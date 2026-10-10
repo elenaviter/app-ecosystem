@@ -98,6 +98,30 @@ answers `already_published`, with or without links. A partly current group is re
 (`card_version_effects_pending`); a writer never runs another txn's effects. Only that txn's own PUBLISH
 retry or ROLLBACK runs them. Readers treat the version `current.json` names as final.
 
+## Links held by other records (W661 scope B)
+
+A record that has to name a Card version keeps a LINK, never a copy of the body:
+`{card_revision, revision_name, content_hash}`. The record itself names the Card. The helper is
+`cards/version_link.py`:
+- `load_version` reads that one version file by name, strips `version_record`, and requires the full
+  content hash, the access id and the revision to match. It is not a serving read: `read_revision`
+  still hides staged files.
+- A version that does not exist yet is written once by `write_hidden_version`, as its own txn-tagged
+  file behind a `.card-transaction.json` marker that names its tag. `load_version(..., marker=tag)`
+  then requires exactly that marker.
+
+The OAuth issuance plan holds two links:
+- the original: the committed version that `current.json` names;
+- the candidate: written once behind `staging_tag("oauth-issuance-candidate", decision_request_id)`.
+  No transaction has that tag, so the file never becomes history.
+
+A plan stored before this change still holds bodies and is read as before, until its decision finishes.
+
+The one-off cutover step `cards/intent_purge.purge_finished_v1_intents` deletes v1 intent files. A
+v1 intent is one that stores a Card body. It is deleted only when its decision is terminal and every
+participant has finished. It is a dry run unless `apply=True`, and it reports transaction ids and
+counts only. In-flight v1 intents stay until their transaction finishes.
+
 ## Hub-local operations in flight
 
 An issuer update or lifecycle intent writes `<card>/inflight.json` under the Card's lock before its
