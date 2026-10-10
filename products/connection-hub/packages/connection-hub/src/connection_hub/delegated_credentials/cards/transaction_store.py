@@ -1726,7 +1726,8 @@ async def card_version_stage(store: Any, *, txn: str, request_digest: str, catal
         content_hash = candidate.content_hash()
         pointer = CardCurrentPointer.for_revision(candidate, content_hash=content_hash, updated_at=now,
                                                   revision_name=card_revision_name(card_revision=candidate.card_revision,
-                                                                                   content_hash=content_hash, updated_at=now))
+                                                                                   content_hash=content_hash, updated_at=now,
+                                                                                   txn=txn))
         checked.append(_member_link(subject_hash, access_id, base_version, pointer, current))
     # Infra K4 (16:45Z): the marker FIRST, as `staging`, naming every file this STAGE may write, so a
     # cancellation or failure at ANY later point leaves files that ROLLBACK can locate ("that error must call
@@ -1760,7 +1761,7 @@ async def _write_staged_versions(store: Any, marker: Mapping[str, Any], candidat
                   "catalog": marker.get("catalog"), "binding": marker.get("binding")}
         # D2: who and when are fields of the version record ("each card version -> one record").
         pointer = await store.write_revision(subject_hash=m["subject_hash"], authority=candidate, updated_at=now,
-                                             record=record)
+                                             record=record, txn=marker["txn"])
         if pointer.revision_name != m["revision_name"]:
             raise CardStorageError("card_version_revision_mismatch")
 
@@ -1851,7 +1852,8 @@ async def card_version_rollback(store: Any, *, txn: str, run_effect: Any = None,
 
     ``links`` are STAGE's answer {subject_hash, access_id, version, checksum} and ``at`` the request's time:
     with the marker gone (D2), the version file name is a pure function of them
-    (card_revision_<utc_stamp(at)>_<version:08d>_<checksum[:12]>.json), read directly, never listed.
+    (card_revision_<utc_stamp(at)>_<version:08d>_<checksum[:12]>_<sha256(txn)[:12]>.json), read directly,
+    never listed.
     """
     marker = await read_card_version_marker(store, txn)
     if marker is None:
@@ -1888,7 +1890,7 @@ async def _published_by_links(store: Any, *, txn: str, links: Any, at: Any, bind
     for link in links:
         try:
             name = card_revision_name(card_revision=int(link["version"]), content_hash=str(link["checksum"]),
-                                      updated_at=at)
+                                      updated_at=at, txn=txn)
             record = await store.read_version_record(subject_hash=link["subject_hash"], access_id=link["access_id"],
                                                      revision_name=name)
         except (KeyError, TypeError, ValueError) as exc:

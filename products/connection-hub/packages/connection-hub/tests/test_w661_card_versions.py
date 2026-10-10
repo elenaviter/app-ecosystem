@@ -738,3 +738,29 @@ async def test_a_reader_sees_the_new_version_once_current_names_it_even_before_t
                                 pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
     assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
     assert await _current(store, before) == after
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schedule", ["loser_rolls_back_first", "loser_rolls_back_after", "loser_publishes_after"])
+async def test_two_saves_with_the_same_version_content_and_time_never_share_a_version_file(tmp_path, schedule):
+    """B1 (Spark App 17:29Z; EMain 17:30Z): the file name carries the txn, so one file belongs to one txn."""
+    store, service, before, after = await _setup(tmp_path)
+    loser, winner = TXN, "w661-txn-" + "e" * 32
+    a = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], txn=loser)
+    b = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], txn=winner)
+    names = [(await tx.read_card_version_marker(store, t))["members"][0]["revision_name"] for t in (loser, winner)]
+    assert names[0] != names[1] and a == b  # the same link {card, version, checksum}, two files
+    if schedule == "loser_rolls_back_first":
+        assert await service.rollback_card_version(txn=loser) == "rolled_back"
+        await service.publish_card_version(txn=winner)
+    else:
+        await service.publish_card_version(txn=winner)
+        if schedule == "loser_rolls_back_after":
+            assert await service.rollback_card_version(txn=loser) == "rolled_back"  # never already_published
+            assert await service.rollback_card_version(txn=loser, links=_links(a), at=WHEN) == "unknown_txn"
+        else:
+            with pytest.raises(tx.CardTransactionRefused, match="card_changed"):  # the lost-update fence holds
+                await service.publish_card_version(txn=loser)
+    assert await _current(store, before) == after  # the winner's version is readable
+    assert names[1] in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    assert await service.rollback_card_version(txn=winner, links=_links(b), at=WHEN) == "already_published"

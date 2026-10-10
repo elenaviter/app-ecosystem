@@ -55,9 +55,9 @@ _SUBJECT_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _ACCESS_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _REVISION_NAME_PATTERN = re.compile(
     r"^card_revision_[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9]{3}"
-    r"_[0-9]{8}_[0-9a-f]{12}\.json$"
+    r"_[0-9]{8}_[0-9a-f]{12}(?:_[0-9a-f]{12})?\.json$"  # W661: a card-version save adds its txn tag
 )
-_REVISION_NUMBER_PATTERN = re.compile(r"_([0-9]{8})_([0-9a-f]{12})\.json$")
+_REVISION_NUMBER_PATTERN = re.compile(r"_([0-9]{8})_([0-9a-f]{12})(?:_[0-9a-f]{12})?\.json$")
 
 
 
@@ -296,7 +296,8 @@ class BundleStorageDelegatedCardStore:
         return pointer, authority
 
     async def write_revision(
-        self, *, subject_hash: str, authority: CardAuthority, updated_at: datetime, record: dict | None = None
+        self, *, subject_hash: str, authority: CardAuthority, updated_at: datetime, record: dict | None = None,
+        txn: str = "",
     ) -> CardCurrentPointer:
         """Write the immutable revision and return the pointer that commits it.
 
@@ -309,6 +310,7 @@ class BundleStorageDelegatedCardStore:
             card_revision=authority.card_revision,
             content_hash=content_hash,
             updated_at=updated_at,
+            txn=txn,
         )
         await write_json_atomic(
             self.revision_path(

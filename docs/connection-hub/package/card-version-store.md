@@ -18,10 +18,12 @@ UPSERT. overwrite"; "not yet final version does not work until theres final arri
 | `card-versions/<txn>.json` | the txn marker while the save is in progress: links only |
 | `<card>/inflight.json` | the Hub-local operation (issuer update, lifecycle intent) in flight on the Card |
 
-**The version file name** is a pure function of the link and the request time:
-`card_revision_<utc_stamp(at)>_<version:08d>_<checksum[:12]>.json`. `at` is the save request's own time,
-never the Hub's clock, so a retried STAGE names the same file, and ROLLBACK can find a published
-version from STAGE's answer `{card, version, checksum}` plus `at` without listing anything.
+**The version file name** is a pure function of the link, the request time and the txn:
+`card_revision_<utc_stamp(at)>_<version:08d>_<checksum[:12]>_<sha256(txn)[:12]>.json`. `at` is the save
+request's own time, never the Hub's clock, so a retried STAGE names the same file. The txn tag makes one
+file belong to exactly one txn: two saves with the same version, content and time never share a file
+(B1). ROLLBACK finds a published version from STAGE's answer `{card, version, checksum}` plus `at` and
+the txn, without listing anything. Older writers' names have no txn tag.
 
 `version_record` is stored beside the Card value and stripped before the Card's content hash is
 checked, so Card reads are unchanged.
