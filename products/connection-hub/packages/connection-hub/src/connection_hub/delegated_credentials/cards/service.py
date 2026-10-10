@@ -31,6 +31,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontext
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
+from connection_hub.delegated_credentials.durable_io import unlink_guarded
 from connection_hub.delegated_credentials.cache_settings import (
     DelegatedCacheSettings,
 )
@@ -280,6 +281,147 @@ class DelegatedCardService:
             wait_seconds=CARD_LOCK_WAIT_SECONDS,
         )
 
+    @asynccontextmanager
+    async def _card_version_sections(self, cards: Any):
+        """W661 v6.2: every member Card's mutation lock, in sorted (subject_hash, access_id) order.
+
+        The lock is a flock that never expires or is stolen (CardMutationLock). Started writes are drained
+        INSIDE the locks (drain_writes_before_release), so a cancelled call's to_thread write cannot land
+        after a lock is released (EMain's late-write question, 16:3xZ).
+        """
+        from contextlib import AsyncExitStack
+        from ..durable_io import drain_writes_before_release
+
+        async with AsyncExitStack() as stack:
+            for subject_hash, access_id in sorted(set(cards)):
+                await stack.enter_async_context(self._critical_section(subject_hash=subject_hash, access_id=access_id))
+            await stack.enter_async_context(drain_writes_before_release())
+            yield
+
+    async def stage_card_version(self, *, txn: str, request_digest: str, catalog: str, members: Any,
+                                 now: datetime, effects: Any = (), request_id: str = "", actor: Any = None,
+                                 prepare: Any = None, binding: Any = None,
+                                 active_catalog: Any = None, reads: Any = ()) -> list[dict[str, Any]]:
+        """W661 STAGE: the members' next versions, not yet final; ``members`` = (subject_hash, access_id,
+        base_version | None, candidate). Answers links only: card, version, checksum.
+
+        ``now`` is the request's own time (contract: "who and when are fields of the record"), never this
+        host's clock: a same-request retry then names the same revision file and cannot leave a stray one."""
+        from .transaction_store import card_version_stage
+
+        members, reads = list(members), list(reads or ())
+        try:
+            # Read members (never written) are locked with the written ones, in the one sorted order.
+            async with self._card_version_sections([(m[0], m[1]) for m in members] + [(r[0], r[1]) for r in reads]):
+                return await card_version_stage(self._store, txn=txn, request_digest=request_digest, catalog=catalog,
+                                                members=members, effects=effects, now=now,
+                                                request_id=request_id, actor=actor, prepare=prepare,
+                                                binding=binding, active_catalog=active_catalog, reads=reads)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def _card_version_members(self, txn: str) -> list[tuple[str, str]]:
+        from .transaction_store import read_card_version_marker
+
+        marker = await read_card_version_marker(self._store, txn)
+        if marker is None:
+            return []
+        return [(m["subject_hash"], m["access_id"]) for m in marker["members"] + marker.get("reads", [])]
+
+    async def _under_txn_locks(self, txn: str, operation: Any) -> Any:
+        """Run ``operation`` under the locks of exactly the txn marker's members.
+
+        The members are read first to know which locks to take, then read AGAIN under those locks. If a
+        concurrent same-txn STAGE changed them in between, retry (at most 3 times): an operation never acts
+        on a member whose lock it does not hold.
+        """
+        for _ in range(3):
+            expected = sorted(set(await self._card_version_members(txn)))
+            try:
+                async with self._card_version_sections(expected):
+                    if sorted(set(await self._card_version_members(txn))) != expected:
+                        continue
+                    return await operation()
+            except CardMutationLockTimeout as exc:
+                raise CardConflict("card_mutation_lock_timeout") from exc
+        raise CardConflict("card_version_members_moved")
+
+    async def publish_card_version(self, *, txn: str, run_effect: Any = None,
+                                   binding: Any = None) -> list[dict[str, Any]]:
+        """W661 PUBLISH: base fence, current.json, marker published, then the recorded effects."""
+        from .transaction_store import card_version_publish, card_version_txn_id
+
+        card_version_txn_id(txn)
+        return await self._under_txn_locks(txn, lambda: card_version_publish(self._store, txn=txn,
+                                                                             run_effect=run_effect, binding=binding))
+
+    async def rollback_card_version(self, *, txn: str, run_effect: Any = None, release: Any = None,
+                                    binding: Any = None, links: Any = (), at: Any = None) -> str:
+        """W661 ROLLBACK: rolled_back | already_published | unknown_txn; never removes a published version."""
+        from .transaction_store import card_version_rollback, card_version_txn_id
+
+        card_version_txn_id(txn)
+        return await self._under_txn_locks(txn, lambda: card_version_rollback(self._store, txn=txn,
+                                                                              run_effect=run_effect, release=release,
+                                                                              binding=binding, links=links, at=at))
+
+    async def outcome_card_version(self, *, txn: str, binding: Any = None, links: Any = (),
+                                   at: Any = None) -> dict[str, Any]:
+        """v6.3 item 5: the read-only outcome of ``txn`` by its exact request, under the linked Cards' locks."""
+        from .transaction_store import _link_cards, card_version_outcome, card_version_txn_id
+
+        card_version_txn_id(txn)
+        cards = [(c["subject_hash"], c["access_id"]) for c in _link_cards(links)]
+        cards += await self._card_version_members(txn)
+        try:
+            async with self._card_version_sections(cards):
+                return await card_version_outcome(self._store, txn=txn, binding=binding, links=links, at=at)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+
+    async def compensate_card_version(self, *, txn: str, binding: Any = None, links: Any = (), at: Any = None,
+                                      compensation_at: Any = None) -> dict[str, Any]:
+        """v6.3 item 7: restore the pre-``txn`` content as a NEW version, fenced on txn's exact version.
+
+        Runs only for a conclusively uncommitted PB outcome (PB decides under its row lock). Never overwrites a
+        successor (compensation_superseded), never rewinds, copies no Card body out of the Hub. The restore is
+        an ordinary STAGE + PUBLISH of the deterministic compensation txn, so a retry is idempotent.
+        """
+        import hashlib
+        import json
+        from .transaction_store import (
+            CardTransactionRefused, _link_cards, card_version_compensation_plan, read_card_version_marker)
+
+        cards = _link_cards(links)
+        if not isinstance(compensation_at, datetime) or compensation_at.utcoffset() is None:
+            raise CardTransactionRefused("card_version_request_invalid")
+        try:
+            async with self._card_version_sections([(c["subject_hash"], c["access_id"]) for c in cards]):
+                comp, plan, done = await card_version_compensation_plan(self._store, txn=txn, binding=binding,
+                                                                        links=links, at=at)
+        except CardMutationLockTimeout as exc:
+            raise CardConflict("card_mutation_lock_timeout") from exc
+        if not done:
+            try:
+                if await read_card_version_marker(self._store, comp) is None:
+                    digest = hashlib.sha256(json.dumps(
+                        {"op": "compensate", "txn": txn, "links": cards, "at": compensation_at.isoformat()},
+                        sort_keys=True).encode("utf-8")).hexdigest()
+                    await self.stage_card_version(txn=comp, request_digest=digest, catalog="compensation",
+                                                  members=plan, now=compensation_at, binding=binding,
+                                                  actor={"subject": "connection-hub", "kind": "compensation"})
+                await self.publish_card_version(txn=comp, binding=binding)
+            except CardTransactionRefused as exc:
+                if exc.reason == "card_changed":  # a successor slipped in between: never overwrite it
+                    raise CardTransactionRefused("compensation_superseded") from exc
+                raise
+        members = []
+        for c in cards:
+            current = await self._store.read_current(subject_hash=c["subject_hash"], access_id=c["access_id"])
+            members.append({"subject_hash": c["subject_hash"], "access_id": c["access_id"],
+                            "version": current.card_revision, "checksum": current.content_hash})
+        return {"state": "already_compensated" if done else "compensated", "members": members}
+
     def _collection_section(self, collection_id: str):
         """W651 retention: one sealed collection's lock, taken OUTERMOST (before any Card section) by
         every stage and finish that resolves the collection and by the sweep, in that one fixed order."""
@@ -344,7 +486,7 @@ class DelegatedCardService:
                     # under it, which has passed: registration and a first PREPARE refuse, a sweep finds
                     # nothing, and a replay of a prepared receipt would have protected the collection.
                     try:
-                        collection_lock_path(self._store, collection_id).unlink(missing_ok=True)
+                        unlink_guarded(collection_lock_path(self._store, collection_id))
                     except OSError:
                         pass
             except CardMutationLockTimeout:

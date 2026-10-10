@@ -745,12 +745,17 @@ def authority_projection_ttl(
     return max(0, authority.expires_at - int(moment))
 
 
-def card_revision_name(*, card_revision: int, content_hash: str, updated_at: datetime) -> str:
-    """Timestamp-first, ordered, verifiable immutable revision object name."""
+def card_revision_name(*, card_revision: int, content_hash: str, updated_at: datetime, txn: str = "") -> str:
+    """Timestamp-first, ordered, verifiable immutable revision object name.
+
+    W661 (B1, EMain 17:30Z): a card-version save also names its txn, ``_<sha256(txn)[:12]>``, so one version
+    file belongs to exactly one txn and two saves with the same version, content and time never share it.
+    """
+    suffix = f"_{hashlib.sha256(txn.encode()).hexdigest()[:_REVISION_HASH_CHARS]}" if txn else ""
     return (
         f"card_revision_{utc_stamp(updated_at)}"
         f"_{max(0, int(card_revision)):08d}"
-        f"_{content_hash[:_REVISION_HASH_CHARS]}.json"
+        f"_{content_hash[:_REVISION_HASH_CHARS]}{suffix}.json"
     )
 
 

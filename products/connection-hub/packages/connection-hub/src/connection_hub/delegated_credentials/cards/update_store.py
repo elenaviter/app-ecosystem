@@ -8,12 +8,11 @@ after commit. Credential handles are neither read nor written here.
 from __future__ import annotations
 
 import asyncio
-import itertools
 import re
 from datetime import datetime
 from typing import Any, Mapping
 
-from ..durable_io import cancellation_safe_await, read_json_or_none, require_publish_before, write_json_atomic
+from ..durable_io import cancellation_safe_await, read_json_or_none, require_publish_before, write_json_atomic, unlink_guarded
 from ..issuer_gate import change_digest
 from ..issuer_update import IssuerUpdateQuery, IssuerUpdateRefused
 from .model import CardCurrentPointer, card_revision_name
@@ -21,7 +20,6 @@ from .store import CardStorageError
 
 UPDATE_POINTER_SCHEMA = "connection_hub.card-current-issuer-update.v1"
 UPDATE_RECEIPT_SCHEMA = "connection_hub.card-issuer-update-receipt.v1"
-MAX_ACTIVE_UPDATES = 128
 
 
 def receipt_path(store, transaction_id):
@@ -83,34 +81,22 @@ async def retire(store, receipt):
     if receipt["state"] == "prepared" or receipt["serving_state"] == "pending":
         return
     try:
-        await cancellation_safe_await(asyncio.to_thread(active_path(store, receipt["transaction_id"]).unlink, missing_ok=True))
+        await cancellation_safe_await(asyncio.to_thread(unlink_guarded, active_path(store, receipt["transaction_id"])))
     except OSError:
         pass  # terminal receipt remains authoritative
+    from .inflight import release_inflight
+    target = IssuerUpdateQuery.from_mapping(receipt["binding"]["request"]).target
+    await release_inflight(store, subject_hash=target.subject_hash, access_id=target.access_id,
+                           txn=receipt["transaction_id"])
 
 
 async def assert_replaceable(store, *, subject_hash, access_id):
     if not hasattr(store, "root"):
         return
-    directory = store.root / "issuer-updates" / "active"
-
-    def paths():
-        try:
-            return list(itertools.islice(directory.iterdir(), MAX_ACTIVE_UPDATES + 1))
-        except FileNotFoundError:
-            return []
-
-    found = await asyncio.to_thread(paths)
-    if len(found) > MAX_ACTIVE_UPDATES:
-        raise CardStorageError("issuer_update_recovery_queue_unavailable")
-    for path in found:
-        if not path.is_file() or path.suffix != ".json":
-            continue
-        receipt = await read_receipt(store, path.stem)
-        if receipt is None or (receipt["state"] != "prepared" and receipt["serving_state"] != "pending"):
-            continue
-        target = IssuerUpdateQuery.from_mapping(receipt["binding"]["request"]).target
-        if (target.subject_hash, target.access_id) == (subject_hash, access_id):
-            raise CardStorageError("issuer_update_preparation_unresolved")
+    # W661 (EMain 16:57Z; operator: "never nothing is being scanned"): the Card's own in-flight file, one
+    # direct read, replaces the listing of issuer-updates/active.
+    from .inflight import assert_no_inflight
+    await assert_no_inflight(store, subject_hash=subject_hash, access_id=access_id)
     raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
     if raw is not None and raw.get("schema") == UPDATE_POINTER_SCHEMA:
         await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=access_id)
@@ -164,6 +150,10 @@ async def atomic_update(store, *, query, actor_subject, original, candidate, now
         "before": before.to_dict(), "after": after.to_dict(), "change_digest": change_digest(candidate.to_dict()),
         "serving_state": "pending"}
     validate_receipt(receipt, transaction_id)
+    from .inflight import ISSUER_UPDATE, claim_inflight
+    # The Card names this update BEFORE its queue entry exists (W661: the guard reads only the Card).
+    await claim_inflight(store, subject_hash=query.target.subject_hash, access_id=query.target.access_id,
+                         kind=ISSUER_UPDATE, txn=transaction_id)
     await write_json_atomic(active_path(store, transaction_id), receipt)
     try:
         await after_prepare()

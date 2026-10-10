@@ -274,8 +274,8 @@ async def test_a_member_that_moved_before_its_own_staging_refuses_the_group_and_
     monkeypatch.setattr(service, "stage_transaction", stage_then_move)
     with pytest.raises(tx.CardTransactionRefused) as refused:
         await _service_stage(service, members, catalog=CATALOG, collection=ref)
-    # The second member (a newly minted id) found its slot used before its own staging.
-    assert str(refused.value) == "card_transaction_absent_slot_used"
+    # The second member (a newly minted id) found a current Card before its own staging (W661: no history scan).
+    assert str(refused.value) == "card_transaction_base_moved"
     monkeypatch.setattr(service, "stage_transaction", real)
     with pytest.raises(CardStorageError, match="card_transaction_unresolved"):
         await tx.assert_replaceable(store, subject_hash=OTHER, access_id="aut_other_0000")  # still held
