@@ -9968,9 +9968,6 @@ class AutomationAccessService:
             "credential_subject": integration_subject(grantor, client_id=client),
             "base_revision": base_revision, "candidate_revision": candidate.card_revision,
             "expires_at": candidate.expires_at, "card_content_hash": candidate.content_hash(),
-            "operations": list(candidate.operations),
-            "resource_grants": {key: list(items) for key, items in candidate.resource_grants.items()},
-            "resource_operations": {key: list(items) for key, items in candidate.resource_operations.items()},
             "delivery_deadline": delivery_deadline, "reserved_until": reserved_until, "slots": list(ISSUANCE_SLOTS),
             "effect_digests": {effect["key"]: effect_digest(effect) for effect in effects},
         }
@@ -10052,12 +10049,21 @@ class AutomationAccessService:
                           original=await self._plan_card(plan, "original"), candidate=candidate, effects=effects,
                           action=spec["action"], actor_subject=spec["actor_subject"], actor_kind=spec["actor_kind"])
 
-    @staticmethod
-    def _issuance_plan(plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
+    async def _issuance_plan(self, plan: Mapping[str, Any], transaction_id: str, intent_digest: str) -> Any:
+        """The SDK-facing ``OAuthIssuancePlan``. W661 scope B: the candidate's authority snapshot
+        (operations, resource grants and operations) is read from the linked candidate, never stored
+        twice; a legacy plan that stored it keeps it."""
         from .oauth_issuance import IssuanceRefused, OAuthIssuancePlan
 
+        derived = {}
+        if "operations" not in plan:
+            candidate = await self._plan_card(plan, "candidate")
+            derived = {"operations": list(candidate.operations),
+                       "resource_grants": {key: list(items) for key, items in candidate.resource_grants.items()},
+                       "resource_operations": {key: list(items)
+                                               for key, items in candidate.resource_operations.items()}}
         try:
-            return OAuthIssuancePlan.from_mapping({**plan, "transaction_id": transaction_id,
+            return OAuthIssuancePlan.from_mapping({**plan, **derived, "transaction_id": transaction_id,
                                                    "intent_digest": intent_digest})
         except (KeyError, TypeError, ValueError):
             # A plan stored before a field existed is never completed from a newer Card.
@@ -10087,7 +10093,7 @@ class AutomationAccessService:
                                   else "issuance_replay_changed") from None
         except IssuanceStoreRefused as exc:
             raise IssuanceRefused(exc.reason) from None
-        return self._issuance_plan(plan, row.transaction_id, row.intent.digest)
+        return await self._issuance_plan(plan, row.transaction_id, row.intent.digest)
 
     async def _trusted_issuance(self, transaction_id: str, *, decisions: Any, store: Any) -> tuple[Any, Any, Any]:
         """(stored plan, the plan as the Hub would return it, the decision row) for a transaction id."""
@@ -10100,7 +10106,7 @@ class AutomationAccessService:
         if stored is None or row is None:
             raise IssuanceRefused("issuance_plan_unknown")
         plan = stored["plan"]
-        return plan, self._issuance_plan(plan, transaction_id, row.intent.digest), row
+        return plan, await self._issuance_plan(plan, transaction_id, row.intent.digest), row
 
     @staticmethod
     def _checked_issuance_record(plan: Mapping[str, Any], slot: str, record: Any) -> dict[str, Any]:
@@ -10180,7 +10186,9 @@ class AutomationAccessService:
             raise IssuanceRefused("issuance_decision_closed")
         if slot not in trusted.slots:
             raise IssuanceRefused("reservation_slot_undeclared")
-        checked = self._checked_issuance_record(stored, slot, record)
+        # W661 scope B: the authority snapshot is the trusted plan's, derived from the linked candidate.
+        snapshot = {name: trusted.to_dict()[name] for name in ("operations", "resource_grants", "resource_operations")}
+        checked = self._checked_issuance_record({**stored, **snapshot}, slot, record)
         try:
             return await store.reserve_issued_credential(transaction_id=trusted.transaction_id, slot=slot,
                                                          token_sha256=token_sha256, record=checked,

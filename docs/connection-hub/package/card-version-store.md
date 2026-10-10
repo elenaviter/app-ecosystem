@@ -113,7 +113,13 @@ A record that has to name a Card version keeps a LINK, never a copy of the body:
 The OAuth issuance plan holds two links:
 - the original: the committed version that `current.json` names;
 - the candidate: written once behind `staging_tag("oauth-issuance-candidate", decision_request_id)`.
-  No transaction has that tag, so the file never becomes history.
+  The tag is the SHA-256 of canonical tagged fields. No receipt exists for it, so the file never
+  becomes history. STAGE adopts that same file for the real transaction with `adopt_hidden_version`;
+  only the marker moves.
+
+The plan stores no other copy of the Card either. `operations`, `resource_grants` and
+`resource_operations`, which the SDK's `OAuthIssuancePlan` exposes, are derived from the linked
+candidate when the plan is read.
 
 A plan stored before this change still holds bodies and is read as before, until its decision finishes.
 

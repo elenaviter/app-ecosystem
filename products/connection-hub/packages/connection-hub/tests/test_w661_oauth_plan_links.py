@@ -36,7 +36,8 @@ async def _stored(w, plan):
 
 
 def _assert_no_bodies(value):
-    """No Card body anywhere in the stored plan's intent."""
+    """No Card body anywhere in the stored plan: not in its intent, not as a top-level authority copy."""
+    assert not {"operations", "resource_grants", "resource_operations"} & set(value)
     intent = value["intent"]
     for which in ("original", "candidate"):
         item = intent[which]
@@ -168,3 +169,59 @@ async def test_the_cutover_purge_deletes_only_finished_v1_intents(tmp_path):
         assert "original" not in json.dumps(applied) and "candidate" not in json.dumps(applied)  # ids only
         again = await purge_finished_v1_intents(w.store, w.decisions, apply=True)
         assert again["deleted"] == []  # idempotent
+
+
+@pytest.mark.asyncio
+async def test_a_hidden_version_is_never_overwritten_and_is_adopted_by_moving_only_its_marker(tmp_path):
+    from connection_hub.delegated_credentials.cards.transaction_store import revision_marker_path
+
+    async with _world(tmp_path) as w:
+        plan = await _begin(w)
+        stored = await _stored(w, plan)
+        trusted = await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)
+        assert (trusted.operations, trusted.resource_grants) == (plan.operations, plan.resource_grants)  # derived
+        link = stored["intent"]["candidate"]
+        tag = links.staging_tag("oauth-issuance-candidate", plan.decision_request_id)
+        authority = await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
+                                             link=link, marker=tag)
+        at = datetime(2026, 10, 11, 0, 0, tzinfo=timezone.utc)
+        other = links.staging_tag("test", "owner")
+        first = await links.write_hidden_version(w.store, subject_hash=w.subject_hash, authority=authority,
+                                                 at=at, tag=other)
+        marker = revision_marker_path(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
+                                      revision_name=first["revision_name"])
+        path = w.store.revision_path(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                     revision_name=first["revision_name"])
+        # A marker naming another owner refuses; nothing is rewritten.
+        marker.write_text(json.dumps({"transaction_id": "f" * 64}))
+        with pytest.raises(CardRecordError, match="version_link_owner_conflict"):
+            await links.write_hidden_version(w.store, subject_hash=w.subject_hash, authority=authority, at=at,
+                                             tag=other)
+        # A corrupt file refuses; it is never overwritten.
+        marker.write_text(json.dumps({"transaction_id": other}))
+        original_bytes = path.read_bytes()
+        path.write_text(json.dumps({**json.loads(original_bytes), "client_label": "corrupt"}))
+        with pytest.raises(CardRecordError, match="revision_content_hash_mismatch"):
+            await links.write_hidden_version(w.store, subject_hash=w.subject_hash, authority=authority, at=at,
+                                             tag=other)
+        path.write_bytes(original_bytes)
+        # A replay whose marker is gone (adopted and committed) reuses the file and recreates no marker.
+        marker.unlink()
+        assert await links.write_hidden_version(w.store, subject_hash=w.subject_hash, authority=authority,
+                                                at=at, tag=other) == first
+        assert not marker.exists()
+        # Adoption: the SAME file, only the marker moves; a retry is accepted; another owner refuses.
+        txn = links.staging_tag("test", "real-txn")
+        candidate_marker = revision_marker_path(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
+                                                revision_name=link["revision_name"])
+        candidate_path = w.store.revision_path(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                               revision_name=link["revision_name"])
+        before = candidate_path.read_bytes()
+        for _ in range(2):
+            assert await links.adopt_hidden_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
+                                                    link=link, from_tag=tag, to_transaction_id=txn) == link
+        assert json.loads(candidate_marker.read_text()) == {"transaction_id": txn}
+        assert candidate_path.read_bytes() == before
+        with pytest.raises(CardRecordError, match="version_link_owner_conflict"):
+            await links.adopt_hidden_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
+                                             link=link, from_tag=tag, to_transaction_id="e" * 64)
