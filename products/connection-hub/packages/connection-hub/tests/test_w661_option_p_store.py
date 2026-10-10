@@ -152,3 +152,22 @@ async def test_the_lock_free_precondition_read_never_writes_a_marker(tmp_path, m
         async with _card_lock(lock, store):
             assert tx._may_write_markers(store) is True
         assert marked == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_replicas_bootstrap_the_schema_once_without_a_race(tmp_path):
+    """KDCube critical-section-README, "Database Bootstrap Critical Section": proc replicas load the bundle at the
+    same time; the DDL runs under pg_advisory_xact_lock, so concurrent CREATE ... IF NOT EXISTS never collide."""
+    import asyncpg
+
+    from connection_hub.delegated_credentials.cards.pointer_authority import PostgresCardRows
+
+    pool = await asyncpg.create_pool(DSN, min_size=1, max_size=8)
+    try:
+        project = "p" + uuid.uuid4().hex[:12]
+        replicas = [PostgresCardRows(pool, schema="kdcube_t_" + project, tenant="t", project=project)
+                    for _ in range(8)]
+        await asyncio.gather(*(rows.ensure_schema() for rows in replicas))
+        assert await replicas[0].is_activated() is False
+    finally:
+        await pool.close()

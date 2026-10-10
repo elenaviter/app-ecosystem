@@ -104,8 +104,13 @@ class PostgresCardRows:
         self.pool, self.schema, self.tenant, self.project = pool, schema, str(tenant), str(project)
 
     async def ensure_schema(self) -> None:
+        """Idempotent bootstrap, guarded as KDCube prescribes for concurrent proc replicas (critical-section-README,
+        "Database Bootstrap Critical Section"): one transaction under pg_advisory_xact_lock, on ONE connection."""
         async with self.pool.acquire() as connection:
-            await connection.execute(card_pointer_schema_sql(self.schema))
+            async with connection.transaction():
+                await connection.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                                         f"{self.schema}:connection-hub-card-rows-schema")
+                await connection.execute(card_pointer_schema_sql(self.schema))
 
     # ---- one statement, on this operation's lock session when there is one --------------------------------
 
