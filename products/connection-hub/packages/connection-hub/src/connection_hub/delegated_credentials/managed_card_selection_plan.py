@@ -68,10 +68,12 @@ def managed_target_kind(original: CardAuthority, *, project_ref: str, kind: str)
             return kind
         raise _refuse("card_plan_update_scope_invalid")
     binding = original.control_card
+    # The resolved holder, as the resolver reads it: attach leaves holder_subject empty when P's holder is
+    # the Card's own grantor (an agent owned by P's own holder).
     if (kind == "agent_card" and binding is not None and binding.issuer_kind == "application"
             and binding.issuer_ref == project_ref
-            and binding.control_id == control_card_id_for_issuer("application", project_ref,
-                                                                  grantor_subject=binding.holder_subject)):
+            and binding.control_id == control_card_id_for_issuer(
+                "application", project_ref, grantor_subject=binding.holder_subject or original.grantor_subject)):
         return kind
     raise _refuse("card_plan_update_scope_invalid")
 

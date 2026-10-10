@@ -75,9 +75,10 @@ def _existing_binding(original: CardAuthority, *, project_ref: str,
                       decision: ProjectAuthorizationDecision) -> ControlCardBinding:
     binding = original.control_card
     locator = decision.project_control
+    # The resolved holder, as the resolver reads it (attach leaves it empty for a same-owner link).
     if (binding is None or binding.issuer_kind != "application" or binding.issuer_ref != project_ref
             or locator is None or locator.control_id != binding.control_id
-            or locator.holder_subject != binding.holder_subject):
+            or locator.holder_subject != (binding.holder_subject or original.grantor_subject)):
         raise _refuse("agent_plan_project_control_invalid")
     return binding
 
