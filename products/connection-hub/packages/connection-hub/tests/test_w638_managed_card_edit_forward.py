@@ -243,3 +243,53 @@ def test_an_answer_outside_the_route_contract_is_invalid():
     with pytest.raises(ManagedCardEditError) as refused:
         asyncio.run(peer.forward(_person_body()))
     assert (refused.value.reason, refused.value.status) == ("managed_card_edit_answer_invalid", 502)
+
+
+def _with_current(svc, result, read):
+    async def project_person_control_get(user, *, project_ref, target_subject, request_id):
+        return await read(project_ref=project_ref, target_subject=target_subject, request_id=request_id)
+    svc.project_person_control_get = project_person_control_get
+    return asyncio.run(svc._with_current_person_control(
+        {"user_id": "alice"}, result, project_ref=PROJECT, target_subject="bob", request_id="edit-1"))
+
+
+def test_a_committed_managed_save_answers_with_the_card_as_it_is_now():
+    """W661 save #2 (operator, 10 Oct: bookkeeping never makes the next edit stale): after a managed save the
+    answer carries the current Card (revision and properties), so the editor reloads it before its next save."""
+    reads = []
+
+    async def read(**kwargs):
+        reads.append(kwargs)
+        return {"ok": True, "access": {"access_id": "ctl-bob", "card_revision": 13, "properties": {"p": 2}}}
+
+    committed = {"ok": True, "managed_card_edit": {"state": "committed", "card_revision": 13}}
+    answer = _with_current(service(), committed, read)
+    assert answer == {**committed, "access": {"access_id": "ctl-bob", "card_revision": 13, "properties": {"p": 2}}}
+    assert reads == [{"project_ref": PROJECT, "target_subject": "bob", "request_id": "edit-1"}]
+
+
+def test_a_refused_managed_save_carries_the_current_card_too():
+    async def read(**kwargs):
+        return {"ok": True, "access": {"access_id": "ctl-bob", "card_revision": 13}}
+
+    refused = {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409, "message": "m"}
+    assert _with_current(service(), refused, read)["access"]["card_revision"] == 13
+
+
+@pytest.mark.parametrize("read_result", ["raises", {"ok": False, "error": "denied"}, {"ok": True}])
+def test_a_failed_read_leaves_the_save_answer_unchanged(read_result):
+    async def read(**kwargs):
+        if read_result == "raises":
+            raise RuntimeError("synthetic read failure")
+        return read_result
+
+    committed = {"ok": True, "managed_card_edit": {"state": "committed"}}
+    assert _with_current(service(), committed, read) == committed
+
+
+def test_answers_that_are_not_a_managed_save_are_not_reread():
+    async def read(**kwargs):
+        raise AssertionError("must not read")
+
+    other = {"ok": False, "error": "managed_card_edit_revision_required", "status": 400}
+    assert _with_current(service(), other, read) == other
