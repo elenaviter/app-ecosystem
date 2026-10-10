@@ -15,8 +15,11 @@ Design (Ops 19:28Z + 20:29Z, Spark OK 20:30Z with C1 and C2):
   prefers the file (C2). A missing row means nobody wrote that object since the cutover: a writer holding the
   Card lock then creates the row from the file (first touch, INSERT ... ON CONFLICT DO NOTHING, no scan); a
   reader that holds no lock never creates a row.
-- The revision an operation read is remembered on its lock session (one session per operation), so a write
-  can only fence against what this operation actually decided on. A write with nothing observed is refused.
+- The revision an operation read is remembered in its row context (locks.CardRowOperation, one per Card
+  operation, opened by row_fenced_lock around whatever mutation lock serializes the normal case: the local flock,
+  or the per-Card KDCube Redis cluster lock of option R), so a write can only fence against what this operation
+  actually decided on. A write with nothing observed is refused. The lock is the performance layer; the CAS is
+  the storage-level optimistic check the KDCube data-bus doc requires (operator 21:50Z: "R now, with P").
 
 Rows hold links and ids only (revision names, checksums, versions, txn ids), never a Card body.
 """
@@ -93,7 +96,7 @@ def _session():
 
 
 class PostgresCardRows:
-    """The pointer and txn-marker rows of one tenant/project. ``pool`` is the dedicated Card lock pool."""
+    """The pointer and txn-marker rows of one tenant/project. ``pool`` is a dedicated, bounded asyncpg pool."""
 
     def __init__(self, pool: Any, *, schema: str, tenant: str, project: str) -> None:
         if not _SCHEMA_PATTERN.fullmatch(str(schema or "")):
@@ -107,9 +110,7 @@ class PostgresCardRows:
     # ---- one statement, on this operation's lock session when there is one --------------------------------
 
     async def _fetchrow(self, query: str, *args: Any) -> Any:
-        session = _session()
-        if session is not None:
-            return await session.fetchrow(query, *args)
+        # Each statement on its own pool connection: the fence is the row CAS, not a session (option P under R).
         async with self.pool.acquire() as connection:
             return await connection.fetchrow(query, *args)
 
@@ -120,6 +121,13 @@ class PostgresCardRows:
         await self._fetchrow(
             f"""INSERT INTO {self.schema}.{TABLE_CARD_POINTER_AUTHORITY} (tenant, project) VALUES ($1, $2)
                 ON CONFLICT DO NOTHING RETURNING tenant""", self.tenant, self.project)
+
+    async def activation_recorded(self) -> bool:
+        """Whether this scope was ever activated, WITHOUT creating anything: no authority table means never
+        activated (a scope where P is off gets no DDL; Ops' N3)."""
+        row = await self._fetchrow("SELECT to_regclass($1) IS NOT NULL AS present",
+                                   f"{self.schema}.{TABLE_CARD_POINTER_AUTHORITY}")
+        return bool(row and row["present"]) and await self.is_activated()
 
     async def is_activated(self) -> bool:
         row = await self._fetchrow(

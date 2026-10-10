@@ -253,3 +253,55 @@ therefore NOT retired by R.
 Outside it, the Card lock, every write and every deletion refuse `card_store_write_wrong_process_role`. On the
 Docker Desktop runtime the single-writer condition stays: exactly one proc-labelled container mounts the Card share
 (the VM pause is exactly the residual above). It is retired only after R is qualified on a cluster deployment.
+
+
+## The storage-level version check (option P, under the Card lock)
+
+The operator's decision (10 Oct, about 21:50Z, verbatim: "R now, with P (the Postgres version check)"):
+the Card lock serializes the normal case, and the storage refuses a stale writer. That is the KDCube
+pattern in `service/comm/data-bus-README.md` ("Ordering And Concurrency": a short-lived Redis lock, and
+"still require storage-level idempotency and optimistic concurrency checks"; "the storage layer must reject
+stale updates"). `sdk/bundle/bundle-scheduled-jobs-README.md` says the same: an expired lease can be
+reacquired while old code still acts, so durable effects need a resource-enforced guard.
+
+- **Rows.** Each Card's pointer is a row in `connection_hub_card_pointers`, and each card-version txn
+  marker is a row in `connection_hub_card_version_txns`, in the scope's schema (`kdcube_<tenant>_<project>`).
+  Both hold the links-only document plus `row_revision`. Every change is a compare-and-swap on the
+  `row_revision` this operation read: zero rows means a stale writer, refused `card_pointer_moved` or
+  `card_version_marker_moved` whatever its lock state. `current.json` and the marker file stay as hints,
+  written after the row.
+- **Reads.** Once a row exists, every reader uses the row and never prefers the file, even a newer-looking
+  one (C2). Without a row, the Card was not written since activation:
+  - a writer holding that Card's lock adopts the file into the row (first touch, no scan);
+  - a reader without the lock reads the file and creates nothing.
+- **The operation context.** `locks.row_fenced_lock` wraps whatever mutation lock serializes the normal
+  case: the container-local flock (lock_backend local) or the per-Card KDCube Redis cluster lock
+  (option R, lock_backend "redis"); `hub_card_mutation_lock` and `hub_redis_card_mutation_lock` both wrap
+  their stack in it. It opens one `CardRowOperation` per Card operation. That context holds the revisions this
+  operation read and the lock resources it holds; it has no connection and no lock of its own.
+  - Each row statement runs on its own pool connection.
+  - A write without a read of that row in the same operation is refused `card_row_unobserved`; a write
+    outside any Card operation is refused `card_lock_not_held` by the rows (unlike R's file guard, which
+    allows writes outside an R operation: no production pointer or marker writer runs outside the Card lock).
+  - A child task that outlives its operation is refused `card_lock_session_closed`.
+  - The lock-free precondition read (`current_revision`) checks D3 but never writes a marker; the writer's
+    own commit, under the lock, marks it.
+- **Activation (C1).** The bundle property
+  `connections.delegated_credentials.lifecycle_storage.card_rows: "postgresql"` turns the rows on at bundle
+  load. That records the scope's activation row. Set without a `pg_pool`, it refuses the load.
+  - **One-way:** once a scope is activated, the Hub uses its rows even if the property is removed later.
+  - **Cutover:** stop every Hub process of the scope, deploy, then start. A pre-P binary writes only the
+    file, and new code cannot refuse it, so old and new processes must never overlap. The phase-1
+    single-writer guard stays until R is qualified on a cluster deployment.
+- **A txn with no member Card.** An operation on a card-version txn whose marker names no member (an unknown
+  or late txn, e.g. a ROLLBACK under `KEEP_ROLLBACK_MARKER`) takes the txn's own section
+  (`card-version-txn:<txn>`, R key kind `card-version-txn`), so its marker write is locked and row-fenced too.
+- **Process state.** The scope's rows are registered per Card storage root at `on_bundle_load`, which every proc
+  runs process-locally before admission; an entrypoint instance is not guaranteed to be a singleton, so the
+  rows are not held on it. A scope where `card_rows` is not set and was never activated gets no DDL.
+- **Evidence tooling.** `W661_BCORE_PG_MODE=1` re-runs the Hub package suite against the rows;
+  `W661_PG_AUDIT=<file>` records every pointer or marker write made outside a Card row operation with its entry
+  frame (a production writer there would be refused `card_lock_not_held`).
+- **Residual without P.** The Redis lock (R) alone leaves one stall window: a holder paused past the
+  lock's TTL can still write once. With P that write is refused by the row; the test
+  `test_a_holder_whose_lock_expired_cannot_write_after_another_writer_published` pins it.
