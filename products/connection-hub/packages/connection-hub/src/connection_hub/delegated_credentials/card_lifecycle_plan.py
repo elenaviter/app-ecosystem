@@ -403,10 +403,11 @@ def _parent_binding(parent: CardAuthority) -> ControlCardBinding:
 
 def _protected_grants_valid(value: Any) -> bool:
     """W661 S5 (EMain 18:22Z): a fixed PB policy, never Card data: at most 4 resources x 16 grants."""
+    # Entry types first: a dict or list entry is valid JSON but unhashable (Infra 18:36Z).
     return (isinstance(value, Mapping) and 0 < len(value) <= 4 and all(
         type(resource) is str and resource and type(grants) is list and 0 < len(grants) <= 16
-        and len(set(grants)) == len(grants)
         and all(type(grant) is str and grant and grant == grant.strip() for grant in grants)
+        and len(set(grants)) == len(grants)
         for resource, grants in value.items()))
 
 
