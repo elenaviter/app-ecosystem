@@ -167,3 +167,34 @@ async def test_rolling_back_a_loser_before_the_winner_publishes_leaves_the_winne
     assert await _call(operation, "rollback", links=loser["members"]) == {"kind": "rollback", "state": "rolled_back"}
     assert (await _call(operation, "publish", txn=OTHER))["kind"] == "published"
     assert await _current(store, before) == after  # today: CardStorageError current_revision_missing
+
+
+@pytest.mark.asyncio
+async def test_a_successor_is_refused_while_a_predecessors_effect_is_pending_and_goes_through_after_its_rollback(tmp_path):
+    """D3 (EMain 17:39Z): a STAGE over a predecessor with an unfinished effect is refused effects_pending; the
+    predecessor's own ROLLBACK finishes it once; then the successor's save goes through."""
+    store, service, before, after = await _setup(tmp_path)
+
+    class _Flaky(p2._Handles):
+        failures = 1
+
+        async def advance_binding(self, access_id, **kwargs):
+            if self.failures:
+                self.failures -= 1
+                raise RuntimeError("handle store down")
+            return await super().advance_binding(access_id, **kwargs)
+
+    payload = {**p2.AGENT_EFFECT["payload"], "access_id": before.access_id, "from_revision": before.card_revision}
+    effect = {**p2.AGENT_EFFECT, "key": f"handle:{before.access_id}", "payload": payload}
+    handles = _Flaky(identity={**p2.ROW, "from_revision": before.card_revision})
+    card_versions = ServiceCardVersionStore(service, refused=CardVersionRefused, catalog_store=_Catalogs())
+    operation, _, _ = p2._operation(planner=p2._Planner(_plan(before, after)), store=card_versions,
+                                    host=p2._Host(effects=[effect]), handles=handles)
+    staged = await _call(operation, "stage", updates=_update(before))
+    assert (await _call(operation, "publish"))["code"] == "effects_pending"
+    assert await _current(store, before) == after  # the pointer moved; the credential stays fail-closed
+    successor = "txn-" + "c" * 40
+    assert (await _call(operation, "stage", txn=successor, updates=_update(before)))["code"] == "effects_pending"
+    assert await _call(operation, "rollback", links=staged["members"]) == {
+        "kind": "rollback", "state": "already_published"}
+    assert [call[0] for call in handles.calls] == ["advance"]
