@@ -299,7 +299,8 @@ class DelegatedCardService:
 
     async def stage_card_version(self, *, txn: str, request_digest: str, catalog: str, members: Any,
                                  now: datetime, effects: Any = (), request_id: str = "", actor: Any = None,
-                                 prepare: Any = None, binding: Any = None) -> list[dict[str, Any]]:
+                                 prepare: Any = None, binding: Any = None,
+                                 active_catalog: Any = None) -> list[dict[str, Any]]:
         """W661 STAGE: the members' next versions, not yet final; ``members`` = (subject_hash, access_id,
         base_version | None, candidate). Answers links only: card, version, checksum.
 
@@ -313,7 +314,7 @@ class DelegatedCardService:
                 return await card_version_stage(self._store, txn=txn, request_digest=request_digest, catalog=catalog,
                                                 members=members, effects=effects, now=now,
                                                 request_id=request_id, actor=actor, prepare=prepare,
-                                                binding=binding)
+                                                binding=binding, active_catalog=active_catalog)
         except CardMutationLockTimeout as exc:
             raise CardConflict("card_mutation_lock_timeout") from exc
 
@@ -351,14 +352,14 @@ class DelegatedCardService:
                                                                              run_effect=run_effect, binding=binding))
 
     async def rollback_card_version(self, *, txn: str, run_effect: Any = None, release: Any = None,
-                                    binding: Any = None) -> str:
+                                    binding: Any = None, links: Any = (), at: Any = None) -> str:
         """W661 ROLLBACK: rolled_back | already_published | unknown_txn; never removes a published version."""
         from .transaction_store import card_version_rollback, card_version_txn_id
 
         card_version_txn_id(txn)
         return await self._under_txn_locks(txn, lambda: card_version_rollback(self._store, txn=txn,
                                                                               run_effect=run_effect, release=release,
-                                                                              binding=binding))
+                                                                              binding=binding, links=links, at=at))
 
     def _collection_section(self, collection_id: str):
         """W651 retention: one sealed collection's lock, taken OUTERMOST (before any Card section) by

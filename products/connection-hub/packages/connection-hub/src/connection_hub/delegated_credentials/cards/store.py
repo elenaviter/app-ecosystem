@@ -60,6 +60,9 @@ _REVISION_NAME_PATTERN = re.compile(
 _REVISION_NUMBER_PATTERN = re.compile(r"_([0-9]{8})_([0-9a-f]{12})\.json$")
 
 
+
+VERSION_RECORD_KEY = "version_record"
+
 class CardStorageError(DurableStorageError):
     """Durable card storage could not be read or written."""
 
@@ -201,11 +204,21 @@ class BundleStorageDelegatedCardStore:
         if not await self._revision_is_committed(subject_hash=subject_hash, access_id=access_id,
                                                 revision_name=revision_name):
             return None
-        return await read_json_or_none(
+        payload = await read_json_or_none(
             self.revision_path(
                 subject_hash=subject_hash, access_id=access_id, revision_name=revision_name
             )
         )
+        if isinstance(payload, dict):
+            payload.pop(VERSION_RECORD_KEY, None)  # W661: who and when beside the Card value, never in it
+        return payload
+
+    async def read_version_record(self, *, subject_hash: str, access_id: str, revision_name: str) -> dict | None:
+        """W661: the version's own record {txn, actor, at, catalog, binding}; one direct read, None if absent."""
+        payload = await read_json_or_none(
+            self.revision_path(subject_hash=subject_hash, access_id=access_id, revision_name=revision_name))
+        record = payload.get(VERSION_RECORD_KEY) if isinstance(payload, dict) else None
+        return dict(record) if isinstance(record, dict) else None
 
     async def _revision_is_committed(self, *, subject_hash: str, access_id: str, revision_name: str) -> bool:
         path = self.revision_path(subject_hash=subject_hash, access_id=access_id, revision_name=revision_name)
@@ -283,12 +296,13 @@ class BundleStorageDelegatedCardStore:
         return pointer, authority
 
     async def write_revision(
-        self, *, subject_hash: str, authority: CardAuthority, updated_at: datetime
+        self, *, subject_hash: str, authority: CardAuthority, updated_at: datetime, record: dict | None = None
     ) -> CardCurrentPointer:
         """Write the immutable revision and return the pointer that commits it.
 
         Advancing ``current.json`` is a separate step so the caller can validate
-        the written object first.
+        the written object first. ``record`` (W661) is the version's who and when,
+        stored beside the Card value under ``version_record`` and never hashed.
         """
         content_hash = authority.content_hash()
         revision_name = card_revision_name(
@@ -302,7 +316,7 @@ class BundleStorageDelegatedCardStore:
                 access_id=authority.access_id,
                 revision_name=revision_name,
             ),
-            authority.to_dict(),
+            authority.to_dict() if record is None else {**authority.to_dict(), VERSION_RECORD_KEY: dict(record)},
         )
         return CardCurrentPointer.for_revision(
             authority,

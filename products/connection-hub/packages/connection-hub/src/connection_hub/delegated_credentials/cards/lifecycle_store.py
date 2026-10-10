@@ -182,9 +182,9 @@ async def assert_pointer_replaceable(store: Any, *, subject_hash: str, access_id
     # W578: no ordinary write publishes around an undecided staged transaction.
     from .transaction_store import assert_replaceable as assert_transaction_replaceable
     await assert_transaction_replaceable(store, subject_hash=subject_hash, access_id=access_id)
-    # W661 (Infra K2 cut): no writer replaces a current version whose card-version txn is unresolved.
-    from .transaction_store import assert_current_version_resolved
-    await assert_current_version_resolved(store, subject_hash=subject_hash, access_id=access_id)
+    # W661 D3 (Infra K2 cut): finalize the card-version txn current.json names before replacing it.
+    from .transaction_store import finalize_current_version
+    await finalize_current_version(store, subject_hash=subject_hash, access_id=access_id)
     # The shared intent exists BEFORE either pointer is staged, and each target Card names it in its own
     # in-flight file before that (W661: one direct read per Card, nothing listed). The update store's check
     # above read that same file, so an in-flight lifecycle intent has already refused there.

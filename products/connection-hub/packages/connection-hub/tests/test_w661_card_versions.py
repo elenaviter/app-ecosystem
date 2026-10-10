@@ -45,6 +45,11 @@ async def _current(store, card):
     return None if found is None else found[1]
 
 
+def _links(answer):
+    return [{"subject_hash": m["subject_hash"], "access_id": m["access_id"], "version": m["version"],
+             "checksum": m["checksum"]} for m in answer]
+
+
 def _revision_files(store, card):
     folder = store.card_path(subject_hash=SUBJECT_HASH, access_id=card.access_id) / "revisions"
     return sorted(p.name for p in folder.iterdir()) if folder.exists() else []
@@ -66,9 +71,15 @@ async def test_a_staged_version_is_invisible_until_publish_then_it_is_current_an
     assert await service.publish_card_version(txn=TXN) == answer
     assert await _current(store, before) == after
     assert staged in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
-    assert (await tx.read_card_version_marker(store, TXN))["state"] == "published"
+    # D2: once published with every effect recorded, only the version remains: no marker, no sidecar.
+    assert not tx.card_version_marker_path(store, TXN).exists()
     assert not any(name.endswith(".card-version.json") for name in _revision_files(store, before))
-    assert await service.publish_card_version(txn=TXN) == answer  # idempotent
+    record = await store.read_version_record(subject_hash=SUBJECT_HASH, access_id=before.access_id,
+                                             revision_name=staged)
+    assert record == {"txn": TXN, "actor": None, "at": WHEN.isoformat(), "catalog": "catalog-1", "binding": None}
+    with pytest.raises(tx.CardTransactionRefused, match="txn_unknown"):  # D5: a lost-reply retry goes to ROLLBACK
+        await service.publish_card_version(txn=TXN)
+    assert await service.rollback_card_version(txn=TXN, links=_links(answer), at=WHEN) == "already_published"
 
 
 @pytest.mark.asyncio
@@ -197,9 +208,12 @@ async def test_a_refused_preparation_writes_no_card_file_and_rollback_releases_e
 @pytest.mark.asyncio
 async def test_rollback_after_a_lost_publish_reply_answers_already_published_and_keeps_the_version(tmp_path):
     store, service, before, after = await _setup(tmp_path)
-    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    answer = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
     await service.publish_card_version(txn=TXN)
-    assert await service.rollback_card_version(txn=TXN) == "already_published"
+    assert await service.rollback_card_version(txn=TXN, links=_links(answer), at=WHEN) == "already_published"
+    assert await service.rollback_card_version(txn=TXN) == "unknown_txn"  # without its links: nothing to name
+    assert await service.rollback_card_version(txn=TXN, links=_links(answer),
+                                               at=WHEN + timedelta(seconds=1)) == "unknown_txn"
     assert await _current(store, before) == after
 
 
@@ -213,7 +227,7 @@ async def test_a_publish_stopped_between_pointer_and_marker_is_published_by_roll
                                 pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
     assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
     assert await service.rollback_card_version(txn=TXN) == "already_published"
-    assert (await tx.read_card_version_marker(store, TXN))["state"] == "published"
+    assert not tx.card_version_marker_path(store, TXN).exists()  # finished, so only the version remains
     assert await _current(store, before) == after
 
 
@@ -244,7 +258,7 @@ async def test_invite_remove_invite_overwrites_the_same_id_without_any_history_s
 async def test_effects_run_once_each_pending_until_done_and_never_again(tmp_path):
     store, service, before, after = await _setup(tmp_path)
     effects = [{"kind": "handle_binding", "key": "k1"}, {"kind": "handle_binding", "key": "k2"}]
-    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], effects=effects)
+    answer = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], effects=effects)
     runs = []
 
     async def flaky(effect, marker):
@@ -258,12 +272,13 @@ async def test_effects_run_once_each_pending_until_done_and_never_again(tmp_path
     with pytest.raises(RuntimeError):
         await service.publish_card_version(txn=TXN, run_effect=flaky)
     assert runs == ["k1", "k2"]
+    assert (await tx.read_card_version_marker(store, TXN))["effect_outcomes"] == {"0": "applied"}
     await service.publish_card_version(txn=TXN, run_effect=flaky)
     assert runs == ["k1", "k2", "k2"]
-    assert await service.rollback_card_version(txn=TXN, run_effect=flaky) == "already_published"
-    await service.publish_card_version(txn=TXN, run_effect=flaky)
+    assert not tx.card_version_marker_path(store, TXN).exists()  # every effect recorded: the marker went
+    assert await service.rollback_card_version(txn=TXN, run_effect=flaky, links=_links(answer),
+                                               at=WHEN) == "already_published"
     assert runs == ["k1", "k2", "k2"]
-    assert (await tx.read_card_version_marker(store, TXN))["effect_outcomes"] == {"0": "applied", "1": "applied"}
 
 
 @pytest.mark.asyncio
@@ -284,8 +299,8 @@ async def test_no_operation_lists_any_folder(tmp_path, monkeypatch):
     await _stage(service, [(SUBJECT_HASH, "aut_other", None, replace(after, access_id="aut_other", card_revision=1))],
                  txn=second)
     assert await service.rollback_card_version(txn=second) == "rolled_back"
-    await service.publish_card_version(txn=TXN)
-    assert await service.rollback_card_version(txn=TXN) == "already_published"
+    answer = await service.publish_card_version(txn=TXN)
+    assert await service.rollback_card_version(txn=TXN, links=_links(answer), at=WHEN) == "already_published"
 
 
 @pytest.mark.asyncio
@@ -397,7 +412,19 @@ async def test_the_piece_2_port_answers_links_hands_effects_the_port_marker_and_
     from connection_hub.delegated_credentials.cards.card_version_port import ServiceCardVersionStore
 
     store, service, before, after = await _setup(tmp_path)
-    port = ServiceCardVersionStore(service, refused=_PortRefused)
+
+    class _Catalog:
+        active = {"version": "v1", "content_hash": "c" * 64}
+
+        async def read_active(self):
+            return type("Doc", (), self.active)()
+    catalog = _Catalog()
+    with pytest.raises(_PortRefused) as refused:  # D1: no catalog store bound, STAGE fails closed
+        await ServiceCardVersionStore(service, refused=_PortRefused).stage(
+            TXN, request_id="r", request_digest=DIGEST, catalog={}, actor_subject="p", actor_kind="caller",
+            members=[], effects=[], prepare=None, at=WHEN, scope="s", caller="c")
+    assert refused.value.code == "storage_unavailable"
+    port = ServiceCardVersionStore(service, refused=_PortRefused, catalog_store=catalog)
     member = {"subject_hash": SUBJECT_HASH, "access_id": before.access_id, "base_version": 1, "value": after.to_dict()}
     effects = [{"kind": "handle_binding", "key": "k1", "access_id": before.access_id, "payload": {"card_revision": 2}}]
     seen, prepared = [], []
@@ -428,7 +455,12 @@ async def test_the_piece_2_port_answers_links_hands_effects_the_port_marker_and_
     assert await port.read_current(SUBJECT_HASH, before.access_id) == {"version": 1, "checksum": before.content_hash()}
     assert await port.publish(TXN, **bound, apply=apply) == {"members": [link]}
     assert seen == [{"txn": TXN, "members": [{**link, "base_version": 1}]}]
-    assert await port.rollback(TXN, **bound, apply=apply, release=apply) == {"state": "already_published"}
+    assert await port.rollback(TXN, **bound, links=[link], at=WHEN, apply=apply,
+                               release=apply) == {"state": "already_published"}
+    with pytest.raises(_PortRefused) as refused:  # the version record carries the binding too
+        await port.rollback(TXN, scope="project-b", caller="pb-service", links=[link], at=WHEN, apply=apply,
+                            release=apply)
+    assert refused.value.code == "txn_scope_mismatch"
     assert len(seen) == 1  # effects ran once
     with pytest.raises(_PortRefused) as refused:
         await port.stage("w661-txn-" + "e" * 32, **{**stage, "members": [member]})
@@ -440,6 +472,12 @@ async def test_the_piece_2_port_answers_links_hands_effects_the_port_marker_and_
     with pytest.raises(_PortRefused) as refused:
         await port.stage("w661-txn-" + "8" * 32, **{**stage, "members": [{**member, "value": {"bad": 1}}]})
     assert refused.value.code == "edit_invalid"
+    catalog.active = {"version": "v2", "content_hash": "d" * 64}  # a catalog publish since PB's read
+    second = replace(after, card_revision=3, label="third")
+    with pytest.raises(_PortRefused) as refused:
+        await port.stage("w661-txn-" + "7" * 32, **{**stage, "members": [{**member, "base_version": 2,
+                                                                         "value": second.to_dict()}]})
+    assert refused.value.code == "stage_catalog_moved"
 
 
 @pytest.mark.asyncio
@@ -630,12 +668,16 @@ async def test_a_hub_local_operation_in_flight_on_the_card_refuses_publish_by_on
 
 
 @pytest.mark.asyncio
-async def test_no_writer_builds_on_a_version_whose_publish_stopped_before_its_marker(tmp_path, monkeypatch):
-    """Infra K2 cut (17:02Z): A writes current.json, its `published` marker write fails, the lock is released.
-    No other writer may build v3 on A's version, or A's ROLLBACK would see a successor and delete a published
-    version. Both a later STAGE and an ordinary commit are refused until A's own ROLLBACK resolves it."""
+@pytest.mark.parametrize("successor", ["stage", "commit"])
+async def test_a_writer_finalizes_a_stopped_publish_so_its_rollback_never_deletes_published_history(tmp_path,
+                                                                                                    monkeypatch,
+                                                                                                    successor):
+    """D3 (EMain; Infra's K2 cut, successor_before_recovery): A writes current.json, its `published` marker write
+    fails, the lock is released. The next writer of that Card first records A as published, then builds v3; A's
+    later ROLLBACK answers already_published and A's version stays as history."""
     store, service, before, after = await _setup(tmp_path)
-    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    answer = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
+    staged = (await tx.read_card_version_marker(store, TXN))["members"][0]["revision_name"]
     real = tx._write_card_version_marker
 
     async def fail_published(store_, marker):
@@ -646,14 +688,16 @@ async def test_no_writer_builds_on_a_version_whose_publish_stopped_before_its_ma
     with pytest.raises(CardStorageError):
         await service.publish_card_version(txn=TXN)
     monkeypatch.setattr(tx, "_write_card_version_marker", real)
-    assert (await store.read_current(subject_hash=SUBJECT_HASH, access_id=before.access_id)).card_revision == 2
-    successor = replace(after, card_revision=3, label="successor")
-    with pytest.raises(CardStorageError, match="card_version_unresolved"):
-        await _stage(service, [(SUBJECT_HASH, before.access_id, 2, successor)], txn="w661-txn-" + "d" * 32)
-    with pytest.raises(CardStorageError, match="card_version_unresolved"):
-        await service.commit(successor, subject_hash=SUBJECT_HASH, expected_revision=2, now=NOW)
-    assert await service.rollback_card_version(txn=TXN) == "already_published"
-    assert await _current(store, before) == after  # never deleted
-    await _stage(service, [(SUBJECT_HASH, before.access_id, 2, successor)], txn="w661-txn-" + "d" * 32)
-    await service.publish_card_version(txn="w661-txn-" + "d" * 32)
-    assert await _current(store, before) == successor
+    assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
+    v3 = replace(after, card_revision=3, label="successor")
+    if successor == "stage":
+        await _stage(service, [(SUBJECT_HASH, before.access_id, 2, v3)], txn="w661-txn-" + "d" * 32)
+        await service.publish_card_version(txn="w661-txn-" + "d" * 32)
+    else:
+        await service.commit(v3, subject_hash=SUBJECT_HASH, expected_revision=2, now=NOW)
+    assert await _current(store, before) == v3
+    assert not tx.card_version_marker_path(store, TXN).exists()  # A was finalized (no effects): only its version
+    assert await service.rollback_card_version(txn=TXN, links=_links(answer), at=WHEN) == "already_published"
+    assert staged in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    assert await store.read_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id,
+                                     revision_name=staged) == after

@@ -36,9 +36,17 @@ _CONTRACT_CODES = {
 
 
 class ServiceCardVersionStore:
-    def __init__(self, service: Any, *, refused: Callable[[str], Exception]) -> None:
+    """``catalog_store`` is the Hub's catalog store (``read_active()``); STAGE refuses without it (D1)."""
+
+    def __init__(self, service: Any, *, refused: Callable[[str], Exception], catalog_store: Any = None) -> None:
         self._service = service
         self._refused = refused
+        self._catalog_store = catalog_store
+
+    async def _active_catalog(self) -> dict[str, str] | None:
+        """D1: the ACTIVE catalog's link, read directly (under the Card locks, by STAGE)."""
+        document = await self._catalog_store.read_active()
+        return None if document is None else {"version": document.version, "content_hash": document.content_hash}
 
     async def _guard(self, awaitable: Any) -> Any:
         """A store refusal, or a lock conflict, answers as ``refused(contract code)``; anything else raises."""
@@ -60,11 +68,13 @@ class ServiceCardVersionStore:
                     for m in members]
         except Exception as exc:  # noqa: BLE001 - a malformed value is the caller's edit, never a store fault
             raise self._refused("edit_invalid") from exc
+        if self._catalog_store is None:
+            raise self._refused("storage_unavailable")  # D1 needs the catalog store: fail closed
         answer = await self._guard(self._service.stage_card_version(
             txn=txn, request_digest=request_digest, catalog=dict(catalog), members=rows, now=at,
             effects=[dict(effect) for effect in effects], request_id=request_id,
             actor={"subject": actor_subject, "kind": actor_kind}, prepare=prepare,
-            binding={"scope": scope, "caller": caller}))
+            binding={"scope": scope, "caller": caller}, active_catalog=self._active_catalog))
         return {"members": _links(answer)}
 
     async def publish(self, txn: str, *, scope: str, caller: str, apply: Any) -> Mapping[str, Any]:
@@ -72,10 +82,18 @@ class ServiceCardVersionStore:
             txn=txn, run_effect=_port_effect(apply), binding={"scope": scope, "caller": caller}))
         return {"members": _links(answer)}
 
-    async def rollback(self, txn: str, *, scope: str, caller: str, apply: Any, release: Any) -> Mapping[str, Any]:
+    async def rollback(self, txn: str, *, scope: str, caller: str, links: Sequence[Mapping[str, Any]] = (),
+                       at: datetime | None = None, apply: Any, release: Any) -> Mapping[str, Any]:
+        """``links`` are STAGE's answer and ``at`` the request's time: with the marker gone after PUBLISH (D2),
+        they name the exact version files to read."""
+        try:
+            flat = [{"subject_hash": link["card"]["subject_hash"], "access_id": link["card"]["access_id"],
+                     "version": link["version"], "checksum": link["checksum"]} for link in links]
+        except (KeyError, TypeError) as exc:
+            raise self._refused("edit_invalid") from exc
         state = await self._guard(self._service.rollback_card_version(
             txn=txn, run_effect=_port_effect(apply), release=_port_effect(release),
-            binding={"scope": scope, "caller": caller}))
+            binding={"scope": scope, "caller": caller}, links=flat, at=at))
         return {"state": state}
 
     async def read_current(self, subject_hash: str, access_id: str) -> Mapping[str, Any] | None:
