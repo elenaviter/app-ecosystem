@@ -132,6 +132,11 @@ The OAuth issuance plan holds two links:
 - An ABORTED decision's candidate is released by the same sweep once the plan's deadline has passed;
   reads before then still need it. After release, a read of that plan answers `issuance_decision_closed`.
   A committed candidate stays, because it is the committed version once its transaction adopts it.
+- Begin, record and bind also run inside the planning section. The sweep takes the same lock only if it
+  is free, and treats a plan as "never begun" only after its draft has expired (no begin can record it
+  any more). Even then it first checks the decision store, READ ONLY, by the draft's replay scope and
+  request id (`PostgresDecisionStore.read_by_request`). A decision found there is bound to the plan,
+  never deleted. Every delete runs inside the plan Card's own mutation section.
 - A plan whose decision never begins ends at its deadline, and so does its planned candidate.
   `release_unbegun_oauth_issuance_plans` runs inside the scheduled reservation sweep. It is one
   deadline-ordered query; the plan names its file, so nothing is listed. It deletes the hidden version

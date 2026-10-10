@@ -12,7 +12,7 @@ A file is deleted only when it is v1 (it holds a Card body) AND its decision is 
 participant of that decision has finished. Everything else is kept and counted: an in-flight v1
 intent stays readable until its own transaction finishes; a v2 intent is lane 3's to delete. Nothing
 in the result carries a Card body, only transaction ids and counts. ``apply=False`` (the default) is a
-dry run that reports what it would delete; ``apply=True`` deletes through ``durable_io.unlink_guarded``,
+dry run that reports what it would delete; ``apply=True`` deletes through the guarded unlink (``unlink_guarded_async`` under R),
 so the store's writer guard refuses it exactly as it refuses any other write.
 """
 
@@ -20,8 +20,8 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from connection_hub.delegated_credentials.durable_io import list_child_names, read_json_or_none, unlink_guarded
-from .version_link import is_version_link
+from connection_hub.delegated_credentials.durable_io import list_child_names, read_json_or_none
+from .version_link import is_version_link, unlink_guarded_any
 
 INTENTS_DIR = ("card-transactions", "intents")
 
@@ -70,7 +70,7 @@ async def purge_finished_v1_intents(store: Any, decisions: Any, *, apply: bool =
             kept_in_flight.append(transaction_id)
             continue
         if apply:
-            unlink_guarded(path)  # a deletion is a write: the store's K1 writer guard decides first
+            await unlink_guarded_any(path)  # a deletion is a write: the writer guard (and R's owner) decide first
         deleted.append(transaction_id)
     return {"applied": bool(apply), "deleted": deleted, "kept_in_flight": kept_in_flight,
             "kept_v2": kept_v2, "unreadable": unreadable}
