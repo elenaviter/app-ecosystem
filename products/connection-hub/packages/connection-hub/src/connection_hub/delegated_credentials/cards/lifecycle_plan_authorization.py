@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable, Mapping
 
 from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
 
+from ...bundle_operations import BundleOperationResultError, normalize_bundle_operation_result
 from ..admission import AdmissionRequest, sign_admission_request
 from ..project_authorization import (
     LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest, ProjectAuthorizationDecision,
@@ -86,12 +87,18 @@ class PeerLifecyclePlanAuthorization:
         proof = sign_plan_authorization(body, bundle_id=self._bundle_id, signer_id=self._signer_id,
                                         secret=self._secret, clock=self._clock)
         try:
+            # The signed body travels whole under "data" with the identity hints given as None (else the
+            # platform adds the session's and the host's exact-body check refuses), as managed_card_edit_forward.
             answer = await self._call(bundle_id=self._bundle_id, operation=OPERATION,
-                                      data={**body, "service_proof": proof})
+                                      data={"data": {**body, "service_proof": proof},
+                                            "user_id": None, "fingerprint": None})
         except Exception:  # noqa: BLE001 - transport failure, by name only
             raise ProjectAuthorizationError("card_plan_authorization_unavailable") from None
-        if not isinstance(answer, Mapping):
-            raise ProjectAuthorizationError("card_plan_authorization_invalid")
+        try:
+            # Inside a request the operation route answers {"status": "ok", ..., "<operation>": answer}.
+            answer = normalize_bundle_operation_result(OPERATION, answer)
+        except BundleOperationResultError:
+            raise ProjectAuthorizationError("card_plan_authorization_invalid") from None
         if answer.get("ok") is not True:
             raise ProjectAuthorizationError("card_plan_authorization_refused")
         decisions = answer.get("decisions")

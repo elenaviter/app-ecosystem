@@ -85,6 +85,14 @@ class _PB:
         self.world, self.scopes = world, []
 
     async def __call__(self, *, bundle_id, operation, data):
+        # As the operation route sees it: the signed body under "data", the identity hints given as None,
+        # and the answer inside the route's envelope.
+        assert data["user_id"] is None and data["fingerprint"] is None and set(data) == {"data", "user_id",
+                                                                                          "fingerprint"}
+        return {"status": "ok", operation: await self._answer(bundle_id=bundle_id, operation=operation,
+                                                              data=data["data"])}
+
+    async def _answer(self, *, bundle_id, operation, data):
         assert (bundle_id, operation) == (PB_BUNDLE, PB_OPERATION)
         unsigned = {name: value for name, value in data.items() if name != "service_proof"}
         verdict = verify_admission_request(

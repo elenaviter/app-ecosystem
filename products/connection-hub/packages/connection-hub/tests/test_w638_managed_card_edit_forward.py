@@ -26,11 +26,16 @@ class Host:
         self.state, self.fail, self.calls = state, fail, []
 
     async def call(self, *, bundle_id, operation, data):
-        self.calls.append((bundle_id, operation, data))
+        # As the operation route sees it: the signed body under "data", the identity hints given as None
+        # (else the platform adds the session's), and the answer inside the route's envelope.
+        body = data["data"]
+        assert data == {"data": body, "user_id": None, "fingerprint": None}
+        self.calls.append((bundle_id, operation, body))
         if self.fail:
             raise TimeoutError("synthetic lost answer")
-        return {"ok": True, "outcome": {"schema": OUTCOME_SCHEMA, "request_id": data["request_id"],
-                                        "state": self.state, "transaction_id": "tx-1", "card_revision": 4}}
+        return {"status": "ok", "bundle_id": bundle_id, operation: {"ok": True, "outcome": {
+            "schema": OUTCOME_SCHEMA, "request_id": body["request_id"], "state": self.state,
+            "transaction_id": "tx-1", "card_revision": 4}}}
 
 
 class Stored:
@@ -188,3 +193,53 @@ def test_managed_card_location_names_the_stored_card_or_refuses_an_invalid_ident
         with pytest.raises(ManagedCardEditError) as refused:
             managed_card_location(kind, project_ref=project_ref, ref=ref)
         assert (refused.value.reason, refused.value.status) == ("managed_card_edit_request_invalid", 400)
+
+
+def _person_body():
+    return managed_card_edit_body(actor_subject="alice", project_ref=PROJECT, request_id="edit-1",
+        kind="person_control", principal_key="user:bob", original_revision=3,
+        selection={"resource_operations": {"svc": ["a"]}})
+
+
+def test_the_platform_adds_no_session_identity_to_the_signed_body():
+    """Live 2026-10-09 23:01Z: the session's user_id joined the signed body and the project refused it."""
+    seen = {}
+
+    async def route(*, bundle_id, operation, data):
+        # The platform's rule for an operation's arguments: a hint not given is filled from the session.
+        arguments = dict(data)
+        arguments.setdefault("user_id", "session-user")
+        arguments.setdefault("fingerprint", "session-fingerprint")
+        seen.update(body=arguments.pop("data"), hints=arguments)
+        return {"status": "ok", operation: {"ok": True, "outcome": {"schema": OUTCOME_SCHEMA,
+            "request_id": "edit-1", "state": "committed", "transaction_id": "tx", "card_revision": 4}}}
+
+    peer = PeerManagedCardEdit(call=route, bundle_id="problem-board@1-0", signer_id="hub", secret=SECRET)
+    asyncio.run(peer.forward(_person_body()))
+    assert seen["hints"] == {"user_id": None, "fingerprint": None}
+    assert set(seen["body"]) == {"schema", "actor_subject", "project_ref", "request_id", "target", "selection",
+                                 "service_proof"}
+
+
+def test_a_project_refusal_inside_the_route_envelope_keeps_its_code_status_and_message(caplog):
+    async def route(*, bundle_id, operation, data):
+        return {"status": "ok", "bundle_id": bundle_id, operation: {"ok": False, "status": 400, "error": {
+            "code": "work_managed_card_edit_request_invalid", "message": "The exact managed Card edit is required.",
+            "details": {}}}}
+
+    peer = PeerManagedCardEdit(call=route, bundle_id="problem-board@1-0", signer_id="hub", secret=SECRET)
+    with caplog.at_level("WARNING"), pytest.raises(ManagedCardEditError) as refused:
+        asyncio.run(peer.forward(_person_body()))
+    assert (refused.value.reason, refused.value.status, refused.value.message) == (
+        "work_managed_card_edit_request_invalid", 400, "The exact managed Card edit is required.")
+    assert "kind=person_control code=work_managed_card_edit_request_invalid status=400" in caplog.text
+
+
+def test_an_answer_outside_the_route_contract_is_invalid():
+    async def route(**kwargs):
+        return {"status": "error", "detail": "synthetic"}
+
+    peer = PeerManagedCardEdit(call=route, bundle_id="problem-board@1-0", signer_id="hub", secret=SECRET)
+    with pytest.raises(ManagedCardEditError) as refused:
+        asyncio.run(peer.forward(_person_body()))
+    assert (refused.value.reason, refused.value.status) == ("managed_card_edit_answer_invalid", 502)

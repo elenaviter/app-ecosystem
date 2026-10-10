@@ -32,9 +32,14 @@ class Host:
         self.state, self.calls = state, []
 
     async def call(self, *, bundle_id, operation, data):
-        self.calls.append((bundle_id, operation, data))
-        return {"ok": True, "outcome": {"schema": OUTCOME_SCHEMA, "request_id": data["request_id"],
-                                        "state": self.state, "transaction_id": "tx-p", "card_revision": 6}}
+        # As the operation route sees it: the signed body under "data", the identity hints given as None
+        # (else the platform adds the session's), and the answer inside the route's envelope.
+        body = data["data"]
+        assert data == {"data": body, "user_id": None, "fingerprint": None}
+        self.calls.append((bundle_id, operation, body))
+        return {"status": "ok", "bundle_id": bundle_id, operation: {"ok": True, "outcome": {
+            "schema": OUTCOME_SCHEMA, "request_id": body["request_id"], "state": self.state,
+            "transaction_id": "tx-p", "card_revision": 6}}}
 
 
 def project_control(**changes):
