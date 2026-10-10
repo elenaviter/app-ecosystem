@@ -119,6 +119,25 @@ whole request, so no edit value is repeated.
   and a version file that its link finds and that carries this txn is
   published history. ROLLBACK answers `rolled_back`, `already_published` or
   `unknown_txn`.
+- **`op: outcome` and `op: compensate` (v6.3 items 5 and 7).** Both carry
+  `txn`, STAGE's `links` (as returned, `base_version` included) and STAGE's
+  `at`. `compensate` also carries `compensation_at`, a 16th request field that
+  is null for every other op and outside the stage digest; the other STAGE
+  fields are null.
+  - OUTCOME writes nothing. Under the linked Cards' locks it answers `{kind:
+    outcome, state, members}`, where `state` is `published`, `staged`,
+    `staging` or `unknown_txn`, and each member link adds `current`: whether
+    that Card's current version is this txn's. `links` may be `[]` when STAGE
+    never answered.
+  - COMPENSATE runs only after PB has conclusively not committed, under its
+    row lock. It restores each Card's pre-txn content as a new version, only
+    while every Card's current version is exactly this txn's. It answers
+    `{kind: compensation, state: compensated | already_compensated, members}`.
+    A successor version refuses `compensation_superseded`; a version with no
+    recorded base, or a credential-bearing Card, refuses
+    `compensation_unsupported`; a link that is not its version file refuses
+    `card_version_link_mismatch`. Each is 409, and nothing is written.
+  - A store without these ports answers `storage_unavailable`.
 - **Store.** The endpoint binds piece 1's `ServiceCardVersionStore` over the
   Card service and the catalog store, so STAGE re-reads the active catalog
   under the Card locks. Without either one, the endpoint answers unavailable.
