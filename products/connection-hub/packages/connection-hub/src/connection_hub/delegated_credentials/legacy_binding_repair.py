@@ -18,7 +18,11 @@ root application Control of that project. Zero or several roots bind nothing.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import pathlib
+import time
 from collections import Counter, defaultdict
 from typing import Any
 
@@ -38,6 +42,32 @@ from connection_hub.delegated_credentials.project_identity_lifecycle import (
 
 LOGGER = logging.getLogger(__name__)
 PROJECT_PREFIX = "work:project:"
+# A durable "nothing left" marker beside the Card store (operator rule: no work that grows with the
+# population on every load). Written only when a run left nothing outstanding; a later load reads this
+# one file and no Card. Any refusal, error or skip leaves it unwritten, so the next load retries.
+MARKER_NAME = "legacy-binding-repair.complete.json"
+MARKER_SCHEMA = "connection-hub.legacy-binding-repair.v1"
+DONE_KEYS = frozenset({"c_bound", "c_already_bound", "my_repaired", "my_already_bound"})
+
+
+def _marker_path(store: Any) -> pathlib.Path:
+    return pathlib.Path(store.root) / MARKER_NAME
+
+
+def _complete(store: Any) -> bool:
+    try:
+        value = json.loads(_marker_path(store).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(value, dict) and value.get("schema") == MARKER_SCHEMA
+
+
+def _write_marker(store: Any, counts: dict[str, int]) -> None:
+    path = _marker_path(store)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps({"schema": MARKER_SCHEMA, "completed_at": int(time.time()),
+                                     "counts": dict(sorted(counts.items()))}, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _is_root_p(card: Any) -> bool:
@@ -68,11 +98,16 @@ async def repair_legacy_project_bindings(host: Any, store: Any) -> dict[str, int
 
     from connection_hub.delegated_credentials.automation_access import LEGACY_BINDING_REPAIR
 
+    if _complete(store):
+        LOGGER.info("[connection-hub] legacy project binding repair already complete")
+        return {"already_complete": 1}
     token = LEGACY_BINDING_REPAIR.set(True)
     try:
         counts = await _repair(host, store)
     finally:
         LEGACY_BINDING_REPAIR.reset(token)
+    if set(counts) <= DONE_KEYS:
+        _write_marker(store, counts)
     LOGGER.info("[connection-hub] legacy project binding repair %s",
                 " ".join(f"{key}={value}" for key, value in sorted(counts.items())) or "nothing_to_do")
     return counts
@@ -115,14 +150,19 @@ async def _repair(host: Any, store: Any) -> dict[str, int]:
         if card.issuer_kind != PROJECT_PERSON_MY_CARD_ISSUER_KIND:
             continue
         try:
-            counts[await _repair_my(host, lifecycle, card, card_authority_from_record)] += 1
+            counts[await _repair_my(host, lifecycle, card, card_authority_from_record, roots)] += 1
         except Exception as exc:  # noqa: BLE001 - counted by class; the next Card is still repaired
             counts["my_error_" + type(exc).__name__] += 1
     return dict(counts)
 
 
-async def _repair_my(host: Any, lifecycle: ProjectIdentityLifecycle, card: Any, authority_of: Any) -> str:
+async def _repair_my(host: Any, lifecycle: ProjectIdentityLifecycle, card: Any, authority_of: Any,
+                     roots: dict[str, list[Any]]) -> str:
     mine = ProjectPersonCardIdentity.from_my_card(card)
+    # The same eligibility as C (codex-infra review): exactly one root P, and the C bound to that P.
+    project_roots = roots.get(mine.project_ref, [])
+    if len(project_roots) != 1:
+        return "my_skipped_no_single_p"
     control_identity = ProjectPersonControlIdentity.build(project_ref=mine.project_ref,
                                                           target_subject=mine.person_subject)
     loaded = await host._load_record_any_state(control_identity.control_id,
@@ -132,6 +172,9 @@ async def _repair_my(host: Any, lifecycle: ProjectIdentityLifecycle, card: Any, 
     control = authority_of(loaded[0])
     if control.control_card is None:
         return "my_skipped_unbound_c"
+    if (control.control_card.control_id != project_roots[0].access_id
+            or control.control_card.issuer_ref != mine.project_ref):
+        return "my_skipped_c_not_under_root_p"
     my_loaded = await host._load_record_any_state(card.access_id, grantor_subject=card.grantor_subject)
     if my_loaded is None or my_loaded[1] != CARD_STATE_ACTIVE:
         return "my_skipped_not_active"

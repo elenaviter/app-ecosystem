@@ -442,8 +442,11 @@ obligations, not optional checks.
    `automation_access.LEGACY_BINDING_REPAIR`; no operation, request or descriptor can. While it is set,
    W578 allows exactly two things: attaching an unbound C to its own project's root P, and a write to a
    bound Card whose only changed authority field is `control_card`. Both write the binding a new Card
-   gets at creation. Writes stay fenced, a second load changes nothing, it logs counts only, and a
-   failure never blocks the load.
+   gets at creation. A My Card is repaired only when its project has exactly one root P and its C is
+   bound to that P. Writes stay fenced, it logs counts only, and a failure never blocks the load. A run
+   that leaves nothing outstanding writes `legacy-binding-repair.complete.json` beside the Card store;
+   every later load reads only that file and no Card. Any skip, refusal or error leaves it unwritten, so
+   the next load retries.
 10. **Removing v1 waits.** The v1 authority path is removed only after the peer's
    writer switch.
 

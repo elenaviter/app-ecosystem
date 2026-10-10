@@ -30,7 +30,7 @@ from connection_hub.delegated_credentials.project_identity_lifecycle import Proj
 from test_project_person_access import PROJECT_REF, TARGET
 from test_w502_my_card_fence_real_path import ADMIN, GRANT, OPERATION, _control
 from test_w580_bound_card_writers import _memories
-from test_w502_person_control_binding import _create, _locator, _project_control, _service
+from test_w502_person_control_binding import CREATOR, OTHER_CREATOR, _create, _locator, _project_control, _service
 from test_w580_bound_card_writers import redis_client  # noqa: F401 - fixture
 
 
@@ -90,8 +90,10 @@ async def test_a_second_load_changes_nothing(tmp_path, redis_client):  # noqa: F
     await _legacy_world(h)
     await repair_legacy_project_bindings(h.service, h.store)
     c, my = await _control(h), await _my(h)
+    reads = _count_reads(h.store)
     again = await repair_legacy_project_bindings(h.service, h.store)
-    assert again == {"my_already_bound": 1}
+    assert again == {"already_complete": 1}
+    assert reads == {"grantors": 0, "cards": 0}, "a completed repair reads no Card on the next load (constant cost)"
     assert (await _control(h)).card_revision == c.card_revision and (await _my(h)).card_revision == my.card_revision
 
 
@@ -161,7 +163,7 @@ async def test_with_card_transactions_on_as_live_the_legacy_cards_are_still_boun
         c, my = await _control(h), await _my(h)
         assert c.control_card.control_id == p_id and _plan_check(c) == "person_control"
         assert _plan_check(my) == "my_card"
-        assert (await repair_legacy_project_bindings(h.service, h.store)) == {"my_already_bound": 1}
+        assert (await repair_legacy_project_bindings(h.service, h.store)) == {"already_complete": 1}
         # The switch is the repair's alone: it is off again afterwards.
         assert LEGACY_BINDING_REPAIR.get() is False
     finally:
@@ -257,3 +259,61 @@ async def test_after_the_repair_a_legacy_c_save_plans_and_commits_with_card_tran
         assert saved.control_card == bound.control_card, "the save keeps the repaired link"
     finally:
         await pool.close()
+
+
+def _count_reads(store):
+    """Count the store's grantor listings and Card reads from now on."""
+    reads = {"grantors": 0, "cards": 0}
+    list_grantors, read_current = store.list_grantor_hashes, store.read_current_authority
+
+    async def counted_grantors():
+        reads["grantors"] += 1
+        return await list_grantors()
+
+    async def counted_read(**kwargs):
+        reads["cards"] += 1
+        return await read_current(**kwargs)
+
+    store.list_grantor_hashes, store.read_current_authority = counted_grantors, counted_read
+    return reads
+
+
+async def _older_my(h):
+    my = await _my(h)
+    older = dataclasses.replace(my, card_revision=my.card_revision + 1,
+                                control_card=dataclasses.replace(my.control_card, holder_subject=""))
+    await h.cards.commit(older, subject_hash=subject_hash_for(TARGET), expected_revision=my.card_revision,
+                         now=int(time.time()))
+    return older
+
+
+@pytest.mark.asyncio
+async def test_a_my_card_is_not_touched_without_exactly_one_root_p(tmp_path, redis_client):  # noqa: F811
+    """codex-infra review: the My repair has C's eligibility. Zero roots, then two roots: nothing changes."""
+    h = await _service(tmp_path, redis_client)
+    h.port.locator = None
+    assert (await _create(h))["project_control_binding"] == "no_project_control"
+    older = await _older_my(h)
+    counts = await repair_legacy_project_bindings(h.service, h.store)
+    assert counts == {"c_skipped_no_single_p": 1, "my_skipped_no_single_p": 1}, counts
+    assert (await _my(h)).card_revision == older.card_revision
+    assert not (pathlib.Path(h.store.root) / "legacy-binding-repair.complete.json").exists(), "outstanding: no marker"
+    await _project_control(h)
+    await _project_control(h, holder=OTHER_CREATOR)
+    counts = await repair_legacy_project_bindings(h.service, h.store)
+    assert counts == {"c_skipped_no_single_p": 1, "my_skipped_no_single_p": 1}, counts
+    assert (await _my(h)).card_revision == older.card_revision and (await _control(h)).control_card is None
+
+
+@pytest.mark.asyncio
+async def test_a_my_card_whose_c_is_bound_to_a_foreign_p_is_not_touched(tmp_path, redis_client):  # noqa: F811
+    h = await _service(tmp_path, redis_client)
+    old_p = await _project_control(h)
+    assert (await _create(h))["project_control_binding"] == "bound"
+    older = await _older_my(h)
+    assert (await h.service.control_card_revoke({"user_id": CREATOR}, control_id=old_p))["ok"] is True
+    await _project_control(h, holder=OTHER_CREATOR)  # the project's one root P is now another Card
+    counts = await repair_legacy_project_bindings(h.service, h.store)
+    assert counts == {"my_skipped_c_not_under_root_p": 1}, counts
+    assert (await _my(h)).card_revision == older.card_revision
+    assert (await _control(h)).control_card.control_id == old_p
