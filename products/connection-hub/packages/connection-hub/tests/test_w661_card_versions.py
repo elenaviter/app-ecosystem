@@ -962,3 +962,16 @@ async def test_a_read_member_is_never_written_and_answers_no_link(tmp_path):
         await service.stage_card_version(txn="w661-txn-" + "f" * 32, request_digest=DIGEST, catalog="c", now=WHEN,
                                          members=[(SUBJECT_HASH, control.access_id, 1, replace(control, card_revision=2))],
                                          reads=[(SUBJECT_HASH, control.access_id, 1)])
+
+
+def test_a_txn_section_uses_one_of_a_bounded_set_of_lock_files(tmp_path):
+    """Mint N-P1: a txn with no member Card takes its own section; its lock file is one of 256 shards, the same
+    for the same txn, so late rollbacks never grow the lock root."""
+    from connection_hub.delegated_credentials.cards.service import TXN_SECTION_SHARDS, txn_section_lock_path
+    from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    paths = {txn_section_lock_path(store, "w661-txn-" + f"{i:032x}") for i in range(5000)}
+    assert len(paths) <= TXN_SECTION_SHARDS
+    txn = "w661-txn-" + "a" * 32
+    assert txn_section_lock_path(store, txn) == txn_section_lock_path(store, txn)

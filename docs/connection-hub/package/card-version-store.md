@@ -296,6 +296,8 @@ reacquired while old code still acts, so durable effects need a resource-enforce
 - **A txn with no member Card.** An operation on a card-version txn whose marker names no member (an unknown
   or late txn, e.g. a ROLLBACK under `KEEP_ROLLBACK_MARKER`) takes the txn's own section
   (`card-version-txn:<txn>`, R key kind `card-version-txn`), so its marker write is locked and row-fenced too.
+  Its local lock file is one of 256 fixed shards chosen by the txn's digest (`txn_section_lock_path`), so late
+  rollbacks never grow the lock root; under R the per-txn Redis key expires with its TTL.
 - **Process state.** The scope's rows are registered per Card storage root at `on_bundle_load`, which every proc
   runs process-locally before admission; an entrypoint instance is not guaranteed to be a singleton, so the
   rows are not held on it. A scope where `card_rows` is not set and was never activated gets no DDL.
