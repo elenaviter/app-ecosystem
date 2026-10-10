@@ -904,11 +904,28 @@ def _lifecycle_lock_scope(entrypoint: Any) -> str:
     return scope if scope in ("same-host-flock", "shared-flock-verified") else ""
 
 
-def _guarded_card_store(storage_root: Any, **kwargs: Any) -> BundleStorageDelegatedCardStore:
-    """W661 K1: every Card store the Hub builds is write-guarded: Card files are written only in chat-proc."""
+def _guarded_card_store(storage_root: Any, *, entrypoint: Any = None, **kwargs: Any) -> BundleStorageDelegatedCardStore:
+    """W661 K1: every Card store the Hub builds is write-guarded: Card files are written only in chat-proc, and with
+    lock_backend "redis" (option R) only while this operation still owns its Card's Redis lock key."""
     from connection_hub.delegated_credentials.cards.locks import guard_card_store_writes
 
-    return guard_card_store_writes(BundleStorageDelegatedCardStore(storage_root, **kwargs))
+    store = guard_card_store_writes(BundleStorageDelegatedCardStore(storage_root, **kwargs))
+    if entrypoint is not None and _card_lock_backend(entrypoint) == "redis":
+        from connection_hub.delegated_credentials.cards.redis_lock import guard_card_store_lock_owner
+
+        guard_card_store_lock_owner(store)
+    return store
+
+
+def _card_lock_settings(entrypoint: Any) -> Mapping[str, Any]:
+    delegated = _connections_config(entrypoint).get("delegated_credentials")
+    storage = delegated.get("lifecycle_storage") if isinstance(delegated, Mapping) else None
+    return storage if isinstance(storage, Mapping) else {}
+
+
+def _card_lock_backend(entrypoint: Any) -> str:
+    """W661: "redis" selects option R (the per-Card KDCube Redis lock); anything else is the phase-1 local lock."""
+    return "redis" if _card_lock_settings(entrypoint).get("lock_backend") == "redis" else "local"
 
 
 def _card_lock_root(entrypoint: Any) -> str:
@@ -931,6 +948,22 @@ def _card_mutation_lock(entrypoint: Any) -> Any:
         _kdcube_card_mutation_lock,
     )
 
+    if _card_lock_backend(entrypoint) == "redis":
+        # Option R (operator 10 Oct: "R now, with P"): critical-section-README "Git Bundle Materialization": the
+        # shared Redis lock, then the observed file lock. Fail closed: no Redis client refuses every Card mutation.
+        from connection_hub.delegated_credentials.cards.locks import hub_redis_card_mutation_lock
+        from kdcube_ai_app.storage.observed_file_locks import make_lock_metadata
+        from kdcube_ai_app.storage.observed_redis_locks import observed_redis_lock_async
+
+        settings = _card_lock_settings(entrypoint)
+        overrides = {name: settings[key] for key, name in (("lock_ttl_seconds", "ttl_seconds"),
+                                                            ("lock_renew_seconds", "renew_seconds"))
+                     if isinstance(settings.get(key), (int, float)) and not isinstance(settings.get(key), bool)}
+        redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        tenant, project = _runtime_tenant_project(entrypoint)
+        return hub_redis_card_mutation_lock(redis, _kdcube_card_mutation_lock, _card_lock_root(entrypoint),
+                                            tenant=tenant, project=project, observed_lock=observed_redis_lock_async,
+                                            make_metadata=make_lock_metadata, **overrides)
     return hub_card_mutation_lock(_kdcube_card_mutation_lock, _card_lock_root(entrypoint))
 
 
@@ -1286,7 +1319,7 @@ async def _repair_legacy_project_bindings(entrypoint: Any) -> dict[str, int]:
     storage_root = entrypoint.bundle_storage_root()
     if storage_root is None:
         return {}
-    store = _guarded_card_store(storage_root, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint))
+    store = _guarded_card_store(storage_root, entrypoint=entrypoint, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint))
     host = await _automation_access_service(entrypoint, None)
     return await repair_legacy_project_bindings(host, store)
 
@@ -1324,7 +1357,8 @@ async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
         redis=redis,
         tenant=tenant,
         project=project,
-        card_store=_guarded_card_store(storage_root, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint)),
+        card_store=_guarded_card_store(storage_root, entrypoint=entrypoint,
+                                       lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint)),
         settings=DelegatedCacheSettings.from_connections(_connections_config(entrypoint)),
         mutation_lock=_card_mutation_lock(entrypoint),
         credential_handles=credential_handles,
@@ -3978,7 +4012,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         tenant, project = _runtime_tenant_project(self)
         report = await CardProjectionReconciler(
             cache=DelegatedCardRuntimeCache(redis, tenant=tenant, project=project),
-            store=_guarded_card_store(storage_root),
+            store=_guarded_card_store(storage_root, entrypoint=self),
         ).reconcile()
         if report is None:
             return {"ok": True, "swept": False}
@@ -5391,7 +5425,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         storage_root = self.bundle_storage_root()
         if storage_root is None:
             return None
-        return AgentCardShares(_guarded_card_store(storage_root))
+        return AgentCardShares(_guarded_card_store(storage_root, entrypoint=self))
 
     async def _agent_card_share_call(self, user_id: Optional[str], run: Any) -> Dict[str, Any]:
         user = _platform_user_payload(self, user_id=user_id)

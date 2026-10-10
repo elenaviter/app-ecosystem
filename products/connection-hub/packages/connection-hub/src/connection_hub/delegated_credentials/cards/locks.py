@@ -110,6 +110,20 @@ def hub_card_mutation_lock(base_lock: CardMutationLock, root: os.PathLike[str] |
     return proc_only_lock(container_local_lock(base_lock, root), role=role)
 
 
+def hub_redis_card_mutation_lock(redis: Any, base_lock: CardMutationLock,
+                                 root: os.PathLike[str] | str = DEFAULT_CARD_LOCK_ROOT, *, tenant: str, project: str,
+                                 observed_lock: Any, make_metadata: Any, role: Any = current_process_role,
+                                 **settings: Any) -> CardMutationLock:
+    """Option R (operator 10 Oct, "R now, with P"): proc-only, then the per-Card KDCube Redis lock, then the
+    container-local observed file lock (the critical-section doc's git-bundle order: Redis, then the file lock)."""
+    from .redis_lock import redis_card_mutation_lock
+
+    return proc_only_lock(redis_card_mutation_lock(redis, observed_lock=observed_lock, make_metadata=make_metadata,
+                                                   tenant=tenant, project=project,
+                                                   base_lock=container_local_lock(base_lock, root), **settings),
+                          role=role)
+
+
 __all__ = ["CARD_WRITER_ROLE", "CONTAINER_LOCK_SUFFIX", "DEFAULT_CARD_LOCK_ROOT", "PROCESS_ROLE_ENV",
            "container_local_lock", "container_local_lock_path", "current_process_role", "guard_card_store_writes",
-           "hub_card_mutation_lock", "proc_only_lock", "refuse_outside_proc"]
+           "hub_card_mutation_lock", "hub_redis_card_mutation_lock", "proc_only_lock", "refuse_outside_proc"]
