@@ -145,7 +145,7 @@ async def test_w661_card_version_endpoint_ignores_the_browser_session(entrypoint
     answer = await entrypoint.card_version(data={"op": "publish"}, request=_browser_request())
     assert answer["ok"] is False and answer["error"]["code"] == "card_version_request_invalid"
     forged = _forged("card-version-request.v1", {
-        "op": "publish", "scope": "work:project:one", "txn": "t" * 40, "request_id": None, "catalog": None,
+        "op": "publish", "scope": "work:project:one", "txn": "t" * 40, "request_id": None, "at": None, "catalog": None,
         "actor_subject": None, "actor_kind": None, "delegable_grants": None, "project_control": None,
         "creations": None, "updates": None})
     answer = await entrypoint.card_version(data=forged, request=_browser_request())

@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
-from service_foundation.coordination.durable_wire import canonical_json_bytes
+from service_foundation.coordination.durable_wire import canonical_json_bytes, sha256_hex
 from service_foundation.coordination.participant_answer import AnswerContract
 from service_foundation.coordination.participant_answer import request_digest as shared_request_digest
 from service_foundation.coordination.participant_answer import sign_participant_answer
@@ -52,10 +53,12 @@ OPERATION = "card_version"
 REQUEST_SCHEMA = "card-version-request.v1"
 ANSWER_SCHEMA = "card-version-answer.v1"
 DIRECTION = "hub-to-authority"
-REQUEST_FIELDS = ("schema", "op", "request_echo", "scope", "txn", "request_id", "catalog", "actor_subject",
+REQUEST_FIELDS = ("schema", "op", "request_echo", "scope", "txn", "request_id", "at", "catalog", "actor_subject",
                   "actor_kind", "delegable_grants", "project_control", "creations", "updates")
-STAGE_FIELDS = ("request_id", "catalog", "actor_subject", "actor_kind", "delegable_grants", "project_control",
+STAGE_FIELDS = ("request_id", "at", "catalog", "actor_subject", "actor_kind", "delegable_grants", "project_control",
                 "creations", "updates")
+# The answer echoes only the call's identity (AnswerContract.CARD_VERSION); request_digest binds the rest.
+ECHO_FIELDS = ("op", "request_echo", "scope", "txn")
 PROOF_FIELDS = frozenset({"service_id", "timestamp", "nonce", "signature"})
 OPS = frozenset({"stage", "publish", "rollback"})
 MAX_GRANTS = 256
@@ -68,7 +71,9 @@ _BOUNDED = 256
 # not what PB authorized against" is card_changed; any other is edit_invalid.
 REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_catalog_moved": 409,
             "edit_invalid": 422, "effects_pending": 503, "storage_unavailable": 503,
-            "request_scope_invalid": 403, "card_version_timeout": 504}
+            "request_scope_invalid": 403, "stage_txn_conflict": 409, "txn_not_staged": 409}
+# Store codes PB sees under the contract's name: a txn staged under another scope or caller is out of scope.
+_ALIASES = {"txn_scope_mismatch": "request_scope_invalid"}
 _CARD_CHANGED = frozenset({"card_plan_original_revision_changed", "card_plan_update_target_absent",
                            "card_plan_target_exists", "card_plan_revision_invalid",
                            "card_effect_target_revision_moved"})
@@ -83,6 +88,7 @@ class CardVersionRefused(Exception):
 
     def __init__(self, code: str) -> None:
         super().__init__(code)
+        code = _ALIASES.get(code, code)
         self.code = code if code in REFUSALS else "storage_unavailable"
 
 
@@ -97,18 +103,21 @@ class CardVersionStore(Protocol):
     ``apply`` (PUBLISH, or ROLLBACK finding ``published``) and records the
     named result. ROLLBACK of ``staging`` or ``staged`` hands every effect to
     ``release``, then deletes the bodies and the marker. Every mutating path
-    runs drained, under the Card locks.
+    runs drained, under the Card locks. ``scope`` and ``caller`` are the
+    authenticated binding: STAGE records them in the marker, and a replay,
+    PUBLISH or ROLLBACK that names another refuses ``txn_scope_mismatch``.
     """
 
     async def stage(self, txn: str, *, request_id: str, request_digest: str, catalog: Mapping[str, Any],
                     actor_subject: str, actor_kind: str, members: Sequence[Mapping[str, Any]],
-                    effects: Sequence[Mapping[str, Any]],
-                    prepare: Callable[[], Awaitable[None]]) -> Mapping[str, Any]: ...
+                    effects: Sequence[Mapping[str, Any]], prepare: Callable[[], Awaitable[None]],
+                    at: datetime, scope: str, caller: str) -> Mapping[str, Any]: ...
 
-    async def publish(self, txn: str, *, apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]]
-                      ) -> Mapping[str, Any]: ...
+    async def publish(self, txn: str, *, scope: str, caller: str,
+                      apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]]) -> Mapping[str, Any]: ...
 
-    async def rollback(self, txn: str, *, apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]],
+    async def rollback(self, txn: str, *, scope: str, caller: str,
+                       apply: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[str]],
                        release: Callable[[Mapping[str, Any], Mapping[str, Any]], Awaitable[None]]
                        ) -> Mapping[str, Any]: ...
 
@@ -125,10 +134,32 @@ def _bounded(value: Any) -> bool:
     return type(value) is str and 0 < len(value) <= _BOUNDED and value.isprintable()
 
 
+def _at(value: Any) -> datetime | None:
+    """STAGE's ``at``: the request's own time, ISO 8601 with an offset (EMain 16:41Z). A retry sends the same."""
+    if not _bounded(value):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.utcoffset() is not None else None
+
+
+def stage_digest(data: Mapping[str, Any]) -> str:
+    """The STAGE content binding: every request field but the per-call ``request_echo``.
+
+    A retry of the same save (a fresh echo and nonce) has the same stage digest, so the store finds its own
+    marker; a different edit under the same txn does not (stage_txn_conflict). The signed answer still
+    binds the exact call through ``request_digest``.
+    """
+    return sha256_hex(canonical_json_bytes({name: data[name] for name in REQUEST_FIELDS
+                                            if name not in ("schema", "op", "request_echo")}))
+
+
 def _valid_stage(data: Mapping[str, Any]) -> bool:
     catalog, grants, control = data["catalog"], data["delegable_grants"], data["project_control"]
     creations, updates = data["creations"], data["updates"]
-    return (_bounded(data["request_id"]) and _bounded(data["actor_subject"])
+    return (_bounded(data["request_id"]) and _at(data["at"]) is not None and _bounded(data["actor_subject"])
             and data["actor_subject"] == data["actor_subject"].strip()
             and data["actor_kind"] in ("caller", "grantor")
             and isinstance(catalog, Mapping) and set(catalog) == {"version", "content_hash"}
@@ -264,18 +295,22 @@ class CardVersionOperation:
         prefix = caller.plan_scope_prefix
         if not prefix or not data["scope"].startswith(prefix):
             raise CardVersionRefused("request_scope_invalid")
+        # The marker records the authenticated caller and scope at STAGE; a replay, PUBLISH or ROLLBACK
+        # naming another binding refuses txn_scope_mismatch and touches nothing (Infra finding 2).
+        txn, binding = data["txn"], {"scope": data["scope"], "caller": caller.service_id}
         if data["op"] == "stage":
-            return {"kind": "staged", "members": await self._stage(data, digest)}
+            return {"kind": "staged", "members": await self._stage(data, binding)}
         if data["op"] == "publish":
-            answer = await self._store.publish(data["txn"], apply=self._apply)
+            answer = await self._store.publish(txn, **binding, apply=self._apply)
             return {"kind": "published", "members": _links(answer)}
-        answer = await self._store.rollback(data["txn"], apply=self._apply, release=self._release)
+        answer = await self._store.rollback(txn, **binding, apply=self._apply, release=self._release)
         state = answer.get("state") if isinstance(answer, Mapping) else None
         if state not in ("rolled_back", "already_published", "unknown_txn"):
             raise CardVersionRefused("storage_unavailable")
         return {"kind": "rollback", "state": state}
 
-    async def _stage(self, data: Mapping[str, Any], digest: str) -> list[dict[str, Any]]:
+    async def _stage(self, data: Mapping[str, Any], binding: Mapping[str, str]) -> list[dict[str, Any]]:
+        txn, digest = data["txn"], stage_digest(data)
         try:
             authorization = stage_authorization(data, digest)
         except (ProjectAuthorizationError, _StepsRefused):
@@ -301,12 +336,12 @@ class CardVersionOperation:
 
         async def prepare() -> None:
             for effect in effects:
-                await self._prepare(data["txn"], effect)
+                await self._prepare(txn, effect)
 
         answer = await self._store.stage(
-            data["txn"], request_id=data["request_id"], request_digest=digest, catalog=dict(catalog),
+            txn, request_id=data["request_id"], request_digest=digest, catalog=dict(catalog),
             actor_subject=data["actor_subject"], actor_kind=data["actor_kind"], members=members,
-            effects=effects, prepare=prepare)
+            effects=effects, prepare=prepare, at=_at(data["at"]), **binding)
         return _links(answer)
 
     async def _effects(self, cards: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -382,7 +417,7 @@ class CardVersionOperation:
     def _signed(self, caller: ParticipantCaller, data: Mapping[str, Any], digest: str,
                 result: Mapping[str, Any]) -> dict[str, Any]:
         unsigned = {"schema": ANSWER_SCHEMA, "direction": DIRECTION, "audience": caller.audience,
-                    "request_digest": digest, **{name: data[name] for name in REQUEST_FIELDS if name != "schema"},
+                    "request_digest": digest, **{name: data[name] for name in ECHO_FIELDS},
                     "result": dict(result)}
         proof = sign_participant_answer(unsigned, schema=ANSWER_SCHEMA, secret=caller.receipt_secret,
                                         signer_id=caller.receipt_signer_id, timestamp=str(int(self._clock())),
@@ -390,5 +425,6 @@ class CardVersionOperation:
         return {"ok": result.get("kind") != "refused", "participant_answer": {**unsigned, "receipt_proof": proof}}
 
 
-__all__ = ["ANSWER_SCHEMA", "CardVersionOperation", "CardVersionRefused", "CardVersionStore", "OPERATION",
-           "REFUSALS", "REQUEST_FIELDS", "REQUEST_SCHEMA", "card_version_request_digest", "stage_authorization"]
+__all__ = ["ANSWER_SCHEMA", "CardVersionOperation", "CardVersionRefused", "CardVersionStore", "ECHO_FIELDS",
+           "OPERATION", "REFUSALS", "REQUEST_FIELDS", "REQUEST_SCHEMA", "card_version_request_digest",
+           "stage_authorization", "stage_digest"]

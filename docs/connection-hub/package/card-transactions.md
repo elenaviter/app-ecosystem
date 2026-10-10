@@ -43,9 +43,12 @@ and the managed Card edit forward:
 nothing back during the save. It has the same peer authentication and
 `plan_scope_prefix` entitlement as `card_lifecycle_plan`. The request schema is
 `card-version-request.v1`, and every authenticated answer is signed
-(`card-version-answer.v1`, `AnswerContract.CARD_VERSION`).
+(`card-version-answer.v1`, `AnswerContract.CARD_VERSION`). The answer echoes
+only `op`, `request_echo`, `scope` and `txn`. Its `request_digest` binds the
+whole request, so no edit value is repeated.
 
-- **`op: stage`.** The request carries `txn`, `request_id`, the `catalog`
+- **`op: stage`.** The request carries `txn`, `request_id`, `at` (the
+  request's own time, ISO 8601 with an offset; a retry sends the same), the `catalog`
   (`version`, `content_hash`) PB authorized under, the actor, PB's
   `delegable_grants`, the project Control locator, and the planner's
   `creations` and `updates`. An update's `original_revision` is the base
@@ -55,12 +58,20 @@ nothing back during the save. It has the same peer authentication and
     A base that moved is `card_changed`, and another catalog is
     `stage_catalog_moved`.
   - The Card store then writes each version once, not yet final, under the
-    Card's lock.
+    Card's lock. It compares a retry by the STAGE digest: every request field
+    except the per-call `request_echo`. A different edit under the same `txn`
+    is refused `stage_txn_conflict`.
+  - A person's C or My that already exists on its stable id, revoked or
+    active, is created again at its next revision. Operator, 10 Oct: "UPSERT.
+    overwrite".
   - The answer holds only links: `{card: {subject_hash, access_id}, version,
     checksum}`.
 - **`op: publish` and `op: rollback`.** These carry `txn` alone, because the
   store's transaction marker names its members. ROLLBACK answers
   `rolled_back`, `already_published` or `unknown_txn`.
+- **Binding.** STAGE records the authenticated caller and scope in the
+  marker. A replay, PUBLISH or ROLLBACK from another caller or scope is
+  refused `request_scope_invalid` and touches nothing.
 - **Effects.** A person Card save has none. An edited agent Card has only
   `handle_binding`:
   - its row identity is checked, and an agent's re-wrap prepared, at STAGE;

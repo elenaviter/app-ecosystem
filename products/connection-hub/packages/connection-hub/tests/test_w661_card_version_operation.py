@@ -17,7 +17,7 @@ from service_foundation.coordination.participant_answer import AnswerContract, v
 from connection_hub.delegated_credentials.admission import AdmissionRequest, sign_admission_request
 from connection_hub.delegated_credentials.cards.participant_card_version import (
     ANSWER_SCHEMA, OPERATION, REQUEST_FIELDS, REQUEST_SCHEMA, CardVersionOperation, CardVersionRefused,
-    card_version_request_digest,
+    card_version_request_digest, stage_digest,
 )
 from connection_hub.delegated_credentials.cards.participant_operation import ParticipantCaller
 from connection_hub.delegated_credentials.catalog.reservations import catalog_version_digest
@@ -29,6 +29,7 @@ PEER, PROJECT, ACTOR, TARGET = "problem-board", "work:project:p1", "user:admin",
 REQUEST_SECRET, RECEIPT_SECRET = "r" * 40, "s" * 40
 TXN = "txn-" + "a" * 40
 CATALOG = {"version": "catalog-7", "content_hash": "c" * 64}
+AT = "2026-10-10T17:00:00+00:00"
 SUBJECT, ACCESS = "h" * 64, "card-control-1"
 UPDATE = {"kind": "reselect", "target_subject": TARGET, "access_id": ACCESS, "subject_hash": SUBJECT,
           "original_revision": 3, "selection": {"resource_grants": ["memories:read"]}}
@@ -72,18 +73,31 @@ class _Store:
         self.staged, self.markers, self.current = [], {}, {}
         self.rollback_state, self.stage_refusal = rollback_state, stage_refusal
 
+    def _bound(self, txn, scope, caller):
+        """Piece 1's binding: a marker answers only the scope and caller that staged it."""
+        marker = self.markers.get(txn)
+        if marker is not None and marker["binding"] != {"scope": scope, "caller": caller}:
+            raise CardVersionRefused("txn_scope_mismatch")
+        return marker
+
     async def stage(self, txn, *, request_id, request_digest, catalog, actor_subject, actor_kind, members,
-                    effects, prepare):
+                    effects, prepare, at, scope, caller):
         if self.stage_refusal:
             raise CardVersionRefused(self.stage_refusal)
+        existing = self._bound(txn, scope, caller)
+        if existing is not None:
+            if existing["request_digest"] != request_digest:
+                raise CardVersionRefused("stage_txn_conflict")
+            return {"members": [LINK]}
         await prepare()
-        self.staged.append({"txn": txn, "members": members, "effects": effects, "catalog": catalog})
+        self.staged.append({"txn": txn, "members": members, "effects": effects, "catalog": catalog, "at": at})
         self.markers[txn] = {"txn": txn, "members": [dict(LINK, base_version=m["base_version"]) for m in members],
-                             "effects": [dict(effect, result=None) for effect in effects]}
+                             "effects": [dict(effect, result=None) for effect in effects],
+                             "binding": {"scope": scope, "caller": caller}, "request_digest": request_digest}
         return {"members": [LINK]}
 
-    async def publish(self, txn, *, apply):
-        marker = self.markers.get(txn)
+    async def publish(self, txn, *, scope, caller, apply):
+        marker = self._bound(txn, scope, caller)
         if marker is None:
             raise CardVersionRefused("txn_unknown")
         self.current[ACCESS] = {"version": LINK["version"], "checksum": LINK["checksum"]}
@@ -92,8 +106,8 @@ class _Store:
                 effect["result"] = await apply(effect, marker)
         return {"members": marker["members"]}
 
-    async def rollback(self, txn, *, apply, release):
-        marker = self.markers.get(txn)
+    async def rollback(self, txn, *, scope, caller, apply, release):
+        marker = self._bound(txn, scope, caller)
         if marker is not None and self.rollback_state == "rolled_back":
             for effect in marker["effects"]:
                 await release(effect, marker)
@@ -164,10 +178,10 @@ def _operation(*, prefix="work:project:", planner=None, store=None, host=None, h
 
 def _request(op="stage", *, scope=PROJECT, updates=(UPDATE,), creations=(), nonce=None, **override):
     data = {"schema": REQUEST_SCHEMA, "op": op, "request_echo": os.urandom(16).hex(), "scope": scope, "txn": TXN,
-            "request_id": None, "catalog": None, "actor_subject": None, "actor_kind": None,
+            "request_id": None, "at": None, "catalog": None, "actor_subject": None, "actor_kind": None,
             "delegable_grants": None, "project_control": None, "creations": None, "updates": None}
     if op == "stage":
-        data.update(request_id="save-1", catalog=dict(CATALOG), actor_subject=ACTOR, actor_kind="caller",
+        data.update(request_id="save-1", at=AT, catalog=dict(CATALOG), actor_subject=ACTOR, actor_kind="caller",
                     delegable_grants=["memories:read"], creations=list(creations), updates=list(updates))
     data.update(override)
     proof = {"service_id": PEER, "timestamp": str(NOW), "nonce": nonce or os.urandom(12).hex()}
@@ -199,14 +213,18 @@ async def test_stage_plans_under_pbs_grants_and_answers_links_only():
         (PROJECT_PERSON_CONTROL_UPDATE, TARGET)]
     decision = authorization.decision_for("update:0")
     assert decision.allowed and decision.delegable_grants == ("memories:read",) and decision.actor_subject == ACTOR
-    assert authorization.request.request_digest == card_version_request_digest(request)
+    assert authorization.request.request_digest == stage_digest(request)
     [staged] = store.staged
-    assert staged["txn"] == TXN and staged["catalog"] == CATALOG
+    assert staged["txn"] == TXN and staged["catalog"] == CATALOG and staged["at"].isoformat() == AT
+    assert store.markers[TXN]["binding"] == {"scope": PROJECT, "caller": PEER}
     assert staged["members"] == [{"subject_hash": SUBJECT, "access_id": ACCESS, "base_version": 3,
                                   "value": CANDIDATE}]
-    # No Card value leaves the Hub: the answer holds only the links.
-    assert b"card_revision" not in canonical_json_bytes(response["participant_answer"]["result"])
-    assert TARGET.encode() not in canonical_json_bytes(response["participant_answer"]["result"])
+    # No Card value leaves the Hub, and the edit is not echoed: the whole answer holds identity and links.
+    assert set(response["participant_answer"]) == {
+        "schema", "direction", "audience", "request_digest", "op", "request_echo", "scope", "txn", "result",
+        "receipt_proof"}
+    whole = canonical_json_bytes(response)
+    assert b"card_revision" not in whole and TARGET.encode() not in whole and b"memories:read" not in whole
 
 
 @pytest.mark.asyncio
@@ -348,3 +366,50 @@ async def test_publish_of_an_unknown_txn_is_refused():
     operation, _, _ = _operation()
     request = _request("publish")
     assert _verified(await operation.answer(request), request)["code"] == "txn_unknown"
+
+
+@pytest.mark.asyncio
+async def test_the_answer_does_not_grow_with_the_edit_refusals_included():
+    sizes = []
+    for count in (1, 40):
+        selection = {"resource_grants": [f"grant-{index}:read" for index in range(count)]}
+        for planner in (_Planner(), _Planner({"ok": False, "error": "card_plan_selection_invalid"})):
+            operation, _, _ = _operation(planner=planner)
+            response = await operation.answer(_request(updates=[{**UPDATE, "selection": selection}]))
+            assert b"grant-0:read" not in canonical_json_bytes(response)
+            sizes.append(len(canonical_json_bytes(response["participant_answer"]["result"])))
+    assert sizes[0] == sizes[2] and sizes[1] == sizes[3]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("op", ["stage", "publish", "rollback"])
+async def test_a_txn_answers_only_the_scope_and_caller_that_staged_it(op):
+    store = _Store()
+    first, _, _ = _operation(store=store)
+    assert (await first.answer(_request(scope="work:project:a")))["ok"] is True
+    other, _, _ = _operation(store=store)
+    request = _request(op, scope="work:project:b")
+    assert _verified(await other.answer(request), request) == {
+        "kind": "refused", "code": "request_scope_invalid", "status": 403}
+    assert len(store.staged) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_retry_with_a_fresh_echo_is_the_same_stage():
+    operation, _, store = _operation()
+    first, again = _request(), _request()
+    assert first["request_echo"] != again["request_echo"]
+    assert stage_digest(first) == stage_digest(again)
+    assert (await operation.answer(first))["ok"] is True and (await operation.answer(again))["ok"] is True
+    assert len(store.staged) == 1
+    changed = _request(updates=[{**UPDATE, "selection": {"resource_grants": ["other:read"]}}])
+    assert stage_digest(changed) != stage_digest(first)
+    assert _verified(await operation.answer(changed), changed)["code"] == "stage_txn_conflict"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("at", [None, "2026-10-10T17:00:00", "yesterday"])
+async def test_stage_needs_the_requests_own_time_with_an_offset(at):
+    operation, _, _ = _operation()
+    response = await operation.answer(_request(at=at))
+    assert response == {"ok": False, "status": 400, "error": {"code": "card_version_request_invalid"}}
