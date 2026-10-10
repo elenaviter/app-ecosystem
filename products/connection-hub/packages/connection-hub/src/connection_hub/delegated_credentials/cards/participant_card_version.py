@@ -72,7 +72,9 @@ _BOUNDED = 256
 # not what PB authorized against" is card_changed; any other is edit_invalid.
 REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_catalog_moved": 409,
             "edit_invalid": 422, "effects_pending": 503, "storage_unavailable": 503,
-            "request_scope_invalid": 403, "stage_txn_conflict": 409, "txn_not_staged": 409}
+            "request_scope_invalid": 403, "stage_txn_conflict": 409, "txn_not_staged": 409,
+            # S5 (EMain 18:27Z): the person sees why a manual edit was refused; a fixed code, no free text.
+            "card_edit_admin_grant_role_only": 409}
 # Store codes PB sees under the contract's name: a txn staged under another scope or caller is out of scope.
 _ALIASES = {"txn_scope_mismatch": "request_scope_invalid"}
 _CARD_CHANGED = frozenset({"card_plan_original_revision_changed", "card_plan_update_target_absent",
@@ -361,6 +363,8 @@ class CardVersionOperation:
             code = planned.get("error") if isinstance(planned, Mapping) else None
             if code in _CARD_CHANGED:
                 raise CardVersionRefused("card_changed")
+            if code == "card_edit_admin_grant_role_only":
+                raise CardVersionRefused(code)
             raise CardVersionRefused("storage_unavailable" if code in _UNAVAILABLE else "edit_invalid")
         plan = planned["plan"]
         catalog = data["catalog"]

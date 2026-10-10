@@ -85,7 +85,8 @@ whole request, so no edit value is repeated.
   16 grants). PB sends `{<its resource>: ["work:admin"]}`.
   - The Hub compares, for each listed grant, whether the original Card holds it
     and whether the candidate does. Any difference refuses
-    `card_edit_admin_grant_role_only`.
+    `card_edit_admin_grant_role_only`, a fixed signed refusal code (409) with no
+    free text.
   - Only `role_selection` changes those grants.
 - **A role change's Cards (`role_selection`).** One `updates` entry per Card (C, or
   C and My): `kind`, `target_subject`, `access_id`, `subject_hash`,
