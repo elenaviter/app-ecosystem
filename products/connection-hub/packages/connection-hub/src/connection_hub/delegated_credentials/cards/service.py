@@ -179,7 +179,8 @@ class DelegatedCardService:
         self._settings = (settings or DelegatedCacheSettings()).cards
         # The recorder reuses this EXACT composed mutation section; it never
         # constructs a separate file-only lock over the same Card storage.
-        self._store._card_intent_service = self
+        if isinstance(self._store, BundleStorageDelegatedCardStore):
+            self._store._card_intent_service = self
 
     def _lock_path(self, *, subject_hash: str, access_id: str) -> pathlib.Path:
         return (

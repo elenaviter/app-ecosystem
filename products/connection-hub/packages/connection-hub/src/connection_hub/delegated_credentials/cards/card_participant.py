@@ -444,6 +444,9 @@ class LocalCardIntentSource:
     async def load(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
         raw = await read_json_or_none(self._path(transaction_id))
         if raw is None:
+            from ..durable_io import path_is_file
+            if await path_is_file(self._path(transaction_id)):
+                raise DecisionRefused("card_intent_invalid")
             raise DecisionRefused("card_intent_unknown")
         from .intent_links import is_link_record, load_links
         intent = await load_links(self, raw) if is_link_record(raw) else intent_from_mapping(raw)
@@ -651,7 +654,7 @@ class HubCardParticipant:
 
     async def finish(self, transaction_id: str, decision: str) -> Receipt:
         """Authenticate the terminal decision first; retire only after service FINISH succeeds."""
-        from .intent_links import is_link_record, retire_intent, terminal
+        from .intent_links import is_link_record, retire_intent, terminal, validate_link_record
         source = self._intents if isinstance(self._intents, LocalCardIntentSource) else getattr(self._intents, "_local", None)
         record = await self._decisions.read(transaction_id)
         if record is None:
@@ -663,6 +666,14 @@ class HubCardParticipant:
         if source is None:
             return await self._finish_loaded(transaction_id, decision)
         raw = await read_json_or_none(source._path(transaction_id))
+        if raw is None:
+            from ..durable_io import path_is_file
+            if await path_is_file(source._path(transaction_id)):
+                raise DecisionRefused("card_intent_invalid")
+        if raw is not None and not isinstance(raw, Mapping):
+            raise DecisionRefused("card_intent_invalid")
+        if is_link_record(raw):
+            validate_link_record(raw)
         ended = await terminal(source, transaction_id)
         if raw is not None and raw.get("intent_digest") != record.intent.digest:
             raise DecisionRefused("card_intent_not_bound")

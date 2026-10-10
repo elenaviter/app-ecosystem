@@ -1,5 +1,7 @@
 """One durable Card body, links-only intents, exact crash/retry and FINISH boundaries."""
 
+import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -8,14 +10,17 @@ import pytest
 from service_foundation.coordination.durable_decision_log import DecisionRefused
 from connection_hub.delegated_credentials.cards import intent_links, transaction_store as tx
 from connection_hub.delegated_credentials.cards.card_participant import (
-    CardIntent, DecisionStorePort, HubCardParticipant, LocalCardIntentSource, PARTICIPANT,
+    CardGroupIntent, CardGroupMemberIntent, CardIntent, DecisionStorePort, HubCardParticipant,
+    LocalCardIntentSource, PARTICIPANT,
 )
+from connection_hub.delegated_credentials.cards.card_group import group_member, hub_group_participant_input
 from connection_hub.delegated_credentials.cards.service import CardServingUnavailable
 from connection_hub.delegated_credentials.cards.version_link import LINK_KEYS, staging_tag, write_hidden_version
 from connection_hub.delegated_credentials.durable_io import read_json_or_none, write_json_atomic
 from test_card_participant import TXID, WITNESS, _Store, _draft, _edit
 from test_card_service import SUBJECT_HASH
 from test_card_transaction_store import _setup
+from service_foundation.coordination.durable_decision_log import IntentDraft
 
 
 async def _unrecorded(tmp_path):
@@ -228,3 +233,166 @@ async def test_v2_record_rejects_a_hidden_full_body_field(tmp_path):
     await write_json_atomic(source._path(TXID), raw)
     with pytest.raises(DecisionRefused, match="card_intent_invalid"):
         await source.load(TXID)
+
+
+async def _unrecorded_group(tmp_path):
+    store, service, before, after = await _setup(tmp_path)
+    created = replace(after, access_id="aut_zz_new", card_revision=1)
+    members = (CardGroupMemberIntent(SUBJECT_HASH, before, after, "update"),
+               CardGroupMemberIntent(SUBJECT_HASH, None, created, "create"))
+    projection = hub_group_participant_input(
+        members=[group_member(original=m.original, candidate=m.candidate, action=m.action) for m in members],
+        actor_subject="person", actor_kind="caller")
+    decisions = _Store()
+    row = await decisions.begin(IntentDraft(
+        replay_scope="test:group", request_id="group", expires_at=2_000_000_000,
+        participants=(PARTICIPANT,), payload={"participant_inputs": {PARTICIPANT: projection}}))
+    tx.bind_transaction_decisions(store, DecisionStorePort(decisions))
+    source = LocalCardIntentSource(store, service=service, decisions=decisions)
+    intent = CardGroupIntent(TXID, row.intent.digest, members, actor_subject="person", actor_kind="caller")
+    hub = HubCardParticipant(service=service, store=store, intents=source, decisions=decisions)
+    return store, service, source, intent, hub, decisions
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recovery", ["resume", "abort"])
+async def test_partial_group_manifest_names_every_member_before_any_version(tmp_path, monkeypatch, recovery):
+    store, _, source, intent, hub, decisions = await _unrecorded_group(tmp_path)
+    write, count = intent_links.write_hidden_version, 0
+
+    async def crash_second(*args, **kwargs):
+        nonlocal count
+        count += 1
+        if count == 2:
+            raise RuntimeError("second member crash")
+        return await write(*args, **kwargs)
+
+    monkeypatch.setattr(intent_links, "write_hidden_version", crash_second)
+    with pytest.raises(RuntimeError, match="second member crash"):
+        await source.record(intent)
+    raw = await read_json_or_none(source._path(TXID))
+    assert raw["status"] == "staging" and len(raw["members"]) == 2
+    with pytest.raises(DecisionRefused, match="card_intent_incomplete"):
+        await source.load(TXID)
+    monkeypatch.setattr(intent_links, "write_hidden_version", write)
+    if recovery == "resume":
+        await source.record(intent)
+        assert (await read_json_or_none(source._path(TXID)))["members"] == raw["members"]
+        await hub.prepare(TXID)
+        await decisions.decide(TXID, "committed")
+        await hub.finish(TXID, "committed")
+    else:
+        await decisions.decide(TXID, "aborted")
+        await hub.finish(TXID, "aborted")
+        for member in raw["members"]:
+            assert not store.revision_path(subject_hash=member["subject_hash"], access_id=member["access_id"],
+                                           revision_name=member["candidate"]["revision_name"]).exists()
+    assert not source._path(TXID).exists()
+
+
+@pytest.mark.asyncio
+async def test_group_plan_candidate_is_adopted_by_its_member_id_not_parent_id(tmp_path):
+    store, service, source, intent, hub, decisions = await _unrecorded_group(tmp_path)
+    lead = intent.members[0]
+    tag = staging_tag("oauth-issuance-candidate", "group-plan")
+    async with service._card_version_sections([(lead.subject_hash, lead.candidate.access_id)]):
+        link = await write_hidden_version(store, subject_hash=lead.subject_hash, authority=lead.candidate,
+                                          at=datetime.now(timezone.utc), tag=tag)
+    planned = replace(lead, candidate_link=link, candidate_staging_tag=tag)
+    await source.record(replace(intent, members=(planned, intent.members[1])))
+    path = store.revision_path(subject_hash=lead.subject_hash, access_id=lead.candidate.access_id,
+                               revision_name=link["revision_name"])
+    original_bytes = path.read_bytes()
+    assert await read_json_or_none(tx.revision_marker_path(
+        store, subject_hash=lead.subject_hash, access_id=lead.candidate.access_id,
+        revision_name=link["revision_name"])) == {"transaction_id": tx.member_transaction_id(TXID, 0)}
+    await hub.prepare(TXID)
+    assert path.read_bytes() == original_bytes
+    assert (await tx.read_receipt(store, tx.member_transaction_id(TXID, 0)))["after"]["revision_name"] == link["revision_name"]
+    await decisions.decide(TXID, "committed")
+    await hub.finish(TXID, "committed")
+
+
+@pytest.mark.asyncio
+async def test_cleanup_crash_retains_address_and_retry_never_hydrates_deleted_candidate(tmp_path, monkeypatch):
+    store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
+    await source.record(intent)
+    await decisions.decide(TXID, "aborted")
+    unlink = intent_links.unlink_guarded
+    raw = await read_json_or_none(source._path(TXID))
+    marker_path = tx.revision_marker_path(store, subject_hash=SUBJECT_HASH,
+        access_id=intent.candidate.access_id, revision_name=raw["candidate"]["revision_name"])
+
+    def crash_marker(path):
+        if path == marker_path:
+            raise OSError("cleanup interrupted")
+        unlink(path)
+
+    monkeypatch.setattr(intent_links, "unlink_guarded", crash_marker)
+    with pytest.raises(OSError, match="cleanup interrupted"):
+        await hub.finish(TXID, "aborted")
+    assert source._path(TXID).exists() and marker_path.exists()
+    assert (await read_json_or_none(tx.tombstone_path(store, TXID)))["intent_finished"] is True
+    monkeypatch.setattr(intent_links, "unlink_guarded", unlink)
+
+    async def no_body(*args, **kwargs):
+        raise AssertionError("cleanup retry must not hydrate the deleted body")
+
+    monkeypatch.setattr(intent_links, "load_version", no_body)
+    first = await hub.finish(TXID, "aborted")
+    assert not source._path(TXID).exists() and not marker_path.exists()
+    assert await hub.finish(TXID, "aborted") == first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["committed", "aborted"])
+async def test_unfinished_legacy_v1_intent_can_finish_and_be_retired(tmp_path, decision):
+    store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
+    await write_json_atomic(source._path(TXID), intent.to_dict())
+    await hub.prepare(TXID)
+    await decisions.decide(TXID, decision)
+    first = await hub.finish(TXID, decision)
+    assert not source._path(TXID).exists()
+    assert await hub.finish(TXID, decision) == first
+
+
+@pytest.mark.asyncio
+async def test_concurrent_exact_record_is_serialized_and_preserves_one_frozen_name(tmp_path):
+    store, service, source, intent, _, _ = await _unrecorded(tmp_path)
+    lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def card_lock(**kwargs):
+        async with lock:
+            yield
+
+    service._mutation_lock = card_lock
+    await asyncio.gather(source.record(intent), source.record(intent), source.record(intent))
+    raw = await read_json_or_none(source._path(TXID))
+    assert len(list(store.card_path(subject_hash=SUBJECT_HASH, access_id=intent.candidate.access_id)
+                    .glob("revisions/*[0-9a-f].json"))) == 2  # bodies, not *.card-transaction.json markers
+    assert (await source.load(TXID)).candidate_link == raw["candidate"]
+
+
+@pytest.mark.asyncio
+async def test_external_first_prepare_uses_recorded_frozen_link_and_finished_cursor(tmp_path):
+    from test_card_participant_operation import _world, _request, _verified, TX, PROJECT
+
+    world, before, _ = await _world(tmp_path)
+    operation = world.operation()
+    request = _request("prepare")
+    assert _verified(await operation.answer(request), request)["kind"] == "receipt"
+    raw = await read_json_or_none(LocalCardIntentSource(world.store)._path(TX))
+    assert (await tx.read_receipt(world.store, TX))["after"]["revision_name"] == raw["candidate"]["revision_name"]
+    assert len(list(world.store.card_path(subject_hash=raw["subject_hash"], access_id=before.access_id)
+                    .glob("revisions/*[0-9a-f].json"))) == 2
+    world.decision = "committed"
+    request = _request("finish", decision="committed")
+    first = _verified(await operation.answer(request), request)
+    assert first["kind"] == "receipt"
+    request = _request("finish", decision="committed")
+    assert _verified(await operation.answer(request), request) == first
+    request = _request("list_prepared", transaction_id=None, limit=1, cursor=TX, scope=PROJECT)
+    assert _verified(await operation.answer(request), request)["kind"] == "page"
+    request = _request("list_prepared", transaction_id=None, limit=1, cursor=TX, scope="work:project:other")
+    assert _verified(await operation.answer(request), request)["code"] == "card_participant_cursor_invalid"

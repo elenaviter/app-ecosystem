@@ -185,7 +185,7 @@ class AuthorityCardIntentSource(_AuthorityReads):
                             scope=intent_scope(verified.intent, self._scope_field),
                             catalog=catalog_reservation_from_dependencies(projection["dependency_revisions"]))
         await self._local.record(intent)
-        return intent
+        return await self._local.load(transaction_id)
 
     async def _load_group(self, transaction_id: str, verified: Any) -> CardGroupIntent:
         """W578: the group intent from the VERIFIED group candidate; each original is the Hub's own Card.
@@ -226,7 +226,7 @@ class AuthorityCardIntentSource(_AuthorityReads):
             else catalog_reservation_from_dependencies(projection["dependency_revisions"]),
             collection=collection)
         await self._local.record(intent)
-        return intent
+        return await self._local.load(transaction_id)
 
 
 __all__ = ["AuthorityCardIntentSource", "AuthorityDecisionReader", "AuthorityDecisionRecord", "AuthorityFetch",
