@@ -764,3 +764,29 @@ async def test_two_saves_with_the_same_version_content_and_time_never_share_a_ve
     assert await _current(store, before) == after  # the winner's version is readable
     assert names[1] in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
     assert await service.rollback_card_version(txn=winner, links=_links(b), at=WHEN) == "already_published"
+
+
+@pytest.mark.asyncio
+async def test_a_successor_is_refused_while_its_predecessor_has_unrecorded_effects(tmp_path):
+    """Infra 17:37Z (D3, "complete or refuse"): A's pointer is published but its handle_binding effect is not
+    recorded. A STAGE (no executor) or pointer writer is refused; a PUBLISH holding the executor finishes A first."""
+    store, service, before, after = await _setup(tmp_path)
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], effects=[{"kind": "handle_binding", "key": "k1"}])
+    with pytest.raises(tx.CardTransactionRefused, match="effects_pending"):
+        await service.publish_card_version(txn=TXN)
+    v3 = replace(after, card_revision=3, label="successor")
+    b = "w661-txn-" + "b" * 32
+    with pytest.raises(CardStorageError, match="card_version_effects_pending"):
+        await _stage(service, [(SUBJECT_HASH, before.access_id, 2, v3)], txn=b)
+    with pytest.raises(CardStorageError, match="card_version_effects_pending"):
+        await service.commit(v3, subject_hash=SUBJECT_HASH, expected_revision=2, now=NOW)
+    ran = []
+
+    async def apply(effect, marker):
+        ran.append((marker["txn"], effect["key"]))
+        return "applied"
+    assert await service.rollback_card_version(txn=TXN, run_effect=apply) == "already_published"
+    assert ran == [(TXN, "k1")]
+    await _stage(service, [(SUBJECT_HASH, before.access_id, 2, v3)], txn=b)
+    await service.publish_card_version(txn=b, run_effect=apply)
+    assert await _current(store, before) == v3

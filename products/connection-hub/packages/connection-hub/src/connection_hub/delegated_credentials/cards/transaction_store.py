@@ -1604,6 +1604,11 @@ async def finalize_current_version(store: Any, *, subject_hash: str, access_id: 
         await _mark_published(store, marker)
     if run_effect is not None and len(marker["members"]) == 1:
         await _run_effects(store, marker, run_effect)
+    if any(str(index) not in marker["effect_outcomes"] for index in range(len(marker["effects"]))):
+        # Infra 17:37Z: D3 is "complete or refuse" before admitting the next base. Without an executor for the
+        # predecessor's effects (STAGE, a pointer writer, or a group), refuse; its own PUBLISH retry/ROLLBACK
+        # finishes them.
+        raise CardStorageError("card_version_effects_pending")
     # The marker stays `published`: only the txn's own PUBLISH retry or ROLLBACK (which PB's error path always
     # sends) deletes it, so that ROLLBACK answers already_published even without its links (Infra red 2).
     return txn
