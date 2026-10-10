@@ -2559,9 +2559,9 @@ class AutomationAccessService:
         request_id: str,
     ) -> dict[str, Any]:
         """W661 save #2 (operator, 10 Oct: bookkeeping never makes the next edit stale). After a managed
-        person-Control save, committed or refused, the answer carries the Card as it is NOW (the same read as
-        project_person_control_get, under the caller's own authority), so the editor reloads it: its next save
-        echoes the current revision and properties. A failed read leaves the answer as it was."""
+        person-Control save, committed or refused, the answer carries the Card as it is NOW (the same read the
+        person-Control get route makes, under the caller's own authority), so the editor reloads it: its next
+        save echoes the current revision and properties. A failed read leaves the answer as it was."""
         if not isinstance(result, dict) or ("managed_card_edit" not in result and result.get("status") != 409):
             return result
         try:
