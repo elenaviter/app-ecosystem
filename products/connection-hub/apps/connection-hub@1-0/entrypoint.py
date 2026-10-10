@@ -1240,6 +1240,18 @@ def _delegated_catalog_store(entrypoint: Any) -> Any:
     return BundleStorageDelegatedCatalogStore(storage_root) if storage_root is not None else None
 
 
+async def _repair_legacy_project_bindings(entrypoint: Any) -> dict[str, int]:
+    """P0 (10 Oct 2026): legacy C under its project's one P, and My pointers, exactly as new Cards are bound."""
+    from connection_hub.delegated_credentials.legacy_binding_repair import repair_legacy_project_bindings
+
+    storage_root = entrypoint.bundle_storage_root()
+    if storage_root is None:
+        return {}
+    store = BundleStorageDelegatedCardStore(storage_root, lifecycle_lock_scope=_lifecycle_lock_scope(entrypoint))
+    host = await _automation_access_service(entrypoint, None)
+    return await repair_legacy_project_bindings(host, store)
+
+
 async def _delegated_card_persistence(entrypoint: Any, redis: Any) -> Any:
     """Durable card persistence, or ``None`` when bundle storage is
     unavailable — card operations then fail closed."""
@@ -3283,6 +3295,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 LOGGER.exception("[connection-hub] on_bundle_load: failed to ensure/bootstrap authenticator schema")
         else:
             LOGGER.warning("[connection-hub] on_bundle_load: no pg_pool; request authenticator metadata store unavailable")
+        # P0 (10 Oct 2026): bind legacy project Cards the way new Cards are bound, once, on reload.
+        # Idempotent; logs counts only; a failure never blocks the bundle load.
+        try:
+            await _repair_legacy_project_bindings(self)
+        except Exception as exc:  # noqa: BLE001 - class only, never values
+            LOGGER.warning("[connection-hub] on_bundle_load: legacy project binding repair failed: %s",
+                           type(exc).__name__)
 
     def configuration_defaults(self) -> Dict[str, Any]:
         return {
