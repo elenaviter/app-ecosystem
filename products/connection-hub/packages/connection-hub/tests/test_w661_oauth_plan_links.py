@@ -45,6 +45,15 @@ def _assert_no_bodies(value):
         assert item is None or not set(item) & _BODY_FIELDS
 
 
+def _owners(plan):
+    """A begun plan's candidate owners: its staging tag, or (once lane 3's record adopted it) its
+    transaction, member 0 of a first-consent group."""
+    from connection_hub.delegated_credentials.cards.transaction_store import member_transaction_id
+
+    return {links.staging_tag("oauth-issuance-candidate", plan.decision_request_id),
+            plan.transaction_id, member_transaction_id(plan.transaction_id, 0)}
+
+
 async def _complete(w, plan):
     tokens = await _reserve(w, plan)
     return await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id,
@@ -67,7 +76,7 @@ async def test_a_first_consent_plan_links_a_hidden_candidate_version_and_commits
                                            revision_name=link["revision_name"]) is None
         assert await _card(w, plan.access_id) is None
         loaded = await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
-                                          link=link, marker=tag)
+                                          link=link, owners=_owners(plan))
         assert loaded.content_hash() == plan.card_content_hash
         result = await _complete(w, plan)
         assert (result.state, result.card_revision) == ("committed", 1)
@@ -112,7 +121,7 @@ async def test_a_legacy_plan_that_stored_bodies_still_completes(tmp_path):
         stored = await _stored(w, plan)
         tag = links.staging_tag("oauth-issuance-candidate", plan.decision_request_id)
         body = await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
-                                        link=stored["intent"]["candidate"], marker=tag)
+                                        link=stored["intent"]["candidate"], owners=_owners(plan))
         legacy = {**stored, "intent": {key: value for key, value in stored["intent"].items() if key != "card_kind"}}
         legacy["intent"]["candidate"] = body.to_dict()
         async with w.pool.acquire() as connection:
@@ -138,7 +147,7 @@ async def test_the_version_link_helper_refuses_a_wrong_marker_card_or_shape(tmp_
         # A retry of the same write (same at, same tag) reuses the one file.
         tag = links.staging_tag("oauth-issuance-candidate", plan.decision_request_id)
         authority = await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
-                                             link=link, marker=tag)
+                                             link=link, owners=_owners(plan))
         with pytest.raises(CardRecordError, match="version_link_marker_mismatch"):  # Spark N2
             await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id, link=link)
         at = datetime(2026, 10, 10, 22, 0, tzinfo=timezone.utc)
@@ -206,7 +215,7 @@ async def test_a_hidden_version_is_never_overwritten_and_is_adopted_by_moving_on
         link = stored["intent"]["candidate"]
         tag = links.staging_tag("oauth-issuance-candidate", plan.decision_request_id)
         authority = await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
-                                             link=link, marker=tag)
+                                             link=link, owners=_owners(plan))
         at = datetime(2026, 10, 11, 0, 0, tzinfo=timezone.utc)
         other = links.staging_tag("test", "owner")
         first = await links.write_hidden_version(w.store, subject_hash=w.subject_hash, authority=authority,
@@ -234,11 +243,13 @@ async def test_a_hidden_version_is_never_overwritten_and_is_adopted_by_moving_on
                                                 at=at, tag=other) == first
         assert not marker.exists()
         # Adoption: the SAME file, only the marker moves; a retry is accepted; another owner refuses.
-        txn = links.staging_tag("test", "real-txn")
+        txn = "a" * 64
         candidate_marker = revision_marker_path(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
-                                                revision_name=link["revision_name"])
+                                                revision_name=first["revision_name"])
         candidate_path = w.store.revision_path(subject_hash=w.subject_hash, access_id=plan.access_id,
-                                               revision_name=link["revision_name"])
+                                               revision_name=first["revision_name"])
+        link, tag = first, other
+        candidate_marker.write_text(json.dumps({"transaction_id": other}))  # staged again under its tag
         before = candidate_path.read_bytes()
         for _ in range(2):
             assert await links.adopt_hidden_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
@@ -273,7 +284,7 @@ async def test_the_plan_reads_its_candidate_after_adoption_and_after_commit_but_
         assert refused.value.reason == "issuance_plan_card_unavailable"
         marker.write_text(json.dumps({"transaction_id": member}))
         assert (await _complete(w, plan)).state == "committed"
-        marker.unlink()  # committed: the marker may go; the plan still reads its candidate
+        marker.unlink(missing_ok=True)  # committed: the marker may go; the plan still reads its candidate
         assert (await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)).operations \
             == plan.operations
 
@@ -289,7 +300,7 @@ async def test_a_present_json_null_version_or_marker_is_corruption_never_absence
         link = (await _stored(w, plan))["intent"]["candidate"]
         tag = links.staging_tag("oauth-issuance-candidate", plan.decision_request_id)
         authority = await links.load_version(w.store, subject_hash=w.subject_hash, access_id=plan.access_id,
-                                             link=link, marker=tag)
+                                             link=link, owners=_owners(plan))
         at = datetime(2026, 10, 11, 0, 30, tzinfo=timezone.utc)
         other = links.staging_tag("test", "null")
         written = await links.write_hidden_version(w.store, subject_hash=w.subject_hash, authority=authority,
@@ -432,6 +443,15 @@ async def test_a_pending_decision_never_treats_a_missing_marker_as_committed(tmp
             await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)
 
 
+def _version_files(w, access_id):
+    """Every version file of one Card (TEST-only listing, to prove nothing extra exists)."""
+    directory = w.store.card_path(subject_hash=w.subject_hash, access_id=access_id) / "revisions"
+    return sorted(path.name for path in directory.glob("card_revision_*.json")
+                  if not path.name.endswith((".card-transaction.json", ".card-version.json", ".lifecycle.json",
+                                             ".issuer-update.json")))
+
+
+
 def _staged_files(w, access_id):
     """Every staging-owned candidate file of one Card (a TEST-only listing, to prove nothing extra exists)."""
     directory = w.store.card_path(subject_hash=w.subject_hash, access_id=access_id) / "revisions"
@@ -459,7 +479,7 @@ async def test_a_crash_before_the_plan_is_stored_is_retried_onto_the_same_file(t
         monkeypatch.setattr(w.authority, "put_issuance_plan", original_put)
         plan = await _begin(w, request="crashing")
         link = (await _stored(w, plan))["intent"]["candidate"]
-        assert _staged_files(w, plan.access_id) == [link["revision_name"].replace(".json", ".card-transaction.json")]
+        assert _version_files(w, plan.access_id) == [link["revision_name"]]  # one file, whoever owns it now
         assert await w.authority.read_plan_attempt(plan.decision_request_id) is None  # gone once stored
         assert (await _complete(w, plan)).state == "committed"
 
@@ -473,7 +493,7 @@ async def test_concurrent_planners_of_one_request_store_one_plan_and_one_file(tm
         first, second = await asyncio.gather(_begin(w, request="raced"), _begin(w, request="raced"))
         assert first == second
         link = (await _stored(w, first))["intent"]["candidate"]
-        assert _staged_files(w, first.access_id) == [link["revision_name"].replace(".json", ".card-transaction.json")]
+        assert _version_files(w, first.access_id) == [link["revision_name"]]
 
 
 @pytest.mark.asyncio
@@ -486,15 +506,15 @@ async def test_an_aborted_decision_releases_its_planned_candidate(tmp_path):
         assert path.exists()
         result = await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id, expect=None)
         assert result.state == "aborted"  # nothing was reserved
-        assert path.exists()  # reads before the plan's deadline still need it
         with pytest.raises(IssuanceRefused, match="issuance_decision_closed"):
             await _reserve(w, plan, slots=("access",))
         async with w.pool.acquire() as connection:
             await connection.execute(f"UPDATE {w.authority.schema}.connection_hub_oauth_issuance_plans "
                                      "SET reserved_until = to_timestamp(1) WHERE decision_request_id = $1",
                                      plan.decision_request_id)
-        assert await w.service.release_unbegun_oauth_issuance_plans() == 1
-        assert not path.exists() and _staged_files(w, plan.access_id) == []
+        await w.service.release_unbegun_oauth_issuance_plans()
+        # Gone either way: lane 3's FINISH(ABORT) removes an adopted candidate; the sweep a staging-owned one.
+        assert not path.exists() and _version_files(w, plan.access_id) == []
         with pytest.raises(IssuanceRefused, match="issuance_decision_closed"):
             await w.service.read_oauth_issuance_plan(transaction_id=plan.transaction_id)
         assert await w.service.release_unbegun_oauth_issuance_plans() == 0  # released once (flag)
@@ -597,3 +617,27 @@ async def test_a_begin_that_stopped_before_its_binding_is_bound_by_the_sweep_not
         bound = await w.authority.read_issuance_plan_request(request)
         began = await decisions.read_by_request(stored["plan"]["draft"]["replay_scope"], request)
         assert bound["transaction_id"] == began.transaction_id
+
+
+@pytest.mark.asyncio
+async def test_the_issuance_record_adopts_the_planned_candidate_so_each_version_exists_once(tmp_path):
+    """Wiring (lane 4 on lane 3): the plan's candidate file IS the version STAGE commits; one file per
+    revision, adopted by the real transaction (member 0 of a first-consent group), never a second copy."""
+    from connection_hub.delegated_credentials.cards.transaction_store import member_transaction_id, revision_marker_path
+
+    async with _world(tmp_path) as w:
+        first = await _begin(w)
+        link = (await _stored(w, first))["intent"]["candidate"]
+        marker = revision_marker_path(w.store, subject_hash=w.subject_hash, access_id=first.access_id,
+                                      revision_name=link["revision_name"])
+        assert json.loads(marker.read_text()) == {"transaction_id": member_transaction_id(first.transaction_id, 0)}
+        assert (await _complete(w, first)).state == "committed"
+        assert _version_files(w, first.access_id) == [link["revision_name"]]
+        current = await w.store.read_current_authority(subject_hash=w.subject_hash, access_id=first.access_id)
+        assert current[0].revision_name == link["revision_name"]
+        second = await _begin(w, request="exchange-2", scopes=["memories:read", "memories:write"])
+        link2 = (await _stored(w, second))["intent"]["candidate"]
+        assert (await _complete(w, second)).state == "committed"
+        assert _version_files(w, second.access_id) == sorted([link["revision_name"], link2["revision_name"]])
+        assert (await w.service.read_oauth_issuance_plan(transaction_id=second.transaction_id)).operations \
+            == second.operations
