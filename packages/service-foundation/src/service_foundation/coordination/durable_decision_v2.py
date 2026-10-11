@@ -471,6 +471,17 @@ class PostgresDecisionStore:
         async with self.pool.acquire() as conn:
             return self._decode(await self._row(conn, transaction_id))
 
+    async def read_request(self, replay_scope: str, request_id: str, *, connection: Any | None = None
+                           ) -> DecisionRecord | None:
+        """READ ONLY: the decision begun for (replay_scope, request_id), or None when none began. Never begins
+        one (``begin`` would): a cleanup proves "no decision" with this before it releases anything."""
+        query = (f"SELECT {_ROW_COLUMNS} FROM {self.table} WHERE namespace=$1 AND replay_scope=$2"
+                 " AND request_id=$3")
+        if connection is not None:
+            return self._decode(await connection.fetchrow(query, self.namespace, replay_scope, request_id))
+        async with self.pool.acquire() as conn:
+            return self._decode(await conn.fetchrow(query, self.namespace, replay_scope, request_id))
+
     async def record_prepared(self, receipt: Receipt, *, connection: Any | None = None
                               ) -> DecisionRecord:
         async with self._transaction(connection) as conn:

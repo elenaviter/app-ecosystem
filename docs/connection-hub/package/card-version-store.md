@@ -124,8 +124,8 @@ The OAuth issuance plan holds two links:
   records the planned clock and the file's link. The first planner's clock wins
   (`INSERT ... ON CONFLICT DO NOTHING`), so a retry, or a concurrent planner of the same request, builds
   the same candidate and names the same file, which is reused. An expired attempt is renewed only if it
-  is still the one read, and its row is deleted once the plan is stored, for exactly that clock. No lock
-  is held across these calls.
+  is still the one read, and its row is deleted once the plan is stored, for exactly that clock. No
+  PostgreSQL lock or connection is held across these calls.
 - A stored plan always wins. Another planner of the same request can finish the whole begin while this one
   is between two calls. Then this planner's pin reads no row, its candidate record updates no row, a
   stored plan is found after the pin, or its file is already adopted. In each case it writes no file and
@@ -134,13 +134,32 @@ The OAuth issuance plan holds two links:
   candidate with no marker is accepted only when the bound decision is COMMITTED in the decision log.
   `load_version` with no owner named refuses any marked file. Presence is decided in one read, so a
   concurrent writer is never mistaken for corruption.
-- **Cleanup is disabled in this release: nothing is deleted.** `release_unbegun_oauth_issuance_plans`
-  returns 0, and the reservation sweep does not call it. An outcome read still answers after an abort;
-  plan reads and reserve answer `issuance_decision_closed` once the candidate is gone. A candidate file
-  can stay unreferenced only after a crashed attempt whose Card base moved before its retry, or after an
-  aborted decision. Such a file is hidden (a `stg-` or uncommitted-transaction marker), never history.
-  A bounded cleanup on a per-request KDCube Redis lock, linearized with plan, begin, record and bind,
-  is a separate follow-up.
+- **One section per request (W704).** Plan, store, begin, record and bind run inside the request's
+  section: the composed Card mutation lock with resource `oauth-issuance-request:<sha256(request)>`.
+  Under R, that is the KDCube Redis cluster lock (`observed_redis_lock_async`, key kind `oauth-request`),
+  then the observed file lock on one of 256 fixed stripe files. It holds no PostgreSQL connection. A Card
+  section nests inside it, never the reverse. A second begin of the same request waits; past the wait it
+  refuses the retryable `issuance_request_busy`. No planner can run inside another planner's gap.
+  - A renewed attempt moves to a strictly later clock (`GREATEST(now, old + 1)`), so it never names the
+    old file. Only with candidate cleanup enabled (below), the planner deletes, inside the section, the old
+    attempt's file first, and also the file of a retry whose Card base moved.
+  - Right before the file write, the planner re-reads the stored plan. If any plan is stored, even one with
+    changed inputs, it writes no file.
+- **Candidate cleanup is OFF by default (W704).** One switch, `enable_oauth_candidate_cleanup`, gates every
+  planned-candidate deletion: the planner's deletions above and `release_unbegun_oauth_issuance_plans`. Off,
+  nothing is deleted anywhere and the residual stands. Nothing in this package turns it on; turning it on in
+  a deployment is a separate, approved release decision. Nothing schedules the cleanup.
+  - When on, the cleanup reads at most `limit` expired attempt rows and `limit` unbound plans past
+    `reserved_until`, through deadline indexes. It never lists files or Cards.
+  - Each request is handled inside its section, taken with a short wait. A busy request is skipped.
+  - Claim before delete: verify the row, CLAIM it with one conditional statement (`releasing` on the
+    attempt, `candidate_released` on the plan), delete the file, then finish the row (delete the attempt;
+    mark the plan `candidate_gone`). A crash after the claim leaves a claimed row; the next run re-claims it
+    and finishes, exactly once.
+  - Only a file still owned by the request's staging tag is deleted. An adopted file is lane 3's.
+  - A plan is claimed only when the decision log (`read_request`, read only) shows no decision, or an
+    ABORTED one. From its claim on, a begin of that request refuses `issuance_plan_released`.
+  - With no composed section or no decision-log proof, it releases nothing.
 
 A plan stored before this change still holds bodies and is read as before, until its decision finishes.
 
