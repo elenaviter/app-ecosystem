@@ -442,13 +442,10 @@ class LocalCardIntentSource:
         await record_links(self, intent)
 
     async def load(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
-        raw = await read_json_or_none(self._path(transaction_id))
+        from .intent_links import is_link_record, load_recorded_links, read_manifest, refuse_retired
+        raw = await read_manifest(self, transaction_id)
         if raw is None:
-            from ..durable_io import path_is_file
-            if await path_is_file(self._path(transaction_id)):
-                raise DecisionRefused("card_intent_invalid")
-            raise DecisionRefused("card_intent_unknown")
-        from .intent_links import is_link_record, load_recorded_links
+            await refuse_retired(self, transaction_id)
         intent = await load_recorded_links(self, raw, transaction_id) if is_link_record(raw) else intent_from_mapping(raw)
         if intent.transaction_id != transaction_id:
             raise DecisionRefused("card_intent_invalid")

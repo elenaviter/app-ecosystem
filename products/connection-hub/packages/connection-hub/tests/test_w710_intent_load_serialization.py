@@ -201,7 +201,8 @@ async def test_overlapping_prepare_observes_exact_retired_decision_without_hydra
 
 
 @pytest.mark.asyncio
-async def test_retired_overlap_refuses_changed_finished_binding(tmp_path, monkeypatch):
+@pytest.mark.parametrize("field", ["record_digest", "authority", "scope"])
+async def test_retired_overlap_refuses_changed_finished_binding(tmp_path, field):
     store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
     await source.record(intent)
     raw = await read_json_or_none(source._path(TXID))
@@ -209,10 +210,34 @@ async def test_retired_overlap_refuses_changed_finished_binding(tmp_path, monkey
     await decisions.decide(TXID, "committed")
     await hub.finish(TXID, "committed")
     receipt = await transaction_store.read_receipt(store, TXID)
-    receipt["intent_binding"]["record_digest"] = "d" * 64
+    receipt["intent_binding"][field] = "d" * 64 if field == "record_digest" else "another-binding"
     await write_json_atomic(transaction_store.receipt_path(store, TXID), receipt)
     with pytest.raises(DecisionRefused, match="card_intent_conflict"):
         await intent_links.load_recorded_links(source, raw, TXID)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["committed", "aborted"])
+async def test_initially_retired_load_uses_only_finished_terminal_metadata(tmp_path, monkeypatch, decision):
+    store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
+    await source.record(intent)
+    await hub.prepare(TXID)
+    await decisions.decide(TXID, decision)
+    await hub.finish(TXID, decision)
+
+    async def no_hydration(*args, **kwargs):
+        raise AssertionError("retired load must not hydrate Card bodies")
+
+    monkeypatch.setattr(intent_links, "load_version", no_hydration)
+    reason = "card_transaction_late_stage" if decision == "committed" else "card_transaction_aborted"
+    with pytest.raises(DecisionRefused, match=reason):
+        await source.load(TXID)
+    receipt = await transaction_store.read_receipt(store, TXID)
+    receipt.pop("intent_binding")
+    receipt.pop("intent_finished")
+    await write_json_atomic(transaction_store.receipt_path(store, TXID), receipt)
+    with pytest.raises(DecisionRefused, match="card_intent_unknown"):
+        await source.load(TXID)  # A terminal receipt without completed service duties proves no retirement.
 
 
 @pytest.mark.asyncio
@@ -232,7 +257,10 @@ async def test_initial_absence_rechecks_a_manifest_created_before_presence_check
     monkeypatch.setattr(card_participant, "read_json_or_none", stale_absence)
     monkeypatch.setattr(intent_links, "read_json_or_none", stale_absence)
     result = await getattr(source, operation)(TXID)
-    assert result.transaction_id == TXID if operation == "load" else result.scope == intent.scope
+    if operation == "load":
+        assert result.transaction_id == TXID
+    else:
+        assert result.scope == intent.scope
 
 
 @pytest.mark.asyncio

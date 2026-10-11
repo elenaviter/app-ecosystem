@@ -172,10 +172,18 @@ takes those same composed sections and reads the manifest again. An active
 recorder can finish `staging` to `ready` while the reader waits; no Card is
 hydrated before the locked re-read. Every other manifest field must remain
 identical, and `ready` cannot move back to `staging`. A changed binding or
-member set refuses `card_intent_conflict`; a removed intent is unknown, and
-JSON null is invalid. A recorder that crashed still leaves `staging`, which
+member set refuses `card_intent_conflict`. If FINISH retired the exact intent
+while a duplicate waited, its validated finished receipt/tombstone must match
+the original manifest's digest, authority and scope, and the authoritative
+terminal decision when that port is bound. It yields the existing late-stage
+or aborted refusal, not a new successful PREPARE: the coordinator can replay
+its own exact decision without treating the participant as unavailable.
+Missing, unfinished or mismatched terminal evidence still refuses. The initial
+metadata read also performs at most one re-read when a subsequent presence
+check sees a file, handling publication/removal between the read and stat;
+JSON null remains invalid. A recorder that crashed still leaves `staging`, which
 continues to refuse `card_intent_incomplete` without candidate hydration.
-The loader writes nothing, adds no private lock or retry policy, and releases
+The loader writes nothing, adds no private lock or unbounded retry policy, and releases
 the member sections before the participant enters its preparation operation.
 Legacy v1 and terminal FINISH's receipt-only retries are unchanged.
 
