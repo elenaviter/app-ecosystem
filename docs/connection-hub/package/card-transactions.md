@@ -57,6 +57,24 @@ whole request, so no edit value is repeated.
     one allow per step and builds the new versions with `plan_card_lifecycle`.
     A base that moved is `card_changed`, and another catalog is
     `stage_catalog_moved`.
+  - **A join's invitation seed (W746).** Redeeming an invitation creates the
+    person's C with `seed_origin: "invitation"`. That creation's
+    `identity.invitation` also carries `email_digest`: the
+    `normalized_email_digest` of the redeemer's provider-verified email. PB's
+    join admission matched that email to the invitation.
+    - `stage_authorization` lifts the digest out of the identity, so the planner
+      sees the identity it always checked. It puts the digest in that one
+      step's evidence: `{source: card-version-stage, request_digest,
+      invitation_ref, invitation_email_digest}`.
+    - The planner still compares it with the pending invitation Card's own
+      target digest. A mismatch is `project_invitation_binding_email_mismatch`
+      (`edit_invalid` on the wire), and nothing is written.
+    - `email_digest` anywhere else (another kind, another step, or the identity
+      top level) is refused `card_plan_invitation_email_digest_misplaced`. A
+      malformed digest is refused `card_plan_invitation_seed_invalid`.
+    - Every other STAGE body, and its decisions, stays byte-identical. This is
+      the evidence the legacy PLAN callback gave, with the same trust: the
+      STAGE request is PB-authenticated.
   - The Card store then writes each version once, not yet final, under the
     Card's lock. It compares a retry by the STAGE digest: every request field
     except the per-call `request_echo`. A different edit under the same `txn`
@@ -358,6 +376,29 @@ confirmation, so the host previews and confirms the same proposal in that call; 
 are unchanged (an owner or admin removes another non-owner person). STAGE fences the person's Control at
 `original_revision`, so a moved Control refuses and nothing is written. Without a forwarder, or for a pending
 invitation (`invitation_ref`), the Hub keeps refusing `card_transactions_direct_write_refused`.
+
+**The project access rule (W742).** On the project Control (P) alone, the AND/OR rule
+(`composition_mode`) also travels, as an exact, signed top-level field of the body, only when it
+differs from P's durable current revision (never the serving projection). The host sends it in its
+`reselect_project_control` update, and the planner changes exactly that field of P (any other kind
+carrying it is refused `card_plan_update_invalid`). A rule change alone is a real edit; a Save that
+changes nothing answers `{ok: true, unchanged: true}` without a write, so an AND sent to an AND P is
+not an error. On the project path (`project_control_card_update`) the edit names the person the Hub
+authenticated, never P's storage owner. Every body without the field is byte-identical to before.
+
+**Renaming a managed Card (W735).** A Card's `label` is a display field, not authority. On every managed
+kind (a person's Control, their My Card, a project agent Card, the project Control P, a pending invitation's
+Control) a changed label travels as an exact, signed top-level `label` field of the managed edit, only when it
+differs from the stored name; the planner changes exactly that field, so a rename alone is a real edit and
+the Card's authority stays byte-identical. Every body without it is unchanged.
+
+**Renewing a managed Card (W735).** A Control (P, C) and a person's My Card never carry an expiry: the Card
+model refuses one. Renewing one answers `delegated_access_managed_card_does_not_expire` (409); there is
+nothing to renew. A project agent Card renews by its own source: an agent's credential renews itself; an
+OAuth client's Card is prolonged through its binding's caller-writer policy (W580), expiry forward only. A
+manual bearer bound under a project Control is not reissued: a reissue replaces the Card's credentials,
+which W578 refuses for a bound Card (`card_transactions_direct_write_refused`). Unlink it from the project
+first, then reissue it.
 
 **A focused grant ("add permission", W727)** is the Cards screen's
 `delegated_agent_grant_create` for one newly ticked operation, sent after the

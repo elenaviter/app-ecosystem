@@ -113,11 +113,13 @@ async def build_existing_card_selection_update(
     request_id: str,
     now: int,
     accepted_operations: Mapping[str, Any] | None = None,
+    label: str | None = None,
 ) -> dict[str, Any]:
     """Build one exact C/My update from a host-authorized selection, without a write.
 
     W723: ``accepted_operations`` names the changed catalog rows the person ticked "Accept update"
     for; the same ``next_resource_acceptance`` the direct path uses records them.
+    W735: ``label`` is the Card's new display name; it changes only that field, never authority.
     """
     scope = _required(project_ref, "card_plan_update_scope_invalid")
     target = _required(target_subject, "card_plan_update_scope_invalid")
@@ -178,6 +180,7 @@ async def build_existing_card_selection_update(
     candidate = dataclasses.replace(
         selected, card_revision=original.card_revision + 1, catalog_version=catalog_version,
         resource_acceptance=preserve_descriptor_acceptance(original.resource_acceptance, computed_acceptance),
+        **({"label": label} if label is not None else {}),
     )
     before = original.to_dict()
     after = candidate.to_dict()
@@ -192,7 +195,7 @@ async def build_existing_card_selection_update(
             candidate.properties, basis_catalog_version=catalog_version,
         ))
         candidate = bind_project_person_control(candidate, identity=identity)
-        if not project_person_control_diff(original, candidate):
+        if not project_person_control_diff(original, candidate) and (label is None or label == original.label):
             raise _refuse("card_plan_selection_unchanged")
         audit = ProjectPersonControlAudit.build(
             action="updated", actor_subject=actor, identity=identity,
@@ -202,7 +205,10 @@ async def build_existing_card_selection_update(
     shape_refusal = candidate_shape_refusal("update", original.to_dict(), candidate.to_dict())
     if shape_refusal is not None:
         raise _refuse(shape_refusal)
-    if undisplayed_change(original.to_dict(), candidate.to_dict(),
+    shown = original.to_dict()
+    if label is not None:
+        shown["label"] = label  # the one display field the person renamed
+    if undisplayed_change(shown, candidate.to_dict(),
                           hub_written=kind == "person_control") is not None:
         raise _refuse("card_plan_undisplayed_change")
     return {"member": group_member(original=original, candidate=candidate, action="update")}
