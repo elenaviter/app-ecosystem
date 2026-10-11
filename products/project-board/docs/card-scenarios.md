@@ -126,7 +126,7 @@ attempt with its time. `unconfirmed` means no test has run it yet. Times are UTC
 |---|---|---|---|---|---|---|
 | V1 | admin | C | Remove a person from the project | Hub `project_person_control_revoke`, or PB `project.people.remove` | C is revoked through the project and the person's membership ends | unconfirmed; the Hub request refuses outright today (W728) |
 | V2 | holder | managed Card | Revoke the Card from the Cards screen | Hub `delegated_access_revoke` | Through the project where the rules allow it; otherwise a named refusal the screen explains | unconfirmed; refuses today (W729) |
-| V3 | admin | P | Revoke P | `delegated_access_revoke` | Through the project; every linked agent closes at once (fail closed) | unconfirmed |
+| V3 | admin | P | Revoke the project Control Card | `delegated_access_revoke` | Refused by design with a named reason (`managed_card_revoke_project_control_unsupported`): P exists as long as the project and ends only when the project is deleted. Operator, 11 Oct 15:16Z, verbatim: "no. if we have project we have card. when project deleted then card as well" | refusal confirmed (W730); message W729 |
 
 ### People and roles (Problem Board screen)
 
