@@ -348,11 +348,13 @@ async def test_member_locks_are_taken_in_sorted_order_and_held_for_every_operati
     _, _, before, _ = await _setup(tmp_path / "seed")
     cards = [replace(before, access_id=f"aut_{name}", card_revision=1) for name in ("zz", "aa", "mm")]
     await _stage(service, [(SUBJECT_HASH, c.access_id, None, c) for c in cards])
-    assert taken == ["delegated-card:aut_aa", "delegated-card:aut_mm", "delegated-card:aut_zz"]
+    # W700 P: the txn's own section first (one order for STAGE, PUBLISH, ROLLBACK), then the members sorted.
+    order = ["card-version-txn:" + TXN, "delegated-card:aut_aa", "delegated-card:aut_mm", "delegated-card:aut_zz"]
+    assert taken == order
     taken.clear()
     await service.publish_card_version(txn=TXN)
     # read members, take their locks in order, re-read under the locks
-    assert taken == ["delegated-card:aut_aa", "delegated-card:aut_mm", "delegated-card:aut_zz"]
+    assert taken == order
     assert held == set()
 
 
@@ -928,11 +930,14 @@ async def test_read_members_are_locked_in_the_one_sorted_order_with_the_written_
     await service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,
                                      members=[(SUBJECT_HASH, before.access_id, 1, after)],
                                      reads=[(SUBJECT_HASH, control.access_id, 1)])
-    assert taken == sorted(taken) and set(taken) == {f"delegated-card:{control.access_id}",
-                                                     f"delegated-card:{before.access_id}"}
+    # W700 P: the txn's own section first, then the written and read members in the one sorted order.
+    assert taken[0] == "card-version-txn:" + TXN
+    assert taken[1:] == sorted(taken[1:]) and set(taken[1:]) == {f"delegated-card:{control.access_id}",
+                                                                 f"delegated-card:{before.access_id}"}
     taken.clear()
     await service.publish_card_version(txn=TXN)
-    assert set(taken) == {f"delegated-card:{control.access_id}", f"delegated-card:{before.access_id}"}
+    assert taken[0] == "card-version-txn:" + TXN
+    assert set(taken[1:]) == {f"delegated-card:{control.access_id}", f"delegated-card:{before.access_id}"}
 
 
 @pytest.mark.asyncio

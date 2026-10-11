@@ -302,9 +302,12 @@ reacquired while old code still acts, so durable effects need a resource-enforce
   - **Cutover:** stop every Hub process of the scope, deploy, then start. A pre-P binary writes only the
     file, and new code cannot refuse it, so old and new processes must never overlap. The phase-1
     single-writer guard stays until R is qualified on a cluster deployment.
-- **A txn with no member Card.** An operation on a card-version txn whose marker names no member (an unknown
-  or late txn, e.g. a ROLLBACK under `KEEP_ROLLBACK_MARKER`) takes the txn's own section
-  (`card-version-txn:<txn>`, R key kind `card-version-txn`), so its marker write is locked and row-fenced too.
+- **The txn's own section, first.** Every card-version operation (STAGE, PUBLISH, ROLLBACK) takes the txn's
+  own section (`card-version-txn:<txn>`, R key kind `card-version-txn`) BEFORE the member Card sections, in that
+  one order. So a ROLLBACK or PUBLISH that found no members yet still serializes with a same-txn STAGE that is
+  creating them, and a txn with no member Card (e.g. a ROLLBACK under `KEEP_ROLLBACK_MARKER`) still writes its
+  marker locked and row-fenced. (Before, such an operation held no Card lock and could act on a marker a
+  concurrent STAGE had just written; the R+PG suite surfaced it as card_version_marker_moved.)
   Its local lock file is one of 256 fixed shards chosen by the txn's digest (`txn_section_lock_path`), so late
   rollbacks never grow the lock root; under R the per-txn Redis key expires with its TTL.
 - **Process state.** `_CARD_ROWS_BY_ROOT` is a registry of ACTIVATED SCOPES (a storage root to its row

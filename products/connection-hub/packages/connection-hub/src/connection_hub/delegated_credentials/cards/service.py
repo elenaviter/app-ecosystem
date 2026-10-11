@@ -348,8 +348,11 @@ class DelegatedCardService:
 
         members, reads = list(members), list(reads or ())
         try:
-            # Read members (never written) are locked with the written ones, in the one sorted order.
-            async with self._card_version_sections([(m[0], m[1]) for m in members] + [(r[0], r[1]) for r in reads]):
+            # One lock order for every card-version operation: the txn's own section first, then the member
+            # (and read) Cards in the one sorted order. A ROLLBACK or PUBLISH of the same txn that found no
+            # members yet therefore still serializes with this STAGE (Spark, R+PG run 11 Oct).
+            async with self._txn_section(txn), \
+                    self._card_version_sections([(m[0], m[1]) for m in members] + [(r[0], r[1]) for r in reads]):
                 return await card_version_stage(self._store, txn=txn, request_digest=request_digest, catalog=catalog,
                                                 members=members, effects=effects, now=now,
                                                 request_id=request_id, actor=actor, prepare=prepare,
@@ -371,13 +374,15 @@ class DelegatedCardService:
         The members are read first to know which locks to take, then read AGAIN under those locks. If a
         concurrent same-txn STAGE changed them in between, retry (at most 3 times): an operation never acts
         on a member whose lock it does not hold.
+
+        The txn's own section is always taken first (the order STAGE uses too), so an operation that found no
+        members yet cannot interleave with a same-txn STAGE that is creating them: without it, a ROLLBACK
+        holding no Card lock could act on a marker a concurrent STAGE had just written (R+PG run, 11 Oct).
         """
         for _ in range(3):
             expected = sorted(set(await self._card_version_members(txn)))
             try:
-                # No members (an unknown or late txn): the txn's own section, so a closing marker written under
-                # KEEP_ROLLBACK_MARKER is still a locked, row-fenced write (W661 P), never a lock-free one.
-                async with (self._card_version_sections(expected) if expected else self._txn_section(txn)):
+                async with self._txn_section(txn), self._card_version_sections(expected):
                     if sorted(set(await self._card_version_members(txn))) != expected:
                         continue
                     return await operation()
