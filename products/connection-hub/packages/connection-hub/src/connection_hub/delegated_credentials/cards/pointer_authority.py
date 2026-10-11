@@ -206,7 +206,8 @@ class PostgresCardRows:
         """(document, row_revision) or (None, None) when no row exists. Records the revision read. ``claim`` (the
         store passes it only for the holder of THIS Card's lock): the read CLAIMS the row with the operation's
         fence token in the same statement, unless a newer token holds it. A refused claim is an unclaimed read:
-        the fence, document and revision stay as they are, and a later CAS of this operation refuses. Otherwise the read claims nothing."""
+        the fence, document and revision stay as they are, and a later CAS of this operation refuses. Otherwise
+        the read claims nothing."""
         session = _session()
         if session is None or not claim:
             row = await self._fetchrow(
