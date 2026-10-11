@@ -5771,10 +5771,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # forward to the project carries it, so every later hop logs under the same id.
         from connection_hub.card_save_trace import answer_outcome, hop, trace_scope
         started = time.monotonic()
-        with trace_scope(_audit_request_id(request)):
+        # Read the request id ONCE: without a host id, _audit_request_id draws a fresh one per call, and
+        # the trace and the forwarded request_id would then name two different saves.
+        request_id = _audit_request_id(request)
+        with trace_scope(request_id):
             hop("hub.person_control_update", "entry")
             try:
-                answer = await self._person_control_update(payload, user, request)
+                answer = await self._person_control_update(payload, user, request, request_id=request_id)
             except Exception:
                 hop("hub.person_control_update", "error", started=started)
                 raise
@@ -5782,7 +5785,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             hop("hub.person_control_update", outcome, code=code, started=started)
             return answer
 
-    async def _person_control_update(self, payload: Dict[str, Any], user: Any, request: Any) -> Dict[str, Any]:
+    async def _person_control_update(
+        self, payload: Dict[str, Any], user: Any, request: Any, *, request_id: str
+    ) -> Dict[str, Any]:
         return await (
             await _automation_access_service(self, request)
         ).project_person_control_update(
@@ -5793,7 +5798,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             control_id=str(
                 payload.get("control_id") or payload.get("control_card_id") or ""
             ).strip(),
-            request_id=_audit_request_id(request),
+            request_id=request_id,
             resource_grants=(
                 dict(payload.get("resource_grants") or {})
                 if "resource_grants" in payload
