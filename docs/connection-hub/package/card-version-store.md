@@ -167,6 +167,15 @@ started writes drained before release, cover recording and retirement.
 Candidate sidecars are written before version bodies, so planned candidates
 are not serving authority or history.
 
+Pass the composed `DelegatedCardService` explicitly to the intent source in
+production. For callers that omit `service=`, a bundle store retains its
+original service as the fallback; constructing a different service on that
+same store refuses `card_intent_service_conflict`, without replacing the
+fallback or taking any Card lock. Even identical lock objects do not make two
+services interchangeable. Separate stores can have separate services. An
+explicit intent-source service still takes precedence over the fallback;
+this registration guard adds no private lock, ledger or Card copy.
+
 The W578 participant stages that SAME candidate file. A pre-begin OAuth plan
 may supply `candidate_link` and `candidate_staging_tag` on `CardIntent` or on
 each `CardGroupMemberIntent`: recording adopts the sidecar to the transaction

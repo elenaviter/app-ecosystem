@@ -95,7 +95,10 @@ async def test_a_card_save_in_an_ingress_process_is_refused_and_writes_nothing(t
     async def base(**kwargs):
         yield {}
 
-    service = DelegatedCardService(store=store, cache=_Cache(),
+    # The ingress worker owns a distinct store object over the same files.
+    ingress_store = BundleStorageDelegatedCardStore(tmp_path)
+    tx.bind_transaction_decisions(ingress_store, store._card_transaction_decisions)
+    service = DelegatedCardService(store=ingress_store, cache=_Cache(),
                                    mutation_lock=hub_card_mutation_lock(base, tmp_path / "locks", role=lambda: "ingress"))
     with pytest.raises(CardStorageError, match="card_store_write_wrong_process_role"):
         await service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,

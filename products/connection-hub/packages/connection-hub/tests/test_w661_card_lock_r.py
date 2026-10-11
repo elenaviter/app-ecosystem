@@ -339,6 +339,8 @@ async def test_a_publish_stalled_past_the_ttl_is_refused_and_the_retry_publishes
     before = _authority()
     await seed.commit(before, subject_hash=SUBJECT_HASH, expected_revision=0, now=1_780_000_000)
     after = replace(before, card_revision=2, label="published by the retry")
+    store = guard_card_store_lock_owner(BundleStorageDelegatedCardStore(tmp_path))
+    tx.bind_transaction_decisions(store, Decisions())
     service_a = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=lock)
     await _stage(service_a, [(SUBJECT_HASH, before.access_id, 1, after)])
 
@@ -373,7 +375,10 @@ async def test_a_publish_stalled_past_the_ttl_is_refused_and_the_retry_publishes
     async def b():
         await stalled.wait()
         await asyncio.sleep(1.2)  # A's key has expired
-        service_b = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=lock)
+        # B is another worker: separate objects, same durable files and Redis key.
+        retry_store = guard_card_store_lock_owner(BundleStorageDelegatedCardStore(tmp_path))
+        tx.bind_transaction_decisions(retry_store, Decisions())
+        service_b = DelegatedCardService(store=retry_store, cache=_Cache(), mutation_lock=lock)
         await service_b.publish_card_version(txn=tx_id())
         retried.set()
 

@@ -362,8 +362,7 @@ async def test_stage_and_rollback_of_one_txn_serialize_on_the_card_lock(tmp_path
             await asyncio.sleep(0)
             yield
 
-    store, _, before, after = await _setup(tmp_path)
-    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    store, service, before, after = await _setup(tmp_path, mutation_lock=mutation_lock)
     staged, answer = await asyncio.gather(_stage(service, [(SUBJECT_HASH, before.access_id, 1, after)]),
                                           service.rollback_card_version(txn=TXN))
     marker = await tx.read_card_version_marker(store, TXN)
@@ -495,8 +494,7 @@ async def test_a_cancelled_stage_drains_its_thread_write_before_rollback_can_run
         async with locks.setdefault(str(lock_path), asyncio.Lock()):
             yield
 
-    store, _, before, after = await _setup(tmp_path)
-    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    store, service, before, after = await _setup(tmp_path, mutation_lock=mutation_lock)
     files_before = _revision_files(store, before)
     real_write = durable_io._write_text_atomic
     entered, resume, order = threading.Event(), threading.Event(), []
@@ -554,7 +552,11 @@ def _locked_service(store):
     async def mutation_lock(*, lock_path, resource_id, operation, wait_seconds):
         async with locks.setdefault(str(lock_path), asyncio.Lock()):
             yield
-    return DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    # A separate worker composes a fresh store object over the same durable root.
+    reopened = BundleStorageDelegatedCardStore(store.root.parent.parent,
+                                               lifecycle_lock_scope=store.lifecycle_lock_scope)
+    tx.bind_transaction_decisions(reopened, store._card_transaction_decisions)
+    return DelegatedCardService(store=reopened, cache=_Cache(), mutation_lock=mutation_lock)
 
 
 @pytest.mark.asyncio
@@ -913,10 +915,10 @@ async def test_read_members_are_locked_in_the_one_sorted_order_with_the_written_
         taken.append(resource_id)
         yield
 
-    store, base_service, before, after = await _setup(tmp_path)
+    store, service, before, after = await _setup(tmp_path, mutation_lock=mutation_lock)
     control = replace(before, access_id="aut_aa_control", card_revision=1)
-    await base_service.commit(control, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
-    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    await service.commit(control, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
+    taken.clear()  # measure the operation, not fixture seeding
     await service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,
                                      members=[(SUBJECT_HASH, before.access_id, 1, after)],
                                      reads=[(SUBJECT_HASH, control.access_id, 1)])

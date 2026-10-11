@@ -42,13 +42,13 @@ async def fixture(tmp_path):
     cache.commit_projection = AsyncMock(side_effect=commit)
     cache.finalize_removal = AsyncMock(side_effect=remove)
     cache.read = AsyncMock(side_effect=lambda *args: live["entry"])
-    service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
-    service._reconcile = AsyncMock()
-    service._index = AsyncMock()
     handles = MagicMock()
     persistence = DurableCardPersistence(redis=MagicMock(), tenant="fixture", project="fixture", card_store=store,
         mutation_lock=_test_lock, credential_handles=handles)
-    persistence._cards = service
+    service = persistence.card_service
+    service._cache = cache
+    service._reconcile = AsyncMock()
+    service._index = AsyncMock()
     handles.reset_mock()  # constructor chooses the injected store by truthiness
     return original, query, store, service, persistence, cache, handles
 
