@@ -13,8 +13,12 @@ inherits that section's operation and shares its token, and cannot witness eithe
 """
 import asyncio
 import contextvars
+import os
 
 import pytest
+
+pytestmark = pytest.mark.skipif(not (os.environ.get("W661_TEST_PG_DSN") and os.environ.get("W661_TEST_REDIS_URL")),
+                                reason="W661_TEST_PG_DSN and W661_TEST_REDIS_URL are required")
 
 from connection_hub.delegated_credentials.cards import store as store_module
 from connection_hub.delegated_credentials.cards.store import CardStorageError
