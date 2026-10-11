@@ -203,5 +203,23 @@
   "object.action.project.role.get",
   "object.action.project.role.handover.decide",
   "object.action.project.coordinator.note.write"
+ ],
+ "membership": [
+  "assignment.list",
+  "mail.reconciliation.list",
+  "mail.reconciliation.read",
+  "plan.notes.list",
+  "project.control.get",
+  "project.coordinator.get",
+  "project.plan.embedding_status",
+  "project.plan.history",
+  "project.plan.index",
+  "project.plan.item",
+  "project.plan.resolve",
+  "project.plan.search",
+  "project.role.get",
+  "work.attachment.link",
+  "work.item.save",
+  "workspace.shared_write.list"
  ]
 }

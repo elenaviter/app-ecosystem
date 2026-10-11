@@ -3920,6 +3920,8 @@ class AutomationAccessService:
                 # W667: the operations a person's Card decides; a person's editor hides the rest.
                 **({"person_card_operations": list(person_ops)} if (person_ops := tuple(
                     getattr(resource, "person_card_operations", ()) or ())) else {}),
+                **({"person_member_operations": list(member_ops)} if (member_ops := tuple(
+                    getattr(resource, "person_member_operations", ()) or ())) else {}),
                 "operations": [
                     {
                         "name": tool.name,

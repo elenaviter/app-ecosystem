@@ -56,8 +56,25 @@ function declaredPersonOperations(option: DelegatedAccessResourceOption): Set<st
  *  2026-10-11: "we still show this (simply disabled)", "ie.. we must", "because for other permisisons that
  *  also card does not decide we still show them"): it is SHOWN, never hidden. ``person_undecided`` marks it
  *  so Save keeps the grants it needs exactly as the Card holds them. */
-function managedUndecided<T>(operation: T): T & { managed: true; person_undecided: true } {
-  return { ...operation, managed: true, person_undecided: true };
+function managedUndecided<T extends { name: string }>(
+  operation: T, members: Set<string> | null,
+): T & { managed: true; person_undecided: true; in_effect?: boolean } {
+  // W748 (operator, live 2026-10-11 17:46Z: "read is not ticked btw"): the tick shows whether the operation is
+  // IN EFFECT for the person, so a membership read every member holds is ticked whatever the Card holds.
+  return { ...operation, managed: true, person_undecided: true,
+    ...(members ? { in_effect: members.has(operation.name) } : {}) };
+}
+
+/** W748: the operations every member holds by membership, as the application declares them; null when it
+ *  declares none (an undecided row's tick then shows what the Card holds, as before). */
+function memberOperations(option: DelegatedAccessResourceOption): Set<string> | null {
+  return Array.isArray(option.person_member_operations) && option.person_member_operations.length
+    ? new Set(option.person_member_operations) : null;
+}
+
+/** A named-service alias's outer operation (`object.action.<operation>`), for the membership tick. */
+function aliasOperation(name: string): string {
+  return name.startsWith('object.action.') ? name.slice('object.action.'.length) : name;
 }
 
 /** One catalog row as a person's Card is offered it. An outer operation the service decides for a person
@@ -66,11 +83,12 @@ function managedUndecided<T>(operation: T): T & { managed: true; person_undecide
  *  never hidden. Showing it never edits authority. */
 export function resourceForPersonCard(option: DelegatedAccessResourceOption): DelegatedAccessResourceOption {
   const declared = declaredPersonOperations(option);
+  const members = memberOperations(option);
   return {
     ...option,
     ...(option.operations ? { operations: option.operations.map((operation) => {
       const decided = offeredOnPersonCard(operation) && (!declared || declared.has(operation.name));
-      return decided ? operation : managedUndecided(operation);
+      return decided ? operation : managedUndecided(operation, members);
     }) } : {}),
     ...(option.named_services ? { named_services: option.named_services.map(namespaceForPersonCard) } : {}),
   };
@@ -100,13 +118,18 @@ export function visibleOperations<T extends { hidden?: boolean }>(operations: T[
  *  the offered set keep reading the narrowed namespace, so what Save sends is unchanged. */
 function namespaceShownOnPersonCard(
   namespace: DelegatedAccessNamedServiceNamespaceOption,
+  members: Set<string> | null = null,
 ): DelegatedAccessNamedServiceNamespaceOption {
   if (!namespace.tools) return namespace;
+  const effect = (name: string) => (members ? { in_effect: members.has(aliasOperation(name)) } : {});
   const tools = Object.fromEntries(Object.entries(namespace.tools).map(([name, tool]) => {
     const toolDecided = offeredOnPersonCard(tool);
-    if (!tool.operations) return [name, toolDecided ? tool : { ...tool, person_undecided: true }];
+    if (!tool.operations) {
+      return [name, toolDecided ? tool : { ...tool, person_undecided: true, ...effect(tool.operation || name) }];
+    }
     const operations = Object.fromEntries(Object.entries(tool.operations).map(([operation, entry]) => [
-      operation, toolDecided && offeredOnPersonCard(entry) ? entry : { ...entry, person_undecided: true },
+      operation, toolDecided && offeredOnPersonCard(entry) ? entry
+        : { ...entry, person_undecided: true, ...effect(operation) },
     ]));
     return [name, { ...tool, operations }];
   }));
@@ -117,7 +140,8 @@ function namespaceShownOnPersonCard(
  *  the ones it does not decide included and marked; display only. */
 export function namedServicesShownOnPersonCard(catalogRow: DelegatedAccessResourceOption): DelegatedAccessResourceOption {
   return catalogRow.named_services
-    ? { ...catalogRow, named_services: catalogRow.named_services.map(namespaceShownOnPersonCard) }
+    ? { ...catalogRow, named_services: catalogRow.named_services.map(
+      (namespace) => namespaceShownOnPersonCard(namespace, memberOperations(catalogRow))) }
     : catalogRow;
 }
 
@@ -137,9 +161,11 @@ export function resourcesForPersonMyCard(options: DelegatedAccessResourceOption[
   return options.map((option) => {
     if (declaredPersonOperations(option)) return resourceForPersonCard(option);
     if (!option.operations?.some((operation) => !offeredOnPersonCard(operation))) return option;
+    const members = memberOperations(option);
     return {
       ...option,
-      operations: option.operations.map((operation) => (offeredOnPersonCard(operation) ? operation : managedUndecided(operation))),
+      operations: option.operations.map((operation) => (
+        offeredOnPersonCard(operation) ? operation : managedUndecided(operation, members))),
     };
   });
 }

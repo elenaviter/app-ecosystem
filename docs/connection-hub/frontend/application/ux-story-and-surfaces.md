@@ -114,9 +114,13 @@ read every card.
   decides that operation for a person by role, not by the Card. With a
   non-empty `person_card_operations` declaration, every operation outside it
   is undecided too. A person's Control Card and My Card show every undecided
-  operation, outer and named-service alike, ticked as the Card holds it,
-  disabled, "Set by the application"; none is hidden (operator, 2026-10-11:
-  "we still show this (simply disabled)", "ie.. we must"). Showing never edits
+  operation, outer and named-service alike, disabled, "Set by the application";
+  none is hidden (operator, 2026-10-11: "we still show this (simply disabled)",
+  "ie.. we must"). Its tick says whether it is in effect for the person: an
+  operation in the application's `person_member_operations` declaration (held
+  by every member, such as a membership read) is ticked, any other undecided
+  one is not (operator, 2026-10-11: "read is not ticked btw"); without that
+  declaration the tick shows what the Card holds. Showing never edits
   authority: Save keeps an undecided operation, and the grants it needs,
   exactly as the Card holds them, and never adds one the Card does not hold.
   A My Card without a declaration shows its named services as before. Agent

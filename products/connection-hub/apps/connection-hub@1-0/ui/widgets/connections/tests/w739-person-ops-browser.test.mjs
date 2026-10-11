@@ -71,14 +71,18 @@ for (const card of ['control', 'my']) {
       assert.deepEqual(disabled, UNDECIDED, 'exactly the 49 undecided rows are disabled, "Set by the application"')
       assert.ok(disabled.includes('project.control.get'))
       assert.deepEqual(outer.filter((r) => !r.disabled && !r.managed).map((r) => r.name).sort(), DECLARED)
-      // A disabled row is ticked exactly as the Card holds it.
-      assert.deepEqual(outer.filter((r) => r.disabled && r.checked).map((r) => r.name).sort(),
-        ['project.control.get', 'work.item.save'])
+      // W748 (operator, live 17:46Z: "read is not ticked btw"): a disabled row is ticked when it is in effect
+      // for the person (the 16 membership operations), whatever the Card holds; agent-only and retired are not.
+      assert.deepEqual(outer.filter((r) => r.disabled && r.checked).map((r) => r.name).sort(), [...table.membership].sort())
+      assert.ok(outer.find((r) => r.name === 'project.control.get').checked)
+      assert.equal(outer.find((r) => r.name === 'worker.publish').checked, false)
       if (card === 'control') {
         assert.deepEqual(named.filter((r) => r.disabled && r.managed).map((r) => r.name).sort(),
           [...table.alias_role_only].sort(), 'the six role-only aliases are shown disabled on the Control Card')
         assert.equal(named.length, table.aliases.length)
-        assert.deepEqual(named.filter((r) => r.disabled && r.checked).map((r) => r.name), ['object.action.project.role.get'])
+        // W748: an alias is in effect when its operation is a membership operation.
+        assert.deepEqual(named.filter((r) => r.disabled && r.checked).map((r) => r.name).sort(),
+          table.alias_role_only.filter((name) => table.membership.includes(name.replace('object.action.', ''))).sort())
       } else {
         // A My Card that declares person_card_operations shows its named aliases as the Control Card does.
         assert.deepEqual(named.filter((r) => r.disabled && r.managed).map((r) => r.name).sort(), [...table.alias_role_only].sort())
