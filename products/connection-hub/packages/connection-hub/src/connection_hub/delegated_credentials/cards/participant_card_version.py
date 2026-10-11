@@ -318,9 +318,10 @@ def invitation_seed_evidence(creations: list[Mapping[str, Any]]) -> tuple[list[M
         named = identity.get("invitation") if isinstance(identity, Mapping) else None
         seed = (creation.get("kind") == "project_person_control" and isinstance(identity, Mapping)
                 and identity.get("seed_origin") == "invitation")
-        if not seed and (isinstance(identity, Mapping) and "email_digest" in identity
-                         or isinstance(named, Mapping) and "email_digest" in named):
-            # Only the invitation seed may carry it; anywhere else it is refused by name, never ignored.
+        if (isinstance(identity, Mapping) and "email_digest" in identity
+                or not seed and isinstance(named, Mapping) and "email_digest" in named):
+            # Only the invitation seed's identity.invitation may carry it. The identity's top level (seed or
+            # not) and every other kind refuse by name, never ignored (CodeApp, W746 review).
             raise _StepsRefused("card_plan_invitation_email_digest_misplaced", 400)
         if seed and isinstance(named, Mapping) and "email_digest" in named:
             email_digest = named["email_digest"]

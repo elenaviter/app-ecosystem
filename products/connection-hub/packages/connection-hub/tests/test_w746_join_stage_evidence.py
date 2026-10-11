@@ -67,6 +67,9 @@ def test_the_seed_digest_becomes_that_steps_evidence_and_leaves_the_identity():
     {"ref": "c", "kind": "project_person_control",
      "identity": {"target_subject": PERSON, "seed_origin": "migration", "email_digest": DIGEST}, "selection": {},
      "parent": dict(LOCATOR)},
+    # CodeApp (W746 review): the seed's identity top level, alone or beside the correct nested digest.
+    {**_seed(), "identity": {**_seed()["identity"], "email_digest": DIGEST}},
+    {**_seed(email_digest=DIGEST), "identity": {**_seed(email_digest=DIGEST)["identity"], "email_digest": DIGEST}},
 ])
 def test_a_digest_anywhere_but_the_invitation_seed_is_refused_by_name(creation):
     with pytest.raises(_Refused) as refused:
