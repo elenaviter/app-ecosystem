@@ -690,20 +690,17 @@ async def _retire_pointer(store: Any, receipt: Mapping[str, Any]) -> None:
     read and no coordinator call (Root and Ops hot-path rule, 11:57).
     """
 
-    path = store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"])
-    raw = await read_json_or_none(path)
+    raw = await store.read_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"])
     if (isinstance(raw, Mapping) and raw.get("schema") == TRANSACTION_POINTER_SCHEMA
             and raw.get("transaction_id") == receipt["transaction_id"]):
         side = receipt["after"] if receipt["state"] == "committed" else receipt["before"]
-        if side is None:
-            # An aborted create of a newly minted id: the slot is absent again. The
-            # staged revision keeps its marker, so it never appears in history.
-            try:
-                await unlink_guarded_async(path)
-            except OSError as exc:
-                raise CardStorageError("card_transaction_retire_failed") from exc
-        else:
-            await write_json_atomic(path, dict(side))
+        # side None: an aborted create of a newly minted id, so the slot is absent again. The
+        # staged revision keeps its marker, so it never appears in history.
+        try:
+            await store.write_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"],
+                                               document=None if side is None else dict(side))
+        except OSError as exc:
+            raise CardStorageError("card_transaction_retire_failed") from exc
     if receipt["state"] == "committed":
         # A committed AFTER is an ordinary revision now: drop its marker so a
         # settled read never touches the receipt (Ops N1/N4). An aborted
@@ -793,7 +790,7 @@ async def assert_replaceable(store: Any, *, subject_hash: str, access_id: str) -
         raise CardStorageError("card_transaction_unresolved")
     if await _live_read_fence(store, subject_hash=subject_hash, access_id=access_id) is not None:
         raise CardStorageError("card_transaction_unresolved")  # a prepared transaction depends on it
-    raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
+    raw = await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
     if raw is None or raw.get("schema") != TRANSACTION_POINTER_SCHEMA:
         return
     await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=access_id, consult_decision=False)
@@ -805,7 +802,7 @@ async def assert_replaceable(store: Any, *, subject_hash: str, access_id: str) -
 
 
 async def _is_staged(store: Any, receipt: Mapping[str, Any]) -> bool:
-    raw = await read_json_or_none(store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"]))
+    raw = await store.read_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"])
     return (isinstance(raw, Mapping) and raw.get("schema") == TRANSACTION_POINTER_SCHEMA
             and raw.get("transaction_id") == receipt["transaction_id"]
             and raw.get("before") == receipt["before"] and raw.get("after") == receipt["after"])
@@ -851,9 +848,11 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
                                     link=candidate_link, marker=receipt["transaction_id"])
         if frozen.to_dict() != candidate.to_dict():
             raise CardTransactionRefused("card_transaction_replay_changed")
-        await write_json_atomic(store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"]),
-                                {"schema": TRANSACTION_POINTER_SCHEMA, "transaction_id": receipt["transaction_id"],
-                                 "before": receipt["before"], "after": receipt["after"]})
+        # W661 P: through the pointer authority (the row when on), as every other pointer writer.
+        await store.write_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"],
+                                           document={"schema": TRANSACTION_POINTER_SCHEMA,
+                                                     "transaction_id": receipt["transaction_id"],
+                                                     "before": receipt["before"], "after": receipt["after"]})
         return
     # The revision marker first: a staged AFTER never appears in history or a
     # by-name revision read before its transaction commits, and an aborted one
@@ -865,9 +864,10 @@ async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardA
     pointer = await store.write_revision(subject_hash=receipt["subject_hash"], authority=candidate, updated_at=now)
     if pointer.to_dict() != receipt["after"]:
         raise CardStorageError("card_transaction_staged_revision_mismatch")
-    await write_json_atomic(store.current_path(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"]),
-                            {"schema": TRANSACTION_POINTER_SCHEMA, "transaction_id": receipt["transaction_id"],
-                             "before": receipt["before"], "after": receipt["after"]})
+    await store.write_pointer_document(subject_hash=receipt["subject_hash"], access_id=receipt["access_id"],
+                                       document={"schema": TRANSACTION_POINTER_SCHEMA,
+                                                 "transaction_id": receipt["transaction_id"],
+                                                 "before": receipt["before"], "after": receipt["after"]})
 
 
 async def stage(store: Any, *, transaction_id: str, intent_digest: str, participant: str, subject_hash: str,
@@ -966,7 +966,7 @@ async def stage(store: Any, *, transaction_id: str, intent_digest: str, particip
             raise CardTransactionRefused("card_transaction_replay_changed")
         if existing["state"] != "prepared" or await _is_staged(store, existing):
             return existing
-        raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
+        raw = await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
         current = None if raw is None else (
             await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=access_id,
                                   consult_decision=False)
@@ -1539,7 +1539,7 @@ def card_version_txn_id(txn: Any) -> str:
 
 
 def card_version_marker_path(store: Any, txn: str):
-    return store.root / "card-versions" / f"{card_version_txn_id(txn)}.json"
+    return store.card_version_marker_path(card_version_txn_id(txn))
 
 
 def card_version_revision_marker_path(store: Any, *, subject_hash: str, access_id: str, revision_name: str):
@@ -1549,7 +1549,7 @@ def card_version_revision_marker_path(store: Any, *, subject_hash: str, access_i
 
 
 async def read_card_version_marker(store: Any, txn: str) -> dict[str, Any] | None:
-    raw = await read_json_or_none(card_version_marker_path(store, txn))
+    raw = await store.read_marker_document(card_version_txn_id(txn))
     if raw is None:
         return None
     if (not isinstance(raw, Mapping) or raw.get("schema") != CARD_VERSION_MARKER_SCHEMA
@@ -1560,7 +1560,7 @@ async def read_card_version_marker(store: Any, txn: str) -> dict[str, Any] | Non
 
 
 async def _write_card_version_marker(store: Any, marker: Mapping[str, Any]) -> None:
-    await write_json_atomic(card_version_marker_path(store, marker["txn"]), dict(marker))
+    await store.write_marker_document(card_version_txn_id(marker["txn"]), dict(marker))
 
 
 async def card_version_revision_committed(store: Any, marker: Any, *, subject_hash: str, access_id: str,
@@ -1603,7 +1603,7 @@ async def _finish_published(store: Any, marker: dict[str, Any], run_effect: Any)
     """Each unrecorded effect once; once every effect is recorded the marker goes (D2: only the version stays)."""
     await _run_effects(store, marker, run_effect)
     try:
-        await unlink_guarded_async(card_version_marker_path(store, marker["txn"]))
+        await store.delete_marker_document(card_version_txn_id(marker["txn"]))
     except OSError as exc:
         raise CardStorageError("card_version_marker_cleanup_failed") from exc
     from ..durable_io import _fsync_directory
@@ -1620,6 +1620,17 @@ async def _current_txn(store: Any, current: Any, *, subject_hash: str, access_id
     sidecar = await read_json_or_none(card_version_revision_marker_path(
         store, subject_hash=subject_hash, access_id=access_id, revision_name=current.revision_name))
     return sidecar["txn"] if isinstance(sidecar, Mapping) and type(sidecar.get("txn")) is str else ""
+
+
+def _may_write_markers(store: Any) -> bool:
+    """Without option P's rows the marker is a file and the phase-1 behaviour stands; with rows, only an
+    operation inside a Card lock (its row context) writes one."""
+    if getattr(store, "card_rows", None) is None:
+        return True
+    from .locks import current_lock_session
+
+    session = current_lock_session()
+    return session is not None and bool(session.resources)
 
 
 async def finalize_current_version(store: Any, *, subject_hash: str, access_id: str, own_txn: str = "") -> str:
@@ -1647,7 +1658,11 @@ async def finalize_current_version(store: Any, *, subject_hash: str, access_id: 
             named = await store.read_current(subject_hash=m["subject_hash"], access_id=m["access_id"])
             if named is None or named.revision_name != m["revision_name"]:
                 raise CardStorageError("card_version_unresolved")
-        await _mark_published(store, marker)
+        if _may_write_markers(store):
+            await _mark_published(store, marker)
+        # Otherwise a lock-free precondition read (service.current_revision): the check above is the same, and
+        # the writer's own commit, under the Card lock, runs this again and marks it (W661 option P: a row is
+        # never written outside a Card operation).
     if any(str(index) not in marker["effect_outcomes"] for index in range(len(marker["effects"]))):
         # Infra 17:37Z, EMain 17:43Z: never run another txn's effects, always refuse before admitting the next
         # base. Only that txn's own PUBLISH retry or ROLLBACK runs them (a later operation finishing earlier work
@@ -1876,7 +1891,7 @@ async def _release_and_forget(store: Any, marker: Mapping[str, Any], *, release:
         await _write_card_version_marker(store, {**marker, "state": "rolled_back"})
         return
     try:
-        await unlink_guarded_async(card_version_marker_path(store, marker["txn"]))
+        await store.delete_marker_document(card_version_txn_id(marker["txn"]))
     except OSError as exc:
         raise CardStorageError("card_version_rollback_failed") from exc
     _fsync_directory(card_version_marker_path(store, marker["txn"]).parent)

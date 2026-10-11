@@ -97,7 +97,7 @@ async def assert_replaceable(store, *, subject_hash, access_id):
     # direct read, replaces the listing of issuer-updates/active.
     from .inflight import assert_no_inflight
     await assert_no_inflight(store, subject_hash=subject_hash, access_id=access_id)
-    raw = await read_json_or_none(store.current_path(subject_hash=subject_hash, access_id=access_id))
+    raw = await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
     if raw is not None and raw.get("schema") == UPDATE_POINTER_SCHEMA:
         await resolve_pointer(store, raw, subject_hash=subject_hash, access_id=access_id)
 
@@ -165,8 +165,9 @@ async def atomic_update(store, *, query, actor_subject, original, candidate, now
             raise CardStorageError("issuer_update_staged_revision_mismatch")
         # Publish no authority yet: modern readers resolve this through the
         # receipt; older readers reject the unfamiliar pointer schema.
-        await write_json_atomic(store.current_path(subject_hash=query.target.subject_hash, access_id=query.target.access_id),
-            {"schema": UPDATE_POINTER_SCHEMA, "transaction_id": transaction_id, "before": receipt["before"], "after": receipt["after"]})
+        await store.write_pointer_document(subject_hash=query.target.subject_hash, access_id=query.target.access_id,
+            document={"schema": UPDATE_POINTER_SCHEMA, "transaction_id": transaction_id, "before": receipt["before"],
+                      "after": receipt["after"]})
         deadline = await before_publish()
         committed = {**receipt, "state": "committed"}
         with require_publish_before(deadline):

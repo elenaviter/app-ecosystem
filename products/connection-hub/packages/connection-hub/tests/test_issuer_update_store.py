@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from connection_hub.delegated_credentials.cards import store as card_store_module
 from connection_hub.delegated_credentials.cards import update_store
 from connection_hub.delegated_credentials.cards.cache import CardCacheEntry
 from connection_hub.delegated_credentials.cards.persistence import DurableCardPersistence
@@ -118,6 +119,8 @@ async def test_prepared_pointer_and_history_do_not_publish_staged_update(tmp_pat
         await write(path, payload)
 
     monkeypatch.setattr(update_store, "write_json_atomic", inspect)
+
+    monkeypatch.setattr(card_store_module, "write_json_atomic", inspect)  # b-core: the pointer is written by the store
     result = await apply(persistence, reg)
     assert result["state"] == "refused"
     assert (await store.read_current_authority(subject_hash=query.target.subject_hash, access_id=query.target.access_id))[1] == original
@@ -139,6 +142,8 @@ async def test_error_after_authoritative_receipt_rename_is_still_committed(tmp_p
             raise OSError("fixture after rename")
 
     monkeypatch.setattr(update_store, "write_json_atomic", fail_after)
+
+    monkeypatch.setattr(card_store_module, "write_json_atomic", fail_after)  # b-core: the pointer is written by the store
     result = await apply(persistence, reg)
     assert result["ok"] and result["state"] == "committed"
 

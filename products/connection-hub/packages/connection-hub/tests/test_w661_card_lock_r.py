@@ -278,6 +278,9 @@ def test_keys_carry_their_kind_and_a_mismatched_card_path_is_refused(tmp_path):
     assert card_lock_key(tenant="t", project="p", resource_id=card["resource_id"], lock_path=card["lock_path"]) \
         == "kdcube:cards:lock:t:p:card:" + "f" * 64 + ":a-9"
     assert card_lock_key(tenant="t", project="p", resource_id="card-collection:c1") == "kdcube:cards:lock:t:p:collection:c1"
+    # W661 P: a card-version txn that names no member Card takes its own section (service._txn_section).
+    assert card_lock_key(tenant="t", project="p", resource_id="card-version-txn:w661-txn-" + "f" * 32) \
+        == "kdcube:cards:lock:t:p:card-version-txn:w661-txn-" + "f" * 32
     with pytest.raises(CardStorageError, match="card_lock_resource_invalid"):
         card_lock_key(tenant="t", project="p", resource_id="delegated-card:a-1", lock_path=card["lock_path"])
     with pytest.raises(CardStorageError, match="card_lock_resource_invalid"):

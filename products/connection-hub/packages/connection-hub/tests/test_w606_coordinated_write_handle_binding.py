@@ -305,7 +305,6 @@ async def test_a_stale_application_is_superseded_and_changes_nothing(tmp_path, s
     from datetime import datetime, timezone
 
     from connection_hub.delegated_credentials.cards.handle_metadata import CardHandleMetadata
-    from connection_hub.delegated_credentials.durable_io import write_json_atomic
 
     async with _world(tmp_path) as w:
         real_advance = w.handles.advance_binding
@@ -328,8 +327,9 @@ async def test_a_stale_application_is_superseded_and_changes_nothing(tmp_path, s
             newer = dataclasses.replace(w.card, card_revision=3, label="newer")
             pointer = await w.store.write_revision(subject_hash=w.subject_hash, authority=newer,
                                                    updated_at=datetime.now(timezone.utc))
-            await write_json_atomic(w.store.current_path(subject_hash=w.subject_hash, access_id=w.card.access_id),
-                                    pointer.to_dict())  # forced past the store's fence, as an out-of-band writer
+            # Forced past the store's fence (W661 P: through the pointer authority, the row when on).
+            await w.store.write_pointer_document(subject_hash=w.subject_hash, access_id=w.card.access_id,
+                                                document=pointer.to_dict())
         before = await w.metadata.read_current(w.card.access_id)
         w.handles.advance_binding = real_advance
         await w.host._card_coordinator[0].recover(limit=10)

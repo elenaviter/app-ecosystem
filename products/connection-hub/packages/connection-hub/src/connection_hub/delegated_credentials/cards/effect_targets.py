@@ -245,7 +245,7 @@ class CredentialIssueTarget:
         """The committed revision when it is still the authoritative live Card; otherwise None."""
         receipt = binding.receipt()
         subject_hash, access_id = receipt["subject_hash"], receipt["access_id"]
-        raw = await read_json_or_none(self._card_store.current_path(subject_hash=subject_hash, access_id=access_id))
+        raw = await self._card_store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
         if (isinstance(raw, Mapping) and raw.get("schema") == tx.TRANSACTION_POINTER_SCHEMA
                 and raw.get("transaction_id") == binding.transaction_id):
             pointer = CardCurrentPointer.from_mapping(receipt["after"])
@@ -355,7 +355,7 @@ class HandleBindingTarget:
         if committed.state != CARD_STATE_ACTIVE:
             return False  # an ending Card never re-points an active binding
         subject_hash, access_id = receipt["subject_hash"], receipt["access_id"]
-        raw = await read_json_or_none(self._card_store.current_path(subject_hash=subject_hash, access_id=access_id))
+        raw = await self._card_store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
         if (isinstance(raw, Mapping) and raw.get("schema") == tx.TRANSACTION_POINTER_SCHEMA
                 and raw.get("transaction_id") == member_id):
             return True  # this transaction's own pointer: the Card is exactly its AFTER
