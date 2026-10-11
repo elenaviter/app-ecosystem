@@ -40,6 +40,24 @@ export function pinAfterSave(pin: number | null, saved: { card_revision?: number
   return saved?.card_revision ?? pin;
 }
 
+/** W727: a committed write's answer moves the pin to the revision it wrote:
+ *  for a project-managed Card, the project transaction's committed revision
+ *  (a Card read back may still be behind it), otherwise the Card it returned.
+ *  Each focused grant after a Save is made against the revision the previous
+ *  write left. */
+export function pinAfterCommit(
+  pin: number | null,
+  result: {
+    access?: { card_revision?: number } | null;
+    managed_card_edit?: { state?: string; card_revision?: number } | null;
+  } | null | undefined,
+): number | null {
+  const managed = result?.managed_card_edit;
+  return (managed?.state === 'committed' ? managed.card_revision : undefined)
+    ?? result?.access?.card_revision
+    ?? pin;
+}
+
 /** A Card read replaces the owner list's copy when it is newer, so the rows
  *  and a row's Edit never start from an older copy than the tab has read. */
 export function withNewerCard<T extends { access_id: string; card_revision?: number }>(

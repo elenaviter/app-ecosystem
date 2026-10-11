@@ -195,6 +195,12 @@ class ProjectAgentCardAccess:
                     "reason": "decision_via_cannot_edit", "status": 403}
         return decision
 
+    async def authorize_write(
+        self, user: Mapping[str, Any], *, access_id: str, project_ref: str,
+    ) -> AgentCardDecision | dict[str, Any]:
+        """W727: the project's answer for a write to this agent Card by this person (a refusal is a dict)."""
+        return await self._authorize(user, access_id=access_id, project_ref=project_ref, action=AGENT_CARD_WRITE)
+
     async def _share(self, actor: str, access_id: str) -> Mapping[str, Any] | None:
         if self._shares is None:
             return None

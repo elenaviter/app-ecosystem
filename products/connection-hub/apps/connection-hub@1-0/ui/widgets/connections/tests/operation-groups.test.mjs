@@ -48,7 +48,8 @@ test('all three operation lists render through the declared groups', () => {
   assert.match(panel, /renderOperationGroups\(visibleOperations\(item\.operations\), \(operation\) => operation\.group, item\.operation_groups,/)
   assert.match(panel, /renderOperationGroups\(visibleOperations\(resourceOption\.operations\), \(operation\) => operation\.group, resourceOption\.operation_groups,/)
   const catalog = source('src/features/delegatedAccess/DelegatedResourceCatalog.tsx')
-  assert.match(catalog, /renderOperationGroups\(rows, \(row\) => row\.group, namespace\.operation_groups,/)
+  // W739: the named-service list draws every shown row, managed ones included, through the groups.
+  assert.match(catalog, /renderOperationGroups\(shownRows, \(row\) => row\.group, namespace\.operation_groups,/)
   assert.match(catalog, /group: String\(policy\.group \|\| tool\.group \|\| ''\)/)
 })
 

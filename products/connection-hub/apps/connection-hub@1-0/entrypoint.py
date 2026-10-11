@@ -6928,6 +6928,11 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # migrated). create_access/extend_client_access normalize it.
         raw_scope = payload.get("account_scope")
         account_scope = dict(raw_scope) if isinstance(raw_scope, Mapping) else None
+        try:
+            # W727: the Card revision the screen last saw; required only when the Card is project-managed.
+            expected_card_revision = _expected_card_revision(payload)
+        except ValueError as exc:
+            return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc), "status": 400}
         if not resource or (
             not claims
             and resource_operations is None
@@ -7129,6 +7134,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     return replay_result
             except Exception as exc:
                 return _invocation_policy_failure(exc)
+
+        async def authorize_agent_card(access_id: str, project_ref: str) -> Any:
+            # W727: a bound agent Card changes only as its project's policy allows this person.
+            agent_cards = await self._project_agent_card_access(request)
+            return await agent_cards.authorize_write(user, access_id=access_id, project_ref=project_ref)
+
         if client_id and not client_id.startswith("kdcube-agent:"):
             # An EXTERNAL delegated client (an OAuth app — Claude Code): the
             # user EDITS its existing card here (born at its own OAuth consent;
@@ -7151,6 +7162,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 # Optional rename: a DCR client registers one fixed name, so the
                 # user may label the card. Empty keeps the existing name.
                 label=str(payload.get("label") or "").strip() or None,
+                expected_card_revision=expected_card_revision,
+                _authorize_agent_card=authorize_agent_card,
             )
         elif not client_id.startswith("kdcube-agent:"):
             return {"ok": False, "error": "delegated_agent_grant_invalid_client"}
@@ -7173,6 +7186,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     ttl_seconds=payload.get("ttl_seconds") or AGENT_GRANT_DEFAULT_TTL_SECONDS,
                     client_id=client_id,
                     merge_existing=not replace,
+                    expected_card_revision=expected_card_revision,
+                    _authorize_agent_card=authorize_agent_card,
                 )
             except ValueError as exc:
                 return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
@@ -7215,10 +7230,21 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     )
                     result["request_permit"] = permit.to_public_dict()
             except Exception as exc:
-                # The prepared marker remains. If the card write committed,
+                # The prepared marker remains. The card write committed, so
                 # invocation enforcement stays closed until this exact change
-                # is retried and the policy commit completes.
-                return _invocation_policy_failure(exc)
+                # is retried and the policy commit completes. W727: the answer
+                # says so, never a plain failure the screen reads as "nothing saved".
+                access = result.get("access")
+                return {
+                    **_invocation_policy_failure(exc),
+                    "outcome": "card_committed_policy_pending",
+                    "access_id": actual_access_id,
+                    **({"access": access} if isinstance(access, Mapping) else {}),
+                    "message": (
+                        "The Card change was saved, but its invocation policy was not. "
+                        "Retry this exact change to finish it."
+                    ),
+                }
         if result.get("ok"):
             # Close the consent loop the same way connected-account consent
             # does: author `connections.consent.granted` events into every

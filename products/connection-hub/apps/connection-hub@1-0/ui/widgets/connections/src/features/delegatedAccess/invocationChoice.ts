@@ -109,7 +109,11 @@ export function focusedGrantArgs(
   identity: FocusedGrantIdentity,
   mode: InvocationMode,
   claims: string[],
-  extras: { namedServiceOperations?: Record<string, string[]>; accountScope?: Record<string, Record<string, string[]>> } = {},
+  extras: {
+    namedServiceOperations?: Record<string, string[]>;
+    accountScope?: Record<string, Record<string, string[]>>;
+    expectedCardRevision?: number;
+  } = {},
 ): GrantAgentAccessArgs {
   return {
     clientId: identity.clientId,
@@ -129,6 +133,7 @@ export function focusedGrantArgs(
     } : {}),
     ...(extras.namedServiceOperations ? { namedServiceOperations: extras.namedServiceOperations } : {}),
     ...(extras.accountScope ? { accountScope: extras.accountScope } : {}),
+    ...(extras.expectedCardRevision !== undefined ? { expectedCardRevision: extras.expectedCardRevision } : {}),
   };
 }
 
