@@ -5621,7 +5621,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
         try:
             changes: Dict[str, Any] = {
-                "resource_grants": dict(payload.get("resource_grants") or {}),
+                # W737: omitted stays omitted (an Accept-only save changes no selection).
+                "resource_grants": (
+                    dict(payload.get("resource_grants") or {})
+                    if "resource_grants" in payload
+                    else None
+                ),
                 "resource_operations": (
                     dict(payload.get("resource_operations") or {})
                     if "resource_operations" in payload
@@ -6690,7 +6695,12 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 _result = await access_service.update_access(
                     user,
                     access_id=_access_id_for_log,
-                    resource_grants=dict(payload.get("resource_grants") or {}),
+                    # W737: omitted stays omitted (an Accept-only save changes no selection).
+                    resource_grants=(
+                        dict(payload.get("resource_grants") or {})
+                        if "resource_grants" in payload
+                        else None
+                    ),
                     resource_operations=(
                         dict(payload.get("resource_operations") or {})
                         if "resource_operations" in payload
