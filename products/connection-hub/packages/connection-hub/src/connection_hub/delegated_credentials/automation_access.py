@@ -5931,7 +5931,7 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         access_id: str,
-        resource_grants: Mapping[str, Any],
+        resource_grants: Mapping[str, Any] | None,
         resource_operations: Mapping[str, Any] | None = None,
         operations: Iterable[str] = (),
         named_service_operations: Mapping[str, Any] | str | None = None,
@@ -6016,6 +6016,10 @@ class AutomationAccessService:
             accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version)
         if own_my is not None:
             return own_my
+        if resource_grants is None:
+            # W737: only the managed forwards above read an omitted selection as "unchanged"; a direct
+            # write still replaces the record exactly, as before.
+            resource_grants = {}
         try:
             descriptor_marker = descriptor_control(existing.properties)
         except AgentCapabilityPolicyError as exc:
