@@ -285,9 +285,10 @@ reacquired while old code still acts, so durable effects need a resource-enforce
     database restore moves the rows and the sequence together. The sequence is `CACHE 1`, so `nextval` order
     is real-time order across connections (a cached sequence would break the fence).
   - **The claim** is one UPDATE that sets `fence_token` to t only where it is NULL or not newer, and returns
-    whether it did (`fence_token = t AS claimed`). A stale operation's late claim (Ops' review of b1693251: an unordered per-operation id let it take the row back) carries the
-    older token, matches nothing, and is an unclaimed read: nothing is touched, its later CAS refuses, and the
-    successor's CAS succeeds. Without ordering the live owner was refused instead (witness:
+    whether it did (`fence_token = t AS claimed`). A stale operation's late claim (Ops' review of b1693251: an
+    unordered per-operation id let it take the row back) carries the older token. The UPDATE still runs on the
+    row, but it keeps the newer fence and leaves the document and revision as they are; the caller gets an
+    unclaimed read. Its later CAS refuses, and the successor's CAS succeeds. Without ordering the live owner was refused instead (witness:
     `test_w661_p_row_late_claim_ordered_fence.py`, which fails on b1693251).
   - **Who claims.** A pointer row is claimed only by the holder of that Card's lock. A marker row is claimed
     by an operation inside any Card or txn section (every marker writer is; the txn's member Cards and its
@@ -295,7 +296,7 @@ reacquired while old code still acts, so durable effects need a resource-enforce
     earlier token's claim is then an unclaimed read and its write refuses `card_version_marker_moved`, the
     same contention as the revision CAS alone. Any other read claims nothing.
   When the successor reads under its lock, it holds the claim, and the stalled writer's CAS then refuses
-  (`card_pointer_moved` / `card_version_marker_moved`) with the row untouched: the live lock owner wins, and nobody
+  (`card_pointer_moved` / `card_version_marker_moved`) with the row's document, revision and fence unchanged: the live lock owner wins, and nobody
   is told "failed" for a write that landed. A lock-free read claims nothing.
 - **Residual: creates.** A row that does not exist yet has nothing to claim. If a stalled writer and its
   successor both observed "absent", the first INSERT wins and the other refuses (ON CONFLICT) and re-reads it.

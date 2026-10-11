@@ -144,7 +144,7 @@ class CardRowOperation:
         # and is drawn BEFORE the owner guard that precedes every claim and write, and drawn again after every new
         # lock acquisition (``fence_token = None``), so an operation that passed its guard drew its token before
         # any successor acquired that lock: the successor's token is larger, a late claim of the stale operation
-        # matches no row, and the successor's CAS is never refused by it.
+        # keeps the successor's fence (an unclaimed read), and the successor's CAS is never refused by it.
         self.fence_token: int | None = None
         self.claims: dict[tuple, int] = {}
         self.observed: dict[tuple, int] = {}

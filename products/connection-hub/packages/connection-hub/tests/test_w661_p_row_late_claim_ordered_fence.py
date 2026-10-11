@@ -4,7 +4,7 @@ Ops' schedule: A passes its real owner guard and stalls just before its claiming
 expires; B acquires the lock and its locked read claims the row; then A's delayed claim lands. With an UNORDERED
 fence (b1693251's per-operation id) A's claim overwrites B's, nothing stale lands, but B's CAS is refused
 card_version_marker_moved: the live owner loses its save. With the ORDERED fence token (one PostgreSQL sequence,
-drawn before the owner guard) A's token predates B's, A's claim matches no row, and B commits.
+drawn before the owner guard) A's token predates B's, A's claim keeps B's fence (an unclaimed read), and B commits.
 
 world() is Infra's actual-R fixture (SDK observed_redis_lock_async, 1 s TTL, renewal off to model the stall,
 observed flock, real PG rows). The pause is scheduling only, at the real _fetchrow boundary of A's claiming
@@ -85,7 +85,7 @@ async def test_a_late_claim_of_an_expired_owner_never_refuses_the_successor(tmp_
                 observed["b_read_by"] = before.get("by")
                 token = await redis.get(key)
                 assert token
-                resume_claim.set()  # A's delayed claim now lands (or matches nothing)
+                resume_claim.set()  # A's delayed claim now lands (it keeps B's newer fence)
                 await asyncio.wait_for(a_done.wait(), 8)
                 try:
                     await store.write_marker_document(TXN, {**staged, "state": "published", "by": "B"})
@@ -195,7 +195,7 @@ async def test_pointer_a_claim_drawn_before_the_successor_never_takes_its_row(po
     await asyncio.wait_for(asyncio.gather(old_a(), successor_b()), 10)
     final, _revision = await rows.read_pointer(subject_hash=_S, access_id=_A)
     assert (observed["b"], observed["a"], final["by"]) == ("written", "card_pointer_moved", "B"), observed
-    assert observed["a_read"]["card_revision"] == 1  # A's refused claim was an unclaimed read, nothing touched
+    assert observed["a_read"]["card_revision"] == 1  # A's refused claim was an unclaimed read: fence, document, revision unchanged
 
 
 @pytest.mark.asyncio
