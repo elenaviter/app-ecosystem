@@ -359,6 +359,24 @@ Card bound directly under the scope's project Control, and its display kind is
 `agent_card`. `reselect_project_control` plans an edit of the project Control
 itself under `project.control.update`.
 
+**Removing a person from the Hub's Cards screen (W728).** While enabled, `project_person_control_revoke`
+for a live person (`target_subject`) is forwarded the same way, as the project's removal of that person, with
+`{kind: person_removal, principal_key: "user:<person>", original_revision}` and an empty `selection` (no
+acceptance travels). `original_revision` is the person's Control revision the Hub reads now; the request id is
+derived from the actor, project, person and that revision, so a retry replays the host's one decision. A
+retry whose first answer was lost reads the Control after the host's removal revoked it, one revision on. The
+removal at the revision read is sent first, as always, also for a member whose Control was revoked some other
+way; the host's answer stands (today it refuses that case `work_card_transaction_hub_edit_invalid`, W743). Only if the host refuses it as `removal_target_invalid` and the Control is revoked does the Hub
+send the first body again (the revision before, its request id); the host replays that only from the request's
+own audit row, else its refusal stands. A re-invited person's later removal, or another admin's, is a new
+request id. The
+host runs its existing removal for the person the Hub authenticated, in ONE decision: the membership ends and
+the person's Control and My Card are revoked. The Hub screen's Remove confirmation is the person's
+confirmation, so the host previews and confirms the same proposal in that call; its admin and target rules
+are unchanged (an owner or admin removes another non-owner person). STAGE fences the person's Control at
+`original_revision`, so a moved Control refuses and nothing is written. Without a forwarder, or for a pending
+invitation (`invitation_ref`), the Hub keeps refusing `card_transactions_direct_write_refused`.
+
 **The project access rule (W742).** On the project Control (P) alone, the AND/OR rule
 (`composition_mode`) also travels, as an exact, signed top-level field of the body, only when it
 differs from P's durable current revision (never the serving projection). The host sends it in its
