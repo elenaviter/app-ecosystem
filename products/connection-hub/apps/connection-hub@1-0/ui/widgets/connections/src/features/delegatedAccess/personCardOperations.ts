@@ -51,31 +51,33 @@ function declaredPersonOperations(option: DelegatedAccessResourceOption): Set<st
     ? new Set(option.person_card_operations) : null;
 }
 
-/** An outer operation a person's Card does not decide: "managed" (never changed by the editor or its Save)
- *  and "hidden" (not shown; Save still keeps it exactly as the Card holds it). */
-function managedHidden<T>(operation: T): T & { managed: true; hidden: true } {
-  return { ...operation, managed: true, hidden: true };
+/** An outer operation a person's Card does not decide: "managed" (shown ticked as the Card holds it,
+ *  disabled, "Set by the application"; never changed by the editor or its Save). W739 (operator,
+ *  2026-10-11: "we still show this (simply disabled)", "ie.. we must", "because for other permisisons that
+ *  also card does not decide we still show them"): it is SHOWN, never hidden. ``person_undecided`` marks it
+ *  so Save keeps the grants it needs exactly as the Card holds them. */
+function managedUndecided<T>(operation: T): T & { managed: true; person_undecided: true } {
+  return { ...operation, managed: true, person_undecided: true };
 }
 
-/** One catalog row as a person's Card is offered it. W560 (operator, relayed 2026-10-09, superseding the
- *  2026-10-05 "simply selected and non-editable"): an outer operation the service decides for a person
- *  (`person_card: false`) is managed AND hidden on every person Card, whether or not the application
- *  declares `person_card_operations`. W667: with a non-empty declaration, every operation outside the
- *  declared set is hidden too. Hiding never edits authority. */
+/** One catalog row as a person's Card is offered it. An outer operation the service decides for a person
+ *  (`person_card: false`, W560) and, with a non-empty `person_card_operations` declaration (W667), every
+ *  operation outside the declared set, is managed: shown disabled as "Set by the application" (W739),
+ *  never hidden. Showing it never edits authority. */
 export function resourceForPersonCard(option: DelegatedAccessResourceOption): DelegatedAccessResourceOption {
   const declared = declaredPersonOperations(option);
   return {
     ...option,
     ...(option.operations ? { operations: option.operations.map((operation) => {
       const decided = offeredOnPersonCard(operation) && (!declared || declared.has(operation.name));
-      return decided ? operation : managedHidden(operation);
+      return decided ? operation : managedUndecided(operation);
     }) } : {}),
     ...(option.named_services ? { named_services: option.named_services.map(namespaceForPersonCard) } : {}),
   };
 }
 
-/** W667: the held grants a hidden held operation needs; Save keeps them exactly as the Card holds them, so
- *  hiding never removes authority a person cannot see. */
+/** W667/W739: the held grants a held operation the person's Card does not decide needs; Save keeps them
+ *  exactly as the Card holds them, so showing it disabled never removes authority. */
 export function hiddenHeldGrants(
   option: DelegatedAccessResourceOption | undefined,
   heldOperations: readonly string[],
@@ -83,7 +85,7 @@ export function hiddenHeldGrants(
 ): string[] {
   const held = new Set(heldOperations);
   const needed = new Set((option?.operations || [])
-    .filter((operation) => operation.hidden === true && held.has(operation.name))
+    .filter((operation) => (operation.hidden === true || operation.person_undecided === true) && held.has(operation.name))
     .flatMap((operation) => operation.grants || []));
   return heldGrants.filter((grant) => needed.has(grant));
 }
@@ -93,20 +95,51 @@ export function visibleOperations<T extends { hidden?: boolean }>(operations: T[
   return (operations || []).filter((operation) => operation.hidden !== true);
 }
 
+/** W739: a namespace as a person's Card SHOWS it: every tool and operation `namespaceForPersonCard` leaves
+ *  out is kept and marked ``person_undecided`` (disabled, "Set by the application"). Display only: Save and
+ *  the offered set keep reading the narrowed namespace, so what Save sends is unchanged. */
+function namespaceShownOnPersonCard(
+  namespace: DelegatedAccessNamedServiceNamespaceOption,
+): DelegatedAccessNamedServiceNamespaceOption {
+  if (!namespace.tools) return namespace;
+  const tools = Object.fromEntries(Object.entries(namespace.tools).map(([name, tool]) => {
+    const toolDecided = offeredOnPersonCard(tool);
+    if (!tool.operations) return [name, toolDecided ? tool : { ...tool, person_undecided: true }];
+    const operations = Object.fromEntries(Object.entries(tool.operations).map(([operation, entry]) => [
+      operation, toolDecided && offeredOnPersonCard(entry) ? entry : { ...entry, person_undecided: true },
+    ]));
+    return [name, { ...tool, operations }];
+  }));
+  return { ...namespace, tools };
+}
+
+/** W739: the named services of one catalog row as a person's Card shows them (C, or a declared My Card),
+ *  the ones it does not decide included and marked; display only. */
+export function namedServicesShownOnPersonCard(catalogRow: DelegatedAccessResourceOption): DelegatedAccessResourceOption {
+  return catalogRow.named_services
+    ? { ...catalogRow, named_services: catalogRow.named_services.map(namespaceShownOnPersonCard) }
+    : catalogRow;
+}
+
+/** A My Card narrows its named services only with a declaration (W667); without one they are shown as before. */
+export function namedServicesShownOnPersonMyCard(catalogRow: DelegatedAccessResourceOption): DelegatedAccessResourceOption {
+  return declaredPersonOperations(catalogRow) ? namedServicesShownOnPersonCard(catalogRow) : catalogRow;
+}
+
 export function resourcesForPersonCard(options: DelegatedAccessResourceOption[]): DelegatedAccessResourceOption[] {
   return options.map(resourceForPersonCard);
 }
 
-/** A person's own My Card hides what it does not decide. With a declaration (W667) it is filtered exactly as
- *  the person's Control Card. Without one (W560) only the outer `person_card: false` operations are managed
- *  and hidden; every other operation and the named services are shown as before. */
+/** A person's own My Card shows what it does not decide as managed and disabled (W739). With a declaration
+ *  (W667) it is treated exactly as the person's Control Card. Without one (W560) only the outer
+ *  `person_card: false` operations are managed; every other operation and the named services are as before. */
 export function resourcesForPersonMyCard(options: DelegatedAccessResourceOption[]): DelegatedAccessResourceOption[] {
   return options.map((option) => {
     if (declaredPersonOperations(option)) return resourceForPersonCard(option);
     if (!option.operations?.some((operation) => !offeredOnPersonCard(operation))) return option;
     return {
       ...option,
-      operations: option.operations.map((operation) => (offeredOnPersonCard(operation) ? operation : managedHidden(operation))),
+      operations: option.operations.map((operation) => (offeredOnPersonCard(operation) ? operation : managedUndecided(operation))),
     };
   });
 }

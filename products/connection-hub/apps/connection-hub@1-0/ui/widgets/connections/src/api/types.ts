@@ -80,6 +80,8 @@ export interface DelegatedAccessOperationOption {
   managed?: boolean;
   /** W667: on a person's Card, an operation that Card does not decide: not shown, kept as the Card holds it. */
   hidden?: boolean;
+  /** W739: an operation a person's Card does not decide, shown managed and disabled; Save keeps its grants. */
+  person_undecided?: boolean;
 }
 
 /** One operation group a service declares, in display order (W260). */
@@ -94,6 +96,8 @@ export interface DelegatedAccessNamedServiceOperationOption {
   group?: string;
   /** False when the service decides this operation for a person by role alone (W360). */
   person_card?: boolean;
+  /** W739: shown on a person's Card although that Card does not decide it: disabled, never sent by Save. */
+  person_undecided?: boolean;
   label?: string;
   description?: string;
   authority_id?: string;
