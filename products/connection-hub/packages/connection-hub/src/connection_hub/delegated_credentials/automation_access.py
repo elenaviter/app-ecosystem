@@ -2647,7 +2647,8 @@ class AutomationAccessService:
 
         A lost-answer retry (Infra's W728 review, 2026-10-11) reads the Control AFTER the host's removal
         revoked it, one revision on (N -> N+1). The removal at the revision read is sent first, exactly as
-        before: a member whose Control was revoked some other way is still removed by it. Only when the host
+        before (for a member whose Control was revoked some other way too; the host's answer stands, and today
+        it refuses that case, W743). Only when the host
         refuses that as ``removal_target_invalid`` and the Control is revoked does the Hub send the first
         request again (revision N, its request id), and the host replays it only if its own removal audit row
         holds that request id for this actor; otherwise its refusal stands. A revoked Control alone is never

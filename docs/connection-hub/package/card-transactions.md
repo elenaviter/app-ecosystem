@@ -346,8 +346,8 @@ for a live person (`target_subject`) is forwarded the same way, as the project's
 acceptance travels). `original_revision` is the person's Control revision the Hub reads now; the request id is
 derived from the actor, project, person and that revision, so a retry replays the host's one decision. A
 retry whose first answer was lost reads the Control after the host's removal revoked it, one revision on. The
-removal at the revision read is sent first, as always (a member whose Control was revoked some other way is
-still removed). Only if the host refuses it as `removal_target_invalid` and the Control is revoked does the Hub
+removal at the revision read is sent first, as always, also for a member whose Control was revoked some other
+way; the host's answer stands (today it refuses that case `work_card_transaction_hub_edit_invalid`, W743). Only if the host refuses it as `removal_target_invalid` and the Control is revoked does the Hub
 send the first body again (the revision before, its request id); the host replays that only from the request's
 own audit row, else its refusal stands. A re-invited person's later removal, or another admin's, is a new
 request id. The
