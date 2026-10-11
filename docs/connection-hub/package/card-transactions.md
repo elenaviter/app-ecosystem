@@ -340,6 +340,15 @@ Card bound directly under the scope's project Control, and its display kind is
 `agent_card`. `reselect_project_control` plans an edit of the project Control
 itself under `project.control.update`.
 
+**The project access rule (W742).** On the project Control (P) alone, the AND/OR rule
+(`composition_mode`) also travels, as an exact, signed top-level field of the body, only when it
+differs from P's durable current revision (never the serving projection). The host sends it in its
+`reselect_project_control` update, and the planner changes exactly that field of P (any other kind
+carrying it is refused `card_plan_update_invalid`). A rule change alone is a real edit; a Save that
+changes nothing answers `{ok: true, unchanged: true}` without a write, so an AND sent to an AND P is
+not an error. On the project path (`project_control_card_update`) the edit names the person the Hub
+authenticated, never P's storage owner. Every body without the field is byte-identical to before.
+
 **A pending invitation's Control Save** (`project_person_control_update` with
 `invitation_ref`) is forwarded the same way with `{kind: invitation_control,
 access_id, subject_hash, original_revision}`; the host plans it with

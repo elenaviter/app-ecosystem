@@ -886,14 +886,18 @@ async def plan_card_lifecycle(
                     or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent",
                                    "selection", "profile", "resource", "display_digest", "control",
                                    "add_grants", "add_operations", "remove_operations", "operation_grants",
-                                   "protected_grants", "accepted_operations", "expected_catalog_version"}
+                                   "protected_grants", "accepted_operations", "expected_catalog_version",
+                                   "composition_mode"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control"})
                     # W723: an acceptance travels only with a selection edit, and the catalog it was
                     # reviewed under only with an acceptance.
                     or ("accepted_operations" in raw and "selection" not in raw)
-                    or ("expected_catalog_version" in raw and "accepted_operations" not in raw)):
+                    or ("expected_catalog_version" in raw and "accepted_operations" not in raw)
+                    # W742: the project access rule travels only on the project Control's own edit.
+                    or ("composition_mode" in raw and (raw.get("kind") != "reselect_project_control"
+                                                       or raw["composition_mode"] not in {"and", "or"}))):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             decision = authorization.decision_for(f"update:{index}")
             if "expected_catalog_version" in raw and raw["expected_catalog_version"] != host._version_of(active):
@@ -966,7 +970,8 @@ async def plan_card_lifecycle(
                     kind={"reselect_project_control": "project_control", "reselect_agent_card": "agent_card",
                           "reselect_invitation_control": "invitation_control"}[raw["kind"]],
                     project_ref=scope, actor_subject=actor, request_id=request_id, now=now,
-                    accepted_operations=raw.get("accepted_operations"))
+                    accepted_operations=raw.get("accepted_operations"),
+                    composition_mode=raw.get("composition_mode"))
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
