@@ -1706,7 +1706,25 @@ def test_review_uses_a_detached_exact_head_tree_under_rv():
     assert "use the detached exact-head review tree under `<workspace>/rv/`" in skill
     assert "`<workspace>/wt/<item>-<alias>`" in workspace
     assert "`<workspace>/rv/<item>-<alias>-<short sha>`" in workspace
-    assert "A review tree goes as soon as the verdict is recorded" in workspace
+    assert "A review, composition or runner tree goes as soon as its verdict is recorded or its change request is merged" in workspace
+
+
+def test_agents_dispose_of_their_own_unused_trees_and_old_backups():
+    """W753. Operator, 2026-10-11 about 19:30Z: "you must dispose unused worktrees and db backups"; "then
+    delete old backups"; "Review worktrees: every review leaves a full copy of the repositories behind. <<
+    then why they are not get cleaned". Owner-only, never blind: the no-loss checks and the never-yours
+    list stay; an install's backup count is its owner's retention policy, not part of the rule."""
+
+    workspace = " ".join(_read("references/project-workspace.md").split())
+    runtime = " ".join(_read("references/runtime-actions.md").split())
+    assert "its item need not be closed" in workspace
+    assert "Dispose of your own unused trees and old backups; do not wait for a sweep (operator, 2026-10-11" in workspace
+    assert "Never delete blindly." in workspace
+    assert ("Another agent's folder, the live runtime, a live database and a protected rollback input are never "
+            "yours to remove") in workspace
+    assert "is that install owner's retention policy, recorded in the project's Facts, not a number from this rule" in workspace
+    assert '(operator, 2026-10-11: "then delete old backups")' in runtime
+    assert "until the operator decides how to clear them" not in runtime
 
 
 def test_the_kdcube_profile_gives_deploy_worktrees_a_gitdir_the_container_can_read():

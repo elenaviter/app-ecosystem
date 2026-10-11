@@ -448,18 +448,37 @@ automatic runs only report what they would remove
   every worktree's Git data. A tree the sweep keeps is yours to finish, push or
   remove by hand with `git worktree remove`.
 - Remote branches are the merger's to delete.
-- A review tree goes as soon as the verdict is recorded and its item is
-  closed. Its installed packages (for example a widget's `node_modules`) go with it
-  when you declared them with `--generated`, unless another tree still links
-  into them.
-- The first real sweep on a host with an existing pile is the operator's
-  decision, and so is turning automatic removal on; until then, `--sweep`
-  without `--apply` shows what would go.
+- A review, composition or runner tree goes as soon as its verdict is
+  recorded or its change request is merged; its item need not be closed, the
+  exact head stays reproducible from its commit. Remove it in the same turn
+  (`git worktree remove`, then `git worktree prune`) after the checks above:
+  nothing unique in it, nothing still reading it. Its installed packages (for
+  example a widget's `node_modules`) go with it, unless another tree still
+  links into them.
+- **Dispose of your own unused trees and old backups; do not wait for a
+  sweep (operator, 2026-10-11, see the project's Facts).** On every host, each
+  agent removes its own finished trees and its own old copies: review,
+  composition and runner trees, scratch copies of repositories, and obsolete
+  database or configuration backups. Keep only what an open item, a pinned
+  consumer or a live install's rollback still needs. Turning the automatic
+  sweep's removal on for a host stays the operator's decision.
+- **What blocks a removal, and how its owner resolves it.** Never delete
+  blindly. A tree or copy with uncommitted changes, untracked files, commits no
+  remote has, or a file that is the only copy of a finding is resolved by its
+  owner first: commit and push, publish the finding (an applied item note or a
+  tracked file), or discard it on purpose and say so on the item. A job you do
+  not recognise or a reader still attached keeps the tree until you name it.
+  Another agent's folder, the live runtime, a live database and a protected
+  rollback input are never yours to remove: ask their owner on the board.
 
 Runtime-window database backups follow the same lifetime rule: they live in
 the host's managed backup folder, never in a workspace or scratch folder, and
 only until the next verified ALL CLEAR keeps the newest one. The coordinator's
 step is in [runtime actions](runtime-actions.md#runtime-window-database-backups).
+Old database and configuration backups outside that manifest are deleted by
+their owner too (operator, 2026-10-11); how many install backups a live
+install keeps for rollback is that install owner's retention policy, recorded
+in the project's Facts, not a number from this rule.
 
 Why: worktrees that were never removed filled one host with about a hundred
 stale folders, and a coordinator's hidden test trees reached 4 GB; on
