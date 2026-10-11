@@ -163,9 +163,29 @@ owner and the first accepted staging instant, before any candidate write.
 Only a `ready` record can load for preparation; a partial manifest refuses
 `card_intent_incomplete`. A replay resumes its exact files with the frozen
 instant. The composed service's member Card sections, in sorted order with
-started writes drained before release, cover recording and retirement.
+started writes drained before release, cover recording, loading and retirement.
 Candidate sidecars are written before version bodies, so planned candidates
 are not serving authority or history.
+
+Loading first validates that one manifest's bounded member coordinates, then
+takes those same composed sections and reads the manifest again. An active
+recorder can finish `staging` to `ready` while the reader waits; no Card is
+hydrated before the locked re-read. Every other manifest field must remain
+identical, and `ready` cannot move back to `staging`. A changed binding or
+member set refuses `card_intent_conflict`. If FINISH retired the exact intent
+while a duplicate waited, its validated finished receipt/tombstone must match
+the original manifest's digest, authority and scope, and the authoritative
+terminal decision when that port is bound. It yields the existing late-stage
+or aborted refusal, not a new successful PREPARE: the coordinator can replay
+its own exact decision without treating the participant as unavailable.
+Missing, unfinished or mismatched terminal evidence still refuses. The initial
+metadata read also performs at most one re-read when a subsequent presence
+check sees a file, handling publication/removal between the read and stat;
+JSON null remains invalid. A recorder that crashed still leaves `staging`, which
+continues to refuse `card_intent_incomplete` without candidate hydration.
+The loader writes nothing, adds no private lock or unbounded retry policy, and releases
+the member sections before the participant enters its preparation operation.
+Legacy v1 and terminal FINISH's receipt-only retries are unchanged.
 
 Pass the composed `DelegatedCardService` explicitly to the intent source in
 production. For callers that omit `service=`, a bundle store retains its
@@ -193,6 +213,13 @@ removes a current version. A failed finish or cleanup leaves retry evidence.
 Terminal FINISH retries use the receipt without Card hydration; signed
 retries and page cursors require its exact authority/scope binding. A legacy
 receipt whose intent is gone and whose binding is absent fails closed.
+If a duplicate FINISH saw a ready linked manifest before waiting, then finds
+it retired, only the known late-stage/aborted loader refusal can be replayed:
+the finished terminal receipt must match the authoritative decision and
+intent digest plus that manifest's exact authority, scope and record digest.
+It then follows the same idempotent retirement/receipt path, without loading
+Card bodies or repeating service duties. Missing, unfinished, mismatched or
+other refusal evidence is never promoted to success. PREPARE is unchanged.
 Exact terminal record replay writes nothing; late STAGE is refused.
 
 ## Hub-local operations in flight

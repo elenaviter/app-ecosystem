@@ -442,14 +442,11 @@ class LocalCardIntentSource:
         await record_links(self, intent)
 
     async def load(self, transaction_id: str) -> "CardIntent | CardGroupIntent":
-        raw = await read_json_or_none(self._path(transaction_id))
+        from .intent_links import is_link_record, load_recorded_links, read_manifest, refuse_retired
+        raw = await read_manifest(self, transaction_id)
         if raw is None:
-            from ..durable_io import path_is_file
-            if await path_is_file(self._path(transaction_id)):
-                raise DecisionRefused("card_intent_invalid")
-            raise DecisionRefused("card_intent_unknown")
-        from .intent_links import is_link_record, load_links
-        intent = await load_links(self, raw) if is_link_record(raw) else intent_from_mapping(raw)
+            await refuse_retired(self, transaction_id)
+        intent = await load_recorded_links(self, raw, transaction_id) if is_link_record(raw) else intent_from_mapping(raw)
         if intent.transaction_id != transaction_id:
             raise DecisionRefused("card_intent_invalid")
         return intent
@@ -700,7 +697,22 @@ class HubCardParticipant:
                     decision=decision, subject_hash=lead["subject_hash"], access_id=lead["access_id"])
             finished = await retire_intent(source, transaction_id, decision)
         else:
-            result = await self._finish_loaded(transaction_id, decision)
+            try:
+                result = await self._finish_loaded(transaction_id, decision)
+            except DecisionRefused as exc:
+                # Another FINISH may retire this ready linked intent while
+                # its load waits. Replay only the same completed duties;
+                # PREPARE keeps the loader's late-stage/aborted refusal.
+                if (not is_link_record(raw) or raw["status"] != "ready"
+                        or str(exc) not in ("card_transaction_late_stage", "card_transaction_aborted")):
+                    raise
+                ended = await terminal(source, transaction_id)
+                binding = {key: raw[key] for key in ("authority", "scope", "record_digest")}
+                if (ended is None or ended.get("intent_finished") is not True
+                        or ended["state"] != decision or ended.get("intent_digest") != record.intent.digest
+                        or ended.get("intent_binding") != binding):
+                    raise
+                result = None
             if raw is None:
                 return result  # genuinely never recorded: no binding is inferred
             finished = await retire_intent(source, transaction_id, decision)

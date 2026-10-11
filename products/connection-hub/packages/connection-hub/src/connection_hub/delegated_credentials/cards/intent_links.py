@@ -129,10 +129,45 @@ async def terminal(source: Any, transaction_id: str) -> dict[str, Any] | None:
     return None
 
 
-async def read_binding(source: Any, transaction_id: str) -> Any:
+async def read_manifest(source: Any, transaction_id: str) -> Any:
+    """One bounded re-read distinguishes JSON null from publication/removal between read and stat."""
     raw = await read_json_or_none(source._path(transaction_id))
     if raw is None and await path_is_file(source._path(transaction_id)):
-        raise DecisionRefused("card_intent_invalid")
+        raw = await read_json_or_none(source._path(transaction_id))
+        if raw is None and await path_is_file(source._path(transaction_id)):
+            raise DecisionRefused("card_intent_invalid")
+    return raw
+
+
+async def refuse_retired(source: Any, transaction_id: str, original: Any = None) -> None:
+    """A finished duplicate is a known late decision, not an unknown/unavailable participant.
+
+    This returns no PREPARE success and never rehydrates or stages a retired
+    intent. The coordinator can replay its own exact authoritative decision.
+    Missing, unfinished or mismatched terminal evidence still fails closed.
+    """
+    ended = await terminal(source, transaction_id)
+    if ended is None or ended.get("intent_finished") is not True:
+        raise DecisionRefused("card_intent_unknown")
+    validate_finished_binding(ended)
+    if original is not None:
+        expected = {"authority": original["authority"], "scope": original["scope"],
+                    "record_digest": original["record_digest"]}
+        if ended["intent_binding"] != expected or ended.get("intent_digest") != original["intent_digest"]:
+            raise DecisionRefused("card_intent_conflict")
+        if ended["state"] == "committed" and original["status"] != "ready":
+            raise DecisionRefused("card_intent_incomplete")
+    if source._decisions is not None:
+        record = await source._decisions.read(transaction_id)
+        if (record is None or not record.terminal or record.state != ended["state"]
+                or record.intent.digest != ended.get("intent_digest")):
+            raise DecisionRefused("card_intent_not_bound")
+    raise DecisionRefused("card_transaction_aborted" if ended["state"] == "aborted"
+                          else "card_transaction_late_stage")
+
+
+async def read_binding(source: Any, transaction_id: str) -> Any:
+    raw = await read_manifest(source, transaction_id)
     if raw is not None and (not isinstance(raw, Mapping) or raw.get("transaction_id") != transaction_id):
         raise DecisionRefused("card_intent_invalid")
     if is_link_record(raw):
@@ -263,6 +298,31 @@ async def record_links(source: Any, intent: Any) -> None:
         except CardRecordError as exc:
             raise DecisionRefused(str(exc)) from exc
         await write_json_atomic(path, {**manifest, "status": "ready"})
+
+
+async def load_recorded_links(source: Any, raw: Any, transaction_id: str) -> Any:
+    """Wait for an active recorder, then hydrate the same exact manifest under its member sections.
+
+    The first bounded metadata read chooses the lock set, never Card bodies.
+    Recording and retirement use these same composed sections. A crash still
+    leaves an incomplete manifest; only staging-to-ready may change while waiting.
+    Exact finished retirement yields the existing late-decision refusal so the
+    coordinator can converge a duplicate without treating it as unavailable.
+    """
+    validate_link_record(raw)
+    if raw["transaction_id"] != transaction_id:
+        raise DecisionRefused("card_intent_invalid")
+    members = raw["members"] if raw["schema"] == GROUP_SCHEMA else [raw]
+    keys = [(member["subject_hash"], member["access_id"]) for member in members]
+    async with sections(source, keys):
+        current = await read_manifest(source, transaction_id)
+        if current is None:
+            await refuse_retired(source, transaction_id, raw)
+        validate_link_record(current)
+        if ({**current, "status": raw["status"]} != raw
+                or (raw["status"] == "ready" and current["status"] != "ready")):
+            raise DecisionRefused("card_intent_conflict")
+        return await load_links(source, current)
 
 
 async def load_links(source: Any, raw: Any) -> Any:
