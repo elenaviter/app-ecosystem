@@ -2864,7 +2864,7 @@ class AutomationAccessService:
         from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body, managed_my_card_owner
         owner = managed_my_card_owner(card_authority_from_record(record))
         if owner != (project_ref, actor_subject):
-            return {"ok": False, "error": "project_person_my_card_property_self_only", "status": 403}
+            return {"ok": False, "error": "managed_card_edit_owner_required", "status": 403}
         forwarder = self._managed_card_edit_forwarder(project_ref)
         if forwarder is None:
             return {"ok": False, "error": "managed_card_edit_route_unavailable", "status": 503}

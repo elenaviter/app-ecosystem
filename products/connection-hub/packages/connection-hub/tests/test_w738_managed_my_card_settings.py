@@ -163,3 +163,13 @@ def test_stage_refuses_a_mixed_settings_step_without_mutating_the_request(extra)
     with pytest.raises(_Refused):
         stage_authorization(data, DIGEST)
     assert canonical_json_bytes(data) == before
+
+
+def test_settings_codec_fixed_refusals_are_declared_for_value_free_trace():
+    import re
+    from pathlib import Path
+    from connection_hub.card_save_codes import CARD_SAVE_CODES
+    from connection_hub.delegated_credentials import my_card_person_properties_plan
+    found = set(re.findall(r'"((?:card|project)_[a-z0-9_]+)"',
+                          Path(my_card_person_properties_plan.__file__).read_text()))
+    assert found <= CARD_SAVE_CODES
