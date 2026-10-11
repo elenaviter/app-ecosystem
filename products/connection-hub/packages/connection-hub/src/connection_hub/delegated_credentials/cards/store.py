@@ -122,6 +122,15 @@ class DelegatedCardStore(Protocol):
 MARKER_ROW_ERA_KEY = "_card_rows_era"
 
 
+
+async def _guard_row_write(path) -> None:
+    """A row write passes the SAME writer guards as the file write it stands for (proc-only, and under R the
+    Card-lock owner check), BEFORE the CAS: a writer whose Redis lock expired is refused card_lock_lost before
+    it can advance the row, instead of landing the row and failing only at the file hint (Ops' R+P stall run)."""
+    from connection_hub.delegated_credentials.durable_io import _check_write_guards_async
+
+    await _check_write_guards_async(path)
+
 def _without_era(document):
     if isinstance(document, dict) and MARKER_ROW_ERA_KEY in document:
         document = {key: value for key, value in document.items() if key != MARKER_ROW_ERA_KEY}
@@ -194,6 +203,7 @@ class BundleStorageDelegatedCardStore:
             session = current_lock_session()
             if session is None or not session.holds(f"delegated-card:{validated_access_id(access_id)}"):
                 return hint
+            await _guard_row_write(path)
             document, _revision = await rows.adopt_pointer(subject_hash=subject_hash, access_id=access_id,
                                                            document=hint)
         return None if document == ABSENT_POINTER else document
@@ -204,6 +214,7 @@ class BundleStorageDelegatedCardStore:
         if self.card_rows is not None:
             from .pointer_authority import ABSENT_POINTER
 
+            await _guard_row_write(path)
             await self.card_rows.write_pointer(subject_hash=subject_hash, access_id=access_id,
                                                document=ABSENT_POINTER if document is None else dict(document))
         if document is None:
@@ -242,6 +253,7 @@ class BundleStorageDelegatedCardStore:
                 return None
             if not locked:
                 return hint
+            await _guard_row_write(path)
             document, _revision = await rows.adopt_marker(txn, hint)
         return document
 
@@ -250,6 +262,7 @@ class BundleStorageDelegatedCardStore:
         rows are on, so a late hint can never resurrect a deleted row)."""
         hint = dict(document)
         if self.card_rows is not None:
+            await _guard_row_write(self.card_version_marker_path(txn))
             await self.card_rows.write_marker(txn, dict(document))
             hint[MARKER_ROW_ERA_KEY] = True
         await write_json_atomic(self.card_version_marker_path(txn), hint)
@@ -257,6 +270,7 @@ class BundleStorageDelegatedCardStore:
     async def delete_marker_document(self, txn: str) -> None:
         """R1: removal is a CAS too (a stale deleter never removes a newer state), then the file hint."""
         if self.card_rows is not None:
+            await _guard_row_write(self.card_version_marker_path(txn))
             await self.card_rows.delete_marker(txn)
         await unlink_guarded_async(self.card_version_marker_path(txn))
 

@@ -270,6 +270,11 @@ reacquired while old code still acts, so durable effects need a resource-enforce
   `row_revision` this operation read: zero rows means a stale writer, refused `card_pointer_moved` or
   `card_version_marker_moved` whatever its lock state. `current.json` and the marker file stay as hints,
   written after the row.
+- **Writer guards before the row.** Every row write (pointer, marker, delete, first-touch adoption) first passes
+  the same writer guards as the file write it stands for: proc-only and, under R, the Card-lock owner check. A
+  writer whose Redis key expired is refused `card_lock_lost` BEFORE its CAS, so it can never advance the row while
+  its own caller is told it failed (Ops' R+P stall run). The residual window between the owner check and the CAS is
+  closed by the CAS itself: the successor's write then refuses, and nothing is lost.
 - **Reads.** Once a row exists, every reader uses the row and never prefers the file, even a newer-looking
   one (C2). Without a row, the Card was not written since activation:
   - a writer holding that Card's lock adopts the file into the row (first touch, no scan);
