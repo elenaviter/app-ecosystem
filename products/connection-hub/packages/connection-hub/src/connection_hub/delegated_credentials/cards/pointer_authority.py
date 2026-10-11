@@ -214,16 +214,10 @@ class PostgresCardRows:
         else:
             token = await self._claim_token()
             row = await self._fetchrow(
-                f"""WITH claimed AS (
-                        UPDATE {self.schema}.{TABLE_CARD_POINTERS} SET fence_token=$5
-                        WHERE tenant=$1 AND project=$2 AND subject_hash=$3 AND access_id=$4
-                          AND (fence_token IS NULL OR fence_token <= $5)
-                        RETURNING document, row_revision)
-                    SELECT document, row_revision, TRUE AS claimed FROM claimed
-                    UNION ALL
-                    SELECT document, row_revision, FALSE FROM {self.schema}.{TABLE_CARD_POINTERS}
+                f"""UPDATE {self.schema}.{TABLE_CARD_POINTERS}
+                    SET fence_token = CASE WHEN fence_token IS NULL OR fence_token <= $5 THEN $5 ELSE fence_token END
                     WHERE tenant=$1 AND project=$2 AND subject_hash=$3 AND access_id=$4
-                      AND NOT EXISTS (SELECT 1 FROM claimed)""",
+                    RETURNING document, row_revision, fence_token = $5 AS claimed""",
                 self.tenant, self.project, subject_hash, access_id, token)
             if row is not None:
                 self._claimed("pointer", (subject_hash, access_id), token if row["claimed"] else None)
@@ -289,14 +283,10 @@ class PostgresCardRows:
         else:  # a locked read claims the row unless a newer token holds it (see read_pointer)
             token = await self._claim_token()
             row = await self._fetchrow(
-                f"""WITH claimed AS (
-                        UPDATE {self.schema}.{TABLE_CARD_VERSION_TXNS} SET fence_token=$4
-                        WHERE tenant=$1 AND project=$2 AND txn=$3 AND (fence_token IS NULL OR fence_token <= $4)
-                        RETURNING document, row_revision, incarnation)
-                    SELECT document, row_revision, incarnation, TRUE AS claimed FROM claimed
-                    UNION ALL
-                    SELECT document, row_revision, incarnation, FALSE FROM {self.schema}.{TABLE_CARD_VERSION_TXNS}
-                    WHERE tenant=$1 AND project=$2 AND txn=$3 AND NOT EXISTS (SELECT 1 FROM claimed)""",
+                f"""UPDATE {self.schema}.{TABLE_CARD_VERSION_TXNS}
+                    SET fence_token = CASE WHEN fence_token IS NULL OR fence_token <= $4 THEN $4 ELSE fence_token END
+                    WHERE tenant=$1 AND project=$2 AND txn=$3
+                    RETURNING document, row_revision, incarnation, fence_token = $4 AS claimed""",
                 self.tenant, self.project, txn, token)
             if row is not None:
                 self._claimed("marker", (txn,), token if row["claimed"] else None)

@@ -283,8 +283,8 @@ reacquired while old code still acts, so durable effects need a resource-enforce
     still held then, so a successor on that lock acquires later and draws a LARGER token. The sequence lives
     with the rows it fences: no per-Card or per-operation key, nothing to seed after a Redis restore, and a
     database restore moves the rows and the sequence together.
-  - **The claim** is `SET fence_token = t WHERE fence_token IS NULL OR fence_token <= t`. A stale operation's
-    late claim (Ops' review of b1693251: an unordered per-operation id let it take the row back) carries the
+  - **The claim** is one UPDATE that sets `fence_token` to t only where it is NULL or not newer, and returns
+    whether it did (`fence_token = t AS claimed`). A stale operation's late claim (Ops' review of b1693251: an unordered per-operation id let it take the row back) carries the
     older token, matches nothing, and is an unclaimed read: nothing is touched, its later CAS refuses, and the
     successor's CAS succeeds. Without ordering the live owner was refused instead (witness:
     `test_w661_p_row_late_claim_ordered_fence.py`, which fails on b1693251).
