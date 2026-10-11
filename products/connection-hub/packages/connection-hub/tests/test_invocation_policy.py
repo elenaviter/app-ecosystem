@@ -782,3 +782,59 @@ async def test_an_aborted_card_change_releases_only_its_own_prepared_marker(tmp_
                                                change_id="tx-b:restart") is False
     assert (await service.commit_policy_change(owner_subject="user-1", authority=authority,
                                                change_id="tx-b:restart", now=105)) == policy
+
+
+# W749: a stuck PREPARED marker never blocks a new attempt (operator, 11 Oct 17:49Z, verbatim:
+# "i do not want anything that was prepared and stuck to get in my way").
+
+STUCK = 100 + 600  # PREPARED_SUPERSEDE_AFTER_SECONDS after a marker prepared at 100
+
+
+@pytest.mark.asyncio
+async def test_a_new_change_supersedes_a_stuck_prepared_marker_and_the_old_commit_is_refused(tmp_path):
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="edit-pre-fix", now=100)
+    fresh = await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                                change_id="edit-retry", now=STUCK)
+    assert fresh.change_id == "edit-retry"
+    with pytest.raises(InvocationPolicyConflict) as superseded:
+        await service.commit_policy_change(owner_subject="user-1", authority=authority, change_id="edit-pre-fix")
+    assert superseded.value.reason == "invocation_policy_change_missing"
+    policy = await service.commit_policy_change(owner_subject="user-1", authority=authority, change_id="edit-retry")
+    assert (policy.mode, policy.revision) == (POLICY_ONCE, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_marker_that_may_still_be_in_flight_is_not_superseded(tmp_path):
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="in-flight", now=100)
+    with pytest.raises(InvocationPolicyConflict) as raised:
+        await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                            change_id="other", now=STUCK - 1)
+    assert raised.value.reason == "invocation_policy_change_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_the_same_change_id_asking_another_mode_stays_a_conflict(tmp_path):
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="edit-1", now=100)
+    with pytest.raises(InvocationPolicyConflict):
+        await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ALWAYS,
+                                            change_id="edit-1", now=STUCK)
+
+
+@pytest.mark.asyncio
+async def test_a_direct_set_supersedes_a_stuck_prepared_marker(tmp_path):
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="live-delete-once", now=100)
+    policy = await service.set_policy(owner_subject="user-1", authority=authority, mode=POLICY_ALWAYS, now=STUCK)
+    assert policy.mode == POLICY_ALWAYS
+    assert await service.get_policy_change(owner_subject="user-1", authority=authority) is None

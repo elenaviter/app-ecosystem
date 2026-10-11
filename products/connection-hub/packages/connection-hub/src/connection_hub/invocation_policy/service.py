@@ -61,6 +61,17 @@ class InvocationPolicyConflict(RuntimeError):
         self.current_revision = current_revision
 
 
+# W749 (operator, 11 Oct: "i do not want anything that was prepared and stuck to get in my way"): a
+# PREPARED marker of another change older than this is stuck, and a new change supersedes it. Younger
+# markers may still belong to a Card transaction in flight (PB admits one for 300s and decides within
+# 30s); superseding one of those would leave its committed Card unable to apply its policy.
+PREPARED_SUPERSEDE_AFTER_SECONDS = 600
+
+
+def _superseded(change: InvocationPolicyChange, moment: int) -> bool:
+    return moment - int(change.prepared_at or 0) >= PREPARED_SUPERSEDE_AFTER_SECONDS
+
+
 class InvocationPolicyService:
     def __init__(
         self,
@@ -172,7 +183,10 @@ class InvocationPolicyService:
                 authority=authority,
             )
             if change is not None and change.state == POLICY_CHANGE_PREPARED:
-                raise InvocationPolicyConflict("invocation_policy_change_in_progress")
+                if not _superseded(change, moment):
+                    raise InvocationPolicyConflict("invocation_policy_change_in_progress")
+                # W749: a stuck earlier attempt never blocks a new one; this direct set supersedes it.
+                await self._store.delete_policy_change(owner_hash=owner_hash, authority=authority)
             current = await self._store.read_policy(
                 owner_hash=owner_hash, authority=authority
             )
@@ -223,10 +237,18 @@ class InvocationPolicyService:
                     and existing.mode == selected_mode
                 ):
                     return existing
-                if existing.state == POLICY_CHANGE_PREPARED:
+                if existing.state == POLICY_CHANGE_PREPARED and (
+                    existing.change_id == clean_change_id
+                    or not _superseded(existing, moment)
+                ):
+                    # The same change id asking for another mode is not a new attempt; a marker
+                    # younger than the bound may still belong to a Card transaction in flight.
                     raise InvocationPolicyConflict(
                         "invocation_policy_change_in_progress"
                     )
+                # W749: a stuck PREPARED marker of a DIFFERENT change never blocks a new attempt. The
+                # new change replaces it below; the superseded change's commit is then refused by its
+                # change_id (invocation_policy_change_missing).
             current = await self._store.read_policy(
                 owner_hash=owner_hash,
                 authority=authority,

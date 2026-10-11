@@ -269,3 +269,42 @@ async def test_the_composed_lifetime_target_caps_the_real_credential_family():
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_w749_an_in_flight_transaction_marker_survives_a_new_attempt_and_commits(tmp_path):
+    from connection_hub.invocation_policy import InvocationPolicyConflict
+    policies = _service(tmp_path)
+    prepared, authority = _policy_receipt("prepared")
+    effect = prepared["effects"][0]
+    await _applier(prepared, {"invocation_policy": InvocationPolicyTarget(policies)}).prepare(
+        "invocation_policy", effect["key"], effect["payload"], transaction_id=TX)
+    staged = await policies.get_policy_change(owner_subject=OWNER, authority=authority)
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_change_in_progress"):
+        await policies.prepare_policy_change(owner_subject=OWNER, authority=authority, mode=POLICY_ONCE,
+                                             change_id="edit-direct-attempt", now=staged.prepared_at + 60)
+    committed, _ = _policy_receipt("committed")
+    await _applier(committed, {"invocation_policy": InvocationPolicyTarget(policies)}).apply(
+        "invocation_policy", effect["key"], effect["payload"], transaction_id=TX)
+    assert (await policies.get(owner_subject=OWNER, authority=authority)).mode == POLICY_ONCE
+
+
+@pytest.mark.asyncio
+async def test_w749_a_stuck_transaction_marker_once_superseded_is_refused_at_commit(tmp_path):
+    """What a transaction whose stale marker was superseded does at COMMIT: its policy effect is refused by
+    name (card_effect_policy_conflict), so FINISH keeps the Card fenced (card_effects_pending), never serving
+    it with a policy it did not get; the later change's policy stands."""
+    policies = _service(tmp_path)
+    prepared, authority = _policy_receipt("prepared")
+    effect = prepared["effects"][0]
+    await _applier(prepared, {"invocation_policy": InvocationPolicyTarget(policies)}).prepare(
+        "invocation_policy", effect["key"], effect["payload"], transaction_id=TX)
+    staged = await policies.get_policy_change(owner_subject=OWNER, authority=authority)
+    await policies.prepare_policy_change(owner_subject=OWNER, authority=authority, mode=POLICY_ONCE,
+                                         change_id="edit-later", now=staged.prepared_at + 600)
+    committed, _ = _policy_receipt("committed")
+    with pytest.raises(ParticipantEffectRefused, match="card_effect_policy_conflict"):
+        await _applier(committed, {"invocation_policy": InvocationPolicyTarget(policies)}).apply(
+            "invocation_policy", effect["key"], effect["payload"], transaction_id=TX)
+    assert await policies.get(owner_subject=OWNER, authority=authority) is None  # nothing of it published
+    assert (await policies.get_policy_change(owner_subject=OWNER, authority=authority)).change_id == "edit-later"
