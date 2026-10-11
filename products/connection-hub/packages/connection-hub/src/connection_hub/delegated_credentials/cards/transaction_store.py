@@ -1580,6 +1580,14 @@ async def _write_card_version_marker(store: Any, marker: Mapping[str, Any]) -> N
     await store.write_marker_document(card_version_txn_id(marker["txn"]), dict(marker))
 
 
+def card_version_effects_complete(marker: Mapping[str, Any]) -> bool:
+    """Readiness is durable: every effect has its own nonempty recorded outcome."""
+    effects, outcomes = marker.get("effects"), marker.get("effect_outcomes")
+    return (isinstance(effects, list) and isinstance(outcomes, Mapping)
+            and all(type(outcomes.get(str(index))) is str and bool(outcomes[str(index)])
+                    for index in range(len(effects))))
+
+
 async def card_version_revision_committed(store: Any, marker: Any, *, subject_hash: str, access_id: str,
                                           revision_name: str) -> bool:
     """A staged revision is history only once its txn is published (never while staged or rolled back)."""
@@ -1590,6 +1598,8 @@ async def card_version_revision_committed(store: Any, marker: Any, *, subject_ha
         # D2 (EMain 17:1xZ): PUBLISH deletes the marker once done, and ROLLBACK deletes a txn's files BEFORE its
         # marker, so a version file whose txn marker is gone is published history.
         return True
+    if not card_version_effects_complete(txn):
+        return False  # W756: a moved pointer alone never exposes partially applied policy effects.
     if txn["state"] == "staged":
         # Infra 17:2xZ red 3: current.json naming this version is the truth (D3): a PUBLISH stopped between its
         # pointer write and its marker write has published it, so readers must not see a missing revision.
@@ -1604,21 +1614,21 @@ async def card_version_revision_committed(store: Any, marker: Any, *, subject_ha
 
 
 async def _mark_published(store: Any, marker: dict[str, Any]) -> None:
-    """Every member's current.json names this txn's version: the txn IS published. Record it, drop the sidecars."""
+    """Record moved pointers, but retain the read fence until ALL effects finish."""
     marker["state"] = "published"
     await _write_card_version_marker(store, marker)
+
+
+async def _finish_published(store: Any, marker: dict[str, Any], run_effect: Any) -> None:
+    """Record every effect before removing either the version fences or the marker."""
+    await _run_effects(store, marker, run_effect)
     for m in marker["members"]:
         path = card_version_revision_marker_path(store, subject_hash=m["subject_hash"], access_id=m["access_id"],
                                                  revision_name=m["revision_name"])
         try:
             await unlink_guarded_async(path)
-        except OSError:
-            pass  # it still resolves as committed: published marker, or no marker at all
-
-
-async def _finish_published(store: Any, marker: dict[str, Any], run_effect: Any) -> None:
-    """Each unrecorded effect once; once every effect is recorded the marker goes (D2: only the version stays)."""
-    await _run_effects(store, marker, run_effect)
+        except OSError as exc:
+            raise CardStorageError("card_version_marker_cleanup_failed") from exc
     try:
         await store.delete_marker_document(card_version_txn_id(marker["txn"]))
     except OSError as exc:
@@ -1637,6 +1647,30 @@ async def _current_txn(store: Any, current: Any, *, subject_hash: str, access_id
     sidecar = await read_json_or_none(card_version_revision_marker_path(
         store, subject_hash=subject_hash, access_id=access_id, revision_name=current.revision_name))
     return sidecar["txn"] if isinstance(sidecar, Mapping) and type(sidecar.get("txn")) is str else ""
+
+
+async def assert_current_version_readable(store: Any, *, subject_hash: str, access_id: str,
+                                         current: Any = None) -> None:
+    """One current/version/marker lookup, no history scan or decision-port call.
+
+    The immutable version record covers older publishers that removed the
+    sidecar before running effects. Cache-ready projections need this same
+    durable fence, including after a cache TTL, restart or legacy publication.
+    """
+    if current is None:
+        current = await store.read_current(subject_hash=subject_hash, access_id=access_id)
+    if current is None:
+        return
+    txn = await _current_txn(store, current, subject_hash=subject_hash, access_id=access_id)
+    if not txn:
+        return
+    marker = await read_card_version_marker(store, txn)
+    if marker is None:
+        return  # completed publication: only the immutable version remains
+    if not await card_version_revision_committed(
+            store, {"txn": txn}, subject_hash=subject_hash, access_id=access_id,
+            revision_name=current.revision_name):
+        raise CardStorageError("card_version_effects_pending")
 
 
 def _may_write_markers(store: Any) -> bool:
@@ -2031,6 +2065,10 @@ async def card_version_outcome(store: Any, *, txn: str, binding: Any = None, lin
     if marker is not None:
         _require_binding(marker, binding)
         state = marker["state"]
+        if state == "published" and not card_version_effects_complete(marker):
+            # W756: PB must never infer Saved from moved pointers alone.
+            # The existing signed refusal needs no new wire field or SDK schema.
+            raise CardTransactionRefused("effects_pending")
         members = [{"subject_hash": m["subject_hash"], "access_id": m["access_id"], "version": m["version"],
                     "checksum": m["content_hash"], "revision_name": m["revision_name"]} for m in marker["members"]]
     else:

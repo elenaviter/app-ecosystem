@@ -106,6 +106,12 @@ class DelegatedCardResolver:
                 return None
             authority = entry.authority
             if authority is not None:
+                try:
+                    await self._store.assert_current_version_readable(subject_hash=subject_hash, access_id=access_id)
+                except CardStorageError as exc:
+                    raise CardUnavailable(str(exc)) from exc
+                except Exception as exc:
+                    raise CardUnavailable("durable_card_unreadable") from exc
                 return authority if authority_is_usable(authority, moment) else None
 
         return await self._restore(subject_hash=subject_hash, access_id=access_id, moment=moment)
@@ -117,6 +123,8 @@ class DelegatedCardResolver:
             current = await self._store.read_current_authority(
                 subject_hash=subject_hash, access_id=access_id
             )
+        except CardStorageError as exc:
+            raise CardUnavailable(str(exc)) from exc
         except Exception as exc:
             raise CardUnavailable("durable_card_unreadable") from exc
         if current is None:

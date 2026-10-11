@@ -273,7 +273,9 @@ async def test_effects_run_once_each_pending_until_done_and_never_again(tmp_path
         return "applied"
     with pytest.raises(tx.CardTransactionRefused, match="effects_pending"):
         await service.publish_card_version(txn=TXN)  # no executor: the flip is done, effects are pending
-    assert await _current(store, before) == after
+    # W756 supersedes pointer-only visibility: not Saved until every effect is recorded.
+    with pytest.raises(CardStorageError, match="card_version_effects_pending"):
+        await _current(store, before)
     with pytest.raises(RuntimeError):
         await service.publish_card_version(txn=TXN, run_effect=flaky)
     assert runs == ["k1", "k2"]

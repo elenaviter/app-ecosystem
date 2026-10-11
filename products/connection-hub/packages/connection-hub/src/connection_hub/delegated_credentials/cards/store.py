@@ -369,6 +369,13 @@ class BundleStorageDelegatedCardStore:
         # W661 v6.2: a staged Card version is history only once its txn is published (D2: "not yet final
         # version does not work until theres final arrives").
         version_marker = await read_json_or_none(path.with_suffix(".card-version.json"))
+        if version_marker is None:
+            # W756: the old publisher removed sidecars before its effects.
+            # The immutable record still binds this version to that transaction.
+            record = await self.read_version_record(subject_hash=subject_hash, access_id=access_id,
+                                                    revision_name=revision_name)
+            if record is not None and record.get("txn"):
+                version_marker = {"txn": record["txn"]}
         if version_marker is not None:
             from .transaction_store import card_version_revision_committed
             return await card_version_revision_committed(self, version_marker, subject_hash=subject_hash,
@@ -395,6 +402,13 @@ class BundleStorageDelegatedCardStore:
             raise CardStorageError("lifecycle_revision_binding_invalid")
         return receipt["state"] == "committed"
 
+    async def assert_current_version_readable(self, *, subject_hash: str, access_id: str,
+                                              current: Any = None) -> None:
+        """The durable CardVersion serving fence, also used by cache hits."""
+        from .transaction_store import assert_current_version_readable
+        await assert_current_version_readable(self, subject_hash=subject_hash, access_id=access_id,
+                                              current=current)
+
     async def read_current_authority(
         self, *, subject_hash: str, access_id: str, consult_decision: bool = True
     ) -> tuple[CardCurrentPointer, CardAuthority] | None:
@@ -408,6 +422,8 @@ class BundleStorageDelegatedCardStore:
         )
         if pointer is None:
             return None
+        await self.assert_current_version_readable(subject_hash=subject_hash, access_id=access_id,
+                                                  current=pointer)
         payload = await self._read_revision_payload(
             subject_hash=subject_hash,
             access_id=access_id,

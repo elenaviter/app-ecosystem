@@ -207,6 +207,20 @@ whole request, so no edit value is repeated.
   each effect's named result in the marker, so a retried PUBLISH applies
   nothing twice.
 
+  **W756 publication readiness.** Moving `current.json` is not permission to
+  serve the new Card while an effect is unrecorded. Current reads, history
+  reads and ready-cache resolution consult the durable transaction binding;
+  an unfinished new version is hidden from history and current resolution
+  refuses `card_version_effects_pending`. This requires direct current/version/
+  marker reads on cache hits, never a history scan or coordinator decision
+  call. The immutable version record also fences recovery of older publishers
+  that deleted a sidecar before effects. Publication retains sidecars until
+  every effect outcome is recorded. A failed PUBLISH retains its updating
+  cache fence, and the same transaction can finish the remaining effects.
+  OUTCOME refuses `effects_pending` rather than reporting `published` while
+  effects are unrecorded. This store/readiness rule does not by itself wire
+  invocation-policy effects or qualify the PB durable-decision path.
+
 ## The person Control under the project Control (C -> P)
 
 A person's project Control Card C (the per-person Card a project admin edits)
