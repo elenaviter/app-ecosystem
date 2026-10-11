@@ -23,6 +23,7 @@ from connection_hub.invocation_policy import (
     BundleStorageInvocationPolicyStore,
     InvocationAuthority,
     InvocationPolicyService,
+    InvocationPolicyConflict,
 )
 from kdcube_ai_app.apps.chat.sdk.runtime.dynamic_module_loader import load_dynamic_module_for_path
 
@@ -113,6 +114,30 @@ async def test_a_card_write_that_raises_releases_its_prepared_marker(monkeypatch
     with pytest.raises(RuntimeError):
         await save("edit-attempt-1")
     assert await marker() is None
+
+
+@pytest.mark.asyncio
+async def test_card_transaction_policy_service_binds_fail_closed_recovery(monkeypatch, tmp_path):
+    module = _entrypoint_module()
+
+    @asynccontextmanager
+    async def lock(**_kwargs):
+        yield {}
+
+    policies = InvocationPolicyService(store=BundleStorageInvocationPolicyStore(tmp_path), mutation_lock=lock)
+    monkeypatch.setattr(module, "build_invocation_policy_service", lambda **_kwargs: policies)
+    monkeypatch.setattr(module, "_storage_root_or_error", lambda _entrypoint: tmp_path)
+    monkeypatch.setattr(module, "_connections_config", lambda _entrypoint: {"card_transactions": {"enabled": True}})
+    monkeypatch.setattr(module, "_delegated_authority_config", lambda _entrypoint: type("Config", (), {
+        "uses_postgresql": False,
+    })())
+    assert module._invocation_policy_service(object()) is policies
+    assert policies._transaction_settler is not None
+    change = await policies.prepare_policy_change(owner_subject="user-1", authority=AUTHORITY,
+                                                  mode=POLICY_ONCE, change_id="edit-attempt-1")
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided") as raised:
+        await policies._transaction_settler(change, "user-1")
+    assert module._invocation_policy_failure(raised.value)["retryable"] is True
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,28 @@ hold before it is switched on. Everything here is **off by default**:
 | Decision routing | `RoutedDecisionPort` | A Card staged by another application's transaction reads its decision from that application's authority. |
 | Recovery | cron `card-transaction-recover` | Finishes or presumes-aborts in-doubt Hub transactions, page by page, with the cursor kept in Redis. |
 
+### Invocation policy markers after a process interruption
+
+An invocation-policy effect places a `PREPARED` marker at STAGE. A later policy
+save for the same authority first validates its requested mode and expected
+revision, then resolves that marker through the exact Card transaction named by
+`<transaction id>:<authority key>`. A recorded COMMIT is FINISHed so its earlier
+policy takes effect before the new save. For a Hub-owned transaction without a
+terminal decision, the Hub may record ABORT only when its decision store says
+the transaction expired; FINISH then releases the marker. For a transaction
+staged by another application, the Hub reads that caller's configured decision
+authority and FINISHes only its terminal decision. It does not decide ABORT for
+the caller.
+
+If the decision remains live or its authority, intent, or receipt cannot be
+verified, the save returns retryable
+`invocation_policy_earlier_change_undecided` after a bounded wait. The marker
+continues to fence use of the policy; it is never cleared by elapsed time in
+the policy store. A stale `expected_revision` is refused before recovery work.
+Operators should recover the named Card transaction at its decision authority,
+then retry the policy save. A direct save's earlier `PREPARED` marker follows
+the separate direct-save supersession rule and needs no Card recovery.
+
 **How the Hub calls a host's signed operation.** This applies to plan
 authorization, the transaction authority fetch (`cards/authority_transport.py`)
 and the managed Card edit forward:
