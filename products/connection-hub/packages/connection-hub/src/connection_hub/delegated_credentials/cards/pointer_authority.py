@@ -144,11 +144,11 @@ class PostgresCardRows:
             row = await self._fetchrow(f"SELECT nextval('{self.schema}.{SEQUENCE_CARD_ROW_FENCE}') AS token")
             session.fence_token = int(row["token"])
 
-    def _claim_token(self) -> int:
-        session = _session()
-        if session is None or session.fence_token is None:
-            raise CardStorageError("card_row_fence_not_drawn")
-        return session.fence_token
+    async def _claim_token(self) -> int:
+        """The token to claim or create with. The store has drawn it before its guard; a direct row caller (no
+        owner guard to order against) draws it here."""
+        await self.draw_fence()
+        return _session().fence_token
 
     def _claimed(self, kind: str, key: tuple, token: int | None) -> None:
         """Record (or with None forget) the token this operation holds the row's claim with."""
@@ -212,7 +212,7 @@ class PostgresCardRows:
                     WHERE tenant=$1 AND project=$2 AND subject_hash=$3 AND access_id=$4""",
                 self.tenant, self.project, subject_hash, access_id)
         else:
-            token = self._claim_token()
+            token = await self._claim_token()
             row = await self._fetchrow(
                 f"""WITH claimed AS (
                         UPDATE {self.schema}.{TABLE_CARD_POINTERS} SET fence_token=$5
@@ -242,7 +242,7 @@ class PostgresCardRows:
                 (tenant, project, subject_hash, access_id, document, digest, row_revision, fence_token)
                 VALUES ($1, $2, $3, $4, $5, $6, 1, $7) ON CONFLICT DO NOTHING RETURNING row_revision""",
             self.tenant, self.project, subject_hash, access_id, encoded, sha256_hex(encoded),
-            self._claim_token())
+            await self._claim_token())
         found, revision = await self.read_pointer(subject_hash=subject_hash, access_id=access_id)
         if found is None or revision is None:
             raise CardStorageError("card_pointer_adoption_failed")
@@ -259,9 +259,9 @@ class PostgresCardRows:
                     (tenant, project, subject_hash, access_id, document, digest, row_revision, fence_token)
                     VALUES ($1, $2, $3, $4, $5, $6, 1, $7) ON CONFLICT DO NOTHING RETURNING row_revision""",
                 self.tenant, self.project, subject_hash, access_id, encoded, sha256_hex(encoded),
-                self._claim_token())
+                await self._claim_token())
             if row is not None:
-                self._claimed("pointer", key, self._claim_token())
+                self._claimed("pointer", key, await self._claim_token())
         else:
             # The CAS names the revision this operation read AND the token it claimed the row with: a later
             # locked reader's claim (the successor) refuses this write even if no new revision was written yet.
@@ -287,7 +287,7 @@ class PostgresCardRows:
                 f"""SELECT document, row_revision, incarnation FROM {self.schema}.{TABLE_CARD_VERSION_TXNS}
                     WHERE tenant=$1 AND project=$2 AND txn=$3""", self.tenant, self.project, txn)
         else:  # a locked read claims the row unless a newer token holds it (see read_pointer)
-            token = self._claim_token()
+            token = await self._claim_token()
             row = await self._fetchrow(
                 f"""WITH claimed AS (
                         UPDATE {self.schema}.{TABLE_CARD_VERSION_TXNS} SET fence_token=$4
@@ -313,7 +313,7 @@ class PostgresCardRows:
         await self._fetchrow(
             f"""INSERT INTO {self.schema}.{TABLE_CARD_VERSION_TXNS} (tenant, project, txn, document, row_revision, fence_token)
                 VALUES ($1, $2, $3, $4, 1, $5) ON CONFLICT DO NOTHING RETURNING row_revision""",
-            self.tenant, self.project, txn, encoded, self._claim_token())
+            self.tenant, self.project, txn, encoded, await self._claim_token())
         found, revision = await self.read_marker(txn)
         if found is None or revision is None:
             raise CardStorageError("card_version_marker_adoption_failed")
@@ -325,7 +325,7 @@ class PostgresCardRows:
         NOTHING is itself the fence, so it never replaces a marker someone else wrote."""
         session = _session()
         expected, incarnation = (0, None) if session is None else self._observed("marker", (txn,), required=True)
-        token = None if session is None else self._claim_token()
+        token = None if session is None else await self._claim_token()
         encoded = _encode(document, limit=MARKER_DOCUMENT_MAX_BYTES)
         if expected == 0:
             row = await self._fetchrow(
