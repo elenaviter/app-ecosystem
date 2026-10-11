@@ -131,6 +131,15 @@ async def _guard_row_write(path) -> None:
 
     await _check_write_guards_async(path)
 
+
+async def _guard_row(rows, path) -> None:
+    """Every row claim, adoption and CAS: draw this operation's fence token FIRST, then the owner guard. A guard
+    that passes after the draw proves the lock was held when the token was drawn, so a successor on that lock
+    draws a larger one (Ops' late-claim review of b1693251: a stale claim must lose, never the successor)."""
+    await rows.draw_fence()
+    await _guard_row_write(path)
+
+
 def _without_era(document):
     if isinstance(document, dict) and MARKER_ROW_ERA_KEY in document:
         document = {key: value for key, value in document.items() if key != MARKER_ROW_ERA_KEY}
@@ -195,15 +204,19 @@ class BundleStorageDelegatedCardStore:
         from .locks import current_lock_session
         from .pointer_authority import ABSENT_POINTER
 
-        document, _revision = await rows.read_pointer(subject_hash=subject_hash, access_id=access_id)
+        session = current_lock_session()
+        holder = session is not None and session.holds(f"delegated-card:{validated_access_id(access_id)}")
+        if holder:
+            await _guard_row(rows, path)  # the Card's lock holder claims the row: guarded like a write
+        document, _revision = await rows.read_pointer(subject_hash=subject_hash, access_id=access_id,
+                                                      claim=holder)
         if document is None:
             hint = await read_json_or_none(path)
             if hint is None:
                 return None
-            session = current_lock_session()
-            if session is None or not session.holds(f"delegated-card:{validated_access_id(access_id)}"):
+            if not holder:
                 return hint
-            await _guard_row_write(path)
+            await _guard_row(rows, path)
             document, _revision = await rows.adopt_pointer(subject_hash=subject_hash, access_id=access_id,
                                                            document=hint)
         return None if document == ABSENT_POINTER else document
@@ -214,7 +227,7 @@ class BundleStorageDelegatedCardStore:
         if self.card_rows is not None:
             from .pointer_authority import ABSENT_POINTER
 
-            await _guard_row_write(path)
+            await _guard_row(self.card_rows, path)
             await self.card_rows.write_pointer(subject_hash=subject_hash, access_id=access_id,
                                                document=ABSENT_POINTER if document is None else dict(document))
         if document is None:
@@ -240,20 +253,22 @@ class BundleStorageDelegatedCardStore:
             return _without_era(await read_json_or_none(path))
         from .locks import current_lock_session
 
-        document, _revision = await rows.read_marker(txn)
+        session = current_lock_session()
+        locked = session is not None and bool(session.resources)
+        if locked:
+            await _guard_row(rows, path)  # a locked read claims the row: guarded like a write
+        document, _revision = await rows.read_marker(txn, claim=locked)
         if document is None:
             hint = await read_json_or_none(path)
             if hint is None:
                 return None
-            session = current_lock_session()
-            locked = session is not None and bool(session.resources)
             if isinstance(hint, dict) and hint.get(MARKER_ROW_ERA_KEY) is True:
                 if locked:
                     await unlink_guarded_async(path)  # an orphan hint of a deleted row: bounded cleanup
                 return None
             if not locked:
                 return hint
-            await _guard_row_write(path)
+            await _guard_row(rows, path)
             document, _revision = await rows.adopt_marker(txn, hint)
         return document
 
@@ -262,7 +277,7 @@ class BundleStorageDelegatedCardStore:
         rows are on, so a late hint can never resurrect a deleted row)."""
         hint = dict(document)
         if self.card_rows is not None:
-            await _guard_row_write(self.card_version_marker_path(txn))
+            await _guard_row(self.card_rows, self.card_version_marker_path(txn))
             await self.card_rows.write_marker(txn, dict(document))
             hint[MARKER_ROW_ERA_KEY] = True
         await write_json_atomic(self.card_version_marker_path(txn), hint)
@@ -270,7 +285,7 @@ class BundleStorageDelegatedCardStore:
     async def delete_marker_document(self, txn: str) -> None:
         """R1: removal is a CAS too (a stale deleter never removes a newer state), then the file hint."""
         if self.card_rows is not None:
-            await _guard_row_write(self.card_version_marker_path(txn))
+            await _guard_row(self.card_rows, self.card_version_marker_path(txn))
             await self.card_rows.delete_marker(txn)
         await unlink_guarded_async(self.card_version_marker_path(txn))
 

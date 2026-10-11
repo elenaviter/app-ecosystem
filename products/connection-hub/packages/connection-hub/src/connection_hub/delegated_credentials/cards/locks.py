@@ -138,12 +138,15 @@ class CardRowOperation:
     """
 
     def __init__(self) -> None:
-        import uuid
-
-        # The row fence (Infra's post-owner-guard HOLD): a locked read writes this id into the row it reads, and
-        # every CAS of this operation requires it, so the latest LOCKED reader owns the row and a stalled writer
-        # whose lock was taken over can no longer move it, whatever its Redis check said before the stall.
-        self.op_id = uuid.uuid4().hex
+        # The ORDERED row fence (Infra's post-owner-guard HOLD; Ops' late-claim liveness review of b1693251): a
+        # locked read claims the row with this operation's fence token unless a NEWER token already claimed it,
+        # and every CAS requires the token its row was claimed with. The token comes from one PostgreSQL sequence
+        # and is drawn BEFORE the owner guard that precedes every claim and write, and drawn again after every new
+        # lock acquisition (``fence_token = None``), so an operation that passed its guard drew its token before
+        # any successor acquired that lock: the successor's token is larger, a late claim of the stale operation
+        # matches no row, and the successor's CAS is never refused by it.
+        self.fence_token: int | None = None
+        self.claims: dict[tuple, int] = {}
         self.observed: dict[tuple, int] = {}
         self.resources: dict[str, int] = {}
         self.closed = False
@@ -182,6 +185,8 @@ def row_fenced_lock(base_lock: CardMutationLock) -> CardMutationLock:
         try:
             async with base_lock(lock_path=lock_path, resource_id=resource_id, operation=operation,
                                  wait_seconds=wait_seconds) as held:
+                if not context.resources.get(resource_id):
+                    context.fence_token = None  # a token drawn before this acquisition may predate a successor's
                 context.resources[resource_id] = context.resources.get(resource_id, 0) + 1
                 try:
                     yield held

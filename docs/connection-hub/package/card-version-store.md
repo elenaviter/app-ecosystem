@@ -273,11 +273,27 @@ reacquired while old code still acts, so durable effects need a resource-enforce
 - **Writer guards before the row.** Every row write (pointer, marker, delete, first-touch adoption) first passes
   the same writer guards as the file write it stands for: proc-only and, under R, the Card-lock owner check. A
   writer whose Redis key already expired is refused `card_lock_lost` before its CAS.
-- **The row fence: the latest locked reader owns the row.** The Redis check and the PostgreSQL CAS are separate
-  resources, so a writer can pass its owner check, stall, and resume after its key expired and a successor took
-  the lock (Infra's post-owner-guard case). So a read made inside a Card operation CLAIMS the row in the same
-  statement (`fence` := the operation id), and every CAS and delete of that operation requires its own fence.
-  When the successor reads under its lock, it takes the fence, and the stalled writer's CAS then refuses
+- **The row fence: an ordered claim, the latest lock owner owns the row.** The Redis check and the PostgreSQL
+  CAS are separate resources, so a writer can pass its owner check, stall, and resume after its key expired and
+  a successor took the lock (Infra's post-owner-guard case). So a read made by the row's lock holder CLAIMS the
+  row in the same statement, and every CAS and delete of that operation requires the token it claimed with:
+  - **The token.** One PostgreSQL sequence per scope schema (`connection_hub_card_row_fence`) hands out fence
+    tokens. An operation draws its token BEFORE the owner guard that precedes every claim and write, and draws
+    a new one after every further lock acquisition. A guard that passes after the draw proves the lock was
+    still held then, so a successor on that lock acquires later and draws a LARGER token. The sequence lives
+    with the rows it fences: no per-Card or per-operation key, nothing to seed after a Redis restore, and a
+    database restore moves the rows and the sequence together.
+  - **The claim** is `SET fence_token = t WHERE fence_token IS NULL OR fence_token <= t`. A stale operation's
+    late claim (Ops' review of b1693251: an unordered per-operation id let it take the row back) carries the
+    older token, matches nothing, and is an unclaimed read: nothing is touched, its later CAS refuses, and the
+    successor's CAS succeeds. Without ordering the live owner was refused instead (witness:
+    `test_w661_p_row_late_claim_ordered_fence.py`, which fails on b1693251).
+  - **Who claims.** A pointer row is claimed only by the holder of that Card's lock. A marker row is claimed
+    by an operation inside any Card or txn section (every marker writer is; the txn's member Cards and its
+    txn section all protect it). Two holders of different member Cards can both finalize one txn: the
+    earlier token's claim is then an unclaimed read and its write refuses `card_version_marker_moved`, the
+    same contention as the revision CAS alone. Any other read claims nothing.
+  When the successor reads under its lock, it holds the claim, and the stalled writer's CAS then refuses
   (`card_pointer_moved` / `card_version_marker_moved`) with the row untouched: the live lock owner wins, and nobody
   is told "failed" for a write that landed. A lock-free read claims nothing.
 - **Residual: creates.** A row that does not exist yet has nothing to claim. If a stalled writer and its
