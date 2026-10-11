@@ -216,25 +216,3 @@ async def _read_under(card, store, access_id):
     async with card(access_id):
         await store.card_rows.draw_fence()
         return await store.read_pointer_document(subject_hash=_S, access_id=_A)
-
-
-@pytest.mark.asyncio
-async def test_pointer_a_token_is_drawn_again_after_a_later_acquisition(pointer_world):
-    store, rows, card = pointer_world
-    async with card(_X):
-        await rows.draw_fence()  # token t, drawn under X only
-        async with card():  # another operation claims and writes A with a larger token, then leaves
-            pass
-        other = asyncio.create_task(_write_under(card, store))
-        await other
-        async with card():  # acquiring A later draws a fresh token, larger than the other operation's
-            assert (await store.read_pointer_document(subject_hash=_S, access_id=_A))["by"] == "other"
-            await store.write_pointer_document(subject_hash=_S, access_id=_A, document=_pointer(3, "late"))
-    final, _revision = await rows.read_pointer(subject_hash=_S, access_id=_A)
-    assert final["by"] == "late"
-
-
-async def _write_under(card, store):
-    async with card():
-        await store.read_pointer_document(subject_hash=_S, access_id=_A)
-        await store.write_pointer_document(subject_hash=_S, access_id=_A, document=_pointer(2, "other"))

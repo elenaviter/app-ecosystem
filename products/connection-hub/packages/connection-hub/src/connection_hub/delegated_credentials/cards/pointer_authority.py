@@ -82,7 +82,9 @@ ALTER TABLE {schema}.{TABLE_CARD_VERSION_TXNS}
 ALTER TABLE {schema}.{TABLE_CARD_VERSION_TXNS} ADD COLUMN IF NOT EXISTS fence_token BIGINT NULL;
 -- One sequence per schema orders the tokens (no per-Card or per-operation key; it lives with the rows it fences,
 -- so a database restore moves both together).
-CREATE SEQUENCE IF NOT EXISTS {schema}.{SEQUENCE_CARD_ROW_FENCE};
+-- CACHE 1 (Ops): the fence order needs nextval order to equal real-time order across connections; a cached
+-- sequence hands each session its own block, so never raise it.
+CREATE SEQUENCE IF NOT EXISTS {schema}.{SEQUENCE_CARD_ROW_FENCE} CACHE 1;
 
 CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CARD_POINTER_AUTHORITY} (
     tenant        TEXT NOT NULL,
