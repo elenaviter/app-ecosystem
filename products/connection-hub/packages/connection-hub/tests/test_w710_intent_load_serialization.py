@@ -201,6 +201,49 @@ async def test_overlapping_prepare_observes_exact_retired_decision_without_hydra
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("group", [False, True], ids=["single", "group"])
+@pytest.mark.parametrize("decision", ["committed", "aborted"])
+async def test_overlapping_finish_replays_exact_finished_receipt_without_hydration(
+        tmp_path, monkeypatch, group, decision):
+    setup = _unrecorded_group if group else _unrecorded
+    store, _, source, intent, hub, decisions = await setup(tmp_path)
+    await source.record(intent)
+    await hub.prepare(TXID)
+    await decisions.decide(TXID, decision)
+    waiting, release = asyncio.Event(), asyncio.Event()
+    actual_sections = intent_links.sections
+
+    @asynccontextmanager
+    async def pause_reader(source, keys):
+        if asyncio.current_task().get_name() == "retirement-finisher":
+            waiting.set()  # FINISH saw ready metadata and unfinished duties before its load waits.
+            await release.wait()
+        async with actual_sections(source, keys):
+            yield
+
+    monkeypatch.setattr(intent_links, "sections", pause_reader)
+    reader = asyncio.create_task(hub.finish(TXID, decision), name="retirement-finisher")
+    try:
+        await asyncio.wait_for(waiting.wait(), 3)
+        finished = await hub.finish(TXID, decision)
+        assert not source._path(TXID).exists()
+        receipt_path = transaction_store.receipt_path(store, TXID)
+        receipt_bytes = receipt_path.read_bytes()
+
+        async def no_hydration(*args, **kwargs):
+            raise AssertionError("duplicate FINISH must replay, not hydrate retired Card bodies")
+
+        monkeypatch.setattr(intent_links, "load_version", no_hydration)
+        release.set()
+        assert await asyncio.wait_for(reader, 3) == finished
+        assert receipt_path.read_bytes() == receipt_bytes
+        assert await hub.finish(TXID, decision) == finished
+    finally:
+        release.set()
+        await _cancel_tasks(reader)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["record_digest", "authority", "scope"])
 async def test_retired_overlap_refuses_changed_finished_binding(tmp_path, field):
     store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
