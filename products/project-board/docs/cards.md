@@ -117,3 +117,12 @@ allows.
   its Card in the same step, after its attendance ends; the agent's own Card
   then applies unchanged. Removing the Control Card from an agent that still
   attends is refused (`control_card_held_by_project`).
+- **Retiring a linked agent.** Retiring an agent that still attends a project
+  first takes it out of the project in that project's own step, as an unlink,
+  and only then ends its Card. If that step does not commit, nothing is
+  retired and the retirement can be repeated. An agent never moves itself, so
+  it cannot retire itself while it attends
+  (`work_card_transaction_agent_lifecycle_agent_caller_denied`); its owner or a
+  project admin retires it. A caller the project's step cannot take is refused
+  by name (`work_worker_retire_unlink_caller_unsupported`) instead of retiring
+  the worker and leaving its Card active.
