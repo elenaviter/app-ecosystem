@@ -11833,7 +11833,7 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
         refused = self._managed_project_control_refused(record)
         if refused is not None:
-            return refused
+            return _managed_revoke_refusal(refused, record)
         if record.control_card is not None:
             # W578: ending a Card bound under a Control (a person's My Card, a
             # project-bound agent Card) changes the authority its Control's
@@ -11841,7 +11841,7 @@ class AutomationAccessService:
             # owner's transaction may end it; until it is enlisted it refuses.
             refused = self._managed_direct_write_refused()
             if refused is not None:
-                return refused
+                return _managed_revoke_refusal(refused, record)
         if self._issuer_managed(record) and not has_expectations:
             return {"ok": False, "error": "delegated_access_revoke_precondition_required", "status": 409}
         if has_expectations and record.card_revision != expected_card_revision:
@@ -12016,3 +12016,17 @@ __all__ = [
     "notify_delegated_access_changed",
     "register_delegated_access_live_session",
 ]
+
+
+
+def _managed_revoke_refusal(refused: Mapping[str, Any], record: Any) -> dict[str, Any]:
+    """The W578 refusal of a managed Card's revoke, naming the project action that ends that kind (W729).
+
+    The error and status stay W578's, so a screen that knows that code keeps working; ``reason`` and
+    ``message`` come from the project domain (managed_card_edit_forward.managed_revoke_reason).
+    """
+    from .managed_card_edit_forward import managed_revoke_reason
+
+    reason, message = managed_revoke_reason(record, authority_from_record=card_authority_from_record,
+                                            agent_source=ACCESS_SOURCE_AGENT)
+    return {**dict(refused), "reason": reason, "message": message}
