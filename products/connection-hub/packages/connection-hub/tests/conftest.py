@@ -17,6 +17,10 @@ import uuid
 import pytest
 
 _R_MODE = os.environ.get("W661_CARD_LOCK_R_MODE") == "1" and bool(os.environ.get("W661_TEST_REDIS_URL"))
+# The R-mode Redis clients of the running test. W707: they were never closed, so their connections were
+# finalized later, inside whatever ran next; on CPython 3.11 < 3.11.8 a finalizer error inside ast.parse
+# raised "AST constructor recursion depth mismatch" in test_issuer_gate (cpython issue 106905).
+_R_CLIENTS: list = []
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +49,7 @@ def _w661_card_lock_r_mode(monkeypatch, request):
     def r_lock():
         client = aioredis.from_url(os.environ["W661_TEST_REDIS_URL"])
         clients.append(client)
+        _R_CLIENTS.append(client)
         return redis_lock.redis_card_mutation_lock(client, observed_lock=observed_redis_lock_async,
                                                    make_metadata=make_lock_metadata, tenant="t",
                                                    project=project, base_lock=no_file_lock)
@@ -95,3 +100,18 @@ def _w661_card_lock_r_mode(monkeypatch, request):
     monkeypatch.setattr(store_module.BundleStorageDelegatedCardStore, "__init__", store_init)
     monkeypatch.setattr(service_module.DelegatedCardService, "__init__", service_init)
     yield
+
+
+@pytest.fixture(autouse=True)
+async def _w661_card_lock_r_mode_clients(_w661_card_lock_r_mode):
+    """Close this test's R-mode Redis clients in its own event loop, before that loop closes (W707)."""
+    yield
+    clients, _R_CLIENTS[:] = list(_R_CLIENTS), []
+    for client in clients:
+        try:
+            await client.aclose()
+        except RuntimeError:
+            pass  # used on a loop the test closed itself (asyncio.run in a sync test): collected just below
+    if clients:
+        import gc
+        gc.collect()  # any connection left runs its finalizer HERE, in this test's teardown, not in a later test
