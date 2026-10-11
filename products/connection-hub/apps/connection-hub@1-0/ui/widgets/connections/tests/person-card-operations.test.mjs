@@ -49,13 +49,15 @@ test('only an explicit false leaves an operation off a person\'s Card', () => {
   assert.equal(offeredOnPersonCard({ person_card: false }), false)
 })
 
-// W560 (operator, 2026-10-05: "they still must be shown on the card but made non-editable. simply seletced
-// and non-editable"): the role-only outer operations stay listed, marked managed (shown as the Card holds
-// them, never changed by the editor or its Save). Named-service tools keep the W360 narrowing for now.
-test('a person\'s Control Card lists every outer operation; the role-only ones are managed, not hidden', () => {
+// W560: the role-only outer operations stay in the row (so Save keeps them exactly as held) but are managed
+// and hidden; the 2026-10-05 disabled display is superseded by the operator's later "not viisble" ruling.
+// Named-service tools keep the W360 narrowing.
+test('a person\'s Control Card keeps every outer operation; the role-only ones are managed and hidden', () => {
   const offered = resourceForPersonCard(ROW)
   assert.deepEqual(offered.operations.map((op) => op.name), ROW.operations.map((op) => op.name))
   assert.deepEqual(offered.operations.filter((op) => op.managed).map((op) => op.name).sort(),
+    ['project.coordinator.hand_over', 'project.people.invite'])
+  assert.deepEqual(offered.operations.filter((op) => op.hidden).map((op) => op.name).sort(),
     ['project.coordinator.hand_over', 'project.people.invite'])
   assert.deepEqual(offered.operations.filter((op) => !op.managed).map((op) => op.name),
     ['review.assign', 'plan.item.create', 'project.plan.index'])

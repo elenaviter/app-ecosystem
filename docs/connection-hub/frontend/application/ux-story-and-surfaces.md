@@ -109,6 +109,14 @@ read every card.
   permissions required by an operation live in the row's tooltip. The row
   names them only when the card does not carry one ("needs canvas:read"),
   because then the person has to act.
+- **A person's Card shows only what the person decides.** An application marks
+  an operation `person_card: false` when it decides that operation for a
+  person by role, not by the Card. A person's Control Card and My Card never
+  show such an operation, whether or not the application also declares
+  `person_card_operations`. With a non-empty declaration, every operation
+  outside it is hidden too. Hiding never edits authority: Save keeps a hidden
+  operation, and the grants it needs, exactly as the Card holds them, and
+  never adds one the Card does not hold. Agent Cards show the whole catalog.
 - **Every dense level is a disclosure.** Each card resource is a bounded,
   collapsible section. Service permissions, tools, service actions, and
   connected-account permissions have their own summaries and selected counts,
