@@ -128,6 +128,7 @@ import {
   resumeFor,
   runFocusedGrants,
   type FocusedGrantResume,
+  type FocusedGrantsOutcome,
 } from './focusedGrantRecovery';
 import type {
   DelegatedAccessNamedServiceOperations,
@@ -3466,11 +3467,61 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       projectAgentCard: projectAgentCard || undefined,
       projectControlCard: projectControlCard || undefined,
     };
-    // W727: Retry Save after a partly finished Save resumes it. The base Save is sent again only
-    // when its part of the draft changed since it committed; otherwise the pending grant and the
-    // operations not yet added continue on the revision the last write left.
+    // W727: Retry Save after a partly finished Save resumes it. A pending grant (its Card committed,
+    // its policy not) is replayed first, exactly, before anything can change the Card's selection that
+    // its request id is derived from. The base Save is sent again only when its part of the draft
+    // changed since it committed; then the operations not yet added, on the revision the last write left.
     const baseKey = JSON.stringify(baseArgs);
     const { skipBase, resume } = resumeFor(editResume.current, item.access_id, baseKey);
+    const progress: FocusedGrantResume = {
+      accessId: item.access_id,
+      baseKey: resume?.baseKey ?? baseKey,
+      completed: [...(resume?.completed || [])],
+      pending: resume?.pending || null,
+    };
+    const grants = (additions: typeof focusedAdditions) => runFocusedGrants({
+      progress,
+      additions,
+      // W727: each grant is made against the revision the previous write left.
+      build: ({ resource, operation, mode }, pin) => focusedGrantArgs(
+        {
+          clientId: item.client_id as string,
+          accessId: item.access_id,
+          resource,
+          operation,
+          changeId: editChangeId(item.access_id, operation, randomNonce()),
+        },
+        mode,
+        routedKept[resource] || [],
+        { expectedCardRevision: pin ?? undefined },
+      ),
+      send: (args) => dispatch(grantAgentAccess(args)).unwrap(),
+      pin: editBaseRevision,
+      pinAfter: pinAfterCommit,
+    });
+    // A stopped Save keeps the draft and its resume point; the message says what is already saved.
+    const stopped = (outcome: FocusedGrantsOutcome): boolean => {
+      if (outcome.state === 'done') return false;
+      const { operation } = outcome;
+      const completed = outcome.completed.length
+        ? ` Added before this: ${outcome.completed.join(', ')}.`
+        : '';
+      setEditActionError(outcome.state === 'policy_pending'
+        // The operation is on the Card; only this exact request (same change id and revision)
+        // finishes its policy, so Retry Save replays it unchanged before anything else.
+        ? `The card changes were saved and ${operation} is on the card, but its invocation policy was not saved: ${outcome.answer.message || outcome.answer.error || 'request refused'}${completed} Retry Save to finish it.`
+        : `The card changes were saved, but ${operation} was not added: ${String(outcome.error || 'request refused')}.${completed} Your draft is still here; retry Save to complete it.`);
+      // The base save (and any earlier focused grants) advanced the Card.
+      // Refresh that saved authority without reseeding this editor, so the
+      // retained draft retries only the operations that are still missing
+      // against the current revision.
+      void dispatch(loadDelegatedAccess());
+      return true;
+    };
+    if (progress.pending) {
+      editResume.current = progress;
+      if (stopped(await grants([]))) return;
+    }
     if (!skipBase) {
       try {
         updated = await dispatch(updateDelegatedAccess({
@@ -3508,50 +3559,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       // W727: a project-managed Card's Save answers with the transaction's committed revision.
       editBaseRevision.current = pinAfterCommit(editBaseRevision.current, updated);
     }
-    const progress: FocusedGrantResume = {
-      accessId: item.access_id,
-      baseKey,
-      completed: [...(resume?.completed || [])],
-      pending: resume?.pending || null,
-    };
+    progress.baseKey = baseKey;
     editResume.current = progress;
-    const outcome = await runFocusedGrants({
-      progress,
-      additions: focusedAdditions,
-      // W727: each grant is made against the revision the previous write left.
-      build: ({ resource, operation, mode }, pin) => focusedGrantArgs(
-        {
-          clientId: item.client_id as string,
-          accessId: item.access_id,
-          resource,
-          operation,
-          changeId: editChangeId(item.access_id, operation, randomNonce()),
-        },
-        mode,
-        routedKept[resource] || [],
-        { expectedCardRevision: pin ?? undefined },
-      ),
-      send: (args) => dispatch(grantAgentAccess(args)).unwrap(),
-      pin: editBaseRevision,
-      pinAfter: pinAfterCommit,
-    });
-    if (outcome.state !== 'done') {
-      const { operation } = outcome;
-      const completed = outcome.completed.length
-        ? ` Added before this: ${outcome.completed.join(', ')}.`
-        : '';
-      setEditActionError(outcome.state === 'policy_pending'
-        // The operation is on the Card; only this exact request (same change id and revision)
-        // finishes its policy, so Retry Save replays it unchanged before anything else.
-        ? `The card changes were saved and ${operation} is on the card, but its invocation policy was not saved: ${outcome.answer.message || outcome.answer.error || 'request refused'}${completed} Retry Save to finish it.`
-        : `The card changes were saved, but ${operation} was not added: ${String(outcome.error || 'request refused')}.${completed} Your draft is still here; retry Save to complete it.`);
-      // The base save (and any earlier focused grants) advanced the Card.
-      // Refresh that saved authority without reseeding this editor, so the
-      // retained draft retries only the operations that are still missing
-      // against the current revision.
-      void dispatch(loadDelegatedAccess());
-      return;
-    }
+    if (stopped(await grants(focusedAdditions))) return;
     clearEditState();
     void dispatch(loadDelegatedAccess());
   };

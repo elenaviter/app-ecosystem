@@ -47,6 +47,8 @@ test('a grant without a pinned revision sends exactly the old payload', () => {
 test('the panel builds every focused grant on the pin and runs them through the resumable orchestration', () => {
   const save = panel.slice(panel.indexOf('const saveEdit = async'), panel.indexOf('// The full delegable catalog'))
   assert.match(save, /resumeFor\(editResume\.current, item\.access_id, baseKey\)/)
+  // The pending exact replay comes before any base Save (CodeApp, 15:30Z).
+  assert.ok(save.indexOf('if (stopped(await grants([]))) return;') < save.indexOf('if (!skipBase) {'))
   assert.match(save, /if \(!skipBase\) \{[^]*?dispatch\(updateDelegatedAccess\(/)
   assert.match(save, /runFocusedGrants\(\{[^]*?\{ expectedCardRevision: pin \?\? undefined \}[^]*?pin: editBaseRevision,[^]*?pinAfter: pinAfterCommit,/)
   assert.match(panel, /editResume\.current = null;[^]*?editResume\.current = null;/) // reset on Edit and on close
@@ -65,32 +67,44 @@ function editor() {
   let nonce = 0
   const sent = []
   const bases = []
+  const order = []
   const save = async ({ baseKey, additions, answers }) => {
+    // The panel's order (saveEdit): the pending exact replay, then the base Save if its draft part changed,
+    // then the additions not yet made.
     const step = resumeFor(resume, 'person-my-card', baseKey)
-    if (!step.skipBase) {
-      bases.push(pin.current)
-      pin.current = pinAfterCommit(pin.current, ok(pin.current + 1)) // the managed base Save's answer
-    }
-    const progress = { accessId: 'person-my-card', baseKey, completed: [...(step.resume?.completed || [])],
-      pending: step.resume?.pending || null }
-    resume = progress
-    const outcome = await runFocusedGrants({
-      progress, additions, pin, pinAfter: pinAfterCommit,
+    const progress = { accessId: 'person-my-card', baseKey: step.resume?.baseKey ?? baseKey,
+      completed: [...(step.resume?.completed || [])], pending: step.resume?.pending || null }
+    const run = (list) => runFocusedGrants({
+      progress, additions: list, pin, pinAfter: pinAfterCommit,
       build: ({ resource, operation, mode }, current) => focusedGrantArgs(
         { ...identity(operation), resource, changeId: `edit:${operation}:${++nonce}` }, mode, ['use'],
         { expectedCardRevision: current ?? undefined }),
       send: async (args) => {
         const wire = agentGrantWirePayload(args)
         sent.push(wire)
+        order.push('grant:' + wire.resource_operations.svc[0])
         const answer = answers.shift()
         if (answer instanceof Error) throw answer
         return answer
       },
     })
+    if (progress.pending) {
+      resume = progress
+      const replayed = await run([])
+      if (replayed.state !== 'done') return replayed
+    }
+    if (!step.skipBase) {
+      bases.push(pin.current)
+      order.push('base')
+      pin.current = pinAfterCommit(pin.current, ok(pin.current + 1)) // the managed base Save's answer
+    }
+    progress.baseKey = baseKey
+    resume = progress
+    const outcome = await run(additions)
     if (outcome.state === 'done') resume = null
     return outcome
   }
-  return { pin, sent, bases, save }
+  return { pin, sent, bases, order, save }
 }
 
 test('Retry Save after a policy-pending grant replays that exact grant and never resends the base Save', async () => {
@@ -122,11 +136,15 @@ test('a retry before the Card is reloaded still sends only the missing grants af
   assert.deepEqual(e.bases, [26])
 })
 
-test('a changed draft sends its base Save again, on the advanced pin, before the pending replay', async () => {
+test('a changed draft replays the pending grant first, then sends its base Save on the advanced pin', async () => {
+  // CodeApp (15:30Z): a new base Save before the replay would change the selection the request id is derived from.
   const e = editor()
   const additions = [{ resource: 'svc', operation: 'b', mode: 'once' }]
   await e.save({ baseKey: 'draft-1', additions, answers: [partial(28)] })
-  await e.save({ baseKey: 'draft-2', additions: [], answers: [ok(28)] })
+  const retry = await e.save({ baseKey: 'draft-2', additions: [], answers: [ok(28)] })
+  assert.equal(retry.state, 'done')
+  assert.deepEqual(e.order, ['base', 'grant:b', 'grant:b', 'base'])
+  assert.deepEqual(e.sent[1], e.sent[0]) // the exact replay, before the second base Save
   assert.deepEqual(e.bases, [26, 28])
 })
 
