@@ -163,9 +163,21 @@ owner and the first accepted staging instant, before any candidate write.
 Only a `ready` record can load for preparation; a partial manifest refuses
 `card_intent_incomplete`. A replay resumes its exact files with the frozen
 instant. The composed service's member Card sections, in sorted order with
-started writes drained before release, cover recording and retirement.
+started writes drained before release, cover recording, loading and retirement.
 Candidate sidecars are written before version bodies, so planned candidates
 are not serving authority or history.
+
+Loading first validates that one manifest's bounded member coordinates, then
+takes those same composed sections and reads the manifest again. An active
+recorder can finish `staging` to `ready` while the reader waits; no Card is
+hydrated before the locked re-read. Every other manifest field must remain
+identical, and `ready` cannot move back to `staging`. A changed binding or
+member set refuses `card_intent_conflict`; a removed intent is unknown, and
+JSON null is invalid. A recorder that crashed still leaves `staging`, which
+continues to refuse `card_intent_incomplete` without candidate hydration.
+The loader writes nothing, adds no private lock or retry policy, and releases
+the member sections before the participant enters its preparation operation.
+Legacy v1 and terminal FINISH's receipt-only retries are unchanged.
 
 Pass the composed `DelegatedCardService` explicitly to the intent source in
 production. For callers that omit `service=`, a bundle store retains its

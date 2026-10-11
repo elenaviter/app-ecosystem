@@ -448,8 +448,8 @@ class LocalCardIntentSource:
             if await path_is_file(self._path(transaction_id)):
                 raise DecisionRefused("card_intent_invalid")
             raise DecisionRefused("card_intent_unknown")
-        from .intent_links import is_link_record, load_links
-        intent = await load_links(self, raw) if is_link_record(raw) else intent_from_mapping(raw)
+        from .intent_links import is_link_record, load_recorded_links
+        intent = await load_recorded_links(self, raw, transaction_id) if is_link_record(raw) else intent_from_mapping(raw)
         if intent.transaction_id != transaction_id:
             raise DecisionRefused("card_intent_invalid")
         return intent

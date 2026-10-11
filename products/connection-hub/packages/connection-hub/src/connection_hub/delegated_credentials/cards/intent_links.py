@@ -265,6 +265,31 @@ async def record_links(source: Any, intent: Any) -> None:
         await write_json_atomic(path, {**manifest, "status": "ready"})
 
 
+async def load_recorded_links(source: Any, raw: Any, transaction_id: str) -> Any:
+    """Wait for an active recorder, then hydrate the same exact manifest under its member sections.
+
+    The first bounded metadata read chooses the lock set, never Card bodies.
+    Recording and retirement use these same composed sections. A crash still
+    leaves an incomplete manifest; only staging-to-ready may change while waiting.
+    """
+    validate_link_record(raw)
+    if raw["transaction_id"] != transaction_id:
+        raise DecisionRefused("card_intent_invalid")
+    members = raw["members"] if raw["schema"] == GROUP_SCHEMA else [raw]
+    keys = [(member["subject_hash"], member["access_id"]) for member in members]
+    async with sections(source, keys):
+        current = await read_json_or_none(source._path(transaction_id))
+        if current is None:
+            if await path_is_file(source._path(transaction_id)):
+                raise DecisionRefused("card_intent_invalid")
+            raise DecisionRefused("card_intent_unknown")
+        validate_link_record(current)
+        if ({**current, "status": raw["status"]} != raw
+                or (raw["status"] == "ready" and current["status"] != "ready")):
+            raise DecisionRefused("card_intent_conflict")
+        return await load_links(source, current)
+
+
 async def load_links(source: Any, raw: Any) -> Any:
     from .card_participant import CardGroupIntent, CardGroupMemberIntent, CardIntent
 
