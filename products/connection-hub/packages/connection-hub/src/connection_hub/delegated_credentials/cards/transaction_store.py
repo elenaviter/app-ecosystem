@@ -656,7 +656,10 @@ async def resolve_pointer(store: Any, payload: Any, *, subject_hash: str, access
             or any(payload[name] != receipt[name] for name in ("before", "after"))):
         raise CardStorageError("card_transaction_pointer_binding_invalid")
     if not consult_decision:
-        return _pointer_or_absent(receipt["after" if receipt["state"] == "committed" else "before"])
+        ready = receipt["state"] == "committed" and not await _effects_outstanding(store, receipt)
+        # Identity-only owner listings may retain BEFORE, but never expose
+        # a new Card whose committed effects are still only partly applied.
+        return _pointer_or_absent(receipt["after" if ready else "before"])
     state = await _authoritative_state(store, receipt)
     if state == "committed" and await _effects_outstanding(store, receipt):
         # Readiness fence: AFTER is never served without its effects, for any member of a group.
@@ -847,9 +850,37 @@ async def revision_is_committed(store: Any, marker: Any, *, subject_hash: str, a
     # coordinator, even before local FINISH) shows it; ABORTED or undecided
     # hides it, so history fails closed while pending.
     try:
-        return await _authoritative_state(store, receipt) == "committed"
+        return (await _authoritative_state(store, receipt) == "committed"
+                and not await _effects_outstanding(store, receipt))
     except CardStorageError:
         return False
+
+
+async def _effect_candidate(store: Any, receipt: Mapping[str, Any]) -> CardAuthority:
+    """Trusted FINISH-only read of its exact committed candidate, never a serving read.
+
+    A credential effect must check its candidate while public revision reads
+    remain fenced. The current transaction pointer, local receipt, durable
+    decision and immutable candidate hash must all name this same revision.
+    """
+    if receipt.get("state") != "committed" or await _authoritative_state(store, receipt) != "committed":
+        raise CardStorageError("card_transaction_not_committed")
+    subject_hash, access_id = receipt["subject_hash"], receipt["access_id"]
+    raw = await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
+    if (not isinstance(raw, Mapping) or raw.get("schema") != TRANSACTION_POINTER_SCHEMA
+            or raw.get("transaction_id") != receipt["transaction_id"] or raw.get("after") != receipt["after"]):
+        raise CardStorageError("card_transaction_pointer_binding_invalid")
+    pointer = CardCurrentPointer.from_mapping(receipt["after"])
+    payload = await read_json_or_none(store.revision_path(
+        subject_hash=subject_hash, access_id=access_id, revision_name=pointer.revision_name))
+    if not isinstance(payload, dict):
+        raise CardStorageError("card_transaction_candidate_missing")
+    payload.pop(VERSION_RECORD_KEY, None)
+    candidate = CardAuthority.from_mapping(payload)
+    if (candidate.access_id != access_id or candidate.card_revision != pointer.card_revision
+            or candidate.content_hash() != pointer.content_hash):
+        raise CardStorageError("card_transaction_pointer_binding_invalid")
+    return candidate
 
 
 async def _write_staged(store: Any, receipt: Mapping[str, Any], candidate: CardAuthority, now: datetime,

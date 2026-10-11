@@ -8,7 +8,9 @@ from connection_hub.delegated_credentials.oauth.config import (
 )
 from connection_hub.delegated_credentials.whole_card_save import (
     WholeCardSaveRefused, check_card_pin, check_catalog_pin, normalize_selection, added_invocation_modes,
+    same_selection,
 )
+from connection_hub.delegated_credentials.cards.model import NamedServiceSelection
 
 
 class Catalog:
@@ -84,3 +86,47 @@ def test_application_api_operations_are_not_invocation_policy_effects():
     assert added_invocation_modes(original=original(resource_operations={}),
         candidate=original(resource_operations={"*": ("project.plan.read",)}), config=Catalog(),
         modes={}, policy_bearing=True) == {}
+
+
+NAMED = {"namespaces": {"Svc:": {"tools": {
+    "reader": {"operation": "inner-read", "grants": ["read"]},
+    "writer": {"operation": "inner-write", "grants": ["write"]},
+}}}}
+
+
+class NamedCatalog(Catalog):
+    def card_selector_config(self, resource):
+        return OAuthDelegatedResourceConfig(resource=resource, grants=("read", "write"),
+                                            named_services=NAMED)
+
+
+def test_named_all_is_concrete_grant_filtered_and_uses_existing_managed_wire():
+    from connection_hub.delegated_credentials.managed_card_edit_forward import managed_card_edit_body
+    selection = {"named_service_operations": "*"}
+    normalized = normalize_selection(original(), selection, config=NamedCatalog())
+    assert normalized == {"named_service_operations": {"service": {"svc": ["inner-read"]}}}
+    assert selection == {"named_service_operations": "*"}
+    body = managed_card_edit_body(actor_subject="person", project_ref="work:project:fixture",
+        request_id="hub-owned", kind="person_my", principal_key="user:person", original_revision=29,
+        selection=normalized, expected_catalog_version="catalog-29")
+    assert body["selection"] == normalized
+
+
+def test_named_namespace_all_is_expanded_under_the_same_catalog():
+    normalized = normalize_selection(original(), {"named_service_operations": {
+        "service": {"Svc:": ["*"]}}}, config=NamedCatalog())
+    assert normalized == {"named_service_operations": {"service": {"svc": ["inner-read"]}}}
+
+
+def test_named_all_same_as_stored_boundary_is_noop_but_new_catalog_names_are_a_change():
+    before = original(named_service_operations=NamedServiceSelection.all(), named_services=NAMED)
+    normalized = normalize_selection(before, {"named_service_operations": "*"}, config=NamedCatalog())
+    assert same_selection(before, normalized)
+    before.named_services = {"namespaces": {}}
+    assert not same_selection(before, normalized)
+
+
+def test_unknown_namespace_all_refuses_instead_of_retaining_a_wildcard():
+    with pytest.raises(WholeCardSaveRefused, match="card_selection_wildcard_unavailable"):
+        normalize_selection(original(), {"named_service_operations": {
+            "service": {"missing": ["*"]}}}, config=NamedCatalog())

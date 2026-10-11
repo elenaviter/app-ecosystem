@@ -534,6 +534,7 @@ async def plan_card_lifecycle(
         # W607: each member's exact original (None for a creation), for the public before/after display.
         originals: dict[tuple[str, str], Mapping[str, Any] | None] = {}
         settings_members: dict[tuple[str, str], tuple[str, str]] = {}
+        whole_settings_members: set[tuple[str, str]] = set()
         reads_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         live_cache: dict[tuple[str, str], CardAuthority | None] = {}
         row_config: dict[str, Any] = {}
@@ -985,6 +986,7 @@ async def plan_card_lifecycle(
                         and "properties" in raw["selection"] and built["member"]["candidate"]["properties"]
                         != dict(original.properties or {})):
                     settings_members[(subject_hash, access_id)] = (scope, actor)
+                    whole_settings_members.add((subject_hash, access_id))
                 continue
             if raw["kind"] in {"reselect_project_control", "reselect_agent_card", "reselect_invitation_control"}:
                 # W638: the project's own Control or a project agent Card takes a host-authorized selection.
@@ -1164,7 +1166,8 @@ async def plan_card_lifecycle(
         candidate_value = group_candidate_value(members)
         # W607: the public before/after of every member, from the exact originals loaded above.
         from connection_hub.delegated_credentials.plan_display import plan_display
-        display = (plan_display(candidate_value, originals, person_settings=settings_members)
+        display = (plan_display(candidate_value, originals, person_settings=settings_members,
+                                whole_card_settings=frozenset(whole_settings_members))
                    if settings_members else plan_display(candidate_value, originals))
         participant_input = hub_group_participant_input(
             members=members, actor_subject=actor, actor_kind=actor_kind,

@@ -44,8 +44,9 @@ async def test_the_owner_listing_reads_through_another_cards_transaction(tmp_pat
     listed = {authority.access_id: authority for authority in
               await persistence.list_all_current(subject_hash=SUBJECT_HASH)}
     assert set(listed) == {before.access_id, other.access_id}
-    # Undecided lists BEFORE; committed lists AFTER even before its effects finish. Identity is the same.
-    assert listed[before.access_id] == (after if effects_pending else before)
+    # Whole-Save readiness includes identity listings: retain BEFORE while
+    # any effect is pending, even after the irrevocable COMMIT.
+    assert listed[before.access_id] == before
     assert (listed[before.access_id].grantor_subject, listed[before.access_id].client_id) == (
         before.grantor_subject, before.client_id)
 

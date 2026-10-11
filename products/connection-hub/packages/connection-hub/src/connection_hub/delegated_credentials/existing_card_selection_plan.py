@@ -142,6 +142,11 @@ async def build_existing_card_selection_update(
     if (kind == "person_control" and properties.get(PROJECT_PERSON_CONTROL_PROPERTY)
             != dict(original.properties or {}).get(PROJECT_PERSON_CONTROL_PROPERTY)):
         raise _refuse("card_plan_update_scope_invalid")
+    if kind == "person_control" and properties != dict(original.properties or {}):
+        # A whole Card carries the stored properties for comparison, not a
+        # permission to replace Hub-authored snapshot/audit data. Refuse the
+        # supplied mutation before resolving or regenerating those keys.
+        raise _refuse("card_plan_undisplayed_change")
     settings = None
     if kind == "my_card" and "properties" in selection:
         from .my_card_person_properties_plan import whole_person_properties_patch, build_person_settings_update

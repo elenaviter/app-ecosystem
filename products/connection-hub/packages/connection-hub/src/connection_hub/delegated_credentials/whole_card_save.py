@@ -13,6 +13,8 @@ from typing import Any, Mapping
 
 from .managed_card_edit_forward import ManagedCardEditError, invocation_modes_part
 from .managed_grants import managed_operations
+from .cards.model import NamedServiceSelection
+from .named_service_policy import configured_named_service_operations
 from .resource_operations import normalize_resource_grants, normalize_resource_operations
 
 
@@ -68,6 +70,35 @@ def normalize_selection(original: Any, selection: Mapping[str, Any], *, config: 
                     names = tuple(sorted((set(names) - {"*"}) | offered))
                 concrete[resource] = list(names)
             result["resource_operations"] = concrete
+        if "named_service_operations" in result:
+            named = NamedServiceSelection.from_stored(result["named_service_operations"], present=True)
+            if named.is_unknown:
+                raise WholeCardSaveRefused("managed_card_edit_request_invalid", 400)
+            # A screen's All is consent to the pinned catalog, not a durable
+            # wildcard which could grow later. The managed carrier stays the
+            # existing concrete resource/namespace/operation map.
+            selected = {resource: {} for resource in grants} if named.is_all else named.operations
+            concrete_named = {}
+            for resource, namespaces in selected.items():
+                if named.is_all or any("*" in names for names in namespaces.values()):
+                    row = config.card_selector_config(resource)
+                    if row is None:
+                        raise WholeCardSaveRefused("card_selection_wildcard_unavailable")
+                    offered = configured_named_service_operations(
+                        row.named_services, grants=grants.get(resource, ()))
+                if named.is_all:
+                    namespaces = offered
+                concrete_namespaces = {}
+                for namespace, names in namespaces.items():
+                    if "*" in names:
+                        available = offered.get(namespace, set())
+                        if not available:
+                            raise WholeCardSaveRefused("card_selection_wildcard_unavailable")
+                        names = (set(names) - {"*"}) | available
+                    concrete_namespaces[namespace] = sorted(set(names))
+                if concrete_namespaces:
+                    concrete_named[resource] = concrete_namespaces
+            result["named_service_operations"] = concrete_named
     except (TypeError, ValueError) as exc:
         if isinstance(exc, WholeCardSaveRefused):
             raise
@@ -124,7 +155,18 @@ def same_selection(original: Any, selection: Mapping[str, Any], *, label: Any = 
     for field, value in selection.items():
         stored = getattr(original, field)
         if field == "named_service_operations":
-            stored = stored.to_stored()
+            if stored.is_all or stored.is_unknown:
+                # Compare with the stored expansion, never re-read today's
+                # catalog to redefine the permission the original Card held.
+                stored = {
+                    resource: {namespace: sorted(names) for namespace, names in
+                               configured_named_service_operations(
+                                   original.named_services, grants=grants).items()}
+                    for resource, grants in original.resource_grants.items()
+                }
+                stored = {resource: namespaces for resource, namespaces in stored.items() if namespaces}
+            else:
+                stored = stored.to_stored()
         if (value != stored if field == "properties" else unordered(value) != unordered(stored)):
             return False
     return ((label is None or label == original.label)

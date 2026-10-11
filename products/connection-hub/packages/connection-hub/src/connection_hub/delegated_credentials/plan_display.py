@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -61,6 +62,7 @@ def plan_display(
     candidate_value: Mapping[str, Any],
     originals: Mapping[tuple[str, str], Mapping[str, Any] | None],
     *, person_settings: Mapping[tuple[str, str], tuple[str, str]] | None = None,
+    whole_card_settings: frozenset[tuple[str, str]] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Project a group with a real before image for every member.
 
@@ -71,6 +73,9 @@ def plan_display(
     """
     if not isinstance(candidate_value, Mapping) or not isinstance(originals, Mapping):
         raise _refuse("card_plan_display_invalid")
+    if (not isinstance(whole_card_settings, frozenset)
+            or whole_card_settings - set(person_settings or {})):
+        raise _refuse("card_plan_display_person_settings_invalid")
     cards = candidate_value.get("cards")
     if not isinstance(cards, (list, tuple)):
         raise _refuse("card_plan_display_invalid")
@@ -140,8 +145,21 @@ def plan_display(
             from .my_card_person_properties_plan import settings_display, settings_only_change
             try:
                 scope, owner = person_settings[key]
+                if before is None or kind != "my_card" or member.get("action") != "update":
+                    raise ValueError
+                settings_candidate = candidate
+                if key in whole_card_settings:
+                    # Only the authorized whole-My reselect builder opts in.
+                    # Validate the closed properties independently, and still
+                    # refuse changes outside displayed selection/name/settings.
+                    from .existing_card_selection_plan import undisplayed_change
+                    shown = dataclasses.replace(original, label=candidate.label, properties=candidate.properties)
+                    if undisplayed_change(shown.to_dict(), candidate.to_dict()) is not None:
+                        raise ValueError
+                    settings_candidate = dataclasses.replace(
+                        original, properties=candidate.properties, card_revision=candidate.card_revision)
                 if (before is None or kind != "my_card" or member.get("action") != "update"
-                        or not settings_only_change(original, candidate)):
+                        or not settings_only_change(original, settings_candidate)):
                     raise ValueError
                 for card in (original, candidate):
                     identity = ProjectPersonCardIdentity.from_my_card(card)
@@ -149,6 +167,8 @@ def plan_display(
                         raise ValueError
                 before["properties"] = settings_display(original.properties)
                 after["properties"] = settings_display(candidate.properties)
+                if key in whole_card_settings:
+                    before["label"], after["label"] = original.label, candidate.label
             except (ValueError, TypeError):
                 raise _refuse("card_plan_display_person_settings_invalid") from None
         entries.append({

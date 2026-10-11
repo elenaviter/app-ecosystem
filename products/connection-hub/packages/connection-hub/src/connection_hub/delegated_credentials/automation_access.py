@@ -3259,6 +3259,7 @@ class AutomationAccessService:
         caller_write: CallerWrite | None = None,
         pre_gate: tuple[Any, Any] | None = None,
         effects: Sequence[Mapping[str, Any]] = (),
+        require_transaction: bool = False,
     ) -> None:
         persistence = self._cards()
         persist = persistence.persist
@@ -3297,7 +3298,7 @@ class AutomationAccessService:
             coordinated = await self._coordinated_write(
                 record, authority, expected_revision=expected_revision, caller_write=caller_write,
                 gate=guard.get("before_commit"), witness=witness, effects=effects)
-            if effects and not coordinated:
+            if (effects or require_transaction) and not coordinated:
                 # Effects exist only inside the protocol: never dropped silently.
                 raise CardConflict("card_effects_unroutable")
         except BaseException:
@@ -6145,10 +6146,12 @@ class AutomationAccessService:
             invocation_modes=invocation_modes, _screen_save=_screen_save)
         if own_my is not None:
             return own_my
-        if _screen_save or invocation_modes is not None:
+        local_whole_save = _screen_save or invocation_modes is not None
+        local_modes: dict[str, Any] = {}
+        if local_whole_save:
             from .managed_card_edit_forward import ManagedCardEditError
             try:
-                _, _, unchanged_save, _ = await self._whole_card_save_preflight(
+                existing, selected, unchanged_save, local_modes = await self._whole_card_save_preflight(
                     record=existing, kind="control" if _record_is_credentialless(existing) else "caller_card",
                     expected_card_revision=expected_card_revision, expected_catalog_version=expected_catalog_version,
                     selection={field: value for field, value in (
@@ -6160,11 +6163,17 @@ class AutomationAccessService:
                 return exc.to_dict()
             if unchanged_save:
                 return {"ok": True, "unchanged": True}
-            # A new whole-Save carrier must never fall through to an older
-            # direct writer that would discard its policy choices. The local
-            # one-participant/all-effects publication path qualifies separately.
-            return {"ok": False, "error": "whole_card_save_transaction_unavailable", "status": 503,
-                    "message": "This Card's whole-Save transaction is unavailable. Your draft is kept."}
+            if getattr(self, "_card_coordinator", None) is None:
+                return {"ok": False, "error": "whole_card_save_transaction_unavailable", "status": 503,
+                        "message": "This Card's whole-Save transaction is unavailable. Your draft is kept."}
+            # Reuse the existing one-participant Card transaction and its
+            # durable decision; never discard choices or use a direct fallback.
+            resource_grants = selected.get("resource_grants", existing.resource_grants)
+            resource_operations = selected.get("resource_operations", existing.resource_operations)
+            named_service_operations = selected.get(
+                "named_service_operations", existing.named_service_operations.to_stored())
+            account_scope = selected.get("account_scope", existing.account_scope)
+            properties = selected.get("properties", existing.properties)
         if resource_grants is None:
             # W737: only the managed forwards above read an omitted selection as "unchanged"; a direct
             # write still replaces the record exactly, as before.
@@ -6507,6 +6516,28 @@ class AutomationAccessService:
         if _record_transform is not None:
             updated = _record_transform(existing, updated)
         del remaining
+        save_effects: list[dict[str, Any]] = []
+        if local_whole_save:
+            from .whole_card_save import WholeCardSaveRefused, added_invocation_modes
+            from .oauth_issuance import IssuanceRefused
+            try:
+                # Bind choices to the actually resolved candidate, not merely
+                # the submitted map. Every policy is a reserve-only STAGE effect.
+                local_modes = added_invocation_modes(
+                    original=existing, candidate=updated, config=catalog_config,
+                    modes=local_modes, policy_bearing=not _record_is_credentialless(existing))
+                if local_modes:
+                    save_effects = await self._oauth_policy_effects(
+                        grantor=grantor_subject, candidate=updated,
+                        resource_operations={resource: list(choices) for resource, choices in local_modes.items()},
+                        invocation_policies=local_modes)
+            except WholeCardSaveRefused as exc:
+                return exc.to_dict()
+            except IssuanceRefused as exc:
+                unavailable = exc.reason == "issuance_invocation_policies_unavailable"
+                return {"ok": False, "error": "invocation_policy_unavailable" if unavailable
+                        else "invocation_modes_invalid", "status": 503 if unavailable else 400,
+                        "message": "The permission choices were not saved. Your draft is kept."}
         try:
             before_commit, issuer_request = await self._issuer_before_commit(
                 existing, user, action="update",
@@ -6535,7 +6566,8 @@ class AutomationAccessService:
         gate_digest = (issuer_request or caller_request).change_digest if before_commit is not None else ""
         try:
             guard = {"before_commit": before_commit, "expected_issuer_digest": gate_digest} if before_commit is not None else {}
-            await self._persist_record(updated, expected_revision=existing.card_revision, **guard)
+            await self._persist_record(updated, expected_revision=existing.card_revision,
+                                       effects=save_effects, require_transaction=local_whole_save, **guard)
         except (IssuerWriteRefused, CallerWriteRefused) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=existing.card_revision)
             outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,

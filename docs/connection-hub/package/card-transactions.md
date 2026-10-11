@@ -51,8 +51,10 @@ supplied catalog pin independently of `accepted_operations`. A moved catalog
 answers `consent_catalog_changed` with expected and active catalog versions.
 Every screen Save requires this pin; omission answers
 `consent_catalog_version_required` after the Card pin check, never a silent Save.
-Only then does the Hub expand operation `*` into concrete current catalog
-operations, compare visible fields, and identify net additions. Equal content
+Only then does the Hub expand outer-operation and named-service `*` into
+concrete, grant-authorized current catalog operations, compare visible fields,
+and identify net additions. A stored named-service All is compared against its
+stored boundary, not redefined from the current catalog. Equal content
 answers `{ok: true, unchanged: true}` without forwarding or writing a revision.
 Held operations cannot reset their policies; missing added-operation choices
 answer `invocation_mode_required` before forwarding. Controls, the application
@@ -78,13 +80,19 @@ rename in the same next revision. Non-settings properties are retained; settings
 audits are rebuilt from authenticated STAGE time, never browser audit fields.
 The existing settings-only API remains a closed, separate legacy request shape.
 
+An unmanaged owner's Save uses the already-bound local one-participant Card
+coordinator. Its policy choices are effects of that one durable decision, with
+no direct-write fallback. Current, history and ready-cache reads remain fenced
+until every effect is recorded; internal FINISH re-drives the same COMMIT.
+Credential issuance's internal candidate check is bound to the exact committed
+receipt, transaction pointer and immutable hash, not a public pending-revision
+read. Without the coordinator, a changed Save refuses
+`whole_card_save_transaction_unavailable` and keeps the draft.
+
 Implementation checkpoint: managed preflight, wire, candidate composition and
-real filesystem policy/marker adapter checks exist. Productive PB/database and
-browser qualification is still required. A new mode-bearing whole Save must not
-fall through to an unmanaged writer that ignores its choices; that local
-one-participant publication path currently refuses
-`whole_card_save_transaction_unavailable` and remains unfinished. No release
-readiness is asserted by this checkpoint.
+real filesystem policy/coordinator failure-cut checks exist. Productive
+PB/database and browser qualification is still required; these local checks
+do not assert release readiness.
 
 `card_version` serves Problem Board's save. PB calls the Hub, and the Hub calls
 nothing back during the save. It has the same peer authentication and
