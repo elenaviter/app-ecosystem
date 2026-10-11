@@ -93,9 +93,11 @@ The operator chooses the backup root per host
 until then `--new` refuses and nothing is created. The manifest is the
 coordinator's: any agent may list it (`pb worker backup --project-ref <project>`),
 only the coordinator names, records and prunes backups. Pruning never touches
-a file the manifest does not list; the listing names such files, and older
-dumps in agents' scratch folders stay their owners' until the operator decides
-how to clear them.
+a file the manifest does not list; the listing names such files. Older dumps
+and configuration backups outside the manifest, in agents' scratch folders or
+anywhere else, are deleted by their owners (operator, 2026-10-11: "then delete
+old backups"), after the same checks as a tree: not the only copy of a
+finding, not a live install's rollback input.
 
 Why: every window left a table dump in the scratch folder of whichever agent
 ran it, and nothing removed them. On 2026-09-30 one host held 24 dumps in one
