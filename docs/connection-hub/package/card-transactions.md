@@ -86,7 +86,9 @@ no direct-write fallback. Current, history and ready-cache reads remain fenced
 until every effect is recorded; internal FINISH re-drives the same COMMIT.
 Credential issuance's internal candidate check is bound to the exact committed
 receipt, transaction pointer and immutable hash, not a public pending-revision
-read. Without the coordinator, a changed Save refuses
+read. Effect bindings omit mutable state and reason; FINISH loads the durable
+receipt, matches all sealed immutable fields, and checks its committed state.
+Without the coordinator, a changed Save refuses
 `whole_card_save_transaction_unavailable` and keeps the draft.
 
 Implementation checkpoint: managed preflight, wire, candidate composition and

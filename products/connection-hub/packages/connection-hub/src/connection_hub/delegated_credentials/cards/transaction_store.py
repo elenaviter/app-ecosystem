@@ -863,7 +863,18 @@ async def _effect_candidate(store: Any, receipt: Mapping[str, Any]) -> CardAutho
     remain fenced. The current transaction pointer, local receipt, durable
     decision and immutable candidate hash must all name this same revision.
     """
-    if receipt.get("state") != "committed" or await _authoritative_state(store, receipt) != "committed":
+    # EffectBinding excludes mutable state/reason from its stable digest.
+    # Read the durable receipt and bind every immutable field before using
+    # its committed state; never treat a caller's state flag as evidence.
+    durable = await read_receipt(store, receipt["transaction_id"])
+    if durable is None:
+        raise CardStorageError("card_transaction_receipt_missing")
+    immutable = lambda value: {field: item for field, item in value.items()
+                               if field not in {"state", "reason"}}
+    if immutable(durable) != immutable(receipt):
+        raise CardStorageError("card_transaction_pointer_binding_invalid")
+    receipt = durable
+    if receipt["state"] != "committed" or await _authoritative_state(store, receipt) != "committed":
         raise CardStorageError("card_transaction_not_committed")
     subject_hash, access_id = receipt["subject_hash"], receipt["access_id"]
     raw = await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
