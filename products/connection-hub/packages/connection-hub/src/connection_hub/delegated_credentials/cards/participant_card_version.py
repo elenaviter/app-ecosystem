@@ -301,6 +301,39 @@ def _reset_reads(updates: Sequence[Mapping[str, Any]], plan_reads: Sequence[Mapp
     return reads
 
 
+def invitation_seed_evidence(creations: list[Mapping[str, Any]]) -> tuple[list[Mapping[str, Any]], dict[str, dict]]:
+    """W746: a join's person Control seeded from an invitation names the redeemer's verified email digest.
+
+    The planner binds the pending invitation Card to the redeemer by
+    ``decision.evidence["invitation_email_digest"]`` (as the legacy PLAN callback supplied it). On STAGE, PB
+    sends that digest as ``identity.invitation.email_digest`` of the seed creation: it is the
+    normalized_email_digest of the provider-verified session email PB's admission matched to the invitation.
+    It is lifted out of the identity here, so the planner sees the identity it always checked, and becomes
+    that one step's evidence. Every other creation is returned as it came.
+    """
+    planned: list[Mapping[str, Any]] = []
+    evidence: dict[str, dict] = {}
+    for creation in creations:
+        identity = creation.get("identity")
+        named = identity.get("invitation") if isinstance(identity, Mapping) else None
+        seed = (creation.get("kind") == "project_person_control" and isinstance(identity, Mapping)
+                and identity.get("seed_origin") == "invitation")
+        if not seed and (isinstance(identity, Mapping) and "email_digest" in identity
+                         or isinstance(named, Mapping) and "email_digest" in named):
+            # Only the invitation seed may carry it; anywhere else it is refused by name, never ignored.
+            raise _StepsRefused("card_plan_invitation_email_digest_misplaced", 400)
+        if seed and isinstance(named, Mapping) and "email_digest" in named:
+            email_digest = named["email_digest"]
+            if type(email_digest) is not str or not _HASH.fullmatch(email_digest):
+                raise _StepsRefused("card_plan_invitation_seed_invalid", 400)
+            named = {key: value for key, value in named.items() if key != "email_digest"}
+            creation = {**creation, "identity": {**identity, "invitation": named}}
+            evidence[str(creation.get("ref"))] = {"invitation_ref": named.get("invitation_ref"),
+                                                  "invitation_email_digest": email_digest}
+        planned.append(creation)
+    return planned, evidence
+
+
 def stage_authorization(data: Mapping[str, Any], digest: str) -> LifecyclePlanAuthorization:
     """PB's role decision as the planner's envelope: one allow per step, bounded by PB's delegable grants.
 
@@ -309,14 +342,18 @@ def stage_authorization(data: Mapping[str, Any], digest: str) -> LifecyclePlanAu
     asks nothing back. Each step keeps only those grants and the project
     Control locator PB named; nothing here widens them.
     """
-    steps = plan_steps(list(data["creations"]), list(data["updates"]))
+    creations, seeds = invitation_seed_evidence(list(data["creations"]))
+    steps = plan_steps(creations, list(data["updates"]))
     request = LifecyclePlanAuthorizationRequest(
         actor_subject=data["actor_subject"], project_ref=data["scope"], request_id=data["request_id"],
         request_digest=digest, steps=steps)
     locator = ProjectControlLocator.from_mapping(data["project_control"])
     return LifecyclePlanAuthorization(request=request, decisions=tuple(
         (step.ref, ProjectAuthorizationDecision.allow(
-            request.step_request(step), delegable_grants=tuple(data["delegable_grants"]), project_control=locator))
+            request.step_request(step), delegable_grants=tuple(data["delegable_grants"]), project_control=locator,
+            # W746: only an invitation seed step carries evidence; every other decision is as before.
+            evidence=({"source": "card-version-stage", "request_digest": digest, **seeds[step.ref]}
+                      if step.ref in seeds else None)))
         for step in steps))
 
 
@@ -418,7 +455,8 @@ class CardVersionOperation:
             authorization = stage_authorization(data, digest)
         except (ProjectAuthorizationError, _StepsRefused):
             raise CardVersionRefused("edit_invalid") from None
-        planned = await self._planner(self._host, project_ref=data["scope"], creations=list(data["creations"]),
+        planned = await self._planner(self._host, project_ref=data["scope"],
+                                      creations=invitation_seed_evidence(list(data["creations"]))[0],
                                       updates=list(data["updates"]), actor_subject=data["actor_subject"],
                                       actor_kind=data["actor_kind"], request_id=data["request_id"],
                                       authorization=authorization)
