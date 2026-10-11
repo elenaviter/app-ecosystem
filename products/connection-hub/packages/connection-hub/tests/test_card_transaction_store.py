@@ -37,12 +37,13 @@ async def _decide(store, decision, transaction_id=TX, **kwargs):
     return await tx.decide(store, transaction_id=transaction_id, intent_digest=INTENT, decision=decision, **kwargs)
 
 
-async def _setup(tmp_path):
+async def _setup(tmp_path, *, mutation_lock=None):
     from contextlib import asynccontextmanager
 
-    @asynccontextmanager
-    async def mutation_lock(**kwargs):
-        yield
+    if mutation_lock is None:
+        @asynccontextmanager
+        async def mutation_lock(**kwargs):
+            yield
 
     store = BundleStorageDelegatedCardStore(tmp_path)
     tx.bind_transaction_decisions(store, Decisions())

@@ -173,12 +173,17 @@ class DelegatedCardService:
         mutation_lock: CardMutationLock,
         settings: DelegatedCacheSettings | None = None,
     ) -> None:
+        if isinstance(store, BundleStorageDelegatedCardStore):
+            existing = getattr(store, "_card_intent_service", None)
+            if existing is not None and existing is not self:
+                raise CardConflict("card_intent_service_conflict")
         self._store = store
         self._cache = cache
         self._mutation_lock = mutation_lock
         self._settings = (settings or DelegatedCacheSettings()).cards
         # The recorder reuses this EXACT composed mutation section; it never
         # constructs a separate file-only lock over the same Card storage.
+        # A different service must not replace that composition accidentally.
         if isinstance(self._store, BundleStorageDelegatedCardStore):
             self._store._card_intent_service = self
 
