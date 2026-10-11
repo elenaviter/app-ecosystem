@@ -244,16 +244,33 @@ def _assert_card_lock_held() -> _Held | None:
 
 async def assert_card_lock_owned() -> None:
     """R-4, the write guard: a write made inside an R operation needs that operation to still own EVERY key it
-    holds (GET == its value) and not be marked lost; otherwise card_lock_lost."""
+    holds (GET == its value) and not be marked lost; otherwise card_lock_lost.
+
+    All held keys are read in ONE round trip: a non-transactional pipeline of GETs, not MGET. The keys share no
+    hash tag, so on a Redis Cluster (a topology the SDK factory declares) MGET would fail CROSSSLOT and refuse every
+    multi-Card write; a cluster client splits a pipeline per node. Each key is still compared on its own, after
+    any fence draw that precedes the guard (P). One GET per key cost O(keys) round trips per guarded write."""
     held = _assert_card_lock_held()
     if held is None:
         return
-    for key, value in list(held.keys.items()):
-        try:
-            current = await held.redis.get(key)
-        except Exception as exc:  # noqa: BLE001 - cannot prove ownership: refuse
+    expected = list(held.keys.items())
+    if not expected:
+        return
+    try:
+        pipeline = held.redis.pipeline(transaction=False)
+        for key, _value in expected:
+            pipeline.get(key)
+        found = await pipeline.execute()  # the default raises on any failed GET: refused below
+    except Exception as exc:  # noqa: BLE001 - cannot prove ownership: refuse
+        held.lost = True
+        raise CardStorageError("card_lock_lost") from exc
+    if len(found) != len(expected):
+        held.lost = True
+        raise CardStorageError("card_lock_lost")
+    for (_key, value), current in zip(expected, found):
+        if isinstance(current, Exception):  # a client that returns a failed GET as a value: unproven
             held.lost = True
-            raise CardStorageError("card_lock_lost") from exc
+            raise CardStorageError("card_lock_lost") from current
         if isinstance(current, bytes):
             current = current.decode("utf-8", errors="replace")
         if current != value:
