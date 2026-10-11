@@ -345,10 +345,12 @@ for a live person (`target_subject`) is forwarded the same way, as the project's
 `{kind: person_removal, principal_key: "user:<person>", original_revision}` and an empty `selection` (no
 acceptance travels). `original_revision` is the person's Control revision the Hub reads now; the request id is
 derived from the actor, project, person and that revision, so a retry replays the host's one decision. A
-retry whose first answer was lost reads the Control after the host's removal revoked it, one revision on; the
-Hub then sends the first body again (the revision before the revocation, the same request id), and the host
-replays its decision from that request's own audit row, or refuses. A re-invited person's later removal, or
-another admin's, is a new request id. The
+retry whose first answer was lost reads the Control after the host's removal revoked it, one revision on. The
+removal at the revision read is sent first, as always (a member whose Control was revoked some other way is
+still removed). Only if the host refuses it as `removal_target_invalid` and the Control is revoked does the Hub
+send the first body again (the revision before, its request id); the host replays that only from the request's
+own audit row, else its refusal stands. A re-invited person's later removal, or another admin's, is a new
+request id. The
 host runs its existing removal for the person the Hub authenticated, in ONE decision: the membership ends and
 the person's Control and My Card are revoked. The Hub screen's Remove confirmation is the person's
 confirmation, so the host previews and confirms the same proposal in that call; its admin and target rules

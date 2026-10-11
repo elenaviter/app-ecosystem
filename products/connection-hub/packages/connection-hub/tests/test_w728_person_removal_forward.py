@@ -58,33 +58,75 @@ def test_the_request_id_is_stable_for_a_retry_and_moves_with_the_revision():
     assert ids[0] == ids[1] != ids[2]
 
 
-def test_a_lost_answer_retry_after_the_removal_sends_the_first_body_again():
-    """Infra's W728 review: the project's removal revoked the Control (7 -> 8); the same admin's retry
-    rebuilds the first request's identity, so the project replays its one decision."""
+class Project(Host):
+    """The project as W728 decides: a request id its removal audit row holds replays; an ended member refuses."""
+
+    def __init__(self, decided=(), member=False):
+        super().__init__()
+        self.decided, self.member = set(decided), member
+
+    async def call(self, *, bundle_id, operation, data):
+        body = data["data"]
+        if self.member or body["request_id"] in self.decided:
+            return await super().call(bundle_id=bundle_id, operation=operation, data=data)
+        self.calls.append((bundle_id, operation, body))
+        return {"status": "ok", "bundle_id": bundle_id, operation: {"ok": False, "status": 409, "error": {
+            "code": "work_card_transaction_removal_target_invalid", "message": "Not a removable person."}}}
+
+
+def test_a_lost_answer_retry_after_the_removal_replays_the_first_request():
+    """Infra's W728 review: the project's removal revoked the Control (7 -> 8). The removal at 8 is refused
+    (the person is gone); the first request, at 7, is then sent again and the project replays it."""
     host = Host()
     _revoke(_transactions_on(service(host)))
-    _revoke(_transactions_on(service(host), revision=8, state="revoked"))
-    first, retry = (body for _, _, body in host.calls)
-    assert retry["request_id"] == first["request_id"]
-    assert retry["target"] == first["target"] == {"kind": "person_removal", "principal_key": "user:bob",
-                                                  "original_revision": 7}
+    (_, _, first), = host.calls
+    project = Project(decided={first["request_id"]})
+    result = _revoke(_transactions_on(service(project), revision=8, state="revoked"))
+    assert result["ok"] is True and result["managed_card_edit"]["state"] == "committed", result
+    at_8, again = (body for _, _, body in project.calls)
+    assert at_8["target"]["original_revision"] == 8 and at_8["request_id"] != first["request_id"]
+    assert again["request_id"] == first["request_id"] and again["target"] == first["target"]
+
+
+def test_a_member_whose_control_was_revoked_otherwise_is_removed_at_the_revision_read():
+    project = Project(member=True)
+    result = _revoke(_transactions_on(service(project), revision=8, state="revoked"))
+    assert result["ok"] is True, result
+    (_, _, body), = project.calls
+    assert body["target"]["original_revision"] == 8  # never the reconstructed 7
+
+
+def test_a_revoked_control_with_no_recorded_removal_keeps_the_projects_refusal():
+    project = Project()
+    result = _revoke(_transactions_on(service(project), revision=8, state="revoked"))
+    assert result["ok"] is False and result["error"] == "work_card_transaction_removal_target_invalid", result
+    assert [body["target"]["original_revision"] for _, _, body in project.calls] == [8, 7]
 
 
 def test_a_re_invited_persons_removal_is_a_new_decision_and_another_admin_never_replays_it():
     host = Host()
     _revoke(_transactions_on(service(host)))
     _revoke(_transactions_on(service(host), revision=9))  # re-invited: an active Control again, later revision
-    asyncio.run(_transactions_on(service(host), revision=8, state="revoked").project_person_control_revoke(
-        {"user_id": "carol"}, project_ref=PROJECT, target_subject="bob", request_id="audit-3"))
-    first, again, other = (body for _, _, body in host.calls)
+    (_, _, first), (_, _, again) = host.calls
     assert again["request_id"] != first["request_id"] and again["target"]["original_revision"] == 9
-    assert other["request_id"] != first["request_id"] and other["actor_subject"] == "carol"
+    project = Project(decided={first["request_id"]})
+    result = asyncio.run(_transactions_on(service(project), revision=8, state="revoked").project_person_control_revoke(
+        {"user_id": "carol"}, project_ref=PROJECT, target_subject="bob", request_id="audit-3"))
+    assert result["ok"] is False, result  # carol's ids are hers: alice's recorded removal is never replayed
+    assert all(body["actor_subject"] == "carol" and body["request_id"] != first["request_id"]
+               for _, _, body in project.calls)
 
 
-def test_a_revoked_control_with_no_earlier_revision_is_not_forwarded():
-    host = Host()
-    result = _revoke(_transactions_on(service(host), revision=1, state="revoked"))
-    assert result["error"] == "card_transactions_direct_write_refused" and host.calls == [], result
+def test_an_active_control_is_never_sent_at_an_earlier_revision():
+    project = Project()
+    result = _revoke(_transactions_on(service(project), revision=8))
+    assert result["ok"] is False and [body["target"]["original_revision"] for _, _, body in project.calls] == [8]
+
+
+def test_a_revoked_control_at_its_first_revision_is_sent_once():
+    project = Project()
+    result = _revoke(_transactions_on(service(project), revision=1, state="revoked"))
+    assert result["error"] == "work_card_transaction_removal_target_invalid" and len(project.calls) == 1, result
 
 
 def test_an_uncommitted_project_answer_is_returned_and_nothing_is_written_directly():

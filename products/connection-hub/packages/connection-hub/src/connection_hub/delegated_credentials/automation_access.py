@@ -2646,11 +2646,12 @@ class AutomationAccessService:
         caller then keeps W578's refusal.
 
         A lost-answer retry (Infra's W728 review, 2026-10-11) reads the Control AFTER the host's removal
-        revoked it, one revision on (N -> N+1). It rebuilds the first request's identity, the revision before
-        the revocation, so the body is the first one again and the host replays its recorded decision. The host
-        replays only a request id its own removal audit row holds (the same actor's), so this can only ever
-        repeat that one decision; anything else is the host's own refusal, unchanged. A revoked Control alone
-        is never read as an ended membership: the host decides that from its rows.
+        revoked it, one revision on (N -> N+1). The removal at the revision read is sent first, exactly as
+        before: a member whose Control was revoked some other way is still removed by it. Only when the host
+        refuses that as ``removal_target_invalid`` and the Control is revoked does the Hub send the first
+        request again (revision N, its request id), and the host replays it only if its own removal audit row
+        holds that request id for this actor; otherwise its refusal stands. A revoked Control alone is never
+        read as an ended membership: the host decides that from its rows.
         """
         from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body, managed_card_location
         forwarder = self._managed_card_edit_forwarder(project_ref)
@@ -2665,18 +2666,22 @@ class AutomationAccessService:
         stored = current[0] if current is not None else None
         if stored is None or type(stored.card_revision) is not int or stored.card_revision < 1:
             return None
-        revision = stored.card_revision - 1 if current[1] == CARD_STATE_REVOKED else stored.card_revision
-        if revision < 1:
-            return None
-        digest = hashlib.sha256(json.dumps([actor_subject, project_ref, target_subject, revision],
-                                           separators=(",", ":")).encode("utf-8")).hexdigest()
-        try:
-            body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
-                request_id="person-removal:" + digest[:48], kind="person_removal",
-                principal_key="user:" + target_subject, original_revision=revision, selection={})
-            outcome = await forwarder.forward(body)
-        except ManagedCardEditError as exc:
-            return exc.to_dict()
+        revisions = [stored.card_revision]
+        if current[1] == CARD_STATE_REVOKED and stored.card_revision > 1:
+            revisions.append(stored.card_revision - 1)  # the first request of a lost-answer retry
+        for attempt, revision in enumerate(revisions):
+            digest = hashlib.sha256(json.dumps([actor_subject, project_ref, target_subject, revision],
+                                               separators=(",", ":")).encode("utf-8")).hexdigest()
+            try:
+                body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
+                    request_id="person-removal:" + digest[:48], kind="person_removal",
+                    principal_key="user:" + target_subject, original_revision=revision, selection={})
+                outcome = await forwarder.forward(body)
+                break
+            except ManagedCardEditError as exc:
+                if attempt + 1 < len(revisions) and exc.reason.endswith("removal_target_invalid"):
+                    continue
+                return exc.to_dict()
         return {"ok": outcome["state"] == "committed", "managed_card_edit": outcome,
                 **({} if outcome["state"] == "committed" else {
                     "error": "managed_card_edit_" + outcome["state"], "status": 409,
