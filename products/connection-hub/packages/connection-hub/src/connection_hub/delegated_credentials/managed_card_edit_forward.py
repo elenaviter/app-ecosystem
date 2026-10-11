@@ -248,3 +248,46 @@ class PeerManagedCardEdit:
 
 __all__ = ["OPERATION", "OUTCOME_SCHEMA", "PROTOCOL", "SCHEMA", "ManagedCardEditError", "PeerManagedCardEdit",
            "managed_card_edit_body", "managed_card_location", "sign_managed_card_edit"]
+
+
+# W729: no project route ends one managed Card on its own (card-transactions.md, "Editing a managed Card from the
+# Hub": a managed edit carries a selection, never a state change). Each kind ends through the project action that
+# owns it (Problem Board cards.md and flows.md), so the Hub's W578 refusal names that action for the screen.
+MANAGED_REVOKE_REASONS = {
+    "person_my": ("managed_card_revoke_requires_project_removal",
+                  "A person's My Card ends only when the person is removed from the project, which ends their "
+                  "project Control Card and My Card together. Use People > Remove in Problem Board. "
+                  "Nothing was changed."),
+    "agent": ("managed_card_revoke_requires_unlink",
+              "This agent's Card is linked to a project. Unlink the agent from the project in Problem Board "
+              "first; its own Card can then be revoked here. Nothing was changed."),
+    "project_control": ("managed_card_revoke_project_control_unsupported",
+                        "A project's Control Card cannot be revoked from here; no project route ends it yet. "
+                        "Nothing was changed."),
+    "managed": ("managed_card_revoke_requires_project",
+                "This Card is managed by its project. It ends only through the project's own action in "
+                "Problem Board. Nothing was changed."),
+}
+
+
+def managed_revoke_kind(record: Any, *, authority_from_record: Callable[[Any], Any], agent_source: str) -> str:
+    """Which managed kind a refused revoke ends: the project Control, a person's My Card, an agent Card, or other."""
+    if str(getattr(record, "issuer_kind", "") or "").strip() == "application" \
+            and getattr(record, "control_card", None) is None:
+        return "project_control"
+    try:
+        owner = managed_my_card_owner(authority_from_record(record))
+    except (AttributeError, TypeError, ValueError):  # not a complete Card record: not a My Card
+        owner = None
+    if owner is not None:
+        return "person_my"
+    if str(getattr(record, "source", "") or "").strip() == agent_source:
+        return "agent"
+    return "managed"
+
+
+def managed_revoke_reason(record: Any, *, authority_from_record: Callable[[Any], Any],
+                          agent_source: str) -> tuple[str, str]:
+    """``(reason, message)`` for a refused revoke of a managed Card (W729)."""
+    return MANAGED_REVOKE_REASONS[managed_revoke_kind(record, authority_from_record=authority_from_record,
+                                                      agent_source=agent_source)]
