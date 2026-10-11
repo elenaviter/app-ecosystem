@@ -480,6 +480,9 @@ export interface DelegatedAccessCreateResult {
   managed_card_edit?: { state?: string; card_revision?: number; transaction_id?: string };
   /** W727: 'card_committed_policy_pending' when the Card committed and its invocation policy did not. */
   outcome?: string;
+  /** W755: the whole new Card equals the stored revision; nothing was written. */
+  unchanged?: boolean;
+  card_revision?: number;
   access_id?: string;
   access_token?: string;
   authorization_header?: string;

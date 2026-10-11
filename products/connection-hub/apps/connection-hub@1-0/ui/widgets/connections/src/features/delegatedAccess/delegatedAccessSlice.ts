@@ -254,6 +254,9 @@ export interface UpdateDelegatedAccessArgs {
   projectAgentCard?: ProjectAgentCardTarget;
   /** W260: a project's Control Card opened through its project saves there too. */
   projectControlCard?: ProjectControlCardTarget;
+  /** W755: the Once/Every-time policy for each operation this Save adds, {resource: {operation: mode}}. The
+   *  Save sends the whole Card once; the server finds what was added and applies these with it. */
+  invocationModes?: Record<string, Record<string, 'always' | 'once'>>;
 }
 
 /** Edit a manual automation IN PLACE — the card keeps its access_id/client_id,
@@ -283,6 +286,7 @@ export const updateDelegatedAccess = createAsyncThunk<
       projectPersonControl,
       projectAgentCard,
       projectControlCard,
+      invocationModes,
     },
     { rejectWithValue },
   ) => {
@@ -335,6 +339,7 @@ export const updateDelegatedAccess = createAsyncThunk<
             : {}),
           ...(compositionMode ? { composition_mode: compositionMode } : {}),
           ...(properties !== undefined ? { properties } : {}),
+          ...(invocationModes && Object.keys(invocationModes).length ? { invocation_modes: invocationModes } : {}),
         },
       );
       if (res?.ok === false && res.error === 'card_transactions_direct_write_refused') {

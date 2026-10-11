@@ -27,6 +27,7 @@ test('any other refusal is shown as itself and never marks the edit stale', () =
   assert.equal(isStaleEditRefusal(null), false)
   const save = panel.slice(panel.indexOf('if (isStaleEditRefusal(updated)) {'))
   // W587 C: only a restarting board gets its own words; every other refusal is shown as itself.
-  assert.match(save, /return;\s+\}\s+setEditActionError\(isBoardRestarting\(updated\?\.error\)\s+\? `Save was not applied: \$\{BOARD_RESTARTING_MESSAGE\} Your draft is kept\.`\s+: updated\?\.message \|\| `Save was not applied: \$\{updated\?\.error \|\| 'request refused'\}`\);/)
+  // W755: a missing Once/Every-time choice for an added operation gets its own words too.
+  assert.match(save, /return;\s+\}\s+setEditActionError\(isBoardRestarting\(updated\?\.error\)\s+\? `Save was not applied: \$\{BOARD_RESTARTING_MESSAGE\} Your draft is kept\.`\s+: updated\?\.error === 'invocation_mode_required'\s+\? 'Save was not applied: choose Once or Every time for each operation you added\. Your draft is kept\.'\s+: updated\?\.message \|\| `Save was not applied: \$\{updated\?\.error \|\| 'request refused'\}`\);/)
   assert.doesNotMatch(panel, /if \(updated\?\.status === 409\) \{/)
 })

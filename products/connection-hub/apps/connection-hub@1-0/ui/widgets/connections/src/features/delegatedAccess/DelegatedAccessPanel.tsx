@@ -81,13 +81,11 @@ import {
   toggleAccepted,
 } from './resourceEditing';
 import {
-  editChangeId,
   focusedGrantArgs,
   pendingChoiceRequested,
   pendingFocusedIdentity,
   pendingGrantAccessId,
   pendingPresetMode,
-  randomNonce,
   splitEditedOperations,
   submittedInvocationModes,
   withDefaultInvocationModes,
@@ -123,13 +121,7 @@ import {
   resolvePendingServiceCapability,
 } from './pendingGrantProjection';
 import type { PendingSelectionStatus } from './pendingGrantProjection';
-import {
-  isPolicyPending,
-  resumeFor,
-  runFocusedGrants,
-  type FocusedGrantResume,
-  type FocusedGrantsOutcome,
-} from './focusedGrantRecovery';
+import { isPolicyPending } from './focusedGrantRecovery';
 import type {
   DelegatedAccessNamedServiceOperations,
   DelegatedAccessRecord,
@@ -184,8 +176,9 @@ import {
   controlFocusRead,
   isStaleEditRefusal,
   onPendingTooLong,
+  NOTHING_TO_SAVE_MESSAGE,
+  isNothingToSave,
   pinAfterRefusal,
-  pinAfterCommit,
   pinAtStart,
   withLinkedOperation,
 } from './cardFreshness';
@@ -1202,8 +1195,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // W587: the Card revision the open edit started from (see saveEdit), and
   // whether the server already refused this edit as stale (409).
   const editBaseRevision = useRef<number | null>(null);
-  // W727: a Save whose base or focused grants already committed resumes from here on Retry Save.
-  const editResume = useRef<FocusedGrantResume | null>(null);
   const editBaseCatalog = useRef<string | null>(null);
   const editRequest = useRef<string | null>(null);
   const [editRefusedStale, setEditRefusedStale] = useState(false);
@@ -1282,6 +1273,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   const [editConversationTargets, setEditConversationTargets] = useState<string[]>([]);
   const [editAgentCapabilities, setEditAgentCapabilities] = useState<Record<string, string[]>>({});
   const [editActionError, setEditActionError] = useState('');
+  const [editSaveNotice, setEditSaveNotice] = useState('');
   // The automation-creation form is folded behind its call to action.
   const [createOpen, setCreateOpen] = useState(false);
   // Claims kept on the edited card, keyed `${resource}:${claim}`. The form
@@ -2306,7 +2298,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     editBaseRevision.current = pinAtStart(item);
     editBaseCatalog.current = catalogPinAtStart(item);
     setEditRefusedStale(false);
-    editResume.current = null;
     const picks: Record<string, boolean> = {};
     Object.entries(item.resource_grants || {}).forEach(([resource, grants]) => {
       grants.forEach((claim) => { picks[`${resource}:${claim}`] = true; });
@@ -3032,7 +3023,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
 
   const clearEditState = () => {
     editBaseRevision.current = null;
-    editResume.current = null;
     editBaseCatalog.current = null;
     setEditRefusedStale(false);
     setEditingAccessId(null);
@@ -3050,6 +3040,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     setEditConversationTargets([]);
     setEditAgentCapabilities({});
     setEditActionError('');
+    setEditSaveNotice('');
     setEditAddedResources([]);
     setEditRemovedResources([]);
     setEditAcceptedOperations({});
@@ -3297,6 +3288,7 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       return;
     }
     setEditActionError('');
+    setEditSaveNotice('');
     const kept: Record<string, string[]> = {};
     editResourceKeys(item)
       .filter((resource) => editResourceHasAuthority(item, resource))
@@ -3351,18 +3343,20 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       split.focused.map(({ operation, mode }) => ({ resource, operation, mode }))
     ));
     // W560: an operation the application decides for a person stays exactly as the Card holds it.
+    // W755 (operator, 2026-10-11: "WHY ITS NOT A PART"; "the new card yes must be sent to save"): the Save
+    // sends the WHOLE new Card once, the operations it adds included, with the policy chosen for each; the
+    // server finds what changed against the stored revision. There is no separate per-operation grant.
+    const invocationModes: Record<string, Record<string, InvocationMode>> = {};
+    focusedAdditions.forEach(({ resource, operation, mode }) => {
+      invocationModes[resource] = { ...(invocationModes[resource] || {}), [operation]: mode };
+    });
     const savedResourceOperations = withManagedGrantsAsHeld(
-      Object.fromEntries(Object.entries(splits).map(([resource, split]) => [resource, split.kept])),
+      Object.fromEntries(Object.entries(splits).map(([resource, split]) => [
+        resource, [...split.kept, ...split.focused.map(({ operation }) => operation)]])),
       item.resource_operations || {},
       (resource) => new Set((catalogRowFor(resources, resource, editRowFor)?.operations || [])
         .filter((operation) => operation.managed).map((operation) => operation.name)),
     );
-    if (focusedAdditions.length && !item.client_id) {
-      setEditActionError(
-        `Could not add ${focusedAdditions[0].operation}: this card has no client identity for a focused grant. Your draft is still here.`,
-      );
-      return;
-    }
     const propertiesFor = (policy: ApplicationOperationRolePolicy, targets: string[]) => withConversationTargets(
       applicationOperationPropertiesForSelection({
         properties: item.properties || {},
@@ -3467,102 +3461,51 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       projectPersonControl: projectPersonControl || undefined,
       projectAgentCard: projectAgentCard || undefined,
       projectControlCard: projectControlCard || undefined,
+      invocationModes,
     };
-    // W727: Retry Save after a partly finished Save resumes it. A pending grant (its Card committed,
-    // its policy not) is replayed first, exactly, before anything can change the Card's selection that
-    // its request id is derived from. The base Save is sent again only when its part of the draft
-    // changed since it committed; then the operations not yet added, on the revision the last write left.
-    const baseKey = JSON.stringify(baseArgs);
-    const { skipBase, resume } = resumeFor(editResume.current, item.access_id, baseKey);
-    const progress: FocusedGrantResume = {
-      accessId: item.access_id,
-      baseKey: resume?.baseKey ?? baseKey,
-      completed: [...(resume?.completed || [])],
-      pending: resume?.pending || null,
-    };
-    const grants = (additions: typeof focusedAdditions) => runFocusedGrants({
-      progress,
-      additions,
-      // W727: each grant is made against the revision the previous write left.
-      build: ({ resource, operation, mode }, pin) => focusedGrantArgs(
-        {
-          clientId: item.client_id as string,
-          accessId: item.access_id,
-          resource,
-          operation,
-          changeId: editChangeId(item.access_id, operation, randomNonce()),
-        },
-        mode,
-        routedKept[resource] || [],
-        { expectedCardRevision: pin ?? undefined },
-      ),
-      send: (args) => dispatch(grantAgentAccess(args)).unwrap(),
-      pin: editBaseRevision,
-      pinAfter: pinAfterCommit,
-    });
-    // A stopped Save keeps the draft and its resume point; the message says what is already saved.
-    const stopped = (outcome: FocusedGrantsOutcome): boolean => {
-      if (outcome.state === 'done') return false;
-      const { operation } = outcome;
-      const completed = outcome.completed.length
-        ? ` Added before this: ${outcome.completed.join(', ')}.`
-        : '';
-      setEditActionError(outcome.state === 'policy_pending'
-        // The operation is on the Card; only this exact request (same change id and revision)
-        // finishes its policy, so Retry Save replays it unchanged before anything else.
-        ? `The card changes were saved and ${operation} is on the card, but its invocation policy was not saved: ${outcome.answer.message || outcome.answer.error || 'request refused'}${completed} Retry Save to finish it.`
-        : `The card changes were saved, but ${operation} was not added: ${String(outcome.error || 'request refused')}.${completed} Your draft is still here; retry Save to complete it.`);
-      // The base save (and any earlier focused grants) advanced the Card.
-      // Refresh that saved authority without reseeding this editor, so the
-      // retained draft retries only the operations that are still missing
-      // against the current revision.
-      void dispatch(loadDelegatedAccess());
-      return true;
-    };
-    if (progress.pending) {
-      editResume.current = progress;
-      if (stopped(await grants([]))) return;
+    // W755: one Save is one request and one project transaction. A refusal changes nothing and keeps the draft.
+    // Operator, 2026-10-11 21:03Z: "the card version is comapred to server. if on server newer exist this is
+    // right away discarded" — so Save pressed again after a lost answer meets the stale refusal and Reload.
+    try {
+      updated = await dispatch(updateDelegatedAccess({
+        ...baseArgs,
+        // What this editor was opened on. The server refuses the save when
+        // either moved. W587: the revision is the one the edit STARTED from,
+        // pinned at startEdit, so a background refresh never turns a draft
+        // made against an older Card into an overwrite of a newer one.
+        expectedCardRevision: editBaseRevision.current ?? item.card_revision,
+      })).unwrap();
+    } catch (error) {
+      setEditActionError(isBoardRestarting(String(error || ''))
+        ? `Save was not applied: ${BOARD_RESTARTING_MESSAGE} Your draft is kept.`
+        : `Save was not applied: ${String(error || 'request refused')}`);
+      return;
     }
-    if (!skipBase) {
-      try {
-        updated = await dispatch(updateDelegatedAccess({
-          ...baseArgs,
-          // What this editor was opened on. The server refuses the save when
-          // either moved. W587: the revision is the one the edit STARTED from,
-          // pinned at startEdit, so a background refresh never turns a draft
-          // made against an older Card into an overwrite of a newer one.
-          expectedCardRevision: editBaseRevision.current ?? item.card_revision,
-        })).unwrap();
-      } catch (error) {
-        setEditActionError(isBoardRestarting(String(error || ''))
-          ? `Save was not applied: ${BOARD_RESTARTING_MESSAGE} Your draft is kept.`
-          : `Save was not applied: ${String(error || 'request refused')}`);
+    if (!updated || updated.ok === false) {
+      // Keep every draft choice in place. A conflict may refresh the record in
+      // Redux, but the operator decides how to reconcile it with this draft.
+      // W587: after a 409 the edit stays pinned and is refused until the
+      // person reloads the Card; the read shows them the server version.
+      if (isStaleEditRefusal(updated)) {
+        // No automatic re-read (operator, 14:50); "Reload this Card" reads it.
+        editBaseRevision.current = pinAfterRefusal(editBaseRevision.current);
+        setEditRefusedStale(true);
+        setEditActionError(STALE_EDIT_MESSAGE);
         return;
       }
-      if (!updated || updated.ok === false) {
-        // Keep every draft choice in place. A conflict may refresh the record in
-        // Redux, but the operator decides how to reconcile it with this draft.
-        // W587: after a 409 the edit stays pinned and is refused until the
-        // person reloads the Card; the read shows them the server version.
-        if (isStaleEditRefusal(updated)) {
-          // No automatic re-read (operator, 14:50); "Reload this Card" reads it.
-          editBaseRevision.current = pinAfterRefusal(editBaseRevision.current);
-          setEditRefusedStale(true);
-          setEditActionError(STALE_EDIT_MESSAGE);
-          return;
-        }
-        setEditActionError(isBoardRestarting(updated?.error)
-          ? `Save was not applied: ${BOARD_RESTARTING_MESSAGE} Your draft is kept.`
+      setEditActionError(isBoardRestarting(updated?.error)
+        ? `Save was not applied: ${BOARD_RESTARTING_MESSAGE} Your draft is kept.`
+        : updated?.error === 'invocation_mode_required'
+          ? 'Save was not applied: choose Once or Every time for each operation you added. Your draft is kept.'
           : updated?.message || `Save was not applied: ${updated?.error || 'request refused'}`);
-        return;
-      }
-      // W587: the base save advanced the Card; a retry continues from that revision.
-      // W727: a project-managed Card's Save answers with the transaction's committed revision.
-      editBaseRevision.current = pinAfterCommit(editBaseRevision.current, updated);
+      return;
     }
-    progress.baseKey = baseKey;
-    editResume.current = progress;
-    if (stopped(await grants(focusedAdditions))) return;
+    if (isNothingToSave(updated)) {
+      // W755 (operator diagram, 2026-10-11): "identical ──► ok "nothing to save" (no new revision)". The editor
+      // stays open on the same draft and the same revision.
+      setEditSaveNotice(NOTHING_TO_SAVE_MESSAGE);
+      return;
+    }
     clearEditState();
     void dispatch(loadDelegatedAccess());
   };
@@ -5670,6 +5613,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                   Reload this Card
                 </button>
               </div>
+            ) : null}
+            {editSaveNotice && !editActionError ? (
+              <div className="notice" role="status">{editSaveNotice}</div>
             ) : null}
             {editActionError || delegatedAccessError || problemText ? (
               <div className="error form-actions__error" role="alert">
