@@ -57,6 +57,24 @@ whole request, so no edit value is repeated.
     one allow per step and builds the new versions with `plan_card_lifecycle`.
     A base that moved is `card_changed`, and another catalog is
     `stage_catalog_moved`.
+  - **A join's invitation seed (W746).** Redeeming an invitation creates the
+    person's C with `seed_origin: "invitation"`. That creation's
+    `identity.invitation` also carries `email_digest`: the
+    `normalized_email_digest` of the redeemer's provider-verified email. PB's
+    join admission matched that email to the invitation.
+    - `stage_authorization` lifts the digest out of the identity, so the planner
+      sees the identity it always checked. It puts the digest in that one
+      step's evidence: `{source: card-version-stage, request_digest,
+      invitation_ref, invitation_email_digest}`.
+    - The planner still compares it with the pending invitation Card's own
+      target digest. A mismatch is `project_invitation_binding_email_mismatch`
+      (`edit_invalid` on the wire), and nothing is written.
+    - `email_digest` anywhere else (another kind, another step, or the identity
+      top level) is refused `card_plan_invitation_email_digest_misplaced`. A
+      malformed digest is refused `card_plan_invitation_seed_invalid`.
+    - Every other STAGE body, and its decisions, stays byte-identical. This is
+      the evidence the legacy PLAN callback gave, with the same trust: the
+      STAGE request is PB-authenticated.
   - The Card store then writes each version once, not yet final, under the
     Card's lock. It compares a retry by the STAGE digest: every request field
     except the per-call `request_echo`. A different edit under the same `txn`

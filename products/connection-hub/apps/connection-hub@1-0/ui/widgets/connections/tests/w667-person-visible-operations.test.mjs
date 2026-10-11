@@ -27,9 +27,17 @@ const ROW = {
   ],
 }
 
-test('a person Card shows only the declared operations it decides', () => {
-  const shown = visibleOperations(resourceForPersonCard(ROW).operations).map((operation) => operation.name)
-  assert.deepEqual(shown, ['review.assign', 'plan.item.create'])
+// W739 (operator, 2026-10-11: "we still show this (simply disabled)", "ie.. we must", "because for other
+// permisisons that also card does not decide we still show them"): a person Card SHOWS every operation; the
+// ones it does not decide are managed (disabled, "Set by the application"), never hidden.
+test('a person Card shows every operation; only the declared ones it decides are editable', () => {
+  const row = resourceForPersonCard(ROW)
+  assert.deepEqual(visibleOperations(row.operations).map((operation) => operation.name),
+    ['review.assign', 'plan.item.create', 'plan.notes.list', 'project.github.use', 'project.people.invite'])
+  assert.deepEqual(row.operations.filter((operation) => !operation.managed).map((operation) => operation.name),
+    ['review.assign', 'plan.item.create'])
+  assert.deepEqual(row.operations.filter((operation) => operation.managed && operation.person_undecided)
+    .map((operation) => operation.name), ['plan.notes.list', 'project.github.use', 'project.people.invite'])
 })
 
 test('hidden operations are kept exactly as the Card holds them on Save', () => {
@@ -47,26 +55,28 @@ test('the drift review leaves out every hidden operation', () => {
   assert.deepEqual(notOfferedOnPersonCard(ROW).sort(), ['plan.notes.list', 'project.github.use', 'project.people.invite'])
 })
 
-// W560 (operator ruling relayed 2026-10-09: managed operations "not viisble"; everything that cannot be
-// controlled "must be hidden"). This supersedes the earlier disabled "Set by the application" display on
-// person Cards: a `person_card: false` operation is hidden whether or not the application declares anything.
+// W560, as W739 restores the display (operator, 2026-10-11: "we still show this (simply disabled)"): a
+// `person_card: false` operation is managed and shown disabled whether or not the application declares anything.
 for (const [label, declaration] of [['without a declaration', undefined], ['with an empty declaration', []]]) {
-  test(`${label} the managed operation is hidden on a person's Control Card and the rest is shown`, () => {
+  test(`${label} the managed operation is shown disabled on a person's Control Card with the rest`, () => {
     const { person_card_operations: _, ...base } = ROW
     const row = resourceForPersonCard(declaration === undefined ? base : { ...base, person_card_operations: declaration })
     assert.deepEqual(visibleOperations(row.operations).map((operation) => operation.name),
-      ['review.assign', 'plan.item.create', 'plan.notes.list', 'project.github.use'])
-    assert.deepEqual(row.operations.filter((operation) => operation.managed && operation.hidden).map((operation) => operation.name),
+      ['review.assign', 'plan.item.create', 'plan.notes.list', 'project.github.use', 'project.people.invite'])
+    assert.deepEqual(row.operations.filter((operation) => operation.managed).map((operation) => operation.name),
       ['project.people.invite'])
+    assert.equal(row.operations.some((operation) => operation.hidden), false)
   })
 
-  test(`${label} a person's My Card hides only the managed operation`, () => {
+  test(`${label} a person's My Card shows the managed operation disabled`, () => {
     const { person_card_operations: _, ...base } = ROW
     const named = [{ namespace: 'work', tools: { action: { operations: { 'object.action.set_role': { person_card: false } } } } }]
     const plain = { ...base, named_services: named, ...(declaration === undefined ? {} : { person_card_operations: declaration }) }
     const [mine] = resourcesForPersonMyCard([plain])
     assert.deepEqual(visibleOperations(mine.operations).map((operation) => operation.name),
-      ['review.assign', 'plan.item.create', 'plan.notes.list', 'project.github.use'])
+      ['review.assign', 'plan.item.create', 'plan.notes.list', 'project.github.use', 'project.people.invite'])
+    assert.deepEqual(mine.operations.filter((operation) => operation.managed).map((operation) => operation.name),
+      ['project.people.invite'])
     assert.deepEqual(mine.named_services, named)  // named services on a My Card are shown as before
   })
 }
@@ -89,9 +99,11 @@ test('without a declaration Save still keeps a held managed operation and its gr
   assert.deepEqual(hiddenHeldGrants(row, [], ['work:admin']), [])  // not held: never kept or added
 })
 
-test("a person's My Card hides the same set when declared; an agent Card is never filtered here", () => {
+test("a person's My Card manages the same set when declared; an agent Card is never filtered here", () => {
   const [mine] = resourcesForPersonMyCard([ROW])
-  assert.deepEqual(visibleOperations(mine.operations).map((operation) => operation.name), ['review.assign', 'plan.item.create'])
+  assert.deepEqual(mine.operations.filter((operation) => !operation.managed).map((operation) => operation.name),
+    ['review.assign', 'plan.item.create'])
+  assert.equal(visibleOperations(mine.operations).length, ROW.operations.length)  // W739: shown, never hidden
   assert.equal(visibleOperations(ROW.operations).length, ROW.operations.length)  // the raw catalog (agent Cards)
 })
 

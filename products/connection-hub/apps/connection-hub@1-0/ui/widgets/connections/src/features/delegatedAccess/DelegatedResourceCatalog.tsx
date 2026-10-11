@@ -14,6 +14,7 @@ import {
   type ControlCompositionMode,
 } from './controlCardPreview';
 import { InfoMark } from '../../components/InfoMark';
+import { MANAGED_OPERATION_NOTE } from './managedGrants';
 import { renderOperationGroups } from './OperationGroups';
 
 interface NamedServiceOperationRow {
@@ -23,6 +24,8 @@ interface NamedServiceOperationRow {
   grants: string[];
   /** The group the service declares (W260); '' when none. */
   group: string;
+  /** W739: shown on a person's Card that does not decide it; disabled, never toggled. */
+  managed: boolean;
 }
 
 interface DelegatedResourceCatalogProps {
@@ -42,6 +45,8 @@ interface DelegatedResourceCatalogProps {
     controlLabel: string;
     controlOperations: Record<string, string[]>;
   };
+  /** W739: per namespace, the managed operations the Card holds (drawn ticked); '*' when it holds every one. */
+  heldManagedOperations?: Record<string, string[]> | '*';
 }
 
 const CONSENT_ACTION_LABEL: Record<Exclude<ConsentPlanAction, 'done'>, string> = {
@@ -84,6 +89,7 @@ export function operationRows(namespace: DelegatedAccessNamedServiceNamespaceOpt
           description: policy.description || tool.description || '',
           grants,
           group: String(policy.group || tool.group || ''),
+          managed: policy.person_undecided === true || tool.person_undecided === true,
         });
       });
       return;
@@ -98,6 +104,7 @@ export function operationRows(namespace: DelegatedAccessNamedServiceNamespaceOpt
       description: tool.description || '',
       grants,
       group: String(tool.group || ''),
+      managed: tool.person_undecided === true,
     });
   });
   return rows;
@@ -200,6 +207,7 @@ export function DelegatedResourceCatalog({
   providers,
   accounts,
   composition,
+  heldManagedOperations,
 }: DelegatedResourceCatalogProps) {
   const namespaces = resource.named_services || [];
   const [open, setOpen] = useState(false);
@@ -208,8 +216,11 @@ export function DelegatedResourceCatalog({
   /* Every offered row, so "all of them" is a question this component can both
    * ask and answer. Ticking all of them is what the save encodes as `"*"`. */
   const offeredRows = namespaces.flatMap((namespace) => (
-    operationRows(namespace).map((row) => ({ namespace: namespace.namespace, row }))
+    operationRows(namespace).filter((row) => !row.managed).map((row) => ({ namespace: namespace.namespace, row }))
   ));
+  const managedHeld = (namespace: string, operation: string) => (
+    heldManagedOperations === '*' || Boolean(heldManagedOperations?.[namespace]?.includes(operation))
+  );
   const selectedCount = namespaces.reduce((total, namespace) => (
     total + (selectedOperations[namespace.namespace] || []).length
   ), 0);
@@ -295,7 +306,9 @@ export function DelegatedResourceCatalog({
           </p>
         ) : null}
         {namespaces.map((namespace) => {
-          const rows = operationRows(namespace);
+          const shownRows = operationRows(namespace);
+          // W739: managed rows are drawn, never toggled, counted or sent.
+          const rows = shownRows.filter((row) => !row.managed);
           const selected = new Set(selectedOperations[namespace.namespace] || []);
           const includedRows = rows.filter((row) => selected.has(row.operation));
           const effectiveRows = composition ? rows.filter((row) => {
@@ -361,7 +374,24 @@ export function DelegatedResourceCatalog({
             </summary>
 
             <div className="namespace-operation-list">
-              {renderOperationGroups(rows, (row) => row.group, namespace.operation_groups, (row) => {
+              {renderOperationGroups(shownRows, (row) => row.group, namespace.operation_groups, (row) => {
+                if (row.managed) {
+                  return (
+                    <label className="namespace-operation" key={`${namespace.namespace}:${row.operation}:managed`}>
+                      <input type="checkbox" checked={managedHeld(namespace.namespace, row.operation)} disabled readOnly />
+                      <span className="namespace-operation__body">
+                        <span className="namespace-operation__title">
+                          <strong>{row.label}</strong>
+                          <small className="grant-chip-managed">{MANAGED_OPERATION_NOTE}</small>
+                          {row.label !== row.operation ? (
+                            <code className="operation-id">{row.operation}</code>
+                          ) : null}
+                        </span>
+                        {row.description ? <small>{row.description}</small> : null}
+                      </span>
+                    </label>
+                  );
+                }
                 const included = includedRows.includes(row);
                 const controlSelected = (composition?.controlOperations[namespace.namespace] || [])
                   .some((operation) => operation === '*' || operation === row.operation);
