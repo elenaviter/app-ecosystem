@@ -29,9 +29,9 @@ import pytest
 _R_MODE = os.environ.get("W661_CARD_LOCK_R_MODE") == "1" and bool(os.environ.get("W661_TEST_REDIS_URL"))
 _PG_MODE = os.environ.get("W661_BCORE_PG_MODE") == "1" and bool(os.environ.get("W661_TEST_PG_DSN"))
 
-# Reviewer witnesses retained byte-for-byte (W700 P) that need the real PostgreSQL and Redis but carry no skip of
-# their own: skipped here, as their sibling P tests skip themselves, so a run without them shows no false red.
-_REVIEWER_REAL_PG_REDIS_MODULES = {"test_w661_p_delayed_claim_read_infra.py", "test_w661_p_fence_order_ops.py"}
+# A reviewer witness retained byte-for-byte (W700 P, Infra's) that needs the real PostgreSQL and Redis but carries
+# no skip of its own: skipped here, as its sibling P tests skip themselves, so a run without them shows no false red.
+_REVIEWER_REAL_PG_REDIS_MODULES = {"test_w661_p_delayed_claim_read_infra.py"}
 
 
 def pytest_collection_modifyitems(config, items):
