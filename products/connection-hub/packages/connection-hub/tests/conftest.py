@@ -66,7 +66,20 @@ class _LazyPool:
     async def release(self, connection) -> None:
         return None
 
+    async def aclose_running(self) -> None:
+        """Close this loop's connection in its own loop, before the loop closes (as W707 closes R clients)."""
+        loop = asyncio.get_running_loop()
+        slot = self._per_loop.pop(id(loop), None)
+        if slot is not None and slot[0] is loop and not slot[2].is_closed():
+            await slot[2].close()
+
     def terminate(self) -> None:
+        """Abort every connection still open (one opened in a loop the test ran and closed itself)."""
+        for _loop, _lock, connection in list(self._per_loop.values()):
+            try:
+                connection.terminate()
+            except RuntimeError:
+                pass  # its loop is already closed: collected by the caller's gc.collect()
         self._per_loop.clear()
 
 
@@ -123,14 +136,29 @@ def _audit_unlocked_write(kind: str) -> None:
                   f"{test.filename.split('/tests/')[-1] + ':' + test.name if test else '-'}\n")
 
 
+_PG_POOLS: list = []  # the PG-mode pool of the running test
+
+
 @pytest.fixture(autouse=True)
 def _w661_bcore_pg_mode(monkeypatch):
     if not _PG_MODE:
         yield
         return
     pool = install_pg_mode(lambda target, name, value: monkeypatch.setattr(target, name, value, raising=False))
+    _PG_POOLS.append(pool)
     yield
+    _PG_POOLS.remove(pool)
     pool.terminate()
+    import gc
+    gc.collect()  # a connection left on a closed loop is finalized HERE, not in a later test
+
+
+@pytest.fixture(autouse=True)
+async def _w661_bcore_pg_mode_connections(_w661_bcore_pg_mode):
+    """Close this test's PG-mode connection in the test's own event loop, before that loop closes."""
+    yield
+    for pool in list(_PG_POOLS):
+        await pool.aclose_running()
 
 
 def install_pg_mode(set_attr):
