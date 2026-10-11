@@ -99,6 +99,18 @@ def settings_display(properties: Any) -> dict[str, Any]:
     return copy.deepcopy(selected)
 
 
+def settings_only_change(original: CardAuthority, candidate: CardAuthority) -> bool:
+    """All fields outside the two settings and revision must be byte-identical."""
+    before, after = original.to_dict(), candidate.to_dict()
+    if candidate.card_revision != original.card_revision + 1:
+        return False
+    after["card_revision"] = before["card_revision"]
+    for value in (before, after):
+        value["properties"] = {key: item for key, item in value["properties"].items()
+                               if key not in MY_CARD_PERSON_PROPERTIES}
+    return before == after
+
+
 def build_person_settings_update(*, original: CardAuthority, selection: Mapping[str, Any],
                                  decision: ProjectAuthorizationDecision, project_ref: str,
                                  target_subject: str, actor_subject: str, request_id: str,
@@ -147,11 +159,6 @@ def build_person_settings_update(*, original: CardAuthority, selection: Mapping[
     if refusal is not None:
         raise DecisionRefused(refusal)
     # No re-resolution or selection/catalog/acceptance changes are permitted.
-    before, after = original.to_dict(), candidate.to_dict()
-    after["card_revision"] = before["card_revision"]
-    for value in (before, after):
-        value["properties"] = {key: item for key, item in value["properties"].items()
-                               if key not in MY_CARD_PERSON_PROPERTIES}
-    if before != after:
+    if not settings_only_change(original, candidate):
         raise DecisionRefused("card_plan_undisplayed_change")
     return {"member": group_member(original=original, candidate=candidate, action="update")}

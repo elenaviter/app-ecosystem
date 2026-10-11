@@ -137,10 +137,11 @@ def plan_display(
         after = selection_display(candidate.to_dict())
         if person_settings is not None and key in person_settings:
             from .project_identity_lifecycle import ProjectPersonCardIdentity
-            from .my_card_person_properties_plan import settings_display
+            from .my_card_person_properties_plan import settings_display, settings_only_change
             try:
                 scope, owner = person_settings[key]
-                if before is None or kind != "my_card" or member.get("action") != "update":
+                if (before is None or kind != "my_card" or member.get("action") != "update"
+                        or not settings_only_change(original, candidate)):
                     raise ValueError
                 for card in (original, candidate):
                     identity = ProjectPersonCardIdentity.from_my_card(card)

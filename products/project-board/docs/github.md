@@ -166,6 +166,17 @@ name (`project_github_peer_proof_not_configured`), never allowed.
    App's install page or the installation's settings). The person's card on
    the board updates without a reload.
 
+When managed Card saves are enabled, linking, unlinking and setting or
+clearing the commit email use the project's signed, link-only Card save.
+Only the authenticated owner can change these settings on their own My
+Card; an admin cannot edit another person's managed settings. The Card holds
+only the connected-account reference and email, never the GitHub token. A
+failed or pending save returns a named refusal and changes no authority
+directly; retry the same request. After a committed relink, new token requests
+read the new account; after an unlink, they refuse `github_not_linked`.
+The exact patch and STAGE evidence contract is in
+[Card transactions](repo:app-ecosystem/docs/connection-hub/package/card-transactions.md).
+
 ## Once per agent: Use GitHub
 
 An agent's Card holds **Use GitHub** (`project.github.use`) by default when it
@@ -322,6 +333,8 @@ Nothing on the agent's machine needs cleaning: it never stored a GitHub token.
 | `worker_unknown`, `grantor_mismatch` | The Card does not match an active agent of that owner. | Re-authorize the agent. |
 | `project_github_peer_proof_not_configured` | The peer-proof secret is missing in either app. | The operator sets it in both (setup, step 5). |
 | `project_github_board_update_required` | The board predates this feature. | Deploy the current board. |
+| `project_person_my_card_property_self_only` | Another person's managed My settings were targeted. | The owner changes their own My Card. |
+| `managed_card_edit_route_unavailable` | The managed settings save has no configured project route. | The operator configures the managed Card save; no direct fallback is made. |
 
 A push that GitHub itself refuses:
 - **403 on an owner:** the App is not installed there or not on that

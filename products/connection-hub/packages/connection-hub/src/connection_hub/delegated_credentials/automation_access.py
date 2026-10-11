@@ -2856,6 +2856,33 @@ class AutomationAccessService:
                     "error": "managed_card_edit_" + outcome["state"], "status": 409,
                     "message": "The project did not save this change. Your draft is kept."})}
 
+    async def _forward_managed_my_card_settings(
+        self, *, actor_subject: str, project_ref: str, record: AutomationAccessRecord,
+        changes: Mapping[str, Any], request_id: str,
+    ) -> dict[str, Any]:
+        """An owner's closed settings patch; never fall back to a direct managed write."""
+        from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body, managed_my_card_owner
+        owner = managed_my_card_owner(card_authority_from_record(record))
+        if owner != (project_ref, actor_subject):
+            return {"ok": False, "error": "project_person_my_card_property_self_only", "status": 403}
+        forwarder = self._managed_card_edit_forwarder(project_ref)
+        if forwarder is None:
+            return {"ok": False, "error": "managed_card_edit_route_unavailable", "status": 503}
+        if not request_id:
+            digest = hashlib.sha256(json.dumps([actor_subject, project_ref, record.access_id,
+                record.card_revision, changes], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            request_id = "my-card-settings:" + digest[:48]
+        try:
+            body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
+                request_id=request_id, kind="person_my", principal_key="user:" + actor_subject,
+                original_revision=record.card_revision, selection={"properties": changes})
+            outcome = await forwarder.forward(body)
+        except ManagedCardEditError as exc:
+            return exc.to_dict()
+        return {"ok": outcome["state"] == "committed", "managed_card_edit": outcome,
+                **({} if outcome["state"] == "committed" else {
+                    "error": "managed_card_edit_" + outcome["state"], "status": 409})}
+
     async def _managed_grant_base(self, record: AutomationAccessRecord) -> AutomationAccessRecord:
         """W727: the managed Card a grant merges into is its durable current revision.
 

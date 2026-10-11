@@ -148,3 +148,18 @@ def test_display_is_opt_in_and_shows_real_whitelisted_before_after():
         assert "kept" not in part["properties"]
     with pytest.raises(DecisionRefused):
         plan_display(value, originals, person_settings={key: (PROJECT, "synthetic-admin")})
+    mixed = copy.deepcopy(value)
+    mixed["cards"][0]["candidate"]["label"] = "mixed rename"
+    with pytest.raises(DecisionRefused):
+        plan_display(mixed, originals, person_settings={key: (PROJECT, ACTOR)})
+
+
+@pytest.mark.parametrize("extra", [dict(label="mixed"), dict(parent=None), dict(accepted_operations={})])
+def test_stage_refuses_a_mixed_settings_step_without_mutating_the_request(extra):
+    from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import _Refused
+    data = stage(original(), {GITHUB: GH})
+    data["updates"][0].update(extra)
+    before = canonical_json_bytes(data)
+    with pytest.raises(_Refused):
+        stage_authorization(data, DIGEST)
+    assert canonical_json_bytes(data) == before
