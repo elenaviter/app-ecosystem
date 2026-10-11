@@ -116,6 +116,9 @@ attempt with its time. `unconfirmed` means no test has run it yet. Times are UTC
 | X2 | holder | managed Card | Renew to a later expiry | Hub `delegated_access_renew` | Saved; the rule permits it (expiry only forward) | unconfirmed |
 | X3 | holder | managed Card | Rename (label only) | `delegated_access_update` with a label | Saved; the rule permits it | unconfirmed |
 | X4 | holder | My | Change Card properties or the access rule | `delegated_access_update` | Refused with a named code, because the project route binds the selection only; nothing changes | unconfirmed |
+| X5 | member | own My | Link my GitHub key to the project | Hub `project_person_github_key_link` (MyCardGithubSection) | The key is linked for this project; if it changes My Card, through the project; GitHub tokens then issue for the person's agents | unconfirmed (found by the W730 guard, 14:26) |
+| X6 | member | own My | Unlink my GitHub key | Hub `project_person_github_key_unlink` | Unlinked; if it changes My Card, through the project; token issue stops | unconfirmed (found by the W730 guard, 14:26) |
+| X7 | member | own My | Set my commit email for the project | Hub `project_person_commit_email_set` | Saved; if it changes My Card, through the project | unconfirmed |
 
 ### Revoking and removing
 
