@@ -5,13 +5,23 @@ SDK Redis/PG or live serving proof; the composed PB gate supplies those inputs.
 """
 import asyncio
 from contextlib import asynccontextmanager
+import contextvars
 
 import pytest
 
 from service_foundation.coordination.durable_decision_log import DecisionRefused
 from connection_hub.delegated_credentials.cards import intent_links
+from connection_hub.delegated_credentials.cards import card_participant, transaction_store
 from connection_hub.delegated_credentials.durable_io import read_json_or_none, write_json_atomic
 from test_w697_intent_links import TXID, _unrecorded, _unrecorded_group
+
+
+async def _cancel_tasks(*tasks):
+    present = [task for task in tasks if task is not None]
+    for task in present:
+        if not task.done():
+            task.cancel()
+    await asyncio.gather(*present, return_exceptions=True)
 
 
 def _controlled_sections(service):
@@ -78,9 +88,7 @@ async def test_loader_waits_for_same_member_recorder_then_uses_ready_manifest(tm
         assert store.current_path(subject_hash=expected[0]["subject_hash"], access_id=expected[0]["access_id"]).exists()
     finally:
         release.set()
-        if signal is not None:
-            signal.cancel()
-        await asyncio.gather(*(task for task in (writer, reader, signal) if task is not None), return_exceptions=True)
+        await _cancel_tasks(writer, reader, signal)
 
 
 @pytest.mark.asyncio
@@ -116,9 +124,7 @@ async def test_waiting_reader_still_refuses_a_crashed_staging_manifest_without_h
         assert await read_json_or_none(source._path(TXID)) == before
     finally:
         release.set()
-        if signal is not None:
-            signal.cancel()
-        await asyncio.gather(*(task for task in (writer, reader, signal) if task is not None), return_exceptions=True)
+        await _cancel_tasks(writer, reader, signal)
 
 
 @pytest.mark.asyncio
@@ -128,6 +134,7 @@ async def test_reader_rechecks_immutable_binding_after_wait_and_hydrates_nothing
     waiting, _ = _controlled_sections(service)
     raw = await read_json_or_none(source._path(TXID))
     reader = None
+    reader_context = contextvars.copy_context()  # Capture before the writer acquires its R operation context.
 
     async def no_hydration(*args, **kwargs):
         raise AssertionError("changed manifest must refuse before Card hydration")
@@ -135,7 +142,7 @@ async def test_reader_rechecks_immutable_binding_after_wait_and_hydrates_nothing
     monkeypatch.setattr(intent_links, "load_version", no_hydration)
     try:
         async with service._card_version_sections([(raw["subject_hash"], raw["access_id"])]):
-            reader = asyncio.create_task(source.load(TXID), name="overlap-reader")
+            reader = asyncio.create_task(source.load(TXID), name="overlap-reader", context=reader_context)
             await asyncio.wait_for(waiting.wait(), 3)
             changed = {**raw, "record_digest": "d" * 64}
             await write_json_atomic(source._path(TXID), changed)
@@ -143,5 +150,96 @@ async def test_reader_rechecks_immutable_binding_after_wait_and_hydrates_nothing
             await reader
         assert await read_json_or_none(source._path(TXID)) == changed
     finally:
-        if reader is not None:
-            await asyncio.gather(reader, return_exceptions=True)
+        await _cancel_tasks(reader)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group", [False, True], ids=["single", "group"])
+@pytest.mark.parametrize("decision", ["committed", "aborted"])
+async def test_overlapping_prepare_observes_exact_retired_decision_without_hydration(
+        tmp_path, monkeypatch, group, decision):
+    setup = _unrecorded_group if group else _unrecorded
+    store, _, source, intent, hub, decisions = await setup(tmp_path)
+    await source.record(intent)
+    waiting, release = asyncio.Event(), asyncio.Event()
+    actual_sections = intent_links.sections
+
+    @asynccontextmanager
+    async def pause_reader(source, keys):
+        if asyncio.current_task().get_name() == "retirement-reader":
+            waiting.set()  # The first manifest read and nonterminal decision read have happened.
+            await release.wait()
+        async with actual_sections(source, keys):
+            yield
+
+    monkeypatch.setattr(intent_links, "sections", pause_reader)
+    reader = asyncio.create_task(hub.prepare(TXID), name="retirement-reader")
+    try:
+        await asyncio.wait_for(waiting.wait(), 3)
+        await hub.prepare(TXID)
+        await decisions.decide(TXID, decision)
+        finished = await hub.finish(TXID, decision)
+        assert not source._path(TXID).exists()
+        receipt_path = transaction_store.receipt_path(store, TXID)
+        receipt_bytes = receipt_path.read_bytes()
+
+        async def no_hydration(*args, **kwargs):
+            raise AssertionError("finished overlap must not hydrate or restage Card bodies")
+
+        monkeypatch.setattr(intent_links, "load_version", no_hydration)
+        release.set()
+        reason = "card_transaction_late_stage" if decision == "committed" else "card_transaction_aborted"
+        with pytest.raises(DecisionRefused, match=reason):
+            await asyncio.wait_for(reader, 3)
+        assert receipt_path.read_bytes() == receipt_bytes
+        assert await hub.finish(TXID, decision) == finished
+        with pytest.raises(DecisionRefused, match=reason):
+            await hub.prepare(TXID)  # Fresh late PREPARE is still refused, not a new successful STAGE.
+    finally:
+        release.set()
+        await _cancel_tasks(reader)
+
+
+@pytest.mark.asyncio
+async def test_retired_overlap_refuses_changed_finished_binding(tmp_path, monkeypatch):
+    store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
+    await source.record(intent)
+    raw = await read_json_or_none(source._path(TXID))
+    await hub.prepare(TXID)
+    await decisions.decide(TXID, "committed")
+    await hub.finish(TXID, "committed")
+    receipt = await transaction_store.read_receipt(store, TXID)
+    receipt["intent_binding"]["record_digest"] = "d" * 64
+    await write_json_atomic(transaction_store.receipt_path(store, TXID), receipt)
+    with pytest.raises(DecisionRefused, match="card_intent_conflict"):
+        await intent_links.load_recorded_links(source, raw, TXID)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["load", "binding"])
+async def test_initial_absence_rechecks_a_manifest_created_before_presence_check(tmp_path, monkeypatch, operation):
+    _, _, source, intent, _, _ = await _unrecorded(tmp_path)
+    await source.record(intent)
+    actual_read, first = read_json_or_none, True
+
+    async def stale_absence(path):
+        nonlocal first
+        if path == source._path(TXID) and first:
+            first = False
+            return None  # It was absent at read time, but the recorder publishes it before stat.
+        return await actual_read(path)
+
+    monkeypatch.setattr(card_participant, "read_json_or_none", stale_absence)
+    monkeypatch.setattr(intent_links, "read_json_or_none", stale_absence)
+    result = await getattr(source, operation)(TXID)
+    assert result.transaction_id == TXID if operation == "load" else result.scope == intent.scope
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["load", "binding"])
+async def test_manifest_json_null_remains_corruption_after_bounded_recheck(tmp_path, operation):
+    _, _, source, intent, _, _ = await _unrecorded(tmp_path)
+    await source.record(intent)
+    await write_json_atomic(source._path(TXID), None)
+    with pytest.raises(DecisionRefused, match="card_intent_invalid"):
+        await getattr(source, operation)(TXID)
