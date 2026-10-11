@@ -167,7 +167,11 @@ def test_the_reviewed_catalog_travels_only_with_an_acceptance():
 
 
 def test_a_my_card_retry_under_another_reviewed_catalog_is_a_new_request(monkeypatch):
-    """CodeApp 12:51Z: a Save refused for a moved catalog, then saved again after reload, must not reuse the id."""
+    """Defensive: a My Card Save without a route id derives one that includes the reviewed catalog.
+
+    Not a demonstrated failure (CodeApp's 12:53Z real-hop probe showed the retry commits either way); the
+    derived id simply distinguishes Saves reviewed under different catalogs.
+    """
     host = Host()
     svc = service(host)
     svc._card_coordinator = object()

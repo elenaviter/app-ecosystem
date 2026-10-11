@@ -278,13 +278,15 @@ invitation's Control, a project agent Card, the project's Control (P), and
 - **"Accept update" (W723).** When the person ticked "Accept update" for
   catalog rows that changed since the Card accepted them, the body also carries
   `accepted_operations: {resource: [operation, ...]}` (canonical, sorted) and,
-  with it, `expected_catalog_version`: the catalog the person reviewed. The
-  host passes both to the Hub's STAGE beside the selection. The Hub applies
+  when the editor provides it, `expected_catalog_version`: the catalog the
+  person reviewed. The host passes both to the Hub's STAGE beside the
+  selection. The Hub applies
   them with the same `next_resource_acceptance` the direct path uses, so the
   committed revision records the accepted rows. An acceptance alone is a real
-  edit, and `selection` may then be empty. If the reviewed catalog is no longer
-  the active one, the Hub refuses `stage_catalog_moved` and writes nothing: an
-  acceptance never applies to a catalog the person did not see. A body without
+  edit, and `selection` may then be empty. When `expected_catalog_version` is
+  given and is no longer the active catalog, the Hub refuses
+  `stage_catalog_moved` and writes nothing; an acceptance sent without it is
+  applied to the active catalog. A body without
   an acceptance carries neither field and is byte-identical to before.
 - **A person's own My Card (W724).** `target.kind` is `person_my` and
   `principal_key` is the acting person's own `user:` key. Any other person is
