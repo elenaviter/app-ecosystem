@@ -2585,9 +2585,10 @@ class AutomationAccessService:
     async def _forward_person_control_edit(
         self, user: Mapping[str, Any], *, project_ref: str, target_subject: str, request_id: str,
         selection: Mapping[str, Any], expected_card_revision: int | None, properties: Any,
-        composition_mode: str | None,
+        composition_mode: str | None, accepted_operations: Mapping[str, Any] | None = None,
+        expected_catalog_version: str | None = None,
     ) -> dict[str, Any] | None:
-        """The managed person-Control edit, made by the project's own transaction."""
+        """The managed person-Control edit, made by the project's own transaction (W723: with its acceptance)."""
         from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
         forwarder = self._managed_card_edit_forwarder(project_ref)
         actor_subject = _subject_from_user(user)
@@ -2622,7 +2623,8 @@ class AutomationAccessService:
         try:
             body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
                 request_id=request_id, kind="person_control", principal_key="user:" + _clean(target_subject),
-                original_revision=expected_card_revision, selection=selection)
+                original_revision=expected_card_revision, selection=selection,
+                accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version)
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
@@ -2665,7 +2667,9 @@ class AutomationAccessService:
             body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
                 request_id=request_id, kind=kind, principal_key="card:" + record.access_id,
                 original_revision=revision, selection=selection,
-                access_id=record.access_id, subject_hash=subject_hash_for(record.grantor_subject))
+                access_id=record.access_id, subject_hash=subject_hash_for(record.grantor_subject),
+                accepted_operations=changes.get("accepted_operations"),
+                expected_catalog_version=changes.get("expected_catalog_version"))
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
@@ -2698,6 +2702,60 @@ class AutomationAccessService:
             request_id = "project-control-save:" + digest[:48]
         return await self._forward_agent_card_edit(user, record=record, project_ref=_clean(record.issuer_ref),
                                                    request_id=request_id, changes=changes, kind="project_control")
+
+    async def _forward_own_my_card_edit(
+        self, user: Mapping[str, Any], *, record: AutomationAccessRecord, request_id: str | None,
+        expected_card_revision: int | None, selection: Mapping[str, Any], properties: Any,
+        composition_mode: str | None, label: str | None, accepted_operations: Mapping[str, Any] | None,
+        expected_catalog_version: str | None = None,
+    ) -> dict[str, Any] | None:
+        """W724: a person's Save of their OWN project My Card, made by the project's own transaction.
+
+        Live 11 Oct (W705): with Card transactions enabled, W578 refuses every direct authority change of a
+        bound My Card, and no project route existed, so a person could not change their own My Card at all.
+        None when this is not a managed My Card, Card transactions are off, or no forwarder serves its
+        project: the caller then takes its ordinary path (and W578 still refuses a direct authority change).
+        """
+        if self._managed_direct_write_refused() is None:
+            return None
+        from .managed_card_edit_forward import managed_my_card_owner
+        owner = managed_my_card_owner(card_authority_from_record(record))
+        if owner is None:
+            return None
+        scope, person = owner
+        forwarder = self._managed_card_edit_forwarder(scope)
+        actor_subject = _subject_from_user(user)
+        if forwarder is None or not actor_subject or person != actor_subject:
+            return None
+        unchanged = (("properties", dict(record.properties or {}), properties),
+                     ("composition_mode", record.composition_mode or "and",
+                      None if composition_mode is None else (composition_mode or "and")),
+                     ("label", record.label, label))
+        if any(value is not None and (dict(value) if isinstance(value, Mapping) else value) != stored
+               for _, stored, value in unchanged):
+            return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
+                    "message": "Only the Card's selection is changed by this edit. Nothing was saved."}
+        if type(expected_card_revision) is not int:
+            return {"ok": False, "error": "managed_card_edit_revision_required", "status": 409,
+                    "message": "Reload the Card and save again. Nothing was saved."}
+        if not request_id:
+            digest = hashlib.sha256(json.dumps(
+                [actor_subject, record.access_id, expected_card_revision, selection, accepted_operations or {}],
+                sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+            request_id = "my-card-save:" + digest[:48]
+        from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
+        try:
+            body = managed_card_edit_body(actor_subject=actor_subject, project_ref=scope,
+                request_id=request_id, kind="person_my", principal_key="user:" + actor_subject,
+                original_revision=expected_card_revision, selection=selection,
+                accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version)
+            outcome = await forwarder.forward(body)
+        except ManagedCardEditError as exc:
+            return exc.to_dict()
+        return {"ok": outcome["state"] == "committed", "managed_card_edit": outcome,
+                **({} if outcome["state"] == "committed" else {
+                    "error": "managed_card_edit_" + outcome["state"], "status": 409,
+                    "message": "The project did not save this change. Your draft is kept."})}
 
     def bind_managed_control_scopes(self, prefixes: Iterable[str]) -> None:
         """W578: the scopes in which a configured coordinator plans a project's Control Card (P).
@@ -5741,8 +5799,20 @@ class AutomationAccessService:
                 changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
                          "named_service_operations": named_service_operations, "account_scope": account_scope,
                          "properties": properties, "composition_mode": composition_mode, "label": label,
-                         "expected_card_revision": expected_card_revision})
+                         "expected_card_revision": expected_card_revision,
+                         "accepted_operations": accepted_operations,
+                         "expected_catalog_version": expected_catalog_version})
             return forwarded if forwarded is not None else refused
+        own_my = await self._forward_own_my_card_edit(
+            user, record=existing, request_id=request_id, expected_card_revision=expected_card_revision,
+            selection={field: value for field, value in (
+                ("resource_grants", resource_grants), ("resource_operations", resource_operations),
+                ("named_service_operations", named_service_operations), ("account_scope", account_scope),
+            ) if value is not None},
+            properties=properties, composition_mode=composition_mode, label=label,
+            accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version)
+        if own_my is not None:
+            return own_my
         try:
             descriptor_marker = descriptor_control(existing.properties)
         except AgentCapabilityPolicyError as exc:
@@ -7433,7 +7503,9 @@ class AutomationAccessService:
                 changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
                          "named_service_operations": named_service_operations, "account_scope": account_scope,
                          "properties": properties, "composition_mode": composition_mode, "label": label,
-                         "expected_card_revision": expected_card_revision})
+                         "expected_card_revision": expected_card_revision,
+                         "accepted_operations": accepted_operations,
+                         "expected_catalog_version": expected_catalog_version})
             return forwarded if forwarded is not None else refused
         updated = await self.update_access(
             user,
@@ -7628,9 +7700,12 @@ class AutomationAccessService:
                 changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
                          "named_service_operations": named_service_operations, "account_scope": account_scope,
                          "properties": properties, "composition_mode": composition_mode, "label": label,
-                         "expected_card_revision": expected_card_revision})
+                         "expected_card_revision": expected_card_revision,
+                         "accepted_operations": accepted_operations,
+                         "expected_catalog_version": expected_catalog_version})
             return refused if forwarded is None else forwarded
         if refused is not None:
+            # W723 (live W705, 11 Oct): the person's "Accept update" decisions travel with the selection.
             forwarded = await self._forward_person_control_edit(
                 user, project_ref=project_ref, target_subject=target_subject, request_id=request_id,
                 selection={field: value for field, value in (
@@ -7638,7 +7713,8 @@ class AutomationAccessService:
                     ("named_service_operations", named_service_operations), ("account_scope", account_scope),
                 ) if value is not None},
                 expected_card_revision=expected_card_revision, properties=properties,
-                composition_mode=composition_mode)
+                composition_mode=composition_mode, accepted_operations=accepted_operations,
+                expected_catalog_version=expected_catalog_version)
             if forwarded is None:
                 return refused
             return await self._with_current_person_control(

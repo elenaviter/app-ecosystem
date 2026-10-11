@@ -430,6 +430,8 @@ class CardVersionOperation:
                 raise CardVersionRefused(code)
             if code == "card_plan_already_applied":
                 raise _AlreadyApplied
+            if code == "card_plan_catalog_moved":  # W723: the reviewed catalog is no longer the active one
+                raise CardVersionRefused("stage_catalog_moved")
             raise CardVersionRefused("storage_unavailable" if code in _UNAVAILABLE else "edit_invalid")
         plan = planned["plan"]
         catalog = data["catalog"]

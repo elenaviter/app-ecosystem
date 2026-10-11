@@ -37,7 +37,7 @@ PROTOCOL = "managed-card-edit.v1"
 OPERATION = "project_card_edit"
 SCHEMA = "managed-card-edit.v1"
 OUTCOME_SCHEMA = "managed-card-edit-outcome.v1"
-TARGET_KINDS = frozenset({"person_control", "agent_card", "invitation_control", "project_control"})
+TARGET_KINDS = frozenset({"person_control", "person_my", "agent_card", "invitation_control", "project_control"})
 SELECTION_FIELDS = ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
 
 BundleCall = Callable[..., Awaitable[Any]]
@@ -55,35 +55,74 @@ class ManagedCardEditError(ValueError):
                 "message": self.message or "The project did not save this Card change."}
 
 
+def _accepted_part(value: Any) -> dict[str, list[str]]:
+    """W723: the person's "Accept update" decisions, ``{resource: [operation, ...]}``, canonical; {} for none."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+    out: dict[str, list[str]] = {}
+    for resource, names in value.items():
+        if (type(resource) is not str or not resource or isinstance(names, (str, bytes))
+                or not hasattr(names, "__iter__")):
+            raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+        listed = list(names)
+        if not listed or any(type(name) is not str or not name for name in listed):
+            raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+        out[resource] = sorted(set(listed))
+    return dict(sorted(out.items()))
+
+
 def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: str, kind: str,
                            principal_key: str, original_revision: int, selection: Mapping[str, Any],
-                           access_id: str | None = None, subject_hash: str | None = None) -> dict:
-    """The exact unsigned request; nothing in it comes from the browser except the edit itself."""
+                           access_id: str | None = None, subject_hash: str | None = None,
+                           accepted_operations: Mapping[str, Any] | None = None,
+                           expected_catalog_version: str | None = None) -> dict:
+    """The exact unsigned request; nothing in it comes from the browser except the edit itself.
+
+    W723: ``accepted_operations`` travels only when the person ticked "Accept update", so every body
+    without it is byte-identical to before. An acceptance alone is a real edit: ``selection`` may then
+    be empty. W724: ``person_my`` is the person's own My Card (``principal_key`` is their own ``user:``).
+    """
     for value in (actor_subject, project_ref, request_id, principal_key):
         if type(value) is not str or not 0 < len(value) <= 256 or value != value.strip() or not value.isprintable():
             raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+    accepted = _accepted_part(accepted_operations)
+    if not isinstance(selection, Mapping) or (not selection and not accepted):
+        raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+    if kind == "person_my" and principal_key != "user:" + actor_subject:
+        raise ManagedCardEditError("managed_card_edit_request_invalid", 400)  # only one's own My Card
+    extra = {"accepted_operations": accepted} if accepted else {}
+    if accepted and expected_catalog_version is not None:
+        # The catalog the person reviewed: an acceptance is never applied to a catalog they did not see.
+        if (type(expected_catalog_version) is not str or not 0 < len(expected_catalog_version) <= 256
+                or expected_catalog_version != expected_catalog_version.strip()):
+            raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+        extra["expected_catalog_version"] = expected_catalog_version
     if kind in {"agent_card", "invitation_control", "project_control"}:
         # The host cannot read an agent Card or the project Control (P): it names
         # the Card's own storage coordinates, and the Hub's planner keeps every
         # field not sent.
         if (principal_key != "card:" + str(access_id) or type(subject_hash) is not str or not subject_hash
                 or type(original_revision) is not int or original_revision < 1 or not isinstance(selection, Mapping)
-                or not selection or set(selection) - set(SELECTION_FIELDS)
+                or set(selection) - set(SELECTION_FIELDS)
                 or any(not isinstance(value, Mapping) for value in selection.values())):
             raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
         return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref, "request_id": request_id,
                 "target": {"kind": kind, "access_id": access_id, "subject_hash": subject_hash,
                            "original_revision": original_revision},
-                "selection": {field: dict(selection[field]) for field in SELECTION_FIELDS if field in selection}}
+                "selection": {field: dict(selection[field]) for field in SELECTION_FIELDS if field in selection},
+                **extra}
     # Only the fields the person changed travel; the host keeps every other
     # field of the revision-fenced original, never an empty default.
     if (kind not in TARGET_KINDS or type(original_revision) is not int or original_revision < 1
-            or not isinstance(selection, Mapping) or not selection or set(selection) - set(SELECTION_FIELDS)
+            or set(selection) - set(SELECTION_FIELDS)
             or any(not isinstance(value, Mapping) for value in selection.values())):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref, "request_id": request_id,
             "target": {"kind": kind, "principal_key": principal_key, "original_revision": original_revision},
-            "selection": {field: dict(selection[field]) for field in SELECTION_FIELDS if field in selection}}
+            "selection": {field: dict(selection[field]) for field in SELECTION_FIELDS if field in selection},
+            **extra}
 
 
 def managed_card_location(kind: str, *, project_ref: str, ref: str) -> tuple[str, str]:
@@ -103,6 +142,19 @@ def managed_card_location(kind: str, *, project_ref: str, ref: str) -> tuple[str
     except ValueError as exc:  # both identity errors are ValueErrors; an invalid identity names no Card
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400) from exc
     raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+
+
+def managed_my_card_owner(authority: Any) -> tuple[str, str] | None:
+    """W724: ``(project_ref, person_subject)`` when ``authority`` is a person's project My Card, else None.
+
+    The project-domain identity stays here, outside the generic Card core.
+    """
+    from .project_identity_lifecycle import ProjectIdentityLifecycleError, ProjectPersonCardIdentity
+    try:
+        identity = ProjectPersonCardIdentity.from_my_card(authority)
+    except (ProjectIdentityLifecycleError, ValueError):
+        return None
+    return identity.project_ref, identity.person_subject
 
 
 def sign_managed_card_edit(body: Mapping[str, Any], *, bundle_id: str, signer_id: str, secret: str,

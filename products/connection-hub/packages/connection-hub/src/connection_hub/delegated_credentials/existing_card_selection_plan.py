@@ -88,6 +88,18 @@ def _target_identity(original: CardAuthority, project_ref: str, target_subject: 
     raise _refuse("card_plan_update_scope_invalid")
 
 
+def _accepted(value: Any) -> dict[str, list[str]] | None:
+    """W723: ``{resource: [operation, ...]}`` exactly, or nothing; anything else refuses by name."""
+    if value is None:
+        return None
+    if (not isinstance(value, Mapping) or any(
+            type(resource) is not str or not resource or not isinstance(names, (list, tuple))
+            or any(type(name) is not str or not name for name in names)
+            for resource, names in value.items())):
+        raise _refuse("card_plan_accepted_operations_invalid")
+    return {resource: list(names) for resource, names in value.items()}
+
+
 async def build_existing_card_selection_update(
     host: Any,
     *,
@@ -100,8 +112,13 @@ async def build_existing_card_selection_update(
     actor_subject: str,
     request_id: str,
     now: int,
+    accepted_operations: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build one exact C/My update from a host-authorized selection, without a write."""
+    """Build one exact C/My update from a host-authorized selection, without a write.
+
+    W723: ``accepted_operations`` names the changed catalog rows the person ticked "Accept update"
+    for; the same ``next_resource_acceptance`` the direct path uses records them.
+    """
     scope = _required(project_ref, "card_plan_update_scope_invalid")
     target = _required(target_subject, "card_plan_update_scope_invalid")
     actor = _required(actor_subject, "card_plan_actor_invalid")
@@ -152,6 +169,7 @@ async def build_existing_card_selection_update(
         catalog_version=catalog_version,
         selected_operations=resolved.resource_operations,
         previous=original.resource_acceptance,
+        accepted_operations=_accepted(accepted_operations),
     )
     selected = _with_selection(
         original, resolved=resolved, catalog_version=catalog_version,
