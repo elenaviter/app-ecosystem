@@ -261,6 +261,9 @@ MANAGED_REVOKE_REASONS = {
     "agent": ("managed_card_revoke_requires_unlink",
               "This agent's Card is linked to a project. Unlink the agent from the project in Problem Board "
               "first; its own Card can then be revoked here. Nothing was changed."),
+    "invitation_control": ("managed_card_revoke_requires_invitation_withdraw",
+                           "This is a pending invitation's Control Card. Withdraw the invitation in Problem Board "
+                           "(People > Invitations). Nothing was changed."),
     "project_control": ("managed_card_revoke_project_control_unsupported",
                         "A project's Control Card cannot be revoked from here; no project route ends it yet. "
                         "Nothing was changed."),
@@ -271,7 +274,12 @@ MANAGED_REVOKE_REASONS = {
 
 
 def managed_revoke_kind(record: Any, *, authority_from_record: Callable[[Any], Any], agent_source: str) -> str:
-    """Which managed kind a refused revoke ends: the project Control, a person's My Card, an agent Card, or other."""
+    """Which managed kind a refused revoke ends: the project Control, a pending invitation's Control, a person's
+    My Card, an agent Card, or other."""
+    from .controls.project_invitation import PROJECT_INVITATION_CONTROL_ISSUER_KIND
+
+    if str(getattr(record, "issuer_kind", "") or "").strip() == PROJECT_INVITATION_CONTROL_ISSUER_KIND:
+        return "invitation_control"
     if str(getattr(record, "issuer_kind", "") or "").strip() == "application" \
             and getattr(record, "control_card", None) is None:
         return "project_control"

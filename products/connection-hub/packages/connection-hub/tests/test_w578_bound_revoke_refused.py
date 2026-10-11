@@ -88,3 +88,23 @@ async def test_a_managed_project_control_revoke_refusal_says_no_route_ends_it_ye
     result = await service.revoke_access(USER, access_id="card-p")
     assert result["error"] == "card_transactions_direct_write_refused"
     assert result["reason"] == "managed_card_revoke_project_control_unsupported"
+
+
+def test_each_managed_kind_names_its_project_action():
+    """W729: the reason table covers every managed kind, and each message says nothing changed."""
+    from connection_hub.delegated_credentials.managed_card_edit_forward import (
+        MANAGED_REVOKE_REASONS, managed_revoke_kind)
+
+    def kind(**fields):
+        record = SimpleNamespace(**{"issuer_kind": "", "control_card": object(), "source": "", **fields})
+        return managed_revoke_kind(record, authority_from_record=lambda r: r, agent_source="agent")
+
+    assert kind(issuer_kind="project-invitation", control_card=None) == "invitation_control"
+    assert kind(issuer_kind="application", control_card=None) == "project_control"
+    assert kind(source="agent") == "agent"
+    assert kind() == "managed"
+    assert {reason for reason, _ in MANAGED_REVOKE_REASONS.values()} == {
+        "managed_card_revoke_requires_project_removal", "managed_card_revoke_requires_unlink",
+        "managed_card_revoke_requires_invitation_withdraw", "managed_card_revoke_project_control_unsupported",
+        "managed_card_revoke_requires_project"}
+    assert all(message.endswith("Nothing was changed.") for _, message in MANAGED_REVOKE_REASONS.values())
