@@ -697,7 +697,22 @@ class HubCardParticipant:
                     decision=decision, subject_hash=lead["subject_hash"], access_id=lead["access_id"])
             finished = await retire_intent(source, transaction_id, decision)
         else:
-            result = await self._finish_loaded(transaction_id, decision)
+            try:
+                result = await self._finish_loaded(transaction_id, decision)
+            except DecisionRefused as exc:
+                # Another FINISH may retire this ready linked intent while
+                # its load waits. Replay only the same completed duties;
+                # PREPARE keeps the loader's late-stage/aborted refusal.
+                if (not is_link_record(raw) or raw["status"] != "ready"
+                        or str(exc) not in ("card_transaction_late_stage", "card_transaction_aborted")):
+                    raise
+                ended = await terminal(source, transaction_id)
+                binding = {key: raw[key] for key in ("authority", "scope", "record_digest")}
+                if (ended is None or ended.get("intent_finished") is not True
+                        or ended["state"] != decision or ended.get("intent_digest") != record.intent.digest
+                        or ended.get("intent_binding") != binding):
+                    raise
+                result = None
             if raw is None:
                 return result  # genuinely never recorded: no binding is inferred
             finished = await retire_intent(source, transaction_id, decision)

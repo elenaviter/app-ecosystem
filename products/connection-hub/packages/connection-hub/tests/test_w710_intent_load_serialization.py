@@ -244,6 +244,44 @@ async def test_overlapping_finish_replays_exact_finished_receipt_without_hydrati
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mismatch", ["unfinished", "decision", "intent_digest", "binding", "unknown", "absent"])
+async def test_finish_does_not_promote_a_refusal_without_exact_finished_metadata(tmp_path, monkeypatch, mismatch):
+    _, _, source, intent, hub, decisions = await _unrecorded(tmp_path)
+    await source.record(intent)
+    await hub.prepare(TXID)
+    await decisions.decide(TXID, "committed")
+    raw = await read_json_or_none(source._path(TXID))
+    ended = {"state": "committed", "intent_finished": True, "intent_digest": intent.intent_digest,
+             "intent_binding": {key: raw[key] for key in ("authority", "scope", "record_digest")}}
+    if mismatch == "unfinished":
+        ended["intent_finished"] = False
+    elif mismatch == "decision":
+        ended["state"] = "aborted"
+    elif mismatch == "intent_digest":
+        ended["intent_digest"] = "d" * 64
+    elif mismatch == "binding":
+        ended["intent_binding"]["scope"] = "another-scope"
+    elif mismatch == "absent":
+        ended = None
+    reads = 0
+
+    async def terminal_seam(*args):
+        nonlocal reads
+        reads += 1
+        return None if reads == 1 else ended
+
+    async def refusal_seam(*args):
+        raise DecisionRefused("card_intent_unknown" if mismatch == "unknown" else "card_transaction_late_stage")
+
+    monkeypatch.setattr(intent_links, "terminal", terminal_seam)
+    monkeypatch.setattr(hub, "_finish_loaded", refusal_seam)
+    reason = "card_intent_unknown" if mismatch == "unknown" else "card_transaction_late_stage"
+    with pytest.raises(DecisionRefused, match=reason):
+        await hub.finish(TXID, "committed")
+    assert await read_json_or_none(source._path(TXID)) == raw
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("field", ["record_digest", "authority", "scope"])
 async def test_retired_overlap_refuses_changed_finished_binding(tmp_path, field):
     store, _, source, intent, hub, decisions = await _unrecorded(tmp_path)

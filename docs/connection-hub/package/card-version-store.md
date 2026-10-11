@@ -213,6 +213,13 @@ removes a current version. A failed finish or cleanup leaves retry evidence.
 Terminal FINISH retries use the receipt without Card hydration; signed
 retries and page cursors require its exact authority/scope binding. A legacy
 receipt whose intent is gone and whose binding is absent fails closed.
+If a duplicate FINISH saw a ready linked manifest before waiting, then finds
+it retired, only the known late-stage/aborted loader refusal can be replayed:
+the finished terminal receipt must match the authoritative decision and
+intent digest plus that manifest's exact authority, scope and record digest.
+It then follows the same idempotent retirement/receipt path, without loading
+Card bodies or repeating service duties. Missing, unfinished, mismatched or
+other refusal evidence is never promoted to success. PREPARE is unchanged.
 Exact terminal record replay writes nothing; late STAGE is refused.
 
 ## Hub-local operations in flight
