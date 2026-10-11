@@ -2740,7 +2740,8 @@ class AutomationAccessService:
                     "message": "Reload the Card and save again. Nothing was saved."}
         if not request_id:
             digest = hashlib.sha256(json.dumps(
-                [actor_subject, record.access_id, expected_card_revision, selection, accepted_operations or {}],
+                [actor_subject, record.access_id, expected_card_revision, selection, accepted_operations or {},
+                 expected_catalog_version or ""],
                 sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
             request_id = "my-card-save:" + digest[:48]
         from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body

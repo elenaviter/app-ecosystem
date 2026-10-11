@@ -164,3 +164,16 @@ def test_the_reviewed_catalog_travels_only_with_an_acceptance():
     with_acceptance, without = (body for _, _, body in host.calls)
     assert with_acceptance["expected_catalog_version"] == "delegated_catalog_x"
     assert "expected_catalog_version" not in without and "accepted_operations" not in without
+
+
+def test_a_my_card_retry_under_another_reviewed_catalog_is_a_new_request(monkeypatch):
+    """CodeApp 12:51Z: a Save refused for a moved catalog, then saved again after reload, must not reuse the id."""
+    host = Host()
+    svc = service(host)
+    svc._card_coordinator = object()
+    common = dict(request_id=None, accepted_operations={"svc": ["a"]})
+    _my_route(monkeypatch, svc, expected_catalog_version="delegated_catalog_old", **common)
+    _my_route(monkeypatch, svc, expected_catalog_version="delegated_catalog_new", **common)
+    _my_route(monkeypatch, svc, expected_catalog_version="delegated_catalog_new", **common)
+    first, second, same = (body["request_id"] for _, _, body in host.calls)
+    assert first != second and second == same
