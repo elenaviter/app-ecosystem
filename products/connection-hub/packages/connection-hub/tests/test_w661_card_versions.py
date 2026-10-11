@@ -318,6 +318,8 @@ async def test_every_write_is_fsynced_and_the_marker_holds_links_only(tmp_path, 
     assert len(synced) >= 6  # revision marker, revision, txn marker: each file and its directory
     raw = tx.card_version_marker_path(store, TXN).read_text(encoding="utf-8")
     marker = json.loads(raw)
+    from connection_hub.delegated_credentials.cards.store import MARKER_ROW_ERA_KEY
+    marker.pop(MARKER_ROW_ERA_KEY, None)  # W700 P: the hint's row-era tag (rows on), not Card data
     assert set(marker) == {"schema", "txn", "state", "request_digest", "request_id", "actor", "binding", "at",
                            "catalog", "members", "reads", "effects", "effect_outcomes"}
     assert set(marker["members"][0]) == {"subject_hash", "access_id", "base_version", "observed_version",

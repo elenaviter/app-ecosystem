@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import uuid
 
@@ -171,3 +172,69 @@ async def test_concurrent_replicas_bootstrap_the_schema_once_without_a_race(tmp_
         assert await replicas[0].is_activated() is False
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_a_late_marker_hint_never_resurrects_a_deleted_row(tmp_path, monkeypatch):
+    """Infra's HOLD on 24fdd314: A CASes its marker row to published and pauses before the file hint; B (whose lock
+    A has lost) reads the row and deletes it, row and hint; A then writes the hint. The tagged late hint reads as
+    absent, lock-free or locked; it is never adopted, and a locked reader removes it."""
+    from connection_hub.delegated_credentials.cards import store as store_module
+    from connection_hub.delegated_credentials.cards.store import MARKER_ROW_ERA_KEY
+
+    txn = "w661-txn-" + "7" * 32
+    async with _world(tmp_path) as (store, rows, lock):
+        def held(resource):
+            return lock(lock_path=store.root / f"{resource}.lock", resource_id=resource, operation="test",
+                        wait_seconds=5.0)
+
+        async with held("card-version-txn:" + txn):
+            assert await store.read_marker_document(txn) is None
+            await store.write_marker_document(txn, {"txn": txn, "state": "staged"})
+        real_write, a_paused, b_done = store_module.write_json_atomic, asyncio.Event(), asyncio.Event()
+
+        async def pausing(path, payload):
+            if path == store.card_version_marker_path(txn) and payload.get("state") == "published":
+                a_paused.set()
+                await b_done.wait()  # A stalls between its row CAS and its hint write
+            await real_write(path, payload)
+
+        monkeypatch.setattr(store_module, "write_json_atomic", pausing)
+
+        async def stale_a():
+            async with held("card-version-txn:" + txn):
+                assert (await store.read_marker_document(txn))["state"] == "staged"
+                await store.write_marker_document(txn, {"txn": txn, "state": "published"})
+
+        async def live_b():
+            await a_paused.wait()
+            async with held("card-version-txn:lost-" + txn):  # B holds the lock A has lost
+                assert (await store.read_marker_document(txn))["state"] == "published"
+                await store.delete_marker_document(txn)
+            b_done.set()
+
+        await asyncio.gather(stale_a(), live_b())
+        late = store.card_version_marker_path(txn)
+        assert late.exists() and json.loads(late.read_text())[MARKER_ROW_ERA_KEY] is True  # the late hint landed
+        assert await rows.read_marker(txn) == (None, None)
+        assert await store.read_marker_document(txn) is None  # lock-free: absent, not the late hint
+        async with held("card-version-txn:" + txn):
+            assert await store.read_marker_document(txn) is None  # locked: absent, never adopted
+        assert not late.exists()  # the orphan hint was removed by the locked reader
+        assert await rows.read_marker(txn) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_a_pre_cutover_marker_file_is_still_adopted_under_the_lock(tmp_path):
+    """The control for the late-hint fix: an UNTAGGED marker file (written before activation) is adopted."""
+    from connection_hub.delegated_credentials.durable_io import write_json_atomic
+
+    txn = "w661-txn-" + "8" * 32
+    async with _world(tmp_path) as (store, rows, lock):
+        await write_json_atomic(store.card_version_marker_path(txn), {"txn": txn, "state": "staged"})
+        assert (await store.read_marker_document(txn))["state"] == "staged"  # lock-free: the hint, nothing created
+        assert await rows.read_marker(txn) == (None, None)
+        async with lock(lock_path=store.root / "t.lock", resource_id="card-version-txn:" + txn, operation="test",
+                        wait_seconds=5.0):
+            assert (await store.read_marker_document(txn))["state"] == "staged"
+        assert (await rows.read_marker(txn))[0] == {"txn": txn, "state": "staged"}

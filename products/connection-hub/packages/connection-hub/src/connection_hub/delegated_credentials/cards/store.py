@@ -118,6 +118,17 @@ class DelegatedCardStore(Protocol):
     ) -> CardAuthority | None: ...
 
 
+# W700 P: a card-version marker hint written while the rows are on carries this key (Infra's late-hint HOLD).
+MARKER_ROW_ERA_KEY = "_card_rows_era"
+
+
+def _without_era(document):
+    if isinstance(document, dict) and MARKER_ROW_ERA_KEY in document:
+        document = {key: value for key, value in document.items() if key != MARKER_ROW_ERA_KEY}
+    return document
+
+
+
 class BundleStorageDelegatedCardStore:
     """``DelegatedCardStore`` over a shared bundle-storage root."""
 
@@ -206,11 +217,16 @@ class BundleStorageDelegatedCardStore:
     async def read_marker_document(self, txn: str) -> dict | None:
         """The card-version txn marker (R1). b-core: the row decides once it exists; a marker file written before
         the cutover is adopted only by an operation that holds a Card lock (every marker op does); a lock-free
-        reader reads the file and creates nothing."""
+        reader reads the file and creates nothing.
+
+        Infra's late-hint HOLD (24fdd314): every hint written while the rows are on carries MARKER_ROW_ERA_KEY.
+        A tagged hint with no row is a hint of a row that was DELETED (a stale writer's late file write after a
+        conditional delete): it reads as absent, is never adopted, and a locked reader removes it. Only an
+        untagged hint, written before the cutover, can be adopted. No per-txn tombstone row is kept."""
         path = self.card_version_marker_path(txn)
         rows = self.card_rows
         if rows is None:
-            return await read_json_or_none(path)
+            return _without_era(await read_json_or_none(path))
         from .locks import current_lock_session
 
         document, _revision = await rows.read_marker(txn)
@@ -219,16 +235,24 @@ class BundleStorageDelegatedCardStore:
             if hint is None:
                 return None
             session = current_lock_session()
-            if session is None or not session.resources:
+            locked = session is not None and bool(session.resources)
+            if isinstance(hint, dict) and hint.get(MARKER_ROW_ERA_KEY) is True:
+                if locked:
+                    await unlink_guarded_async(path)  # an orphan hint of a deleted row: bounded cleanup
+                return None
+            if not locked:
                 return hint
             document, _revision = await rows.adopt_marker(txn, hint)
         return document
 
     async def write_marker_document(self, txn: str, document: dict) -> None:
-        """R1: the marker's every transition is a CAS on its row, then the file hint."""
+        """R1: the marker's every transition is a CAS on its row, then the file hint (tagged as row-era when the
+        rows are on, so a late hint can never resurrect a deleted row)."""
+        hint = dict(document)
         if self.card_rows is not None:
             await self.card_rows.write_marker(txn, dict(document))
-        await write_json_atomic(self.card_version_marker_path(txn), dict(document))
+            hint[MARKER_ROW_ERA_KEY] = True
+        await write_json_atomic(self.card_version_marker_path(txn), hint)
 
     async def delete_marker_document(self, txn: str) -> None:
         """R1: removal is a CAS too (a stale deleter never removes a newer state), then the file hint."""

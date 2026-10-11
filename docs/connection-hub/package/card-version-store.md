@@ -274,6 +274,10 @@ reacquired while old code still acts, so durable effects need a resource-enforce
   one (C2). Without a row, the Card was not written since activation:
   - a writer holding that Card's lock adopts the file into the row (first touch, no scan);
   - a reader without the lock reads the file and creates nothing.
+  - A marker file written while the rows are on carries `_card_rows_era: true`. A tagged hint with NO row is
+    the late file write of a stale writer after the row was deleted: it reads as absent, is never adopted, and
+    a reader holding the Card lock removes it (Infra's late-hint case). Only an untagged file, written before
+    the cutover, is adopted. No per-txn tombstone row is kept.
 - **The operation context.** `locks.row_fenced_lock` wraps whatever mutation lock serializes the normal
   case: the container-local flock (lock_backend local) or the per-Card KDCube Redis cluster lock
   (option R, lock_backend "redis"); `hub_card_mutation_lock` and `hub_redis_card_mutation_lock` both wrap
