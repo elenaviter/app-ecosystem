@@ -17,6 +17,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
+from connection_hub.delegated_credentials.cards import store as store_module
 from connection_hub.delegated_credentials.cards import update_store
 from connection_hub.delegated_credentials.cards.cache import DelegatedCardRuntimeCache
 from connection_hub.delegated_credentials.cards.model import CardAuthority, NamedServiceSelection
@@ -88,24 +89,29 @@ def _die():
 def _install_kill(stage, store, query):
     if stage not in STAGES:
         raise ValueError("fixture_crash_stage_invalid")
-    write = update_store.write_json_atomic
     transaction = query.transaction_id(ACTOR)
 
-    async def write_then_die(path, payload):
-        await write(path, payload)
-        if stage == "intent" and path == update_store.active_path(store, transaction):
-            _die()
-        if stage == "sidecar" and path.name.endswith(".issuer-update.json"):
-            _die()
-        if stage == "pointer" and payload.get("schema") == update_store.UPDATE_POINTER_SCHEMA:
-            _die()
-        if path == update_store.receipt_path(store, transaction) and payload.get("state") == "committed":
-            if stage == "committed" and payload["serving_state"] == "pending":
+    def write_then_die(write):
+        async def written(path, payload):
+            await write(path, payload)
+            if stage == "intent" and path == update_store.active_path(store, transaction):
                 _die()
-            if stage == "complete" and payload["serving_state"] == "complete":
+            if stage == "sidecar" and path.name.endswith(".issuer-update.json"):
                 _die()
+            if stage == "pointer" and payload.get("schema") == update_store.UPDATE_POINTER_SCHEMA:
+                _die()
+            if path == update_store.receipt_path(store, transaction) and payload.get("state") == "committed":
+                if stage == "committed" and payload["serving_state"] == "pending":
+                    _die()
+                if stage == "complete" and payload["serving_state"] == "complete":
+                    _die()
+        return written
 
-    update_store.write_json_atomic = write_then_die
+    # W700 P (b-core): the Card pointer is written by the store (store.write_pointer_document), so the pointer
+    # write goes through the store module's write_json_atomic; every other file here through update_store's.
+    # Each write passes exactly one of the two, so each stage still dies right after its REAL write.
+    update_store.write_json_atomic = write_then_die(update_store.write_json_atomic)
+    store_module.write_json_atomic = write_then_die(store_module.write_json_atomic)
     if stage == "revision":
         write_revision = store.write_revision
 
