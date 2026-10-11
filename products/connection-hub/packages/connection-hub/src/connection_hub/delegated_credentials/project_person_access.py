@@ -1150,17 +1150,25 @@ class ProjectPersonControlLifecycle:
 
         The person sets their own. A project admin may set another person's
         settings except the GitHub link, which only its person may make,
-        because it names that person's own GitHub account.
+        because it names that person's own GitHub account. With managed Card
+        saves enabled, all these settings are owner-only and use the project
+        transaction instead of the direct writer.
         """
 
-        unknown = sorted(set(changes or {}) - set(MY_CARD_PERSON_PROPERTIES))
-        if unknown or not changes:
+        unknown = sorted(set(changes) - set(MY_CARD_PERSON_PROPERTIES)) if isinstance(changes, Mapping) else []
+        if unknown or not isinstance(changes, Mapping) or not changes:
             return {
                 "ok": False,
                 "error": "project_person_my_card_property_invalid",
                 "properties": unknown,
                 "status": 400,
             }
+        managed_gate = getattr(self._host, "_managed_direct_write_refused", None)
+        managed = callable(managed_gate) and managed_gate() is not None
+        # Managed settings belong only to the authenticated My owner, even for
+        # an admin. Legacy transaction-off policy keeps its existing behavior.
+        if managed and _clean(target_subject or actor_subject) != _clean(actor_subject):
+            return {"ok": False, "error": "project_person_my_card_property_self_only", "status": 403}
         target = await self._my_card_actor(
             actor_subject=actor_subject,
             project_ref=project_ref,
@@ -1178,12 +1186,37 @@ class ProjectPersonControlLifecycle:
                 "status": 403,
             }
         try:
-            record, changed = await self._project_identities.set_my_card_properties(
-                project_ref=project_ref,
-                person_subject=target,
-                changes=changes,
-                expected_card_revision=expected_card_revision,
-            )
+            if managed:
+                from .my_card_person_properties_plan import settings_patch
+                try:
+                    patch = settings_patch(changes, internal_audit=True)
+                except ValueError:
+                    return {"ok": False, "error": "project_person_my_card_property_invalid", "status": 400}
+                record = await self._project_identities._my_card_record(project_ref=project_ref, person_subject=target)
+                if (expected_card_revision is not None and (type(expected_card_revision) is not int
+                        or expected_card_revision != record.card_revision)):
+                    return {"ok": False, "error": "managed_card_edit_revision_changed", "status": 409}
+                # A semantic no-op is a read, not another revision or history event.
+                stored = dict(record.properties or {})
+                try:
+                    current = settings_patch({key: stored.get(key) for key in patch}, internal_audit=True)
+                except ValueError:
+                    return {"ok": False, "error": "project_person_my_card_property_invalid", "status": 400}
+                changed = current != patch
+                if changed:
+                    forwarded = await self._host._forward_managed_my_card_settings(
+                        actor_subject=_clean(actor_subject), project_ref=_clean(project_ref), record=record,
+                        changes=patch, request_id=request_id)
+                    if not forwarded.get("ok"):
+                        return forwarded
+                    record = await self._project_identities._my_card_record(
+                        project_ref=project_ref, person_subject=target)
+            else:
+                record, changed = await self._project_identities.set_my_card_properties(
+                    project_ref=project_ref, person_subject=target, changes=changes,
+                    expected_card_revision=expected_card_revision)
+        except CallerWriteRefused as exc:
+            return exc.to_dict()
         except (
             CardUnavailable,
             CardServingUnavailable,

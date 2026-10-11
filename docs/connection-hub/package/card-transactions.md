@@ -98,6 +98,27 @@ whole request, so no edit value is repeated.
   - The new My takes that one service's selection from the Control; everything
     else is unchanged.
   - C is read, never written.
+- **Owner My settings (`set_person_properties`).** One update names the
+  caller's own My Card, its exact `original_revision`, and
+  `selection: {properties: <patch>}`. The nonempty patch contains only
+  `connection_hub.github` (a non-secret `{provider_id, account_id, login}`
+  connected-account reference) and/or `connection_hub.commit_email`
+  (`{email}`). `null` removes a key. No grant, operation, account scope,
+  acceptance, label or composition edit may accompany it.
+  - Authenticated `stage_authorization` gives only this step evidence
+    `{source: card-version-stage, request_digest, person_settings_at: at}`.
+    Every other step's request and decision remain unchanged. The planner
+    requires the matching digest and immutable, offset-bearing STAGE time;
+    it never invents this audit time from its wall clock or trusts a supplied
+    `linked_at`, `set_by` or `set_at`.
+  - The candidate changes only these properties and the revision. The Hub
+    rebuilds `linked_at` or `set_by`/`set_at` from the authenticated owner and
+    STAGE time. All other fields, properties, grants, bindings and acceptance
+    remain unchanged. Its opt-in plan display shows the real before/after
+    values of only these two keys; ordinary plan displays remain unchanged.
+  - A malformed or mixed patch, another person's My Card, missing STAGE
+    evidence, or a moved revision refuses by name and writes nothing.
+    This is not a general properties editor or a new authorization callback.
 - **Protected grants on a manual edit.** A person Control or My `reselect` may
   carry `protected_grants: {<resource>: [<grant>, ...]}` (at most 4 resources x
   16 grants). PB sends `{<its resource>: ["work:admin"]}`.
@@ -292,8 +313,10 @@ focused grant on a My Card or an agent Card is forwarded too (W727, below).
   fields the person changed (`resource_grants`, `resource_operations`,
   `named_service_operations`, `account_scope`); the host keeps every other
   field of the revision-fenced original, never an empty default. A Save that
-  changes properties, the composition or the label, or names no revision,
-  refuses before anything is sent.
+  names no revision refuses before anything is sent. Properties do not travel
+  on an ordinary selection edit; the closed owner-settings exception below
+  has its own owning codec. The composition and label edits have their own
+  bounded fields described below.
 - **"Accept update" (W723).** When the person ticked "Accept update" for
   catalog rows that changed since the Card accepted them, the body also carries
   `accepted_operations: {resource: [operation, ...]}` (canonical, sorted) and,
@@ -317,6 +340,18 @@ focused grant on a My Card or an agent Card is forwarded too (W727, below).
   the actor, the Card, its expected revision, the selection, the acceptance
   and the reviewed catalog, so a retry after a refusal under a changed catalog
   is a new request.
+- **GitHub link/unlink and commit email on My (W738).** These use the same
+  signed `managed-card-edit.v1` body with `target.kind: person_my`, the
+  authenticated person's own `user:` key, current exact revision, and only
+  the closed `selection.properties` patch above. The Hub validates the owner
+  account before linking; no OAuth credential enters the Card or forward.
+  The project host uses its link-only save coordinator and committed
+  membership to authorize the owner, then sends `set_person_properties` to
+  STAGE. A semantic no-op is a read with no forward or new revision. Missing
+  forwarding/link-only configuration, pending/aborted saves and direct-write
+  refusals are named responses, never direct-write fallbacks. The token
+  issuer subsequently reads the published My revision: a relink changes its
+  account reference and an unlink stops new issuance.
 - **How it is sent.** The signed body travels whole under the operation's
   `data` argument, with `user_id` and `fingerprint` given as `null`. The
   platform otherwise fills those two arguments from the signed-in session, and

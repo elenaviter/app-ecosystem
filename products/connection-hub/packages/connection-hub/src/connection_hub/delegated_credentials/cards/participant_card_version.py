@@ -344,6 +344,16 @@ def stage_authorization(data: Mapping[str, Any], digest: str) -> LifecyclePlanAu
     Control locator PB named; nothing here widens them.
     """
     creations, seeds = invitation_seed_evidence(list(data["creations"]))
+    from ..my_card_person_properties_plan import SETTINGS_STEP, settings_update_valid
+    settings_evidence = {}
+    for index, update in enumerate(data["updates"]):
+        if update.get("kind") == SETTINGS_STEP:
+            if not settings_update_valid(update) or _at(data.get("at")) is None:
+                raise _StepsRefused("card_plan_person_settings_invalid", 400)
+            settings_evidence[f"update:{index}"] = {
+                "source": "card-version-stage", "request_digest": digest,
+                "person_settings_at": data["at"],
+            }
     steps = plan_steps(creations, list(data["updates"]))
     request = LifecyclePlanAuthorizationRequest(
         actor_subject=data["actor_subject"], project_ref=data["scope"], request_id=data["request_id"],
@@ -354,7 +364,7 @@ def stage_authorization(data: Mapping[str, Any], digest: str) -> LifecyclePlanAu
             request.step_request(step), delegable_grants=tuple(data["delegable_grants"]), project_control=locator,
             # W746: only an invitation seed step carries evidence; every other decision is as before.
             evidence=({"source": "card-version-stage", "request_digest": digest, **seeds[step.ref]}
-                      if step.ref in seeds else None)))
+                      if step.ref in seeds else settings_evidence.get(step.ref))))
         for step in steps))
 
 
