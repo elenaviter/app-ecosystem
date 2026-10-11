@@ -2647,6 +2647,61 @@ class AutomationAccessService:
                     "error": "managed_card_edit_" + outcome["state"], "status": 409,
                     "message": "The project did not save this change. Your draft is kept."})}
 
+    async def _forward_person_removal(
+        self, user: Mapping[str, Any], *, project_ref: str, target_subject: str,
+    ) -> dict[str, Any] | None:
+        """W728: an admin's revocation of a live person's project Control, made as the project's removal.
+
+        The host (Problem Board) removes the person in ONE decision: membership ended, the person's Control
+        and My Card revoked. It decides the admin rule and the target from its own committed rows. The fence
+        is the person's current Control revision as the Hub reads it now. The request id is derived from the
+        actor, project, person and that revision, so retrying the same removal replays the host's one
+        decision. None when no forwarder serves the project or the person has no current Control: the
+        caller then keeps W578's refusal.
+
+        A lost-answer retry (Infra's W728 review, 2026-10-11) reads the Control AFTER the host's removal
+        revoked it, one revision on (N -> N+1). The removal at the revision read is sent first, exactly as
+        before (for a member whose Control was revoked some other way too; the host's answer stands, and today
+        it refuses that case, W743). Only when the host
+        refuses that as ``removal_target_invalid`` and the Control is revoked does the Hub send the first
+        request again (revision N, its request id), and the host replays it only if its own removal audit row
+        holds that request id for this actor; otherwise its refusal stands. A revoked Control alone is never
+        read as an ended membership: the host decides that from its rows.
+        """
+        from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body, managed_card_location
+        forwarder = self._managed_card_edit_forwarder(project_ref)
+        actor_subject = _subject_from_user(user)
+        if forwarder is None or not actor_subject or not project_ref or not target_subject:
+            return None
+        try:
+            access_id, grantor = managed_card_location("person_control", project_ref=project_ref, ref=target_subject)
+            current = await self._load_record_any_state(access_id, grantor_subject=grantor)
+        except ValueError:
+            current = None
+        stored = current[0] if current is not None else None
+        if stored is None or type(stored.card_revision) is not int or stored.card_revision < 1:
+            return None
+        revisions = [stored.card_revision]
+        if current[1] == CARD_STATE_REVOKED and stored.card_revision > 1:
+            revisions.append(stored.card_revision - 1)  # the first request of a lost-answer retry
+        for attempt, revision in enumerate(revisions):
+            digest = hashlib.sha256(json.dumps([actor_subject, project_ref, target_subject, revision],
+                                               separators=(",", ":")).encode("utf-8")).hexdigest()
+            try:
+                body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
+                    request_id="person-removal:" + digest[:48], kind="person_removal",
+                    principal_key="user:" + target_subject, original_revision=revision, selection={})
+                outcome = await forwarder.forward(body)
+                break
+            except ManagedCardEditError as exc:
+                if attempt + 1 < len(revisions) and exc.reason.endswith("removal_target_invalid"):
+                    continue
+                return exc.to_dict()
+        return {"ok": outcome["state"] == "committed", "managed_card_edit": outcome,
+                **({} if outcome["state"] == "committed" else {
+                    "error": "managed_card_edit_" + outcome["state"], "status": 409,
+                    "message": "The project did not remove this person. Nothing changed."})}
+
     async def _forward_agent_card_edit(
         self, user: Mapping[str, Any], *, record: AutomationAccessRecord, project_ref: str, request_id: str,
         changes: Mapping[str, Any], kind: str = "agent_card",
@@ -7926,6 +7981,13 @@ class AutomationAccessService:
 
         refused = self._managed_direct_write_refused()
         if refused is not None:
+            # W728: with Card transactions on, a LIVE person's revocation is the project's removal of that
+            # person, made in the host's own transaction. Never a direct write; no forwarder keeps W578.
+            if not _clean(invitation_ref):
+                forwarded = await self._forward_person_removal(
+                    user, project_ref=_clean(project_ref), target_subject=_clean(target_subject))
+                if forwarded is not None:
+                    return forwarded
             return refused
         actor_subject = _subject_from_user(user)
         if not actor_subject:
