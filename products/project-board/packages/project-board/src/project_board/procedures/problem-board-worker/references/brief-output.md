@@ -78,7 +78,14 @@ to read.
   earlier attempt under the same `idempotency_key`. The receipt is the original
   one, and nothing was written twice.
 - `state: refused`, with `reason` and `summary`, and where the service gave one
-  an `error.code`, `error.message` and `error.details`.
+  an `error.code`, `error.message` and `error.details`. The refusal is definite:
+  nothing applied. The service keeps it under its `idempotency_key`: the same
+  request under that key repeats the refusal, and any changed request under it
+  is refused `work_operation_idempotency_conflict`. So a retry that changes the
+  request, such as a note sent again at the current `expected_revision` after
+  `work_item_revision_conflict`, is a new request under a new key. That is safe
+  only because the refusal proves nothing applied; after an unknown outcome
+  (below) only the same request under the same key is safe (W718).
 - `observed_revision` is in every receipt, applied or refused. It says which
   revision the service saw, not that anything conflicted. An empty `error` slot
   is not printed.

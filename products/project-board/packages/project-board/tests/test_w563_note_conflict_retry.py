@@ -15,7 +15,9 @@ def test_a_note_revision_conflict_prints_the_same_text_retry_at_the_current_revi
     }})
 
     assert "current_revision = 275" in text
-    assert 'retry: plan.note.append only: the same text, unchanged, with "expected_revision": 275.' in text
+    assert 'retry: plan.note.append only: the same text, unchanged, with "expected_revision": 275' in text
+    # W718: the refused request stays bound to its key, so the retry needs a new one.
+    assert "a NEW idempotency_key (this refusal applied nothing; the old key stays bound to the refused request)" in text
     assert "A replacement edit (plan.item.update) reads the item again and decides first." in text
     plain = render_envelope({"ok": False, "error": {"code": "work_item_revision_conflict", "message": "changed"}})
     assert "retry:" not in plain, "no current revision, no retry line"
