@@ -92,10 +92,11 @@ async def test_each_production_reader_keeps_staged_authority_out_of_current_and_
     cache.index_members = AsyncMock(return_value=[])
     cache.index_add = AsyncMock()
     cache.reconcile_projection = AsyncMock(return_value=True)
-    service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
     resolver = DelegatedCardResolver(cache=cache, store=store)
     persistence = DurableCardPersistence(redis=object(), tenant="fixture", project="fixture",
         card_store=store, mutation_lock=_test_lock, credential_handles=MagicMock())
+    service = persistence.card_service
+    service._cache = cache
     persistence._resolver = resolver
     reconciler = CardProjectionReconciler(cache=cache, store=store)
 
