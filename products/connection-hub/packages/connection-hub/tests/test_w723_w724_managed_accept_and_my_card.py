@@ -157,28 +157,22 @@ def test_unchanged_card_fields_sent_back_with_the_my_card_save_still_forward(mon
     assert result["ok"] is True and len(host.calls) == 1
 
 
-def test_the_reviewed_catalog_travels_only_with_an_acceptance():
-    """W723: the catalog the person reviewed rides with "Accept update", never alone."""
-    host = Host()
-    forward(service(host), accepted_operations={"svc": ["a"]}, expected_catalog_version="delegated_catalog_x")
-    forward(service(host), expected_catalog_version="delegated_catalog_x")
-    with_acceptance, without = (body for _, _, body in host.calls)
+def test_the_rendered_catalog_travels_independently_of_acceptance():
+    """Whole Save pins the rendered catalog even when no descriptor update is being accepted."""
+    from connection_hub.delegated_credentials.managed_card_edit_forward import managed_card_edit_body
+    common = dict(actor_subject="alice", project_ref=PROJECT, request_id="one-save", kind="person_control",
+                  principal_key="user:bob", original_revision=3, selection={"resource_operations": {"svc": ["a"]}},
+                  expected_catalog_version="delegated_catalog_x")
+    with_acceptance = managed_card_edit_body(**common, accepted_operations={"svc": ["a"]})
+    without = managed_card_edit_body(**common)
     assert with_acceptance["expected_catalog_version"] == "delegated_catalog_x"
-    assert "expected_catalog_version" not in without and "accepted_operations" not in without
+    assert without["expected_catalog_version"] == "delegated_catalog_x" and "accepted_operations" not in without
 
 
-def test_a_my_card_retry_under_another_reviewed_catalog_is_a_new_request(monkeypatch):
-    """Defensive: a My Card Save without a route id derives one that includes the reviewed catalog.
-
-    Not a demonstrated failure (CodeApp's 12:53Z real-hop probe showed the retry commits either way); the
-    derived id simply distinguishes Saves reviewed under different catalogs.
-    """
-    host = Host()
-    svc = service(host)
-    svc._card_coordinator = object()
-    common = dict(request_id=None, accepted_operations={"svc": ["a"]})
-    _my_route(monkeypatch, svc, expected_catalog_version="delegated_catalog_old", **common)
-    _my_route(monkeypatch, svc, expected_catalog_version="delegated_catalog_new", **common)
-    _my_route(monkeypatch, svc, expected_catalog_version="delegated_catalog_new", **common)
-    first, second, same = (body["request_id"] for _, _, body in host.calls)
-    assert first != second and second == same
+def test_a_my_card_save_under_another_catalog_is_refused_before_request_creation():
+    import asyncio
+    from test_w756_whole_card_forward import setup, save
+    peer, svc, record, reads = setup()
+    result = asyncio.run(save(svc, record, expected_catalog_version="delegated_catalog_old"))
+    assert result["error"] == "consent_catalog_changed"
+    assert result["active_catalog_version"] == "render-29" and peer.calls == []

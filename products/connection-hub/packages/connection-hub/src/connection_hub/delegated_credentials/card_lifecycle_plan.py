@@ -893,14 +893,15 @@ async def plan_card_lifecycle(
                                    "selection", "profile", "resource", "display_digest", "control",
                                    "add_grants", "add_operations", "remove_operations", "operation_grants",
                                    "protected_grants", "accepted_operations", "expected_catalog_version",
-                                   "composition_mode", "label"}
+                                   "composition_mode", "label", "invocation_modes"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control", "set_person_properties"})
                     # W723: an acceptance travels only with a selection edit, and the catalog it was
                     # reviewed under only with an acceptance.
                     or ("accepted_operations" in raw and "selection" not in raw)
-                    or ("expected_catalog_version" in raw and "accepted_operations" not in raw)
+                    or ("expected_catalog_version" in raw and "selection" not in raw)
+                    or ("invocation_modes" in raw and raw.get("kind") not in {"reselect", "reselect_agent_card"})
                     # W742: the project access rule travels only on the project Control's own edit.
                     or ("composition_mode" in raw and (raw.get("kind") != "reselect_project_control"
                                                        or raw["composition_mode"] not in {"and", "or"}))
@@ -911,9 +912,6 @@ async def plan_card_lifecycle(
                                             or not _valid_label(raw["label"])))):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             decision = authorization.decision_for(f"update:{index}")
-            if "expected_catalog_version" in raw and raw["expected_catalog_version"] != host._version_of(active):
-                # W723: an "Accept update" applies only to the catalog the person reviewed.
-                raise CardLifecyclePlanRefused("card_plan_catalog_moved")
             access_id = _required_text(raw["access_id"], "card_plan_update_invalid")
             subject_hash = _required_text(raw["subject_hash"], "card_plan_update_invalid")
             original_revision = raw["original_revision"]
@@ -934,6 +932,9 @@ async def plan_card_lifecycle(
             if (subject_hash_for(original.grantor_subject) != subject_hash
                     or not read_current and original.card_revision != original_revision):
                 raise CardLifecyclePlanRefused("card_plan_original_revision_changed")
+            if "expected_catalog_version" in raw and raw["expected_catalog_version"] != host._version_of(active):
+                # Whole Save: a stale Card wins over a moved render catalog.
+                raise CardLifecyclePlanRefused("card_plan_catalog_moved")
             try:
                 person_identity = ProjectPersonControlIdentity.from_authority(original)
             except ProjectPersonControlError:
@@ -980,6 +981,10 @@ async def plan_card_lifecycle(
                 _require_protected_grants_kept(raw.get("protected_grants"), original, built["member"]["candidate"])
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
+                if (original.issuer_kind == PROJECT_PERSON_MY_CARD_ISSUER_KIND
+                        and "properties" in raw["selection"] and built["member"]["candidate"]["properties"]
+                        != dict(original.properties or {})):
+                    settings_members[(subject_hash, access_id)] = (scope, actor)
                 continue
             if raw["kind"] in {"reselect_project_control", "reselect_agent_card", "reselect_invitation_control"}:
                 # W638: the project's own Control or a project agent Card takes a host-authorized selection.

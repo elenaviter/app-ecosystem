@@ -39,6 +39,53 @@ and the managed Card edit forward:
 
 ## Saving a Card version (W661)
 
+### Whole-Card screen Save
+
+The screen sends its complete editable Card and the render-time Card and
+catalog pins once. `invocation_modes` is a separate closed map
+`{resource: {added_operation: "once" | "always"}}`, not Card authority or a
+caller-provided effect payload. There is no browser transaction/request id.
+
+The Hub re-reads durable current, checks the Card pin first, then checks the
+supplied catalog pin independently of `accepted_operations`. A moved catalog
+answers `consent_catalog_changed` with expected and active catalog versions.
+Every screen Save requires this pin; omission answers
+`consent_catalog_version_required` after the Card pin check, never a silent Save.
+Only then does the Hub expand operation `*` into concrete current catalog
+operations, compare visible fields, and identify net additions. Equal content
+answers `{ok: true, unchanged: true}` without forwarding or writing a revision.
+Held operations cannot reset their policies; missing added-operation choices
+answer `invocation_mode_required` before forwarding. Controls, the application
+API resource, and application-owned operations never carry invocation modes.
+
+A changed managed Card travels as ONE signed `managed-card-edit.v1` request.
+PB carries the exact mode map beside the selection in its STAGE update. The
+Hub derives the actual policies from its original/candidate Cards and catalog,
+pins current policy revisions, and prepares them inside CardVersion STAGE under
+`<txn>:<authority.key>`. The base reservation and marker already exist before
+any prepare. The separate policy store is retained; no Card schema/migration
+or second decision protocol is introduced.
+
+PUBLISH commits each prepared policy through the real policy service and
+records all effect outcomes. The durable readiness fence prevents an incomplete
+new Card from being read, served, or included in history. A failure retains the
+original transaction for exact PUBLISH re-drive; pre-decision ABORT releases all
+prepares, including a partial k-of-N preparation. Only the PB coordinator owns
+the irrevocable COMMIT; it never compensates a DECIDED manual Save.
+
+An owner's My Card can include its closed personal settings, permissions and
+rename in the same next revision. Non-settings properties are retained; settings
+audits are rebuilt from authenticated STAGE time, never browser audit fields.
+The existing settings-only API remains a closed, separate legacy request shape.
+
+Implementation checkpoint: managed preflight, wire, candidate composition and
+real filesystem policy/marker adapter checks exist. Productive PB/database and
+browser qualification is still required. A new mode-bearing whole Save must not
+fall through to an unmanaged writer that ignores its choices; that local
+one-participant publication path currently refuses
+`whole_card_save_transaction_unavailable` and remains unfinished. No release
+readiness is asserted by this checkpoint.
+
 `card_version` serves Problem Board's save. PB calls the Hub, and the Hub calls
 nothing back during the save. It has the same peer authentication and
 `plan_scope_prefix` entitlement as `card_lifecycle_plan`. The request schema is

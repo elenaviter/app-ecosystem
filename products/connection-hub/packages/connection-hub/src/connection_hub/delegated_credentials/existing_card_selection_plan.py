@@ -142,6 +142,22 @@ async def build_existing_card_selection_update(
     if (kind == "person_control" and properties.get(PROJECT_PERSON_CONTROL_PROPERTY)
             != dict(original.properties or {}).get(PROJECT_PERSON_CONTROL_PROPERTY)):
         raise _refuse("card_plan_update_scope_invalid")
+    settings = None
+    if kind == "my_card" and "properties" in selection:
+        from .my_card_person_properties_plan import whole_person_properties_patch, build_person_settings_update
+        try:
+            patch = whole_person_properties_patch(dict(original.properties or {}), properties)
+        except ValueError:
+            raise _refuse("card_plan_undisplayed_change") from None
+        if patch:
+            settings = build_person_settings_update(
+                original=original, selection={"properties": patch}, decision=decision,
+                project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id,
+                request_digest=decision.request_digest)["member"]["candidate"]["properties"]
+        properties = copy.deepcopy(dict(original.properties or {}))
+    catalog_config = await host._catalog_config(active, owner_subject=original.grantor_subject)
+    from .whole_card_save import normalize_selection
+    selection = normalize_selection(original, selection, config=catalog_config)
     resolved = await host._resolve_card_authority(
         user={"user_id": original.grantor_subject},
         # The resolver reads the authority fields shared by CardAuthority and
@@ -181,6 +197,7 @@ async def build_existing_card_selection_update(
         selected, card_revision=original.card_revision + 1, catalog_version=catalog_version,
         resource_acceptance=preserve_descriptor_acceptance(original.resource_acceptance, computed_acceptance),
         **({"label": label} if label is not None else {}),
+        **({"properties": settings} if settings is not None else {}),
     )
     before = original.to_dict()
     after = candidate.to_dict()
@@ -208,6 +225,8 @@ async def build_existing_card_selection_update(
     shown = original.to_dict()
     if label is not None:
         shown["label"] = label  # the one display field the person renamed
+    if settings is not None:
+        shown["properties"] = copy.deepcopy(settings)  # only the closed, STAGE-authored settings change
     if undisplayed_change(shown, candidate.to_dict(),
                           hub_written=kind == "person_control") is not None:
         raise _refuse("card_plan_undisplayed_change")

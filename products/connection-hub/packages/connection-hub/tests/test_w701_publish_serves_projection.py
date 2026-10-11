@@ -27,7 +27,7 @@ from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE, CardAuthority, NamedServiceSelection, authority_projection_ttl,
 )
 from connection_hub.delegated_credentials.cards.service import DelegatedCardService
-from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore, CardStorageError
 
 GRANTOR = "platform-user-1"
 SUBJECT_HASH = hashlib.sha256(GRANTOR.encode("utf-8")).hexdigest()
@@ -138,8 +138,12 @@ async def test_a_refused_publish_leaves_no_marker_and_serves_the_revision_that_s
     txn = "w661-txn-" + "d" * 32
     await service.stage_card_version(txn=txn, request_digest="d" * 64, catalog="catalog-1",
                                      members=[(SUBJECT_HASH, ACCESS_ID, 1, _saved(2))], now=WHEN)
-    await service.commit(_card(2, label="moved meanwhile"), subject_hash=SUBJECT_HASH, expected_revision=1, now=NOW)
-    with pytest.raises(tx.CardTransactionRefused, match="card_changed"):
+    with pytest.raises(CardStorageError, match="card_version_base_reserved"):
+        await service.commit(_card(2, label="moved meanwhile"), subject_hash=SUBJECT_HASH, expected_revision=1, now=NOW)
+    assert await _served(cache) == await _durable(store) == _card()
+    assert await service.rollback_card_version(txn=txn) == "rolled_back"  # actual pre-decision ABORT
+    await service.commit(_card(2, label="moved after abort"), subject_hash=SUBJECT_HASH, expected_revision=1, now=NOW)
+    with pytest.raises(tx.CardTransactionRefused, match="txn_unknown"):
         await service.publish_card_version(txn=txn)
     entry = await cache.read(ACCESS_ID)
     assert entry is None or not entry.is_updating

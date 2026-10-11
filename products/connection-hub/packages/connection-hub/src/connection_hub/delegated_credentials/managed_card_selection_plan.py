@@ -38,7 +38,7 @@ from .project_authorization import (
 )
 OPERATIONS = {"project_control": PROJECT_CONTROL_UPDATE, "agent_card": PROJECT_AGENT_CARD_UPDATE,
               "invitation_control": PROJECT_INVITATION_CONTROL_UPDATE}
-_SELECTION_FIELDS = frozenset({"resource_grants", "resource_operations", "named_service_operations", "account_scope"})
+_SELECTION_FIELDS = frozenset({"resource_grants", "resource_operations", "named_service_operations", "account_scope", "properties"})
 
 
 def _refuse(reason: str) -> DecisionRefused:
@@ -97,6 +97,8 @@ async def build_managed_card_selection_update(
     if type(now) is not int or now < 1:
         raise _refuse("card_plan_audit_time_invalid")
     managed_target_kind(original, project_ref=project_ref, kind=kind)
+    if "properties" in selection and selection["properties"] != dict(original.properties or {}):
+        raise _refuse("card_plan_undisplayed_change")
     if (not isinstance(decision, ProjectAuthorizationDecision) or not decision.allowed
             or decision.project_ref != project_ref or decision.actor_subject != actor_subject
             or decision.request_id != request_id or decision.operation != OPERATIONS[kind]
@@ -105,6 +107,9 @@ async def build_managed_card_selection_update(
     for field in ("resource_grants", "resource_operations", "account_scope"):
         if field in selection and not isinstance(selection[field], Mapping):
             raise _refuse("card_plan_selection_invalid")
+    catalog_config = await host._catalog_config(active, owner_subject=original.grantor_subject)
+    from .whole_card_save import normalize_selection
+    selection = normalize_selection(original, selection, config=catalog_config)
     resolved = await host._resolve_card_authority(
         user={"user_id": original.grantor_subject}, existing=original, active=active,
         resource_grants=selection.get("resource_grants", original.resource_grants),
