@@ -88,9 +88,9 @@ def test_a_selection_save_that_sends_the_same_rule_is_byte_identical_to_before()
     assert "composition_mode" not in body
 
 
-def test_label_and_properties_are_still_not_changed_by_a_p_edit():
+def test_properties_are_still_not_changed_by_a_p_edit():
     host = Host()
-    result = _rule(service(host), project_control(), "or", label="Renamed")
+    result = _rule(service(host), project_control(), "or", properties={"x": 1})
     assert result["error"] == "managed_card_edit_fields_unsupported" and host.calls == []
 
 

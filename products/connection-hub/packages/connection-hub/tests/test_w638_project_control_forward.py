@@ -130,7 +130,8 @@ def test_without_a_forwarder_or_for_an_unmanaged_card_nothing_is_forwarded():
     assert host.calls == []
 
 
-@pytest.mark.parametrize("change", [dict(label="Renamed"), dict(properties={"x": 1}),
+# W735: a rename now travels as its own signed field (test_w735_managed_label_and_renew.py).
+@pytest.mark.parametrize("change", [dict(properties={"x": 1}),
                                     dict(expected_card_revision=None)])
 def test_a_p_save_that_changes_more_than_its_selection_saves_nothing(change):
     host = Host()
