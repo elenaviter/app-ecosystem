@@ -67,9 +67,14 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CARD_VERSION_TXNS} (
     txn           TEXT NOT NULL,
     document      BYTEA NOT NULL CHECK (octet_length(document) BETWEEN 2 AND {MARKER_DOCUMENT_MAX_BYTES}),
     row_revision  BIGINT NOT NULL CHECK (row_revision >= 1),
+    incarnation   TEXT NOT NULL DEFAULT gen_random_uuid()::text,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (tenant, project, txn)
 );
+-- Infra's ABA HOLD (9cd86893): a deleted and re-created marker row restarts at row_revision 1, so the CAS
+-- also names the row's incarnation (random, set at creation): a stale observation never matches a new row.
+ALTER TABLE {schema}.{TABLE_CARD_VERSION_TXNS}
+    ADD COLUMN IF NOT EXISTS incarnation TEXT NOT NULL DEFAULT gen_random_uuid()::text;
 
 CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CARD_POINTER_AUTHORITY} (
     tenant        TEXT NOT NULL,
@@ -208,12 +213,12 @@ class PostgresCardRows:
 
     async def read_marker(self, txn: str) -> tuple[dict | None, int | None]:
         row = await self._fetchrow(
-            f"""SELECT document, row_revision FROM {self.schema}.{TABLE_CARD_VERSION_TXNS}
+            f"""SELECT document, row_revision, incarnation FROM {self.schema}.{TABLE_CARD_VERSION_TXNS}
                 WHERE tenant=$1 AND project=$2 AND txn=$3""", self.tenant, self.project, txn)
         if row is None:
-            self._observe("marker", (txn,), 0)
+            self._observe("marker", (txn,), (0, None))
             return None, None
-        self._observe("marker", (txn,), int(row["row_revision"]))
+        self._observe("marker", (txn,), (int(row["row_revision"]), str(row["incarnation"])))
         return parse_canonical_json_bytes(bytes(row["document"])), int(row["row_revision"])
 
     async def adopt_marker(self, txn: str, document: dict) -> tuple[dict, int]:
@@ -233,36 +238,38 @@ class PostgresCardRows:
         """R1: INSERT when this operation saw no row, else CAS on the revision it read. Outside any lock only a
         create is possible (a ROLLBACK of a txn with no links holds no Card lock): INSERT ... ON CONFLICT DO
         NOTHING is itself the fence, so it never replaces a marker someone else wrote."""
-        expected = 0 if _session() is None else self._observed("marker", (txn,), required=True)
+        expected, incarnation = (0, None) if _session() is None else self._observed("marker", (txn,), required=True)
         encoded = _encode(document, limit=MARKER_DOCUMENT_MAX_BYTES)
         if expected == 0:
             row = await self._fetchrow(
                 f"""INSERT INTO {self.schema}.{TABLE_CARD_VERSION_TXNS} (tenant, project, txn, document, row_revision)
-                    VALUES ($1, $2, $3, $4, 1) ON CONFLICT DO NOTHING RETURNING row_revision""",
+                    VALUES ($1, $2, $3, $4, 1) ON CONFLICT DO NOTHING RETURNING row_revision, incarnation""",
                 self.tenant, self.project, txn, encoded)
         else:
+            # The CAS names the exact row this operation read: its revision AND its incarnation (Infra's ABA).
             row = await self._fetchrow(
                 f"""UPDATE {self.schema}.{TABLE_CARD_VERSION_TXNS}
                     SET document=$4, row_revision=row_revision+1, updated_at=clock_timestamp()
-                    WHERE tenant=$1 AND project=$2 AND txn=$3 AND row_revision=$5 RETURNING row_revision""",
-                self.tenant, self.project, txn, encoded, expected)
+                    WHERE tenant=$1 AND project=$2 AND txn=$3 AND row_revision=$5 AND incarnation=$6
+                    RETURNING row_revision, incarnation""",
+                self.tenant, self.project, txn, encoded, expected, incarnation)
         if row is None:
             raise CardStorageError("card_version_marker_moved")
-        self._observe("marker", (txn,), int(row["row_revision"]))
+        self._observe("marker", (txn,), (int(row["row_revision"]), str(row["incarnation"])))
         return int(row["row_revision"])
 
     async def delete_marker(self, txn: str) -> None:
         """R1: the marker's removal is a CAS too; a stale deleter never removes a newer state."""
-        expected = self._observed("marker", (txn,), required=True)
+        expected, incarnation = self._observed("marker", (txn,), required=True)
         if expected == 0:
             return  # this operation saw it absent
         row = await self._fetchrow(
             f"""DELETE FROM {self.schema}.{TABLE_CARD_VERSION_TXNS}
-                WHERE tenant=$1 AND project=$2 AND txn=$3 AND row_revision=$4 RETURNING txn""",
-            self.tenant, self.project, txn, expected)
+                WHERE tenant=$1 AND project=$2 AND txn=$3 AND row_revision=$4 AND incarnation=$5 RETURNING txn""",
+            self.tenant, self.project, txn, expected, incarnation)
         if row is None:
             raise CardStorageError("card_version_marker_moved")
-        self._observe("marker", (txn,), 0)
+        self._observe("marker", (txn,), (0, None))
 
 
 __all__ = ["ABSENT_POINTER", "MARKER_DOCUMENT_MAX_BYTES", "POINTER_DOCUMENT_MAX_BYTES", "PostgresCardRows",

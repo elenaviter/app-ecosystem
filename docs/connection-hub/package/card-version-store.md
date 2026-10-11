@@ -278,6 +278,11 @@ reacquired while old code still acts, so durable effects need a resource-enforce
     the late file write of a stale writer after the row was deleted: it reads as absent, is never adopted, and
     a reader holding the Card lock removes it (Infra's late-hint case). Only an untagged file, written before
     the cutover, is adopted. No per-txn tombstone row is kept.
+  - A marker row can be deleted (ROLLBACK) and re-created for the same txn (re-STAGE), starting again at
+    row_revision 1. So the marker CAS names the row's `incarnation` (random, set when the row is created) as
+    well as its revision: a stale writer that observed the old row never matches the new one (Infra's ABA
+    case). Pointer rows are never deleted (absence is a row with the ABSENT document), so their revisions only
+    move forward.
 - **The operation context.** `locks.row_fenced_lock` wraps whatever mutation lock serializes the normal
   case: the container-local flock (lock_backend local) or the per-Card KDCube Redis cluster lock
   (option R, lock_backend "redis"); `hub_card_mutation_lock` and `hub_redis_card_mutation_lock` both wrap

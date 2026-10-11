@@ -238,3 +238,46 @@ async def test_a_pre_cutover_marker_file_is_still_adopted_under_the_lock(tmp_pat
                         wait_seconds=5.0):
             assert (await store.read_marker_document(txn))["state"] == "staged"
         assert (await rows.read_marker(txn))[0] == {"txn": txn, "state": "staged"}
+
+
+@pytest.mark.asyncio
+async def test_a_stale_marker_cas_never_matches_a_re_created_row_at_the_same_revision(tmp_path):
+    """Infra's ABA HOLD on 9cd86893: A reads the staging marker (revision 1) and stalls; B deletes the marker
+    (ROLLBACK) and re-creates it for the same txn (re-STAGE), again at revision 1; A's CAS from its revision-1
+    observation must be refused (card_version_marker_moved), and B's row must stay B's. The CAS names the row's
+    incarnation as well as its revision, so a re-created row never matches a stale observation."""
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+
+    txn = "w661-txn-" + "9" * 32
+    async with _world(tmp_path) as (store, rows, lock):
+        def held(resource):
+            return lock(lock_path=store.root / f"{resource}.lock", resource_id=resource, operation="test",
+                        wait_seconds=5.0)
+
+        async with held("card-version-txn:" + txn):
+            assert await store.read_marker_document(txn) is None
+            await store.write_marker_document(txn, {"txn": txn, "state": "staging", "by": "A"})
+        a_read, b_done = asyncio.Event(), asyncio.Event()
+
+        async def stale_a():
+            async with held("card-version-txn:" + txn):
+                assert (await store.read_marker_document(txn))["by"] == "A"  # observes revision 1
+                a_read.set()
+                await b_done.wait()
+                with pytest.raises(CardStorageError, match="card_version_marker_moved"):
+                    await store.write_marker_document(txn, {"txn": txn, "state": "staged", "by": "A"})
+
+        async def live_b():
+            await a_read.wait()
+            async with held("card-version-txn:lost-" + txn):  # B holds the lock A has lost
+                assert (await store.read_marker_document(txn))["by"] == "A"
+                await store.delete_marker_document(txn)  # ROLLBACK
+            async with held("card-version-txn:lost2-" + txn):
+                assert await store.read_marker_document(txn) is None
+                await store.write_marker_document(txn, {"txn": txn, "state": "staging", "by": "B"})  # re-STAGE
+            assert (await rows.read_marker(txn))[1] == 1  # the same revision number A observed
+            b_done.set()
+
+        await asyncio.gather(stale_a(), live_b())
+        assert await rows.read_marker(txn) == ({"txn": txn, "state": "staging", "by": "B"}, 1)
+        assert (await store.read_marker_document(txn))["by"] == "B"
