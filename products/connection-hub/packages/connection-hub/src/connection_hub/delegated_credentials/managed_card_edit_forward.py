@@ -280,8 +280,11 @@ def managed_revoke_kind(record: Any, *, authority_from_record: Callable[[Any], A
 
     if str(getattr(record, "issuer_kind", "") or "").strip() == PROJECT_INVITATION_CONTROL_ISSUER_KIND:
         return "invitation_control"
-    if str(getattr(record, "issuer_kind", "") or "").strip() == "application" \
-            and getattr(record, "control_card", None) is None:
+    try:
+        bound = record.control_card is not None
+    except AttributeError:
+        bound = False
+    if str(getattr(record, "issuer_kind", "") or "").strip() == "application" and not bound:
         return "project_control"
     try:
         owner = managed_my_card_owner(authority_from_record(record))
