@@ -846,7 +846,7 @@ def _verify_destination(
                 except DomainError as exc:
                     errors.append(
                         "The installed SKILL.md cannot be reproduced from its source "
-                        f"snapshot: {exc.message}"
+                        f"snapshot: {exc}"
                     )
                 else:
                     root_reproducible = expected_entrypoint == text
