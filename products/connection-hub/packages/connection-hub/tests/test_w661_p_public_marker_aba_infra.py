@@ -22,6 +22,7 @@ import pytest
 
 pytestmark = pytest.mark.skipif(not (os.environ.get("W661_TEST_PG_DSN") and os.environ.get("W661_TEST_REDIS_URL")),
                                 reason="W661_TEST_PG_DSN and W661_TEST_REDIS_URL are required")
+W661_OWN_R_LOCK = True  # builds its own real SDK R locks (1 s TTL); the R-mode harness must not wrap them again
 from redis.asyncio import Redis
 
 from connection_hub.delegated_credentials import durable_io
