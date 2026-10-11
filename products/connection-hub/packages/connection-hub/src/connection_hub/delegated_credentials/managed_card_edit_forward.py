@@ -265,8 +265,8 @@ MANAGED_REVOKE_REASONS = {
                            "This is a pending invitation's Control Card. Withdraw the invitation in Problem Board "
                            "(People > Invitations). Nothing was changed."),
     "project_control": ("managed_card_revoke_project_control_unsupported",
-                        "A project's Control Card cannot be revoked from here; no project route ends it yet. "
-                        "Nothing was changed."),
+                        "A project's Control Card exists as long as the project and ends only when the project "
+                        "is deleted. Nothing was changed."),
     "managed": ("managed_card_revoke_requires_project",
                 "This Card is managed by its project. It ends only through the project's own action in "
                 "Problem Board. Nothing was changed."),
