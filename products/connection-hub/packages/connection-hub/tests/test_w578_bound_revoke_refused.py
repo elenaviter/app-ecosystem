@@ -23,9 +23,10 @@ class _PastTheGuard(Exception):
     pass
 
 
-def _service(*, enabled: bool, bound: bool) -> AutomationAccessService:
+def _service(*, enabled: bool, bound: bool, source: str = "") -> AutomationAccessService:
     service = AutomationAccessService.__new__(AutomationAccessService)
-    record = SimpleNamespace(grantor_subject="platform-user-1", control_card=object() if bound else None)
+    record = SimpleNamespace(grantor_subject="platform-user-1", control_card=object() if bound else None,
+                             source=source)
 
     async def load(access_id, *, grantor_subject):
         return record, module.CARD_STATE_ACTIVE
@@ -52,3 +53,58 @@ async def test_enabled_a_bound_card_revoke_refuses_before_anything_is_ended():
 async def test_an_unbound_card_or_a_disabled_hub_revokes_as_before(enabled, bound):
     with pytest.raises(_PastTheGuard):
         await _service(enabled=enabled, bound=bound).revoke_access(USER, access_id="card-1")
+
+
+# W729: the refusal names the project action that ends each managed kind, for the screen to show.
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind,source,reason", [
+    ("person_my", "", "managed_card_revoke_requires_project_removal"),
+    ("agent", "agent", "managed_card_revoke_requires_unlink"),
+    ("managed", "", "managed_card_revoke_requires_project"),
+])
+async def test_a_bound_card_revoke_refusal_names_its_project_action(monkeypatch, kind, source, reason):
+    from connection_hub.delegated_credentials import managed_card_edit_forward
+
+    monkeypatch.setattr(module, "card_authority_from_record", lambda record: record)
+    monkeypatch.setattr(managed_card_edit_forward, "managed_my_card_owner",
+                        lambda authority: ("work:project:p", "platform-user-1") if kind == "person_my" else None)
+    result = await _service(enabled=True, bound=True, source=source).revoke_access(USER, access_id="card-1")
+    assert result["error"] == "card_transactions_direct_write_refused" and result["status"] == 409
+    assert result["reason"] == reason
+    assert "Nothing was changed." in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_managed_project_control_revoke_refusal_says_no_route_ends_it_yet():
+    service = _service(enabled=True, bound=False)
+    service._managed_project_control_refused = lambda record: {
+        "ok": False, "error": "card_transactions_direct_write_refused", "status": 409}
+    record = SimpleNamespace(grantor_subject="platform-user-1", control_card=None, source="", issuer_kind="application")
+
+    async def load(access_id, *, grantor_subject):
+        return record, module.CARD_STATE_ACTIVE
+
+    service._load_record_any_state = load
+    result = await service.revoke_access(USER, access_id="card-p")
+    assert result["error"] == "card_transactions_direct_write_refused"
+    assert result["reason"] == "managed_card_revoke_project_control_unsupported"
+
+
+def test_each_managed_kind_names_its_project_action():
+    """W729: the reason table covers every managed kind, and each message says nothing changed."""
+    from connection_hub.delegated_credentials.managed_card_edit_forward import (
+        MANAGED_REVOKE_REASONS, managed_revoke_kind)
+
+    def kind(**fields):
+        record = SimpleNamespace(**{"issuer_kind": "", "control_card": object(), "source": "", **fields})
+        return managed_revoke_kind(record, authority_from_record=lambda r: r, agent_source="agent")
+
+    assert kind(issuer_kind="project-invitation", control_card=None) == "invitation_control"
+    assert kind(issuer_kind="application", control_card=None) == "project_control"
+    assert kind(source="agent") == "agent"
+    assert kind() == "managed"
+    assert {reason for reason, _ in MANAGED_REVOKE_REASONS.values()} == {
+        "managed_card_revoke_requires_project_removal", "managed_card_revoke_requires_unlink",
+        "managed_card_revoke_requires_invitation_withdraw", "managed_card_revoke_project_control_unsupported",
+        "managed_card_revoke_requires_project"}
+    assert all(message.endswith("Nothing was changed.") for _, message in MANAGED_REVOKE_REASONS.values())

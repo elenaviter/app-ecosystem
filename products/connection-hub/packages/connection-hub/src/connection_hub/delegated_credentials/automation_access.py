@@ -2758,6 +2758,89 @@ class AutomationAccessService:
                     "error": "managed_card_edit_" + outcome["state"], "status": 409,
                     "message": "The project did not save this change. Your draft is kept."})}
 
+    async def _managed_grant_base(self, record: AutomationAccessRecord) -> AutomationAccessRecord:
+        """W727: the managed Card a grant merges into is its durable current revision.
+
+        The serving projection ``_load_record`` reads can be behind a project transaction's commit (live 10 Oct
+        22:49Z), so a grant right after a Save would merge into the Card as it was before that Save. Only a
+        managed target (the caller's own My Card, a bound agent Card) with Card transactions on is re-read;
+        every other Card keeps the record its caller loaded.
+        """
+        if self._managed_direct_write_refused() is None:
+            return record
+        from .managed_card_edit_forward import managed_my_card_owner
+        if managed_my_card_owner(card_authority_from_record(record)) is None and record.control_card is None:
+            return record
+        loaded = await self._load_record_any_state(record.access_id, grantor_subject=record.grantor_subject)
+        if loaded is None or loaded[1] != CARD_STATE_ACTIVE or loaded[0].card_revision < record.card_revision:
+            return record
+        return loaded[0]
+
+    async def _forward_managed_grant(
+        self, user: Mapping[str, Any], *, record: AutomationAccessRecord, candidate: AutomationAccessRecord,
+        expected_card_revision: int | None, request_id: str | None, label: str | None,
+        authorize_agent_card: Callable[[str, str], Awaitable[Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        """W727: a focused grant (the Cards screen's "add permission") on a managed Card, by the project's transaction.
+
+        Live W705, 11 Oct 13:46:33Z: after a committed My Card Save, the screen's grant for the newly ticked
+        operation was refused card_transactions_direct_write_refused. The grant's merged result (``candidate``,
+        the Card's full current selection plus the addition) is forwarded as one managed edit: the caller's own
+        My Card (W724), or a bound project agent Card the project host authorizes for this actor (W638). None when
+        Card transactions are off or ``record`` is neither: the caller's direct path, and W578, stay as they were.
+        A committed answer carries the Card as it is now, so the next grant fences on the advanced revision.
+        """
+        if self._managed_direct_write_refused() is None:
+            return None
+        from .managed_card_edit_forward import managed_my_card_owner
+        agent = managed_my_card_owner(card_authority_from_record(record)) is None
+        if agent and record.control_card is None:
+            return None
+        selection: dict[str, Any] = {
+            "resource_grants": {res: list(vals) for res, vals in candidate.resource_grants.items()},
+            "resource_operations": {res: list(vals) for res, vals in candidate.resource_operations.items()},
+            "account_scope": {provider: {account: list(claims) for account, claims in accounts.items()}
+                              for provider, accounts in candidate.account_scope.items()},
+        }
+        named = candidate.named_service_operations.to_stored()
+        if named != record.named_service_operations.to_stored():
+            if not isinstance(named, Mapping):
+                return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
+                        "message": "Only the Card's selection is changed by this edit. Nothing was saved."}
+            selection["named_service_operations"] = dict(named)
+        if not request_id:
+            digest = hashlib.sha256(json.dumps(
+                [_subject_from_user(user), record.access_id, expected_card_revision, selection],
+                sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+            request_id = "card-grant:" + digest[:48]
+        if agent:
+            project_ref = _clean(record.control_card.issuer_ref)
+            if authorize_agent_card is None:
+                return None  # no project policy to ask: W578 refuses the direct write
+            decision = await authorize_agent_card(record.access_id, project_ref)
+            if isinstance(decision, dict):
+                return decision  # the project host's own refusal
+            forwarded = await self._forward_agent_card_edit(user, record=record, project_ref=project_ref,
+                request_id=request_id, changes={**selection, "label": label,
+                                                "expected_card_revision": expected_card_revision})
+        else:
+            forwarded = await self._forward_own_my_card_edit(
+                user, record=record, request_id=request_id, expected_card_revision=expected_card_revision,
+                selection=selection, properties=None, composition_mode=None, label=label,
+                accepted_operations=None)
+        if forwarded is None or forwarded.get("ok") is not True:
+            return forwarded
+        forwarded = {**forwarded, "access_id": record.access_id}
+        try:  # the durable current Card, never a serving projection that may still be behind this commit
+            loaded = await self._load_record_any_state(record.access_id, grantor_subject=record.grantor_subject)
+        except CardUnavailable:
+            loaded = None  # committed; the answer's managed_card_edit names the revision
+        current = loaded[0] if loaded is not None else None
+        if current is not None and current.card_revision == forwarded["managed_card_edit"]["card_revision"]:
+            forwarded["access"] = current.to_public_dict()
+            await self.notify_change(record.grantor_subject, action="extended", access=forwarded["access"])
+        return forwarded
+
     def bind_managed_control_scopes(self, prefixes: Iterable[str]) -> None:
         """W578: the scopes in which a configured coordinator plans a project's Control Card (P).
 
@@ -4295,6 +4378,9 @@ class AutomationAccessService:
         ttl_seconds: Any = None,
         client_id: str | None = None,
         merge_existing: bool = True,
+        expected_card_revision: int | None = None,
+        request_id: str | None = None,
+        _authorize_agent_card: Callable[[str, str], Awaitable[Any]] | None = None,
         _application_write: bool = False,
     ) -> dict[str, Any]:
         """Create a delegated-access grant the current user grants to a client.
@@ -4536,6 +4622,8 @@ class AutomationAccessService:
                 existing = await self._load_record(
                     access_id, grantor_subject=grantor_subject
                 )
+                if existing is not None:
+                    existing = await self._managed_grant_base(existing)  # W727
             except CardUnavailable as exc:
                 return {
                     "ok": False,
@@ -4794,6 +4882,22 @@ class AutomationAccessService:
             )
         except ApplicationOperationPolicyError as exc:
             return _application_policy_refusal(exc)
+        if existing is not None and self._managed_direct_write_refused() is not None:
+            # W727: a grant onto a managed Card (the caller's own My Card, or a bound agent Card the
+            # project authorizes) is that project's transaction; no credential is minted for it. A grant
+            # never renames the Card (the route defaults the label to the client id), so no label travels.
+            forwarded = await self._forward_managed_grant(
+                user, record=existing, expected_card_revision=expected_card_revision, request_id=request_id,
+                label=None, authorize_agent_card=_authorize_agent_card,
+                candidate=replace_fields(
+                    existing,
+                    resource_grants={key: tuple(value) for key, value in selected_resource_grants.items()},
+                    resource_operations={key: tuple(value) for key, value in selected_resource_operations.items()},
+                    named_service_operations=selected_named_service_operations,
+                    account_scope={provider: {account_id: tuple(claims) for account_id, claims in accounts.items()}
+                                   for provider, accounts in selected_account_scope.items()}))
+            if forwarded is not None:
+                return forwarded
 
         ttl = _bounded_ttl(ttl_seconds)
         now = int(time.time())
@@ -11198,6 +11302,9 @@ class AutomationAccessService:
         named_service_operations: Mapping[str, Any] | str | None = None,
         replace: bool = False,
         label: str | None = None,
+        expected_card_revision: int | None = None,
+        request_id: str | None = None,
+        _authorize_agent_card: Callable[[str, str], Awaitable[Any]] | None = None,
     ) -> dict[str, Any]:
         """Edit an EXISTING delegated client's card (an unknown client is never
         created here). ``access_id`` selects an exact existing card when a
@@ -11286,6 +11393,16 @@ class AutomationAccessService:
                 "ok": False,
                 "error": "delegated_access_client_mismatch",
                 "status": 409,
+            }
+        try:
+            record = await self._managed_grant_base(record)  # W727
+        except CardUnavailable as exc:
+            return {
+                "ok": False,
+                "error": "delegated_cards_unavailable",
+                "reason": exc.reason,
+                "retryable": True,
+                "status": 503,
             }
         # Claims must stay inside the deployment's delegable ceiling for the
         # resource when the catalog knows it.
@@ -11446,6 +11563,14 @@ class AutomationAccessService:
             self._resource_grants(dict(record.resource_operations)))
         if changes:
             return managed_grant_refusal(changes)
+        # W727: a managed Card (the caller's own My Card, or a bound agent Card the project authorizes)
+        # changes only through its project's transaction. ``expected_card_revision`` is the revision the
+        # screen last saw, required for a managed Card only.
+        forwarded = await self._forward_managed_grant(
+            user, record=record, candidate=updated, expected_card_revision=expected_card_revision,
+            request_id=request_id, label=new_label or None, authorize_agent_card=_authorize_agent_card)
+        if forwarded is not None:
+            return forwarded
         try:
             await self._persist_record(updated, expected_revision=record.card_revision,
                                        caller_write=CallerWrite("extend", self._caller_actor_subject(user)))
@@ -11837,7 +11962,7 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
         refused = self._managed_project_control_refused(record)
         if refused is not None:
-            return refused
+            return _managed_revoke_refusal(refused, record)
         if record.control_card is not None:
             # W578: ending a Card bound under a Control (a person's My Card, a
             # project-bound agent Card) changes the authority its Control's
@@ -11845,7 +11970,7 @@ class AutomationAccessService:
             # owner's transaction may end it; until it is enlisted it refuses.
             refused = self._managed_direct_write_refused()
             if refused is not None:
-                return refused
+                return _managed_revoke_refusal(refused, record)
         if self._issuer_managed(record) and not has_expectations:
             return {"ok": False, "error": "delegated_access_revoke_precondition_required", "status": 409}
         if has_expectations and record.card_revision != expected_card_revision:
@@ -12020,3 +12145,17 @@ __all__ = [
     "notify_delegated_access_changed",
     "register_delegated_access_live_session",
 ]
+
+
+
+def _managed_revoke_refusal(refused: Mapping[str, Any], record: Any) -> dict[str, Any]:
+    """The W578 refusal of a managed Card's revoke, naming the project action that ends that kind (W729).
+
+    The error and status stay W578's, so a screen that knows that code keeps working; ``reason`` and
+    ``message`` come from the project domain (managed_card_edit_forward.managed_revoke_reason).
+    """
+    from .managed_card_edit_forward import managed_revoke_reason
+
+    reason, message = managed_revoke_reason(record, authority_from_record=card_authority_from_record,
+                                            agent_source=ACCESS_SOURCE_AGENT)
+    return {**dict(refused), "reason": reason, "message": message}
