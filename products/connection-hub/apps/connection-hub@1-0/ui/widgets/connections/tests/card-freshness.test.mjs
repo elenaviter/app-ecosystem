@@ -80,7 +80,8 @@ test('the panel moves the pin only through these rules', () => {
     'editBaseRevision.current = pinAtStart(item);',
     'editBaseRevision.current = null;', // clearEditState: the editor closed
     'editBaseRevision.current = pinAfterRefusal(editBaseRevision.current);',
-    'editBaseRevision.current = pinAfterSave(editBaseRevision.current, updated.access);',
+    'editBaseRevision.current = pinAfterCommit(editBaseRevision.current, updated);',
+    'editBaseRevision.current = pinAfterCommit(editBaseRevision.current, granted);', // W727: each focused grant
   ])
 })
 

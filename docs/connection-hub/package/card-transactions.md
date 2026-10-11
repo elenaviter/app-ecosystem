@@ -264,7 +264,8 @@ forwards it to the project host that plans that scope, and the host makes it
 in its own transaction. The managed Cards are a person Control bound under a
 project's Control (`project_person_control_update` for a person), a pending
 invitation's Control, a project agent Card, the project's Control (P), and
-(W724) a person's own project My Card (`update_access` by its owner).
+(W724) a person's own project My Card (`update_access` by its owner). A
+focused grant on a My Card or an agent Card is forwarded too (W727, below).
 
 - **What travels.** `{schema: managed-card-edit.v1, actor_subject, project_ref,
   request_id, target: {kind, principal_key, original_revision}, selection}`,
@@ -339,6 +340,36 @@ properties refuses before anything is sent. The host plans it with
 Card bound directly under the scope's project Control, and its display kind is
 `agent_card`. `reselect_project_control` plans an edit of the project Control
 itself under `project.control.update`.
+
+**A focused grant ("add permission", W727)** is the Cards screen's
+`delegated_agent_grant_create` for one newly ticked operation, sent after the
+editor's own Save. On the caller's own My Card, or on an agent Card bound under
+a project Control, it is forwarded the same way: as `person_my` (W724), or as
+`agent_card` once the project host authorized the person for that Card
+(`ProjectAgentCardAccess.authorize_write`, the same W319 decision
+`project_agent_card_update` asks for). It is sent for that Card's bound project.
+
+- **Selection.** Its `selection` is the Card's whole resulting selection: the
+  grant's existing merge (`extend_client_access`, or `create_access` for an
+  existing agent Card) applied to the durable current Card. A serving
+  projection that is still behind the editor's Save is never the base.
+- **Revision.** The request carries `expected_card_revision`, the revision the
+  screen last saw. A managed target without it refuses
+  `managed_card_edit_revision_required` and sends nothing. Every other Card
+  ignores it and keeps its direct write unchanged.
+- **The screen's revision chain.** The screen pins the revision from each
+  committed write's answer (`pinAfterCommit`): the base Save's
+  `managed_card_edit.card_revision`, then each grant's. Each grant is made
+  against the revision the previous one left.
+- **Invocation mode.** A grant that carries an invocation mode keeps the policy
+  order: prepare the policy change, forward the grant, and commit the policy
+  only when the project answers `committed`.
+  - If the Card committed but the policy commit then failed, the answer is the
+    policy failure plus `outcome: card_committed_policy_pending`, `access_id`
+    and the Card. Retrying the exact same change replays the project's one
+    decision and completes the policy.
+- **No direct fallback.** There is no direct write. Without a forwarder, or
+  without the project's authorization path, W578 keeps refusing.
 
 **A pending invitation's Control Save** (`project_person_control_update` with
 `invitation_ref`) is forwarded the same way with `{kind: invitation_control,

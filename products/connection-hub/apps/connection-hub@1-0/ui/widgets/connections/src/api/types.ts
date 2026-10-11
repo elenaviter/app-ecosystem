@@ -465,6 +465,8 @@ export interface DelegatedAccessListResult {
 export interface DelegatedAccessCreateResult {
   ok?: boolean;
   access?: DelegatedAccessRecord;
+  /** W638/W727: a project-managed Card's change, made by the project's transaction. */
+  managed_card_edit?: { state?: string; card_revision?: number; transaction_id?: string };
   access_token?: string;
   authorization_header?: string;
   error?: string;

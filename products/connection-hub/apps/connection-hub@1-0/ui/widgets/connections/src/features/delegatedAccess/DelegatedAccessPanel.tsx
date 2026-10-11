@@ -178,7 +178,7 @@ import {
   isStaleEditRefusal,
   onPendingTooLong,
   pinAfterRefusal,
-  pinAfterSave,
+  pinAfterCommit,
   pinAtStart,
   withLinkedOperation,
 } from './cardFreshness';
@@ -3483,11 +3483,12 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       return;
     }
     // W587: the base save advanced the Card; a retry continues from that revision.
-    editBaseRevision.current = pinAfterSave(editBaseRevision.current, updated.access);
+    // W727: a project-managed Card's Save answers with the transaction's committed revision.
+    editBaseRevision.current = pinAfterCommit(editBaseRevision.current, updated);
     const completedOperations: string[] = [];
     for (const { resource, operation, mode } of focusedAdditions) {
       try {
-        await dispatch(grantAgentAccess(focusedGrantArgs(
+        const granted = await dispatch(grantAgentAccess(focusedGrantArgs(
           {
             clientId: item.client_id as string,
             accessId: item.access_id,
@@ -3497,7 +3498,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
           },
           mode,
           routedKept[resource] || [],
+          // W727: each grant is made against the revision the previous write left.
+          { expectedCardRevision: editBaseRevision.current ?? undefined },
         ))).unwrap();
+        editBaseRevision.current = pinAfterCommit(editBaseRevision.current, granted);
         completedOperations.push(operation);
       } catch (error) {
         const completed = completedOperations.length
