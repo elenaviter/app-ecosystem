@@ -316,6 +316,41 @@ async def test_an_interrupted_activation_recovers_the_same_original_credentials(
 
 
 @pytest.mark.asyncio
+async def test_a_second_consent_waits_for_the_first_issuances_effects_then_uses_its_published_original(tmp_path):
+    """Production planners cannot build on a committed Card whose effects are still pending."""
+    async with _world(tmp_path) as w:
+        first = await _begin(w)
+        first_tokens = await _reserve(w, first)
+        real = w.authority.activate_issued_credential
+
+        async def lost(**_kwargs):
+            raise ConnectionError("database connection lost")
+
+        w.authority.activate_issued_credential = lost
+        assert (await w.service.complete_oauth_issuance(transaction_id=first.transaction_id)).state == "pending"
+        receipt = await tx.read_receipt(w.store, tx.member_transaction_id(first.transaction_id, 0))
+        from connection_hub.delegated_credentials.cards.model import CardCurrentPointer
+        from connection_hub.delegated_credentials.cards.store import CardStorageError
+
+        after = CardCurrentPointer.from_mapping(receipt["after"])
+        assert await w.store.read_revision(subject_hash=w.subject_hash, access_id=first.access_id,
+                                           revision_name=after.revision_name) is None
+        with pytest.raises(CardStorageError, match="card_effects_pending"):
+            await _begin(w, request="exchange-pending-2", scopes=["memories:read", "memories:write"])
+        assert await _usable(w, first_tokens) == {"access": False, "refresh": False}
+
+        w.authority.activate_issued_credential = real
+        assert (await w.service.complete_oauth_issuance(transaction_id=first.transaction_id)).state == "committed"
+        assert await w.store.read_revision(subject_hash=w.subject_hash, access_id=first.access_id,
+                                           revision_name=after.revision_name) is not None
+        second = await _begin(w, request="exchange-pending-2", scopes=["memories:read", "memories:write"])
+        assert (second.base_revision, second.candidate_revision, second.access_id) == (1, 2, first.access_id)
+        second_tokens = await _reserve(w, second)
+        assert (await w.service.complete_oauth_issuance(transaction_id=second.transaction_id)).state == "committed"
+        assert await _usable(w, second_tokens) == {"access": True, "refresh": True}
+
+
+@pytest.mark.asyncio
 async def test_a_late_activation_after_a_newer_card_with_no_family_is_superseded(tmp_path):
     async with _world(tmp_path) as w:
         plan = await _begin(w)
@@ -331,8 +366,11 @@ async def test_a_late_activation_after_a_newer_card_with_no_family_is_superseded
         receipt = await tx.read_receipt(w.store, tx.member_transaction_id(plan.transaction_id, 0))
         from connection_hub.delegated_credentials.cards.model import CardAuthority, CardCurrentPointer
         after = CardCurrentPointer.from_mapping(receipt["after"])
-        current = await w.store.read_revision(subject_hash=w.subject_hash, access_id=plan.access_id,
-                                              revision_name=after.revision_name)
+        assert await w.store.read_revision(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                           revision_name=after.revision_name) is None
+        # Only this out-of-band replacement simulation reads the sealed committed
+        # candidate, just as its owning FINISH effect does; public history stays hidden.
+        current = await tx._effect_candidate(w.store, receipt)
         newer = dataclasses.replace(current, card_revision=2, label="replacement")
         from datetime import datetime, timezone
         pointer = await w.store.write_revision(subject_hash=w.subject_hash, authority=newer,
@@ -406,9 +444,12 @@ async def test_a_replacement_card_at_the_same_revision_supersedes_the_old_reserv
 
         from connection_hub.delegated_credentials.cards.model import CardCurrentPointer
         receipt = await tx.read_receipt(w.store, tx.member_transaction_id(plan.transaction_id, 0))
-        committed = await w.store.read_revision(
+        assert await w.store.read_revision(
             subject_hash=w.subject_hash, access_id=plan.access_id,
-            revision_name=CardCurrentPointer.from_mapping(receipt["after"]).revision_name)
+            revision_name=CardCurrentPointer.from_mapping(receipt["after"]).revision_name) is None
+        # This is an out-of-band incarnation change, not a production successor:
+        # normal planners remain refused until the previous effects finish.
+        committed = await tx._effect_candidate(w.store, receipt)
         replacement = dataclasses.replace(committed, label="re-created elsewhere")
         assert (replacement.card_revision, replacement.expires_at, replacement.state) \
             == (committed.card_revision, committed.expires_at, committed.state)
