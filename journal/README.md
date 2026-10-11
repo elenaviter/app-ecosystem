@@ -7,6 +7,7 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-10-11 | The OAuth issuance plan holds Card version links, and its candidate file is adopted, never copied (applications: kdcube-docs/journal/26/10/connection-hub/oauth-issuance-links) | W698 / W661 scope B: `version_link.py`, the `stg-` staging tag, adoption by the lane-3 intent record, lock-free first-writer planning where a stored plan always wins, the one-off v1 intent purge, and the documented cleanup-disabled residual (bounded cleanup is W704). |
 | 2026-10-06 | Authenticated replies bind a participant to one exact request attempt | Shared canonical HMAC envelopes verify configured signer, audience, direction, every frozen request field and fresh retry echo; signed refusals stay distinct from unsigned transport failure, while application policy and the seven-field durable Receipt remain unchanged. |
 | 2026-10-06 | Bounded recovery pages preserve durable completion and legacy refusal | Generic keyset paging advances past failed and unexpired rows, carries failure continuation, wraps to retry, and retains restart-safe finish receipts without another decision ledger; both PostgreSQL JSON codecs and unchanged legacy bounds are tested. |
 | 2026-10-06 | Exact issuer updates preserve the original Card and recover one durable intent | A widening-only delta binds the full original fingerprint and immutable issuer context; receipt-backed visibility, publication-thread expiry checks, cancellation drain and truthful committed/pending recovery do not claim mounted or activation qualification. |
@@ -123,6 +124,7 @@ that concern this repository so the history is discoverable from here.
 | 2026-10-07 | Original OAuth credentials are issued under their Card decision | Reserved before COMMIT in a table no reader uses, activated only by the decision's effect against the exact committed Card; process-cut recovery returns the original credentials. SDK custody, delivery and session activation stay SDK-owned. |
 
 | 2026-10-09 | KDCube services has an independent application source | Stable service identity and interfaces move under the KDCube product app directory, with explicit Git deployment and migration qualification before removing the platform compatibility copy. |
+| 2026-10-10 | Consumed-attempt replay and changed-input candidate residue | — |
 
 | 2026-10-10 | Frozen links must reach the first consumer, not only restart recovery | Recording an immutable candidate link is insufficient when the authority's first call returns its earlier in-memory intent; exact first-PREPARE receipt comparison detects the duplicate-version path that restart tests miss. [Public contract](../docs/connection-hub/package/card-version-store.md). |
 

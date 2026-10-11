@@ -14,6 +14,8 @@ from contextlib import asynccontextmanager
 
 import pytest
 
+W661_OWN_R_LOCK = True  # these tests build their own R locks; the R-mode harness must not wrap them again
+
 URL = os.environ.get("W661_TEST_REDIS_URL", "")
 pytestmark = pytest.mark.skipif(not URL, reason="W661_TEST_REDIS_URL is not set")
 

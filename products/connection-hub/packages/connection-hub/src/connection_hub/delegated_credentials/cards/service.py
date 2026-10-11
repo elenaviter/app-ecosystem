@@ -372,22 +372,96 @@ class DelegatedCardService:
 
     async def publish_card_version(self, *, txn: str, run_effect: Any = None,
                                    binding: Any = None) -> list[dict[str, Any]]:
-        """W661 PUBLISH: base fence, current.json, marker published, then the recorded effects."""
-        from .transaction_store import card_version_publish, card_version_txn_id
+        """W661 PUBLISH: base fence, current.json, marker published, then the recorded effects.
+
+        Serving stays consistent as in decide_transaction: each member's
+        projection is marked updating before its current.json moves, and its
+        durable current is installed after (live 10 Oct: without this a
+        person Control served v12 for an hour after PB published v13).
+        """
+        from .transaction_store import card_version_publish, card_version_txn_id, read_card_version_marker
 
         card_version_txn_id(txn)
-        return await self._under_txn_locks(txn, lambda: card_version_publish(self._store, txn=txn,
-                                                                             run_effect=run_effect, binding=binding))
+        mutation_id = transaction_mutation_id(txn)
+
+        async def publish() -> list[dict[str, Any]]:
+            marker = await read_card_version_marker(self._store, txn)
+            members = [(m["subject_hash"], m["access_id"]) for m in (marker or {}).get("members", [])]
+            marked = []
+            if marker is not None and marker["state"] == "staged":
+                for m in marker["members"]:
+                    await self._mark_card_version_updating(m, mutation_id=mutation_id)
+                    marked.append(m["access_id"])
+            try:
+                answer = await card_version_publish(self._store, txn=txn, run_effect=run_effect, binding=binding)
+            except BaseException:
+                for access_id in marked:
+                    try:  # the marker goes; readers then restore whatever durable state stands
+                        await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
+                    except Exception:  # noqa: BLE001 - an unreleased marker only expires; readers stay closed
+                        pass
+                raise
+            await self._serve_durable_current(members, mutation_id=mutation_id)
+            return answer
+        return await self._under_txn_locks(txn, publish)
 
     async def rollback_card_version(self, *, txn: str, run_effect: Any = None, release: Any = None,
                                     binding: Any = None, links: Any = (), at: Any = None) -> str:
-        """W661 ROLLBACK: rolled_back | already_published | unknown_txn; never removes a published version."""
-        from .transaction_store import card_version_rollback, card_version_txn_id
+        """W661 ROLLBACK: rolled_back | already_published | unknown_txn; never removes a published version.
+
+        A ROLLBACK that finds the txn published finishes that PUBLISH, so the
+        members' durable current is served afterwards either way.
+        """
+        from .transaction_store import _link_cards, card_version_rollback, card_version_txn_id
 
         card_version_txn_id(txn)
-        return await self._under_txn_locks(txn, lambda: card_version_rollback(self._store, txn=txn,
-                                                                              run_effect=run_effect, release=release,
-                                                                              binding=binding, links=links, at=at))
+
+        async def rollback() -> str:
+            members = sorted(set(await self._card_version_members(txn)) | {
+                (c["subject_hash"], c["access_id"]) for c in _link_cards(links)})
+            state = await card_version_rollback(self._store, txn=txn, run_effect=run_effect, release=release,
+                                                binding=binding, links=links, at=at)
+            await self._serve_durable_current(members, mutation_id=transaction_mutation_id(txn))
+            return state
+        return await self._under_txn_locks(txn, rollback)
+
+    async def _mark_card_version_updating(self, member: Mapping[str, Any], *, mutation_id: str) -> None:
+        """Close readers of one PUBLISH member, fenced on its durable current read under the Card lock (an
+        upsert names no base; PUBLISH itself then refuses a current other than the one STAGE observed). A
+        projection older than it (left by a PUBLISH before this fix) is first brought up to it."""
+        access_id = member["access_id"]
+        current = await self._store.read_current_authority(subject_hash=member["subject_hash"], access_id=access_id)
+        try:
+            await self._reconcile(access_id=access_id, current=current, moment=int(time.time()))
+            await self._mark_transaction_updating(access_id=access_id, mutation_id=mutation_id,
+                                                  expected_revision=current[1].card_revision if current else 0)
+        except CardConflict:
+            raise
+        except Exception as exc:
+            raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
+
+    async def _serve_durable_current(self, members: Sequence[tuple[str, str]], *, mutation_id: str) -> None:
+        """Install each Card's durable current as its serving projection, over this mutation's marker, an
+        absent key or an older projection; one already serving it is left as it is."""
+        moment = int(time.time())
+        for subject_hash, access_id in members:
+            try:
+                current = await self._store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
+                if current is None:
+                    await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
+                    continue
+                authority = current[1]
+                if authority.state == CARD_STATE_REVOKED:
+                    await self._cache.commit_tombstone(
+                        access_id, card_revision=authority.card_revision, mutation_id=mutation_id,
+                        ttl_seconds=self._settings.revoked_tombstone_seconds)
+                    await self._cache.index_remove(subject_hash=subject_hash, access_id=access_id)
+                else:
+                    await self._cache.commit_projection(
+                        authority, mutation_id=mutation_id, ttl_seconds=authority_projection_ttl(authority, moment))
+                    await self._index(authority=authority, subject_hash=subject_hash, moment=moment)
+            except Exception as exc:
+                raise CardServingUnavailable("serving_state_unavailable", access_id=access_id) from exc
 
     async def outcome_card_version(self, *, txn: str, binding: Any = None, links: Any = (),
                                    at: Any = None) -> dict[str, Any]:

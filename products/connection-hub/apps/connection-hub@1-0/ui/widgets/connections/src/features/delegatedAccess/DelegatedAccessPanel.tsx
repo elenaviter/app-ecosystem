@@ -42,6 +42,7 @@ import {
   applicationOperationPropertiesForSelection,
   applicationOperationRolePolicy,
   changeApplicationDefaultRole,
+  changedCardProperties,
   changeApplicationOperationRole,
   delegableApplicationRoles,
   removeApplicationOperationRole,
@@ -3347,16 +3348,17 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       );
       return;
     }
-    const baseProperties = withConversationTargets(
+    const propertiesFor = (policy: ApplicationOperationRolePolicy, targets: string[]) => withConversationTargets(
       applicationOperationPropertiesForSelection({
         properties: item.properties || {},
-        policy: editApplicationRolePolicy,
+        policy,
         selectedOperations: splits[APPLICATION_API_RESOURCE]?.kept || [],
         resourceSelected: APPLICATION_API_RESOURCE in routedKept,
         resourcePreviouslySelected: APPLICATION_API_RESOURCE in (item.resource_grants || {}),
       }),
-      editConversationTargets,
+      targets,
     );
+    const baseProperties = propertiesFor(editApplicationRolePolicy, editConversationTargets);
     const capabilityControl = item.control_card;
     const capabilityAuthority = isAgentCapabilityCard(item)
       ? cardAgentCapabilityAuthority(
@@ -3445,7 +3447,14 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
         compositionMode: item.source === 'control'
           ? (projectPersonControl ? 'and' : editCompositionMode)
           : undefined,
-        properties: selectedProperties,
+        // W661 save #2: a managed person-Control Save carries the selection only; properties travel
+        // only when the person changed one, and the server then names that refusal.
+        properties: projectPersonControl
+          ? changedCardProperties(selectedProperties, propertiesFor(
+            seedApplicationOperationRolePolicy(item.properties, item.resource_grants),
+            cardConversationTargets(item.properties),
+          ))
+          : selectedProperties,
         projectPersonControl: projectPersonControl || undefined,
         projectAgentCard: projectAgentCard || undefined,
         projectControlCard: projectControlCard || undefined,

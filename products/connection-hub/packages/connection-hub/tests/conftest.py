@@ -20,8 +20,10 @@ _R_MODE = os.environ.get("W661_CARD_LOCK_R_MODE") == "1" and bool(os.environ.get
 
 
 @pytest.fixture(autouse=True)
-def _w661_card_lock_r_mode(monkeypatch):
-    if not _R_MODE:
+def _w661_card_lock_r_mode(monkeypatch, request):
+    # A module that builds its own R locks (W661_OWN_R_LOCK) is not wrapped again: a second, production-TTL
+    # lock around a test's short-TTL lock would hold the key the test expects to expire.
+    if not _R_MODE or getattr(request.module, "W661_OWN_R_LOCK", False):
         yield
         return
     import redis.asyncio as aioredis
