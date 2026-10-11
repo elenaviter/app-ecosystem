@@ -112,6 +112,23 @@ def test_a_save_without_a_route_id_gets_one_stable_per_save():
     assert len({ids[0], ids[2], ids[3], ids[4]}) == 4
 
 
+def test_a_project_admin_forwards_as_the_actor_while_the_card_stays_under_its_creator():
+    host = Host()
+    svc = service(host)
+    record = project_control()
+    async def load_record(access_id, *, grantor_subject):
+        assert access_id == record.access_id and grantor_subject == CREATOR
+        return record
+    svc._load_record = load_record
+    result = asyncio.run(svc.control_card_update(
+        {"user_id": CREATOR}, control_id=record.access_id, expected_card_revision=5,
+        accepted_operations={"problem-board": ["project.cards.manage"]},
+        _caller_actor_subject="project-admin"))
+    assert result["ok"] is True
+    assert host.calls[0][2]["actor_subject"] == "project-admin"
+    assert host.calls[0][2]["target"]["subject_hash"] == subject_hash_for(CREATOR)
+
+
 def test_without_a_forwarder_or_for_an_unmanaged_card_nothing_is_forwarded():
     # No forwarder: the caller keeps its direct-write refusal.
     assert save(service(None)) is None

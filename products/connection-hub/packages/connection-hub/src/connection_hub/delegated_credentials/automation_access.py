@@ -2680,7 +2680,7 @@ class AutomationAccessService:
 
     async def _forward_managed_project_control(
         self, user: Mapping[str, Any], *, record: AutomationAccessRecord, request_id: str | None,
-        changes: Mapping[str, Any],
+        changes: Mapping[str, Any], actor_subject: str = "",
     ) -> dict[str, Any] | None:
         """W638: a managed project Control's (P) Save, made by the project's own transaction.
 
@@ -2692,15 +2692,19 @@ class AutomationAccessService:
         """
         if self._managed_project_control_refused(record) is None:
             return None
+        # The Card is loaded under its creator, but an authorized project admin
+        # may be the person who actually pressed Save. Keep that authenticated
+        # actor in the signed project request and its retry identity.
+        forward_user = {"user_id": actor_subject} if actor_subject else user
         if not request_id:
             selection = {field: changes[field] for field in
                          ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
                          if changes.get(field) is not None}
             digest = hashlib.sha256(json.dumps(
-                [_subject_from_user(user), record.access_id, changes.get("expected_card_revision"), selection],
+                [_subject_from_user(forward_user), record.access_id, changes.get("expected_card_revision"), selection],
                 sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
             request_id = "project-control-save:" + digest[:48]
-        return await self._forward_agent_card_edit(user, record=record, project_ref=_clean(record.issuer_ref),
+        return await self._forward_agent_card_edit(forward_user, record=record, project_ref=_clean(record.issuer_ref),
                                                    request_id=request_id, changes=changes, kind="project_control")
 
     async def _forward_own_my_card_edit(
@@ -5729,7 +5733,7 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         access_id: str,
-        resource_grants: Mapping[str, Any],
+        resource_grants: Mapping[str, Any] | None,
         resource_operations: Mapping[str, Any] | None = None,
         operations: Iterable[str] = (),
         named_service_operations: Mapping[str, Any] | str | None = None,
@@ -5814,6 +5818,10 @@ class AutomationAccessService:
             accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version)
         if own_my is not None:
             return own_my
+        # Managed Accept-only edits leave this dimension absent. Ordinary
+        # direct edits still resolve against a complete selection below.
+        if resource_grants is None:
+            resource_grants = existing.resource_grants
         try:
             descriptor_marker = descriptor_control(existing.properties)
         except AgentCapabilityPolicyError as exc:
@@ -7470,6 +7478,7 @@ class AutomationAccessService:
         ]
         | None = None,
         _platform_admin: bool | None = None,
+        _caller_actor_subject: str = "",
     ) -> dict[str, Any]:
         """Edit a Control Card through the ordinary catalog-aware Card path.
 
@@ -7501,6 +7510,7 @@ class AutomationAccessService:
         if refused is not None:
             # W638: a managed P's Save goes through the project's own transaction.
             forwarded = await self._forward_managed_project_control(user, record=existing, request_id=request_id,
+                actor_subject=_caller_actor_subject,
                 changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
                          "named_service_operations": named_service_operations, "account_scope": account_scope,
                          "properties": properties, "composition_mode": composition_mode, "label": label,
@@ -7544,6 +7554,7 @@ class AutomationAccessService:
             _delegable_grants=_delegable_grants,
             _record_transform=_record_transform,
             _platform_admin=_platform_admin,
+            _caller_actor_subject=_caller_actor_subject,
         )
         if updated.get("ok") is not True:
             return updated

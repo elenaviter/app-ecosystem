@@ -148,6 +148,7 @@ def test_an_editor_changes_the_card_audited_within_what_they_could_delegate():
     assert result["ok"] is True and result["access"]["can_edit"] is True
     name, call = host.calls[-1]
     assert name == "control_card_update" and call["user"]["user_id"] == CREATOR, "stored under the creator"
+    assert call["_caller_actor_subject"] == "ada", "the project transaction must see the authenticated editor"
     assert call["control_id"] == CONTROL and call["resource_grants"] == {"problem_board": ["work:relay"]}
     assert call["_delegable_grants"] == ["work:coordinate", "work:relay"], "the acting person's inventory"
     audit = call["transformed"].provenance[PROJECT_CONTROL_CARD_AUDIT_PROVENANCE]

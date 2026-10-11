@@ -504,6 +504,18 @@ async def test_absent_operation_acceptance_stays_none(entrypoint):
 
 
 @pytest.mark.asyncio
+async def test_accept_only_update_keeps_omitted_grants_distinct_from_explicit_empty(entrypoint):
+    payload = {"access_id": "aut_1", "accepted_operations": {"urn:resource:one": ["search"]}}
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance, data=payload)
+    assert entrypoint.service.calls[-1]["resource_grants"] is None
+
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance, data={**payload, "resource_grants": {}})
+    assert entrypoint.service.calls[-1]["resource_grants"] == {}
+
+
+@pytest.mark.asyncio
 async def test_external_client_grant_forwards_explicit_empty_account_scope(entrypoint):
     await entrypoint.module.ConnectionHubEntrypoint.delegated_agent_grant_create(
         entrypoint.instance,

@@ -142,6 +142,14 @@ def test_the_operations_pass_the_person_and_the_body_to_the_project_path(monkeyp
     assert calls[1][2]["expected_card_revision"] == 4 and calls[1][2]["request_id"] == "req-1"
     assert calls[2][2]["profile"] == "coordinator" and calls[2][2]["expected_card_revision"] == 5
 
+    asyncio.run(module.ConnectionHubEntrypoint.project_agent_card_update(
+        instance, data={**base, "accepted_operations": {"problem_board": ["work:relay"]},
+                        "expected_card_revision": 5}))
+    assert calls[-1][2]["resource_grants"] is None
+    asyncio.run(module.ConnectionHubEntrypoint.project_agent_card_update(
+        instance, data={**base, "resource_grants": {}, "expected_card_revision": 5}))
+    assert calls[-1][2]["resource_grants"] == {}
+
 
 def test_a_decision_needs_its_owner():
     assert AgentCardDecision.from_mapping({"allowed": False}).allowed is False

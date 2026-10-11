@@ -305,6 +305,7 @@ class ProjectControlCardAccess:
         result = await self._host.control_card_update(
             self._owner_user(decision),
             control_id=decision.control_id,
+            _caller_actor_subject=_subject(user),
             _delegable_grants=await self._actor_delegable_grants(user, decision.grantor_subject),
             _platform_admin=_platform_admin(user),
             _record_transform=self._audit(user, decision, request_id=request_id),
