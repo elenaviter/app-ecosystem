@@ -333,6 +333,15 @@ class CardTransactionParticipantOperation:
         if not record.terminal or record.state != data["decision"]:
             # Only the decision the authority verified is ever applied (EMain 18:46 #3).
             raise _Refused("card_decision_mismatch")
+        if record.state == "aborted":
+            from .intent_links import finish_unrecorded_abort
+            ended = await finish_unrecorded_abort(self._intents, record, authority=caller.service_id,
+                                                  scope=scope if caller.scope_field else "")
+            if ended is not None:
+                return {"kind": "receipt", "receipt": asdict(await binding.participant._tombstone_receipt(record, ended))}
+            # A concurrent recorder may have won publication since _bound.
+            # Recheck its actual authority/scope before the ordinary FINISH.
+            await self._bound(caller, binding, txid, scope)
         return {"kind": "receipt", "receipt": asdict(await binding.participant.finish(txid, record.state))}
 
 

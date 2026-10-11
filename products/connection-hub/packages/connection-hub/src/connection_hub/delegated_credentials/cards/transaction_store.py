@@ -169,7 +169,8 @@ def tombstone_path(store: Any, transaction_id: str):
     return store.root / "card-transactions" / "aborted" / f"{_checked_id(transaction_id)}.json"
 
 
-async def abort_unstaged(store: Any, transaction_id: str, *, intent_digest: str = "") -> dict[str, Any]:
+async def abort_unstaged(store: Any, transaction_id: str, *, intent_digest: str = "",
+                         finished_binding: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """FINISH(aborted) of a transaction with no prepared receipt: an idempotent abort tombstone.
 
     The coordinator finishes an ABORT on every intent participant, including
@@ -181,13 +182,29 @@ async def abort_unstaged(store: Any, transaction_id: str, *, intent_digest: str 
     if await read_receipt(store, transaction_id) is not None:
         raise CardTransactionRefused("card_transaction_prepared")  # finish it through decide
     tombstone = {"transaction_id": transaction_id, "state": "aborted"}
-    await write_json_atomic(tombstone_path(store, transaction_id), tombstone)
+    if finished_binding is not None:
+        # The authenticated operation has confirmed absence under the hosting
+        # txn section. Never publish an opaque intermediate tombstone: the
+        # first and replayed receipts must hash the same durable evidence.
+        from .intent_links import validate_finished_binding
+        tombstone.update(intent_digest=intent_digest, intent_binding=dict(finished_binding),
+                         intent_finished=True, intent_unrecorded=True)
+        validate_finished_binding(tombstone)
+        existing = await read_json_or_none(tombstone_path(store, transaction_id))
+        if existing is not None and existing != tombstone:
+            raise CardTransactionRefused("card_intent_conflict")
+        if existing is None:
+            await write_json_atomic(tombstone_path(store, transaction_id), tombstone)
+    else:
+        await write_json_atomic(tombstone_path(store, transaction_id), tombstone)
     # A stage that crashed after its catalog fence: the ABORT is the authenticated
     # terminal decision, so this exact intent's fence is released (CodeApp 19:29).
     await _release_catalog(store, transaction_id, intent_digest)
     try:
         await unlink_guarded_async(active_path(store, transaction_id))
     except OSError:
+        if finished_binding is not None:
+            raise  # no authenticated success until exact cleanup succeeds; retry is durable
         pass  # an unstaged entry holds no fence; recovery lists it until removed
     return tombstone
 
