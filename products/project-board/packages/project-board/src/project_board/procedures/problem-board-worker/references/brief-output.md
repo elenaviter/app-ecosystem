@@ -110,9 +110,13 @@ which of three things happened. Read it before any retry.
   is known, nothing applied. Follow the reason (let the channel reopen, read
   `pb worker inspect`), then send again. That is a new decision, not a replay.
 - The request was refused before any write, on its shape or its admission:
-  `work_value_required`, a `field_*_invalid` code, an authorization refusal.
-  Nothing applied. Fix what the code names. Repeating the same request repeats
-  the refusal. On the `pb coordinate` path, `work_coordinate_shape_invalid` and
+  `work_value_required`, a `field_*_invalid` code, an authorization refusal,
+  `work_item_revision_conflict`. Nothing applied. Fix what the code names.
+  Repeating the same request repeats the refusal. A changed request (for example
+  a note at the current `expected_revision` after `work_item_revision_conflict`)
+  is a new request under a new `idempotency_key`; under the old key it is refused
+  `work_operation_idempotency_conflict`, because the refused request stays bound
+  to its key (W718). On the `pb coordinate` path, `work_coordinate_shape_invalid` and
   `work_coordinate_operation_unknown` come from the operation catalog before
   anything is sent, and name the corrected command.
 - The outcome is unknown: the request may have applied and its response been
