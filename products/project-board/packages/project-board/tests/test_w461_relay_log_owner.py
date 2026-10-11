@@ -130,7 +130,11 @@ def test_a_failed_write_flush_or_rollover_is_a_failed_receipt_without_its_text(t
             return _Stream()
 
     async def scenario(failure: str):
-        owner = RelayLogOwner(_Broken(tmp_path / f"{failure}.log", failure))
+        path = tmp_path / f"{failure}.log"
+        if failure == "rollover":
+            # CPython 3.12.10+ never rolls an empty file over (gh-116263); start non-empty so it does here too.
+            path.write_text("earlier line\n", encoding="utf-8")
+        owner = RelayLogOwner(_Broken(path, failure))
         owner.handler.stream = None
         writer = DiagnosticWriter(submit=owner.submit_line, timeout_seconds=2.0)
         receipt = await writer.write(("bucket", 1), "x" * 40)
