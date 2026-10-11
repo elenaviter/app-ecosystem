@@ -61,15 +61,14 @@ class InvocationPolicyConflict(RuntimeError):
         self.current_revision = current_revision
 
 
-# W749 (operator, 11 Oct: "i do not want anything that was prepared and stuck to get in my way"): a
-# PREPARED marker of another change older than this is stuck, and a new change supersedes it. Younger
-# markers may still belong to a Card transaction in flight (PB admits one for 300s and decides within
-# 30s); superseding one of those would leave its committed Card unable to apply its policy.
-PREPARED_SUPERSEDE_AFTER_SECONDS = 600
+def _transaction_owned(change: InvocationPolicyChange) -> bool:
+    """A Card transaction's marker: its change id is ``<transaction>:<authority key>`` (effect_targets).
 
-
-def _superseded(change: InvocationPolicyChange, moment: int) -> bool:
-    return moment - int(change.prepared_at or 0) >= PREPARED_SUPERSEDE_AFTER_SECONDS
+    Its transaction may still COMMIT and apply it, so it is never superseded here (W750 decides
+    that case). Any other PREPARED marker is a direct save's: nothing but its own request commits it,
+    and that request releases it or fails by name (W749).
+    """
+    return change.change_id.endswith(":" + change.authority.key)
 
 
 class InvocationPolicyService:
@@ -182,11 +181,9 @@ class InvocationPolicyService:
                 owner_hash=owner_hash,
                 authority=authority,
             )
-            if change is not None and change.state == POLICY_CHANGE_PREPARED:
-                if not _superseded(change, moment):
-                    raise InvocationPolicyConflict("invocation_policy_change_in_progress")
-                # W749: a stuck earlier attempt never blocks a new one; this direct set supersedes it.
-                await self._store.delete_policy_change(owner_hash=owner_hash, authority=authority)
+            stuck = change is not None and change.state == POLICY_CHANGE_PREPARED
+            if stuck and _transaction_owned(change):
+                raise InvocationPolicyConflict("invocation_policy_change_in_progress")
             current = await self._store.read_policy(
                 owner_hash=owner_hash, authority=authority
             )
@@ -196,6 +193,10 @@ class InvocationPolicyService:
                     "invocation_policy_revision_moved",
                     current_revision=current_revision,
                 )
+            if stuck:
+                # W749: an earlier direct save never blocks a new change. Only now, with the new
+                # change validated, is its marker superseded; its commit is refused by change_id.
+                await self._store.delete_policy_change(owner_hash=owner_hash, authority=authority)
             policy = InvocationPolicy(
                 authority=authority,
                 mode=selected_mode,
@@ -239,16 +240,16 @@ class InvocationPolicyService:
                     return existing
                 if existing.state == POLICY_CHANGE_PREPARED and (
                     existing.change_id == clean_change_id
-                    or not _superseded(existing, moment)
+                    or _transaction_owned(existing)
                 ):
-                    # The same change id asking for another mode is not a new attempt; a marker
-                    # younger than the bound may still belong to a Card transaction in flight.
+                    # The same change id asking for another mode is not a new attempt; a Card
+                    # transaction's marker is unchanged here (W750).
                     raise InvocationPolicyConflict(
                         "invocation_policy_change_in_progress"
                     )
-                # W749: a stuck PREPARED marker of a DIFFERENT change never blocks a new attempt. The
-                # new change replaces it below; the superseded change's commit is then refused by its
-                # change_id (invocation_policy_change_missing).
+                # W749: a direct save's PREPARED marker of a DIFFERENT change never blocks a new
+                # attempt. Once the new change is validated below, it replaces that marker; the
+                # superseded change's commit is then refused by its change_id.
             current = await self._store.read_policy(
                 owner_hash=owner_hash,
                 authority=authority,
