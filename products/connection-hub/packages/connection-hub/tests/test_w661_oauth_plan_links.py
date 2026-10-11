@@ -415,6 +415,9 @@ async def test_the_cleanup_releases_an_unbegun_plans_candidate_once_and_that_pla
                                      revision_name=link["revision_name"])
         assert path.exists()
         assert await w.service.expire_oauth_issuance_reservations() == 0
+        assert await w.service.release_unbegun_oauth_issuance_plans() == 0  # OFF by default: nothing deleted
+        assert path.exists()
+        w.service.enable_oauth_candidate_cleanup()
         assert await w.service.release_unbegun_oauth_issuance_plans() == 1
         assert not path.exists() and _version_files(w, planned["access_id"]) == []
         stored = await w.authority.read_issuance_plan_request(request_id)
@@ -546,7 +549,9 @@ async def test_an_aborted_decision_answers_its_outcome_after_its_adopted_candida
         assert (await w.service.complete_oauth_issuance(transaction_id=plan.transaction_id)).state == "aborted"
 
 @pytest.mark.asyncio
-async def test_an_expired_attempt_is_renewed_by_the_next_begin_and_its_old_file_discarded(tmp_path, monkeypatch):
+@pytest.mark.parametrize("cleanup", [False, True])
+async def test_an_expired_attempt_is_renewed_by_the_next_begin_and_its_old_file_discarded(tmp_path, monkeypatch,
+                                                                                          cleanup):
     """C2 + W704: the renewal is conditional on the clock read and moves to a later clock; under the request section the expired attempt's file is discarded first."""
     async with _world(tmp_path) as w:
         original_put = w.authority.put_issuance_plan
@@ -565,6 +570,7 @@ async def test_an_expired_attempt_is_renewed_by_the_next_begin_and_its_old_file_
         stale_link = json.loads(stale["candidate"])["link"] if isinstance(stale["candidate"], str) \
             else stale["candidate"]["link"]
         monkeypatch.setattr(w.authority, "put_issuance_plan", original_put)
+        w.service.enable_oauth_candidate_cleanup(cleanup)
         real_clock = w.authority.issuance_clock
 
         async def later():  # the renewal runs at a later second, so its candidate is a different file
@@ -574,9 +580,13 @@ async def test_an_expired_attempt_is_renewed_by_the_next_begin_and_its_old_file_
         plan = await _begin(w, request="abandoned")
         assert await w.authority.read_plan_attempt(plan.decision_request_id) is None  # gone once stored
         assert (await _complete(w, plan)).state == "committed"
-        # W704: the renewing planner holds the request's section, so the expired attempt's file went first.
-        assert _version_files(w, plan.access_id) == [(await _stored(w, plan))["intent"]["candidate"]["revision_name"]]
-        assert stale_link["revision_name"] not in _version_files(w, plan.access_id)
+        current = (await _stored(w, plan))["intent"]["candidate"]["revision_name"]
+        if cleanup:  # W704: the renewing planner holds the request's section, so the old file went first
+            assert _version_files(w, plan.access_id) == [current]
+        else:  # OFF (default): no deletion anywhere; the old file stays hidden, never history
+            assert _version_files(w, plan.access_id) == sorted([current, stale_link["revision_name"]])
+            assert await w.store.read_revision(subject_hash=w.subject_hash, access_id=plan.access_id,
+                                               revision_name=stale_link["revision_name"]) is None
 
 @pytest.mark.asyncio
 async def test_expiry_cleanup_keeps_an_already_begun_unbound_plan(tmp_path, monkeypatch):
@@ -590,6 +600,7 @@ async def test_expiry_cleanup_keeps_an_already_begun_unbound_plan(tmp_path, monk
     async with _world(tmp_path) as w:
         coordinator, intents, decisions, _ttl, _store = w.service._issuance_parts()
         w.service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions, intent_ttl_seconds=2)
+        w.service.enable_oauth_candidate_cleanup()
         reached, resume, captured = asyncio.Event(), asyncio.Event(), {}
         original_begin = decisions.begin
 
@@ -821,6 +832,7 @@ async def test_w704_the_cleanup_releases_a_crashed_attempts_file_once_and_a_retr
         _production_sections(w)
         coordinator, intents, decisions, _ttl, _store = w.service._issuance_parts()
         w.service.bind_card_coordinator(coordinator, intents=intents, decisions=decisions, intent_ttl_seconds=2)
+        w.service.enable_oauth_candidate_cleanup()
         original_put = w.authority.put_issuance_plan
 
         async def crash(**_kwargs):
@@ -854,6 +866,7 @@ async def test_w704_the_cleanup_never_touches_a_begun_or_bound_plan(tmp_path):
     """A plan whose decision began and bound is never selected, even past its deadline: its adopted file stays."""
     async with _world(tmp_path) as w:
         _production_sections(w)
+        w.service.enable_oauth_candidate_cleanup()
         plan = await _begin(w, request="w704-bound")
         link = (await _stored(w, plan))["intent"]["candidate"]
         async with w.pool.acquire() as connection:
@@ -908,3 +921,58 @@ async def test_w704_a_second_planner_of_the_same_request_waits_and_never_overtak
         assert await _begin(w, request="w704-no-overtake") == first
         link = (await _stored(w, first))["intent"]["candidate"]
         assert _version_files(w, first.access_id) == [link["revision_name"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crash_at", [None, "delete", "finish"])
+async def test_w704_the_cleanup_claims_before_it_deletes_and_a_crash_after_the_claim_is_finished(
+        tmp_path, monkeypatch, crash_at):
+    """Infra's ordering HOLD: the row is CLAIMED (one conditional statement) before any file is deleted, and
+    finished after. A crash after the claim (before or after the delete) leaves a claimed row that keeps the
+    plan out of begin (issuance_plan_released) and that the next run finishes, exactly once."""
+    async with _world(tmp_path) as w:
+        _production_sections(w)
+        w.service.enable_oauth_candidate_cleanup()
+        request_id, planned = await _unbegun_plan(w, "w704-claim-order")
+        link = planned["intent"]["candidate"]
+        path = w.store.revision_path(subject_hash=w.subject_hash, access_id=planned["access_id"],
+                                     revision_name=link["revision_name"])
+        order = []
+        real_claim, real_discard = w.authority.claim_unbegun_plan_candidate, w.service._discard_planned_candidate
+        real_finish = w.authority.finish_released_plan_candidate
+
+        async def claim(request):
+            order.append("claim")
+            return await real_claim(request)
+
+        async def discard(recorded, request):
+            order.append("delete")
+            if crash_at == "delete":
+                raise RuntimeError("synthetic crash before the delete")
+            return await real_discard(recorded, request)
+
+        async def finish(request):
+            order.append("finish")
+            if crash_at == "finish":
+                raise RuntimeError("synthetic crash before the finish")
+            return await real_finish(request)
+
+        monkeypatch.setattr(w.authority, "claim_unbegun_plan_candidate", claim)
+        monkeypatch.setattr(w.service, "_discard_planned_candidate", discard)
+        monkeypatch.setattr(w.authority, "finish_released_plan_candidate", finish)
+        if crash_at is None:
+            assert await w.service.release_unbegun_oauth_issuance_plans() == 1
+        else:
+            with pytest.raises(RuntimeError, match="synthetic crash"):
+                await w.service.release_unbegun_oauth_issuance_plans()
+        assert order[:3] == ["claim", "delete", "finish"][:len(order[:3])] and order[0] == "claim"
+        stored = await w.authority.read_issuance_plan_request(request_id)
+        assert stored["candidate_released"] is True  # claimed in every case: begin refuses from here on
+        with pytest.raises(IssuanceRefused, match="issuance_plan_released"):
+            await _begin(w, request="w704-claim-order")
+        crash_at = None  # the next run (no crash) finishes the claimed row
+        expected = 0 if order[1:2] == ["delete"] and not path.exists() else 1
+        assert await w.service.release_unbegun_oauth_issuance_plans() == expected
+        assert not path.exists() and _version_files(w, planned["access_id"]) == []
+        assert (await w.authority.read_issuance_plan_request(request_id))["candidate_gone"] is True
+        assert await w.service.release_unbegun_oauth_issuance_plans() == 0

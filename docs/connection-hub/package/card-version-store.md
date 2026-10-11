@@ -141,21 +141,24 @@ The OAuth issuance plan holds two links:
   section nests inside it, never the reverse. A second begin of the same request waits; past the wait it
   refuses the retryable `issuance_request_busy`. No planner can run inside another planner's gap.
   - A renewed attempt moves to a strictly later clock (`GREATEST(now, old + 1)`), so it never names the
-    old file. Inside the section, the planner deletes the old attempt's file first, and also the file of a
-    retry whose Card base moved.
+    old file. Only with candidate cleanup enabled (below), the planner deletes, inside the section, the old
+    attempt's file first, and also the file of a retry whose Card base moved.
   - Right before the file write, the planner re-reads the stored plan. If any plan is stored, even one with
     changed inputs, it writes no file.
-- **Bounded cleanup (W704), not scheduled in this release.** `release_unbegun_oauth_issuance_plans(limit)`
-  is an explicit operation; nothing calls it on a schedule, and enabling it is a separate release decision.
-  - It reads at most `limit` expired attempt rows and `limit` unbound plans past `reserved_until`, through
-    deadline indexes. It never lists files or Cards.
+- **Candidate cleanup is OFF by default (W704).** One switch, `enable_oauth_candidate_cleanup`, gates every
+  planned-candidate deletion: the planner's deletions above and `release_unbegun_oauth_issuance_plans`. Off,
+  nothing is deleted anywhere and the residual stands. Nothing in this package turns it on; turning it on in
+  a deployment is a separate, approved release decision. Nothing schedules the cleanup.
+  - When on, the cleanup reads at most `limit` expired attempt rows and `limit` unbound plans past
+    `reserved_until`, through deadline indexes. It never lists files or Cards.
   - Each request is handled inside its section, taken with a short wait. A busy request is skipped.
-  - The order inside is: verify the row, delete the file, then claim the row with one conditional statement.
-    A crash in between leaves the row, and the next run finishes it.
+  - Claim before delete: verify the row, CLAIM it with one conditional statement (`releasing` on the
+    attempt, `candidate_released` on the plan), delete the file, then finish the row (delete the attempt;
+    mark the plan `candidate_gone`). A crash after the claim leaves a claimed row; the next run re-claims it
+    and finishes, exactly once.
   - Only a file still owned by the request's staging tag is deleted. An adopted file is lane 3's.
-  - A plan is released only when the decision log (`read_request`, read only) shows no decision, or an
-    ABORTED one. A released plan keeps its row (`candidate_released`), and a later begin of that request
-    refuses `issuance_plan_released`.
+  - A plan is claimed only when the decision log (`read_request`, read only) shows no decision, or an
+    ABORTED one. From its claim on, a begin of that request refuses `issuance_plan_released`.
   - With no composed section or no decision-log proof, it releases nothing.
 
 A plan stored before this change still holds bodies and is read as before, until its decision finishes.

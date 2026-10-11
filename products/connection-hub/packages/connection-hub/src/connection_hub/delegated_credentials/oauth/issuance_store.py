@@ -151,7 +151,7 @@ class IssuanceReservationStore:
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""
-                SELECT original_input_digest, transaction_id, plan, candidate_released
+                SELECT original_input_digest, transaction_id, plan, candidate_released, candidate_gone
                 FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
                 WHERE tenant = $1 AND project = $2 AND decision_request_id = $3
                 """,
@@ -160,7 +160,7 @@ class IssuanceReservationStore:
         if row is None:
             return None
         return {**self._plan_row(row), "original_input_digest": str(row["original_input_digest"]),
-                "candidate_released": bool(row["candidate_released"])}
+                "candidate_released": bool(row["candidate_released"]), "candidate_gone": bool(row["candidate_gone"])}
 
     async def read_issuance_plan(self, transaction_id: str) -> dict[str, Any] | None:
         """The stored plan of a decision's transaction, or None."""
@@ -548,7 +548,7 @@ class IssuanceReservationStore:
             await connection.execute(
                 f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
                     SET planned_at = GREATEST($5, planned_at + 1), expires_at = to_timestamp($6::bigint),
-                        candidate = NULL
+                        candidate = NULL, releasing = FALSE
                     WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND planned_at = $4
                       AND expires_at <= clock_timestamp()""",
                 self.tenant, self.project, decision_request_id, int(expected_planned_at), int(planned_at),
@@ -592,11 +592,12 @@ class IssuanceReservationStore:
                 for row in rows]
 
     async def claim_expired_plan_attempt(self, decision_request_id: str, *, planned_at: int) -> dict[str, Any] | None:
-        """Delete the expired attempt of exactly this clock; its recorded candidate (or {} if none), or None when
-        the row changed or is gone."""
+        """CLAIM (before any delete): mark the expired attempt of exactly this clock as releasing; its recorded
+        candidate ({} if none), or None when the row changed or is gone. Re-claiming a releasing row is allowed
+        (crash recovery)."""
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
-                f"""DELETE FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} SET releasing = TRUE
                     WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND planned_at = $4
                       AND expires_at <= clock_timestamp()
                     RETURNING candidate""",
@@ -607,29 +608,48 @@ class IssuanceReservationStore:
         candidate = json.loads(candidate) if isinstance(candidate, str) else candidate
         return dict(candidate or {})
 
+    async def finish_released_plan_attempt(self, decision_request_id: str, *, planned_at: int) -> None:
+        """After the file is gone: remove the CLAIMED attempt of exactly this clock."""
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                f"""DELETE FROM {self.schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND planned_at = $4
+                      AND releasing""",
+                self.tenant, self.project, decision_request_id, int(planned_at))
+
     async def unbegun_expired_plans(self, *, limit: int) -> list[str]:
         async with self._pool.acquire() as connection:
             rows = await connection.fetch(
                 f"""SELECT decision_request_id FROM {self.schema}.{TABLE_ISSUANCE_PLANS}
-                    WHERE tenant = $1 AND project = $2 AND transaction_id IS NULL AND NOT candidate_released
+                    WHERE tenant = $1 AND project = $2 AND transaction_id IS NULL AND NOT candidate_gone
                       AND reserved_until <= clock_timestamp()
                     ORDER BY reserved_until LIMIT $3""",
                 self.tenant, self.project, max(1, min(int(limit), 1000)))
         return [str(row["decision_request_id"]) for row in rows]
 
     async def claim_unbegun_plan_candidate(self, decision_request_id: str) -> dict[str, Any] | None:
-        """Flag an unbound plan past its deadline as candidate-released, once; its plan, or None if it changed."""
+        """CLAIM (before any delete): flag an unbound plan past its deadline candidate_released; its plan, or
+        None if it changed. Re-claiming a released, not yet gone plan is allowed (crash recovery)."""
         async with self._pool.acquire() as connection:
             row = await connection.fetchrow(
                 f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLANS} SET candidate_released = TRUE
                     WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND transaction_id IS NULL
-                      AND NOT candidate_released AND reserved_until <= clock_timestamp()
+                      AND NOT candidate_gone AND reserved_until <= clock_timestamp()
                     RETURNING plan""",
                 self.tenant, self.project, decision_request_id)
         if row is None:
             return None
         plan = row["plan"]
         return json.loads(plan) if isinstance(plan, str) else dict(plan)
+
+    async def finish_released_plan_candidate(self, decision_request_id: str) -> None:
+        """After the file is gone: mark the CLAIMED plan's candidate gone."""
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                f"""UPDATE {self.schema}.{TABLE_ISSUANCE_PLANS} SET candidate_gone = TRUE
+                    WHERE tenant = $1 AND project = $2 AND decision_request_id = $3 AND candidate_released
+                      AND transaction_id IS NULL""",
+                self.tenant, self.project, decision_request_id)
 
     async def issuance_reservations(self, transaction_id: str) -> dict[str, dict[str, str]]:
         """Each slot's reservation of one transaction: state, outcome, bearer digest and pin."""

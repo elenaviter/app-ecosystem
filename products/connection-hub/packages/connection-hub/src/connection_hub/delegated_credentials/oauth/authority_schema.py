@@ -190,13 +190,20 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} (
 -- work grows with abandoned requests (each cleaned row is deleted or flagged), never with Cards or files.
 CREATE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plan_attempts_expiry_idx
     ON {schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS} (tenant, project, expires_at);
--- A plan whose decision never began past its reservation deadline: its planned candidate file is released
--- ONCE (the flag is the conditional claim) and a later begin of that request refuses issuance_plan_released.
+-- Claim BEFORE delete: an expired attempt is first claimed (releasing), then its file is deleted, then the
+-- row is removed; a crash after the claim leaves the claimed row, and the next run finishes it.
+ALTER TABLE {schema}.{TABLE_ISSUANCE_PLAN_ATTEMPTS}
+    ADD COLUMN IF NOT EXISTS releasing BOOLEAN NOT NULL DEFAULT FALSE;
+-- A plan whose decision never began past its reservation deadline: claimed first (candidate_released, and a
+-- later begin of that request refuses issuance_plan_released), then its planned file is deleted, then it is
+-- marked candidate_gone. A claimed plan that is not yet gone is finished by the next run.
 ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
     ADD COLUMN IF NOT EXISTS candidate_released BOOLEAN NOT NULL DEFAULT FALSE;
-CREATE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plans_unbegun_idx
+ALTER TABLE {schema}.{TABLE_ISSUANCE_PLANS}
+    ADD COLUMN IF NOT EXISTS candidate_gone BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS connection_hub_oauth_issuance_plans_unreleased_idx
     ON {schema}.{TABLE_ISSUANCE_PLANS} (tenant, project, reserved_until)
-    WHERE transaction_id IS NULL AND NOT candidate_released;
+    WHERE transaction_id IS NULL AND NOT candidate_gone;
 
 -- W603: the credentials of an original issuance, reserved under its ONE Card
 -- decision before that decision's COMMIT. A reservation is in no table a

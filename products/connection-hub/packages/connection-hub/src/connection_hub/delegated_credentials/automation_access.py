@@ -9994,9 +9994,9 @@ class AutomationAccessService:
             now = await store.pin_plan_attempt(decision_request_id=request, planned_at=now, expires_at=now + ttl)
         elif attempt["expired"]:
             # A crashed attempt past its deadline starts over (only if still the one read), at a strictly later
-            # clock, so it never names the old file. Under the section its old file goes first (W704);
-            # without it the old file is kept (the documented residual).
-            if locked and attempt.get("candidate"):
+            # clock, so it never names the old file. With candidate cleanup ENABLED and under the section, its
+            # old file goes first (W704); otherwise the old file is kept (the documented residual).
+            if locked and self.oauth_candidate_cleanup_enabled() and attempt.get("candidate"):
                 await self._discard_planned_candidate(attempt["candidate"], request)
             now = await store.renew_expired_plan_attempt(decision_request_id=request,
                                                          expected_planned_at=attempt["planned_at"],
@@ -10071,8 +10071,8 @@ class AutomationAccessService:
         at, tag = datetime.fromtimestamp(now, tz=timezone.utc), staging_tag("oauth-issuance-candidate", request)
         link = planned_link(authority=candidate, at=at, tag=tag)
         recorded = {"link": link, "subject_hash": subject_hash, "access_id": candidate.access_id}
-        if locked and attempt is not None and not attempt["expired"] and attempt.get("candidate") \
-                and attempt["candidate"] != recorded:
+        if locked and self.oauth_candidate_cleanup_enabled() and attempt is not None and not attempt["expired"] \
+                and attempt.get("candidate") and attempt["candidate"] != recorded:
             # A retry of a crashed attempt whose Card base moved builds another file: the old one goes (W704).
             await self._discard_planned_candidate(attempt["candidate"], request)
         recorded_row = await store.record_attempt_candidate(decision_request_id=request, planned_at=now,
@@ -10443,54 +10443,73 @@ class AutomationAccessService:
                     return False  # adopted by a transaction: not ours to delete
                 raise
 
+    def enable_oauth_candidate_cleanup(self, enabled: bool = True) -> None:
+        """W704: THE activation switch for every planned-candidate deletion, OFF by default. Off: the planner
+        keeps an old attempt's file and the cleanup releases nothing (no deletion anywhere, the documented
+        residual). On: the planner deletes, inside the request section, the file of an attempt it renews or a
+        moved-base retry abandons, and ``release_unbegun_oauth_issuance_plans`` runs. Turning it on in a
+        deployment is a separate, approved release decision; nothing in this package turns it on."""
+        self._oauth_candidate_cleanup = bool(enabled)
+
+    def oauth_candidate_cleanup_enabled(self) -> bool:
+        return bool(getattr(self, "_oauth_candidate_cleanup", False))
+
     async def release_unbegun_oauth_issuance_plans(self, *, limit: int = 50) -> int:
         """W704: the bounded cleanup of planned candidate files no plan or transaction will use; how many files.
 
-        An explicit operation: nothing schedules it in this release (enabling it is a separate release
-        decision). It reads at most ``limit`` expired attempt rows and ``limit`` unbound plans past their
-        deadline, index-ordered (never a file or Card scan). Each request is handled inside its section, taken
-        with a short wait: a busy request (a planner or begin running) is skipped for the next run. Inside it:
-        verify the row, delete the file (owned by this request's staging tag only), then claim the row with one
-        conditional statement. A crash between the two leaves the row, so the next run finishes it.
-        A plan whose decision began is never released unless that decision ABORTED; nothing is released without
-        a read-only proof from the decision log. Returns 0 when no section or proof is available."""
+        Releases nothing unless ``enable_oauth_candidate_cleanup`` turned it on, and nothing schedules it. It
+        reads at most ``limit`` expired attempt rows and ``limit`` unbound plans past their deadline,
+        index-ordered (never a file or Card scan). Each request is handled inside its section, taken with a
+        short wait; a busy request (a planner or begin running) is skipped for the next run. Inside it:
+        verify the row, CLAIM it with one conditional statement, delete the file (owned by this request's
+        staging tag only), then finish the row. A crash after the claim leaves a claimed row; the next run
+        re-claims it (allowed) and finishes. A plan whose decision began is never claimed unless that decision
+        ABORTED; nothing is claimed without a read-only proof from the decision log. Returns 0 when disabled
+        or when no section or proof is available."""
+        if not self.oauth_candidate_cleanup_enabled():
+            return 0
         _coordinator, _intents, decisions, _ttl, store = self._issuance_parts()
         read_request = getattr(decisions, "read_request", None)
         if read_request is None or self._oauth_request_section("0" * 64) is None:
             return 0
         released = 0
         for row in await store.expired_plan_attempts(limit=limit):
-            request = row["decision_request_id"]
+            request, planned_at = row["decision_request_id"], row["planned_at"]
             async with self._try_oauth_request_section(request) as held:
                 if not held:
                     continue
                 attempt = await store.read_plan_attempt(request)
-                if attempt is None or not attempt["expired"] or attempt["planned_at"] != row["planned_at"]:
+                if attempt is None or not attempt["expired"] or attempt["planned_at"] != planned_at:
                     continue
                 stored = await store.read_issuance_plan_request(request)
-                candidate = attempt.get("candidate") or {}
-                if candidate and not (stored is not None and candidate.get("link") == stored["plan"]["intent"]
-                                      .get("candidate")):
-                    released += int(await self._discard_planned_candidate(candidate, request))
-                await store.claim_expired_plan_attempt(request, planned_at=row["planned_at"])
+                claimed = await store.claim_expired_plan_attempt(request, planned_at=planned_at)
+                if claimed is None:
+                    continue
+                link = claimed.get("link")
+                if link and not (stored is not None and link == stored["plan"]["intent"].get("candidate")):
+                    released += int(await self._discard_planned_candidate(claimed, request))
+                await store.finish_released_plan_attempt(request, planned_at=planned_at)
         for request in await store.unbegun_expired_plans(limit=limit):
             async with self._try_oauth_request_section(request) as held:
                 if not held:
                     continue
                 stored = await store.read_issuance_plan_request(request)
-                if stored is None or stored["transaction_id"] or stored.get("candidate_released"):
+                if stored is None or stored["transaction_id"] or stored.get("candidate_gone"):
                     continue
-                plan = stored["plan"]
-                draft = plan.get("draft") or {}
-                decision = await read_request(str(draft.get("replay_scope") or ""), str(draft.get("request_id") or ""))
-                if decision is not None and not (decision.terminal and decision.state == "aborted"):
-                    continue  # began (or committed): lane 3 owns its candidate
+                if not stored.get("candidate_released"):  # a claimed plan was already proven; finish it
+                    draft = stored["plan"].get("draft") or {}
+                    decision = await read_request(str(draft.get("replay_scope") or ""),
+                                                  str(draft.get("request_id") or ""))
+                    if decision is not None and not (decision.terminal and decision.state == "aborted"):
+                        continue  # began (or committed): lane 3 owns its candidate
+                plan = await store.claim_unbegun_plan_candidate(request)
+                if plan is None:
+                    continue
                 intent = plan.get("intent") or {}
-                deleted = await self._discard_planned_candidate(
+                released += int(await self._discard_planned_candidate(
                     {"link": intent.get("candidate"), "subject_hash": intent.get("subject_hash"),
-                     "access_id": plan.get("access_id")}, request)
-                if await store.claim_unbegun_plan_candidate(request) is not None:
-                    released += int(deleted)
+                     "access_id": plan.get("access_id")}, request))
+                await store.finish_released_plan_candidate(request)
         return released
 
     @asynccontextmanager
