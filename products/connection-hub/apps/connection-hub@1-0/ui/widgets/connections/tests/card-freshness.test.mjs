@@ -80,8 +80,10 @@ test('the panel moves the pin only through these rules', () => {
     'editBaseRevision.current = pinAtStart(item);',
     'editBaseRevision.current = null;', // clearEditState: the editor closed
     'editBaseRevision.current = pinAfterRefusal(editBaseRevision.current);',
-    'editBaseRevision.current = pinAfterSave(editBaseRevision.current, updated.access);',
+    'editBaseRevision.current = pinAfterCommit(editBaseRevision.current, updated);',
   ])
+  // W727: each focused grant moves the same pin through the same rule, inside runFocusedGrants.
+  assert.match(panel, /pin: editBaseRevision,\s+pinAfter: pinAfterCommit,/)
 })
 
 test('the focus effect reads through the rule, with no cached-copy shortcut', () => {
