@@ -45,43 +45,78 @@ def pytest_collection_modifyitems(config, items):
 
 class _LazyPool:
     """A pool stand-in that works under any event loop (pytest-asyncio's loop per test, or a sync test's own
-    asyncio.run): each acquire opens one connection in the running loop and closes it on release, so no
-    connection outlives its loop and nothing is left for the garbage collector ("unclosed" under
-    -W always::ResourceWarning). Statements are serialized per loop, as a one-connection pool would."""
+    asyncio.run): ONE connection per running loop, reused across acquires and serialized by a per-loop lock, as a
+    one-connection pool would. The connection is closed inside its loop's own close(), so none outlives its loop
+    and nothing is left for the garbage collector ("unclosed" under -W always::ResourceWarning), without paying a
+    new connection per statement (timing-sensitive tests, e.g. test_lifecycle_store's cancellation drain)."""
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._locks: dict = {}
+        self._per_loop: dict = {}  # id(loop) -> [loop, lock, connection or None]
 
-    def _lock(self):
+    async def _slot(self):
+        """This loop's [loop, lock, connection]. The entry and its lock are created synchronously, before any
+        await, so concurrent first acquires in one loop share ONE lock; the connection is opened by whichever of
+        them holds that lock first (see acquire), so a second connection is never opened and left behind."""
         loop = asyncio.get_running_loop()
-        entry = self._locks.get(id(loop))
-        if entry is None or entry[0] is not loop:
-            entry = (loop, asyncio.Lock())
-            self._locks[id(loop)] = entry
-        return entry[1]
+        slot = self._per_loop.get(id(loop))
+        if slot is None or slot[0] is not loop:
+            slot = [loop, asyncio.Lock(), None]
+            self._per_loop[id(loop)] = slot
+            self._close_with(loop)
+        return slot
+
+    def _close_with(self, loop) -> None:
+        """Wrap this loop's close() once PER POOL: close this pool's connection in the loop first (asyncio.run and
+        pytest-asyncio both stop the loop, then call close() on it). Each pool registers itself on the loop, so a
+        second pool on the same loop is closed too."""
+        pools = getattr(loop, "_w661_lazy_pools", None)
+        if pools is None:
+            pools = loop._w661_lazy_pools = []
+            original_close = loop.close
+
+            def close() -> None:
+                for pool in list(pools):
+                    pool._close_in(loop)
+                original_close()
+
+            loop.close = close
+        if self not in pools:
+            pools.append(self)
+
+    def _close_in(self, loop) -> None:
+        slot = self._per_loop.pop(id(loop), None)
+        connection = None if slot is None or slot[0] is not loop else slot[2]
+        if connection is None or connection.is_closed():
+            return
+        if not loop.is_running() and not loop.is_closed():
+            try:
+                loop.run_until_complete(connection.close())
+                return
+            except Exception:  # noqa: BLE001 - a test stand-in: never mask the test's own outcome
+                pass
+        connection.terminate()
 
     def acquire(self):
         pool = self
 
         class _Acquire:
             async def __aenter__(self):
-                import asyncpg
-
-                self._lock = pool._lock()
+                slot = await pool._slot()
+                self._lock = slot[1]
                 await self._lock.acquire()
                 try:
-                    self._connection = await asyncpg.connect(pool._dsn)
+                    if slot[2] is None or slot[2].is_closed():
+                        import asyncpg
+
+                        slot[2] = await asyncpg.connect(pool._dsn)
                 except BaseException:
                     self._lock.release()
                     raise
-                return self._connection
+                return slot[2]
 
             async def __aexit__(self, *exc):
-                try:
-                    await self._connection.close()
-                finally:
-                    self._lock.release()
+                self._lock.release()
 
         return _Acquire()
 
@@ -89,7 +124,22 @@ class _LazyPool:
         return None
 
     def terminate(self) -> None:
-        self._locks.clear()
+        """Test teardown: a connection whose loop stopped without close() (a thread's own loop) is closed in that
+        loop now; one on a loop still running elsewhere is aborted."""
+        for loop, _lock, connection in list(self._per_loop.values()):
+            if connection is None or connection.is_closed():
+                continue
+            if not loop.is_running() and not loop.is_closed():
+                try:
+                    loop.run_until_complete(connection.close())
+                    continue
+                except Exception:  # noqa: BLE001 - a test stand-in: never mask the test's own outcome
+                    pass
+            try:
+                connection.terminate()
+            except RuntimeError:
+                pass
+        self._per_loop.clear()
 
 
 class _LazyRows:
