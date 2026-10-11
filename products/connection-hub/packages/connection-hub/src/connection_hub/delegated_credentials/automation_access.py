@@ -11833,7 +11833,7 @@ class AutomationAccessService:
             return {"ok": False, "error": "delegated_access_cross_user_access_denied"}
         refused = self._managed_project_control_refused(record)
         if refused is not None:
-            return refused
+            return _managed_revoke_refusal(refused, record)
         if record.control_card is not None:
             # W578: ending a Card bound under a Control (a person's My Card, a
             # project-bound agent Card) changes the authority its Control's
@@ -11841,7 +11841,7 @@ class AutomationAccessService:
             # owner's transaction may end it; until it is enlisted it refuses.
             refused = self._managed_direct_write_refused()
             if refused is not None:
-                return refused
+                return _managed_revoke_refusal(refused, record)
         if self._issuer_managed(record) and not has_expectations:
             return {"ok": False, "error": "delegated_access_revoke_precondition_required", "status": 409}
         if has_expectations and record.card_revision != expected_card_revision:
@@ -12016,3 +12016,49 @@ __all__ = [
     "notify_delegated_access_changed",
     "register_delegated_access_live_session",
 ]
+
+
+# W729: no project route ends one managed Card on its own (card-transactions.md, "Editing a managed Card from the
+# Hub": a managed edit carries a selection, never a state change). Each kind ends through the project action that
+# owns it (Problem Board cards.md and flows.md), so the W578 refusal names that action for the screen to show.
+_MANAGED_REVOKE_REASONS = {
+    "person_my": ("managed_card_revoke_requires_project_removal",
+                  "A person's My Card ends only when the person is removed from the project, which ends their "
+                  "project Control Card and My Card together. Use People > Remove in Problem Board. "
+                  "Nothing was changed."),
+    "agent": ("managed_card_revoke_requires_unlink",
+              "This agent's Card is linked to a project. Unlink the agent from the project in Problem Board "
+              "first; its own Card can then be revoked here. Nothing was changed."),
+    "project_control": ("managed_card_revoke_project_control_unsupported",
+                        "A project's Control Card cannot be revoked from here; no project route ends it yet. "
+                        "Nothing was changed."),
+    "managed": ("managed_card_revoke_requires_project",
+                "This Card is managed by its project. It ends only through the project's own action in "
+                "Problem Board. Nothing was changed."),
+}
+
+
+def _managed_revoke_kind(record: Any) -> str:
+    from .managed_card_edit_forward import managed_my_card_owner
+
+    if _clean(getattr(record, "issuer_kind", "")) == "application" and getattr(record, "control_card", None) is None:
+        return "project_control"
+    try:
+        owner = managed_my_card_owner(card_authority_from_record(record))
+    except (AttributeError, TypeError, ValueError):  # not a complete Card record: not a My Card
+        owner = None
+    if owner is not None:
+        return "person_my"
+    if _clean(getattr(record, "source", "")) == ACCESS_SOURCE_AGENT:
+        return "agent"
+    return "managed"
+
+
+def _managed_revoke_refusal(refused: Mapping[str, Any], record: Any) -> dict[str, Any]:
+    """The W578 refusal of a managed Card's revoke, with the project action that ends that kind (W729).
+
+    The error and status stay W578's, so a screen that knows that code keeps working; ``reason`` names the
+    kind's route and ``message`` is what the screen shows.
+    """
+    reason, message = _MANAGED_REVOKE_REASONS[_managed_revoke_kind(record)]
+    return {**dict(refused), "reason": reason, "message": message}
