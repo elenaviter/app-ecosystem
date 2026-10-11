@@ -78,7 +78,14 @@ to read.
   earlier attempt under the same `idempotency_key`. The receipt is the original
   one, and nothing was written twice.
 - `state: refused`, with `reason` and `summary`, and where the service gave one
-  an `error.code`, `error.message` and `error.details`.
+  an `error.code`, `error.message` and `error.details`. The refusal is definite:
+  nothing applied. The service keeps it under its `idempotency_key`: the same
+  request under that key repeats the refusal, and any changed request under it
+  is refused `work_operation_idempotency_conflict`. So a retry that changes the
+  request, such as a note sent again at the current `expected_revision` after
+  `work_item_revision_conflict`, is a new request under a new key. That is safe
+  only because the refusal proves nothing applied; after an unknown outcome
+  (below) only the same request under the same key is safe (W718).
 - `observed_revision` is in every receipt, applied or refused. It says which
   revision the service saw, not that anything conflicted. An empty `error` slot
   is not printed.
@@ -103,9 +110,13 @@ which of three things happened. Read it before any retry.
   is known, nothing applied. Follow the reason (let the channel reopen, read
   `pb worker inspect`), then send again. That is a new decision, not a replay.
 - The request was refused before any write, on its shape or its admission:
-  `work_value_required`, a `field_*_invalid` code, an authorization refusal.
-  Nothing applied. Fix what the code names. Repeating the same request repeats
-  the refusal. On the `pb coordinate` path, `work_coordinate_shape_invalid` and
+  `work_value_required`, a `field_*_invalid` code, an authorization refusal,
+  `work_item_revision_conflict`. Nothing applied. Fix what the code names.
+  Repeating the same request repeats the refusal. A changed request (for example
+  a note at the current `expected_revision` after `work_item_revision_conflict`)
+  is a new request under a new `idempotency_key`; under the old key it is refused
+  `work_operation_idempotency_conflict`, because the refused request stays bound
+  to its key (W718). On the `pb coordinate` path, `work_coordinate_shape_invalid` and
   `work_coordinate_operation_unknown` come from the operation catalog before
   anything is sent, and name the corrected command.
 - The outcome is unknown: the request may have applied and its response been

@@ -157,11 +157,15 @@ def _render_error(error: Any) -> str:
         # W563: an additive note (plan.note.append) is retried once with the
         # same text at the current revision; a replacement edit re-reads the
         # item and decides again, because its compare-and-set protects
-        # another writer's change. Never retry an outcome-unknown write with
-        # altered content.
+        # another writer's change. W718: this refusal is definite and applied
+        # nothing, but the service keeps it under its idempotency key, so the
+        # retry (a changed expected_revision) is a new request and needs a new
+        # key; under the old key it is refused work_operation_idempotency_conflict.
+        # Never retry an outcome-unknown write with altered content or a new key.
         lines.append(
-            f"retry: plan.note.append only: the same text, unchanged, with \"expected_revision\": {current}. "
-            "A replacement edit (plan.item.update) reads the item again and decides first."
+            f"retry: plan.note.append only: the same text, unchanged, with \"expected_revision\": {current} "
+            "and a NEW idempotency_key (this refusal applied nothing; the old key stays bound to the refused "
+            "request). A replacement edit (plan.item.update) reads the item again and decides first."
         )
     return "\n".join(lines) + "\n"
 
