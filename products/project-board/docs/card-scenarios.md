@@ -51,6 +51,11 @@ connection hub? if no you absolutely must have it, and check the readiness again
 - A direct write the rule permits on a managed Card changes no authority field. Examples: renewing to a later
   expiry, a label.
 - A refusal names the reason and the Card. The screen keeps the draft.
+- An operation no Card decides, for example a membership read such as `project.control.get`, is still shown on a
+  person's Cards, as in effect and disabled, never hidden. The operator, 11 October 2026 about 13:58Z, verbatim: "Cards hide
+  project.control.get since it's a membership read no Card decides << we still show this (simply disabled)" and
+  "ie.. we must", and "because for other permisisons that also card does not decide we still show them". This supersedes
+  the W560/W667 hiding of 2026-10-09; the same rule applies to every such operation.
 
 ## Card kinds
 
@@ -74,6 +79,7 @@ attempt with its time. `unconfirmed` means no test has run it yet. Times are UTC
 | R1 | admin | P | Open "Manage project access" | PB `project.control.get`, then the Hub `project_control_card_get` | P opens; the button is enabled for an admin | live FAIL 13:44: button disabled, cause not yet known |
 | R2 | member | own C | Open own person Card | Hub `project_person_control_get` | Reads C; editing is admin-only | live PASS 13:42:37 |
 | R3 | member | own My | Open My Card | Hub `delegated_access_list` / Card get | Reads My within C | live PASS 13:46 |
+| R5 | member | own C and My | See the operations no Card decides (membership reads such as `project.control.get`) | Hub person Card editor | Shown as in effect and disabled; never hidden | live FAIL 13:48: `project.control.get` hidden, while other undecided operations are shown disabled (inconsistent) |
 | R4 | admin | A | Open an agent's Card | Hub `project_agent_card_get` | Reads A and its link to P | unconfirmed |
 
 ### Selection Saves (operations already offered on the Card)
