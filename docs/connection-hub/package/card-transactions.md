@@ -340,6 +340,18 @@ Card bound directly under the scope's project Control, and its display kind is
 `agent_card`. `reselect_project_control` plans an edit of the project Control
 itself under `project.control.update`.
 
+**Removing a person from the Hub's Cards screen (W728).** While enabled, `project_person_control_revoke`
+for a live person (`target_subject`) is forwarded the same way, as the project's removal of that person, with
+`{kind: person_removal, principal_key: "user:<person>", original_revision}` and an empty `selection` (no
+acceptance travels). `original_revision` is the person's Control revision the Hub reads now; the request id is
+derived from the actor, project, person and that revision, so a retry replays the host's one decision. The
+host runs its existing removal for the person the Hub authenticated, in ONE decision: the membership ends and
+the person's Control and My Card are revoked. The Hub screen's Remove confirmation is the person's
+confirmation, so the host previews and confirms the same proposal in that call; its admin and target rules
+are unchanged (an owner or admin removes another non-owner person). STAGE fences the person's Control at
+`original_revision`, so a moved Control refuses and nothing is written. Without a forwarder, or for a pending
+invitation (`invitation_ref`), the Hub keeps refusing `card_transactions_direct_write_refused`.
+
 **A pending invitation's Control Save** (`project_person_control_update` with
 `invitation_ref`) is forwarded the same way with `{kind: invitation_control,
 access_id, subject_hash, original_revision}`; the host plans it with

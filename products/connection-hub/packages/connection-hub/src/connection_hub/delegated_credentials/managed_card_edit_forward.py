@@ -38,6 +38,8 @@ OPERATION = "project_card_edit"
 SCHEMA = "managed-card-edit.v1"
 OUTCOME_SCHEMA = "managed-card-edit-outcome.v1"
 TARGET_KINDS = frozenset({"person_control", "person_my", "agent_card", "invitation_control", "project_control"})
+# W728: an admin removing a person travels as its own kind, never as a selection edit.
+REMOVAL_KIND = "person_removal"
 SELECTION_FIELDS = ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
 
 BundleCall = Callable[..., Awaitable[Any]]
@@ -88,6 +90,17 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
         if type(value) is not str or not 0 < len(value) <= 256 or value != value.strip() or not value.isprintable():
             raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     accepted = _accepted_part(accepted_operations)
+    if kind == "person_removal":
+        # W728: an admin's removal of ANOTHER person from the project, made by the host's own removal flow
+        # (membership ended, the person's Control and My Card revoked, one decision). No selection, no
+        # acceptance; the fence is the person's Control revision the Hub read.
+        if (not principal_key.startswith("user:") or principal_key == "user:" + actor_subject
+                or type(original_revision) is not int or original_revision < 1
+                or not isinstance(selection, Mapping) or selection or accepted_operations):
+            raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+        return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref, "request_id": request_id,
+                "target": {"kind": kind, "principal_key": principal_key, "original_revision": original_revision},
+                "selection": {}}
     if not isinstance(selection, Mapping) or (not selection and not accepted):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     if kind == "person_my" and principal_key != "user:" + actor_subject:
