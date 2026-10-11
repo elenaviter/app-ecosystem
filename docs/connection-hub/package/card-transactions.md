@@ -350,6 +350,20 @@ changes nothing answers `{ok: true, unchanged: true}` without a write, so an AND
 not an error. On the project path (`project_control_card_update`) the edit names the person the Hub
 authenticated, never P's storage owner. Every body without the field is byte-identical to before.
 
+**Renaming a managed Card (W735).** A Card's `label` is a display field, not authority. On every managed
+kind (a person's Control, their My Card, a project agent Card, the project Control P, a pending invitation's
+Control) a changed label travels as an exact, signed top-level `label` field of the managed edit, only when it
+differs from the stored name; the planner changes exactly that field, so a rename alone is a real edit and
+the Card's authority stays byte-identical. Every body without it is unchanged.
+
+**Renewing a managed Card (W735).** A Control (P, C) and a person's My Card never carry an expiry: the Card
+model refuses one. Renewing one answers `delegated_access_managed_card_does_not_expire` (409); there is
+nothing to renew. A project agent Card renews by its own source: an agent's credential renews itself; an
+OAuth client's Card is prolonged through its binding's caller-writer policy (W580), expiry forward only. A
+manual bearer bound under a project Control is not reissued: a reissue replaces the Card's credentials,
+which W578 refuses for a bound Card (`card_transactions_direct_write_refused`). Unlink it from the project
+first, then reissue it.
+
 **A focused grant ("add permission", W727)** is the Cards screen's
 `delegated_agent_grant_create` for one newly ticked operation, sent after the
 editor's own Save. On the caller's own My Card, or on an agent Card bound under
