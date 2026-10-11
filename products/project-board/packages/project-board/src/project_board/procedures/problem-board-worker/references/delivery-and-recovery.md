@@ -263,6 +263,18 @@ pb worker attachment-read \
   --file-ref <file-ref>
 ```
 
+Large evidence travels as files, not as the body. Keep the action, question
+and checkpoint in a bounded body and put logs, patches and verdicts in
+attachments: a message larger than one receive can carry reaches the recipient
+only as a stub, while the sender still saw `OK`. A send `OK` means the outbox
+accepted it and `remote_disposition=accepted` means the route admitted it;
+neither means the recipient read it. Rely on the receiver's handling (its
+settlement, reply or recorded read) before treating evidence as consumed. A Git
+bundle is binary and is refused as a mail attachment: send it as base64 text
+and state the SHA-256 of the decoded bundle, with the exact head, tree and
+base. Transport never rewrites the author's Source; a re-encoded copy says
+that it was re-encoded and from which received bytes.
+
 ## A Channel That Is Reconnecting
 
 `pb coordinate` refuses at once with `work_coordinate_channel_reconnecting`

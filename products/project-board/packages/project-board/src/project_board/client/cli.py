@@ -765,7 +765,11 @@ def build_parser() -> argparse.ArgumentParser:
     _agent_identity(command)
 
     command = worker_commands.add_parser(
-        "list", help="List this host's workers with local relay diagnostics."
+        "list",
+        help=(
+            "List this host's workers with local relay diagnostics; host-local only, "
+            "not team availability (see worker context)."
+        ),
     )
     _host_config(command)
 
@@ -1311,7 +1315,12 @@ def build_parser() -> argparse.ArgumentParser:
     _agent_identity(command)
 
     command = worker_commands.add_parser(
-        "context", help="Resolve one attended project's local source and journal paths."
+        "context",
+        help=(
+            "The project's team across hosts (--routing: roles and one row per teammate; "
+            "--member W: one teammate's holds, usage and info), plus this project's local "
+            "source and journal paths."
+        ),
     )
     _host_config(command)
     _agent_identity(command)
