@@ -4620,7 +4620,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                         <input
                           type="checkbox"
                           checked={operation.managed
-                            ? ((item.resource_operations || {})[resource] || []).includes(operation.name)
+                            // W748: an operation no person Card decides shows whether it is in effect for the
+                            // person (declared membership operations); otherwise what the Card holds.
+                            ? (operation.person_undecided && operation.in_effect !== undefined
+                              ? operation.in_effect
+                              : ((item.resource_operations || {})[resource] || []).includes(operation.name))
                             : selected}
                           disabled={operation.managed === true}
                           onChange={(event) => {

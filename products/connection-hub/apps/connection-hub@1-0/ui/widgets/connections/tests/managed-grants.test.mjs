@@ -44,7 +44,8 @@ test('the editor disables managed grants with the generic note and keeps them ou
 
 test('W560: an operation the application decides for a person is shown as held, disabled, and kept as held on Save', () => {
   const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
-  assert.match(panel, /checked=\{operation\.managed\s*\? \(\(item\.resource_operations \|\| \{\}\)\[resource\] \|\| \[\]\)\.includes\(operation\.name\)\s*: selected\}/)
+  // W748: an undecided row with a declared membership mark shows that; otherwise what the Card holds.
+  assert.match(panel, /checked=\{operation\.managed[\s\S]{0,400}?\? operation\.in_effect\s*: \(\(item\.resource_operations \|\| \{\}\)\[resource\] \|\| \[\]\)\.includes\(operation\.name\)\)\s*: selected\}/)
   assert.match(panel, /disabled=\{operation\.managed === true\}/)
   assert.match(panel, /\{operation\.managed \? <small className="grant-chip-managed">\{MANAGED_OPERATION_NOTE\}<\/small> : null\}/)
   assert.match(panel, /const savedResourceOperations = withManagedGrantsAsHeld\([\s\S]*?item\.resource_operations \|\| \{\},[\s\S]*?\.filter\(\(operation\) => operation\.managed\)/)

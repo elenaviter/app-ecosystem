@@ -82,6 +82,9 @@ export interface DelegatedAccessOperationOption {
   hidden?: boolean;
   /** W739: an operation a person's Card does not decide, shown managed and disabled; Save keeps its grants. */
   person_undecided?: boolean;
+  /** W748: for such an operation, whether it is in effect for the person (a membership operation); absent when
+   *  the application declares no membership operations (the tick then shows what the Card holds). */
+  in_effect?: boolean;
 }
 
 /** One operation group a service declares, in display order (W260). */
@@ -98,6 +101,8 @@ export interface DelegatedAccessNamedServiceOperationOption {
   person_card?: boolean;
   /** W739: shown on a person's Card although that Card does not decide it: disabled, never sent by Save. */
   person_undecided?: boolean;
+  /** W748: whether that operation is in effect for the person (see DelegatedAccessOperationOption.in_effect). */
+  in_effect?: boolean;
   label?: string;
   description?: string;
   authority_id?: string;
@@ -142,6 +147,8 @@ export interface DelegatedAccessResourceOption {
   managed_grants?: string[];
   /** W667: the operations a person's Card decides, as the application declares them; absent = all shown. */
   person_card_operations?: string[];
+  /** W748: the operations every member holds by membership, whatever their Card holds (shown ticked, disabled). */
+  person_member_operations?: string[];
   resource_selection?: boolean;
   selectable_resources?: string[];
   selector_type?: string;

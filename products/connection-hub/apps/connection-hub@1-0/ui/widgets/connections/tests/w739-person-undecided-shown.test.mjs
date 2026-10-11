@@ -170,7 +170,7 @@ test('the editor draws managed named rows disabled and never toggles, counts or 
   assert.match(catalog, /managed: policy\.person_undecided === true \|\| tool\.person_undecided === true/)
   assert.match(catalog, /operationRows\(namespace\)\.filter\(\(row\) => !row\.managed\)/)
   assert.match(catalog, /const rows = shownRows\.filter\(\(row\) => !row\.managed\);/)
-  assert.match(catalog, /checked=\{managedHeld\(namespace\.namespace, row\.operation\)\} disabled readOnly/)
+  assert.match(catalog, /checked=\{row\.inEffect \?\? managedHeld\(namespace\.namespace, row\.operation\)\} disabled readOnly/)
   assert.match(catalog, /\{MANAGED_OPERATION_NOTE\}/)
   const panel = readFileSync(new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url), 'utf8')
   assert.match(panel, /resource=\{shownResourceOption \|\| resourceOption\}/)

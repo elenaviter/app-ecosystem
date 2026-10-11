@@ -26,6 +26,8 @@ interface NamedServiceOperationRow {
   group: string;
   /** W739: shown on a person's Card that does not decide it; disabled, never toggled. */
   managed: boolean;
+  /** W748: for a managed row, whether it is in effect for the person; undefined = show what the Card holds. */
+  inEffect?: boolean;
 }
 
 interface DelegatedResourceCatalogProps {
@@ -90,6 +92,8 @@ export function operationRows(namespace: DelegatedAccessNamedServiceNamespaceOpt
           grants,
           group: String(policy.group || tool.group || ''),
           managed: policy.person_undecided === true || tool.person_undecided === true,
+          ...(policy.in_effect !== undefined ? { inEffect: policy.in_effect }
+            : tool.in_effect !== undefined ? { inEffect: tool.in_effect } : {}),
         });
       });
       return;
@@ -105,6 +109,7 @@ export function operationRows(namespace: DelegatedAccessNamedServiceNamespaceOpt
       grants,
       group: String(tool.group || ''),
       managed: tool.person_undecided === true,
+      ...(tool.in_effect !== undefined ? { inEffect: tool.in_effect } : {}),
     });
   });
   return rows;
@@ -378,7 +383,7 @@ export function DelegatedResourceCatalog({
                 if (row.managed) {
                   return (
                     <label className="namespace-operation" key={`${namespace.namespace}:${row.operation}:managed`}>
-                      <input type="checkbox" checked={managedHeld(namespace.namespace, row.operation)} disabled readOnly />
+                      <input type="checkbox" checked={row.inEffect ?? managedHeld(namespace.namespace, row.operation)} disabled readOnly />
                       <span className="namespace-operation__body">
                         <span className="namespace-operation__title">
                           <strong>{row.label}</strong>

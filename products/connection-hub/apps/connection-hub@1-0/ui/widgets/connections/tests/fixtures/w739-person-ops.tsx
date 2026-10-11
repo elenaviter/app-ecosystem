@@ -21,6 +21,7 @@ const operations = [...table.declared, ...table.absent, ...table.role_only].sort
 const catalog = {
   resource: RES, label: 'Problem Board', grants: ['work:read', 'work:write', 'work:admin'],
   person_card_operations: table.declared,
+  person_member_operations: table.membership,  // W748
   operations: operations.map((name) => ({
     name, group: name.split('.')[0], grants: ['work:read'], ...(roleOnly.has(name) ? { person_card: false } : {}),
   })),

@@ -142,6 +142,10 @@ class OAuthDelegatedResourceConfig:
     # other operation is hidden there, never edited. Empty: not declared, every operation shown.
     # Presentation only, outside every digest.
     person_card_operations: tuple[str, ...] = ()
+    # W748: the operations every member of the application's scope (a project) holds by membership,
+    # whatever their Card holds. A person's Card editor shows them ticked ("in effect for you"),
+    # disabled; any other operation no person Card decides shows unticked. Presentation only.
+    person_member_operations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -617,6 +621,13 @@ def _person_card_operations(raw: Any, tools: tuple[Any, ...]) -> tuple[str, ...]
     return tuple(tool.name for tool in tools if tool.name in declared)
 
 
+def _person_member_operations(raw: Any, tools: tuple[Any, ...], decided: tuple[str, ...]) -> tuple[str, ...]:
+    """W748: the declared membership operations, in catalog order, among the resource's own tools and never
+    one a person's Card decides (that one's tick is the Card's own)."""
+    declared = set(_coerce_string_tuple(raw)) - set(decided)
+    return tuple(tool.name for tool in tools if tool.name in declared)
+
+
 def _managed_grants(raw: Any, grants: tuple[str, ...]) -> tuple[str, ...]:
     """A resource's application-managed grants: declared, and only among the resource's own grants."""
     declared = set(_coerce_string_tuple(raw))
@@ -692,6 +703,9 @@ def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
                 managed_grants=_managed_grants(item.get("managed_grants"), explicit_grants or _ordered_union(
                     [*(grant for tool in tools for grant in tool.grants), *namespace_grants])),
                 person_card_operations=_person_card_operations(item.get("person_card_operations"), tools),
+                person_member_operations=_person_member_operations(
+                    item.get("person_member_operations"), tools,
+                    _person_card_operations(item.get("person_card_operations"), tools)),
             )
         )
     return tuple(out)
