@@ -60,6 +60,7 @@ def selection_display(card: Mapping[str, Any]) -> dict[str, Any]:
 def plan_display(
     candidate_value: Mapping[str, Any],
     originals: Mapping[tuple[str, str], Mapping[str, Any] | None],
+    *, person_settings: Mapping[tuple[str, str], tuple[str, str]] | None = None,
 ) -> list[dict[str, Any]]:
     """Project a group with a real before image for every member.
 
@@ -133,6 +134,22 @@ def plan_display(
                     or original.card_revision != before_revision):
                 raise _refuse("card_plan_display_original_revision_changed")
             before = selection_display(original.to_dict())
+        after = selection_display(candidate.to_dict())
+        if person_settings is not None and key in person_settings:
+            from .project_identity_lifecycle import ProjectPersonCardIdentity
+            from .my_card_person_properties_plan import settings_display
+            try:
+                scope, owner = person_settings[key]
+                if before is None or kind != "my_card" or member.get("action") != "update":
+                    raise ValueError
+                for card in (original, candidate):
+                    identity = ProjectPersonCardIdentity.from_my_card(card)
+                    if identity.project_ref != scope or identity.person_subject != owner or card.grantor_subject != owner:
+                        raise ValueError
+                before["properties"] = settings_display(original.properties)
+                after["properties"] = settings_display(candidate.properties)
+            except (ValueError, TypeError):
+                raise _refuse("card_plan_display_person_settings_invalid") from None
         entries.append({
             "access_id": access_id,
             "subject_hash": subject_hash,
@@ -141,8 +158,10 @@ def plan_display(
             "original_revision": before_revision,
             "candidate_revision": candidate.card_revision,
             "before": before,
-            "after": selection_display(candidate.to_dict()),
+            "after": after,
         })
+    if person_settings is not None and set(person_settings) - seen:
+        raise _refuse("card_plan_display_original_missing")
     return sorted(entries, key=lambda entry: (entry["subject_hash"], entry["access_id"]))
 
 

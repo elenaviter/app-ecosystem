@@ -120,6 +120,21 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
     if not isinstance(selection, Mapping) or (not selection and not accepted and composition_mode is None
                                               and label is None):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+    if "properties" in selection:
+        from .my_card_person_properties_plan import settings_selection
+        try:
+            selected = settings_selection(selection)
+        except ValueError:
+            raise ManagedCardEditError("project_person_my_card_property_invalid", 400) from None
+        if (kind != "person_my" or principal_key != "user:" + actor_subject
+                or type(original_revision) is not int or original_revision < 1
+                or accepted_operations is not None or expected_catalog_version is not None
+                or composition_mode is not None or label is not None):
+            raise ManagedCardEditError("managed_card_edit_fields_unsupported", 400)
+        return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref,
+                "request_id": request_id,
+                "target": {"kind": kind, "principal_key": principal_key, "original_revision": original_revision},
+                "selection": selected}
     if kind == "person_my" and principal_key != "user:" + actor_subject:
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)  # only one's own My Card
     extra = {"accepted_operations": accepted} if accepted else {}

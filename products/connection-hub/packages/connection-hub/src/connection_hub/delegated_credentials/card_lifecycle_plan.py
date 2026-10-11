@@ -533,6 +533,7 @@ async def plan_card_lifecycle(
         members: list[dict[str, Any]] = []
         # W607: each member's exact original (None for a creation), for the public before/after display.
         originals: dict[tuple[str, str], Mapping[str, Any] | None] = {}
+        settings_members: dict[tuple[str, str], tuple[str, str]] = {}
         reads_by_key: dict[tuple[str, str], dict[str, Any]] = {}
         live_cache: dict[tuple[str, str], CardAuthority | None] = {}
         row_config: dict[str, Any] = {}
@@ -895,7 +896,7 @@ async def plan_card_lifecycle(
                                    "composition_mode", "label"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
-                                                                    "reselect_invitation_control"})
+                                                                    "reselect_invitation_control", "set_person_properties"})
                     # W723: an acceptance travels only with a selection edit, and the catalog it was
                     # reviewed under only with an acceptance.
                     or ("accepted_operations" in raw and "selection" not in raw)
@@ -942,6 +943,18 @@ async def plan_card_lifecycle(
             except ProjectInvitationControlError:
                 invitation_identity = None
             target = _required_text(raw["target_subject"], "card_plan_target_invalid")
+            if raw["kind"] == "set_person_properties":
+                from .my_card_person_properties_plan import build_person_settings_update, settings_update_valid
+                if not settings_update_valid(raw):
+                    raise CardLifecyclePlanRefused("card_plan_person_settings_invalid", 400)
+                built = build_person_settings_update(
+                    original=original, selection=raw["selection"], decision=decision,
+                    project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id,
+                    request_digest=authorization.request.request_digest)
+                members.append(built["member"])
+                originals[(subject_hash, access_id)] = original.to_dict()
+                settings_members[(subject_hash, access_id)] = (scope, actor)
+                continue
             if "protected_grants" in raw and (raw["kind"] != "reselect"
                                               or not _protected_grants_valid(raw["protected_grants"])):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
@@ -1146,7 +1159,8 @@ async def plan_card_lifecycle(
         candidate_value = group_candidate_value(members)
         # W607: the public before/after of every member, from the exact originals loaded above.
         from connection_hub.delegated_credentials.plan_display import plan_display
-        display = plan_display(candidate_value, originals)
+        display = (plan_display(candidate_value, originals, person_settings=settings_members)
+                   if settings_members else plan_display(candidate_value, originals))
         participant_input = hub_group_participant_input(
             members=members, actor_subject=actor, actor_kind=actor_kind,
             reads=reads, catalog_version_digest=digest,
