@@ -20,13 +20,13 @@ class StoredControl:
     properties = {}
 
 
-def _transactions_on(svc, *, revision=7):
+def _transactions_on(svc, *, revision=7, state="active"):
     svc._card_coordinator = object()  # W578: Card transactions enabled
 
     async def load_record_any_state(access_id, *, grantor_subject):
         stored = StoredControl()
         stored.card_revision = revision
-        return stored, "active"
+        return stored, state
     svc._load_record_any_state = load_record_any_state
     return svc
 
@@ -56,6 +56,35 @@ def test_the_request_id_is_stable_for_a_retry_and_moves_with_the_revision():
     _revoke(_transactions_on(service(host), revision=8))
     ids = [body["request_id"] for _, _, body in host.calls]
     assert ids[0] == ids[1] != ids[2]
+
+
+def test_a_lost_answer_retry_after_the_removal_sends_the_first_body_again():
+    """Infra's W728 review: the project's removal revoked the Control (7 -> 8); the same admin's retry
+    rebuilds the first request's identity, so the project replays its one decision."""
+    host = Host()
+    _revoke(_transactions_on(service(host)))
+    _revoke(_transactions_on(service(host), revision=8, state="revoked"))
+    first, retry = (body for _, _, body in host.calls)
+    assert retry["request_id"] == first["request_id"]
+    assert retry["target"] == first["target"] == {"kind": "person_removal", "principal_key": "user:bob",
+                                                  "original_revision": 7}
+
+
+def test_a_re_invited_persons_removal_is_a_new_decision_and_another_admin_never_replays_it():
+    host = Host()
+    _revoke(_transactions_on(service(host)))
+    _revoke(_transactions_on(service(host), revision=9))  # re-invited: an active Control again, later revision
+    asyncio.run(_transactions_on(service(host), revision=8, state="revoked").project_person_control_revoke(
+        {"user_id": "carol"}, project_ref=PROJECT, target_subject="bob", request_id="audit-3"))
+    first, again, other = (body for _, _, body in host.calls)
+    assert again["request_id"] != first["request_id"] and again["target"]["original_revision"] == 9
+    assert other["request_id"] != first["request_id"] and other["actor_subject"] == "carol"
+
+
+def test_a_revoked_control_with_no_earlier_revision_is_not_forwarded():
+    host = Host()
+    result = _revoke(_transactions_on(service(host), revision=1, state="revoked"))
+    assert result["error"] == "card_transactions_direct_write_refused" and host.calls == [], result
 
 
 def test_an_uncommitted_project_answer_is_returned_and_nothing_is_written_directly():

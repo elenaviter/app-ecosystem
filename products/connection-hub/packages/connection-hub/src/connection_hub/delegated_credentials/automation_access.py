@@ -2644,6 +2644,13 @@ class AutomationAccessService:
         actor, project, person and that revision, so retrying the same removal replays the host's one
         decision. None when no forwarder serves the project or the person has no current Control: the
         caller then keeps W578's refusal.
+
+        A lost-answer retry (Infra's W728 review, 2026-10-11) reads the Control AFTER the host's removal
+        revoked it, one revision on (N -> N+1). It rebuilds the first request's identity, the revision before
+        the revocation, so the body is the first one again and the host replays its recorded decision. The host
+        replays only a request id its own removal audit row holds (the same actor's), so this can only ever
+        repeat that one decision; anything else is the host's own refusal, unchanged. A revoked Control alone
+        is never read as an ended membership: the host decides that from its rows.
         """
         from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body, managed_card_location
         forwarder = self._managed_card_edit_forwarder(project_ref)
@@ -2658,12 +2665,15 @@ class AutomationAccessService:
         stored = current[0] if current is not None else None
         if stored is None or type(stored.card_revision) is not int or stored.card_revision < 1:
             return None
-        digest = hashlib.sha256(json.dumps([actor_subject, project_ref, target_subject, stored.card_revision],
+        revision = stored.card_revision - 1 if current[1] == CARD_STATE_REVOKED else stored.card_revision
+        if revision < 1:
+            return None
+        digest = hashlib.sha256(json.dumps([actor_subject, project_ref, target_subject, revision],
                                            separators=(",", ":")).encode("utf-8")).hexdigest()
         try:
             body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
                 request_id="person-removal:" + digest[:48], kind="person_removal",
-                principal_key="user:" + target_subject, original_revision=stored.card_revision, selection={})
+                principal_key="user:" + target_subject, original_revision=revision, selection={})
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
