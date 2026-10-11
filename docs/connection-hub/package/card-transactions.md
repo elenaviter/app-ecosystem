@@ -259,19 +259,45 @@ version links, reuse the same candidate at STAGE, and retire after all FINISH
 duties succeed. The manifest, compatibility and terminal binding contract is
 in [Card version store](card-version-store.md#hub-transaction-intent-links-and-retirement).
 
-While enabled, a person's Save of a person Control bound under a project's
-Control (`project_person_control_update` for a person, not a pending
-invitation) is not written by the Hub. The Hub forwards it to the project
-host that plans that scope, and the host makes it in its own transaction:
+While enabled, a Save of a managed Card is not written by the Hub. The Hub
+forwards it to the project host that plans that scope, and the host makes it
+in its own transaction. The managed Cards are a person Control bound under a
+project's Control (`project_person_control_update` for a person), a pending
+invitation's Control, a project agent Card, the project's Control (P), and
+(W724) a person's own project My Card (`update_access` by its owner).
 
 - **What travels.** `{schema: managed-card-edit.v1, actor_subject, project_ref,
-  request_id, target: {kind: person_control, principal_key, original_revision},
-  selection}`. The actor is the person the Hub authenticated, from the platform
-  session only. `selection` holds only the fields the person changed
-  (`resource_grants`, `resource_operations`, `named_service_operations`,
-  `account_scope`); the host keeps every other field of the revision-fenced
-  original, never an empty default. A Save that changes properties or the
-  composition, or names no revision, refuses before anything is sent.
+  request_id, target: {kind, principal_key, original_revision}, selection}`,
+  plus the optional fields described below. The actor is the person the Hub
+  authenticated, from the platform session only. `selection` holds only the
+  fields the person changed (`resource_grants`, `resource_operations`,
+  `named_service_operations`, `account_scope`); the host keeps every other
+  field of the revision-fenced original, never an empty default. A Save that
+  changes properties, the composition or the label, or names no revision,
+  refuses before anything is sent.
+- **"Accept update" (W723).** When the person ticked "Accept update" for
+  catalog rows that changed since the Card accepted them, the body also carries
+  `accepted_operations: {resource: [operation, ...]}` (canonical, sorted) and,
+  when the editor provides it, `expected_catalog_version`: the catalog the
+  person reviewed. The host passes both to the Hub's STAGE beside the
+  selection. The Hub applies
+  them with the same `next_resource_acceptance` the direct path uses, so the
+  committed revision records the accepted rows. An acceptance alone is a real
+  edit, and `selection` may then be empty. When `expected_catalog_version` is
+  given and is no longer the active catalog, the Hub refuses
+  `stage_catalog_moved` and writes nothing; an acceptance sent without it is
+  applied to the active catalog. A body without
+  an acceptance carries neither field and is byte-identical to before.
+- **A person's own My Card (W724).** `target.kind` is `person_my` and
+  `principal_key` is the acting person's own `user:` key. Any other person is
+  refused by both the Hub (it forwards only its owner's Save) and the host
+  (`card_edit_actor_role_denied`). The host makes it a reselect of that
+  person's My Card. The Hub keeps refusing every direct authority write to a
+  bound My Card (W578), including after a refused forward: there is no direct
+  fallback. A My Card Save without a route `request_id` gets one derived from
+  the actor, the Card, its expected revision, the selection, the acceptance
+  and the reviewed catalog, so a retry after a refusal under a changed catalog
+  is a new request.
 - **How it is sent.** The signed body travels whole under the operation's
   `data` argument, with `user_id` and `fingerprint` given as `null`. The
   platform otherwise fills those two arguments from the signed-in session, and

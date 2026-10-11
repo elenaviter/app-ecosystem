@@ -29,7 +29,7 @@ from .cards.card_group import group_member
 from .cards.model import CARD_STATE_ACTIVE, CardAuthority, authority_is_credentialless
 from .catalog.descriptors import next_resource_acceptance
 from .controls.model import control_card_id_for_issuer
-from .existing_card_selection_plan import undisplayed_change
+from .existing_card_selection_plan import _accepted, undisplayed_change  # W723: one acceptance validation
 from .controls.project_invitation import (
     PROJECT_INVITATION_CONTROL_ISSUER_KIND, ProjectInvitationControlError, ProjectInvitationControlIdentity,
 )
@@ -81,8 +81,9 @@ def managed_target_kind(original: CardAuthority, *, project_ref: str, kind: str)
 async def build_managed_card_selection_update(
     host: Any, *, original: CardAuthority, kind: str, selection: Mapping[str, Any], active: Any,
     decision: ProjectAuthorizationDecision, project_ref: str, actor_subject: str, request_id: str, now: int,
+    accepted_operations: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """One exact P or agent-Card update from a host-authorized selection, without a write."""
+    """One exact P or agent-Card update from a host-authorized selection, without a write (W723: and its acceptance)."""
     if kind not in OPERATIONS or not isinstance(selection, Mapping) or set(selection) - _SELECTION_FIELDS:
         raise _refuse("card_plan_selection_invalid")
     if type(now) is not int or now < 1:
@@ -119,7 +120,7 @@ async def build_managed_card_selection_update(
         resources=resolved.resource_grants,
         row_for=lambda resource: host._configured_resource(resource, config=catalog_config),
         catalog_version=catalog_version, selected_operations=resolved.resource_operations,
-        previous=original.resource_acceptance)
+        previous=original.resource_acceptance, accepted_operations=_accepted(accepted_operations))
     selected = _with_selection(original, resolved=resolved, catalog_version=catalog_version,
         resource_row_for=lambda resource: host._configured_resource(resource, config=catalog_config))
     candidate = dataclasses.replace(selected, card_revision=original.card_revision + 1,
