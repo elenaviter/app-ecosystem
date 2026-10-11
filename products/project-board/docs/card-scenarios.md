@@ -113,7 +113,7 @@ attempt with its time. `unconfirmed` means no test has run it yet. Times are UTC
 | ID | Actor | Card | Action | Screen request | Expected | Status |
 |---|---|---|---|---|---|---|
 | X1 | holder | My / A | Change a held operation's approval policy (always, once) | Hub `delegated_invocation_policy_set` | Saved; this is stored in the invocation-policy store, not on the Card | unconfirmed (code reading: not a Card write) |
-| X2 | holder | managed Card | Renew to a later expiry | Hub `delegated_access_renew` | Saved; the rule permits it (expiry only forward) | unconfirmed |
+| X2 | holder | managed Card | Renew | Hub `delegated_access_renew` | P, C and My never expire (the Card model forbids an expiry), and the screen offers no renew for them: a renew request is refused by name (`delegated_access_managed_card_does_not_expire`). An agent's own Card renews itself. A bound oauth/manual agent Card that can lapse renews through its existing path | evidence W735 (EApp, 15:52); fix in W735 |
 | X3 | holder | managed Card | Rename (label only) | `delegated_access_update` with a label | Saved; the rule permits it | unconfirmed |
 | X4 | holder | My | Change Card properties or the access rule | `delegated_access_update` | Refused with a named code, because the project route binds the selection only; nothing changes | unconfirmed |
 | X5 | member | own My | Link my GitHub key to the project | Hub `project_person_github_key_link` (MyCardGithubSection) | The key is linked for this project; if it changes My Card, through the project; GitHub tokens then issue for the person's agents | unconfirmed (found by the W730 guard, 14:26) |
