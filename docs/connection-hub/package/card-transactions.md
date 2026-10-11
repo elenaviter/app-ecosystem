@@ -368,6 +368,16 @@ a project Control, it is forwarded the same way: as `person_my` (W724), or as
     policy failure plus `outcome: card_committed_policy_pending`, `access_id`
     and the Card. Retrying the exact same change replays the project's one
     decision and completes the policy.
+  - **Screen recovery** (`focusedGrantRecovery.ts`). The grant thunk keeps a
+    policy-pending answer as an object; it is not turned into an error string.
+    - The editor moves its pin to that answer's Card revision.
+    - It keeps a resume point: the committed base Save's arguments, the grants
+      already added, and the pending grant's exact arguments. Those are the
+      original invocation change id and the original `expected_card_revision`.
+    - Retry Save resends the base Save only if that part of the draft changed.
+      It replays the pending grant unchanged, then adds the operations still
+      missing on the advanced pin.
+    - It never relies on a background list refresh for the revision.
 - **No direct fallback.** There is no direct write. Without a forwarder, or
   without the project's authorization path, W578 keeps refusing.
 
