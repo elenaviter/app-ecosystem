@@ -109,14 +109,18 @@ read every card.
   permissions required by an operation live in the row's tooltip. The row
   names them only when the card does not carry one ("needs canvas:read"),
   because then the person has to act.
-- **A person's Card shows only what the person decides.** An application marks
-  an operation `person_card: false` when it decides that operation for a
-  person by role, not by the Card. A person's Control Card and My Card never
-  show such an operation, whether or not the application also declares
-  `person_card_operations`. With a non-empty declaration, every operation
-  outside it is hidden too. Hiding never edits authority: Save keeps a hidden
-  operation, and the grants it needs, exactly as the Card holds them, and
-  never adds one the Card does not hold. Agent Cards show the whole catalog.
+- **A person's Card edits only what the person decides, and shows the rest
+  disabled.** An application marks an operation `person_card: false` when it
+  decides that operation for a person by role, not by the Card. With a
+  non-empty `person_card_operations` declaration, every operation outside it
+  is undecided too. A person's Control Card and My Card show every undecided
+  operation, outer and named-service alike, ticked as the Card holds it,
+  disabled, "Set by the application"; none is hidden (operator, 2026-10-11:
+  "we still show this (simply disabled)", "ie.. we must"). Showing never edits
+  authority: Save keeps an undecided operation, and the grants it needs,
+  exactly as the Card holds them, and never adds one the Card does not hold.
+  A My Card without a declaration shows its named services as before. Agent
+  Cards show the whole catalog.
 - **Every dense level is a disclosure.** Each card resource is a bounded,
   collapsible section. Service permissions, tools, service actions, and
   connected-account permissions have their own summaries and selected counts,

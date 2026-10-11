@@ -195,7 +195,8 @@ import {
   projectPersonControlCoordinates,
 } from './projectPersonControl';
 import {
-  catalogDriftForPersonCard, hiddenHeldGrants, notOfferedOnPersonCard, resourcesForPersonCard, resourcesForPersonMyCard,
+  catalogDriftForPersonCard, hiddenHeldGrants, namedServicesShownOnPersonCard, namedServicesShownOnPersonMyCard,
+  notOfferedOnPersonCard, resourcesForPersonCard, resourcesForPersonMyCard,
   visibleOperations,
 } from './personCardOperations';
 import { callerEditNote, cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, providerAccountsSummary, readableCardLabel } from './cardLabels';
@@ -4328,6 +4329,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const resourceOption = catalogRowFor(
       resources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key,
     );
+    // W739: a person's Card SHOWS the named-service operations it does not decide, disabled as "Set by the
+    // application". Display only: Save and its offered set keep reading the narrowed `resourceOption`.
+    const shownCatalogRow = resourceOption && (editingPersonControl || editingPersonMy)
+      ? catalogRowFor(catalogResources, resource, (key) => (item.catalog_row_by_resource || {})[key] || key)
+      : undefined;
+    const shownNamedServices = shownCatalogRow
+      ? (editingPersonControl ? namedServicesShownOnPersonCard : namedServicesShownOnPersonMyCard)(shownCatalogRow).named_services
+      : undefined;
+    const shownResourceOption = resourceOption && shownNamedServices
+      ? { ...resourceOption, named_services: shownNamedServices } : resourceOption;
+    const heldManagedNamedOperations = isWildcardNamedServices(item.named_service_operations)
+      && !Object.keys(item.effective_named_service_operations || {}).length
+      ? '*' as const : (cardNamedServiceOperations(item)[resource] || {});
     const editedGrants = editKeptClaims(item, resource);
     const editableClaims = editableClaimsFor(item, resource);
     const isSelectionRoute = resourceFamilyRoot || Boolean(
@@ -4684,7 +4698,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
             not whether its grantor may change authority. */}
           {resourceOption && !isSelectionRoute ? (
           <DelegatedResourceCatalog
-            resource={resourceOption}
+            resource={shownResourceOption || resourceOption}
+            heldManagedOperations={heldManagedNamedOperations}
             selectedGrants={editedGrants}
             selectedOperations={editNamedServiceOperations[resource] || {}}
             onOperationChange={(namespace, operation, operationGrants, checked) => {
