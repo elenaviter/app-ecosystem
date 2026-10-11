@@ -148,7 +148,7 @@ attempt with its time. `unconfirmed` means no test has run it yet. Times are UTC
 | A1 | owner or admin | A + P | Add an agent to the project | PB `project.link_worker` | P is linked to A through the project | unconfirmed |
 | A2 | owner or admin | A + P | Unlink an agent | PB `project.unlink_worker` | Attendance ends, then the P link is removed in the same step; A applies unchanged | unconfirmed |
 | A3 | person | A | Make an agent the coordinator, hand over, return | PB `project.coordinator.*` | The coordinator profile is applied to A through the project | unconfirmed |
-| A4 | admin | A | Evict, retire or restore an agent | PB `worker.evict`, `worker.retire`, `worker.restore` | The agent's Card effect follows the project rule | unconfirmed |
+| A4 | admin | A | Evict, retire or restore an agent | PB `worker.evict`, `worker.retire`, `worker.restore` | Attendance status changes (evict = limbo, restore = active); the agent Card and its P link are unchanged (only unlinking removes the P link, A2) | evict/restore driven PASS (W733 14:33); retire unconfirmed |
 
 ### Enforcement (reading the Cards on every call)
 
