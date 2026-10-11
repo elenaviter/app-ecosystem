@@ -168,6 +168,21 @@ def transaction_mutation_id(transaction_id: str) -> str:
     return "tx-" + str(transaction_id)
 
 
+TXN_SECTION_SHARDS = 256
+
+
+def txn_section_lock_path(store: Any, txn: str) -> Any:
+    """The file of a card-version txn's own section: one of TXN_SECTION_SHARDS fixed files chosen by the txn's
+    digest, so lock files stay bounded (Mint N-P1: a per-txn file would grow with every late rollback). The lock
+    resource stays per txn (under R its Redis key expires with its TTL); unrelated txns on one shard only wait."""
+    import hashlib
+
+    from .transaction_store import card_version_txn_id
+
+    shard = hashlib.sha256(card_version_txn_id(txn).encode("utf-8")).digest()[0] % TXN_SECTION_SHARDS
+    return store.root / "card-versions" / f"txn-section-{shard:02x}.lock"
+
+
 class DelegatedCardService:
     def __init__(
         self,
@@ -177,12 +192,17 @@ class DelegatedCardService:
         mutation_lock: CardMutationLock,
         settings: DelegatedCacheSettings | None = None,
     ) -> None:
+        if isinstance(store, BundleStorageDelegatedCardStore):
+            existing = getattr(store, "_card_intent_service", None)
+            if existing is not None and existing is not self:
+                raise CardConflict("card_intent_service_conflict")
         self._store = store
         self._cache = cache
         self._mutation_lock = mutation_lock
         self._settings = (settings or DelegatedCacheSettings()).cards
         # The recorder reuses this EXACT composed mutation section; it never
         # constructs a separate file-only lock over the same Card storage.
+        # A different service must not replace that composition accidentally.
         if isinstance(self._store, BundleStorageDelegatedCardStore):
             self._store._card_intent_service = self
 
@@ -306,6 +326,19 @@ class DelegatedCardService:
         )
 
     @asynccontextmanager
+    async def _txn_section(self, txn: str):
+        """The card-version txn's own mutation section, for an operation on a txn that names no member Card.
+        Started writes drain inside it, as in _card_version_sections."""
+        from ..durable_io import drain_writes_before_release
+
+        async with self._mutation_lock(
+                lock_path=txn_section_lock_path(self._store, txn),
+                resource_id=f"card-version-txn:{txn}", operation="card-version-txn",
+                wait_seconds=CARD_LOCK_WAIT_SECONDS):
+            async with drain_writes_before_release():
+                yield
+
+    @asynccontextmanager
     async def _card_version_sections(self, cards: Any):
         """W661 v6.2: every member Card's mutation lock, in sorted (subject_hash, access_id) order.
 
@@ -335,8 +368,11 @@ class DelegatedCardService:
 
         members, reads = list(members), list(reads or ())
         try:
-            # Read members (never written) are locked with the written ones, in the one sorted order.
-            async with self._card_version_sections([(m[0], m[1]) for m in members] + [(r[0], r[1]) for r in reads]):
+            # One lock order for every card-version operation: the txn's own section first, then the member
+            # (and read) Cards in the one sorted order. A ROLLBACK or PUBLISH of the same txn that found no
+            # members yet therefore still serializes with this STAGE (Spark, R+PG run 11 Oct).
+            async with self._txn_section(txn), \
+                    self._card_version_sections([(m[0], m[1]) for m in members] + [(r[0], r[1]) for r in reads]):
                 return await card_version_stage(self._store, txn=txn, request_digest=request_digest, catalog=catalog,
                                                 members=members, effects=effects, now=now,
                                                 request_id=request_id, actor=actor, prepare=prepare,
@@ -358,11 +394,15 @@ class DelegatedCardService:
         The members are read first to know which locks to take, then read AGAIN under those locks. If a
         concurrent same-txn STAGE changed them in between, retry (at most 3 times): an operation never acts
         on a member whose lock it does not hold.
+
+        The txn's own section is always taken first (the order STAGE uses too), so an operation that found no
+        members yet cannot interleave with a same-txn STAGE that is creating them: without it, a ROLLBACK
+        holding no Card lock could act on a marker a concurrent STAGE had just written (R+PG run, 11 Oct).
         """
         for _ in range(3):
             expected = sorted(set(await self._card_version_members(txn)))
             try:
-                async with self._card_version_sections(expected):
+                async with self._txn_section(txn), self._card_version_sections(expected):
                     if sorted(set(await self._card_version_members(txn))) != expected:
                         continue
                     return await operation()

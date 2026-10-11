@@ -7,6 +7,7 @@ that concern this repository so the history is discoverable from here.
 
 | Date | Entry | What it holds for this repository |
 | --- | --- | --- |
+| 2026-10-11 | A fallback service registration is a lock-composition boundary | Refusing a different Card service on the same store preserves the original fallback lock; fixtures must reuse their composed service or model another worker with a separate store object over the same durable root. |
 | 2026-10-11 | The OAuth issuance plan holds Card version links, and its candidate file is adopted, never copied (applications: kdcube-docs/journal/26/10/connection-hub/oauth-issuance-links) | W698 / W661 scope B: `version_link.py`, the `stg-` staging tag, adoption by the lane-3 intent record, lock-free first-writer planning where a stored plan always wins, the one-off v1 intent purge, and the documented cleanup-disabled residual (bounded cleanup is W704). |
 | 2026-10-06 | Authenticated replies bind a participant to one exact request attempt | Shared canonical HMAC envelopes verify configured signer, audience, direction, every frozen request field and fresh retry echo; signed refusals stay distinct from unsigned transport failure, while application policy and the seven-field durable Receipt remain unchanged. |
 | 2026-10-06 | Bounded recovery pages preserve durable completion and legacy refusal | Generic keyset paging advances past failed and unexpired rows, carries failure continuation, wraps to retry, and retains restart-safe finish receipts without another decision ledger; both PostgreSQL JSON codecs and unchanged legacy bounds are tested. |
@@ -127,6 +128,9 @@ that concern this repository so the history is discoverable from here.
 | 2026-10-10 | Consumed-attempt replay and changed-input candidate residue | — |
 
 | 2026-10-10 | Frozen links must reach the first consumer, not only restart recovery | Recording an immutable candidate link is insufficient when the authority's first call returns its earlier in-memory intent; exact first-PREPARE receipt comparison detects the duplicate-version path that restart tests miss. [Public contract](../docs/connection-hub/package/card-version-store.md). |
+
+| 2026-10-10 | Card writes get a storage-level version check under the Redis Card lock | Option P: the Card pointer and card-version txn marker become PostgreSQL rows changed only by compare-and-swap, so a holder whose Redis lock expired is refused at write time; activation is a one-way bundle property. Journals: Problem Board project (W700) and Connection Hub card-locks. |
+| 2026-10-11 | A row fence needs an ordered token | The Card row claim takes a fence token from one PostgreSQL sequence, drawn before the owner guard, so a stale operation's late claim can no longer make the live lock owner's save fail; four overnight review schedules (late hint, ABA, lock order, guard-to-SQL stall) each keep a witness. [Public contract](../docs/connection-hub/package/card-version-store.md). Journals: Problem Board project (W700) and Connection Hub card-locks. |
 
 Entries are listed newest last. The store itself is not public; the
 addresses here are titles, and the decisions that matter to users of this

@@ -389,12 +389,15 @@ async def test_unfinished_legacy_v1_intent_can_finish_and_be_retired(tmp_path, d
 @pytest.mark.asyncio
 async def test_concurrent_exact_record_is_serialized_and_preserves_one_frozen_name(tmp_path):
     store, service, source, intent, _, _ = await _unrecorded(tmp_path)
-    lock = asyncio.Lock()
+    locks = {}
     composed_lock = service._mutation_lock
 
     @asynccontextmanager
     async def card_lock(**kwargs):
-        async with lock:
+        # The hosting section is per resource, including the txn publication
+        # lock before member locks. A single non-reentrant fake deadlocks that
+        # legitimate nesting instead of testing concurrent same-Card exclusion.
+        async with locks.setdefault(str(kwargs["lock_path"]), asyncio.Lock()):
             async with composed_lock(**kwargs):
                 yield
 

@@ -225,8 +225,9 @@ async def test_a_publish_stopped_between_pointer_and_marker_is_published_by_roll
     await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
     marker = await tx.read_card_version_marker(store, TXN)
     from connection_hub.delegated_credentials.cards.model import CardCurrentPointer
-    await store.advance_current(subject_hash=SUBJECT_HASH,
-                                pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
+    async with service._critical_section(subject_hash=SUBJECT_HASH, access_id=before.access_id):  # a writer's cut
+        await store.advance_current(subject_hash=SUBJECT_HASH,
+                                    pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
     assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
     assert await service.rollback_card_version(txn=TXN) == "already_published"
     assert not tx.card_version_marker_path(store, TXN).exists()  # finished, so only the version remains
@@ -249,7 +250,9 @@ async def test_invitation_upsert_overwrites_an_existing_id_and_creates_an_absent
 async def test_invite_remove_invite_overwrites_the_same_id_without_any_history_scan(tmp_path):
     """Operator: the card id "NEVER changes"; invitation "UPSERT. overwrite"; no "slot used" refusal."""
     store, service, before, after = await _setup(tmp_path)
-    store.current_path(subject_hash=SUBJECT_HASH, access_id=before.access_id).unlink()  # removed
+    async with service._critical_section(subject_hash=SUBJECT_HASH, access_id=before.access_id):  # removed
+        await store.read_pointer_document(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+        await store.write_pointer_document(subject_hash=SUBJECT_HASH, access_id=before.access_id, document=None)
     again = replace(before, card_revision=1, label="invited again")
     await _stage(service, [(SUBJECT_HASH, before.access_id, None, again)])
     await service.publish_card_version(txn=TXN)
@@ -315,6 +318,8 @@ async def test_every_write_is_fsynced_and_the_marker_holds_links_only(tmp_path, 
     assert len(synced) >= 6  # revision marker, revision, txn marker: each file and its directory
     raw = tx.card_version_marker_path(store, TXN).read_text(encoding="utf-8")
     marker = json.loads(raw)
+    from connection_hub.delegated_credentials.cards.store import MARKER_ROW_ERA_KEY
+    marker.pop(MARKER_ROW_ERA_KEY, None)  # W700 P: the hint's row-era tag (rows on), not Card data
     assert set(marker) == {"schema", "txn", "state", "request_digest", "request_id", "actor", "binding", "at",
                            "catalog", "members", "reads", "effects", "effect_outcomes"}
     assert set(marker["members"][0]) == {"subject_hash", "access_id", "base_version", "observed_version",
@@ -343,11 +348,13 @@ async def test_member_locks_are_taken_in_sorted_order_and_held_for_every_operati
     _, _, before, _ = await _setup(tmp_path / "seed")
     cards = [replace(before, access_id=f"aut_{name}", card_revision=1) for name in ("zz", "aa", "mm")]
     await _stage(service, [(SUBJECT_HASH, c.access_id, None, c) for c in cards])
-    assert taken == ["delegated-card:aut_aa", "delegated-card:aut_mm", "delegated-card:aut_zz"]
+    # W700 P: the txn's own section first (one order for STAGE, PUBLISH, ROLLBACK), then the members sorted.
+    order = ["card-version-txn:" + TXN, "delegated-card:aut_aa", "delegated-card:aut_mm", "delegated-card:aut_zz"]
+    assert taken == order
     taken.clear()
     await service.publish_card_version(txn=TXN)
     # read members, take their locks in order, re-read under the locks
-    assert taken == ["delegated-card:aut_aa", "delegated-card:aut_mm", "delegated-card:aut_zz"]
+    assert taken == order
     assert held == set()
 
 
@@ -362,8 +369,7 @@ async def test_stage_and_rollback_of_one_txn_serialize_on_the_card_lock(tmp_path
             await asyncio.sleep(0)
             yield
 
-    store, _, before, after = await _setup(tmp_path)
-    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    store, service, before, after = await _setup(tmp_path, mutation_lock=mutation_lock)
     staged, answer = await asyncio.gather(_stage(service, [(SUBJECT_HASH, before.access_id, 1, after)]),
                                           service.rollback_card_version(txn=TXN))
     marker = await tx.read_card_version_marker(store, TXN)
@@ -495,8 +501,7 @@ async def test_a_cancelled_stage_drains_its_thread_write_before_rollback_can_run
         async with locks.setdefault(str(lock_path), asyncio.Lock()):
             yield
 
-    store, _, before, after = await _setup(tmp_path)
-    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    store, service, before, after = await _setup(tmp_path, mutation_lock=mutation_lock)
     files_before = _revision_files(store, before)
     real_write = durable_io._write_text_atomic
     entered, resume, order = threading.Event(), threading.Event(), []
@@ -554,7 +559,11 @@ def _locked_service(store):
     async def mutation_lock(*, lock_path, resource_id, operation, wait_seconds):
         async with locks.setdefault(str(lock_path), asyncio.Lock()):
             yield
-    return DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    # A separate worker composes a fresh store object over the same durable root.
+    reopened = BundleStorageDelegatedCardStore(store.root.parent.parent,
+                                               lifecycle_lock_scope=store.lifecycle_lock_scope)
+    tx.bind_transaction_decisions(reopened, store._card_transaction_decisions)
+    return DelegatedCardService(store=reopened, cache=_Cache(), mutation_lock=mutation_lock)
 
 
 @pytest.mark.asyncio
@@ -736,8 +745,9 @@ async def test_a_reader_sees_the_new_version_once_current_names_it_even_before_t
     await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
     marker = await tx.read_card_version_marker(store, TXN)
     assert await _current(store, before) == before
-    await store.advance_current(subject_hash=SUBJECT_HASH,
-                                pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
+    async with service._critical_section(subject_hash=SUBJECT_HASH, access_id=before.access_id):  # a writer's cut
+        await store.advance_current(subject_hash=SUBJECT_HASH,
+                                    pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
     assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
     assert await _current(store, before) == after
 
@@ -913,18 +923,21 @@ async def test_read_members_are_locked_in_the_one_sorted_order_with_the_written_
         taken.append(resource_id)
         yield
 
-    store, base_service, before, after = await _setup(tmp_path)
+    store, service, before, after = await _setup(tmp_path, mutation_lock=mutation_lock)
     control = replace(before, access_id="aut_aa_control", card_revision=1)
-    await base_service.commit(control, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
-    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
+    await service.commit(control, subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
+    taken.clear()  # measure the operation, not fixture seeding
     await service.stage_card_version(txn=TXN, request_digest=DIGEST, catalog="c", now=WHEN,
                                      members=[(SUBJECT_HASH, before.access_id, 1, after)],
                                      reads=[(SUBJECT_HASH, control.access_id, 1)])
-    assert taken == sorted(taken) and set(taken) == {f"delegated-card:{control.access_id}",
-                                                     f"delegated-card:{before.access_id}"}
+    # W700 P: the txn's own section first, then the written and read members in the one sorted order.
+    assert taken[0] == "card-version-txn:" + TXN
+    assert taken[1:] == sorted(taken[1:]) and set(taken[1:]) == {f"delegated-card:{control.access_id}",
+                                                                 f"delegated-card:{before.access_id}"}
     taken.clear()
     await service.publish_card_version(txn=TXN)
-    assert set(taken) == {f"delegated-card:{control.access_id}", f"delegated-card:{before.access_id}"}
+    assert taken[0] == "card-version-txn:" + TXN
+    assert set(taken[1:]) == {f"delegated-card:{control.access_id}", f"delegated-card:{before.access_id}"}
 
 
 @pytest.mark.asyncio
@@ -956,3 +969,39 @@ async def test_a_read_member_is_never_written_and_answers_no_link(tmp_path):
         await service.stage_card_version(txn="w661-txn-" + "f" * 32, request_digest=DIGEST, catalog="c", now=WHEN,
                                          members=[(SUBJECT_HASH, control.access_id, 1, replace(control, card_revision=2))],
                                          reads=[(SUBJECT_HASH, control.access_id, 1)])
+
+
+def test_a_txn_section_uses_one_of_a_bounded_set_of_lock_files(tmp_path):
+    """Mint N-P1: a txn with no member Card takes its own section; its lock file is one of 256 shards, the same
+    for the same txn, so late rollbacks never grow the lock root."""
+    from connection_hub.delegated_credentials.cards.service import TXN_SECTION_SHARDS, txn_section_lock_path
+    from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
+
+    store = BundleStorageDelegatedCardStore(tmp_path)
+    paths = {txn_section_lock_path(store, "w661-txn-" + f"{i:032x}") for i in range(5000)}
+    assert len(paths) <= TXN_SECTION_SHARDS
+    txn = "w661-txn-" + "a" * 32
+    assert txn_section_lock_path(store, txn) == txn_section_lock_path(store, txn)
+
+
+@pytest.mark.asyncio
+async def test_many_late_rollbacks_leave_a_bounded_set_of_lock_files(tmp_path, monkeypatch):
+    """Mint N-P1 / EMain: after many late ROLLBACKs (txns naming no member) through the Hub's container-local lock
+    mapping, the lock root holds at most the 256 txn-section shards: no per-txn file growth."""
+    from connection_hub.delegated_credentials.cards.locks import container_local_lock
+    from connection_hub.delegated_credentials.cards.service import TXN_SECTION_SHARDS
+
+    monkeypatch.setattr(tx, "KEEP_ROLLBACK_MARKER", True)
+    lock_root = tmp_path / "_card_locks"
+    lock_root.mkdir()
+
+    @asynccontextmanager
+    async def file_lock(*, lock_path, resource_id, operation, wait_seconds):
+        pathlib.Path(lock_path).touch()  # a flock leaves its file behind, as the SDK's observed file lock does
+        yield {}
+
+    store = BundleStorageDelegatedCardStore(tmp_path / "cards")
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=container_local_lock(file_lock, lock_root))
+    for i in range(600):
+        assert await service.rollback_card_version(txn="w661-txn-" + f"{i:032x}") == "unknown_txn"
+    assert 0 < len(list(lock_root.iterdir())) <= TXN_SECTION_SHARDS

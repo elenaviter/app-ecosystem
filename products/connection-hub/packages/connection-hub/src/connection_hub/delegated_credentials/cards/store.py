@@ -23,7 +23,7 @@ import os
 import pathlib
 import re
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 
 from connection_hub.delegated_credentials.cards.model import (
     CardAuthority,
@@ -36,6 +36,7 @@ from connection_hub.delegated_credentials.durable_io import (
     DurableStorageError,
     list_child_names,
     read_json_or_none,
+    unlink_guarded_async,
     write_json_atomic,
 )
 
@@ -117,6 +118,35 @@ class DelegatedCardStore(Protocol):
     ) -> CardAuthority | None: ...
 
 
+# W700 P: a card-version marker hint written while the rows are on carries this key (Infra's late-hint HOLD).
+MARKER_ROW_ERA_KEY = "_card_rows_era"
+
+
+
+async def _guard_row_write(path) -> None:
+    """A row write passes the SAME writer guards as the file write it stands for (proc-only, and under R the
+    Card-lock owner check), BEFORE the CAS: a writer whose Redis lock expired is refused card_lock_lost before
+    it can advance the row, instead of landing the row and failing only at the file hint (Ops' R+P stall run)."""
+    from connection_hub.delegated_credentials.durable_io import _check_write_guards_async
+
+    await _check_write_guards_async(path)
+
+
+async def _guard_row(rows, path) -> None:
+    """Every row claim, adoption and CAS: draw this operation's fence token FIRST, then the owner guard. A guard
+    that passes after the draw proves the lock was held when the token was drawn, so a successor on that lock
+    draws a larger one (Ops' late-claim review of b1693251: a stale claim must lose, never the successor)."""
+    await rows.draw_fence()
+    await _guard_row_write(path)
+
+
+def _without_era(document):
+    if isinstance(document, dict) and MARKER_ROW_ERA_KEY in document:
+        document = {key: value for key, value in document.items() if key != MARKER_ROW_ERA_KEY}
+    return document
+
+
+
 class BundleStorageDelegatedCardStore:
     """``DelegatedCardStore`` over a shared bundle-storage root."""
 
@@ -134,6 +164,9 @@ class BundleStorageDelegatedCardStore:
         # shared NFS/SMB mount is not proof of coherent cross-host flock.
         self.lifecycle_lock_scope = lifecycle_lock_scope if lifecycle_lock_scope in (
             "same-host-flock", "shared-flock-verified") else ""
+        # W661 lock (b) b-core: PostgresCardRows when the host runs lock_backend=postgres. Then the pointer row
+        # is the authority and current.json a hint written after it; without it the file is the pointer.
+        self.card_rows: Any = None
 
     @property
     def root(self) -> pathlib.Path:
@@ -157,6 +190,105 @@ class BundleStorageDelegatedCardStore:
             / validated_revision_name(revision_name)
         )
 
+    async def read_pointer_document(self, *, subject_hash: str, access_id: str) -> dict | None:
+        """The Card's raw pointer document (any current.json schema), or None when the Card has none.
+
+        b-core: the row decides once it exists; current.json is never preferred over it (C2). Without a row,
+        nobody wrote this Card since the cutover: a writer holding THIS Card's lock adopts the file into a row
+        (first touch, no scan); a reader without that lock reads the file and creates nothing.
+        """
+        path = self.current_path(subject_hash=subject_hash, access_id=access_id)
+        rows = self.card_rows
+        if rows is None:
+            return await read_json_or_none(path)
+        from .locks import current_lock_session
+        from .pointer_authority import ABSENT_POINTER
+
+        session = current_lock_session()
+        holder = session is not None and session.holds(f"delegated-card:{validated_access_id(access_id)}")
+        if holder:
+            await _guard_row(rows, path)  # the Card's lock holder claims the row: guarded like a write
+        document, _revision = await rows.read_pointer(subject_hash=subject_hash, access_id=access_id,
+                                                      claim=holder)
+        if document is None:
+            hint = await read_json_or_none(path)
+            if hint is None:
+                return None
+            if not holder:
+                return hint
+            await _guard_row(rows, path)
+            document, _revision = await rows.adopt_pointer(subject_hash=subject_hash, access_id=access_id,
+                                                           document=hint)
+        return None if document == ABSENT_POINTER else document
+
+    async def write_pointer_document(self, *, subject_hash: str, access_id: str, document: dict | None) -> None:
+        """Replace (or with None remove) the Card's pointer. b-core: the row CAS first, then the file hint."""
+        path = self.current_path(subject_hash=subject_hash, access_id=access_id)
+        if self.card_rows is not None:
+            from .pointer_authority import ABSENT_POINTER
+
+            await _guard_row(self.card_rows, path)
+            await self.card_rows.write_pointer(subject_hash=subject_hash, access_id=access_id,
+                                               document=ABSENT_POINTER if document is None else dict(document))
+        if document is None:
+            await unlink_guarded_async(path)
+        else:
+            await write_json_atomic(path, dict(document))
+
+    def card_version_marker_path(self, txn: str) -> pathlib.Path:
+        return self._root / "card-versions" / f"{txn}.json"
+
+    async def read_marker_document(self, txn: str) -> dict | None:
+        """The card-version txn marker (R1). b-core: the row decides once it exists; a marker file written before
+        the cutover is adopted only by an operation that holds a Card lock (every marker op does); a lock-free
+        reader reads the file and creates nothing.
+
+        Infra's late-hint HOLD (24fdd314): every hint written while the rows are on carries MARKER_ROW_ERA_KEY.
+        A tagged hint with no row is a hint of a row that was DELETED (a stale writer's late file write after a
+        conditional delete): it reads as absent, is never adopted, and a locked reader removes it. Only an
+        untagged hint, written before the cutover, can be adopted. No per-txn tombstone row is kept."""
+        path = self.card_version_marker_path(txn)
+        rows = self.card_rows
+        if rows is None:
+            return _without_era(await read_json_or_none(path))
+        from .locks import current_lock_session
+
+        session = current_lock_session()
+        locked = session is not None and bool(session.resources)
+        if locked:
+            await _guard_row(rows, path)  # a locked read claims the row: guarded like a write
+        document, _revision = await rows.read_marker(txn, claim=locked)
+        if document is None:
+            hint = await read_json_or_none(path)
+            if hint is None:
+                return None
+            if isinstance(hint, dict) and hint.get(MARKER_ROW_ERA_KEY) is True:
+                if locked:
+                    await unlink_guarded_async(path)  # an orphan hint of a deleted row: bounded cleanup
+                return None
+            if not locked:
+                return hint
+            await _guard_row(rows, path)
+            document, _revision = await rows.adopt_marker(txn, hint)
+        return document
+
+    async def write_marker_document(self, txn: str, document: dict) -> None:
+        """R1: the marker's every transition is a CAS on its row, then the file hint (tagged as row-era when the
+        rows are on, so a late hint can never resurrect a deleted row)."""
+        hint = dict(document)
+        if self.card_rows is not None:
+            await _guard_row(self.card_rows, self.card_version_marker_path(txn))
+            await self.card_rows.write_marker(txn, dict(document))
+            hint[MARKER_ROW_ERA_KEY] = True
+        await write_json_atomic(self.card_version_marker_path(txn), hint)
+
+    async def delete_marker_document(self, txn: str) -> None:
+        """R1: removal is a CAS too (a stale deleter never removes a newer state), then the file hint."""
+        if self.card_rows is not None:
+            await _guard_row(self.card_rows, self.card_version_marker_path(txn))
+            await self.card_rows.delete_marker(txn)
+        await unlink_guarded_async(self.card_version_marker_path(txn))
+
     async def read_current(
         self, *, subject_hash: str, access_id: str, consult_decision: bool = True
     ) -> CardCurrentPointer | None:
@@ -166,9 +298,7 @@ class BundleStorageDelegatedCardStore:
         grants: a Card inside a Card transaction then reads as its last locally committed revision instead
         of refusing while the coordinator's decision or its effects are outstanding.
         """
-        payload = await read_json_or_none(
-            self.current_path(subject_hash=subject_hash, access_id=access_id)
-        )
+        payload = await self.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
         if payload is None:
             return None
         # Old readers reject this schema. New readers resolve staged pointers
@@ -330,10 +460,8 @@ class BundleStorageDelegatedCardStore:
     async def advance_current(self, *, subject_hash: str, pointer: CardCurrentPointer) -> None:
         from .lifecycle_store import assert_pointer_replaceable
         await assert_pointer_replaceable(self, subject_hash=subject_hash, access_id=pointer.access_id)
-        await write_json_atomic(
-            self.current_path(subject_hash=subject_hash, access_id=pointer.access_id),
-            pointer.to_dict(),
-        )
+        await self.write_pointer_document(subject_hash=subject_hash, access_id=pointer.access_id,
+                                          document=pointer.to_dict())
 
     async def list_card_ids(self, *, subject_hash: str) -> list[str]:
         names = await list_child_names(self.grantor_path(subject_hash))

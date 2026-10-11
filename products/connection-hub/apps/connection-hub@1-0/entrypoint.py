@@ -904,17 +904,69 @@ def _lifecycle_lock_scope(entrypoint: Any) -> str:
     return scope if scope in ("same-host-flock", "shared-flock-verified") else ""
 
 
+# W661 option P (operator 21:50Z "R now, with P"): the PostgreSQL pointer/marker rows of each activated scope,
+# by its Card storage root (one root per tenant/project). Filled at bundle load; every Card store attaches them.
+# Process-scoped on purpose: every proc runs process-local on_bundle_load before admission
+# (docs/service/cicd/embedding-control-plane-frontend-README.md), while an entrypoint instance "may be cached as
+# a singleton" (docs/sdk/bundle/bundle-entrypoint-classes-README.md), not must: rows held on one instance could
+# be missing on the next, and a Card store without them would write file-only in an activated scope.
+_CARD_ROWS_BY_ROOT: Dict[str, Any] = {}
+CARD_ROWS_POSTGRESQL = "postgresql"
+
+
 def _guarded_card_store(storage_root: Any, *, entrypoint: Any = None, **kwargs: Any) -> BundleStorageDelegatedCardStore:
     """W661 K1: every Card store the Hub builds is write-guarded: Card files are written only in chat-proc, and with
-    lock_backend "redis" (option R) only while this operation still owns its Card's Redis lock key."""
+    lock_backend "redis" (option R) only while this operation still owns its Card's Redis lock key.
+
+    Option P: when the scope's Card rows are active, the store reads and writes its pointer and txn markers
+    through them (row first, file hint after)."""
     from connection_hub.delegated_credentials.cards.locks import guard_card_store_writes
 
-    store = guard_card_store_writes(BundleStorageDelegatedCardStore(storage_root, **kwargs))
+    store = BundleStorageDelegatedCardStore(storage_root, **kwargs)
+    rows = _CARD_ROWS_BY_ROOT.get(str(store.root))
+    if rows is not None:
+        store.card_rows = rows
+    store = guard_card_store_writes(store)
     if entrypoint is not None and _card_lock_backend(entrypoint) == "redis":
         from connection_hub.delegated_credentials.cards.redis_lock import guard_card_store_lock_owner
 
         guard_card_store_lock_owner(store)
     return store
+
+
+def _card_rows_configured(entrypoint: Any) -> bool:
+    """The bundle property connections.delegated_credentials.lifecycle_storage.card_rows == "postgresql"
+    (kdcube docs sdk/bundle/bundle-properties-and-secrets-lifecycle-README.md: a feature toggle is a descriptor
+    property, never an env var)."""
+    return _card_lock_settings(entrypoint).get("card_rows") == CARD_ROWS_POSTGRESQL
+
+
+async def _activate_card_rows(entrypoint: Any, pg_pool: Any) -> bool:
+    """Option P at bundle load. Configured: ensure the scope's rows and record activation (C1). Activation is
+    ONE-WAY: once a scope is activated, this code uses its rows even if the property is later removed, so a
+    config rollback never silently returns to file-only pointer writes. A pre-P binary cannot be refused by new
+    code: the cutover is stop-old-then-start-new (docs/connection-hub/package/card-version-store.md).
+    Configured without pg_pool refuses the load (fail closed)."""
+    configured = _card_rows_configured(entrypoint)
+    if pg_pool is None:
+        if configured:
+            raise RuntimeError("card_rows_require_pg_pool")
+        return False
+    from connection_hub.delegated_credentials.cards.pointer_authority import PostgresCardRows
+    from connection_hub.hub.authenticator_store import schema_for_scope
+
+    tenant, project = _runtime_tenant_project(entrypoint)
+    rows = PostgresCardRows(pg_pool, schema=schema_for_scope(tenant=tenant, project=project),
+                            tenant=tenant, project=project)
+    if configured:
+        await rows.ensure_schema()
+        await rows.activate()
+    elif not await rows.activation_recorded():
+        return False  # P is off and never was: no DDL in this scope
+    else:
+        await rows.ensure_schema()  # activated before: keep the schema current
+    _CARD_ROWS_BY_ROOT[str(BundleStorageDelegatedCardStore(_storage_root_or_error(entrypoint)).root)] = rows
+    return True
 
 
 def _card_lock_settings(entrypoint: Any) -> Mapping[str, Any]:
@@ -3394,6 +3446,10 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 "[connection-hub] Redis is explicitly selected as the "
                 "pre-cutover migration source"
             )
+        # W661 option P: the Card pointer/marker rows, before any Card store is built (fail closed if configured
+        # without pg_pool; one-way once activated).
+        if await _activate_card_rows(self, pg_pool):
+            LOGGER.info("[connection-hub] on_bundle_load: Card pointer/marker rows active (W661 option P)")
         if pg_pool is not None:
             try:
                 await _authenticator_store(self).ensure_schema()
@@ -5771,10 +5827,13 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         # forward to the project carries it, so every later hop logs under the same id.
         from connection_hub.card_save_trace import answer_outcome, hop, trace_scope
         started = time.monotonic()
-        with trace_scope(_audit_request_id(request)):
+        # Read the request id ONCE: without a host id, _audit_request_id draws a fresh one per call, and
+        # the trace and the forwarded request_id would then name two different saves.
+        request_id = _audit_request_id(request)
+        with trace_scope(request_id):
             hop("hub.person_control_update", "entry")
             try:
-                answer = await self._person_control_update(payload, user, request)
+                answer = await self._person_control_update(payload, user, request, request_id=request_id)
             except Exception:
                 hop("hub.person_control_update", "error", started=started)
                 raise
@@ -5782,7 +5841,9 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             hop("hub.person_control_update", outcome, code=code, started=started)
             return answer
 
-    async def _person_control_update(self, payload: Dict[str, Any], user: Any, request: Any) -> Dict[str, Any]:
+    async def _person_control_update(
+        self, payload: Dict[str, Any], user: Any, request: Any, *, request_id: str
+    ) -> Dict[str, Any]:
         return await (
             await _automation_access_service(self, request)
         ).project_person_control_update(
@@ -5793,7 +5854,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             control_id=str(
                 payload.get("control_id") or payload.get("control_card_id") or ""
             ).strip(),
-            request_id=_audit_request_id(request),
+            request_id=request_id,
             resource_grants=(
                 dict(payload.get("resource_grants") or {})
                 if "resource_grants" in payload

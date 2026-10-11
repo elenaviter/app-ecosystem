@@ -280,6 +280,34 @@ async def test_operations_use_authenticated_actor_and_host_request_id(entrypoint
 
 
 @pytest.mark.asyncio
+async def test_update_without_a_host_request_id_traces_and_forwards_one_id(entrypoint) -> None:
+    """With no host id, the fallback id is drawn once: the save's trace and its forwarded request_id agree."""
+    from connection_hub import card_save_trace
+
+    seen = {}
+
+    async def _update(user, **kwargs):
+        seen["trace"] = card_save_trace._TRACE.get()
+        seen["request_id"] = kwargs["request_id"]
+        return {"ok": True}
+
+    entrypoint.service.project_person_control_update = _update
+    answer = await entrypoint.module.ConnectionHubEntrypoint.project_person_control_update(
+        entrypoint.instance,
+        data={
+            "project_ref": "work:project:quickstart",
+            "target_subject": "platform-user-2",
+            "expected_card_revision": 1,
+        },
+        request=SimpleNamespace(state=SimpleNamespace(), scope={}),
+    )
+
+    assert answer.get("ok") is True
+    assert seen["request_id"].startswith("connection-hub-")
+    assert seen["trace"] == card_save_trace.safe_id(seen["request_id"])
+
+
+@pytest.mark.asyncio
 async def test_invitation_operations_forward_only_the_pending_coordinates(entrypoint) -> None:
     request = SimpleNamespace(
         state=SimpleNamespace(request_id="host-request-invitation"),

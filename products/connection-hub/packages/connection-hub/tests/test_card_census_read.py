@@ -457,9 +457,8 @@ async def test_an_absent_control_makes_the_edge_invalid_not_valid(tmp_path, redi
     h = await _service(tmp_path, redis_client)
     assert (await _create(h, "request-create"))["ok"] is True
     identity = ProjectPersonCardIdentity.build(project_ref=PROJECT_REF, person_subject=TARGET)
-    control_path = h.store.current_path(subject_hash=subject_hash_for(identity.project_subject),
-                                        access_id=identity.control_id)
-    control_path.unlink()  # the Hub's own absent Control
+    await h.store.write_pointer_document(subject_hash=subject_hash_for(identity.project_subject),
+                                         access_id=identity.control_id, document=None)  # the Hub's own absent Control
     operation = CardCensusReadOperation(callers={PEER: _caller(PEER, prefix="work:project:")}, card_store=h.store,
                                         catalog_store=None, nonces=_Nonces(), clock=lambda: NOW)
     request = _request([TARGET], scope=PROJECT_REF, include_catalog=False)

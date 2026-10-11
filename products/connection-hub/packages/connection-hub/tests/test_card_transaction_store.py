@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import pytest
 
+from connection_hub.delegated_credentials.cards import store as card_store_module
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.service import CardConflict, CardServingUnavailable, DelegatedCardService
 from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore, CardStorageError
@@ -37,12 +38,13 @@ async def _decide(store, decision, transaction_id=TX, **kwargs):
     return await tx.decide(store, transaction_id=transaction_id, intent_digest=INTENT, decision=decision, **kwargs)
 
 
-async def _setup(tmp_path):
+async def _setup(tmp_path, *, mutation_lock=None):
     from contextlib import asynccontextmanager
 
-    @asynccontextmanager
-    async def mutation_lock(**kwargs):
-        yield
+    if mutation_lock is None:
+        @asynccontextmanager
+        async def mutation_lock(**kwargs):
+            yield
 
     store = BundleStorageDelegatedCardStore(tmp_path)
     tx.bind_transaction_decisions(store, Decisions())
@@ -253,15 +255,15 @@ async def test_a_crash_mid_stage_is_fenced_and_a_replay_resumes_it(tmp_path, mon
 
         monkeypatch.setattr(store, "write_revision", crash)
     else:
-        original_write = tx.write_json_atomic
-        calls = {"n": 0}
+        original_write = store.write_pointer_document
 
-        async def crash_on_pointer(path, payload):
-            if payload.get("schema") == tx.TRANSACTION_POINTER_SCHEMA:
+        async def crash_on_pointer(*, subject_hash, access_id, document):
+            # The crash precedes the pointer write itself: before the b-core row and before current.json.
+            if isinstance(document, dict) and document.get("schema") == tx.TRANSACTION_POINTER_SCHEMA:
                 raise RuntimeError("killed")
-            return await original_write(path, payload)
+            return await original_write(subject_hash=subject_hash, access_id=access_id, document=document)
 
-        monkeypatch.setattr(tx, "write_json_atomic", crash_on_pointer)
+        monkeypatch.setattr(store, "write_pointer_document", crash_on_pointer)
     with pytest.raises(RuntimeError):
         await _stage(store, before, after)
     # F1: the Card is fenced before the pointer exists.
@@ -703,6 +705,8 @@ async def test_a_stage_that_crashed_before_its_receipt_is_still_listed(tmp_path,
         return await original(path, payload)
 
     monkeypatch.setattr(tx, "write_json_atomic", crash_on_receipt)
+
+    monkeypatch.setattr(card_store_module, "write_json_atomic", crash_on_receipt)  # b-core: the pointer is written by the store
     with pytest.raises(RuntimeError):
         await _stage(store, before, after)
     monkeypatch.undo()

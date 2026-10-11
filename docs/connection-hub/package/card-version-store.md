@@ -182,9 +182,38 @@ owner and the first accepted staging instant, before any candidate write.
 Only a `ready` record can load for preparation; a partial manifest refuses
 `card_intent_incomplete`. A replay resumes its exact files with the frozen
 instant. The composed service's member Card sections, in sorted order with
-started writes drained before release, cover recording and retirement.
+started writes drained before release, cover recording, loading and retirement.
 Candidate sidecars are written before version bodies, so planned candidates
 are not serving authority or history.
+
+Loading first validates that one manifest's bounded member coordinates, then
+takes those same composed sections and reads the manifest again. An active
+recorder can finish `staging` to `ready` while the reader waits; no Card is
+hydrated before the locked re-read. Every other manifest field must remain
+identical, and `ready` cannot move back to `staging`. A changed binding or
+member set refuses `card_intent_conflict`. If FINISH retired the exact intent
+while a duplicate waited, its validated finished receipt/tombstone must match
+the original manifest's digest, authority and scope, and the authoritative
+terminal decision when that port is bound. It yields the existing late-stage
+or aborted refusal, not a new successful PREPARE: the coordinator can replay
+its own exact decision without treating the participant as unavailable.
+Missing, unfinished or mismatched terminal evidence still refuses. The initial
+metadata read also performs at most one re-read when a subsequent presence
+check sees a file, handling publication/removal between the read and stat;
+JSON null remains invalid. A recorder that crashed still leaves `staging`, which
+continues to refuse `card_intent_incomplete` without candidate hydration.
+The loader writes nothing, adds no private lock or unbounded retry policy, and releases
+the member sections before the participant enters its preparation operation.
+Legacy v1 and terminal FINISH's receipt-only retries are unchanged.
+
+Pass the composed `DelegatedCardService` explicitly to the intent source in
+production. For callers that omit `service=`, a bundle store retains its
+original service as the fallback; constructing a different service on that
+same store refuses `card_intent_service_conflict`, without replacing the
+fallback or taking any Card lock. Even identical lock objects do not make two
+services interchangeable. Separate stores can have separate services. An
+explicit intent-source service still takes precedence over the fallback;
+this registration guard adds no private lock, ledger or Card copy.
 
 The W578 participant stages that SAME candidate file. A pre-begin OAuth plan
 may supply `candidate_link` and `candidate_staging_tag` on `CardIntent` or on
@@ -203,7 +232,28 @@ removes a current version. A failed finish or cleanup leaves retry evidence.
 Terminal FINISH retries use the receipt without Card hydration; signed
 retries and page cursors require its exact authority/scope binding. A legacy
 receipt whose intent is gone and whose binding is absent fails closed.
+If a duplicate FINISH saw a ready linked manifest before waiting, then finds
+it retired, only the known late-stage/aborted loader refusal can be replayed:
+the finished terminal receipt must match the authoritative decision and
+intent digest plus that manifest's exact authority, scope and record digest.
+It then follows the same idempotent retirement/receipt path, without loading
+Card bodies or repeating service duties. Missing, unfinished, mismatched or
+other refusal evidence is never promoted to success. PREPARE is unchanged.
 Exact terminal record replay writes nothing; late STAGE is refused.
+
+For an authenticated external FINISH(aborted) with genuinely no local intent or
+receipt, the verified caller/authority scope and global decision digest are
+persisted together in the first atomic abort tombstone. The bounded
+`intent_binding` has a domain-separated `record_digest` for this absence witness,
+explicitly tagged `intent_unrecorded: true`; it is not the digest of an invented
+Card intent. The same hosting transaction section serializes absence with intent
+publication, before member Card sections. First and repeated FINISH receipts hash
+identical evidence. Exact catalog/index cleanup retries before acknowledgement,
+including direct participant replay after an interruption. No intent, prepared
+receipt or Card body is created or hydrated. Existing opaque binding-less
+tombstones and orphan receipts remain refused; another authority/scope/global
+decision or corrupt terminal cannot adopt the binding. Ordinary linked/legacy
+recorded intent FINISH is unchanged.
 
 ## Hub-local operations in flight
 
@@ -263,3 +313,103 @@ therefore NOT retired by R.
 Outside it, the Card lock, every write and every deletion refuse `card_store_write_wrong_process_role`. On the
 Docker Desktop runtime the single-writer condition stays: exactly one proc-labelled container mounts the Card share
 (the VM pause is exactly the residual above). It is retired only after R is qualified on a cluster deployment.
+
+
+## The storage-level version check (option P, under the Card lock)
+
+The operator's decision (10 Oct, about 21:50Z, verbatim: "R now, with P (the Postgres version check)"):
+the Card lock serializes the normal case, and the storage refuses a stale writer. That is the KDCube
+pattern in `service/comm/data-bus-README.md` ("Ordering And Concurrency": a short-lived Redis lock, and
+"still require storage-level idempotency and optimistic concurrency checks"; "the storage layer must reject
+stale updates"). `sdk/bundle/bundle-scheduled-jobs-README.md` says the same: an expired lease can be
+reacquired while old code still acts, so durable effects need a resource-enforced guard.
+
+- **Rows.** Each Card's pointer is a row in `connection_hub_card_pointers`, and each card-version txn
+  marker is a row in `connection_hub_card_version_txns`, in the scope's schema (`kdcube_<tenant>_<project>`).
+  Both hold the links-only document plus `row_revision`. Every change is a compare-and-swap on the
+  `row_revision` this operation read: zero rows means a stale writer, refused `card_pointer_moved` or
+  `card_version_marker_moved` whatever its lock state. `current.json` and the marker file stay as hints,
+  written after the row.
+- **Writer guards before the row.** Every row write (pointer, marker, delete, first-touch adoption) first passes
+  the same writer guards as the file write it stands for: proc-only and, under R, the Card-lock owner check. A
+  writer whose Redis key already expired is refused `card_lock_lost` before its CAS.
+- **The row fence: an ordered claim, the latest lock owner owns the row.** The Redis check and the PostgreSQL
+  CAS are separate resources, so a writer can pass its owner check, stall, and resume after its key expired and
+  a successor took the lock (Infra's post-owner-guard case). So a read made by the row's lock holder CLAIMS the
+  row in the same statement, and every CAS and delete of that operation requires the token it claimed with:
+  - **The token.** One PostgreSQL sequence per scope schema (`connection_hub_card_row_fence`) hands out fence
+    tokens. An operation draws its token BEFORE the owner guard that precedes every claim and write, and draws
+    a new one after every further lock acquisition. A guard that passes after the draw proves the lock was
+    still held then, so a successor on that lock acquires later and draws a LARGER token. The sequence lives
+    with the rows it fences: no per-Card or per-operation key, nothing to seed after a Redis restore, and a
+    database restore moves the rows and the sequence together. The sequence is `CACHE 1`, so `nextval` order
+    is real-time order across connections (a cached sequence would break the fence).
+  - **The claim** is one UPDATE that sets `fence_token` to t only where it is NULL or not newer, and returns
+    whether it did (`fence_token = t AS claimed`). A stale operation's late claim (Ops' review of b1693251: an
+    unordered per-operation id let it take the row back) carries the older token. The UPDATE still runs on the
+    row, but it keeps the newer fence and leaves the document and revision as they are; the caller gets an
+    unclaimed read. Its later CAS refuses, and the successor's CAS succeeds. Without ordering the live owner was refused instead (witness:
+    `test_w661_p_row_late_claim_ordered_fence.py`, which fails on b1693251).
+  - **Who claims.** A pointer row is claimed only by the holder of that Card's lock. A marker row is claimed
+    by an operation inside any Card or txn section (every marker writer is; the txn's member Cards and its
+    txn section all protect it). Two holders of different member Cards can both finalize one txn: the
+    earlier token's claim is then an unclaimed read and its write refuses `card_version_marker_moved`, the
+    same contention as the revision CAS alone. Any other read claims nothing.
+  When the successor reads under its lock, it holds the claim, and the stalled writer's CAS then refuses
+  (`card_pointer_moved` / `card_version_marker_moved`) with the row's document, revision and fence unchanged: the live lock owner wins, and nobody
+  is told "failed" for a write that landed. A lock-free read claims nothing.
+- **Residual: creates.** A row that does not exist yet has nothing to claim. If a stalled writer and its
+  successor both observed "absent", the first INSERT wins and the other refuses (ON CONFLICT) and re-reads it.
+  If the stalled one wins, its caller may see `card_lock_lost` from its file hint although its row landed: that
+  outcome is in doubt, and is resolved from the row (the authority; v6.3 `outcome()` for card-version txns),
+  never lost or duplicated.
+- **Reads.** Once a row exists, every reader uses the row and never prefers the file, even a newer-looking
+  one (C2). Without a row, the Card was not written since activation:
+  - a writer holding that Card's lock adopts the file into the row (first touch, no scan);
+  - a reader without the lock reads the file and creates nothing.
+  - A marker file written while the rows are on carries `_card_rows_era: true`. A tagged hint with NO row is
+    the late file write of a stale writer after the row was deleted: it reads as absent, is never adopted, and
+    a reader holding the Card lock removes it (Infra's late-hint case). Only an untagged file, written before
+    the cutover, is adopted. No per-txn tombstone row is kept.
+  - A marker row can be deleted (ROLLBACK) and re-created for the same txn (re-STAGE), starting again at
+    row_revision 1. So the marker CAS names the row's `incarnation` (random, set when the row is created) as
+    well as its revision: a stale writer that observed the old row never matches the new one (Infra's ABA
+    case). Pointer rows are never deleted (absence is a row with the ABSENT document), so their revisions only
+    move forward.
+- **The operation context.** `locks.row_fenced_lock` wraps whatever mutation lock serializes the normal
+  case: the container-local flock (lock_backend local) or the per-Card KDCube Redis cluster lock
+  (option R, lock_backend "redis"); `hub_card_mutation_lock` and `hub_redis_card_mutation_lock` both wrap
+  their stack in it. It opens one `CardRowOperation` per Card operation. That context holds the revisions this
+  operation read and the lock resources it holds; it has no connection and no lock of its own.
+  - Each row statement runs on its own pool connection.
+  - A write without a read of that row in the same operation is refused `card_row_unobserved`; a write
+    outside any Card operation is refused `card_lock_not_held` by the rows (unlike R's file guard, which
+    allows writes outside an R operation: no production pointer or marker writer runs outside the Card lock).
+  - A child task that outlives its operation is refused `card_lock_session_closed`.
+  - The lock-free precondition read (`current_revision`) checks D3 but never writes a marker; the writer's
+    own commit, under the lock, marks it.
+- **Activation (C1).** The bundle property
+  `connections.delegated_credentials.lifecycle_storage.card_rows: "postgresql"` turns the rows on at bundle
+  load. That records the scope's activation row. Set without a `pg_pool`, it refuses the load.
+  - **One-way:** once a scope is activated, the Hub uses its rows even if the property is removed later.
+  - **Cutover:** stop every Hub process of the scope, deploy, then start. A pre-P binary writes only the
+    file, and new code cannot refuse it, so old and new processes must never overlap. The phase-1
+    single-writer guard stays until R is qualified on a cluster deployment.
+- **The txn's own section, first.** Every card-version operation (STAGE, PUBLISH, ROLLBACK) takes the txn's
+  own section (`card-version-txn:<txn>`, R key kind `card-version-txn`) BEFORE the member Card sections, in that
+  one order. So a ROLLBACK or PUBLISH that found no members yet still serializes with a same-txn STAGE that is
+  creating them, and a txn with no member Card (e.g. a ROLLBACK under `KEEP_ROLLBACK_MARKER`) still writes its
+  marker locked and row-fenced. (Before, such an operation held no Card lock and could act on a marker a
+  concurrent STAGE had just written; the R+PG suite surfaced it as card_version_marker_moved.)
+  Its local lock file is one of 256 fixed shards chosen by the txn's digest (`txn_section_lock_path`), so late
+  rollbacks never grow the lock root; under R the per-txn Redis key expires with its TTL.
+- **Process state.** `_CARD_ROWS_BY_ROOT` is a registry of ACTIVATED SCOPES (a storage root to its row
+  authority), not a cache of Card data: it holds no document, and every read goes to PostgreSQL. The scope's rows are registered per Card storage root at `on_bundle_load`, which every proc
+  runs process-locally before admission; an entrypoint instance is not guaranteed to be a singleton, so the
+  rows are not held on it. A scope where `card_rows` is not set and was never activated gets no DDL.
+- **Evidence tooling.** `W661_BCORE_PG_MODE=1` re-runs the Hub package suite against the rows;
+  `W661_PG_AUDIT=<file>` records every pointer or marker write made outside a Card row operation with its entry
+  frame (a production writer there would be refused `card_lock_not_held`).
+- **Residual without P.** The Redis lock (R) alone leaves one stall window: a holder paused past the
+  lock's TTL can still write once. With P that write is refused by the row; the test
+  `test_a_holder_whose_lock_expired_cannot_write_after_another_writer_published` pins it.

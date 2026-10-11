@@ -278,6 +278,9 @@ def test_keys_carry_their_kind_and_a_mismatched_card_path_is_refused(tmp_path):
     assert card_lock_key(tenant="t", project="p", resource_id=card["resource_id"], lock_path=card["lock_path"]) \
         == "kdcube:cards:lock:t:p:card:" + "f" * 64 + ":a-9"
     assert card_lock_key(tenant="t", project="p", resource_id="card-collection:c1") == "kdcube:cards:lock:t:p:collection:c1"
+    # W661 P: a card-version txn that names no member Card takes its own section (service._txn_section).
+    assert card_lock_key(tenant="t", project="p", resource_id="card-version-txn:w661-txn-" + "f" * 32) \
+        == "kdcube:cards:lock:t:p:card-version-txn:w661-txn-" + "f" * 32
     with pytest.raises(CardStorageError, match="card_lock_resource_invalid"):
         card_lock_key(tenant="t", project="p", resource_id="delegated-card:a-1", lock_path=card["lock_path"])
     with pytest.raises(CardStorageError, match="card_lock_resource_invalid"):
@@ -339,6 +342,8 @@ async def test_a_publish_stalled_past_the_ttl_is_refused_and_the_retry_publishes
     before = _authority()
     await seed.commit(before, subject_hash=SUBJECT_HASH, expected_revision=0, now=1_780_000_000)
     after = replace(before, card_revision=2, label="published by the retry")
+    store = guard_card_store_lock_owner(BundleStorageDelegatedCardStore(tmp_path))
+    tx.bind_transaction_decisions(store, Decisions())
     service_a = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=lock)
     await _stage(service_a, [(SUBJECT_HASH, before.access_id, 1, after)])
 
@@ -373,7 +378,10 @@ async def test_a_publish_stalled_past_the_ttl_is_refused_and_the_retry_publishes
     async def b():
         await stalled.wait()
         await asyncio.sleep(1.2)  # A's key has expired
-        service_b = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=lock)
+        # B is another worker: separate objects, same durable files and Redis key.
+        retry_store = guard_card_store_lock_owner(BundleStorageDelegatedCardStore(tmp_path))
+        tx.bind_transaction_decisions(retry_store, Decisions())
+        service_b = DelegatedCardService(store=retry_store, cache=_Cache(), mutation_lock=lock)
         await service_b.publish_card_version(txn=tx_id())
         retried.set()
 
@@ -382,4 +390,114 @@ async def test_a_publish_stalled_past_the_ttl_is_refused_and_the_retry_publishes
     found = await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id)
     assert found[1] == after
     assert [k async for k in redis.scan_iter(match=lock.keys)] == []
+    await redis.aclose()
+
+
+class _CountingRedis:
+    """The real client, counting the round trips of the owner guard: direct GETs and pipeline executions."""
+
+    def __init__(self, redis):
+        self._redis, self.gets, self.executes = redis, 0, 0
+
+    async def get(self, *args, **kwargs):
+        self.gets += 1
+        return await self._redis.get(*args, **kwargs)
+
+    def pipeline(self, *args, **kwargs):
+        pipeline, counter = self._redis.pipeline(*args, **kwargs), self
+
+        class _Counted:
+            def __getattr__(self, name):
+                return getattr(pipeline, name)
+
+            async def execute(self, *a, **k):
+                counter.executes += 1
+                return await pipeline.execute(*a, **k)
+
+        return _Counted()
+
+    def __getattr__(self, name):
+        return getattr(self._redis, name)
+
+
+async def _hold_many(lock, tmp_path, stack, count):
+    for index in range(count):
+        await stack.enter_async_context(lock(**_card(tmp_path, access_id=f"a-{index}"), wait_seconds=1))
+
+
+@pytest.mark.asyncio
+async def test_the_owner_guard_reads_every_held_key_in_one_round_trip(tmp_path):
+    """Spark's finding (P adds a guard per row claim): one GET per held key made a 1000-section read set take
+    minutes. The guard over K held keys is ONE pipelined round trip, and still passes for the owner."""
+    from contextlib import AsyncExitStack
+
+    from connection_hub.delegated_credentials.cards.redis_lock import assert_card_lock_owned
+
+    redis = _client()
+    counting = _CountingRedis(redis)
+    lock = _lock(counting)
+    async with AsyncExitStack() as stack:
+        await _hold_many(lock, tmp_path, stack, 50)
+        counting.gets = counting.executes = 0
+        await assert_card_lock_owned()
+        assert (counting.executes, counting.gets) == (1, 0)
+    assert [k async for k in redis.scan_iter(match=lock.keys)] == []
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_one_foreign_key_among_many_held_refuses_the_owner_guard(tmp_path):
+    from contextlib import AsyncExitStack
+
+    from connection_hub.delegated_credentials.cards.redis_lock import _OPERATION, assert_card_lock_owned
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+
+    redis = _client()
+    other = _client()
+    lock = _lock(redis)
+    async with AsyncExitStack() as stack:
+        await _hold_many(lock, tmp_path, stack, 50)
+        await assert_card_lock_owned()  # the owner passes
+        key = list(_OPERATION.get().keys)[37]
+        await other.set(key, "a-successor-owner", keepttl=True)  # one key taken over, as after an expiry
+        with pytest.raises(CardStorageError, match="card_lock_lost"):
+            await assert_card_lock_owned()
+        assert _OPERATION.get().lost
+    await other.delete(key)
+    await other.aclose()
+    await redis.aclose()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_pipelined_read_refuses_the_owner_guard(tmp_path):
+    """Ownership that cannot be read is not proven: a pipeline whose execution fails refuses card_lock_lost."""
+    from contextlib import AsyncExitStack
+
+    from connection_hub.delegated_credentials.cards.redis_lock import _OPERATION, assert_card_lock_owned
+    from connection_hub.delegated_credentials.cards.store import CardStorageError
+
+    redis = _client()
+    counting = _CountingRedis(redis)
+    lock = _lock(counting)
+    async with AsyncExitStack() as stack:
+        await _hold_many(lock, tmp_path, stack, 3)
+        real_pipeline = counting.pipeline
+
+        def failing_pipeline(*args, **kwargs):
+            pipeline = real_pipeline(*args, **kwargs)
+
+            class _Failing:
+                def __getattr__(self, name):
+                    return getattr(pipeline, name)
+
+                async def execute(self, *a, **k):
+                    raise ConnectionError("redis went away")
+
+            return _Failing()
+
+        counting.pipeline = failing_pipeline
+        with pytest.raises(CardStorageError, match="card_lock_lost"):
+            await assert_card_lock_owned()
+        assert _OPERATION.get().lost
+        counting.pipeline = real_pipeline
     await redis.aclose()

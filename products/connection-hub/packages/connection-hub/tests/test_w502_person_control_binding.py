@@ -68,8 +68,7 @@ async def _service(tmp_path, redis_client):  # noqa: F811
     # The harness commits through a stand-in projection the resolver never reads; commit through
     # the real Redis projection the resolver serves, so a read after a write sees it, as live.
     persistence = h.service._persistence
-    h.cards = persistence._cards = DelegatedCardService(store=h.store, cache=persistence._resolver._cache,
-                                                        mutation_lock=h.cards._mutation_lock)
+    h.cards._cache = persistence._resolver._cache
     h.port = _Port()
     h.service._project_authorization_port = h.port
     h.service._bind_project_lifecycles()

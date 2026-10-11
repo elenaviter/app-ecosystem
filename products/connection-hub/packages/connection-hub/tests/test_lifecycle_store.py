@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from connection_hub.delegated_credentials.cards import store as card_store_module
 from connection_hub.delegated_credentials.cards import lifecycle_store
 from connection_hub.delegated_credentials.cards.lifecycle import LifecycleRefused, LifecycleRequest
 from connection_hub.delegated_credentials.cards.model import CardAuthority, NamedServiceSelection
@@ -92,10 +93,11 @@ async def test_each_production_reader_keeps_staged_authority_out_of_current_and_
     cache.index_members = AsyncMock(return_value=[])
     cache.index_add = AsyncMock()
     cache.reconcile_projection = AsyncMock(return_value=True)
-    service = DelegatedCardService(store=store, cache=cache, mutation_lock=_test_lock)
     resolver = DelegatedCardResolver(cache=cache, store=store)
     persistence = DurableCardPersistence(redis=object(), tenant="fixture", project="fixture",
         card_store=store, mutation_lock=_test_lock, credential_handles=MagicMock())
+    service = persistence.card_service
+    service._cache = cache
     persistence._resolver = resolver
     reconciler = CardProjectionReconciler(cache=cache, store=store)
 
@@ -466,6 +468,8 @@ async def test_both_staged_pointers_still_read_before_one_visibility_point(tmp_p
                                                                               access_id=request.targets[0].access_id))
 
     monkeypatch.setattr(lifecycle_store, "write_json_atomic", write)
+
+    monkeypatch.setattr(card_store_module, "write_json_atomic", write)  # b-core: the pointer is written by the store
     result = await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
     assert observations == [[("active", 1), ("active", 1)]] * 2
     assert result["state"] == "committed"
@@ -490,6 +494,8 @@ async def test_failing_second_pointer_never_commits_first_authority(tmp_path, mo
         await original(path, payload)
 
     monkeypatch.setattr(lifecycle_store, "write_json_atomic", write)
+
+    monkeypatch.setattr(card_store_module, "write_json_atomic", write)  # b-core: the pointer is written by the store
     with pytest.raises(OSError):
         await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
     assert await _states(store, request) == [("active", 1), ("active", 1)]
@@ -526,6 +532,8 @@ async def test_io_error_after_commit_rename_is_not_reported_as_no_write(tmp_path
             raise OSError("synthetic failure after the commit rename")
 
     monkeypatch.setattr(lifecycle_store, "write_json_atomic", write)
+
+    monkeypatch.setattr(card_store_module, "write_json_atomic", write)  # b-core: the pointer is written by the store
     result = await lifecycle_store.atomic_revoke(store, request=request, actor_subject=ACTOR, now=MOMENT, before_publish=_allow)
     assert result["state"] == "committed"
     assert await _states(store, request) == [("revoked", 2), ("revoked", 2)]
@@ -658,6 +666,8 @@ async def write(path, payload):
         if stage == payload.get('state'):
             os.kill(os.getpid(), signal.SIGKILL)
 module.write_json_atomic = write
+from connection_hub.delegated_credentials.cards import store as card_store_module
+card_store_module.write_json_atomic = write  # b-core: the pointer is written by the store
 async def allow(): pass
 asyncio.run(module.atomic_revoke(store, request=request, actor_subject='authenticated-human-admin',
     now=datetime(2026,10,6,tzinfo=timezone.utc), before_publish=allow))

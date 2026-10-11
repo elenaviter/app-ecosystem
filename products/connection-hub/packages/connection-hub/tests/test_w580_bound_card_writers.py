@@ -95,21 +95,21 @@ async def _bound(tmp_path, redis_client, *, source="manual", bound=True):
     async def mutation_lock(**_kwargs):
         yield
 
-    cards = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
     subject_hash = subject_hash_for(card.grantor_subject)
-    await cards.commit(card, subject_hash=subject_hash, expected_revision=0, now=now)
     namespace = uuid.uuid4().hex[:8]
     handles = RedisCardCredentialHandleStore(
         redis_client, tenant=f"t-{namespace}", project=f"p-{namespace}"
     )
     held = CardCredentialHandles(access_id=card.access_id, access_token=ACCESS_TOKEN)
-    await handles.write(card, held)
     persistence = DurableCardPersistence(
         redis=redis_client, tenant=f"t-{namespace}", project=f"p-{namespace}",
         card_store=store, mutation_lock=mutation_lock, credential_handles=handles,
     )
     # Only the serving projection is fake, as in test_revoke_target_revision.
-    persistence._cards = cards
+    cards = persistence.card_service
+    cards._cache = _Cache()
+    await cards.commit(card, subject_hash=subject_hash, expected_revision=0, now=now)
+    await handles.write(card, held)
     grants = _Grants()
     service = AutomationAccessService(
         redis=_Redis(), tenant="tenant", project="project", config=None,
@@ -208,7 +208,6 @@ async def _hub(tmp_path, redis_client, *, connections=None):
     async def mutation_lock(**_kwargs):
         yield
 
-    cards = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=mutation_lock)
     namespace = uuid.uuid4().hex[:8]
     handles = RedisCardCredentialHandleStore(
         redis_client, tenant=f"t-{namespace}", project=f"p-{namespace}"
@@ -217,7 +216,8 @@ async def _hub(tmp_path, redis_client, *, connections=None):
         redis=redis_client, tenant=f"t-{namespace}", project=f"p-{namespace}",
         card_store=store, mutation_lock=mutation_lock, credential_handles=handles,
     )
-    persistence._cards = cards
+    cards = persistence.card_service
+    cards._cache = _Cache()
     h.service._persistence = persistence
     h.store, h.cards, h.handles, h.now = store, cards, handles, int(time.time())
     return h
@@ -563,16 +563,30 @@ async def test_a_token_rotation_on_a_staged_oauth_card_is_refused_with_no_effect
     card, held = await _oauth_card(h)
     if stage == "before":
         await _stage_on(h, card)
+        before = _card_files(h, card)
     else:
         _stage_before(h, "_load_record", card)
     # The token route catches CardConflict and withholds or keeps its tokens.
-    # An already-staged Card is refused at its read, with the generic reason.
-    reason = "delegated_cards_unavailable" if stage == "before" else "card_transaction_unresolved"
-    with pytest.raises(CardConflict, match=reason):
+    # W713: since AE #714 (W676) the owner's Card listing reads a staged Card as its last committed revision,
+    # so the rotation reaches the Card's own pre-write fence, which refuses with the specific reason in both
+    # stages. The refusal still comes before any write.
+    with pytest.raises(CardConflict, match=r"\Acard_transaction_unresolved\Z"):
         await _rotate(h)
+    if stage == "before":
+        # No effect: the Card's current pointer document and every version file (names and bytes) are exactly
+        # as staged, before the transaction is decided.
+        assert _card_files(h, card) == before
     assert await h.handles.read(card) == held
     await _decide(h, "aborted")
     assert await _read(h, card) == card
+
+
+def _card_files(h, card) -> dict[str, bytes]:
+    """Every file of one Card (current pointer, versions, markers), by relative name and exact bytes."""
+    from test_resident_profile_cards import GRANTOR
+
+    root = h.store.card_path(subject_hash=subject_hash_for(GRANTOR), access_id=card.access_id)
+    return {str(path.relative_to(root)): path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
 
 
 @pytest.mark.asyncio

@@ -93,10 +93,20 @@ What the author does to carry its part:
    take over a handoff, when you choose your next action, and when you learn
    that someone's availability changed. Availability is current state read
    together: the work the teammate holds and its latest report
-   (`assignment.list`), its busy-until and info line, whether its session is
-   reachable and listening, and its provider's usage limit and reset
-   (`pb worker context`, `pb worker list`), as the coordinator reference
-   defines it ([coordinator](../coordinator.md), "What the coordinator is for").
+   (`assignment.list`), its busy-until and info line, and its provider's usage
+   limit, hold and reset, as the coordinator reference defines it
+   ([coordinator](../coordinator.md), "What the coordinator is for"). Read it
+   from the project view: `pb worker context --project-ref <project> --routing`
+   for the team on every host, and `--member <stable name>` for one candidate's
+   holds, usage, reset and info line with their observation time.
+   `pb worker list` is this host's relay and watch diagnostics only: a teammate
+   missing there, or shown `reachable False`, is not unavailable, and an online
+   row does not lift an operator's OFF or paused instruction, which binds until
+   its stated resume condition is met. A capacity statement carries its UTC
+   observation time and its source (operator, first-hand measurement or relay);
+   past its own checkpoint it is unknown, which is neither available nor
+   limited. Identity and native ownership do not expire this way, and each
+   worker's own operator ceiling applies, not a universal percentage.
    An inbox with nothing pending, an idle label or an earlier read is not
    availability. Silence is never consent, approval or READY.
 4. **An unavailable reviewer is yours to replace; an unavailable work owner

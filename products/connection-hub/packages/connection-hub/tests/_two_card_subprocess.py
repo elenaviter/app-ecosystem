@@ -14,6 +14,7 @@ import signal
 import sys
 from datetime import datetime
 
+from connection_hub.delegated_credentials.cards import store as card_store_module
 from connection_hub.delegated_credentials.cards import lifecycle_store
 from connection_hub.delegated_credentials.cards.lifecycle import LifecycleRequest
 from connection_hub.delegated_credentials.cards.store import (
@@ -74,6 +75,8 @@ async def _transaction(request: dict) -> dict:
 
         lifecycle_store.write_json_atomic = kill_after_stage
 
+
+        card_store_module.write_json_atomic = kill_after_stage  # b-core: the pointer is written by the store
     return await lifecycle_store.atomic_revoke(
         store,
         request=lifecycle_request,

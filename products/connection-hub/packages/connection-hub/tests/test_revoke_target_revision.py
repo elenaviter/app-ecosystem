@@ -40,15 +40,15 @@ async def _fixture(tmp_path):
         async with lock:
             yield
 
-    cards = DelegatedCardService(store=store, cache=cache, mutation_lock=mutation_lock)
     subject_hash = subject_hash_for(authority.grantor_subject)
-    await cards.commit(authority, subject_hash=subject_hash, expected_revision=0, now=int(time.time()))
     handles = _Handles()
     persistence = DurableCardPersistence(redis=object(), tenant="tenant", project="project",
         card_store=store, mutation_lock=mutation_lock, credential_handles=handles)
     # Only the serving projection is fake. Loads, persistence, immutable
     # revisions and the inside-lock comparison use production implementations.
-    persistence._cards = cards
+    cards = persistence.card_service
+    cards._cache = cache
+    await cards.commit(authority, subject_hash=subject_hash, expected_revision=0, now=int(time.time()))
     service = AutomationAccessService(redis=_Redis(), tenant="tenant", project="project",
         config=None, grant_store=object(), card_persistence=persistence)
     service.notify_change = AsyncMock()

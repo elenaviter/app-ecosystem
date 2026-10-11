@@ -145,6 +145,6 @@ async def test_real_fences_make_the_snapshot_wait_hold_no_peer_call_and_write_no
     before = _files(store)
     phases.clear()
     again = await issuer_managed_card_snapshots(q.to_dict(), registry=registry,
-                                                persistence=DelegatedCardService(store=store, cache=MagicMock()), **HOST)
+                                                persistence=service, **HOST)
     assert again["ok"] and phases == ["authorize", "validate"]
     assert _files(store) == before
