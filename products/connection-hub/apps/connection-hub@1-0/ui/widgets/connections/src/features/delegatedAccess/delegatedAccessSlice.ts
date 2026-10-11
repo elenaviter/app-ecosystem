@@ -1,5 +1,6 @@
 import { createAsyncThunk, createSlice, type PayloadAction } from '@reduxjs/toolkit';
 import { getOp, postOp } from '../../api/client';
+import { isPolicyPending } from './focusedGrantRecovery';
 import { agentGrantWirePayload, type GrantAgentAccessArgs } from './agentGrantPayload';
 import { isStaleEditRefusal, withNewerCard } from './cardFreshness';
 import {
@@ -211,6 +212,9 @@ export const grantAgentAccess = createAsyncThunk<
   async (args, { rejectWithValue }) => {
     try {
       const res = await postOp<DelegatedAccessCreateResult>('delegated_agent_grant_create', agentGrantWirePayload(args));
+      // W727: the Card committed but its invocation policy did not. The answer (its Card, the outcome) is
+      // kept, so the caller can pin the revision and retry exactly this grant; isPolicyPending tells it apart.
+      if (isPolicyPending(res)) return res;
       if (res?.ok === false) return rejectWithValue(resultError(res, 'Failed to grant agent access'));
       return res || {};
     } catch (e) {
