@@ -222,6 +222,20 @@ Card bodies or repeating service duties. Missing, unfinished, mismatched or
 other refusal evidence is never promoted to success. PREPARE is unchanged.
 Exact terminal record replay writes nothing; late STAGE is refused.
 
+For an authenticated external FINISH(aborted) with genuinely no local intent or
+receipt, the verified caller/authority scope and global decision digest are
+persisted together in the first atomic abort tombstone. The bounded
+`intent_binding` has a domain-separated `record_digest` for this absence witness,
+explicitly tagged `intent_unrecorded: true`; it is not the digest of an invented
+Card intent. The same hosting transaction section serializes absence with intent
+publication, before member Card sections. First and repeated FINISH receipts hash
+identical evidence. Exact catalog/index cleanup retries before acknowledgement,
+including direct participant replay after an interruption. No intent, prepared
+receipt or Card body is created or hydrated. Existing opaque binding-less
+tombstones and orphan receipts remain refused; another authority/scope/global
+decision or corrupt terminal cannot adopt the binding. Ordinary linked/legacy
+recorded intent FINISH is unchanged.
+
 ## Hub-local operations in flight
 
 An issuer update or lifecycle intent writes `<card>/inflight.json` under the Card's lock before its
