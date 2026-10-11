@@ -16,6 +16,7 @@ import pytest
 
 from service_foundation.coordination.durable_wire import canonical_json_bytes
 
+from connection_hub.delegated_credentials.cards import store as card_store_module
 from connection_hub.delegated_credentials.cards import card_read_collection as collections
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.card_read_set import read_set_candidate_value
@@ -393,12 +394,14 @@ async def test_a_crash_before_the_receipt_stays_unstaged_and_abort_releases_the_
             raise RuntimeError("crash before prepared header")
         return await original(path, value)
     monkeypatch.setattr(tx, "write_json_atomic", crash)
+    monkeypatch.setattr(card_store_module, "write_json_atomic", crash)  # b-core: the pointer is written by the store
     with pytest.raises(RuntimeError, match="before prepared header"):
         await _prepare(service, header)
     assert await tx.read_receipt(store, RS) is None
     assert await tx.list_in_doubt(store) == [{"transaction_id": RS, "state": "unstaged"}]
     assert [row["transaction_id"] for row in await reservations.holders()] == [RS]
     monkeypatch.setattr(tx, "write_json_atomic", original)
+    monkeypatch.setattr(card_store_module, "write_json_atomic", original)  # b-core: the pointer is written by the store
     await tx.abort_unstaged(store, RS, intent_digest=INTENT)
     assert await reservations.holders() == [] and await tx.list_in_doubt(store) == []
     # A fence written before the crash holds nothing without a receipt: an ordinary write proceeds.
@@ -419,9 +422,11 @@ async def test_a_crash_after_the_receipt_fails_closed_and_the_recorded_finish_re
         if path == tx.receipt_path(store, RS):
             raise RuntimeError("crash after prepared header")
     monkeypatch.setattr(tx, "write_json_atomic", crash)
+    monkeypatch.setattr(card_store_module, "write_json_atomic", crash)  # b-core: the pointer is written by the store
     with pytest.raises(RuntimeError, match="after prepared header"):
         await _prepare(service, header)
     monkeypatch.setattr(tx, "write_json_atomic", original)
+    monkeypatch.setattr(card_store_module, "write_json_atomic", original)  # b-core: the pointer is written by the store
     assert (await tx.read_receipt(store, RS))["state"] == "prepared"
     assert [entry["transaction_id"] for entry in await tx.list_in_doubt(store)] == [RS]
     with pytest.raises(CardStorageError, match="card_transaction_unresolved"):

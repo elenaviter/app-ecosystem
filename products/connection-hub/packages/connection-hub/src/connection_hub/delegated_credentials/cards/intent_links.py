@@ -449,7 +449,9 @@ async def retire_intent(source: Any, transaction_id: str, decision: str) -> dict
                     owners.add(member["candidate_staging_tag"])
                 if not isinstance(marker, Mapping) or set(marker) != {"transaction_id"} or marker["transaction_id"] not in owners:
                     raise DecisionRefused("card_intent_cleanup_owner_conflict")
-                pointer = await read_json_or_none(source._store.current_path(subject_hash=member["subject_hash"], access_id=member["access_id"]))
+                # W661 P: the pointer authority (the row when on), never the file hint.
+                pointer = await source._store.read_pointer_document(subject_hash=member["subject_hash"],
+                                                                    access_id=member["access_id"])
                 if pointer is not None and not isinstance(pointer, Mapping):
                     raise DecisionRefused("card_intent_invalid")
                 if pointer is not None and (pointer.get("revision_name") == member["candidate"]["revision_name"]

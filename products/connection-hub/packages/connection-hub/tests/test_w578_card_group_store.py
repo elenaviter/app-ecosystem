@@ -135,7 +135,7 @@ async def test_an_old_id_whose_pointer_is_gone_is_overwritten_without_a_history_
     """W661, operator: "never nothing is being scanned"; the card id "NEVER changes"; invitation "UPSERT.
     overwrite". Replaces CodeApp 22:59's absent-slot guard, which listed the revision history."""
     store, _, before, after = await _setup(tmp_path)
-    store.current_path(subject_hash=SUBJECT_HASH, access_id=before.access_id).unlink()
+    await store.write_pointer_document(subject_hash=SUBJECT_HASH, access_id=before.access_id, document=None)
     assert await store.read_current(subject_hash=SUBJECT_HASH, access_id=before.access_id) is None
     members = [(None, replace(after, card_revision=1))]
     await _begin(store, members)

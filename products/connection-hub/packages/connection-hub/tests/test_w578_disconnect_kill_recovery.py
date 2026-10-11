@@ -286,6 +286,10 @@ async def test_a_disconnect_killed_at_the_cut_is_recovered_by_a_fresh_process(tm
 if __name__ == "__main__":
     mode, root, tenant, *rest = sys.argv[1:]
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    import conftest
+
+    if conftest._PG_MODE:  # W661 P: a child writes through the same rows as its parent test, never file-only
+        conftest.install_pg_mode(setattr)
     if mode == "disconnect":
         asyncio.run(_child_disconnect(pathlib.Path(root), tenant, *rest))
     elif mode == "recover":

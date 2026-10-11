@@ -34,6 +34,7 @@ import hashlib
 import os
 import pathlib
 from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 from typing import Any, AsyncIterator
 
 from .service import CardMutationLock
@@ -123,10 +124,89 @@ def guard_card_store_writes(store: Any, *, role: Any = current_process_role) -> 
     return store
 
 
+class CardRowOperation:
+    """W661 option P under R (operator 21:50Z "R now, with P"): one Card operation's view of its fenced rows.
+
+    The storage-level optimistic check (kdcube docs service/comm/data-bus-README.md, "Ordering And Concurrency":
+    "still require storage-level idempotency and optimistic concurrency checks"; "the storage layer must reject
+    stale updates") sits UNDER whatever mutation lock serializes the normal case: the container-local flock
+    (lock_backend local) or the per-Card KDCube Redis cluster lock (observed_redis_lock_async, option R).
+
+    It holds no connection and no lock: each row statement runs on its own pool connection, and a write CASes
+    from the row_revision THIS operation read (``observed``). ``resources`` are the lock resource ids this
+    operation holds, so first touch (adoption of a pre-cutover file) happens only under the Card's own lock.
+    """
+
+    def __init__(self) -> None:
+        # The ORDERED row fence (Infra's post-owner-guard HOLD; Ops' late-claim liveness review of b1693251): a
+        # locked read claims the row with this operation's fence token unless a NEWER token already claimed it,
+        # and every CAS requires the token its row was claimed with. The token comes from one PostgreSQL sequence
+        # and is drawn BEFORE the owner guard that precedes every claim and write, and drawn again after every new
+        # lock acquisition (``fence_token = None``), so an operation that passed its guard drew its token before
+        # any successor acquired that lock: the successor's token is larger, a late claim of the stale operation
+        # keeps the successor's fence (an unclaimed read), and the successor's CAS is never refused by it.
+        self.fence_token: int | None = None
+        self.claims: dict[tuple, int] = {}
+        self.observed: dict[tuple, int] = {}
+        self.resources: dict[str, int] = {}
+        self.closed = False
+
+    def holds(self, resource_id: str) -> bool:
+        return self.resources.get(resource_id, 0) > 0 and not self.closed
+
+    def check_open(self) -> None:
+        if self.closed:
+            # A child task that outlived its operation never acts on the operation's observations.
+            raise CardStorageError("card_lock_session_closed")
+
+
+_ROW_OPERATION: ContextVar["CardRowOperation | None"] = ContextVar("w661_card_row_operation", default=None)
+
+
+def current_lock_session() -> "CardRowOperation | None":
+    """This Card operation's row context (b-core reads and CASes through it), or None outside a Card lock."""
+    operation = _ROW_OPERATION.get()
+    if operation is not None:
+        operation.check_open()
+    return operation
+
+
+def row_fenced_lock(base_lock: CardMutationLock) -> CardMutationLock:
+    """``base_lock`` plus this operation's row context: the outermost lock section opens it, nested sections of
+    the same operation share it (their resources add up), and it closes when the outermost section ends."""
+
+    @asynccontextmanager
+    async def lock(*, lock_path: pathlib.Path, resource_id: str, operation: str,
+                   wait_seconds: float) -> AsyncIterator[Any]:
+        current = _ROW_OPERATION.get()
+        owner = current is None or current.closed
+        context = CardRowOperation() if owner else current
+        token = _ROW_OPERATION.set(context) if owner else None
+        try:
+            async with base_lock(lock_path=lock_path, resource_id=resource_id, operation=operation,
+                                 wait_seconds=wait_seconds) as held:
+                if not context.resources.get(resource_id):
+                    context.fence_token = None  # a token drawn before this acquisition may predate a successor's
+                context.resources[resource_id] = context.resources.get(resource_id, 0) + 1
+                try:
+                    yield held
+                finally:
+                    context.resources[resource_id] -= 1
+                    if not context.resources[resource_id]:
+                        del context.resources[resource_id]
+        finally:
+            if owner:
+                context.closed = True
+                _ROW_OPERATION.reset(token)
+
+    return lock
+
+
 def hub_card_mutation_lock(base_lock: CardMutationLock, root: os.PathLike[str] | str,
                            *, role: Any = current_process_role) -> CardMutationLock:
-    """Phase 1 (EMain 18:40Z): proc-only, on a container-local lock file."""
-    return proc_only_lock(container_local_lock(base_lock, root), role=role)
+    """Phase 1 (EMain 18:40Z): proc-only, on a container-local lock file; with option P's row context, so pointer
+    and marker rows are fenced whenever they are configured (inert without rows)."""
+    return row_fenced_lock(proc_only_lock(container_local_lock(base_lock, root), role=role))
 
 
 def hub_redis_card_mutation_lock(redis: Any, base_lock: CardMutationLock,
@@ -134,15 +214,16 @@ def hub_redis_card_mutation_lock(redis: Any, base_lock: CardMutationLock,
                                  observed_lock: Any, make_metadata: Any, role: Any = current_process_role,
                                  **settings: Any) -> CardMutationLock:
     """Option R (operator 10 Oct, "R now, with P"): proc-only, then the per-Card KDCube Redis lock, then the
-    container-local observed file lock (the critical-section doc's git-bundle order: Redis, then the file lock)."""
+    container-local observed file lock (the critical-section doc's git-bundle order: Redis, then the file lock).
+    Option P's row context wraps the stack: a stall past the Redis TTL is refused by the row CAS."""
     from .redis_lock import redis_card_mutation_lock
 
-    return proc_only_lock(redis_card_mutation_lock(redis, observed_lock=observed_lock, make_metadata=make_metadata,
-                                                   tenant=tenant, project=project,
-                                                   base_lock=container_local_lock(base_lock, root), **settings),
-                          role=role)
+    stack = redis_card_mutation_lock(redis, observed_lock=observed_lock, make_metadata=make_metadata, tenant=tenant,
+                                     project=project, base_lock=container_local_lock(base_lock, root), **settings)
+    return row_fenced_lock(proc_only_lock(stack, role=role))
 
 
-__all__ = ["CARD_LOCK_SUBDIR", "CARD_WRITER_ROLE", "CONTAINER_LOCK_SUFFIX", "PROCESS_ROLE_ENV", "card_lock_root",
+__all__ = ["CARD_LOCK_SUBDIR", "CARD_WRITER_ROLE", "CONTAINER_LOCK_SUFFIX", "CardRowOperation", "PROCESS_ROLE_ENV",
+           "card_lock_root", "current_lock_session", "row_fenced_lock",
            "container_local_lock", "container_local_lock_path", "current_process_role", "guard_card_store_writes",
            "hub_card_mutation_lock", "hub_redis_card_mutation_lock", "proc_only_lock", "refuse_outside_proc"]

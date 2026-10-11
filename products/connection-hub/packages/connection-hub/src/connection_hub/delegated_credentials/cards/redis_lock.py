@@ -54,6 +54,7 @@ _KINDS = {
     "delegated-card-issuer-update": "issuer-update-txn",
     "delegated-account-fence": "account",
     "card-collection": "collection",
+    "card-version-txn": "card-version-txn",  # W661 P: a txn that names no member Card (service._txn_section)
 }
 
 
