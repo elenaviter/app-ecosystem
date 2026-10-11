@@ -68,7 +68,8 @@ async def test_loader_waits_for_same_member_recorder_then_uses_ready_manifest(tm
         expected = before["members"] if group else [before]
         assert keys[:len(expected)] == ["delegated-card:" + member["access_id"] for member in expected]
         if prepare:
-            assert result.transaction_id == TXID and result.intent_digest == intent.intent_digest
+            assert result.transaction_id == TXID
+            assert result.global_intent_digest == intent.intent_digest
         elif group:
             assert [(m.original, m.candidate, m.action) for m in result.members] == [
                 (m.original, m.candidate, m.action) for m in intent.members]
