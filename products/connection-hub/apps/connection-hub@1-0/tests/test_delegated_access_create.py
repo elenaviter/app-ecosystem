@@ -492,6 +492,19 @@ async def test_update_forwards_per_operation_descriptor_acceptance(entrypoint):
 
 
 @pytest.mark.asyncio
+async def test_an_accept_only_update_keeps_the_omitted_selection_omitted(entrypoint):
+    """W737 (U3): an acceptance alone is no "remove every grant"; the service reads None as unchanged."""
+    accepted = {"urn:resource:one": ["search"]}
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance,
+        data={"access_id": "aut_1", "accepted_operations": accepted, "expected_card_revision": 3},
+    )
+    assert entrypoint.service.calls[-1]["method"] == "update"
+    assert entrypoint.service.calls[-1]["resource_grants"] is None
+    assert entrypoint.service.calls[-1]["accepted_operations"] == accepted
+
+
+@pytest.mark.asyncio
 async def test_absent_operation_acceptance_stays_none(entrypoint):
     await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
         entrypoint.instance,

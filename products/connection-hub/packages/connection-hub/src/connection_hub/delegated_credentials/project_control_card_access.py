@@ -308,6 +308,8 @@ class ProjectControlCardAccess:
             _delegable_grants=await self._actor_delegable_grants(user, decision.grantor_subject),
             _platform_admin=_platform_admin(user),
             _record_transform=self._audit(user, decision, request_id=request_id),
+            # W737: a managed P is saved by the project's transaction as the acting admin.
+            _actor_user=user,
             **changes,
         )
         if result.get("ok") is not True:

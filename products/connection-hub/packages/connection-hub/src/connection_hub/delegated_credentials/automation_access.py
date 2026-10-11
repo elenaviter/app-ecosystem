@@ -5729,7 +5729,7 @@ class AutomationAccessService:
         user: Mapping[str, Any],
         *,
         access_id: str,
-        resource_grants: Mapping[str, Any],
+        resource_grants: Mapping[str, Any] | None,
         resource_operations: Mapping[str, Any] | None = None,
         operations: Iterable[str] = (),
         named_service_operations: Mapping[str, Any] | str | None = None,
@@ -5814,6 +5814,10 @@ class AutomationAccessService:
             accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version)
         if own_my is not None:
             return own_my
+        if resource_grants is None:
+            # W737: only the managed forwards above read an omitted selection as "unchanged"; a direct
+            # write still replaces the record exactly, as before.
+            resource_grants = {}
         try:
             descriptor_marker = descriptor_control(existing.properties)
         except AgentCapabilityPolicyError as exc:
@@ -7470,6 +7474,7 @@ class AutomationAccessService:
         ]
         | None = None,
         _platform_admin: bool | None = None,
+        _actor_user: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Edit a Control Card through the ordinary catalog-aware Card path.
 
@@ -7499,8 +7504,10 @@ class AutomationAccessService:
             return {"ok": False, "error": "control_card_not_found", "status": 404}
         refused = self._managed_project_control_refused(existing)
         if refused is not None:
-            # W638: a managed P's Save goes through the project's own transaction.
-            forwarded = await self._forward_managed_project_control(user, record=existing, request_id=request_id,
+            # W638: a managed P's Save goes through the project's own transaction. W737: made by the
+            # authenticated actor (``_actor_user``, the project path's acting admin), never the storage owner.
+            forwarded = await self._forward_managed_project_control(_actor_user or user, record=existing,
+                request_id=request_id,
                 changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
                          "named_service_operations": named_service_operations, "account_scope": account_scope,
                          "properties": properties, "composition_mode": composition_mode, "label": label,

@@ -143,6 +143,33 @@ def test_the_operations_pass_the_person_and_the_body_to_the_project_path(monkeyp
     assert calls[2][2]["profile"] == "coordinator" and calls[2][2]["expected_card_revision"] == 5
 
 
+
+def test_an_accept_only_agent_update_keeps_the_omitted_selection_omitted(monkeypatch):
+    """W737 (U4): an acceptance alone forwards no selection; an explicit empty one is still sent."""
+    module = _entrypoint_module()
+    calls = []
+
+    class Access:
+        async def update(self, user, **kwargs):
+            calls.append(kwargs)
+            return {"ok": True}
+
+    async def access(_self, _request):
+        return Access()
+
+    monkeypatch.setattr(module.ConnectionHubEntrypoint, "_project_agent_card_access", access)
+    monkeypatch.setattr(module, "_platform_user_payload", lambda *a, **kw: {"user_id": "second-admin"})
+    monkeypatch.setattr(module, "_audit_request_id", lambda _request: "req-1")
+    instance = module.ConnectionHubEntrypoint.__new__(module.ConnectionHubEntrypoint)
+    base = {"access_id": "aut_a", "project_ref": "work:project:one", "expected_card_revision": 4}
+    asyncio.run(module.ConnectionHubEntrypoint.project_agent_card_update(
+        instance, data={**base, "accepted_operations": {"problem_board": ["worker.restore"]}}))
+    asyncio.run(module.ConnectionHubEntrypoint.project_agent_card_update(
+        instance, data={**base, "resource_grants": {}}))
+    assert calls[0]["resource_grants"] is None
+    assert calls[0]["accepted_operations"] == {"problem_board": ["worker.restore"]}
+    assert calls[1]["resource_grants"] == {}
+
 def test_a_decision_needs_its_owner():
     assert AgentCardDecision.from_mapping({"allowed": False}).allowed is False
 
