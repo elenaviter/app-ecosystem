@@ -221,9 +221,12 @@ class BundleStorageDelegatedCardStore:
                                                            document=hint)
         return None if document == ABSENT_POINTER else document
 
-    async def write_pointer_document(self, *, subject_hash: str, access_id: str, document: dict | None) -> None:
+    async def write_pointer_document(self, *, subject_hash: str, access_id: str, document: dict | None,
+                                     card_version_txn: str = "") -> None:
         """Replace (or with None remove) the Card's pointer. b-core: the row CAS first, then the file hint."""
         path = self.current_path(subject_hash=subject_hash, access_id=access_id)
+        from .card_version_reservation import assert_base_available
+        await assert_base_available(self, subject_hash=subject_hash, access_id=access_id, own_txn=card_version_txn)
         if self.card_rows is not None:
             from .pointer_authority import ABSENT_POINTER
 
@@ -473,11 +476,13 @@ class BundleStorageDelegatedCardStore:
             updated_at=updated_at,
         )
 
-    async def advance_current(self, *, subject_hash: str, pointer: CardCurrentPointer) -> None:
+    async def advance_current(self, *, subject_hash: str, pointer: CardCurrentPointer,
+                              card_version_txn: str = "") -> None:
         from .lifecycle_store import assert_pointer_replaceable
-        await assert_pointer_replaceable(self, subject_hash=subject_hash, access_id=pointer.access_id)
+        await assert_pointer_replaceable(self, subject_hash=subject_hash, access_id=pointer.access_id,
+                                         card_version_txn=card_version_txn)
         await self.write_pointer_document(subject_hash=subject_hash, access_id=pointer.access_id,
-                                          document=pointer.to_dict())
+                                          document=pointer.to_dict(), card_version_txn=card_version_txn)
 
     async def list_card_ids(self, *, subject_hash: str) -> list[str]:
         names = await list_child_names(self.grantor_path(subject_hash))

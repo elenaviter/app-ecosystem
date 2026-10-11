@@ -221,6 +221,22 @@ whole request, so no edit value is repeated.
   effects are unrecorded. This store/readiness rule does not by itself wire
   invocation-policy effects or qualify the PB durable-decision path.
 
+  **W756 reserve-before-decision.** Before answering the existing signed
+  `staged` links, STAGE durably reserves every member's observed base using
+  one per-Card locator-hash slot in the existing marker store. The slot holds
+  only the transaction, Card locator and base revision name, not Card values.
+  Option P uses the existing guarded row/CAS authority and row-era hint
+  rules, not a parallel filesystem-only permission. A second STAGE or any
+  ordinary pointer writer refuses `card_version_base_reserved` before a
+  competing decision (`card_changed` on the participant wire). A publication
+  still completing effects/cleanup refuses `effects_pending`. Own-txn
+  publication may replace its base; it releases only its own slots after all
+  effects finish. ABORT releases every prepared effect, durably retires the
+  possibility of publication, removes candidate files and releases its own
+  slots, including interrupted k-of-N preparation. Cuts during abort cleanup
+  can be re-driven but cannot revive the retired Save. The signed envelope
+  and STAGE link shape are unchanged; no second prepare call is introduced.
+
 ## The person Control under the project Control (C -> P)
 
 A person's project Control Card C (the per-person Card a project admin edits)
