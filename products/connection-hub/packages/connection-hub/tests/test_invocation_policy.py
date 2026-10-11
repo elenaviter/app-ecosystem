@@ -859,3 +859,16 @@ async def test_a_refused_new_change_leaves_the_old_marker_and_policy_untouched(t
     kept = await service.get_policy_change(owner_subject="user-1", authority=authority)
     assert (kept.change_id, kept.state) == ("edit:card:restart:old", "prepared")
     assert await service.get(owner_subject="user-1", authority=authority) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stuck_id", ["live-delete-once", "edit:person-my-card:project.control.initialize:mv3vm"])
+async def test_any_marker_not_owned_by_a_card_transaction_is_superseded(tmp_path, stuck_id):
+    """EMain 18:09Z: classify by ownership, not by prefix. The two live stuck ids are not ``<tx>:<authority key>``."""
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id=stuck_id, now=100)
+    fresh = await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                                change_id="edit:card:restart:next", now=101)
+    assert (fresh.change_id, fresh.state) == ("edit:card:restart:next", "prepared")
