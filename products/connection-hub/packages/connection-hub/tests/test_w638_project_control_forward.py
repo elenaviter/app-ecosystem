@@ -52,8 +52,13 @@ def project_control(**changes):
     return SimpleNamespace(**values)
 
 
-def service(host=None, *, managed=True):
+def service(host=None, *, managed=True, durable=None):
     value = AutomationAccessService.__new__(AutomationAccessService)
+
+    async def load_record_any_state(access_id, *, grantor_subject):
+        # W742: P's durable current revision; None keeps the record the caller loaded.
+        return None if durable is None else (durable, "active")
+    value._load_record_any_state = load_record_any_state
     if managed:
         value._card_coordinator = object()
         value.bind_managed_control_scopes(["work:project:"])
@@ -125,7 +130,8 @@ def test_without_a_forwarder_or_for_an_unmanaged_card_nothing_is_forwarded():
     assert host.calls == []
 
 
-@pytest.mark.parametrize("change", [dict(label="Renamed"), dict(properties={"x": 1}), dict(composition_mode="or"),
+# W735: a rename now travels as its own signed field (test_w735_managed_label_and_renew.py).
+@pytest.mark.parametrize("change", [dict(properties={"x": 1}),
                                     dict(expected_card_revision=None)])
 def test_a_p_save_that_changes_more_than_its_selection_saves_nothing(change):
     host = Host()

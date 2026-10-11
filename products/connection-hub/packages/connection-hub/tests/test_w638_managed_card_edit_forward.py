@@ -178,7 +178,8 @@ def test_an_agent_card_save_forwards_only_its_selection_with_the_cards_storage_c
     assert data["selection"] == {"resource_operations": {"svc": ["a"]}} and data["actor_subject"] == "alice"
 
 
-@pytest.mark.parametrize("change", [dict(label="Renamed"), dict(properties={"x": 1}), dict(composition_mode="or"),
+# W735: a rename now travels as its own signed field (test_w735_managed_label_and_renew.py).
+@pytest.mark.parametrize("change", [dict(properties={"x": 1}), dict(composition_mode="or"),
                                     dict(expected_card_revision=None)])
 def test_an_agent_card_save_that_changes_more_than_its_selection_saves_nothing(change):
     host = Host()
