@@ -57,9 +57,11 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CARD_POINTERS} (
     document      BYTEA NOT NULL CHECK (octet_length(document) BETWEEN 2 AND {POINTER_DOCUMENT_MAX_BYTES}),
     digest        CHAR(64) NOT NULL,
     row_revision  BIGINT NOT NULL CHECK (row_revision >= 1),
+    fence         TEXT NULL,
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     PRIMARY KEY (tenant, project, subject_hash, access_id)
 );
+ALTER TABLE {schema}.{TABLE_CARD_POINTERS} ADD COLUMN IF NOT EXISTS fence TEXT NULL;
 
 CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CARD_VERSION_TXNS} (
     tenant        TEXT NOT NULL,
@@ -75,6 +77,9 @@ CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CARD_VERSION_TXNS} (
 -- also names the row's incarnation (random, set at creation): a stale observation never matches a new row.
 ALTER TABLE {schema}.{TABLE_CARD_VERSION_TXNS}
     ADD COLUMN IF NOT EXISTS incarnation TEXT NOT NULL DEFAULT gen_random_uuid()::text;
+-- Infra's post-owner-guard HOLD (6e0320df): a locked read claims the row (fence := its operation id) in the
+-- same statement, and every CAS requires that fence: the latest locked reader owns the row.
+ALTER TABLE {schema}.{TABLE_CARD_VERSION_TXNS} ADD COLUMN IF NOT EXISTS fence TEXT NULL;
 
 CREATE TABLE IF NOT EXISTS {schema}.{TABLE_CARD_POINTER_AUTHORITY} (
     tenant        TEXT NOT NULL,
@@ -163,11 +168,21 @@ class PostgresCardRows:
             session.observed[(kind, key)] = revision
 
     async def read_pointer(self, *, subject_hash: str, access_id: str) -> tuple[dict | None, int | None]:
-        """(document, row_revision) or (None, None) when no row exists. Records the revision read."""
-        row = await self._fetchrow(
-            f"""SELECT document, row_revision FROM {self.schema}.{TABLE_CARD_POINTERS}
-                WHERE tenant=$1 AND project=$2 AND subject_hash=$3 AND access_id=$4""",
-            self.tenant, self.project, subject_hash, access_id)
+        """(document, row_revision) or (None, None) when no row exists. Records the revision read. Under a Card
+        operation the read CLAIMS the row (fence := the operation id) in the same statement; a lock-free read
+        claims nothing."""
+        session = _session()
+        if session is None:
+            row = await self._fetchrow(
+                f"""SELECT document, row_revision FROM {self.schema}.{TABLE_CARD_POINTERS}
+                    WHERE tenant=$1 AND project=$2 AND subject_hash=$3 AND access_id=$4""",
+                self.tenant, self.project, subject_hash, access_id)
+        else:
+            row = await self._fetchrow(
+                f"""UPDATE {self.schema}.{TABLE_CARD_POINTERS} SET fence=$5
+                    WHERE tenant=$1 AND project=$2 AND subject_hash=$3 AND access_id=$4
+                    RETURNING document, row_revision""",
+                self.tenant, self.project, subject_hash, access_id, session.op_id)
         if row is None:
             self._observe("pointer", (subject_hash, access_id), 0)
             return None, None
@@ -180,9 +195,9 @@ class PostgresCardRows:
         encoded = _encode(document, limit=POINTER_DOCUMENT_MAX_BYTES)
         await self._fetchrow(
             f"""INSERT INTO {self.schema}.{TABLE_CARD_POINTERS}
-                (tenant, project, subject_hash, access_id, document, digest, row_revision)
-                VALUES ($1, $2, $3, $4, $5, $6, 1) ON CONFLICT DO NOTHING RETURNING row_revision""",
-            self.tenant, self.project, subject_hash, access_id, encoded, sha256_hex(encoded))
+                (tenant, project, subject_hash, access_id, document, digest, row_revision, fence)
+                VALUES ($1, $2, $3, $4, $5, $6, 1, $7) ON CONFLICT DO NOTHING RETURNING row_revision""",
+            self.tenant, self.project, subject_hash, access_id, encoded, sha256_hex(encoded), _session().op_id)
         found, revision = await self.read_pointer(subject_hash=subject_hash, access_id=access_id)
         if found is None or revision is None:
             raise CardStorageError("card_pointer_adoption_failed")
@@ -193,28 +208,39 @@ class PostgresCardRows:
         key = (subject_hash, access_id)
         expected = self._observed("pointer", key, required=True)
         encoded = _encode(document, limit=POINTER_DOCUMENT_MAX_BYTES)
+        op_id = _session().op_id
         if expected == 0:
             row = await self._fetchrow(
                 f"""INSERT INTO {self.schema}.{TABLE_CARD_POINTERS}
-                    (tenant, project, subject_hash, access_id, document, digest, row_revision)
-                    VALUES ($1, $2, $3, $4, $5, $6, 1) ON CONFLICT DO NOTHING RETURNING row_revision""",
-                self.tenant, self.project, subject_hash, access_id, encoded, sha256_hex(encoded))
+                    (tenant, project, subject_hash, access_id, document, digest, row_revision, fence)
+                    VALUES ($1, $2, $3, $4, $5, $6, 1, $7) ON CONFLICT DO NOTHING RETURNING row_revision""",
+                self.tenant, self.project, subject_hash, access_id, encoded, sha256_hex(encoded), op_id)
         else:
+            # The CAS names the revision this operation read AND its own fence: a later locked reader's claim
+            # (the successor) refuses this write even if no new revision was written yet.
             row = await self._fetchrow(
                 f"""UPDATE {self.schema}.{TABLE_CARD_POINTERS}
                     SET document=$5, digest=$6, row_revision=row_revision+1, updated_at=clock_timestamp()
                     WHERE tenant=$1 AND project=$2 AND subject_hash=$3 AND access_id=$4 AND row_revision=$7
+                      AND fence=$8
                     RETURNING row_revision""",
-                self.tenant, self.project, subject_hash, access_id, encoded, sha256_hex(encoded), expected)
+                self.tenant, self.project, subject_hash, access_id, encoded, sha256_hex(encoded), expected, op_id)
         if row is None:
             raise CardStorageError("card_pointer_moved")
         self._observe("pointer", key, int(row["row_revision"]))
         return int(row["row_revision"])
 
     async def read_marker(self, txn: str) -> tuple[dict | None, int | None]:
-        row = await self._fetchrow(
-            f"""SELECT document, row_revision, incarnation FROM {self.schema}.{TABLE_CARD_VERSION_TXNS}
-                WHERE tenant=$1 AND project=$2 AND txn=$3""", self.tenant, self.project, txn)
+        session = _session()
+        if session is None:
+            row = await self._fetchrow(
+                f"""SELECT document, row_revision, incarnation FROM {self.schema}.{TABLE_CARD_VERSION_TXNS}
+                    WHERE tenant=$1 AND project=$2 AND txn=$3""", self.tenant, self.project, txn)
+        else:  # a locked read claims the row (see read_pointer)
+            row = await self._fetchrow(
+                f"""UPDATE {self.schema}.{TABLE_CARD_VERSION_TXNS} SET fence=$4
+                    WHERE tenant=$1 AND project=$2 AND txn=$3
+                    RETURNING document, row_revision, incarnation""", self.tenant, self.project, txn, session.op_id)
         if row is None:
             self._observe("marker", (txn,), (0, None))
             return None, None
@@ -226,9 +252,9 @@ class PostgresCardRows:
         self._observed("marker", (txn,), required=True)
         encoded = _encode(document, limit=MARKER_DOCUMENT_MAX_BYTES)
         await self._fetchrow(
-            f"""INSERT INTO {self.schema}.{TABLE_CARD_VERSION_TXNS} (tenant, project, txn, document, row_revision)
-                VALUES ($1, $2, $3, $4, 1) ON CONFLICT DO NOTHING RETURNING row_revision""",
-            self.tenant, self.project, txn, encoded)
+            f"""INSERT INTO {self.schema}.{TABLE_CARD_VERSION_TXNS} (tenant, project, txn, document, row_revision, fence)
+                VALUES ($1, $2, $3, $4, 1, $5) ON CONFLICT DO NOTHING RETURNING row_revision""",
+            self.tenant, self.project, txn, encoded, _session().op_id)
         found, revision = await self.read_marker(txn)
         if found is None or revision is None:
             raise CardStorageError("card_version_marker_adoption_failed")
@@ -238,21 +264,24 @@ class PostgresCardRows:
         """R1: INSERT when this operation saw no row, else CAS on the revision it read. Outside any lock only a
         create is possible (a ROLLBACK of a txn with no links holds no Card lock): INSERT ... ON CONFLICT DO
         NOTHING is itself the fence, so it never replaces a marker someone else wrote."""
-        expected, incarnation = (0, None) if _session() is None else self._observed("marker", (txn,), required=True)
+        session = _session()
+        expected, incarnation = (0, None) if session is None else self._observed("marker", (txn,), required=True)
+        op_id = None if session is None else session.op_id
         encoded = _encode(document, limit=MARKER_DOCUMENT_MAX_BYTES)
         if expected == 0:
             row = await self._fetchrow(
-                f"""INSERT INTO {self.schema}.{TABLE_CARD_VERSION_TXNS} (tenant, project, txn, document, row_revision)
-                    VALUES ($1, $2, $3, $4, 1) ON CONFLICT DO NOTHING RETURNING row_revision, incarnation""",
-                self.tenant, self.project, txn, encoded)
+                f"""INSERT INTO {self.schema}.{TABLE_CARD_VERSION_TXNS} (tenant, project, txn, document, row_revision, fence)
+                    VALUES ($1, $2, $3, $4, 1, $5) ON CONFLICT DO NOTHING RETURNING row_revision, incarnation""",
+                self.tenant, self.project, txn, encoded, op_id)
         else:
-            # The CAS names the exact row this operation read: its revision AND its incarnation (Infra's ABA).
+            # The CAS names the exact row this operation read (revision AND incarnation, Infra's ABA) and this
+            # operation's own fence (a successor's locked read refuses it, Infra's post-owner-guard HOLD).
             row = await self._fetchrow(
                 f"""UPDATE {self.schema}.{TABLE_CARD_VERSION_TXNS}
                     SET document=$4, row_revision=row_revision+1, updated_at=clock_timestamp()
-                    WHERE tenant=$1 AND project=$2 AND txn=$3 AND row_revision=$5 AND incarnation=$6
+                    WHERE tenant=$1 AND project=$2 AND txn=$3 AND row_revision=$5 AND incarnation=$6 AND fence=$7
                     RETURNING row_revision, incarnation""",
-                self.tenant, self.project, txn, encoded, expected, incarnation)
+                self.tenant, self.project, txn, encoded, expected, incarnation, op_id)
         if row is None:
             raise CardStorageError("card_version_marker_moved")
         self._observe("marker", (txn,), (int(row["row_revision"]), str(row["incarnation"])))
@@ -265,8 +294,9 @@ class PostgresCardRows:
             return  # this operation saw it absent
         row = await self._fetchrow(
             f"""DELETE FROM {self.schema}.{TABLE_CARD_VERSION_TXNS}
-                WHERE tenant=$1 AND project=$2 AND txn=$3 AND row_revision=$4 AND incarnation=$5 RETURNING txn""",
-            self.tenant, self.project, txn, expected, incarnation)
+                WHERE tenant=$1 AND project=$2 AND txn=$3 AND row_revision=$4 AND incarnation=$5 AND fence=$6
+                RETURNING txn""",
+            self.tenant, self.project, txn, expected, incarnation, _session().op_id)
         if row is None:
             raise CardStorageError("card_version_marker_moved")
         self._observe("marker", (txn,), (0, None))

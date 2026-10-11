@@ -272,9 +272,19 @@ reacquired while old code still acts, so durable effects need a resource-enforce
   written after the row.
 - **Writer guards before the row.** Every row write (pointer, marker, delete, first-touch adoption) first passes
   the same writer guards as the file write it stands for: proc-only and, under R, the Card-lock owner check. A
-  writer whose Redis key expired is refused `card_lock_lost` BEFORE its CAS, so it can never advance the row while
-  its own caller is told it failed (Ops' R+P stall run). The residual window between the owner check and the CAS is
-  closed by the CAS itself: the successor's write then refuses, and nothing is lost.
+  writer whose Redis key already expired is refused `card_lock_lost` before its CAS.
+- **The row fence: the latest locked reader owns the row.** The Redis check and the PostgreSQL CAS are separate
+  resources, so a writer can pass its owner check, stall, and resume after its key expired and a successor took
+  the lock (Infra's post-owner-guard case). So a read made inside a Card operation CLAIMS the row in the same
+  statement (`fence` := the operation id), and every CAS and delete of that operation requires its own fence.
+  When the successor reads under its lock, it takes the fence, and the stalled writer's CAS then refuses
+  (`card_pointer_moved` / `card_version_marker_moved`) with the row untouched: the live lock owner wins, and nobody
+  is told "failed" for a write that landed. A lock-free read claims nothing.
+- **Residual: creates.** A row that does not exist yet has nothing to claim. If a stalled writer and its
+  successor both observed "absent", the first INSERT wins and the other refuses (ON CONFLICT) and re-reads it.
+  If the stalled one wins, its caller may see `card_lock_lost` from its file hint although its row landed: that
+  outcome is in doubt, and is resolved from the row (the authority; v6.3 `outcome()` for card-version txns),
+  never lost or duplicated.
 - **Reads.** Once a row exists, every reader uses the row and never prefers the file, even a newer-looking
   one (C2). Without a row, the Card was not written since activation:
   - a writer holding that Card's lock adopts the file into the row (first touch, no scan);

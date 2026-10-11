@@ -138,6 +138,12 @@ class CardRowOperation:
     """
 
     def __init__(self) -> None:
+        import uuid
+
+        # The row fence (Infra's post-owner-guard HOLD): a locked read writes this id into the row it reads, and
+        # every CAS of this operation requires it, so the latest LOCKED reader owns the row and a stalled writer
+        # whose lock was taken over can no longer move it, whatever its Redis check said before the stall.
+        self.op_id = uuid.uuid4().hex
         self.observed: dict[tuple, int] = {}
         self.resources: dict[str, int] = {}
         self.closed = False
