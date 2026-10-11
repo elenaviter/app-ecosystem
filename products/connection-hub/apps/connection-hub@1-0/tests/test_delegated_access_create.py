@@ -839,6 +839,9 @@ async def test_operation_grant_and_once_policy_stay_fail_closed_until_both_commi
     )
 
     assert interrupted["error"] == "delegated_invocation_policy_unavailable"
+    # W727: the answer says the Card change was saved and the policy is pending, never "nothing saved".
+    assert interrupted["outcome"] == "card_committed_policy_pending"
+    assert interrupted["access_id"] == access_id and interrupted["access"]["card_revision"] == 4
     assert "restart" in access.card["resource_operations"][resource]
     assert blocked.reason == "delegated_invocation_policy_changing"
     assert completed["invocation_policy"]["mode"] == POLICY_ONCE

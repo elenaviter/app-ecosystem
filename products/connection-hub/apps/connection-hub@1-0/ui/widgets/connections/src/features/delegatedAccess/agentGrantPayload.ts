@@ -32,6 +32,9 @@ export interface GrantAgentAccessArgs {
   replace?: boolean;
   /** Per-account claim binding: {provider_id: {account_id: [claims]}}. */
   accountScope?: Record<string, Record<string, string[]>>;
+  /** W727: the Card revision this grant is made against. A project-managed
+   *  Card is changed only by its project's transaction, which requires it. */
+  expectedCardRevision?: number;
 }
 
 export function agentGrantWirePayload(args: GrantAgentAccessArgs): Record<string, unknown> {
@@ -39,6 +42,7 @@ export function agentGrantWirePayload(args: GrantAgentAccessArgs): Record<string
     clientId, resource, claims, accessId, invocationMode, invocationChangeId, requestBound,
     requestDigest, requestApprovalTicket, requestCardRevision, requestAuthorityRevision,
     approvalContext, label, resourceOperations, namedServiceOperations, replace, accountScope,
+    expectedCardRevision,
   } = args;
   return {
     client_id: clientId,
@@ -60,5 +64,6 @@ export function agentGrantWirePayload(args: GrantAgentAccessArgs): Record<string
       ? { named_service_operations: namedServiceOperations }
       : {}),
     ...(accountScope !== undefined ? { account_scope: accountScope } : {}),
+    ...(expectedCardRevision !== undefined ? { expected_card_revision: expectedCardRevision } : {}),
   };
 }
