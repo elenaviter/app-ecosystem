@@ -269,3 +269,22 @@ async def test_the_composed_lifetime_target_caps_the_real_credential_family():
         async with pool.acquire() as connection:
             await connection.execute(f"DROP SCHEMA IF EXISTS {store.schema} CASCADE")
         await pool.close()
+
+
+
+@pytest.mark.asyncio
+async def test_w749_a_card_transactions_marker_still_blocks_a_direct_save_and_then_commits(tmp_path):
+    """W749 supersedes only direct saves; a Card transaction's STAGE marker is unchanged (W750)."""
+    from connection_hub.invocation_policy import InvocationPolicyConflict
+    policies = _service(tmp_path)
+    prepared, authority = _policy_receipt("prepared")
+    effect = prepared["effects"][0]
+    await _applier(prepared, {"invocation_policy": InvocationPolicyTarget(policies)}).prepare(
+        "invocation_policy", effect["key"], effect["payload"], transaction_id=TX)
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_change_in_progress"):
+        await policies.prepare_policy_change(owner_subject=OWNER, authority=authority, mode=POLICY_ONCE,
+                                             change_id="edit:card:restart:direct")
+    committed, _ = _policy_receipt("committed")
+    await _applier(committed, {"invocation_policy": InvocationPolicyTarget(policies)}).apply(
+        "invocation_policy", effect["key"], effect["payload"], transaction_id=TX)
+    assert (await policies.get(owner_subject=OWNER, authority=authority)).mode == POLICY_ONCE

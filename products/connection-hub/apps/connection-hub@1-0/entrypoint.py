@@ -158,6 +158,7 @@ from connection_hub.remote_mcp import (
 from connection_hub.invocation_policy import (
     POLICY_ALWAYS,
     POLICY_CHANGE_COMMITTED,
+    POLICY_CHANGE_PREPARED,
     POLICY_ONCE,
     SURFACE_OUTER,
     InvocationAuthority,
@@ -7150,57 +7151,76 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             agent_cards = await self._project_agent_card_access(request)
             return await agent_cards.authorize_write(user, access_id=access_id, project_ref=project_ref)
 
-        if client_id and not client_id.startswith("kdcube-agent:"):
-            # An EXTERNAL delegated client (an OAuth app — Claude Code): the
-            # user EDITS its existing card here (born at its own OAuth consent;
-            # never created from this operation). `replace: true` is the
-            # edit-in-place semantics (the submitted set becomes the record —
-            # narrowing allowed); default merges. account_scope edits which
-            # connected account(s) the client may use per provider. The guard
-            # resolves the card live, so the change carries on the bearer the
-            # client already holds.
-            result = await access_service.extend_client_access(
-                user,
-                client_id=client_id,
-                access_id=(invocation_access_id or None),
-                resource=resource,
-                claims=claims,
-                resource_operations=resource_operations,
-                account_scope=account_scope,
-                named_service_operations=named_service_operations,
-                replace=bool(payload.get("replace")),
-                # Optional rename: a DCR client registers one fixed name, so the
-                # user may label the card. Empty keeps the existing name.
-                label=str(payload.get("label") or "").strip() or None,
-                expected_card_revision=expected_card_revision,
-                _authorize_agent_card=authorize_agent_card,
-            )
-        elif not client_id.startswith("kdcube-agent:"):
-            return {"ok": False, "error": "delegated_agent_grant_invalid_client"}
-        else:
-            # Optional named-service narrowing for THIS resource (namespace -> exact
-            # operations), same selector the manual create flow sends — so extending
-            # an agent's access from the hub can include named-service resources.
-            # Default = MERGE (a one-click grant accumulates). `replace: true` is
-            # (the user unchecked something). Removing everything is a revoke, not
-            # an edit — the UI calls delegated_access_revoke for that.
-            replace = bool(payload.get("replace"))
+        async def release_prepared_change() -> None:
+            # W749: a Card write that did not happen leaves no PREPARED marker behind, so this
+            # attempt never blocks the next one. Only this exact change's PREPARED marker goes.
+            if invocation_change is None or invocation_change.state != POLICY_CHANGE_PREPARED:
+                return
             try:
-                result = await access_service.create_access(
+                await invocation_policy_service.release_policy_change(
+                    owner_subject=invocation_owner, authority=invocation_authority,
+                    change_id=invocation_change_id)
+            except Exception:  # noqa: BLE001 - best effort; a later change supersedes it (W749)
+                LOGGER.warning("[delegated_agent_grant] prepared policy change release failed", exc_info=True)
+
+        try:
+            if client_id and not client_id.startswith("kdcube-agent:"):
+                # An EXTERNAL delegated client (an OAuth app — Claude Code): the
+                # user EDITS its existing card here (born at its own OAuth consent;
+                # never created from this operation). `replace: true` is the
+                # edit-in-place semantics (the submitted set becomes the record —
+                # narrowing allowed); default merges. account_scope edits which
+                # connected account(s) the client may use per provider. The guard
+                # resolves the card live, so the change carries on the bearer the
+                # client already holds.
+                result = await access_service.extend_client_access(
                     user,
-                    label=str(payload.get("label") or "").strip() or client_id,
-                    resource_grants={resource: claims},
-                    resource_operations=resource_operations,
-                    named_service_operations=named_service_operations,
-                    account_scope=account_scope,
-                    ttl_seconds=payload.get("ttl_seconds") or AGENT_GRANT_DEFAULT_TTL_SECONDS,
                     client_id=client_id,
-                    merge_existing=not replace,
+                    access_id=(invocation_access_id or None),
+                    resource=resource,
+                    claims=claims,
+                    resource_operations=resource_operations,
+                    account_scope=account_scope,
+                    named_service_operations=named_service_operations,
+                    replace=bool(payload.get("replace")),
+                    # Optional rename: a DCR client registers one fixed name, so the
+                    # user may label the card. Empty keeps the existing name.
+                    label=str(payload.get("label") or "").strip() or None,
                     expected_card_revision=expected_card_revision,
                     _authorize_agent_card=authorize_agent_card,
                 )
-            except ValueError as exc:
-                return {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+            elif not client_id.startswith("kdcube-agent:"):
+                result = {"ok": False, "error": "delegated_agent_grant_invalid_client"}
+            else:
+                # Optional named-service narrowing for THIS resource (namespace -> exact
+                # operations), same selector the manual create flow sends — so extending
+                # an agent's access from the hub can include named-service resources.
+                # Default = MERGE (a one-click grant accumulates). `replace: true` is
+                # (the user unchecked something). Removing everything is a revoke, not
+                # an edit — the UI calls delegated_access_revoke for that.
+                replace = bool(payload.get("replace"))
+                try:
+                    result = await access_service.create_access(
+                        user,
+                        label=str(payload.get("label") or "").strip() or client_id,
+                        resource_grants={resource: claims},
+                        resource_operations=resource_operations,
+                        named_service_operations=named_service_operations,
+                        account_scope=account_scope,
+                        ttl_seconds=payload.get("ttl_seconds") or AGENT_GRANT_DEFAULT_TTL_SECONDS,
+                        client_id=client_id,
+                        merge_existing=not replace,
+                        expected_card_revision=expected_card_revision,
+                        _authorize_agent_card=authorize_agent_card,
+                    )
+                except ValueError as exc:
+                    result = {"ok": False, "error": "invalid_delegated_access_request", "message": str(exc)}
+        except BaseException:
+            await release_prepared_change()
+            raise
+        if not result.get("ok"):
+            await release_prepared_change()
+            return result
         if result.get("ok") and invocation_change is not None:
             access = result.get("access")
             actual_access_id = str(

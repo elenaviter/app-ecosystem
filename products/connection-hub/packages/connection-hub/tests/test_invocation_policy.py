@@ -691,14 +691,15 @@ async def test_prepared_card_policy_change_is_fail_closed_until_commit(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_prepared_change_blocks_unrelated_policy_writer(tmp_path):
+async def test_a_card_transactions_prepared_change_blocks_an_unrelated_policy_writer(tmp_path):
+    """A Card transaction's marker (``<tx>:<authority key>``) still blocks; W749 supersedes only direct saves."""
     service = _service(tmp_path)
     authority = _authority(operation="restart")
     await service.prepare_policy_change(
         owner_subject="user-1",
         authority=authority,
         mode=POLICY_ONCE,
-        change_id="grant-restart-1",
+        change_id=f"tx-1:{authority.key}",
         now=100,
     )
 
@@ -782,3 +783,92 @@ async def test_an_aborted_card_change_releases_only_its_own_prepared_marker(tmp_
                                                change_id="tx-b:restart") is False
     assert (await service.commit_policy_change(owner_subject="user-1", authority=authority,
                                                change_id="tx-b:restart", now=105)) == policy
+
+
+# W749: an earlier direct save never blocks a new attempt (operator, 11 Oct 17:49Z, verbatim:
+# "i do not want anything that was prepared and stuck to get in my way"). A Card transaction's marker is
+# unchanged here (W750).
+
+
+@pytest.mark.asyncio
+async def test_a_new_change_supersedes_a_direct_saves_prepared_marker_and_the_old_commit_is_refused(tmp_path):
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="edit:card:restart:pre-fix", now=100)
+    fresh = await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                                change_id="edit:card:restart:retry", now=101)  # no age bound
+    assert fresh.change_id == "edit:card:restart:retry"
+    with pytest.raises(InvocationPolicyConflict) as superseded:
+        await service.commit_policy_change(owner_subject="user-1", authority=authority,
+                                           change_id="edit:card:restart:pre-fix")
+    assert superseded.value.reason == "invocation_policy_change_missing"
+    policy = await service.commit_policy_change(owner_subject="user-1", authority=authority,
+                                                change_id="edit:card:restart:retry")
+    assert (policy.mode, policy.revision) == (POLICY_ONCE, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_card_transactions_marker_is_not_superseded_by_a_new_change(tmp_path):
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id=f"tx-1:{authority.key}", now=100)
+    with pytest.raises(InvocationPolicyConflict) as raised:
+        await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                            change_id="edit:card:restart:new", now=100 + 86400)
+    assert raised.value.reason == "invocation_policy_change_in_progress"
+
+
+@pytest.mark.asyncio
+async def test_the_same_change_id_asking_another_mode_stays_a_conflict(tmp_path):
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="edit-1", now=100)
+    with pytest.raises(InvocationPolicyConflict):
+        await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ALWAYS,
+                                            change_id="edit-1", now=101)
+
+
+@pytest.mark.asyncio
+async def test_a_direct_set_supersedes_a_direct_saves_prepared_marker(tmp_path):
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="live-delete-once", now=100)
+    policy = await service.set_policy(owner_subject="user-1", authority=authority, mode=POLICY_ALWAYS, now=101)
+    assert policy.mode == POLICY_ALWAYS
+    assert await service.get_policy_change(owner_subject="user-1", authority=authority) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("writer", ["set_policy", "prepare_policy_change"])
+async def test_a_refused_new_change_leaves_the_old_marker_and_policy_untouched(tmp_path, writer):
+    """CodeApp's W749 finding 2: the new change is validated before anything is superseded."""
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id="edit:card:restart:old", now=100)
+    arguments = dict(owner_subject="user-1", authority=authority, mode=POLICY_ALWAYS, expected_revision=99, now=700)
+    if writer == "prepare_policy_change":
+        arguments["change_id"] = "edit:card:restart:new"
+    with pytest.raises(InvocationPolicyConflict) as refused:
+        await getattr(service, writer)(**arguments)
+    assert refused.value.reason == "invocation_policy_revision_moved"
+    kept = await service.get_policy_change(owner_subject="user-1", authority=authority)
+    assert (kept.change_id, kept.state) == ("edit:card:restart:old", "prepared")
+    assert await service.get(owner_subject="user-1", authority=authority) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stuck_id", ["live-delete-once", "edit:person-my-card:project.control.initialize:mv3vm"])
+async def test_any_marker_not_owned_by_a_card_transaction_is_superseded(tmp_path, stuck_id):
+    """EMain 18:09Z: classify by ownership, not by prefix. The two live stuck ids are not ``<tx>:<authority key>``."""
+    service = _service(tmp_path)
+    authority = _authority(operation="restart")
+    await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                        change_id=stuck_id, now=100)
+    fresh = await service.prepare_policy_change(owner_subject="user-1", authority=authority, mode=POLICY_ONCE,
+                                                change_id="edit:card:restart:next", now=101)
+    assert (fresh.change_id, fresh.state) == ("edit:card:restart:next", "prepared")
