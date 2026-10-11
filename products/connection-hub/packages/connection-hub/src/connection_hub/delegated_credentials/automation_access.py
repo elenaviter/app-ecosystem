@@ -2586,14 +2586,27 @@ class AutomationAccessService:
         self, user: Mapping[str, Any], *, project_ref: str, target_subject: str, request_id: str,
         selection: Mapping[str, Any], expected_card_revision: int | None, properties: Any,
         composition_mode: str | None, accepted_operations: Mapping[str, Any] | None = None,
-        expected_catalog_version: str | None = None,
+        expected_catalog_version: str | None = None, label: str | None = None,
     ) -> dict[str, Any] | None:
-        """The managed person-Control edit, made by the project's own transaction (W723: with its acceptance)."""
+        """The managed person-Control edit, made by the project's own transaction (W723: with its acceptance).
+
+        W735: a rename travels as its own exact, signed field, compared with the durable current Card.
+        """
         from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
         forwarder = self._managed_card_edit_forwarder(project_ref)
         actor_subject = _subject_from_user(user)
         if forwarder is None or not _clean(target_subject) or not actor_subject:
             return None
+        if label is not None:
+            from .managed_card_edit_forward import managed_card_location
+            try:
+                access_id, grantor = managed_card_location(
+                    "person_control", project_ref=project_ref, ref=_clean(target_subject))
+                current = await self._load_record_any_state(access_id, grantor_subject=grantor)
+            except ValueError:
+                current = None
+            if current is not None and current[0].label == label:
+                label = None
         if properties is not None:
             # The editor sends the Card's properties back with every Save.
             # They are not part of this edit: only an unchanged copy may travel.
@@ -2624,7 +2637,8 @@ class AutomationAccessService:
             body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
                 request_id=request_id, kind="person_control", principal_key="user:" + _clean(target_subject),
                 original_revision=expected_card_revision, selection=selection,
-                accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version)
+                accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version,
+                label=label)
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
@@ -2637,22 +2651,42 @@ class AutomationAccessService:
         self, user: Mapping[str, Any], *, record: AutomationAccessRecord, project_ref: str, request_id: str,
         changes: Mapping[str, Any], kind: str = "agent_card",
     ) -> dict[str, Any] | None:
-        """W638: a project agent Card's (or a pending invitation Control's) Save, made by the project's transaction."""
+        """W638: a project agent Card's (or a pending invitation Control's) Save, made by the project's transaction.
+
+        W742: on the project's Control (P) the access rule (``composition_mode``) travels too, as an exact,
+        signed field of the project's edit, only when it changes. A Save that changes nothing answers ok
+        (``unchanged``) without a write: an AND sent to an AND P is not an error.
+        """
         from .cards.store import subject_hash_for
         from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
         forwarder = self._managed_card_edit_forwarder(project_ref)
         actor_subject = _subject_from_user(user)
         if forwarder is None or not actor_subject or (kind == "agent_card" and record.control_card is None):
             return None
+        composition_mode = label = None
+        stored_mode = record.composition_mode
+        if kind == "project_control" and changes.get("composition_mode") is not None:
+            # W742: the rule is compared with P's durable current revision, never the serving projection (live
+            # 10 Oct 22:49Z: a projection behind the committed revision), so a repeated rule is a no-op.
+            current = await self._load_record_any_state(record.access_id, grantor_subject=record.grantor_subject)
+            if current is not None:
+                record = current[0]
+                stored_mode = record.composition_mode
         unchanged = (
             ("properties", dict(record.properties or {})),
-            ("composition_mode", record.composition_mode),
+            ("composition_mode", stored_mode),
             ("label", record.label),
         )
         for field, stored in unchanged:
             value = changes.get(field)
             if field == "composition_mode":
                 value, stored = (value or "and") if value is not None else None, stored or "and"
+                if kind == "project_control" and value is not None and value != stored:
+                    composition_mode = value
+                    continue
+            if field == "label" and value is not None and value != stored:
+                label = value  # W735: a rename travels as its own exact, signed field
+                continue
             if value is not None and (dict(value) if isinstance(value, Mapping) else value) != stored:
                 return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
                         "message": "Only the Card's selection is changed by this edit. Nothing was saved."}
@@ -2663,13 +2697,20 @@ class AutomationAccessService:
         selection = {field: changes[field] for field in
                      ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
                      if changes.get(field) is not None}
+        if (kind == "project_control" and not selection and not changes.get("accepted_operations")
+                and composition_mode is None and label is None):
+            if revision != record.card_revision:
+                return {"ok": False, "error": "managed_card_edit_revision_changed", "status": 409,
+                        "message": "Reload the Card and save again. Nothing was saved."}
+            return {"ok": True, "unchanged": True}
         try:
             body = managed_card_edit_body(actor_subject=actor_subject, project_ref=project_ref,
                 request_id=request_id, kind=kind, principal_key="card:" + record.access_id,
                 original_revision=revision, selection=selection,
                 access_id=record.access_id, subject_hash=subject_hash_for(record.grantor_subject),
                 accepted_operations=changes.get("accepted_operations"),
-                expected_catalog_version=changes.get("expected_catalog_version"))
+                expected_catalog_version=changes.get("expected_catalog_version"),
+                composition_mode=composition_mode, label=label)
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
@@ -2729,8 +2770,9 @@ class AutomationAccessService:
             return None
         unchanged = (("properties", dict(record.properties or {}), properties),
                      ("composition_mode", record.composition_mode or "and",
-                      None if composition_mode is None else (composition_mode or "and")),
-                     ("label", record.label, label))
+                      None if composition_mode is None else (composition_mode or "and")))
+        # W735: a rename travels as its own exact, signed field; only a changed name does.
+        label = label if label is not None and label != record.label else None
         if any(value is not None and (dict(value) if isinstance(value, Mapping) else value) != stored
                for _, stored, value in unchanged):
             return {"ok": False, "error": "managed_card_edit_fields_unsupported", "status": 409,
@@ -2749,7 +2791,8 @@ class AutomationAccessService:
             body = managed_card_edit_body(actor_subject=actor_subject, project_ref=scope,
                 request_id=request_id, kind="person_my", principal_key="user:" + actor_subject,
                 original_revision=expected_card_revision, selection=selection,
-                accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version)
+                accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version,
+                label=label)
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
@@ -7578,6 +7621,7 @@ class AutomationAccessService:
         ]
         | None = None,
         _platform_admin: bool | None = None,
+        _acting_user: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Edit a Control Card through the ordinary catalog-aware Card path.
 
@@ -7607,8 +7651,9 @@ class AutomationAccessService:
             return {"ok": False, "error": "control_card_not_found", "status": 404}
         refused = self._managed_project_control_refused(existing)
         if refused is not None:
-            # W638: a managed P's Save goes through the project's own transaction.
-            forwarded = await self._forward_managed_project_control(user, record=existing, request_id=request_id,
+            # W638: a managed P's Save goes through the project's own transaction. W742: on the project path the
+            # edit names the person the Hub authenticated (``_acting_user``), never P's storage owner.
+            forwarded = await self._forward_managed_project_control(_acting_user or user, record=existing, request_id=request_id,
                 changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
                          "named_service_operations": named_service_operations, "account_scope": account_scope,
                          "properties": properties, "composition_mode": composition_mode, "label": label,
@@ -7823,7 +7868,7 @@ class AutomationAccessService:
                 ) if value is not None},
                 expected_card_revision=expected_card_revision, properties=properties,
                 composition_mode=composition_mode, accepted_operations=accepted_operations,
-                expected_catalog_version=expected_catalog_version)
+                expected_catalog_version=expected_catalog_version, label=label)
             if forwarded is None:
                 return refused
             return await self._with_current_person_control(
@@ -11665,6 +11710,16 @@ class AutomationAccessService:
         mode_value = (_clean(mode) or "reissue").lower()
         if mode_value not in ("reissue", "prolong"):
             return {"ok": False, "error": "invalid_renew_mode", "mode": mode_value}
+        if record.source in (CREDENTIALLESS_CARD_SOURCE, PROJECT_PERSON_SELECTION_SOURCE):
+            # W735 (W730 row X2): a Control (P, C) and a person's My Card never carry an expiry (the Card model
+            # refuses one), so there is nothing to renew; named, rather than a manual/agent source refusal.
+            return {
+                "ok": False,
+                "error": "delegated_access_managed_card_does_not_expire",
+                "source": record.source,
+                "status": 409,
+                "message": "This Card is managed by its project and never expires; there is nothing to renew.",
+            }
         if mode_value == "prolong":
             return await self._prolong_access(user, record=record, ttl_seconds=ttl_seconds)
         if record.source != ACCESS_SOURCE_MANUAL:

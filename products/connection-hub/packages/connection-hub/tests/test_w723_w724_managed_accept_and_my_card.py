@@ -137,8 +137,9 @@ def test_the_my_card_route_is_left_to_the_ordinary_path_when_it_does_not_apply(m
     assert host.calls == []
 
 
+# W735: a rename now travels as its own signed field (test_w735_managed_label_and_renew.py).
 @pytest.mark.parametrize("change", [dict(properties={"kept": False}), dict(composition_mode="or"),
-                                    dict(label="Renamed"), dict(expected_card_revision=None)])
+                                    dict(expected_card_revision=None)])
 def test_a_my_card_save_the_project_cannot_bind_exactly_is_refused_and_nothing_is_sent(monkeypatch, change):
     host = Host()
     svc = service(host)

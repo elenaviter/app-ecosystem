@@ -378,6 +378,11 @@ def build_project_person_control(
     return authority
 
 
+
+def _valid_label(value: Any) -> bool:
+    from .managed_card_edit_forward import valid_label
+    return valid_label(value)
+
 class CardLifecyclePlanRefused(ValueError):
     """An invalid or stale proposal; no Card has been changed."""
 
@@ -886,14 +891,23 @@ async def plan_card_lifecycle(
                     or set(raw) - {"kind", "target_subject", "access_id", "subject_hash", "original_revision", "parent",
                                    "selection", "profile", "resource", "display_digest", "control",
                                    "add_grants", "add_operations", "remove_operations", "operation_grants",
-                                   "protected_grants", "accepted_operations", "expected_catalog_version"}
+                                   "protected_grants", "accepted_operations", "expected_catalog_version",
+                                   "composition_mode", "label"}
                     or ("selection" in raw) != (raw.get("kind") in {"reselect", "reselect_project_control",
                                                                     "reselect_agent_card",
                                                                     "reselect_invitation_control"})
                     # W723: an acceptance travels only with a selection edit, and the catalog it was
                     # reviewed under only with an acceptance.
                     or ("accepted_operations" in raw and "selection" not in raw)
-                    or ("expected_catalog_version" in raw and "accepted_operations" not in raw)):
+                    or ("expected_catalog_version" in raw and "accepted_operations" not in raw)
+                    # W742: the project access rule travels only on the project Control's own edit.
+                    or ("composition_mode" in raw and (raw.get("kind") != "reselect_project_control"
+                                                       or raw["composition_mode"] not in {"and", "or"}))
+                    # W735: a Card's display name travels only on a selection edit of that Card.
+                    or ("label" in raw and (raw.get("kind") not in {"reselect", "reselect_project_control",
+                                                                    "reselect_agent_card",
+                                                                    "reselect_invitation_control"}
+                                            or not _valid_label(raw["label"])))):
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             decision = authorization.decision_for(f"update:{index}")
             if "expected_catalog_version" in raw and raw["expected_catalog_version"] != host._version_of(active):
@@ -949,7 +963,7 @@ async def plan_card_lifecycle(
                 built = await build_existing_card_selection_update(
                     host, original=original, selection=raw["selection"], active=active, decision=decision,
                     project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now,
-                    accepted_operations=raw.get("accepted_operations"))
+                    accepted_operations=raw.get("accepted_operations"), label=raw.get("label"))
                 _require_protected_grants_kept(raw.get("protected_grants"), original, built["member"]["candidate"])
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
@@ -966,7 +980,8 @@ async def plan_card_lifecycle(
                     kind={"reselect_project_control": "project_control", "reselect_agent_card": "agent_card",
                           "reselect_invitation_control": "invitation_control"}[raw["kind"]],
                     project_ref=scope, actor_subject=actor, request_id=request_id, now=now,
-                    accepted_operations=raw.get("accepted_operations"))
+                    accepted_operations=raw.get("accepted_operations"),
+                    composition_mode=raw.get("composition_mode"), label=raw.get("label"))
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue

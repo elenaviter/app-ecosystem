@@ -81,10 +81,18 @@ def managed_target_kind(original: CardAuthority, *, project_ref: str, kind: str)
 async def build_managed_card_selection_update(
     host: Any, *, original: CardAuthority, kind: str, selection: Mapping[str, Any], active: Any,
     decision: ProjectAuthorizationDecision, project_ref: str, actor_subject: str, request_id: str, now: int,
-    accepted_operations: Mapping[str, Any] | None = None,
+    accepted_operations: Mapping[str, Any] | None = None, composition_mode: str | None = None,
+    label: str | None = None,
 ) -> dict[str, Any]:
-    """One exact P or agent-Card update from a host-authorized selection, without a write (W723: and its acceptance)."""
+    """One exact P or agent-Card update from a host-authorized selection, without a write (W723: and its acceptance).
+
+    W742: ``composition_mode`` is the project access rule a project Control (P) edit sets, ``and`` or ``or``;
+    it changes only that field of P, beside (or instead of) the selection. W735: ``label`` is the Card's new
+    display name, changed the same way, never authority.
+    """
     if kind not in OPERATIONS or not isinstance(selection, Mapping) or set(selection) - _SELECTION_FIELDS:
+        raise _refuse("card_plan_selection_invalid")
+    if composition_mode is not None and (kind != "project_control" or composition_mode not in {"and", "or"}):
         raise _refuse("card_plan_selection_invalid")
     if type(now) is not int or now < 1:
         raise _refuse("card_plan_audit_time_invalid")
@@ -125,7 +133,9 @@ async def build_managed_card_selection_update(
         resource_row_for=lambda resource: host._configured_resource(resource, config=catalog_config))
     candidate = dataclasses.replace(selected, card_revision=original.card_revision + 1,
         catalog_version=catalog_version,
-        resource_acceptance=preserve_descriptor_acceptance(original.resource_acceptance, computed))
+        resource_acceptance=preserve_descriptor_acceptance(original.resource_acceptance, computed),
+        **({"composition_mode": composition_mode} if composition_mode is not None else {}),
+        **({"label": label} if label is not None else {}))
     if candidate.control_card != original.control_card:
         raise _refuse("card_plan_update_scope_invalid")  # an edit never moves a Card in the hierarchy
     before, after = original.to_dict(), candidate.to_dict()
@@ -135,7 +145,12 @@ async def build_managed_card_selection_update(
     refusal = candidate_shape_refusal("update", original.to_dict(), candidate.to_dict())
     if refusal is not None:
         raise _refuse(refusal)
-    if undisplayed_change(original.to_dict(), candidate.to_dict()) is not None:
+    shown = original.to_dict()
+    if composition_mode is not None:
+        shown["composition_mode"] = candidate.to_dict().get("composition_mode")  # the one rule the person set
+    if label is not None:
+        shown["label"] = label  # the one display field the person renamed
+    if undisplayed_change(shown, candidate.to_dict()) is not None:
         raise _refuse("card_plan_undisplayed_change")
     return {"member": group_member(original=original, candidate=candidate, action="update")}
 

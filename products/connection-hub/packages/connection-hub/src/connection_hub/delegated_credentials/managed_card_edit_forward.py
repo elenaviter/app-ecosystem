@@ -39,6 +39,13 @@ SCHEMA = "managed-card-edit.v1"
 OUTCOME_SCHEMA = "managed-card-edit-outcome.v1"
 TARGET_KINDS = frozenset({"person_control", "person_my", "agent_card", "invitation_control", "project_control"})
 SELECTION_FIELDS = ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
+COMPOSITION_MODES = frozenset({"and", "or"})
+LABEL_MAX = 200
+
+
+def valid_label(value: Any) -> bool:
+    """W735: a Card's display name as an edit sets it: exact, trimmed, printable, at most LABEL_MAX characters."""
+    return type(value) is str and 0 < len(value) <= LABEL_MAX and value == value.strip() and value.isprintable()
 
 BundleCall = Callable[..., Awaitable[Any]]
 _LOG = logging.getLogger(__name__)
@@ -77,22 +84,36 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
                            principal_key: str, original_revision: int, selection: Mapping[str, Any],
                            access_id: str | None = None, subject_hash: str | None = None,
                            accepted_operations: Mapping[str, Any] | None = None,
-                           expected_catalog_version: str | None = None) -> dict:
+                           expected_catalog_version: str | None = None,
+                           composition_mode: str | None = None, label: str | None = None) -> dict:
     """The exact unsigned request; nothing in it comes from the browser except the edit itself.
 
     W723: ``accepted_operations`` travels only when the person ticked "Accept update", so every body
     without it is byte-identical to before. An acceptance alone is a real edit: ``selection`` may then
     be empty. W724: ``person_my`` is the person's own My Card (``principal_key`` is their own ``user:``).
+    W742: ``composition_mode`` (the project access rule, ``and``/``or``) travels only on a project Control
+    (P) edit that changes it, as an exact, signed field; a rule change alone is a real edit.
+    W735: ``label`` (the Card's display name, not authority) travels only when it changes, as an exact,
+    signed field; a rename alone is a real edit.
     """
     for value in (actor_subject, project_ref, request_id, principal_key):
         if type(value) is not str or not 0 < len(value) <= 256 or value != value.strip() or not value.isprintable():
             raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     accepted = _accepted_part(accepted_operations)
-    if not isinstance(selection, Mapping) or (not selection and not accepted):
+    if composition_mode is not None and (kind != "project_control" or composition_mode not in COMPOSITION_MODES):
+        raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+    if label is not None and (not valid_label(label) or kind not in TARGET_KINDS):
+        raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
+    if not isinstance(selection, Mapping) or (not selection and not accepted and composition_mode is None
+                                              and label is None):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     if kind == "person_my" and principal_key != "user:" + actor_subject:
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)  # only one's own My Card
     extra = {"accepted_operations": accepted} if accepted else {}
+    if composition_mode is not None:
+        extra["composition_mode"] = composition_mode
+    if label is not None:
+        extra["label"] = label
     if accepted and expected_catalog_version is not None:
         # The catalog the person reviewed: an acceptance is never applied to a catalog they did not see.
         if (type(expected_catalog_version) is not str or not 0 < len(expected_catalog_version) <= 256
