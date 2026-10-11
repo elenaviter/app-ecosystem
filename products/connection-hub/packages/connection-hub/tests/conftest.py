@@ -31,56 +31,52 @@ _PG_MODE = os.environ.get("W661_BCORE_PG_MODE") == "1" and bool(os.environ.get("
 
 
 class _LazyPool:
-    """A pool stand-in for pytest-asyncio's loop-per-test: ONE connection per running loop, reused across
-    acquires and serialized by a per-loop lock (a real asyncpg pool reuses its connections too). No connection
-    outlives its loop: a loop that ended leaves a stale entry that is replaced, never used."""
+    """A pool stand-in that works under any event loop (pytest-asyncio's loop per test, or a sync test's own
+    asyncio.run): each acquire opens one connection in the running loop and closes it on release, so no
+    connection outlives its loop and nothing is left for the garbage collector ("unclosed" under
+    -W always::ResourceWarning). Statements are serialized per loop, as a one-connection pool would."""
 
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
-        self._per_loop: dict = {}
+        self._locks: dict = {}
 
-    async def _slot(self):
+    def _lock(self):
         loop = asyncio.get_running_loop()
-        slot = self._per_loop.get(id(loop))
-        if slot is None or slot[0] is not loop or slot[2].is_closed():
-            import asyncpg
-
-            slot = (loop, asyncio.Lock(), await asyncpg.connect(self._dsn))
-            self._per_loop[id(loop)] = slot
-        return slot
+        entry = self._locks.get(id(loop))
+        if entry is None or entry[0] is not loop:
+            entry = (loop, asyncio.Lock())
+            self._locks[id(loop)] = entry
+        return entry[1]
 
     def acquire(self):
         pool = self
 
         class _Acquire:
             async def __aenter__(self):
-                _loop, self._lock, connection = await pool._slot()
+                import asyncpg
+
+                self._lock = pool._lock()
                 await self._lock.acquire()
-                return connection
+                try:
+                    self._connection = await asyncpg.connect(pool._dsn)
+                except BaseException:
+                    self._lock.release()
+                    raise
+                return self._connection
 
             async def __aexit__(self, *exc):
-                self._lock.release()
+                try:
+                    await self._connection.close()
+                finally:
+                    self._lock.release()
 
         return _Acquire()
 
     async def release(self, connection) -> None:
         return None
 
-    async def aclose_running(self) -> None:
-        """Close this loop's connection in its own loop, before the loop closes (as W707 closes R clients)."""
-        loop = asyncio.get_running_loop()
-        slot = self._per_loop.pop(id(loop), None)
-        if slot is not None and slot[0] is loop and not slot[2].is_closed():
-            await slot[2].close()
-
     def terminate(self) -> None:
-        """Abort every connection still open (one opened in a loop the test ran and closed itself)."""
-        for _loop, _lock, connection in list(self._per_loop.values()):
-            try:
-                connection.terminate()
-            except RuntimeError:
-                pass  # its loop is already closed: collected by the caller's gc.collect()
-        self._per_loop.clear()
+        self._locks.clear()
 
 
 class _LazyRows:
@@ -136,29 +132,14 @@ def _audit_unlocked_write(kind: str) -> None:
                   f"{test.filename.split('/tests/')[-1] + ':' + test.name if test else '-'}\n")
 
 
-_PG_POOLS: list = []  # the PG-mode pool of the running test
-
-
 @pytest.fixture(autouse=True)
 def _w661_bcore_pg_mode(monkeypatch):
     if not _PG_MODE:
         yield
         return
     pool = install_pg_mode(lambda target, name, value: monkeypatch.setattr(target, name, value, raising=False))
-    _PG_POOLS.append(pool)
     yield
-    _PG_POOLS.remove(pool)
     pool.terminate()
-    import gc
-    gc.collect()  # a connection left on a closed loop is finalized HERE, not in a later test
-
-
-@pytest.fixture(autouse=True)
-async def _w661_bcore_pg_mode_connections(_w661_bcore_pg_mode):
-    """Close this test's PG-mode connection in the test's own event loop, before that loop closes."""
-    yield
-    for pool in list(_PG_POOLS):
-        await pool.aclose_running()
 
 
 def install_pg_mode(set_attr):
