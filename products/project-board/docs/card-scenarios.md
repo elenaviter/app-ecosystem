@@ -134,7 +134,7 @@ attempt with its time. `unconfirmed` means no test has run it yet. Times are UTC
 |---|---|---|---|---|---|---|
 | P1 | admin | I | Invite a person | PB `project.people.invite` | I created through the project | unconfirmed |
 | P2 | invitee | I, then C and My | Redeem the invitation | Hub redemption | C and My created; membership starts | unconfirmed |
-| P3 | admin | C + My | Fit to role (preview, then confirm) | PB `project.people.card.reset` (FitToRoleLever: preview and confirm); `project.people.set_role` for a role change from the people list | The role minimum is set on both Cards through the project; other selections are kept | unconfirmed at the request layer; transaction layer PASS (W732 14:13) |
+| P3 | admin | C + My | Fit to role (preview, then confirm) | PB `project.people.control.backfill` (the Control step, first), then `project.people.card.reset` (FitToRoleLever: preview and confirm); `project.people.set_role` for a role change from the people list | The role minimum is set on both Cards through the project; other selections are kept | unconfirmed at the request layer; transaction layer PASS (W732 14:13) |
 | P4 | admin | C | Read a person's Card from the people list | PB `project.people.card` (read) | The person's C as the board shows it | unconfirmed. Note: PB `project.people.card.update` is retired (410 `work_control_card_edit_in_connection_hub`, W732 14:18); a person's C is edited only in the Hub (S1) |
 | P8 | admin | C (several people) | Move people to Cards | PB session operation `project_people_cards_move` | Each person's Cards are created or moved through the project | unconfirmed |
 | P5 | owner | C + P | Transfer ownership | PB `project.people.transfer_ownership` | Through the project | unconfirmed |
