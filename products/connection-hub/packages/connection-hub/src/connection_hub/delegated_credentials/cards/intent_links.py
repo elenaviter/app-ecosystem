@@ -81,6 +81,22 @@ def validate_finished_binding(raw: Mapping[str, Any]) -> None:
             or type(binding["record_digest"]) is not str or not _HEX64.fullmatch(binding["record_digest"])
             or raw.get("intent_finished") is not True):
         raise DecisionRefused("card_intent_invalid")
+    if "intent_unrecorded" in raw:
+        # This is an authenticated absence witness, NOT the digest of a Card
+        # intent that was never recorded. Keep its domain explicit and bounded.
+        if (raw["intent_unrecorded"] is not True or "schema" in raw or raw.get("state") != "aborted"
+                or type(raw.get("transaction_id")) is not str or not _HEX64.fullmatch(raw["transaction_id"])
+                or type(raw.get("intent_digest")) is not str or not _HEX64.fullmatch(raw["intent_digest"])
+                or not binding["authority"] or binding["record_digest"] != unrecorded_binding_digest(
+                    raw["transaction_id"], raw["intent_digest"], binding["authority"], binding["scope"])):
+            raise DecisionRefused("card_intent_invalid")
+
+
+def unrecorded_binding_digest(transaction_id: str, intent_digest: str, authority: str, scope: str) -> str:
+    from .card_participant import receipt_digest
+
+    return receipt_digest({"schema": "connection-hub.card-unrecorded-abort.v1", "transaction_id": transaction_id,
+                           "intent_digest": intent_digest, "authority": authority, "scope": scope})
 
 
 def intent_record_digest(intent: Any) -> str:
@@ -110,6 +126,20 @@ async def sections(source: Any, keys: Any):
             yield
 
 
+@asynccontextmanager
+async def transaction_section(source: Any, transaction_id: str):
+    """Use the hosting service's existing txn section; never invent a private lock."""
+    service = source._service or getattr(source._store, "_card_intent_service", None)
+    if service is not None:
+        async with service._txn_section(transaction_id):
+            yield
+    else:
+        # Existing service-less local recorder fixtures retain their drain
+        # boundary. Authenticated never-recorded completion requires a service.
+        async with drain_writes_before_release():
+            yield
+
+
 async def terminal(source: Any, transaction_id: str) -> dict[str, Any] | None:
     receipt = await read_receipt(source._store, transaction_id)
     if receipt is not None:
@@ -119,9 +149,10 @@ async def terminal(source: Any, transaction_id: str) -> dict[str, Any] | None:
         raise DecisionRefused("card_intent_invalid")
     if raw is not None:
         if (not isinstance(raw, dict) or raw.get("transaction_id") != transaction_id or raw.get("state") != "aborted"
-                or not set(raw) <= {"transaction_id", "state", "intent_digest", "intent_binding", "intent_finished"}):
+                or not set(raw) <= {"transaction_id", "state", "intent_digest", "intent_binding", "intent_finished",
+                                    "intent_unrecorded"}):
             raise DecisionRefused("card_intent_invalid")
-        if "intent_binding" in raw or "intent_finished" in raw:
+        if "intent_binding" in raw or "intent_finished" in raw or "intent_unrecorded" in raw:
             validate_finished_binding(raw)
             if type(raw.get("intent_digest")) is not str or not _HEX64.fullmatch(raw["intent_digest"]):
                 raise DecisionRefused("card_intent_invalid")
@@ -182,6 +213,41 @@ async def read_binding(source: Any, transaction_id: str) -> Any:
     return SimpleNamespace(authority=raw.get("authority", ""), scope=raw.get("scope", ""))
 
 
+async def finish_unrecorded_abort(source: Any, record: Any, *, authority: str, scope: str) -> dict[str, Any] | None:
+    """Only after authenticated admission and a verified, scope-bound ABORT.
+
+    Serialize absence with manifest publication. The complete bounded routing
+    witness is in the first atomic tombstone, before any FINISH receipt is
+    returned. Replay retries exact cleanup, not an inferred/adopted binding.
+    A recorded intent still goes through all ordinary participant FINISH duties.
+    """
+    from .transaction_store import abort_unstaged
+
+    service = source._service or getattr(source._store, "_card_intent_service", None)
+    if service is None:
+        raise DecisionRefused("card_intent_recorder_unavailable")
+    transaction_id = record.transaction_id
+    if not record.terminal or record.state != "aborted" or not authority:
+        raise DecisionRefused("card_intent_not_bound")
+    binding = {"authority": authority, "scope": scope, "record_digest": unrecorded_binding_digest(
+        transaction_id, record.intent.digest, authority, scope)}
+    async with service._txn_section(transaction_id):
+        if await read_manifest(source, transaction_id) is not None:
+            return None
+        ended = await terminal(source, transaction_id)
+        if ended is not None:
+            if ended.get("intent_unrecorded") is not True:
+                if ended.get("intent_binding") is None:
+                    raise DecisionRefused("card_intent_not_bound")
+                return None  # a normally recorded and retired intent
+            if ended.get("intent_binding") != binding or ended.get("intent_digest") != record.intent.digest:
+                raise DecisionRefused("card_intent_not_bound")
+        elif await read_receipt(source._store, transaction_id) is not None:
+            raise DecisionRefused("card_intent_not_bound")  # a receipt without a manifest is not absence
+        return await abort_unstaged(source._store, transaction_id, intent_digest=record.intent.digest,
+                                    finished_binding=binding)
+
+
 async def record_links(source: Any, intent: Any) -> None:
     from .card_participant import CardGroupIntent, CardIntent, HubCardParticipant
 
@@ -198,7 +264,7 @@ async def record_links(source: Any, intent: Any) -> None:
     if source._decisions is not None:
         bound = await source._decisions.read(intent.transaction_id)
         HubCardParticipant._check_bound(intent, bound)
-    async with sections(source, keys):
+    async with transaction_section(source, intent.transaction_id), sections(source, keys):
         if source._decisions is not None:
             bound = await source._decisions.read(intent.transaction_id)
             HubCardParticipant._check_bound(intent, bound)
@@ -401,6 +467,13 @@ async def retire_intent(source: Any, transaction_id: str, decision: str) -> dict
     if raw is None:
         if ended.get("intent_finished") is not True or not ended.get("intent_binding"):
             raise DecisionRefused("card_intent_unknown")
+        if ended.get("intent_unrecorded") is True:
+            # A kill may leave the atomic absence witness before index/fence
+            # cleanup. Direct participant replay, as well as the signed
+            # operation, must retry those exact duties before acknowledging.
+            from .transaction_store import abort_unstaged
+            return await abort_unstaged(source._store, transaction_id, intent_digest=ended["intent_digest"],
+                                        finished_binding=ended["intent_binding"])
         return ended
     linked = is_link_record(raw)
     if linked:
