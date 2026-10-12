@@ -37,7 +37,7 @@ At the machine: a terminal tab
 ```bash
 ALIAS=<name>@<machine>
 ACCOUNT=<your Claude account email>
-mkdir -p ~/.kdcube/pb/workspaces/$ALIAS "$HOME/.claude-accounts/$ACCOUNT" && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/$ACCOUNT" claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion
+mkdir -p "$HOME/.kdcube/pb/workspaces/$ALIAS" "$HOME/.claude-accounts/$ACCOUNT" && cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && env CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/$ACCOUNT" claude --add-dir "$HOME/.kdcube" --dangerously-skip-permissions --disallowedTools AskUserQuestion
 ```
 
 Over ssh: in tmux
@@ -45,7 +45,7 @@ Over ssh: in tmux
 ```bash
 ALIAS=<name>@<machine>
 ACCOUNT=<your Claude account email>
-tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS '$HOME/.claude-accounts/$ACCOUNT' && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR='$HOME/.claude-accounts/$ACCOUNT' claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS '$HOME/.claude-accounts/$ACCOUNT' && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR='$HOME/.claude-accounts/$ACCOUNT' claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion; exec $SHELL -l"
 tmux attach -t "$ALIAS"
 ```
 

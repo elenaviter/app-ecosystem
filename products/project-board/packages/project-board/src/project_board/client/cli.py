@@ -1234,6 +1234,11 @@ def build_parser() -> argparse.ArgumentParser:
     profile_command.add_argument("--runtime-session-id", "--session-id", dest="runtime_session_id", required=True)
     profile_command.add_argument("--source", help="The folder the session ran in (default ~/.claude).")
     profile_command.add_argument("--apply", action="store_true", help="Copy; without it nothing is written.")
+    profile_command.add_argument(
+        "--with-memory",
+        action="store_true",
+        help="Also copy the project folder's memory, once the operator confirmed it is this agent's.",
+    )
     profile_command = profile_commands.add_parser("rollback", help="Remove what one migrate created, if none of it changed.")
     _host_config(profile_command)
     profile_command.add_argument("--runtime-session-id", "--session-id", dest="runtime_session_id", required=True)

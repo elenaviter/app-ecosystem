@@ -131,7 +131,7 @@ def test_first_run_has_one_session_set_up_and_enroll_and_finds_pb():
         "## One Session Sets Up, Then Becomes The Worker",
         # The same words as the README and the board's Connect a machine panel.
         'ALIAS=<name>@<machine>',
-        'tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS \'$HOME/.claude-accounts/$ACCOUNT\' && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR=\'$HOME/.claude-accounts/$ACCOUNT\' claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"',
+        'tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS \'$HOME/.claude-accounts/$ACCOUNT\' && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR=\'$HOME/.claude-accounts/$ACCOUNT\' claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion; exec $SHELL -l"',
         'tmux attach -t "$ALIAS"',
         "Edit only the ALIAS and ACCOUNT lines, for example ana@mint and ana@example.com. Use letters, digits, '-' and '@' in ALIAS: tmux does not allow '.' and ':' in a session name.",
         "Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <name>@<machine>",

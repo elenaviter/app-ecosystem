@@ -9,7 +9,9 @@ they are: they are the backup, and nothing here deletes them.
 Copied, and only these:
   projects/<project>/<session>.jsonl   the transcript `claude --resume` reads
   projects/<project>/<session>/        its subagent and tool-result files
-  projects/<project>/memory/           that project folder's memory
+  projects/<project>/memory/           only with with_memory: that project
+                                       folder's memory, once the operator
+                                       confirmed it belongs to this agent
   file-history/<session>/              its file checkpoints
   todos/<session>-*.json               its task lists
 Never copied: `.claude.json`, credential files, settings, plugins, other
@@ -80,13 +82,18 @@ def _files_under(root: Path) -> list[Path]:
     )
 
 
-def session_files(source: Path, session_id: str) -> list[Path]:
-    """The source files that belong to one session, relative to the source folder."""
+def session_files(source: Path, session_id: str, *, with_memory: bool = False) -> list[Path]:
+    """The source files that belong to one session, relative to the source folder.
+
+    A project folder's memory is shared by every session that ran in that
+    folder, so it comes along only when the operator says it is this agent's.
+    """
 
     project = _session_project(source, session_id)
     selected = [project / f"{session_id}.jsonl"]
     selected += _files_under(project / session_id)
-    selected += _files_under(project / "memory")
+    if with_memory:
+        selected += _files_under(project / "memory")
     selected += _files_under(source / "file-history" / session_id)
     selected += sorted(
         path for path in (source / "todos").glob(f"{session_id}-*.json")
@@ -96,7 +103,7 @@ def session_files(source: Path, session_id: str) -> list[Path]:
 
 
 def plan_migration(
-    *, source: str | Path, target: str | Path, session_id: str, now: float | None = None
+    *, source: str | Path, target: str | Path, session_id: str, now: float | None = None, with_memory: bool = False
 ) -> dict[str, Any]:
     """The dry run: each file with its action (copy, present, conflict) and why a run would stop."""
 
@@ -105,7 +112,7 @@ def plan_migration(
     if os.path.realpath(source_dir) == os.path.realpath(target_dir):
         raise _refuse("work_claude_profile_same_folder", "The session already lives in this profile folder.")
     rows: list[dict[str, str]] = []
-    for relative in session_files(source_dir, session_id):
+    for relative in session_files(source_dir, session_id, with_memory=with_memory):
         source_hash = _sha256(source_dir / relative)
         destination = target_dir / relative
         if destination.exists():
@@ -122,6 +129,7 @@ def plan_migration(
         blockers.append("conflict")
     return {
         "session_id": session_id,
+        "with_memory": with_memory,
         "source": str(source_dir),
         "target": str(target_dir),
         "files": rows,
@@ -138,7 +146,7 @@ def _manifest_path(target: Path, session_id: str) -> Path:
 
 
 def apply_migration(
-    *, source: str | Path, target: str | Path, session_id: str, now: float | None = None
+    *, source: str | Path, target: str | Path, session_id: str, now: float | None = None, with_memory: bool = False
 ) -> dict[str, Any]:
     """Copy the session's files and verify each; refuses on a running session or any conflict.
 
@@ -146,7 +154,7 @@ def apply_migration(
     is already there with the same hash.
     """
 
-    plan = plan_migration(source=source, target=target, session_id=session_id, now=now)
+    plan = plan_migration(source=source, target=target, session_id=session_id, now=now, with_memory=with_memory)
     if plan["blockers"]:
         raise _refuse(
             "work_claude_profile_migration_blocked",
@@ -182,7 +190,7 @@ def apply_migration(
         created[row["path"]] = row["sha256"]
         # Recorded after every file, so an interrupted run can still be rolled back.
         atomic_write_json(manifest_path, _manifest(plan, created, created_dirs))
-    verified = verify_migration(target=target_dir, session_id=session_id, source=source_dir)
+    verified = verify_migration(target=target_dir, session_id=session_id, source=source_dir, with_memory=with_memory)
     atomic_write_json(manifest_path, {**_manifest(plan, created, created_dirs), "verified_at": utc_now()})
     return {**plan, "applied": len(created), "verified": verified}
 
@@ -199,13 +207,15 @@ def _manifest(plan: Mapping[str, Any], created: Mapping[str, str], created_dirs:
     }
 
 
-def verify_migration(*, target: str | Path, session_id: str, source: str | Path) -> dict[str, Any]:
+def verify_migration(
+    *, target: str | Path, session_id: str, source: str | Path, with_memory: bool = False
+) -> dict[str, Any]:
     """Every source file of the session is in the profile with the same hash."""
 
     source_dir = Path(source).expanduser()
     target_dir = Path(target).expanduser()
     differing = []
-    files = session_files(source_dir, session_id)
+    files = session_files(source_dir, session_id, with_memory=with_memory)
     for relative in files:
         destination = target_dir / relative
         if not destination.is_file() or _sha256(destination) != _sha256(source_dir / relative):

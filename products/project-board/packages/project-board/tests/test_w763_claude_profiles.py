@@ -548,19 +548,21 @@ def test_a_dry_run_lists_only_the_sessions_own_files_and_writes_nothing(home):
     assert paths == {
         f"projects/-Users-ana-work/{SESSION_A}.jsonl",
         f"projects/-Users-ana-work/{SESSION_A}/subagents/agent-1.jsonl",
-        "projects/-Users-ana-work/memory/MEMORY.md",
         f"file-history/{SESSION_A}/f1",
         f"todos/{SESSION_A}-agent-{SESSION_A}.json",
     }
     assert plan["blockers"] == []
     assert not target.exists()
+    # The project folder's memory only on the operator's word.
+    with_memory = plan_migration(source=source, target=target, session_id=SESSION_A, with_memory=True)
+    assert "projects/-Users-ana-work/memory/MEMORY.md" in {row["path"] for row in with_memory["files"]}
 
 
 def test_apply_copies_verifies_and_never_touches_credentials_or_originals(home):
     source = _legacy_folder(home)
     target = home / ".claude-accounts" / "ana@example.com"
     result = apply_migration(source=source, target=target, session_id=SESSION_A)
-    assert result["verified"] == {"files": 5, "state": "verified"}
+    assert result["verified"] == {"files": 4, "state": "verified"}
     assert (target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").read_text() == '{"turn": 1}\n'
     assert not (target / ".credentials.json").exists()
     assert not (target / "settings.json").exists()
@@ -568,7 +570,7 @@ def test_apply_copies_verifies_and_never_touches_credentials_or_originals(home):
     assert (source / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()
     # A retry is a no-op that verifies again.
     again = apply_migration(source=source, target=target, session_id=SESSION_A)
-    assert again["copy"] == 0 and again["present"] == 5
+    assert again["copy"] == 0 and again["present"] == 4
 
 
 def test_a_running_session_is_not_migrated(home):
@@ -588,7 +590,7 @@ def test_a_different_file_already_in_the_profile_stops_everything(home):
     conflict.parent.mkdir(parents=True)
     conflict.write_text("- a different memory\n", encoding="utf-8")
     with pytest.raises(DomainError) as caught:
-        apply_migration(source=source, target=target, session_id=SESSION_A)
+        apply_migration(source=source, target=target, session_id=SESSION_A, with_memory=True)
     assert caught.value.details["conflicts"] == ["projects/-Users-ana-work/memory/MEMORY.md"]
     assert not (target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()
 
@@ -600,7 +602,7 @@ def test_rollback_removes_only_what_the_migration_created(home):
     (target / ".claude.json").write_text("{}", encoding="utf-8")  # the profile's own login stays
     apply_migration(source=source, target=target, session_id=SESSION_A)
     result = rollback_migration(target=target, session_id=SESSION_A)
-    assert result["removed"] == 5
+    assert result["removed"] == 4
     assert (target / ".claude.json").exists()
     assert not (target / "projects").exists()
     assert (source / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()

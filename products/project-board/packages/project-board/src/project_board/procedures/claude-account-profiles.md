@@ -135,9 +135,12 @@ person's yes.
    anything is copied.
 
    `--apply` copies only that agent's own files: its history, its subagent
-   files, its project memory, its file checkpoints and task lists. It never
-   copies a login, `.claude.json`, settings, plugins, or another agent's
-   history. Each copy is checked against the original by hash. The originals
+   files, its file checkpoints and task lists. The project folder's memory is
+   shared by every session that ran in that folder, so it comes along only with
+   `--with-memory`, after the person confirms it is this agent's. It never
+   copies a login, `.claude.json`, settings, plugins, `CLAUDE.md`, agents,
+   commands, or another agent's history; the profile's settings hold only what
+   step 3 installed. Each copy is checked against the original by hash. The originals
    stay in `~/.claude`: they are the backup. An interrupted `--apply` can be
    run again and copies only what is missing.
 
