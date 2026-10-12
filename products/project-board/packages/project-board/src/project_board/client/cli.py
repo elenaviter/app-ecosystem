@@ -5237,9 +5237,14 @@ def _push_selections(remote: str, push_args: list[str], git_out: Callable[..., s
             matching = git_out("config", "--get", "push.default") == "matching"
             return [["--branches"]] if matching else [["HEAD"]]
     for spec in specs:
+        if spec in (":", "+:"):
+            # The special matching refspec: every branch both sides have. Checking all
+            # local branches covers it (Root's review of 02b6bb78); it is no deletion.
+            selections.append(["--branches"])
+            continue
         source = spec.split(":", 1)[0].lstrip("+")
         if not source:
-            continue  # a deletion sends no commits
+            continue  # a deletion (":dst") sends no commits
         if source.startswith("^"):
             return f"negative refspec {spec} is not checked by pb; push without it (push_selection_unsupported)"
         if "*" in source:
