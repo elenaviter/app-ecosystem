@@ -386,15 +386,27 @@ def apply_migration(
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         # A fresh name: an earlier partial copy, or anything else, is never replaced.
         handle, partial_name = tempfile.mkstemp(dir=destination.parent, prefix=f".{destination.name}.pb-partial-")
+        identity = os.fstat(handle)
         os.close(handle)
         partial = Path(partial_name)
-        # Ownership is durable before the file exists: the path, its hash and
-        # the temporary name. A crash after publication leaves a pending entry
-        # whose destination carries that hash, which the next run or a rollback
-        # counts as this migration's.
-        pending.append({"path": row["path"], "partial": str(partial.relative_to(target_dir)), "sha256": row["sha256"]})
+        # Ownership is durable before the file exists: the path, its hash, the
+        # temporary name and the temporary file's identity on disk. Publication
+        # links that same file into place, so after a crash the destination is
+        # this migration's only when it is that file. Equal bytes are not
+        # ownership: a file someone else wrote with the same content has
+        # another identity and is never claimed.
+        pending.append({
+            "path": row["path"],
+            "partial": str(partial.relative_to(target_dir)),
+            "sha256": row["sha256"],
+            "file_id": [identity.st_dev, identity.st_ino],
+        })
         atomic_write_json(manifest_path, _manifest(plan, created, created_dirs, pending))
         shutil.copy2(_inside(source_dir, row["path"]), partial)
+        staged = partial.stat()
+        if [staged.st_dev, staged.st_ino] != [identity.st_dev, identity.st_ino]:
+            partial.unlink()
+            raise _refuse("work_claude_profile_copy_mismatch", f"{row['path']} was not copied into its staged file.")
         if _sha256(partial) != row["sha256"]:
             partial.unlink()
             raise _refuse("work_claude_profile_copy_mismatch", f"{row['path']} changed while it was copied.")
@@ -413,9 +425,12 @@ def _settle_pending(
 ) -> dict[str, str]:
     """{path: hash} of the files an interrupted run published; its temporary files removed.
 
-    A pending destination that carries the recorded hash was published by
-    that run: the copy only ever links into a name that did not exist. Any
-    other destination is not this migration's and is left alone.
+    A pending destination is that run's only when it is the very file the
+    run staged (same device and inode, recorded before the copy): publication
+    links the staged file into a name that did not exist. Any other
+    destination, equal bytes included, is not this migration's and is left
+    alone. A claimed file keeps its recorded hash, so one changed since is
+    caught by the rollback's check.
     """
 
     published: dict[str, str] = {}
@@ -427,9 +442,13 @@ def _settle_pending(
         if not row.get("path") or not row.get("sha256"):
             continue
         destination = _inside(target_dir, row["path"])
-        if destination.is_file() and _sha256(destination) == row["sha256"]:
-            published[row["path"]] = row["sha256"]
-        elif destination.exists() and kept is not None:
+        file_id = row.get("file_id")
+        if destination.is_file() and isinstance(file_id, list) and len(file_id) == 2:
+            current = destination.stat()
+            if [current.st_dev, current.st_ino] == file_id:
+                published[row["path"]] = row["sha256"]
+                continue
+        if destination.exists() and kept is not None:
             # Changed since, or never this migration's: it stays, and is said.
             kept.append(row["path"])
     return published

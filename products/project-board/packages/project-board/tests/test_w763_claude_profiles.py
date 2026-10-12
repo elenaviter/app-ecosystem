@@ -1009,7 +1009,7 @@ def test_metadata_of_another_account_in_the_profile_stops_the_login_copy(home):
     assert not (target / ".credentials.json").exists()
 
 
-def test_rollback_keeps_and_names_a_file_changed_after_an_interrupted_publication(home, monkeypatch):
+def test_rollback_refuses_a_published_file_changed_after_an_interrupted_publication(home, monkeypatch):
     import project_board.client.claude_profile_migration as migration
 
     source = _legacy_folder(home)
@@ -1024,10 +1024,42 @@ def test_rollback_keeps_and_names_a_file_changed_after_an_interrupted_publicatio
     with pytest.raises(KeyboardInterrupt):
         apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
     published = target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl"
-    published.write_text("the operator changed this", encoding="utf-8")
-    result = rollback_migration(target=target, session_id=SESSION_A)
-    assert result["kept_files"] == [f"projects/-Users-ana-work/{SESSION_A}.jsonl"]
+    published.write_text("the operator changed this", encoding="utf-8")  # same file, new content
+    with pytest.raises(DomainError) as caught:
+        rollback_migration(target=target, session_id=SESSION_A)
+    assert caught.value.code == "work_claude_profile_rollback_conflict"
     assert published.read_text(encoding="utf-8") == "the operator changed this"
+
+
+def test_equal_bytes_written_by_someone_else_are_never_claimed(home, monkeypatch):
+    """A racing file with the very same content is not this migration's file."""
+
+    import project_board.client.claude_profile_migration as migration
+
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    racing = target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl"
+    original = (source / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").read_bytes()
+    real_publish = migration._publish
+
+    def someone_else_first(partial, destination):
+        if destination == racing:
+            racing.write_bytes(original)  # identical bytes, another file
+        real_publish(partial, destination)
+
+    monkeypatch.setattr(migration, "_publish", someone_else_first)
+    with pytest.raises(DomainError) as caught:
+        apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+    assert caught.value.code == "work_claude_profile_conflict"
+    monkeypatch.setattr(migration, "_publish", real_publish)
+    # A retry treats it as already present, not as created.
+    apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+    manifest = json.loads((target / ".pb-migrations" / f"{SESSION_A}.json").read_text(encoding="utf-8"))
+    assert f"projects/-Users-ana-work/{SESSION_A}.jsonl" not in {row["path"] for row in manifest["created"]}
+    # And a rollback leaves it where it is.
+    result = rollback_migration(target=target, session_id=SESSION_A)
+    assert racing.read_bytes() == original
+    assert result["removed"] == 3
 
 
 def test_a_linked_source_login_record_is_not_used(home, tmp_path):
