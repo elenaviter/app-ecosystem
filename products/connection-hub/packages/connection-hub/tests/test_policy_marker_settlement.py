@@ -143,6 +143,33 @@ async def test_live_undecided_card_keeps_marker_and_returns_retryable_conflict(t
 
 
 @pytest.mark.asyncio
+async def test_unreachable_receipt_lookup_stays_bounded_and_names_only_the_member(tmp_path, monkeypatch):
+    policies, authority, before, store, coordinator, _decisions, row = await _staged(tmp_path)
+    marker = await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority)
+    never_answers = asyncio.Event()
+
+    async def unreadable(_store, _member_id):
+        await never_answers.wait()
+
+    monkeypatch.setattr(
+        "connection_hub.delegated_credentials.cards.policy_marker_settlement.read_receipt",
+        unreadable,
+    )
+    settler = CardPolicyMarkerSettler(
+        card_store=store, coordinator=coordinator, callers={}, max_wait_seconds=0.02,
+    )
+    started = asyncio.get_running_loop().time()
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided") as raised:
+        await settler(marker, before.grantor_subject)
+    assert asyncio.get_running_loop().time() - started < 0.2
+    assert invocation_policy_conflict_response(raised.value)["transaction_ref"] == {
+        "member_transaction_id": row.transaction_id,
+    }
+    assert (await policies.get_policy_change(owner_subject=before.grantor_subject,
+                                             authority=authority)).state == POLICY_CHANGE_PREPARED
+
+
+@pytest.mark.asyncio
 async def test_stale_revision_does_not_finish_an_earlier_committed_change(tmp_path):
     policies, authority, before, store, coordinator, decisions, row = await _staged(
         tmp_path, decision="committed",

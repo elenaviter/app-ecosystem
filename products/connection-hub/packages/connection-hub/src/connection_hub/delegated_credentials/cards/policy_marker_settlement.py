@@ -57,11 +57,15 @@ class CardPolicyMarkerSettler:
                 "invocation_policy_earlier_change_undecided", transaction_ref=recovery,
             )
         member_id = change.change_id[:-len(suffix)]
+        deadline = time.monotonic() + self._max_wait_seconds
         if recovery is not None:
             # A group member's marker names its member receipt. Recovery must
             # also name the group's distinct durable decision identity.
             try:
-                receipt = await read_receipt(self._card_store, member_id)
+                receipt = await asyncio.wait_for(
+                    read_receipt(self._card_store, member_id),
+                    timeout=max(0, deadline - time.monotonic()),
+                )
             except Exception:  # noqa: BLE001 - retain the exact member identity
                 receipt = None
             if isinstance(receipt, Mapping) and receipt.get("transaction_id") == member_id:
@@ -73,7 +77,6 @@ class CardPolicyMarkerSettler:
                     and all(char in "0123456789abcdef" for char in decision_id)
                 ):
                     recovery["decision_transaction_id"] = decision_id
-        deadline = time.monotonic() + self._max_wait_seconds
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
