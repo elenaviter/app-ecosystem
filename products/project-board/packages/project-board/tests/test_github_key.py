@@ -150,6 +150,11 @@ def test_pb_worker_gh_selects_the_key_from_an_alias_origin_and_strips_repo_for_a
     calls: list[list[str]] = []
     monkeypatch.setattr(cli, "_GitHubKeySession", _Recording)
     monkeypatch.setattr(cli, "find_gh", lambda **_: "gh")
+
+    async def verified(token, **_):
+        return token.login
+
+    monkeypatch.setattr(cli, "verified_login", verified)
     monkeypatch.setattr(
         cli.subprocess,
         "run",
@@ -246,8 +251,9 @@ def test_a_card_login_that_cannot_refresh_is_named_not_a_traceback(monkeypatch, 
     assert "KeyError" in err and "ghu_should_not_print" not in err
 
 
-def test_gh_is_found_without_the_service_path_and_named_when_missing(tmp_path):
-    """W371 line 5, 2026-09-28 17:18Z: the launchd relay's PATH has no /opt/homebrew/bin."""
+def test_gh_is_found_without_the_service_path_and_named_when_missing(tmp_path, monkeypatch):
+    """W371 line 5: the launchd relay's PATH has no /opt/homebrew/bin. W762: PATH is never read, and a
+    script (a host wrapper that swaps GH_TOKEN, dev-main's ~/.local/bin/gh on 2026-10-12) is never gh."""
 
     import os
 
@@ -255,12 +261,18 @@ def test_gh_is_found_without_the_service_path_and_named_when_missing(tmp_path):
 
     installed = tmp_path / "homebrew" / "bin" / "gh"
     installed.parent.mkdir(parents=True)
-    installed.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    installed.write_bytes(b"\xcf\xfa\xed\xfe binary gh")
     os.chmod(installed, 0o755)
+    wrapper = tmp_path / "local" / "bin" / "gh"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/bin/bash\nexport GH_TOKEN=host\nexec gh \"$@\"\n", encoding="utf-8")
+    os.chmod(wrapper, 0o755)
+    monkeypatch.setenv("PATH", str(wrapper.parent))
 
-    assert find_gh(path="", locations=(str(tmp_path / "nowhere" / "gh"), str(installed))) == str(installed)
-    assert find_gh(path=str(installed.parent), locations=()) == str(installed), "PATH first"
-    assert find_gh(path="", locations=(str(tmp_path / "nowhere" / "gh"),)) == ""
+    assert find_gh(locations=(str(tmp_path / "nowhere" / "gh"), str(installed))) == str(installed)
+    assert find_gh(locations=(str(wrapper), str(installed))) == str(installed), "a script is skipped"
+    assert find_gh(locations=()) == "", "PATH is never read"
+    assert find_gh(locations=(str(tmp_path / "nowhere" / "gh"), str(wrapper))) == ""
 
 
 # --- the deploy-key fallback when the key is unavailable (Connection Hub down, 17:21Z) ---

@@ -95,6 +95,9 @@ from .worker_watch import worker_watch_events
 from .runtime_model import runtime_model_from_claude_statusline
 from .github_key import (
     CARD_BEARER_HEADER,
+    STAMP_ACCOUNT_KEY,
+    STAMP_PROJECT_KEY,
+    verified_login,
     GitHubKeyRefused,
     classify_failure,
     repository_name,
@@ -4801,13 +4804,39 @@ def _workspace_report_command(
     *,
     reasons: Mapping[str, str] | None = None,
     commit_email: str = "",
+    account: str = "",
+    card_checked: bool = False,
 ) -> dict[str, Any]:
     """pb worker workspace-report: inspect the project workspace for the relay's next heartbeat (W337)."""
 
     project_ref, parsed, record, workspace, alias, email = _project_workspace(args, config, field, identity)
     # W371: the owner's commit email (My Card) over the project's, when the GitHub key gave one.
     email = str(commit_email or "").strip() or email
-    if args.set_identity and not (alias and email):
+    account = str(account or "").strip()
+    set_identity = bool(args.set_identity)
+    if set_identity and not (commit_email and account):
+        # W762: a Card-managed clone takes its identity only from a fresh answer of
+        # the Card's key, never from the last recorded one or the project's email.
+        # A project whose Card has no GitHub key route keeps the project's email
+        # (W368), and only while none of its clones carries a Card stamp.
+        stamped = any(
+            _git_text(str(Path(workspace) / str(row.get("alias") or "")), "config", "--local", "--get",
+                      STAMP_PROJECT_KEY)
+            for row in record.get("repositories") or [] if str(row.get("alias") or "")
+        )
+        try:
+            if card_checked:
+                raise GitHubKeyRefused("github_key_unavailable", "connect-project got no answer from the Card's key.")
+            email, account = _fresh_card_identity(args, project_ref)
+        except (DomainError, GitHubKeyRefused) as exc:
+            code = str(getattr(exc, "code", "") or "")
+            if card_checked and stamped:
+                set_identity = False
+            elif card_checked or (code in _NO_CARD_KEY_ROUTE and not stamped):
+                email, account = str(record.get("commit_identity_email") or "").strip(), ""
+            else:
+                raise
+    if set_identity and not (alias and email):
         raise DomainError(
             "field_commit_identity_unset",
             "There is no commit identity to set: "
@@ -4823,7 +4852,8 @@ def _workspace_report_command(
         verify=not args.no_verify,
         timeout=max(1.0, float(args.timeout_seconds)),
         identity=(alias, email) if alias and email else None,
-        set_identity=bool(args.set_identity),
+        set_identity=set_identity,
+        stamp={STAMP_ACCOUNT_KEY: account, STAMP_PROJECT_KEY: project_ref} if account else None,
         reasons=reasons,
     )
     signature = report_signature(report)
@@ -4837,6 +4867,80 @@ def _workspace_report_command(
         "on_board": entry.get("published_signature") == signature,
         "rule": "The relay carries this report on its next heartbeat; the project card shows it.",
     }
+
+
+# Refusals meaning the Card has no GitHub key route at all (not a failure of one).
+_NO_CARD_KEY_ROUTE = frozenset({"github_not_linked", "commit_email_not_set", "repository_not_on_card",
+                                "github_key_route_missing"})
+
+
+def _fresh_card_identity(args: Any, project_ref: str) -> tuple[str, str]:
+    """(commit email, GitHub account) from a fresh issue of the Card's key, or a named refusal (W762)."""
+
+    try:
+        session = _GitHubKeySession(argparse.Namespace(**{**vars(args), "project_ref": project_ref}))
+        repositories = sorted(session.on_card)
+        if not repositories:
+            raise GitHubKeyRefused("repository_not_on_card", "The project card lists no GitHub repository.")
+        token = session.token(repositories[0])
+    except Exception as exc:  # noqa: BLE001 - refused by name; nothing is written
+        code, availability = classify_failure(exc)
+        raise DomainError(
+            "identity_refresh_unavailable" if availability else code,
+            "The Card's GitHub identity could not be read fresh from Connection Hub, so no clone identity was "
+            f"written ({code}). Retry when it answers; a recorded identity is never reapplied.",
+            details={"project_ref": project_ref},
+        ) from exc
+    if not (token.commit_email and token.login):
+        raise DomainError(
+            "github_key_account_missing",
+            "Connection Hub's answer named no GitHub account or commit email; no clone identity was written.",
+            details={"project_ref": project_ref},
+        )
+    return token.commit_email, token.login
+
+
+def _git_text(folder: str, *command: str) -> str:
+    try:
+        found = subprocess.run(["git", "-C", folder, *command], capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return found.stdout.strip() if found.returncode == 0 else ""
+
+
+def _refresh_clone_stamp(project_ref: str, token: GitHubToken, folder: str = ".") -> None:
+    """Bring the clone the command runs in up to the Card's fresh identity (W762).
+
+    Only a clone of this project: stamped with this project, or unstamped with
+    an origin that is the repository the key was issued for. A clone stamped
+    for another project is left alone, so one Card never stamps another's.
+    """
+
+    if not (token.login and token.commit_email):
+        return
+    top = _git_text(folder, "rev-parse", "--show-toplevel")
+    if not top:
+        return
+    stamped = _git_text(top, "config", "--local", "--get", STAMP_PROJECT_KEY)
+    if stamped and stamped != project_ref:
+        return
+    if not stamped and repository_name(_git_text(top, "remote", "get-url", "origin")).lower() != token.repository.lower():
+        return
+    if _git_text(top, "config", "--get", "extensions.worktreeConfig").lower() == "true" and _git_text(
+        folder, "config", "--worktree", "--get", "user.email"
+    ):
+        raise GitHubKeyRefused(
+            "clone_identity_overridden",
+            "This worktree overrides user.email in its own config; remove that override so the Card's identity applies.",
+        )
+    wanted = {"user.email": token.commit_email, STAMP_ACCOUNT_KEY: token.login, STAMP_PROJECT_KEY: project_ref}
+    current = {key: _git_text(top, "config", "--local", "--get", key) for key in wanted}
+    if current == wanted:
+        return
+    for key, value in wanted.items():
+        subprocess.run(["git", "-C", top, "config", "--local", key, value], capture_output=True, timeout=10, check=False)
+    print(f"pb GitHub key: this clone now acts as {token.login} <{token.commit_email}> (the Card's identity)",
+          file=sys.stderr)
 
 
 class _GitHubKeySession:
@@ -4913,6 +5017,8 @@ class _GitHubKeySession:
                 login=token.login,
                 commit_email=token.commit_email,
             )
+            # W762: the clone this command runs in follows the Card's fresh identity.
+            _refresh_clone_stamp(self.project_ref, token)
         return token
 
 
@@ -5012,14 +5118,71 @@ def _gh_command(args: Any) -> int:
         else:
             print(f"pb GitHub key: {_key_failure(exc)}", file=sys.stderr)
         return 1
+    try:
+        # W762: the token must act as the Card's account before gh may use it.
+        asyncio.run(verified_login(token))
+    except GitHubKeyRefused as exc:
+        print(f"pb GitHub key: {exc.message} ({exc.code}); gh was not run", file=sys.stderr)
+        return 1
+    # W762: the real gh binary, never a PATH wrapper that could swap the token.
+    gh = find_gh()
+    if not gh:
+        print("pb GitHub key: no gh binary found in its install locations (gh_executable_unusable); "
+              "a gh script or PATH wrapper is never used.", file=sys.stderr)
+        return 127
     env = dict(os.environ)
-    env.pop("GITHUB_TOKEN", None)
+    for name in ("GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+        env.pop(name, None)
     env["GH_TOKEN"] = token.token
     try:
-        return subprocess.call([find_gh() or "gh", *gh_forwarded_args(gh_args)], env=env)
+        return subprocess.call([gh, *gh_forwarded_args(gh_args)], env=env)
     except FileNotFoundError:
         print("pb GitHub key: gh is not installed on this machine.", file=sys.stderr)
         return 127
+
+
+def _card_push_refusal(
+    args: Any, remote: str, url: str, push_args: list[str], git_out: Callable[..., str]
+) -> str:
+    """Why an owner-key push must not run, or "" when the Card's account and identity hold (W762).
+
+    The clone must be stamped; the key must act as the Card's account; the
+    stamp and user.email must be the Card's; only pb's helper may answer for
+    github.com; and every commit this push adds must carry the Card's email.
+    """
+
+    if not git_out("config", "--get", STAMP_ACCOUNT_KEY):
+        return ("this clone carries no Card account (clone_unstamped): run "
+                "`pb worker workspace-report --set-identity`, or ask the coordinator")
+    helpers = git_out("config", "--get-all", "credential.https://github.com.helper").split("\n")
+    active = helpers[len(helpers) - 1 - helpers[::-1].index(""):] if "" in helpers else helpers
+    active = [helper for helper in active if helper]
+    extra = git_out("config", "--get-regexp", r"^http\..*extraheader$")
+    if len(active) != 1 or not active[0].startswith("!pb worker git-credential") or extra:
+        return "another credential can answer for github.com in this clone (clone_credential_override)"
+    try:
+        session = _GitHubKeySession(args)
+        token = session.token(repository_name(url))
+        asyncio.run(verified_login(token))
+    except Exception as exc:  # noqa: BLE001 - refused by name, never the token
+        code, _availability = classify_failure(exc)
+        return f"{str(getattr(exc, 'message', '') or code)} ({code})"
+    stamp, email = git_out("config", "--get", STAMP_ACCOUNT_KEY), git_out("config", "--get", "user.email")
+    if stamp.lower() != token.login.lower() or email != token.commit_email:
+        return (f"this clone acts as {stamp or '-'} <{email or '-'}> but the Card names "
+                f"{token.login} <{token.commit_email}> (card_account_mismatch)")
+    sources = [spec.split(":", 1)[0].lstrip("+") for spec in push_args[push_args.index(remote) + 1:]
+               if not spec.startswith("-")] or ["HEAD"]
+    wrong: list[str] = []
+    for source in [value for value in sources if value]:
+        for line in git_out("log", "--format=%h %ae %ce", source, "--not", f"--remotes={remote}").splitlines():
+            short, author, committer = (line.split(" ") + ["", "", ""])[:3]
+            if author != token.commit_email or committer != token.commit_email:
+                wrong.append(f"{short} {author}/{committer}")
+    if wrong:
+        return ("new commits are not authored and committed as the Card's email "
+                f"{token.commit_email}: {', '.join(wrong[:10])} (push_commit_identity_mismatch)")
+    return ""
 
 
 # How recent the owner key's last answer must be for a failed push to name it.
@@ -5065,6 +5228,10 @@ def _push_command(args: Any) -> int:
         if not urls or not all(url.startswith("https://") for url in urls):
             print(f"pb GitHub key: --owner-key-only pushes over HTTPS only; {named} pushes to "
                   f"{', '.join(urls) or 'nothing'}; nothing was pushed", file=sys.stderr)
+            return 2
+        refused = _card_push_refusal(args, named, urls[0], push_args, git_out)
+        if refused:
+            print(f"pb GitHub key: {refused}; nothing was pushed", file=sys.stderr)
             return 2
         owned = subprocess.call(["git", "push", *push_args])
         if owned != 0:
@@ -5124,6 +5291,7 @@ def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) 
         github_key=key_session.token if key_session is not None else None,
         helper=key_session.helper() if key_session is not None else "",
         alias_name=alias,
+        project_ref=project_ref,
     )
     rows = connect_repositories(connector, record.get("repositories") or [])
     # W371: the owner's commit email on My Card, when the key was issued, is the one commits carry.
@@ -5136,6 +5304,9 @@ def _connect_project_command(args: Any, config: Any, field: Any, identity: Any) 
         field,
         identity,
         commit_email=connector.commit_email,
+        account=connector.account,
+        # W762: connect-project already asked the Card's key; no second ask.
+        card_checked=not (connector.commit_email and connector.account),
         # Fixed texts only (never a path): the board shows them under "not reachable yet".
         reasons={str(row["alias"]): str(row["report_reason"]) for row in rows if row.get("report_reason")},
     )

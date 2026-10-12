@@ -24,7 +24,6 @@ from __future__ import annotations
 import os
 import re
 import shlex
-import shutil
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Iterable, Mapping
 from urllib.parse import urlsplit
@@ -68,15 +67,27 @@ GH_LOCATIONS = (
 )
 
 
-def find_gh(*, path: str | None = None, locations: tuple[str, ...] = GH_LOCATIONS) -> str:
-    """The absolute path of gh: PATH first, then the usual install locations; empty when none."""
+def _is_script(path: str) -> bool:
+    """Whether an executable is a script (``#!``): a wrapper, not gh itself."""
 
-    found = shutil.which("gh", path=os.environ.get("PATH", "") if path is None else path)
-    if found:
-        return found
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(2) == b"#!"
+    except OSError:
+        return True
+
+
+def find_gh(*, locations: tuple[str, ...] = GH_LOCATIONS) -> str:
+    """The absolute path of the real gh binary, or empty when none (W762).
+
+    Never PATH, and never a script: a host may put a gh wrapper first on PATH
+    that swaps ``GH_TOKEN`` for a host-saved account (dev-main's
+    ``~/.local/bin/gh``, 2026-10-12), and the Card's key must reach gh itself.
+    """
+
     for location in locations:
-        candidate = os.path.expanduser(location)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+        candidate = os.path.realpath(os.path.expanduser(location))
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK) and not _is_script(candidate):
             return candidate
     return ""
 
@@ -274,11 +285,21 @@ def helper_command(runtime_kind: str, runtime_session_id: str) -> str:
     )
 
 
-def clone_config(helper: str, *, name: str = "", email: str = "") -> list[list[str]]:
+# W762: the Card's account and project, stamped next to the Card email in each
+# clone's own config. Non-secret metadata for the host's safety net; never
+# proof on its own (the key's GitHub login is checked before push and gh).
+STAMP_ACCOUNT_KEY = "pb.githubAccount"
+STAMP_PROJECT_KEY = "pb.projectRef"
+
+
+def clone_config(
+    helper: str, *, name: str = "", email: str = "", account: str = "", project_ref: str = ""
+) -> list[list[str]]:
     """``git config`` argument lists that make a clone use the GitHub key.
 
     The empty helper first clears any helper inherited from global config
     (a keychain would otherwise answer with another account) for github.com.
+    With the Card's ``account`` and ``project_ref`` the clone is stamped (W762).
     """
 
     steps = [
@@ -290,7 +311,59 @@ def clone_config(helper: str, *, name: str = "", email: str = "") -> list[list[s
         steps.append(["config", "user.name", name])
     if email:
         steps.append(["config", "user.email", email])
+    if account and project_ref:
+        steps.append(["config", STAMP_ACCOUNT_KEY, account])
+        steps.append(["config", STAMP_PROJECT_KEY, project_ref])
     return steps
+
+
+GITHUB_USER_URL = "https://api.github.com/user"
+Get = Callable[[str, str], Awaitable[tuple[int, Any]]]
+
+
+async def _get_user(url: str, token: str) -> tuple[int, Any]:
+    import aiohttp
+
+    timeout = aiohttp.ClientTimeout(total=20)
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(url, headers=headers) as reply:
+            try:
+                body = await reply.json(content_type=None)
+            except (aiohttp.ContentTypeError, ValueError):
+                body = {}
+            return reply.status, body
+
+
+async def verified_login(token: GitHubToken, *, get: Get | None = None) -> str:
+    """The GitHub login the issued token really acts as, checked against the Card (W762).
+
+    Connection Hub's ``login`` is the connected account's stored name, not a
+    fresh GitHub answer, so the token itself is asked (``GET /user``, which a
+    GitHub App user access token supports). Any other answer refuses: an
+    unverifiable token never passes.
+    """
+
+    try:
+        status, body = await (get or _get_user)(GITHUB_USER_URL, token.token)
+    except Exception as exc:  # noqa: BLE001 - named, never the token
+        raise GitHubKeyRefused(
+            "card_account_unverified", "GitHub could not be asked which account the key acts as.", availability=True
+        ) from exc
+    actual = str(body.get("login") or "") if isinstance(body, Mapping) and status == 200 else ""
+    if not actual:
+        raise GitHubKeyRefused(
+            "card_account_unverified",
+            f"GitHub did not confirm which account the key acts as (HTTP {status}); nothing was done.",
+            availability=status >= 500,
+        )
+    if not token.login or actual.lower() != token.login.lower():
+        raise GitHubKeyRefused(
+            "card_account_mismatch",
+            f"The key acts as {actual}, but the Card names {token.login or 'no account'}: "
+            "ask the operator to reconnect GitHub on the Card in Connection Hub.",
+        )
+    return actual
 
 
 def gh_repository(args: list[str], origin_url: str) -> str:
@@ -337,6 +410,9 @@ __all__ = [
     "find_gh",
     "CONNECTION_HUB_BUNDLE_ID",
     "GIT_USERNAME",
+    "GITHUB_USER_URL",
+    "STAMP_ACCOUNT_KEY",
+    "STAMP_PROJECT_KEY",
     "GitHubKeyRefused",
     "GitHubToken",
     "ISSUE_OPERATION",
@@ -351,4 +427,5 @@ __all__ = [
     "issue_url",
     "parse_credential_request",
     "repository_name",
+    "verified_login",
 ]
