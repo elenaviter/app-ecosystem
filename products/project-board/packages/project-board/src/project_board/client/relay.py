@@ -1474,16 +1474,20 @@ class ProblemBoardHostRelayAdapter:
             self._runtime_account_reader = lambda: read_session_account(self.config.claude_profile)
         return True
 
-    async def _account_action(self, *, action: str, payload: dict[str, Any]) -> Any:
+    async def _account_action(self, payload: dict[str, Any], send: Any) -> Any:
         """Publish or heartbeat; a board that predates W763 gets the evidence it reads.
 
-        A board without session-profile evidence refuses the whole call over
-        its unknown field. Once refused, this relay sends the W310 form from
-        then on, so a client installed before its board loses no heartbeat.
+        ``send`` makes the call itself, so every operation the relay issues
+        stays a literal at its call site, where the worker profile contract
+        enumerates them. A board without session-profile evidence refuses the
+        whole call over its unknown field. Once refused, this relay rewrites
+        ``payload`` (which ``send`` sends) to the W310 form, sends it again,
+        and keeps that form from then on, so a client installed before its
+        board loses no heartbeat.
         """
 
         try:
-            return await self.client.action(object_ref="work:worker:self", action=action, payload=payload)
+            return await send()
         except DomainError as exc:
             if exc.code != "work_runtime_account_evidence_invalid" or not _legacy_account_evidence(payload):
                 raise
@@ -1495,7 +1499,7 @@ class ProblemBoardHostRelayAdapter:
                     self.config.worker_name,
                 )
             self._runtime_account_error_state["legacy_evidence"] = True
-            return await self.client.action(object_ref="work:worker:self", action=action, payload=payload)
+            return await send()
 
     def _trace_stage(self, stage: str, *, operation: str):
         return self._trace.stage(
@@ -2330,7 +2334,10 @@ class ProblemBoardHostRelayAdapter:
         ][-20:]
         if completed:
             payload["relay_degraded_intervals"] = completed
-        response = await self._account_action(action="worker.publish", payload=payload)
+        response = await self._account_action(
+            payload,
+            lambda: self.client.action(object_ref="work:worker:self", action="worker.publish", payload=payload),
+        )
         self._published_interval = interval
         remote = _object_result(response)
         self._record_attendance_observation(remote)
@@ -4696,7 +4703,10 @@ class ProblemBoardHostRelayAdapter:
                     operation="worker.heartbeat",
                 ):
                     heartbeat_response = await self._account_action(
-                        action="worker.heartbeat", payload=heartbeat_payload
+                        heartbeat_payload,
+                        lambda: self.client.action(
+                            object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
+                        ),
                     )
             except DomainError as exc:
                 if exc.code != "work_worker_not_linked":
@@ -5013,7 +5023,12 @@ class ProblemBoardHostRelayAdapter:
         await self._add_runtime_account(heartbeat_payload)
         try:
             return _object_result(
-                await self._account_action(action="worker.heartbeat", payload=heartbeat_payload)
+                await self._account_action(
+                    heartbeat_payload,
+                    lambda: self.client.action(
+                        object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
+                    ),
+                )
             ), None
         except DomainError as exc:
             if exc.code != "work_worker_unavailable":
@@ -5026,7 +5041,12 @@ class ProblemBoardHostRelayAdapter:
         if registration["remote"].get("pool_status") == "limbo":
             return {}, registration
         return _object_result(
-            await self._account_action(action="worker.heartbeat", payload=heartbeat_payload)
+            await self._account_action(
+                heartbeat_payload,
+                lambda: self.client.action(
+                    object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
+                ),
+            )
         ), registration
 
     def _listener_sessions(self) -> list[dict[str, Any]]:
