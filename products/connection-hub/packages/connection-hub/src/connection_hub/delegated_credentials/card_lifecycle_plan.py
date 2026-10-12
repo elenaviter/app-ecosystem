@@ -1062,9 +1062,12 @@ async def plan_card_lifecycle(
             if raw["kind"] == "remove_person":
                 if "parent" in raw:
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
-                if read_current and original.state == CARD_STATE_REVOKED:
+                if original.state == CARD_STATE_REVOKED:
                     # W661 v6.3 item 6: the same-request retry of a removal whose PUBLISH already happened. The
                     # Card is exactly this person's (checked as if active), already revoked: nothing to write.
+                    # W743: the same for a Control revoked outside a removal while the person stayed a member,
+                    # fenced (above) at exactly that revoked revision (the W728 route): the removal
+                    # still ends the membership and My Card, and nothing revokes the Control twice.
                     removed_person_card(replace_state(original, CARD_STATE_ACTIVE), project_ref=scope,
                                         target_subject=target, decision=decision, actor_subject=actor,
                                         request_id=request_id, now=now)

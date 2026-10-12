@@ -209,8 +209,9 @@ whole request, so no edit value is repeated.
   - The Hub knows nothing about roles or admins.
 - **Already applied (v6.3 item 6).** When every update of a STAGE already
   holds (each `role_selection` Card already equals its target, each
-  `remove_person` Card sent with `original_revision: 0` is already revoked and
-  is that person's C or My in this scope), and the STAGE creates nothing, the
+  `remove_person` Card sent with `original_revision: 0`, or fenced at exactly
+  its current revision (W743), is already revoked and is that person's C or My
+  in this scope), and the STAGE creates nothing, the
   Hub writes nothing, records no txn, and answers the signed result
   `{kind: already_applied}`. This is the same-request retry after a PUBLISH
   whose answer PB lost: PB then commits the role or membership change under
@@ -488,7 +489,10 @@ acceptance travels). `original_revision` is the person's Control revision the Hu
 derived from the actor, project, person and that revision, so a retry replays the host's one decision. A
 retry whose first answer was lost reads the Control after the host's removal revoked it, one revision on. The
 removal at the revision read is sent first, as always, also for a member whose Control was revoked some other
-way; the host's answer stands (today it refuses that case `work_card_transaction_hub_edit_invalid`, W743). Only if the host refuses it as `removal_target_invalid` and the Control is revoked does the Hub
+way. For that member the planner reads the revoked Control, fenced at the revision sent, as already applied
+(W743): the host's one decision ends the membership and revokes My Card only, and Control is not revoked again.
+With both Cards already revoked the Hub writes no Card and answers the signed `already_applied`, and the host
+still ends the membership once. Only if the host refuses it as `removal_target_invalid` and the Control is revoked does the Hub
 send the first body again (the revision before, its request id); the host replays that only from the request's
 own audit row, else its refusal stands. A re-invited person's later removal, or another admin's, is a new
 request id. The
