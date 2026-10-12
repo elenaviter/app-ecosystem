@@ -80,10 +80,19 @@ test('the panel moves the pin only through these rules', () => {
     'editBaseRevision.current = pinAtStart(item);',
     'editBaseRevision.current = null;', // clearEditState: the editor closed
     'editBaseRevision.current = pinAfterRefusal(editBaseRevision.current);',
-    'editBaseRevision.current = pinAfterCommit(editBaseRevision.current, updated);',
   ])
-  // W727: each focused grant moves the same pin through the same rule, inside runFocusedGrants.
-  assert.match(panel, /pin: editBaseRevision,\s+pinAfter: pinAfterCommit,/)
+  // W755: a Save is one request (no per-operation grants). A saved Card closes the editor; an unchanged
+  // answer keeps it open on the same revision.
+  assert.doesNotMatch(panel, /runFocusedGrants\(/)
+})
+
+test('W755: an unchanged answer is "Nothing to save"', async () => {
+  const { isNothingToSave, NOTHING_TO_SAVE_MESSAGE } = await import('../src/features/delegatedAccess/cardFreshness.ts')
+  assert.equal(NOTHING_TO_SAVE_MESSAGE, 'Nothing to save: this Card already holds these choices.')
+  assert.equal(isNothingToSave({ ok: true, unchanged: true, card_revision: 29 }), true)
+  assert.equal(isNothingToSave({ ok: true, card_revision: 30 }), false)
+  assert.equal(isNothingToSave({ ok: false, unchanged: true }), false)
+  assert.equal(isNothingToSave(null), false)
 })
 
 test('the focus effect reads through the rule, with no cached-copy shortcut', () => {
