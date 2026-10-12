@@ -5308,6 +5308,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return await (await _automation_access_service(self, request)).control_card_update(
             user,
             control_id=str(payload.get("control_id") or "").strip(),
+            _screen_save=True,
             **_control_card_changes(payload),
         )
 
@@ -5449,6 +5450,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             control_id=str(payload.get("control_id") or "").strip(),
             project_ref=str(payload.get("project_ref") or "").strip(),
             request_id=_audit_request_id(request),
+            _screen_save=True,
             **_control_card_changes(payload),
         )
 
@@ -5643,6 +5645,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 ),
                 "label": str(payload.get("label") or "").strip() or None,
                 "expected_card_revision": _expected_card_revision(payload),
+                "invocation_modes": payload.get("invocation_modes"),
+                "_screen_save": True,
                 "expected_catalog_version": str(payload.get("expected_catalog_version") or "").strip() or None,
                 "accepted_operations": (
                     dict(payload.get("accepted_operations") or {})
@@ -5861,6 +5865,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                 payload.get("control_id") or payload.get("control_card_id") or ""
             ).strip(),
             request_id=request_id,
+            _screen_save=True,
             resource_grants=(
                 dict(payload.get("resource_grants") or {})
                 if "resource_grants" in payload
@@ -6722,6 +6727,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                         else None
                     ),
                     label=str(payload.get("label") or "").strip() or None,
+                    invocation_modes=payload.get("invocation_modes"),
+                    _screen_save=True,
                     expected_card_revision=_expected_card_revision(payload),
                     expected_catalog_version=str(
                         payload.get("expected_catalog_version") or ""

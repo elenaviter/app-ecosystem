@@ -99,6 +99,29 @@ def settings_display(properties: Any) -> dict[str, Any]:
     return copy.deepcopy(selected)
 
 
+def whole_person_properties_patch(original: Mapping[str, Any], submitted: Any) -> dict[str, Any]:
+    """A whole Card keeps every non-settings property; only the two owned settings may differ."""
+    if not isinstance(submitted, Mapping):
+        raise _invalid()
+    keep = lambda values: {key: value for key, value in values.items() if key not in MY_CARD_PERSON_PROPERTIES}
+    if keep(original) != keep(submitted):
+        raise _invalid()
+    patch = {}
+    for key in MY_CARD_PERSON_PROPERTIES:
+        before, after = original.get(key), submitted.get(key)
+        if before == after:
+            continue
+        # Known audit fields in the returned Card are not authority from the
+        # browser; STAGE rebuilds them under the signed request's own time.
+        value = settings_patch({key: after}, internal_audit=True)[key]
+        previous = settings_patch({key: before}, internal_audit=True)[key]
+        if previous != value:
+            patch[key] = value
+        elif before != after:
+            raise _invalid()  # changing only a Hub-written audit is not a settings edit
+    return patch
+
+
 def settings_only_change(original: CardAuthority, candidate: CardAuthority) -> bool:
     """All fields outside the two settings and revision must be byte-identical."""
     before, after = original.to_dict(), candidate.to_dict()

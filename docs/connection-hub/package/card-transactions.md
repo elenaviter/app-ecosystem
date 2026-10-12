@@ -39,6 +39,63 @@ and the managed Card edit forward:
 
 ## Saving a Card version (W661)
 
+### Whole-Card screen Save
+
+The screen sends its complete editable Card and the render-time Card and
+catalog pins once. `invocation_modes` is a separate closed map
+`{resource: {added_operation: "once" | "always"}}`, not Card authority or a
+caller-provided effect payload. There is no browser transaction/request id.
+
+The Hub re-reads durable current, checks the Card pin first, then checks the
+supplied catalog pin independently of `accepted_operations`. A moved catalog
+answers `consent_catalog_changed` with expected and active catalog versions.
+Every screen Save requires this pin; omission answers
+`consent_catalog_version_required` after the Card pin check, never a silent Save.
+Only then does the Hub expand outer-operation and named-service `*` into
+concrete, grant-authorized current catalog operations, compare visible fields,
+and identify net additions. A stored named-service All is compared against its
+stored boundary, not redefined from the current catalog. Equal content
+answers `{ok: true, unchanged: true}` without forwarding or writing a revision.
+Held operations cannot reset their policies; missing added-operation choices
+answer `invocation_mode_required` before forwarding. Controls, the application
+API resource, and application-owned operations never carry invocation modes.
+
+A changed managed Card travels as ONE signed `managed-card-edit.v1` request.
+PB carries the exact mode map beside the selection in its STAGE update. The
+Hub derives the actual policies from its original/candidate Cards and catalog,
+pins current policy revisions, and prepares them inside CardVersion STAGE under
+`<txn>:<authority.key>`. The base reservation and marker already exist before
+any prepare. The separate policy store is retained; no Card schema/migration
+or second decision protocol is introduced.
+
+PUBLISH commits each prepared policy through the real policy service and
+records all effect outcomes. The durable readiness fence prevents an incomplete
+new Card from being read, served, or included in history. A failure retains the
+original transaction for exact PUBLISH re-drive; pre-decision ABORT releases all
+prepares, including a partial k-of-N preparation. Only the PB coordinator owns
+the irrevocable COMMIT; it never compensates a DECIDED manual Save.
+
+An owner's My Card can include its closed personal settings, permissions and
+rename in the same next revision. Non-settings properties are retained; settings
+audits are rebuilt from authenticated STAGE time, never browser audit fields.
+The existing settings-only API remains a closed, separate legacy request shape.
+
+An unmanaged owner's Save uses the already-bound local one-participant Card
+coordinator. Its policy choices are effects of that one durable decision, with
+no direct-write fallback. Current, history and ready-cache reads remain fenced
+until every effect is recorded; internal FINISH re-drives the same COMMIT.
+Credential issuance's internal candidate check is bound to the exact committed
+receipt, transaction pointer and immutable hash, not a public pending-revision
+read. Effect bindings omit mutable state and reason; FINISH loads the durable
+receipt, matches all sealed immutable fields, and checks its committed state.
+Without the coordinator, a changed Save refuses
+`whole_card_save_transaction_unavailable` and keeps the draft.
+
+Implementation checkpoint: managed preflight, wire, candidate composition and
+real filesystem policy/coordinator failure-cut checks exist. Productive
+PB/database and browser qualification is still required; these local checks
+do not assert release readiness.
+
 `card_version` serves Problem Board's save. PB calls the Hub, and the Hub calls
 nothing back during the save. It has the same peer authentication and
 `plan_scope_prefix` entitlement as `card_lifecycle_plan`. The request schema is
@@ -206,6 +263,36 @@ whole request, so no edit value is repeated.
   Any other effect kind refuses the save (`edit_invalid`). The store records
   each effect's named result in the marker, so a retried PUBLISH applies
   nothing twice.
+
+  **W756 publication readiness.** Moving `current.json` is not permission to
+  serve the new Card while an effect is unrecorded. Current reads, history
+  reads and ready-cache resolution consult the durable transaction binding;
+  an unfinished new version is hidden from history and current resolution
+  refuses `card_version_effects_pending`. This requires direct current/version/
+  marker reads on cache hits, never a history scan or coordinator decision
+  call. The immutable version record also fences recovery of older publishers
+  that deleted a sidecar before effects. Publication retains sidecars until
+  every effect outcome is recorded. A failed PUBLISH retains its updating
+  cache fence, and the same transaction can finish the remaining effects.
+  OUTCOME refuses `effects_pending` rather than reporting `published` while
+  effects are unrecorded. This store/readiness rule does not by itself wire
+  invocation-policy effects or qualify the PB durable-decision path.
+
+  **W756 reserve-before-decision.** Before answering the existing signed
+  `staged` links, STAGE durably reserves every member's observed base using
+  one per-Card locator-hash slot in the existing marker store. The slot holds
+  only the transaction, Card locator and base revision name, not Card values.
+  Option P uses the existing guarded row/CAS authority and row-era hint
+  rules, not a parallel filesystem-only permission. A second STAGE or any
+  ordinary pointer writer refuses `card_version_base_reserved` before a
+  competing decision (`card_changed` on the participant wire). A publication
+  still completing effects/cleanup refuses `effects_pending`. Own-txn
+  publication may replace its base; it releases only its own slots after all
+  effects finish. ABORT releases every prepared effect, durably retires the
+  possibility of publication, removes candidate files and releases its own
+  slots, including interrupted k-of-N preparation. Cuts during abort cleanup
+  can be re-driven but cannot revive the retired Save. The signed envelope
+  and STAGE link shape are unchanged; no second prepare call is introduced.
 
 ## The person Control under the project Control (C -> P)
 

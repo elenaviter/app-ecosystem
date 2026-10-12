@@ -16,12 +16,15 @@ Hub's half of that hand-over, and it stays generic: it knows Cards, not roles.
   so it never verifies as a plan authorization or an authority answer.
 - The host decides authority, plans, prepares, commits and finishes. It
   answers ``{ok: true, outcome: {...}}`` with ``state`` ``committed``,
-  ``aborted`` or ``pending``. ``pending`` (or a lost answer) is retried with
-  the same ``request_id``; the host replays its one decision.
+  ``aborted`` or ``pending``. The host's internal original-id recovery
+  replays its one decision. A NEW screen Save checks its rendered Card pin
+  first; after a committed lost answer that old pin is stale, not a replay
+  authorization. The screen keeps its draft and offers Reload.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -40,7 +43,7 @@ OUTCOME_SCHEMA = "managed-card-edit-outcome.v1"
 TARGET_KINDS = frozenset({"person_control", "person_my", "agent_card", "invitation_control", "project_control"})
 # W728: an admin removing a person travels as its own kind, never as a selection edit.
 REMOVAL_KIND = "person_removal"
-SELECTION_FIELDS = ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
+SELECTION_FIELDS = ("resource_grants", "resource_operations", "named_service_operations", "account_scope", "properties")
 COMPOSITION_MODES = frozenset({"and", "or"})
 LABEL_MAX = 200
 
@@ -82,12 +85,35 @@ def _accepted_part(value: Any) -> dict[str, list[str]]:
     return dict(sorted(out.items()))
 
 
+def invocation_modes_part(value: Any) -> dict[str, dict[str, str]]:
+    """The closed signed mode carrier; authority/account/credential fields never travel here."""
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping) or len(value) > 256:
+        raise ManagedCardEditError("invocation_modes_invalid", 400)
+    selected = {}
+    for resource, operations in value.items():
+        if (type(resource) is not str or not resource or resource != resource.strip() or len(resource) > 2048
+                or not isinstance(operations, Mapping) or len(operations) > 256):
+            raise ManagedCardEditError("invocation_modes_invalid", 400)
+        modes = {}
+        for operation, mode in operations.items():
+            if (type(operation) is not str or not operation or operation != operation.strip() or len(operation) > 256
+                    or type(mode) is not str or mode not in {"once", "always"}):
+                raise ManagedCardEditError("invocation_modes_invalid", 400)
+            modes[operation] = mode
+        if modes:
+            selected[resource] = dict(sorted(modes.items()))
+    return dict(sorted(selected.items()))
+
+
 def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: str, kind: str,
                            principal_key: str, original_revision: int, selection: Mapping[str, Any],
                            access_id: str | None = None, subject_hash: str | None = None,
                            accepted_operations: Mapping[str, Any] | None = None,
                            expected_catalog_version: str | None = None,
-                           composition_mode: str | None = None, label: str | None = None) -> dict:
+                           composition_mode: str | None = None, label: str | None = None,
+                           invocation_modes: Mapping[str, Any] | None = None) -> dict:
     """The exact unsigned request; nothing in it comes from the browser except the edit itself.
 
     W723: ``accepted_operations`` travels only when the person ticked "Accept update", so every body
@@ -102,6 +128,9 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
         if type(value) is not str or not 0 < len(value) <= 256 or value != value.strip() or not value.isprintable():
             raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     accepted = _accepted_part(accepted_operations)
+    modes = invocation_modes_part(invocation_modes)
+    if modes and kind not in {"person_my", "agent_card"}:
+        raise ManagedCardEditError("managed_card_edit_fields_unsupported", 400)
     if composition_mode is not None and (kind != "project_control" or composition_mode not in COMPOSITION_MODES):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     if label is not None and (not valid_label(label) or kind not in TARGET_KINDS):
@@ -120,7 +149,10 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
     if not isinstance(selection, Mapping) or (not selection and not accepted and composition_mode is None
                                               and label is None):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
-    if "properties" in selection:
+    if set(selection) == {"properties"}:
+        # The pre-existing settings-only API is still closed. Whole-Card Save
+        # carries properties with the other Card fields and its catalog pin;
+        # the Hub checks the original/settings owner before forwarding it.
         from .my_card_person_properties_plan import settings_selection
         try:
             selected = settings_selection(selection)
@@ -129,7 +161,7 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
         if (kind != "person_my" or principal_key != "user:" + actor_subject
                 or type(original_revision) is not int or original_revision < 1
                 or accepted_operations is not None or expected_catalog_version is not None
-                or composition_mode is not None or label is not None):
+                or composition_mode is not None or label is not None or invocation_modes is not None):
             raise ManagedCardEditError("managed_card_edit_fields_unsupported", 400)
         return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref,
                 "request_id": request_id,
@@ -138,12 +170,14 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
     if kind == "person_my" and principal_key != "user:" + actor_subject:
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)  # only one's own My Card
     extra = {"accepted_operations": accepted} if accepted else {}
+    if modes:
+        extra["invocation_modes"] = modes
     if composition_mode is not None:
         extra["composition_mode"] = composition_mode
     if label is not None:
         extra["label"] = label
-    if accepted and expected_catalog_version is not None:
-        # The catalog the person reviewed: an acceptance is never applied to a catalog they did not see.
+    if expected_catalog_version is not None:
+        # W756: every whole Save's rendered catalog pin, independent of Accept update.
         if (type(expected_catalog_version) is not str or not 0 < len(expected_catalog_version) <= 256
                 or expected_catalog_version != expected_catalog_version.strip()):
             raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
@@ -160,17 +194,19 @@ def managed_card_edit_body(*, actor_subject: str, project_ref: str, request_id: 
         return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref, "request_id": request_id,
                 "target": {"kind": kind, "access_id": access_id, "subject_hash": subject_hash,
                            "original_revision": original_revision},
-                "selection": {field: dict(selection[field]) for field in SELECTION_FIELDS if field in selection},
+                "selection": {field: copy.deepcopy(dict(selection[field]))
+                              for field in SELECTION_FIELDS if field in selection},
                 **extra}
-    # Only the fields the person changed travel; the host keeps every other
-    # field of the revision-fenced original, never an empty default.
+    # The whole screen selection travels together. Omitted legacy dimensions
+    # still retain the revision-fenced original, never an empty default.
     if (kind not in TARGET_KINDS or type(original_revision) is not int or original_revision < 1
             or set(selection) - set(SELECTION_FIELDS)
             or any(not isinstance(value, Mapping) for value in selection.values())):
         raise ManagedCardEditError("managed_card_edit_request_invalid", 400)
     return {"schema": SCHEMA, "actor_subject": actor_subject, "project_ref": project_ref, "request_id": request_id,
             "target": {"kind": kind, "principal_key": principal_key, "original_revision": original_revision},
-            "selection": {field: dict(selection[field]) for field in SELECTION_FIELDS if field in selection},
+            "selection": {field: copy.deepcopy(dict(selection[field]))
+                          for field in SELECTION_FIELDS if field in selection},
             **extra}
 
 

@@ -17,9 +17,10 @@ v6.2). It replaces, for PB's save path, the Hub-to-PB ``plan-authorize`` and
   under the Card's lock. The answer is links only: ``{card, version, checksum}``;
 - PUBLISH and ROLLBACK carry the ``txn`` alone: piece 1's marker names the
   members, so nothing is listed and no Card value travels back;
-- Hub effects (section 4a): only ``handle_binding`` of an edited agent Card
-  exists on this path. Its identity is ``(txn, access_id, kind, key)`` plus the
-  member's version links in the marker; the store records each named result.
+- Hub effects (section 4a): ``handle_binding`` and the whole Save's net-added
+  ``invocation_policy`` effects. Policies are prepared only inside STAGE,
+  under ``txn:authority.key``; PUBLISH records every result before exposing
+  the revision, and pre-decision ROLLBACK releases every prepare.
 
 Every authenticated answer is signed (``card-version-answer.v1``, the shared
 participant answer under ``AnswerContract.CARD_VERSION``), refusals included.
@@ -78,7 +79,8 @@ REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_c
             # successor version superseded, or that this version cannot take (no recorded base, or credentials).
             "card_version_link_mismatch": 409, "compensation_superseded": 409, "compensation_unsupported": 409,
             # S5 (EMain 18:27Z): the person sees why a manual edit was refused; a fixed code, no free text.
-            "card_edit_admin_grant_role_only": 409}
+            "card_edit_admin_grant_role_only": 409, "invocation_mode_required": 409,
+            "invocation_modes_invalid": 400, "invocation_policy_unavailable": 503}
 # Store codes PB sees under the contract's name: a txn staged under another scope or caller is out of scope.
 _ALIASES = {"txn_scope_mismatch": "request_scope_invalid"}
 _CARD_CHANGED = frozenset({"card_plan_original_revision_changed", "card_plan_update_target_absent",
@@ -347,8 +349,11 @@ def stage_authorization(data: Mapping[str, Any], digest: str) -> LifecyclePlanAu
     from ..my_card_person_properties_plan import SETTINGS_STEP, settings_update_valid
     settings_evidence = {}
     for index, update in enumerate(data["updates"]):
-        if update.get("kind") == SETTINGS_STEP:
-            if not settings_update_valid(update) or _at(data.get("at")) is None:
+        mixed_settings = (update.get("kind") == "reselect"
+                          and isinstance(update.get("selection"), Mapping)
+                          and "properties" in update["selection"])
+        if update.get("kind") == SETTINGS_STEP or mixed_settings:
+            if (not mixed_settings and not settings_update_valid(update)) or _at(data.get("at")) is None:
                 raise _StepsRefused("card_plan_person_settings_invalid", 400)
             settings_evidence[f"update:{index}"] = {
                 "source": "card-version-stage", "request_digest": digest,
@@ -495,6 +500,7 @@ class CardVersionOperation:
                     "value": card["candidate"]}
                    for card in cards]
         effects = await self._effects(cards, at=_at(data["at"]))
+        effects.extend(await self._policy_effects(cards, data["updates"]))
         reads = _reset_reads(data["updates"], plan.get("reads") or ())
 
         async def prepare() -> None:
@@ -541,6 +547,66 @@ class CardVersionOperation:
                              "prepared_at": prepared_at if effect["payload"]["from_fingerprint"] else 0}}
                 for effect in effects]
 
+    async def _policy_effects(self, cards: Sequence[Mapping[str, Any]],
+                              updates: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        """Derive actual added-operation policies from the planned Cards, never caller effect payloads."""
+        from ..whole_card_save import WholeCardSaveRefused, added_invocation_modes
+        effects = []
+        for update in updates:
+            if "expected_catalog_version" not in update and "invocation_modes" not in update:
+                continue  # pre-existing non-screen lifecycle operations have their own effect rules
+            if update.get("kind") not in {"reselect", "reselect_agent_card", "reselect_project_control",
+                                          "reselect_invitation_control"}:
+                continue
+            card = next((item for item in cards if (item["subject_hash"], item["access_id"]) == (
+                update["subject_hash"], update["access_id"])), None)
+            if card is None or card["original_absent"]:
+                raise CardVersionRefused("edit_invalid")
+            loaded = await self._host._cards().load_current(card["access_id"], subject_hash=card["subject_hash"])
+            if loaded is None or loaded[0].card_revision != card["original_revision"]:
+                raise CardVersionRefused("card_changed")
+            original, candidate = loaded[0], CardAuthority.from_mapping(card["candidate"])
+            active = await self._host._active_catalog()
+            if (update.get("expected_catalog_version") is not None
+                    and update["expected_catalog_version"] != self._host._version_of(active)):
+                raise CardVersionRefused("stage_catalog_moved")
+            config = await self._host._catalog_config(active, owner_subject=original.grantor_subject)
+            from ..project_identity_lifecycle import PROJECT_PERSON_MY_CARD_ISSUER_KIND
+            bearing = (update["kind"] == "reselect_agent_card"
+                       or update["kind"] == "reselect" and original.issuer_kind == PROJECT_PERSON_MY_CARD_ISSUER_KIND)
+            try:
+                modes = added_invocation_modes(original=original, candidate=candidate, config=config,
+                                               modes=update.get("invocation_modes"), policy_bearing=bearing)
+            except WholeCardSaveRefused as exc:
+                raise CardVersionRefused(exc.reason) from None
+            if not modes:
+                continue
+            if getattr(self._host, "_invocation_policies", None) is None:
+                raise CardVersionRefused("invocation_policy_unavailable")
+            from ..oauth_issuance import IssuanceRefused
+            try:
+                produced = await self._host._oauth_policy_effects(grantor=original.grantor_subject,
+                    candidate=candidate, resource_operations={key: list(names) for key, names in modes.items()},
+                    invocation_policies=modes)
+            except IssuanceRefused:
+                raise CardVersionRefused("invocation_modes_invalid") from None
+            effects.extend({**effect, "access_id": candidate.access_id} for effect in produced)
+        return effects
+
+    def _policy_operation(self, name: str) -> Any:
+        operation = getattr(getattr(self._host, "_invocation_policies", None), name, None)
+        if not callable(operation):
+            raise CardVersionRefused("invocation_policy_unavailable")
+        return operation
+
+    @staticmethod
+    def _policy_authority(effect: Mapping[str, Any]) -> Any:
+        from connection_hub.invocation_policy.models import InvocationAuthority
+        authority = InvocationAuthority.from_mapping(effect["payload"]["authority"])
+        if authority.access_id != effect["access_id"] or authority.key != effect["key"]:
+            raise CardVersionRefused("effects_pending")
+        return authority
+
     def _operation(self, name: str) -> Any:
         operation = getattr(self._handles, name, None)
         if operation is None:
@@ -558,6 +624,16 @@ class CardVersionOperation:
     async def _prepare(self, txn: str, effect: Mapping[str, Any]) -> None:
         """STAGE: the row is still exactly the pinned identity; an agent row's AFTER envelope is prepared now."""
         payload = effect["payload"]
+        if effect["kind"] == "invocation_policy":
+            from connection_hub.invocation_policy.service import InvocationPolicyConflict
+            try:
+                await cancellation_safe_await(self._policy_operation("prepare_policy_change")(
+                    owner_subject=payload["owner_subject"], authority=self._policy_authority(effect),
+                    mode=payload["mode"], expected_revision=payload["expected_revision"],
+                    change_id=f"{txn}:{effect['key']}"))
+            except InvocationPolicyConflict:
+                raise CardVersionRefused("card_changed") from None
+            return
         identity = await self._operation("binding_identity")(payload["access_id"])
         if not isinstance(identity, Mapping) or (identity.get("from_identity"), identity.get("from_revision"),
                                                  identity.get("from_expires_at")) != (
@@ -593,9 +669,16 @@ class CardVersionOperation:
         live = (isinstance(current, Mapping) and (current.get("version"), current.get("checksum"))
                 == (member["version"], member["checksum"]))
         if not live:
+            if effect["kind"] == "invocation_policy":
+                raise CardVersionRefused("effects_pending")
             if payload["from_fingerprint"]:
                 await self._mutate("discard_rewrap", txn, payload["access_id"], payload)
             return CREDENTIAL_ISSUE_SUPERSEDED
+        if effect["kind"] == "invocation_policy":
+            await cancellation_safe_await(self._policy_operation("commit_policy_change")(
+                owner_subject=payload["owner_subject"], authority=self._policy_authority(effect),
+                change_id=f"{txn}:{effect['key']}"))
+            return "applied"
         if payload["from_fingerprint"]:
             outcome = await self._mutate("commit_rewrap", txn, payload["access_id"], payload)
         else:
@@ -610,6 +693,11 @@ class CardVersionOperation:
     async def _release(self, effect: Mapping[str, Any], marker: Mapping[str, Any]) -> None:
         """ROLLBACK of a staged txn: an agent row's prepared envelope goes; the active row never moved."""
         payload = effect["payload"]
+        if effect["kind"] == "invocation_policy":
+            await cancellation_safe_await(self._policy_operation("release_policy_change")(
+                owner_subject=payload["owner_subject"], authority=self._policy_authority(effect),
+                change_id=f"{marker['txn']}:{effect['key']}"))
+            return
         if payload["from_fingerprint"]:
             await self._mutate("discard_rewrap", marker["txn"], payload["access_id"], payload)
 

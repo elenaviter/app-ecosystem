@@ -176,9 +176,11 @@ async def resolve_pointer(store: Any, payload: Mapping[str, Any], *,
     return CardCurrentPointer.from_mapping(entries[0][name])
 
 
-async def assert_pointer_replaceable(store: Any, *, subject_hash: str, access_id: str) -> None:
+async def assert_pointer_replaceable(store: Any, *, subject_hash: str, access_id: str,
+                                     card_version_txn: str = "") -> None:
     from .update_store import assert_replaceable as assert_update_replaceable
-    await assert_update_replaceable(store, subject_hash=subject_hash, access_id=access_id)
+    await assert_update_replaceable(store, subject_hash=subject_hash, access_id=access_id,
+                                    card_version_txn=card_version_txn)
     # W578: no ordinary write publishes around an undecided staged transaction.
     from .transaction_store import assert_replaceable as assert_transaction_replaceable
     await assert_transaction_replaceable(store, subject_hash=subject_hash, access_id=access_id)
