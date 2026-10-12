@@ -131,6 +131,23 @@ async def test_an_already_revoked_partner_is_not_a_member():
 
 
 @pytest.mark.asyncio
+async def test_a_member_whose_control_was_revoked_otherwise_is_removed_without_revoking_it_twice():
+    """W743: the person's C was revoked outside a removal while they stayed a member. The removal fenced at exactly
+    that revoked revision (the W728 route) plans C as already applied and still revokes My: one decision, no double
+    revoke. A fence at any other revision still refuses card_plan_original_revision_changed."""
+    p, c, my = _person()
+    revoked_c = replace_state(c, CARD_STATE_REVOKED)
+    host = _Host(p, revoked_c, my)
+    result = await _plan(host, [_remove(revoked_c), _remove(my)])
+    assert result["ok"] is True, result
+    assert [member["access_id"] for member in result["plan"]["candidate_value"]["cards"]] == [my.access_id]
+    assert host.writes == 0
+    stale = await _plan(_Host(p, revoked_c, my), [_remove(revoked_c, original_revision=revoked_c.card_revision + 1),
+                                                   _remove(my)])
+    assert stale["ok"] is False and stale["error"] == "card_plan_original_revision_changed", stale
+
+
+@pytest.mark.asyncio
 async def test_a_revoked_card_another_person_an_invitation_or_a_stale_revision_refuses():
     p, c, my = _person()
     invitation = ProjectInvitationControlIdentity.build(
@@ -141,7 +158,6 @@ async def test_a_revoked_card_another_person_an_invitation_or_a_stale_revision_r
         issuer_kind=PROJECT_INVITATION_CONTROL_ISSUER_KIND, now=100), identity=invitation)
     revoked_c = replace_state(c, CARD_STATE_REVOKED)
     cases = [
-        (_Host(p, revoked_c, my), [_remove(revoked_c), _remove(my)], "card_plan_revoke_not_active"),
         (_Host(p, c, my), [_remove(c, target="person-2"), _remove(my, target="person-2")],
          "card_plan_update_scope_invalid"),
         (_Host(p, pending), [_remove(pending, target=invitation.invitation_ref)], "card_plan_update_scope_invalid"),
@@ -463,6 +479,7 @@ async def test_w661_v63_an_already_revoked_card_is_still_checked_as_this_persons
                           (_Host(p, revoked_c, revoked_my), [_remove(revoked_c, target="person-2", original_revision=0)])):
         result = await _plan(host, updates)
         assert result == {"ok": False, "error": "card_plan_update_scope_invalid", "status": 403}, result
-    # An explicit revision keeps the old rule: a revoked Card is not a removal target.
+    # W743: an explicit revision at exactly the revoked revision is this person's own, already revoked: with both
+    # Cards revoked there is nothing to write (signed already_applied); the project still ends the membership.
     result = await _plan(_Host(p, revoked_c, revoked_my), [_remove(revoked_c), _remove(revoked_my)])
-    assert result["error"] == "card_plan_revoke_not_active"
+    assert result["error"] == "card_plan_already_applied", result
