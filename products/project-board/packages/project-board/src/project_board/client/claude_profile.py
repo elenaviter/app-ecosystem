@@ -215,7 +215,9 @@ def capture_binding(
         # A confirmed binding keeps its own program; the capture is a cross-check only.
         kept = {**observed, "executable": existing.get("executable") or observed["executable"]}
         if captured and _same_path(captured, existing["config_dir"]):
-            return {**existing, **kept}
+            # Started in its own folder again: an earlier mismatch is over.
+            confirmed = {key: value for key, value in existing.items() if key != "capture"}
+            return {**confirmed, **kept}
         return {**existing, **kept, "capture": "differs_from_binding"}
     if not captured:
         # A session on the global login has no profile of its own yet: it is
@@ -288,6 +290,12 @@ def profile_state(binding: Mapping[str, Any] | None, *, home: str | Path | None 
 
     if not binding or not binding.get("config_dir") or not binding.get("account_id"):
         return UNBOUND, {}
+    if binding.get("capture") == "differs_from_binding":
+        # The session last started in another folder (or the default one): its
+        # bound folder says nothing about the account it runs under now. The
+        # binding is kept, never switched; nothing is attributed until it
+        # starts in its own folder again.
+        return MISMATCH, {}
     try:
         account = read_profile_account(binding["config_dir"], home=home)
     except DomainError:

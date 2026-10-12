@@ -1116,3 +1116,38 @@ def test_an_equal_content_racing_file_survives_rollback_with_or_without_a_retry(
         migration.apply_migration(source=source, target=target, session_id=session, session_stopped=True)
     migration.rollback_migration(target=target, session_id=session)
     assert racing.exists() and racing.stat().st_ino == creator["inode"]
+
+
+def test_a_bound_session_started_in_another_folder_attributes_nothing_until_it_returns(home):
+    """Coordinator's review: the old folder's login is not the account the session runs under now."""
+
+    folder_a = _profile(home, "ana@example.com", ACCOUNT_A)
+    folder_b = _profile(home, "bob@example.com", ACCOUNT_B)
+    bound = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder_a)}, home=home)
+    elsewhere = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder_b)}, home=home, existing=bound)
+    assert elsewhere["config_dir"] == str(folder_a)  # never switched
+    assert cp.profile_state(elsewhere, home=home) == (cp.MISMATCH, {})
+    on_default = cp.capture_binding(environ={}, home=home, existing=bound)
+    assert cp.profile_state(on_default, home=home) == (cp.MISMATCH, {})
+    back = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder_a)}, home=home, existing=elsewhere)
+    assert "capture" not in back
+    assert cp.profile_state(back, home=home)[0] == cp.VERIFIED
+
+
+def test_a_running_relay_sees_the_session_start_elsewhere_and_come_back(home, monkeypatch):
+    import project_board.client.relay as relay_module
+
+    folder_a = _profile(home, "ana@example.com", ACCOUNT_A)
+    folder_b = _profile(home, "bob@example.com", ACCOUNT_B)
+    bound = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder_a)}, home=home)
+    elsewhere = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder_b)}, home=home, existing=bound)
+    adapter = SimpleNamespace(config=SimpleNamespace(claude_profile=dict(bound), runtime_kind="claude-code"))
+    monkeypatch.setattr(
+        relay_module, "replace", lambda config, **changes: SimpleNamespace(**{**config.__dict__, **changes})
+    )
+    assert ProblemBoardHostRelayAdapter.rebind_claude_profile(adapter, elsewhere) is True
+    sample = asyncio.run(adapter._runtime_account_reader())
+    assert (sample.profile_state, sample.account) == (cp.MISMATCH, {})
+    back = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder_a)}, home=home, existing=elsewhere)
+    assert ProblemBoardHostRelayAdapter.rebind_claude_profile(adapter, back) is True
+    assert asyncio.run(adapter._runtime_account_reader()).profile_state == cp.VERIFIED

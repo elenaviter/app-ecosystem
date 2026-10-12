@@ -1260,9 +1260,14 @@ class _JournalRefreshWorker:
             raise asyncio.CancelledError
 
 
-def _binding_key(binding: Mapping[str, Any] | None) -> tuple[str, str, str]:
+def _binding_key(binding: Mapping[str, Any] | None) -> tuple[str, ...]:
+    # The capture is part of it: a session that started in another folder must
+    # reach a running relay as a mismatch, and its return as a match.
     value = binding or {}
-    return (str(value.get("config_dir") or ""), str(value.get("account_id") or ""), str(value.get("executable") or ""))
+    return tuple(
+        str(value.get(key) or "")
+        for key in ("config_dir", "account_id", "executable", "capture", "captured_config_dir")
+    )
 
 
 def _legacy_account_evidence(payload: dict[str, Any]) -> bool:
