@@ -166,7 +166,7 @@ def test_a_codex_session_under_a_keeps_its_sample_when_the_host_logs_in_to_b(tmp
 # ---------------------------------------------------------------- Claude Code: the recorder
 
 
-def test_the_claude_code_recorder_names_the_host_login_as_inference(tmp_path, monkeypatch, capsys):
+def test_the_claude_code_recorder_never_names_the_host_login(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -191,24 +191,14 @@ def test_the_claude_code_recorder_names_the_host_login_as_inference(tmp_path, mo
     )
     payload = {"session_id": "s", "rate_limits": {"five_hour": {"used_percentage": 12, "resets_at": 1790010000}}}
 
+    # W763, operator 2026-10-12: "we re not going to work wit unscoped claude
+    # agents." A sample from a process on the default folder names no
+    # account: the host's global login is never taken as a session's.
     _claude_login(home, "acct-a", changed_at="2026-09-29T11:00:00Z")
     assert cli._limit_state_command(args, stdin=io.StringIO(json.dumps(payload))) == 0
     recorded = field.runtime_limit_state(identity.worker_name)
-    assert recorded["account_id"] == "acct-a"
-    assert recorded["account_source"] == "host_login_file"
-
-    # The host logs in to B. The next sample was taken while the host was on
-    # B, so it names B, still as host-file inference: the native session may
-    # still run under A, and the board never counts it as confirmed capacity.
-    _claude_login(home, "acct-b", changed_at="2026-09-29T11:30:00Z")
-    assert cli._limit_state_command(args, stdin=io.StringIO(json.dumps(payload))) == 0
-    recorded = field.runtime_limit_state(identity.worker_name)
-    assert recorded["account_id"] == "acct-b"
-    assert recorded["account_source"] == "host_login_file"
-
-    # No readable login: the sample names no account.
-    (home / ".claude.json").unlink()
-    assert cli._limit_state_command(args, stdin=io.StringIO(json.dumps(payload))) == 0
+    assert "account_id" not in recorded
+    assert recorded.get("account_source") != "host_login_file"
     capsys.readouterr()
 
 

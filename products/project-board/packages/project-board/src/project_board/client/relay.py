@@ -1466,10 +1466,7 @@ class ProblemBoardHostRelayAdapter:
             return False
         self.config = replace(self.config, claude_profile=dict(binding))
         if self.config.runtime_kind == "claude-code":
-            if binding.get("config_dir"):
-                self._runtime_account_reader = lambda: read_session_account(self.config.claude_profile)
-            else:
-                self._runtime_account_reader = lambda: read_runtime_account(self.config.runtime_kind)
+            self._runtime_account_reader = lambda: read_session_account(self.config.claude_profile)
         return True
 
     async def _account_action(self, *, action: str, payload: dict[str, Any]) -> Any:
@@ -6742,7 +6739,7 @@ class ProblemBoardRelaySupervisor:
                 # login, once the session is bound to one.
                 runtime_account_reader=(
                     (lambda: read_session_account(channel.claude_profile))
-                    if channel.runtime_kind == "claude-code" and channel.claude_profile.get("config_dir")
+                    if channel.runtime_kind == "claude-code"
                     else (lambda: read_runtime_account(channel.runtime_kind))
                 ),
                 outbox_drain_lock=self._outbox_drain_lock(

@@ -20,9 +20,13 @@ it every session on a machine shares `~/.claude` and the one login in
 the board cannot tell which account an agent's usage belongs to.
 
 Problem Board gives each account its own folder, named after the account
-email: `~/.claude-accounts/<email>`. An agent is bound to the folder of its
-account. Its card then reads that folder's login and usage, never the host's
-global login, and its Resume line starts it in that folder.
+email: `~/.claude-accounts/<email>`. Every Claude agent runs in the folder of
+its account (operator, 2026-10-12: "we re not going to work wit unscoped
+claude agents"). Its card reads that folder's login and usage, never the
+host's global login, and its Resume line starts it in that folder. A new
+Claude session started without its folder does not enroll; an agent already
+enrolled from `~/.claude` has no Resume line and no account on its card until
+it is moved.
 
 This page is for a person who runs agents on a machine: a new agent, an agent
 already running on the global login, and checking the result. Nothing here
@@ -168,8 +172,8 @@ pb worker claude-profile rollback --runtime-session-id <session-id>
 removes exactly the files `--apply` created, then the folders it created when
 they are empty, and never a folder tree. Once the agent has run in the new
 folder its history there differs from the copy, and rollback refuses rather
-than lose it. The agent still resumes from the original in `~/.claude` with
-`claude --resume <session-id>` and the same flags until it is bound.
+than lose it. A rolled-back agent is moved again with `migrate --apply`; its
+originals are still in `~/.claude`.
 
 ## Two machines, two operators
 
@@ -184,5 +188,4 @@ or the registry to another machine, and never move another person's agents.
 | --- | --- |
 | this session's own profile, verified | read from the agent's folder; the login is the bound account |
 | profile logged in to another account | the folder's login is not the bound account; usage is not attributed |
-| profile not readable / not bound | no folder yet, or no login in it; usage is not attributed |
-| read from the host login | an agent not yet moved: the machine's global login, which may not be this agent's |
+| profile not readable / not bound | not moved yet, or no login in its folder; usage is not attributed and there is no Resume line |

@@ -205,11 +205,18 @@ def capture_binding(
 
     env = os.environ if environ is None else environ
     captured = str(env.get(CONFIG_DIR_ENV) or "").strip()
-    observed = {"captured_config_dir": captured, "captured_at": utc_now()}
+    observed = {
+        "captured_config_dir": captured,
+        "captured_at": utc_now(),
+        # The program the resume line runs, also for a session on the default folder.
+        "executable": claude_executable(env.get("PATH")),
+    }
     if existing and existing.get("config_dir"):
+        # A confirmed binding keeps its own program; the capture is a cross-check only.
+        kept = {**observed, "executable": existing.get("executable") or observed["executable"]}
         if captured and _same_path(captured, existing["config_dir"]):
-            return {**existing, **observed}
-        return {**existing, **observed, "capture": "differs_from_binding"}
+            return {**existing, **kept}
+        return {**existing, **kept, "capture": "differs_from_binding"}
     if not captured:
         # A session on the global login has no profile of its own yet: it is
         # mapped by the operator (`pb worker claude-profile bind`), never guessed.
@@ -294,7 +301,6 @@ def qualify_profile_limit_state(
     state: Mapping[str, Any] | None,
     binding: Mapping[str, Any] | None,
     *,
-    host_login: Any,
     environ: Mapping[str, str] | None = None,
     home: str | Path | None = None,
 ) -> Mapping[str, Any] | None:
@@ -302,9 +308,9 @@ def qualify_profile_limit_state(
 
     The status line runs inside the session, so `CLAUDE_CONFIG_DIR` here is
     the session's own. A sample from a bound session whose folder holds the
-    bound account names it as ``session_profile``; any mismatch names no
-    account. Only a session on the global login (no `CLAUDE_CONFIG_DIR`)
-    keeps the W310 inference from the host login file.
+    bound account names it as ``session_profile``. Anything else names no
+    account: a mismatch, an unbound session, and a process on the default
+    folder, whose global login is never taken as this session's.
     """
 
     if not isinstance(state, Mapping) or not state or state.get("account_id"):
@@ -312,11 +318,10 @@ def qualify_profile_limit_state(
     env = os.environ if environ is None else environ
     started = str(env.get(CONFIG_DIR_ENV) or "").strip()
     if not started:
-        if binding and binding.get("config_dir"):
-            return state  # bound, but this process runs on the global login: no attribution
-        from .limit_state import qualify_limit_state
-
-        return qualify_limit_state(state, host_login() if callable(host_login) else host_login)
+        # A process on the default folder is not a profile session: its usage
+        # names no account (operator, 2026-10-12: "we re not going to work wit
+        # unscoped claude agents").
+        return state
     if not binding or not binding.get("config_dir") or not _same_path(started, binding["config_dir"]):
         return state
     current, account = profile_state(binding, home=home)
@@ -340,12 +345,14 @@ async def read_session_account(binding: Mapping[str, Any], *, home: str | Path |
     return SessionAccount(account=account, profile_state=state)
 
 
-def resume_profile(binding: Mapping[str, Any] | None) -> dict[str, str] | None:
-    """The {config_dir, executable} a resume line names, or None for an unbound session."""
+def resume_profile(binding: Mapping[str, Any] | None) -> dict[str, str]:
+    """The {config_dir, executable} a resume line names; an empty folder is the default one."""
 
-    if not binding or not binding.get("config_dir") or not binding.get("executable"):
-        return None
-    return {"config_dir": str(binding["config_dir"]), "executable": str(binding["executable"])}
+    value = binding or {}
+    return {
+        "config_dir": str(value.get("config_dir") or ""),
+        "executable": str(value.get("executable") or ""),
+    }
 
 
 __all__ = [

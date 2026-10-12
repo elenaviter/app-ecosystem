@@ -73,26 +73,44 @@ def _resume_argv(
         argv = ["codex", "resume", session_id, *flags]
         # codex takes its folder with -C; a line without it starts from cwd.
         return argv, "" if ("-C" in flags or "--cd" in flags) else cwd
-    if profile:
-        # W763: the session's own profile and the absolute executable, never a shell lookup.
-        return [
-            "env", f"CLAUDE_CONFIG_DIR={profile['config_dir']}", profile["executable"],
-            "--resume", session_id, *flags,
-        ], cwd
-    return ["claude", "--resume", session_id, *flags], cwd
+    # W763: every Claude line names its account folder through env, so neither
+    # a shell function or alias called claude nor a CLAUDE_CONFIG_DIR the
+    # terminal already has can move the session to another account.
+    profile = profile or {}
+    if not profile.get("config_dir"):
+        # Operator, 2026-10-12: "we re not going to work wit unscoped claude agents."
+        raise DomainError(
+            "work_session_resume_profile_required",
+            "This Claude agent has no account profile yet. Move it first: "
+            "pb worker claude-profile bind, then migrate; its resume line follows.",
+            status=409,
+        )
+    executable = profile.get("executable") or "claude"
+    return ["env", f"CLAUDE_CONFIG_DIR={profile['config_dir']}", executable, "--resume", session_id, *flags], cwd
 
 
-def _profile(value: Mapping[str, Any] | None) -> dict[str, str] | None:
-    """The validated profile a Claude resume line names, or None (W763)."""
+def _profile(value: Mapping[str, Any] | None) -> dict[str, str]:
+    """The validated folder and program a Claude resume line names (W763).
 
-    if not value:
-        return None
-    config_dir = _path(value.get("config_dir"), field="profile.config_dir")
+    An empty folder is the default one; an empty program is `claude` found
+    by `env` on PATH, which no shell function or alias can replace.
+    """
+
+    value = value or {}
+    # As recorded, not resolved: resolving names the same folder another way
+    # (macOS: /home -> /System/Volumes/Data/home).
+    config_dir = str(value.get("config_dir") or "").strip()
+    if config_dir and (not config_dir.startswith("/") or any(c in config_dir for c in ("\x00", "\n", "\r"))):
+        raise DomainError(
+            "work_session_resume_path_invalid",
+            "profile.config_dir must be an absolute LOCAL path.",
+        )
     executable = str(value.get("executable") or "").strip()
-    if not config_dir or not executable:
-        return None
-    if not executable.startswith("/") or any(c in executable for c in ("\x00", "\n", "\r")) \
-            or Path(executable).name != "claude":
+    if executable and (
+        not executable.startswith("/")
+        or any(c in executable for c in ("\x00", "\n", "\r"))
+        or Path(executable).name != "claude"
+    ):
         raise DomainError(
             "work_session_resume_executable_invalid",
             "The Claude executable must be an absolute path to a program named claude.",
@@ -149,7 +167,7 @@ def build_session_resume_command(
         cwd = _path(working_directory, field="worker.working_directory")
         if runtime == "codex" and cwd:
             flags = ["-C", cwd, *flags]
-    bound = _profile(profile) if runtime == "claude-code" else None
+    bound = _profile(profile) if runtime == "claude-code" else {}
     argv, cd = _resume_argv(runtime, session_id, flags, cwd, bound)
     line = _line(argv)
     if cd:
@@ -172,7 +190,7 @@ def build_session_resume_command(
         "tmux_session": tmux_session,
         "argv": argv,
         "command": command,
-        "profile_dir": (bound or {}).get("config_dir", ""),
+        "profile_dir": bound.get("config_dir", ""),
     }
 
 

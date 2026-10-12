@@ -136,8 +136,6 @@ def claude_profile_command(args: Any, *, config_path: Path, home: Path | None = 
 
 def _resume_line(channel: Any) -> dict[str, Any]:
     profile = cp.resume_profile(channel.claude_profile)
-    if profile is None:
-        return {}
     built = build_session_resume_command(
         runtime_kind="claude-code",
         runtime_session_id=channel.runtime_session_id,

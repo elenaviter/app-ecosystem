@@ -238,15 +238,11 @@ def test_an_unbound_or_unreadable_profile_attributes_nothing(home):
 SAMPLE = {"observed_at": "2026-10-12T20:00:00Z", "week_used_percentage": 40}
 
 
-def _no_host_login():
-    raise AssertionError("a profile session never reads the host's global login")
-
-
 def test_usage_from_a_bound_session_names_its_verified_profile_account(home):
     folder = _profile(home, "ana@example.com", ACCOUNT_A)
     binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
     state = cp.qualify_profile_limit_state(
-        SAMPLE, binding, host_login=_no_host_login, environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home
+        SAMPLE, binding, environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home
     )
     assert state["account_id"] == ACCOUNT_A
     assert state["account_source"] == "session_profile"
@@ -258,7 +254,7 @@ def test_usage_from_a_process_outside_the_bound_profile_names_no_account(home, s
     binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
     other = _profile(home, "bob@example.com", ACCOUNT_B)
     environ = {"CLAUDE_CONFIG_DIR": str(other)} if started == "other" else {}
-    state = cp.qualify_profile_limit_state(SAMPLE, binding, host_login=_no_host_login, environ=environ, home=home)
+    state = cp.qualify_profile_limit_state(SAMPLE, binding, environ=environ, home=home)
     assert "account_id" not in state
 
 
@@ -267,16 +263,14 @@ def test_usage_from_a_mismatched_profile_names_no_account(home):
     binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
     _login(folder, ACCOUNT_B, "bob@example.com")
     state = cp.qualify_profile_limit_state(
-        SAMPLE, binding, host_login=_no_host_login, environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home
+        SAMPLE, binding, environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home
     )
     assert "account_id" not in state
 
 
-def test_usage_from_an_unbound_global_session_keeps_the_w310_inference(home):
-    login = {"account_id": ACCOUNT_GLOBAL, "changed_at": "2026-10-12T19:00:00Z"}
-    state = cp.qualify_profile_limit_state(SAMPLE, {}, host_login=lambda: login, environ={}, home=home)
-    assert state["account_id"] == ACCOUNT_GLOBAL
-    assert state["account_source"] == "host_login_file"
+def test_usage_from_a_process_on_the_default_folder_names_no_account(home):
+    state = cp.qualify_profile_limit_state(SAMPLE, {}, environ={}, home=home)
+    assert "account_id" not in state
 
 
 def _adapter(reader):
@@ -399,13 +393,14 @@ def test_an_executable_that_is_not_an_absolute_claude_is_refused(tmp_path, execu
     assert caught.value.code == "work_session_resume_executable_invalid"
 
 
-def test_an_unbound_legacy_session_keeps_the_plain_line(tmp_path):
-    built = build_session_resume_command(
-        runtime_kind="claude-code", runtime_session_id=SESSION_A, working_directory=str(tmp_path), profile=None
-    )
-    assert built["argv"][:3] == ["claude", "--resume", SESSION_A]
-    assert built["profile_dir"] == ""
-    assert cp.resume_profile({"state": cp.UNBOUND}) is None
+def test_an_agent_without_a_profile_gets_no_resume_line(tmp_path):
+    # Operator, 2026-10-12: "we re not going to work wit unscoped claude agents."
+    with pytest.raises(DomainError) as caught:
+        build_session_resume_command(
+            runtime_kind="claude-code", runtime_session_id=SESSION_A, working_directory=str(tmp_path), profile=None
+        )
+    assert caught.value.code == "work_session_resume_profile_required"
+    assert cp.resume_profile({"state": cp.UNBOUND})["config_dir"] == ""
 
 
 def test_codex_lines_never_carry_a_claude_profile(tmp_path):
@@ -734,3 +729,13 @@ def test_a_running_relay_takes_a_binding_confirmed_later(home):
     sample = asyncio.run(adapter._runtime_account_reader())
     assert sample.profile_state == cp.VERIFIED
     assert sample.account["account_id"] == ACCOUNT_A
+
+
+def test_a_new_claude_session_without_its_account_folder_does_not_enroll():
+    from project_board.client import cli
+
+    # conftest removes CLAUDE_CONFIG_DIR: this is a session on the default folder.
+    with pytest.raises(DomainError) as caught:
+        cli._require_claude_profile_for_new_session()
+    assert caught.value.code == "work_claude_profile_required"
+    assert "env CLAUDE_CONFIG_DIR=" in str(caught.value)

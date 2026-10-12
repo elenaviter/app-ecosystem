@@ -122,7 +122,6 @@ from .limit_state import (
     limit_state_from_claude_stop_failure,
     limit_state_line,
 )
-from .runtime_account import read_host_login
 from .claude_profile import capture_binding as capture_claude_profile
 from .claude_profile import qualify_profile_limit_state
 from .render import (
@@ -5706,6 +5705,12 @@ def _worker_command(args: Any) -> dict[str, Any]:
             and channel.state == "active"
         )
         previous_alias = channel.worker_alias if channel is not None else ""
+        if identity.runtime_kind == "claude-code" and channel is None:
+            # W763, operator 2026-10-12: "we re not going to work wit unscoped
+            # claude agents." A new Claude session enrolls only from its
+            # account's own folder. An enrolled one not yet moved still
+            # listens, so the move itself can run.
+            _require_claude_profile_for_new_session()
         channel = enroll_worker_channel(
             path,
             identity=identity,
@@ -7655,14 +7660,12 @@ def _limit_state_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
                 identity = None
             if identity is not None:
                 # W763: a session bound to a profile names that profile's
-                # verified account; W310: an unbound one on the global login
-                # names the host login it was read under, as inference.
+                # verified account, and nothing else names one.
                 channel = config.worker(identity)
                 state = dict(
                     qualify_profile_limit_state(
                         state,
                         channel.claude_profile if channel is not None else {},
-                        host_login=lambda: read_host_login("claude-code"),
                     )
                     or state
                 )
@@ -7712,6 +7715,21 @@ def _stop_guard_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
     if decision is not None:
         print(json.dumps(decision, ensure_ascii=True))
     return 0
+
+
+def _require_claude_profile_for_new_session() -> None:
+    preview = capture_claude_profile()
+    if preview.get("config_dir"):
+        return
+    expected = preview.get("expected_config_dir") or "$HOME/.claude-accounts/<your Claude account email>"
+    raise DomainError(
+        "work_claude_profile_required",
+        "A Claude agent runs in its own account folder. Quit this session and start it with "
+        f'env CLAUDE_CONFIG_DIR="{expected}" claude (the start line on the board\'s Connect a machine panel); '
+        "the first start in a new folder asks for that account's login once.",
+        status=409,
+        details={"reason": preview.get("reason", ""), "expected_config_dir": preview.get("expected_config_dir", "")},
+    )
 
 
 def _limit_state_identity(
