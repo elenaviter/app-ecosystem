@@ -5239,6 +5239,22 @@ def _push_command(args: Any) -> int:
                   file=sys.stderr)
         return owned
 
+    # W762: a Card-managed clone (stamped, or answered by pb's own helper) never
+    # pushes unchecked, with or without --owner-key-only.
+    helpers = git_out("config", "--get-all", "credential.https://github.com.helper")
+    if git_out("config", "--get", STAMP_ACCOUNT_KEY) or "!pb worker git-credential" in helpers:
+        remotes_now = set(git_out("remote").split())
+        named = next((arg for arg in push_args if not arg.startswith("-") and arg in remotes_now), "origin")
+        urls = git_out("remote", "get-url", "--push", "--all", named).split()
+        if not urls or not all(url.startswith("https://") for url in urls):
+            print(f"pb GitHub key: this clone acts as the Card's account and pushes over HTTPS only; {named} "
+                  f"pushes to {', '.join(urls) or 'nothing'}; nothing was pushed", file=sys.stderr)
+            return 2
+        refused = _card_push_refusal(args, named, urls[0], [named, *[a for a in push_args if a != named]], git_out)
+        if refused:
+            print(f"pb GitHub key: {refused}; nothing was pushed", file=sys.stderr)
+            return 2
+
     first = subprocess.call(["git", "push", *push_args])
     if first == 0:
         return 0
