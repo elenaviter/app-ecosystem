@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Event
@@ -1260,6 +1260,11 @@ class _JournalRefreshWorker:
             raise asyncio.CancelledError
 
 
+def _binding_key(binding: Mapping[str, Any] | None) -> tuple[str, str, str]:
+    value = binding or {}
+    return (str(value.get("config_dir") or ""), str(value.get("account_id") or ""), str(value.get("executable") or ""))
+
+
 def _legacy_account_evidence(payload: dict[str, Any]) -> bool:
     """Rewrite session-profile evidence into the W310 host-report form; True when it changed.
 
@@ -1382,8 +1387,6 @@ class ProblemBoardHostRelayAdapter:
         # The LOCAL journal mapping gap this cycle found, if any, so a journal
         # view in the same cycle refuses with the cause instead of "unbound".
         self._journal_mapping_gap: dict[str, Any] | None = None
-        # W763: set once the board refused session-profile account evidence.
-        self._legacy_account_evidence = False
 
     async def _runtime_account(
         self,
@@ -1449,8 +1452,25 @@ class ProblemBoardHostRelayAdapter:
         payload["runtime_account_evidence"] = evidence
         if account:
             payload["runtime_account"] = account
-        if self._legacy_account_evidence:
+        if self._runtime_account_error_state.get("legacy_evidence"):
             _legacy_account_evidence(payload)
+
+    def rebind_claude_profile(self, binding: Mapping[str, Any]) -> bool:
+        """Take a binding the operator changed on this host; True when it changed (W763).
+
+        The session stays open: only the resume line and the account read
+        follow the new binding, from the next cycle on.
+        """
+
+        if _binding_key(self.config.claude_profile) == _binding_key(binding):
+            return False
+        self.config = replace(self.config, claude_profile=dict(binding))
+        if self.config.runtime_kind == "claude-code":
+            if binding.get("config_dir"):
+                self._runtime_account_reader = lambda: read_session_account(self.config.claude_profile)
+            else:
+                self._runtime_account_reader = lambda: read_runtime_account(self.config.runtime_kind)
+        return True
 
     async def _account_action(self, *, action: str, payload: dict[str, Any]) -> Any:
         """Publish or heartbeat; a board that predates W763 gets the evidence it reads.
@@ -1465,13 +1485,14 @@ class ProblemBoardHostRelayAdapter:
         except DomainError as exc:
             if exc.code != "work_runtime_account_evidence_invalid" or not _legacy_account_evidence(payload):
                 raise
-            if not self._legacy_account_evidence:
+            # Shared with the per-project adapters, which are rebuilt every poll.
+            if not self._runtime_account_error_state.get("legacy_evidence"):
                 logger.warning(
                     "Problem Board board predates session-profile account evidence; sending the host-report form "
                     "worker_name=%s",
                     self.config.worker_name,
                 )
-            self._legacy_account_evidence = True
+            self._runtime_account_error_state["legacy_evidence"] = True
             return await self.client.action(object_ref="work:worker:self", action=action, payload=payload)
 
     def _trace_stage(self, stage: str, *, operation: str):
@@ -7408,6 +7429,10 @@ class ProblemBoardRelaySupervisor:
                 },
             )
         session = self._sessions.get(channel.worker_name)
+        rebind = getattr(getattr(session, "adapter", None), "rebind_claude_profile", None)
+        if callable(rebind):
+            # W763: a binding confirmed on this host since the session opened.
+            rebind(channel.claude_profile)
         # The Card fingerprint reads the profile file: off the event loop
         # (W456 criterion 4, dev-main 2026-10-05: that read held it 3.2 s).
         if session is not None and not self._session_matches(

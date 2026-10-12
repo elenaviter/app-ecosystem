@@ -453,7 +453,7 @@ class _OldBoard:
 
 
 def _old_board_adapter():
-    adapter = SimpleNamespace(client=_OldBoard(), _legacy_account_evidence=False, config=SimpleNamespace(worker_name="w"))
+    adapter = SimpleNamespace(client=_OldBoard(), _runtime_account_error_state={}, config=SimpleNamespace(worker_name="w"))
     adapter._account_action = lambda **kw: ProblemBoardHostRelayAdapter._account_action(adapter, **kw)
     return adapter
 
@@ -467,7 +467,7 @@ def test_an_older_board_gets_the_w310_form_and_no_heartbeat_is_lost():
         },
     }
     assert asyncio.run(adapter._account_action(action="worker.heartbeat", payload=payload)) == {"ok": True}
-    assert adapter._legacy_account_evidence is True
+    assert adapter._runtime_account_error_state["legacy_evidence"] is True
     assert adapter.client.calls[-1]["evidence"] == {"state": "reported", "source": "host-report", "observed_at": "t"}
 
 
@@ -488,7 +488,7 @@ def test_other_refusals_are_not_swallowed():
         async def action(self, **_):
             raise DomainError("work_worker_unavailable", "gone")
 
-    adapter = SimpleNamespace(client=Refusing(), _legacy_account_evidence=False, config=SimpleNamespace(worker_name="w"))
+    adapter = SimpleNamespace(client=Refusing(), _runtime_account_error_state={}, config=SimpleNamespace(worker_name="w"))
     with pytest.raises(DomainError) as caught:
         asyncio.run(ProblemBoardHostRelayAdapter._account_action(adapter, action="worker.heartbeat", payload={}))
     assert caught.value.code == "work_worker_unavailable"
@@ -712,3 +712,25 @@ def test_bind_to_an_email_the_board_does_not_know_needs_that_folders_login(tmp_p
     _login(home / ".claude-accounts" / "bob@example.com", ACCOUNT_B, "bob@example.com")
     result = claude_profile_command(_args("bind", email="bob@example.com", confirm=True), config_path=path, home=home)
     assert result["bound"]["profile_state"] == cp.VERIFIED
+
+
+def test_a_running_relay_takes_a_binding_confirmed_later(home):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    binding = {"config_dir": str(folder), "account_id": ACCOUNT_A, "executable": "/opt/claude/bin/claude"}
+    adapter = SimpleNamespace(
+        config=SimpleNamespace(claude_profile={}, runtime_kind="claude-code"),
+        _runtime_account_reader=None,
+    )
+    import project_board.client.relay as relay_module
+
+    original = relay_module.replace
+    relay_module.replace = lambda config, **changes: SimpleNamespace(**{**config.__dict__, **changes})
+    try:
+        assert ProblemBoardHostRelayAdapter.rebind_claude_profile(adapter, binding) is True
+        assert ProblemBoardHostRelayAdapter.rebind_claude_profile(adapter, dict(binding, captured_at="x")) is False
+    finally:
+        relay_module.replace = original
+    assert adapter.config.claude_profile["config_dir"] == str(folder)
+    sample = asyncio.run(adapter._runtime_account_reader())
+    assert sample.profile_state == cp.VERIFIED
+    assert sample.account["account_id"] == ACCOUNT_A
