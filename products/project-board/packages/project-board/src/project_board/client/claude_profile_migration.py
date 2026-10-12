@@ -26,7 +26,10 @@ copied as it is, mode 0600, never read into output, a log or the manifest,
 and the profile's `.claude.json` is seeded with only that account's public
 fields. One login is never copied into another account's folder, and nothing
 leaves the machine. On macOS the login is in the Keychain, not a file: there
-the person logs in once in the new folder instead.
+the person logs in once in the new folder instead: the Keychain entry of a
+configuration folder is named by Claude Code in a way it does not document,
+and copying a Keychain secret with the `security` tool passes it on a command
+line. This gap is reported, not worked around.
 
 Every apply writes a manifest of what it created, before and after each
 file, so an interrupted copy is known. A rollback removes only those files,
@@ -204,6 +207,23 @@ def _login_record(source: Path) -> Path:
     return source.parent / ".claude.json" if source.name == ".claude" else source / ".claude.json"
 
 
+def _publish(partial: Path, destination: Path) -> None:
+    """Put ``partial`` at ``destination`` only if nothing is there: one atomic step.
+
+    A hard link fails when the name exists, so a file that appears at the
+    destination at any moment is never replaced; ``partial`` is then removed.
+    """
+
+    try:
+        os.link(partial, destination)
+    except FileExistsError as exc:
+        partial.unlink()
+        raise _refuse(
+            "work_claude_profile_conflict", f"{destination.name} appeared in the profile during the copy; it was kept."
+        ) from exc
+    partial.unlink()
+
+
 def _same_bytes(left: Path, right: Path) -> bool:
     return left.is_file() and right.is_file() and _sha256(left) == _sha256(right)
 
@@ -217,9 +237,7 @@ def _write_new(path: Path, write: Any) -> None:
         with os.fdopen(handle, "wb") as stream:
             write(stream)
         os.chmod(partial, 0o600)
-        if path.exists() or path.is_symlink():
-            raise _refuse("work_claude_profile_conflict", f"{path.name} appeared in the profile during the copy.")
-        os.replace(partial, path)
+        _publish(partial, path)
     finally:
         if partial.exists():
             partial.unlink()
@@ -239,6 +257,12 @@ def preserve_login(*, source: str | Path, target: str | Path, account_id: str) -
     if not account_id:
         raise _refuse("work_claude_profile_unbound", "The profile is not bound to an account.")
     record_path = _login_record(source_dir)
+    if record_path.is_symlink() or os.path.realpath(record_path) != str(record_path):
+        raise _refuse(
+            "work_claude_profile_path_link",
+            f"{record_path} is reached through a symbolic link; its login is not copied.",
+            path=str(record_path),
+        )
     try:
         record = json.loads(record_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -259,26 +283,43 @@ def preserve_login(*, source: str | Path, target: str | Path, account_id: str) -
         )
     target_credential = _inside(target_dir, CREDENTIAL_FILE)
     target_record = _inside(target_dir, ".claude.json")
-    if target_credential.exists() or target_credential.is_symlink():
-        if _same_bytes(credential, target_credential):
-            return {"login": "present"}
-        raise _refuse(
-            "work_claude_profile_login_exists",
-            "The profile already has its own login; it is kept and nothing was copied.",
-        )
+    # Each step can be interrupted and run again: the credential first, then
+    # the public metadata, and each one accepted on a retry when it already
+    # holds this account.
     if target_record.exists() or target_record.is_symlink():
-        raise _refuse(
-            "work_claude_profile_login_exists",
-            "The profile already has its own .claude.json; it is kept and nothing was copied.",
-        )
+        if _record_account(target_record) != account_id:
+            raise _refuse(
+                "work_claude_profile_login_exists",
+                "The profile's .claude.json names another account; it is kept and nothing was copied.",
+            )
     target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    seed = {key: record[key] for key in _ACCOUNT_KEYS if key in record}
-    _write_new(target_record, lambda stream: stream.write(json.dumps(seed, indent=2).encode("utf-8")))
-    with credential.open("rb") as original:
-        _write_new(target_credential, lambda stream: shutil.copyfileobj(original, stream))
-    if not _same_bytes(credential, target_credential):
-        raise _refuse("work_claude_profile_copy_mismatch", "The login changed while it was copied.")
-    return {"login": "copied", "account_id": account_id}
+    copied = False
+    if target_credential.exists() or target_credential.is_symlink():
+        if not _same_bytes(credential, target_credential):
+            raise _refuse(
+                "work_claude_profile_login_exists",
+                "The profile already has its own login; it is kept and nothing was copied.",
+            )
+    else:
+        with credential.open("rb") as original:
+            _write_new(target_credential, lambda stream: shutil.copyfileobj(original, stream))
+        if not _same_bytes(credential, target_credential):
+            raise _refuse("work_claude_profile_copy_mismatch", "The login changed while it was copied.")
+        copied = True
+    if not target_record.exists():
+        seed = {key: record[key] for key in _ACCOUNT_KEYS if key in record}
+        _write_new(target_record, lambda stream: stream.write(json.dumps(seed, indent=2).encode("utf-8")))
+        copied = True
+    return {"login": "copied", "account_id": account_id} if copied else {"login": "present"}
+
+
+def _record_account(path: Path) -> str:
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    account = record.get("oauthAccount") if isinstance(record, Mapping) else None
+    return str(account.get("accountUuid") or "") if isinstance(account, Mapping) else ""
 
 
 def _manifest_path(target: Path, session_id: str) -> Path:
@@ -324,6 +365,11 @@ def apply_migration(
     created = {row["path"]: row["sha256"] for row in previous.get("created", [])}
     created_dirs = set(previous.get("created_dirs", []))
     pending = [row for row in previous.get("pending", []) if isinstance(row, dict)]
+    if pending:
+        # An interrupted run: claim what it published, drop what it did not.
+        created.update(_settle_pending(target_dir, pending))
+        pending = []
+        atomic_write_json(manifest_path, _manifest(plan, created, created_dirs, pending))
     for row in plan["files"]:
         if row["action"] != "copy":
             continue
@@ -342,16 +388,17 @@ def apply_migration(
         handle, partial_name = tempfile.mkstemp(dir=destination.parent, prefix=f".{destination.name}.pb-partial-")
         os.close(handle)
         partial = Path(partial_name)
-        pending.append({"path": row["path"], "partial": str(partial.relative_to(target_dir))})
+        # Ownership is durable before the file exists: the path, its hash and
+        # the temporary name. A crash after publication leaves a pending entry
+        # whose destination carries that hash, which the next run or a rollback
+        # counts as this migration's.
+        pending.append({"path": row["path"], "partial": str(partial.relative_to(target_dir)), "sha256": row["sha256"]})
         atomic_write_json(manifest_path, _manifest(plan, created, created_dirs, pending))
         shutil.copy2(_inside(source_dir, row["path"]), partial)
         if _sha256(partial) != row["sha256"]:
             partial.unlink()
             raise _refuse("work_claude_profile_copy_mismatch", f"{row['path']} changed while it was copied.")
-        if destination.exists() or destination.is_symlink():
-            partial.unlink()
-            raise _refuse("work_claude_profile_conflict", f"{row['path']} appeared in the profile during the copy.")
-        os.replace(partial, destination)
+        _publish(partial, destination)
         pending = [item for item in pending if item.get("partial") != str(partial.relative_to(target_dir))]
         created[row["path"]] = row["sha256"]
         # Recorded after every file, so an interrupted run can still be rolled back.
@@ -359,6 +406,33 @@ def apply_migration(
     verified = verify_migration(target=target_dir, session_id=session_id, source=source_dir, with_memory=with_memory)
     atomic_write_json(manifest_path, {**_manifest(plan, created, created_dirs, pending), "verified_at": utc_now()})
     return {**plan, "applied": len(created), "verified": verified}
+
+
+def _settle_pending(
+    target_dir: Path, pending: list[dict[str, Any]], kept: list[str] | None = None
+) -> dict[str, str]:
+    """{path: hash} of the files an interrupted run published; its temporary files removed.
+
+    A pending destination that carries the recorded hash was published by
+    that run: the copy only ever links into a name that did not exist. Any
+    other destination is not this migration's and is left alone.
+    """
+
+    published: dict[str, str] = {}
+    for row in pending:
+        if row.get("partial"):
+            partial = _inside(target_dir, row["partial"])
+            if partial.is_file():
+                partial.unlink()
+        if not row.get("path") or not row.get("sha256"):
+            continue
+        destination = _inside(target_dir, row["path"])
+        if destination.is_file() and _sha256(destination) == row["sha256"]:
+            published[row["path"]] = row["sha256"]
+        elif destination.exists() and kept is not None:
+            # Changed since, or never this migration's: it stays, and is said.
+            kept.append(row["path"])
+    return published
 
 
 def _manifest(
@@ -412,8 +486,13 @@ def rollback_migration(*, target: str | Path, session_id: str) -> dict[str, Any]
     if not manifest_path.exists():
         raise _refuse("work_claude_profile_migration_unknown", "No migration of this session into this profile.")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    files = [(_inside(target_dir, row["path"]), row["sha256"]) for row in manifest.get("created", [])]
-    partials = [_inside(target_dir, row["partial"]) for row in manifest.get("pending", []) if row.get("partial")]
+    created = {row["path"]: row["sha256"] for row in manifest.get("created", [])}
+    # What an interrupted run published counts as created; its temporary files go.
+    kept_files: list[str] = []
+    created.update(
+        _settle_pending(target_dir, [row for row in manifest.get("pending", []) if isinstance(row, dict)], kept_files)
+    )
+    files = [(_inside(target_dir, path), digest) for path, digest in created.items()]
     folders = [_inside(target_dir, rel) for rel in manifest.get("created_dirs", [])]
     changed = [
         str(path.relative_to(target_dir)) for path, digest in files
@@ -430,9 +509,6 @@ def rollback_migration(*, target: str | Path, session_id: str) -> dict[str, Any]
         if path.exists():
             path.unlink()
             removed += 1
-    for path in partials:
-        if path.is_file():
-            path.unlink()
     kept_dirs = []
     for folder in sorted(folders, key=lambda item: len(item.parts), reverse=True):
         try:
@@ -445,7 +521,7 @@ def rollback_migration(*, target: str | Path, session_id: str) -> dict[str, Any]
         manifest_path.parent.rmdir()
     except OSError:
         pass
-    return {"session_id": session_id, "removed": removed, "kept_dirs": kept_dirs}
+    return {"session_id": session_id, "removed": removed, "kept_files": kept_files, "kept_dirs": kept_dirs}
 
 
 __all__ = [

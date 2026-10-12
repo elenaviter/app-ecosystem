@@ -141,7 +141,11 @@ def claude_profile_command(args: Any, *, config_path: Path, home: Path | None = 
         if getattr(args, "with_login", False):
             # Same machine, same account only: preserve_login refuses anything else.
             result["login"] = preserve_login(source=source, target=target, account_id=binding.get("account_id", ""))
-        return {**result, "next": _next_after_migration(target), **_resume_line(channel)}
+        return {
+            **result,
+            "next": _next_after_migration(target, login_kept=bool(result.get("login"))),
+            **_resume_line(channel),
+        }
     if action == "rollback":
         return rollback_migration(target=target, session_id=session_id)
     raise ValueError(f"unsupported claude-profile command: {action}")
@@ -159,11 +163,17 @@ def _resume_line(channel: Any) -> dict[str, Any]:
     return {"resume_command": built["command"]}
 
 
-def _next_after_migration(target: Path) -> list[str]:
+def _next_after_migration(target: Path, *, login_kept: bool = False) -> list[str]:
     folder = str(target)
+    resume = (
+        "Resume the session with resume_command, in its tmux session; this machine's login of the account was kept."
+        if login_kept
+        else "Resume the session with resume_command, in its tmux session; the first start in a new folder asks "
+        "for that account's login once (on macOS always: the login is in the Keychain)."
+    )
     return [
         f'pb procedure install --target claude-code --claude-config-dir "{folder}"',
-        "Resume the session with resume_command; the first start in a new folder asks for that account's login once.",
+        resume,
         "In the resumed session run pb worker listen; pb worker claude-profile status then shows verified.",
     ]
 

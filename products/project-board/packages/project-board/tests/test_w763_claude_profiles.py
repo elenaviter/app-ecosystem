@@ -908,3 +908,142 @@ def test_the_credential_never_reaches_the_migration_manifest(home):
     preserve_login(source=source, target=target, account_id=ACCOUNT_A)
     manifest = (target / ".pb-migrations" / f"{SESSION_A}.json").read_text(encoding="utf-8")
     assert ".credentials.json" not in manifest and "test-access" not in manifest
+
+
+# -- recovery defects found in review (coordinator, 2026-10-12) ----------------------------
+
+
+def test_a_file_that_appears_at_the_destination_mid_copy_is_never_replaced(home, monkeypatch):
+    import project_board.client.claude_profile_migration as migration
+
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    real_copy = migration.shutil.copy2
+    racing = target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl"
+
+    def copy_then_race(src, dst, *args, **kwargs):
+        result = real_copy(src, dst, *args, **kwargs)
+        if Path(src).name == f"{SESSION_A}.jsonl":
+            racing.write_text("written by someone else", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(migration.shutil, "copy2", copy_then_race)
+    with pytest.raises(DomainError) as caught:
+        apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+    assert caught.value.code == "work_claude_profile_conflict"
+    assert racing.read_text(encoding="utf-8") == "written by someone else"
+    assert not [p for p in racing.parent.iterdir() if ".pb-partial-" in p.name]
+
+
+@pytest.mark.parametrize("then", ["retry", "rollback"])
+def test_a_crash_right_after_a_file_is_published_keeps_its_ownership(home, monkeypatch, then):
+    import project_board.client.claude_profile_migration as migration
+
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    real_publish = migration._publish
+
+    def publish_then_crash(partial, destination):
+        real_publish(partial, destination)
+        raise KeyboardInterrupt  # before the manifest records it
+
+    monkeypatch.setattr(migration, "_publish", publish_then_crash)
+    with pytest.raises(KeyboardInterrupt):
+        apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+    monkeypatch.setattr(migration, "_publish", real_publish)
+    published = target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl"
+    assert published.exists()
+    if then == "retry":
+        result = apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+        assert result["verified"] == {"files": 4, "state": "verified"}
+        manifest = json.loads((target / ".pb-migrations" / f"{SESSION_A}.json").read_text(encoding="utf-8"))
+        assert f"projects/-Users-ana-work/{SESSION_A}.jsonl" in {row["path"] for row in manifest["created"]}
+        assert manifest["pending"] == []
+    else:
+        rollback_migration(target=target, session_id=SESSION_A)
+        assert not published.exists()
+        assert not (target / "projects").exists()
+
+
+def test_an_interrupted_login_copy_completes_on_retry(home, monkeypatch):
+    import project_board.client.claude_profile_migration as migration
+
+    source = _global_login(home, ACCOUNT_A)
+    target = home / ".claude-accounts" / "ana@example.com"
+    real_write = migration._write_new
+    calls = {"n": 0}
+
+    def crash_on_second(path, write):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt
+        return real_write(path, write)
+
+    monkeypatch.setattr(migration, "_write_new", crash_on_second)
+    with pytest.raises(KeyboardInterrupt):
+        preserve_login(source=source, target=target, account_id=ACCOUNT_A)
+    monkeypatch.setattr(migration, "_write_new", real_write)
+    # The credential came first; the retry adds the metadata.
+    assert (target / ".credentials.json").exists() and not (target / ".claude.json").exists()
+    assert preserve_login(source=source, target=target, account_id=ACCOUNT_A) == {"login": "copied", "account_id": ACCOUNT_A}
+    assert cp.read_profile_account(target)["account_id"] == ACCOUNT_A
+
+
+def test_a_retry_accepts_this_accounts_metadata_written_before_its_credential(home):
+    source = _global_login(home, ACCOUNT_A)
+    target = home / ".claude-accounts" / "ana@example.com"
+    target.mkdir(parents=True)
+    (target / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": ACCOUNT_A}}), encoding="utf-8")
+    assert preserve_login(source=source, target=target, account_id=ACCOUNT_A)["login"] == "copied"
+    assert (target / ".credentials.json").read_text(encoding="utf-8") == TOKEN
+
+
+def test_metadata_of_another_account_in_the_profile_stops_the_login_copy(home):
+    source = _global_login(home, ACCOUNT_A)
+    target = home / ".claude-accounts" / "ana@example.com"
+    target.mkdir(parents=True)
+    (target / ".claude.json").write_text(json.dumps({"oauthAccount": {"accountUuid": ACCOUNT_B}}), encoding="utf-8")
+    with pytest.raises(DomainError) as caught:
+        preserve_login(source=source, target=target, account_id=ACCOUNT_A)
+    assert caught.value.code == "work_claude_profile_login_exists"
+    assert not (target / ".credentials.json").exists()
+
+
+def test_rollback_keeps_and_names_a_file_changed_after_an_interrupted_publication(home, monkeypatch):
+    import project_board.client.claude_profile_migration as migration
+
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    real_publish = migration._publish
+
+    def publish_then_crash(partial, destination):
+        real_publish(partial, destination)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(migration, "_publish", publish_then_crash)
+    with pytest.raises(KeyboardInterrupt):
+        apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+    published = target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl"
+    published.write_text("the operator changed this", encoding="utf-8")
+    result = rollback_migration(target=target, session_id=SESSION_A)
+    assert result["kept_files"] == [f"projects/-Users-ana-work/{SESSION_A}.jsonl"]
+    assert published.read_text(encoding="utf-8") == "the operator changed this"
+
+
+def test_a_linked_source_login_record_is_not_used(home, tmp_path):
+    source = _global_login(home, ACCOUNT_A)
+    real = tmp_path / "elsewhere.json"
+    (home / ".claude.json").rename(real)
+    (home / ".claude.json").symlink_to(real)
+    with pytest.raises(DomainError) as caught:
+        preserve_login(source=source, target=home / ".claude-accounts" / "ana@example.com", account_id=ACCOUNT_A)
+    assert caught.value.code == "work_claude_profile_path_link"
+
+
+def test_the_next_steps_promise_a_login_only_when_none_was_kept(tmp_path):
+    from project_board.client.claude_profile_commands import _next_after_migration
+
+    kept = " ".join(_next_after_migration(tmp_path, login_kept=True))
+    fresh = " ".join(_next_after_migration(tmp_path, login_kept=False))
+    assert "login of the account was kept" in kept and "asks for that account's login" not in kept
+    assert "asks for that account's login once" in fresh
