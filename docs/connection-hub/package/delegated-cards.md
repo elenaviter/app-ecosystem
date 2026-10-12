@@ -972,10 +972,12 @@ starting selection. A descriptor-managed hosted Agent Card has a stable
 identity, so Connection Hub refuses direct revocation; the reset action
 restores its starting selection without destroying that identity.
 
-For an administrator save, Connection Hub submits the revision-checked live
-Control Card update only after the KDCube host write succeeds, so the Card
-cannot report a descriptor write-through that did not persist. The linked
-KDCube capability document owns the descriptor field and write path.
+An administrator's Save submits one revision-checked Control Card update. The
+Card records that the administrator edited its selection. Descriptor and
+bundle properties stay unchanged; on a later descriptor revision, sync keeps
+the saved Card choice within the refreshed descriptor and catalog ceilings.
+The linked KDCube capability document remains the source for descriptor-owned
+fields and for seeding a Control Card before its first administrator edit.
 
 A capability picker can open the resident Card directly with
 `tab=delegated_by_kdcube&access_id=<resident-card-id>`; the Connection Hub
