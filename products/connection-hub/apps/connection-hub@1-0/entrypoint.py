@@ -165,6 +165,10 @@ from connection_hub.invocation_policy import (
     InvocationPolicyConflict,
     InvocationPolicyRecordError,
 )
+from connection_hub.invocation_policy.service import (
+    invocation_policy_conflict_response,
+    recovery_transaction_ref,
+)
 from connection_hub.delegated_credentials.secret_resources import (
     SECRET_RESOURCE_PREFIX,
     SecretResource,
@@ -1536,7 +1540,10 @@ def _invocation_policy_service(entrypoint: Any) -> Any:
             except InvocationPolicyConflict:
                 raise
             except Exception as exc:
-                raise InvocationPolicyConflict("invocation_policy_earlier_change_undecided") from exc
+                raise InvocationPolicyConflict(
+                    "invocation_policy_earlier_change_undecided",
+                    transaction_ref=recovery_transaction_ref(change),
+                ) from exc
 
         service.bind_transaction_settler(settle)
     return service
@@ -1544,15 +1551,7 @@ def _invocation_policy_service(entrypoint: Any) -> Any:
 
 def _invocation_policy_failure(exc: Exception) -> Dict[str, Any]:
     if isinstance(exc, InvocationPolicyConflict):
-        result = {
-            "ok": False,
-            "error": exc.reason,
-            "status": 409,
-            "current_revision": exc.current_revision,
-        }
-        if exc.reason == "invocation_policy_earlier_change_undecided":
-            result["retryable"] = True
-        return result
+        return invocation_policy_conflict_response(exc)
     if isinstance(exc, InvocationPolicyRecordError):
         return {"ok": False, "error": exc.reason, "status": 400}
     LOGGER.exception("[connection-hub.invocation_policy] operation failed")

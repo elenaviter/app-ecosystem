@@ -38,7 +38,12 @@ the caller.
 
 If the decision remains live or its authority, intent, or receipt cannot be
 verified, the save returns retryable
-`invocation_policy_earlier_change_undecided` after a bounded wait. The marker
+`invocation_policy_earlier_change_undecided` after a bounded wait. Its
+`transaction_ref.member_transaction_id` names the exact Card receipt; when
+that receipt is readable, `transaction_ref.decision_transaction_id` names the
+decision to recover (the group transaction ID for a group member). Both are
+bounded non-secret transaction IDs. If the receipt is unavailable, only the
+member ID can be returned until recovery can read it. The marker
 continues to fence use of the policy; it is never cleared by elapsed time in
 the policy store. A stale `expected_revision` is refused before recovery work.
 Operators should recover the named Card transaction at its decision authority,

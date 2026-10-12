@@ -26,6 +26,7 @@ from test_card_coordinated_writes import _host, _pg_host
 from test_card_participant import _Store, _Verifier
 from test_invocation_policy import _authority, _service
 from test_card_service import SUBJECT_HASH
+from connection_hub.invocation_policy.service import invocation_policy_conflict_response
 
 
 async def _staged(tmp_path, *, decision="undecided", caller_staged=False, host_data=None):
@@ -138,7 +139,7 @@ async def test_live_undecided_card_keeps_marker_and_returns_retryable_conflict(t
                                   mode=POLICY_ALWAYS)
     marker = await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority)
     assert marker.change_id.startswith(row.transaction_id + ":")
-    assert (await decisions.read(row.transaction_id)).state == "prepared"
+    assert not (await decisions.read(row.transaction_id)).terminal
 
 
 @pytest.mark.asyncio
@@ -211,7 +212,7 @@ async def test_group_lead_member_marker_recovers_the_group_decision(tmp_path):
                  for item in members], actor_subject=before.grantor_subject, actor_kind="grantor",
         effects=(effect,),
     )
-    draft = IntentDraft(replay_scope="w750:group", request_id="w750-group", expires_at=1_900_000_000,
+    draft = IntentDraft(replay_scope="w750:group", request_id="w750-group", expires_at=4_000_000_000,
                         participants=(PARTICIPANT,), payload={"participant_inputs": {PARTICIPANT: projection}})
     row = await decisions.begin(draft)
     old_hub = host._card_coordinator[0].participants[PARTICIPANT]
@@ -225,6 +226,28 @@ async def test_group_lead_member_marker_recovers_the_group_decision(tmp_path):
     await coordinator.prepare_existing(row.transaction_id)
     marker = await policies.get_policy_change(owner_subject=before.grantor_subject, authority=authority)
     assert marker.change_id == f"{tx.member_transaction_id(row.transaction_id, 0)}:{authority.key}"
+    assert not (await decisions.read(row.transaction_id)).terminal
+    async def not_expired(_transaction_id):
+        raise DecisionRefused("not_expired")
+
+    policies.bind_transaction_settler(CardPolicyMarkerSettler(
+        card_store=store,
+        coordinator=SimpleNamespace(
+            store=SimpleNamespace(read=decisions.read, abort_expired=not_expired),
+            finish=coordinator.finish,
+        ),
+        callers={}, max_wait_seconds=0.01,
+    ))
+    with pytest.raises(InvocationPolicyConflict, match="invocation_policy_earlier_change_undecided") as raised:
+        await policies.set_policy(owner_subject=before.grantor_subject, authority=authority,
+                                  mode=POLICY_ALWAYS)
+    refusal = invocation_policy_conflict_response(raised.value)
+    assert refusal["retryable"] is True
+    assert refusal["transaction_ref"] == {
+        "member_transaction_id": tx.member_transaction_id(row.transaction_id, 0),
+        "decision_transaction_id": row.transaction_id,
+    }
+    assert (await decisions.read(row.transaction_id)).state == "prepared"
     await coordinator.decide(row.transaction_id, "committed", witness_digest="a" * 64)
     policies.bind_transaction_settler(CardPolicyMarkerSettler(
         card_store=store, coordinator=coordinator, callers={}, max_wait_seconds=1,

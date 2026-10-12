@@ -55,10 +55,42 @@ class InvocationPolicyMutationLock(Protocol):
 
 
 class InvocationPolicyConflict(RuntimeError):
-    def __init__(self, reason: str, *, current_revision: int = 0) -> None:
+    def __init__(
+        self, reason: str, *, current_revision: int = 0,
+        transaction_ref: Mapping[str, str] | None = None,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
         self.current_revision = current_revision
+        self.transaction_ref = dict(transaction_ref) if transaction_ref else None
+
+
+def recovery_transaction_ref(change: InvocationPolicyChange | None) -> dict[str, str] | None:
+    """Name only a bounded Card transaction id from a prepared policy marker."""
+
+    if change is None:
+        return None
+    suffix = ":" + change.authority.key
+    if not change.change_id.endswith(suffix):
+        return None
+    member_id = change.change_id[:-len(suffix)]
+    if len(member_id) != 64 or any(char not in "0123456789abcdef" for char in member_id):
+        return None
+    return {"member_transaction_id": member_id}
+
+
+def invocation_policy_conflict_response(exc: InvocationPolicyConflict) -> dict[str, Any]:
+    """The public refusal body used by the Connection Hub entrypoint."""
+
+    result: dict[str, Any] = {
+        "ok": False, "error": exc.reason, "status": 409,
+        "current_revision": exc.current_revision,
+    }
+    if exc.reason == "invocation_policy_earlier_change_undecided":
+        result["retryable"] = True
+        if exc.transaction_ref is not None:
+            result["transaction_ref"] = dict(exc.transaction_ref)
+    return result
 
 
 def _transaction_owned(change: InvocationPolicyChange) -> bool:
@@ -199,7 +231,10 @@ class InvocationPolicyService:
                 elif stuck and settling is not None:
                     # A concurrent writer may have placed a *different* marker while FINISH ran.
                     # Neither marker is ours to delete under this lock.
-                    raise InvocationPolicyConflict("invocation_policy_earlier_change_undecided")
+                    raise InvocationPolicyConflict(
+                        "invocation_policy_earlier_change_undecided",
+                        transaction_ref=recovery_transaction_ref(change),
+                    )
                 else:
                     if stuck:
                         # W749 direct save: validation precedes superseding its marker.
@@ -213,7 +248,10 @@ class InvocationPolicyService:
             if self._transaction_settler is None:
                 raise InvocationPolicyConflict("invocation_policy_change_in_progress")
             await self._transaction_settler(settling, owner)
-        raise InvocationPolicyConflict("invocation_policy_earlier_change_undecided")
+        raise InvocationPolicyConflict(
+            "invocation_policy_earlier_change_undecided",
+            transaction_ref=recovery_transaction_ref(settling),
+        )
 
     async def prepare_policy_change(
         self,
@@ -253,7 +291,10 @@ class InvocationPolicyService:
                 if stuck and _transaction_owned(existing) and settling is None:
                     settling = existing
                 elif stuck and settling is not None:
-                    raise InvocationPolicyConflict("invocation_policy_earlier_change_undecided")
+                    raise InvocationPolicyConflict(
+                        "invocation_policy_earlier_change_undecided",
+                        transaction_ref=recovery_transaction_ref(existing),
+                    )
                 else:
                     # W749 direct save: a different PREPARED id is replaced only after validation.
                     change = InvocationPolicyChange(
@@ -266,7 +307,10 @@ class InvocationPolicyService:
             if self._transaction_settler is None:
                 raise InvocationPolicyConflict("invocation_policy_change_in_progress")
             await self._transaction_settler(settling, owner)
-        raise InvocationPolicyConflict("invocation_policy_earlier_change_undecided")
+        raise InvocationPolicyConflict(
+            "invocation_policy_earlier_change_undecided",
+            transaction_ref=recovery_transaction_ref(settling),
+        )
 
     async def commit_policy_change(
         self,

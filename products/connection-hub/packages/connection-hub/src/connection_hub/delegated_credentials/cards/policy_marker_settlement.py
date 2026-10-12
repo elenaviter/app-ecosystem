@@ -17,7 +17,10 @@ from typing import Any, Awaitable, Callable, Mapping
 from service_foundation.coordination.durable_decision_log import DecisionRefused
 
 from connection_hub.invocation_policy.models import InvocationPolicyChange
-from connection_hub.invocation_policy.service import InvocationPolicyConflict
+from connection_hub.invocation_policy.service import (
+    InvocationPolicyConflict,
+    recovery_transaction_ref,
+)
 
 from ..issuer_gate import MAX_DECISION_SECONDS
 from .card_participant import PARTICIPANT, LocalCardIntentSource
@@ -48,14 +51,35 @@ class CardPolicyMarkerSettler:
 
     async def __call__(self, change: InvocationPolicyChange, owner_subject: str) -> None:
         suffix = ":" + change.authority.key
+        recovery = recovery_transaction_ref(change)
         if not change.change_id.endswith(suffix):
-            raise InvocationPolicyConflict("invocation_policy_earlier_change_undecided")
+            raise InvocationPolicyConflict(
+                "invocation_policy_earlier_change_undecided", transaction_ref=recovery,
+            )
         member_id = change.change_id[:-len(suffix)]
+        if recovery is not None:
+            # A group member's marker names its member receipt. Recovery must
+            # also name the group's distinct durable decision identity.
+            try:
+                receipt = await read_receipt(self._card_store, member_id)
+            except Exception:  # noqa: BLE001 - retain the exact member identity
+                receipt = None
+            if isinstance(receipt, Mapping) and receipt.get("transaction_id") == member_id:
+                group = receipt.get("group")
+                decision_id = group.get("transaction_id") if isinstance(group, Mapping) else member_id
+                if (
+                    isinstance(decision_id, str)
+                    and len(decision_id) == 64
+                    and all(char in "0123456789abcdef" for char in decision_id)
+                ):
+                    recovery["decision_transaction_id"] = decision_id
         deadline = time.monotonic() + self._max_wait_seconds
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise InvocationPolicyConflict("invocation_policy_earlier_change_undecided")
+                raise InvocationPolicyConflict(
+                    "invocation_policy_earlier_change_undecided", transaction_ref=recovery,
+                )
             try:
                 # Decision lookup is bounded. Once COMMIT or ABORT is known,
                 # FINISH is not governed by that clock; COMMIT must materialize.
@@ -70,11 +94,15 @@ class CardPolicyMarkerSettler:
                 except Exception as exc:
                     # A failed FINISH keeps its marker; the next request can
                     # replay the same durable decision without guessing.
-                    raise InvocationPolicyConflict("invocation_policy_earlier_change_undecided") from exc
+                    raise InvocationPolicyConflict(
+                        "invocation_policy_earlier_change_undecided", transaction_ref=recovery,
+                    ) from exc
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise InvocationPolicyConflict("invocation_policy_earlier_change_undecided")
+                raise InvocationPolicyConflict(
+                    "invocation_policy_earlier_change_undecided", transaction_ref=recovery,
+                )
             await asyncio.sleep(min(self._poll_seconds, remaining))
 
     async def _terminal_once(
