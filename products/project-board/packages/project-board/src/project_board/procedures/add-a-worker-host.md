@@ -799,11 +799,19 @@ set -eu
 W="$HOME/.kdcube/pb/workspaces/<alias>"
 export PATH="$HOME/.local/node/bin:$HOME/.local/bin:$PATH"
 cd "$W"
-exec claude ${1:+--resume "$1"} --add-dir "$W" --add-dir "$HOME/.kdcube" \
+exec env CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/<account-email>" claude ${1:+--resume "$1"} \
+  --add-dir "$W" --add-dir "$HOME/.kdcube" \
   --dangerously-skip-permissions --disallowedTools AskUserQuestion
 EOF
 chmod 700 ~/.local/bin/start-<agent-name>
 ```
+
+`<account-email>` is the email of the Claude account the agent works under;
+its folder holds that account's own login, settings, skill and history, and
+receives the skill and settings with `pb procedure install --target claude-code
+--claude-config-dir "$HOME/.claude-accounts/<account-email>"`. The first start
+in a new folder asks for that login once. Agents that already run on the
+host's global login move with [Claude account profiles](./claude-account-profiles.md).
 
 Then one detached `tmux` session per agent, named after the agent and started
 from its direct login (step 1) so the session has the user-session environment.

@@ -121,9 +121,9 @@ from .limit_state import (
     limit_state_from_claude_statusline,
     limit_state_from_claude_stop_failure,
     limit_state_line,
-    qualify_limit_state,
 )
-from .runtime_account import read_host_login
+from .claude_profile import capture_binding as capture_claude_profile
+from .claude_profile import qualify_profile_limit_state
 from .render import (
     FORMATS,
     FORMAT_BRIEF,
@@ -731,6 +731,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
     )
     command.add_argument("--home", help="Testing or alternate user home.")
+    command.add_argument(
+        "--claude-config-dir",
+        help="The Claude profile folder to use; default: this session's CLAUDE_CONFIG_DIR, else ~/.claude.",
+    )
     command = procedure_commands.add_parser(
         "verify", help="Verify every file in an installed procedure package."
     )
@@ -741,6 +745,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
     )
     command.add_argument("--home", help="Testing or alternate user home.")
+    command.add_argument(
+        "--claude-config-dir",
+        help="The Claude profile folder to use; default: this session's CLAUDE_CONFIG_DIR, else ~/.claude.",
+    )
     command.add_argument(
         "--detail", action="store_true",
         help="Brief output lists the package manifest and every changed file, not only the verdict.",
@@ -755,6 +763,10 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
     )
     command.add_argument("--home", help="Testing or alternate user home.")
+    command.add_argument(
+        "--claude-config-dir",
+        help="The Claude profile folder to use; default: this session's CLAUDE_CONFIG_DIR, else ~/.claude.",
+    )
     command.add_argument("--force", action="store_true")
     command.add_argument(
         "--allow-downgrade",
@@ -1199,6 +1211,50 @@ def build_parser() -> argparse.ArgumentParser:
         default="-",
         help="The JSON Claude Code passed, a file or - for stdin (default).",
     )
+
+    command = worker_commands.add_parser(
+        "claude-profile",
+        help=(
+            "The Claude account profile of each Claude session on this host: status, "
+            "bind a session to its account email, migrate its files into that profile, roll back."
+        ),
+    )
+    profile_commands = command.add_subparsers(dest="claude_profile_command", required=True)
+    profile_command = profile_commands.add_parser("status", help="Every Claude session here, its profile and its verified account.")
+    _host_config(profile_command)
+    profile_command = profile_commands.add_parser("bind", help="Confirm one session's profile by its Claude account email.")
+    _host_config(profile_command)
+    profile_command.add_argument("--runtime-session-id", "--session-id", dest="runtime_session_id", required=True)
+    profile_command.add_argument("--email", required=True, help="The Claude account email; the folder is ~/.claude-accounts/<email>.")
+    profile_command.add_argument("--confirm", action="store_true", help="The operator confirms this account for this session.")
+    profile_command = profile_commands.add_parser(
+        "migrate", help="Dry run, or --apply: copy the session's own files into its profile and verify them."
+    )
+    _host_config(profile_command)
+    profile_command.add_argument("--runtime-session-id", "--session-id", dest="runtime_session_id", required=True)
+    profile_command.add_argument("--source", help="The folder the session ran in (default ~/.claude).")
+    profile_command.add_argument("--apply", action="store_true", help="Copy; without it nothing is written.")
+    profile_command.add_argument(
+        "--session-stopped",
+        action="store_true",
+        help="The operator confirms the session has exited; --apply refuses without it.",
+    )
+    profile_command.add_argument(
+        "--with-login",
+        action="store_true",
+        help=(
+            "Keep this machine's login of the same account in the profile (copied locally, never shown); "
+            "refused for another account or where the login is not a file."
+        ),
+    )
+    profile_command.add_argument(
+        "--with-memory",
+        action="store_true",
+        help="Also copy the project folder's memory, once the operator confirmed it is this agent's.",
+    )
+    profile_command = profile_commands.add_parser("rollback", help="Remove what one migrate created, if none of it changed.")
+    _host_config(profile_command)
+    profile_command.add_argument("--runtime-session-id", "--session-id", dest="runtime_session_id", required=True)
 
     command = worker_commands.add_parser(
         "stop-guard",
@@ -5623,6 +5679,10 @@ def _worker_command(args: Any) -> dict[str, Any]:
             "config": str(path),
             "workers": SharedFieldStore(config.field_root).list_workers(),
         }
+    if args.worker_command == "claude-profile":
+        from .claude_profile_commands import claude_profile_command
+
+        return claude_profile_command(args, config_path=resolve_host_config_path(getattr(args, "config", None)))
     if args.worker_command == "wake-recover":
         from .wake_recovery import recover_worker_wake
 
@@ -5663,6 +5723,12 @@ def _worker_command(args: Any) -> dict[str, Any]:
             and channel.state == "active"
         )
         previous_alias = channel.worker_alias if channel is not None else ""
+        if identity.runtime_kind == "claude-code" and channel is None:
+            # W763, operator 2026-10-12: "we re not going to work wit unscoped
+            # claude agents." A new Claude session enrolls only from its
+            # account's own folder. An enrolled one not yet moved still
+            # listens, so the move itself can run.
+            _require_claude_profile_for_new_session()
         channel = enroll_worker_channel(
             path,
             identity=identity,
@@ -5673,6 +5739,12 @@ def _worker_command(args: Any) -> dict[str, Any]:
             working_directory=str(Path.cwd().resolve()),
             # W304 finding 29: the runtime's real start line, for the card's resume command.
             runtime_launch=capture_runtime_launch(identity.runtime_kind),
+            # W763: the Claude account profile this session runs under.
+            claude_profile=(
+                (lambda existing: capture_claude_profile(existing=existing))
+                if identity.runtime_kind == "claude-code"
+                else None
+            ),
         )
         try:
             previous_worker = field.read_worker(identity.worker_name)
@@ -6946,7 +7018,9 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             "procedure": str(source_path()),
             "package": package,
             "installed": verify_agent_procedure(
-                targets, home=getattr(args, "home", None)
+                targets,
+                home=getattr(args, "home", None),
+                claude_config_dir=getattr(args, "claude_config_dir", None),
             ),
             "instruction": (
                 "Install the complete package for future sessions. A running session "
@@ -6954,7 +7028,9 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             ),
         }
     if args.procedure_command == "verify":
-        verified = verify_agent_procedure(targets, home=args.home)
+        verified = verify_agent_procedure(
+            targets, home=args.home, claude_config_dir=getattr(args, "claude_config_dir", None)
+        )
         if any(row["state"] != "current" for row in verified):
             raise DomainError(
                 "work_agent_procedure_verification_failed",
@@ -7001,6 +7077,7 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             force=args.force,
             allow_downgrade=bool(getattr(args, "allow_downgrade", False)),
             installed_by=installing,
+            claude_config_dir=getattr(args, "claude_config_dir", None),
         )
         result = {
             "procedure": str(source_path()),
@@ -7020,9 +7097,13 @@ def _procedure_command(args: Any) -> dict[str, Any]:
         if claude_code:
             # The status line and hooks a Claude Code worker needs (W304 finding 45).
             from .claude_settings import merge_claude_code_settings
-            from .procedures import _home_path
+            from .procedures import _home_path, claude_config_root
 
-            result["claude_code_settings"] = merge_claude_code_settings(_home_path(args.home), pb=hook_pb)
+            result["claude_code_settings"] = merge_claude_code_settings(
+                _home_path(args.home),
+                pb=hook_pb,
+                config_dir=claude_config_root(args.home, getattr(args, "claude_config_dir", None)),
+            )
         return result
     raise ValueError(f"unsupported procedure command: {args.procedure_command}")
 
@@ -7596,9 +7677,15 @@ def _limit_state_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
                 # status line and nothing is recorded or said.
                 identity = None
             if identity is not None:
-                # W310: the sample names the host login it was read under.
+                # W763: a session bound to a profile names that profile's
+                # verified account, and nothing else names one.
+                channel = config.worker(identity)
                 state = dict(
-                    qualify_limit_state(state, read_host_login("claude-code")) or state
+                    qualify_profile_limit_state(
+                        state,
+                        channel.claude_profile if channel is not None else {},
+                    )
+                    or state
                 )
                 field.record_runtime_limit_state(identity.worker_name, state)
                 # W327: the same status line names the model and its effort.
@@ -7646,6 +7733,21 @@ def _stop_guard_command(args: argparse.Namespace, *, stdin: Any = None) -> int:
     if decision is not None:
         print(json.dumps(decision, ensure_ascii=True))
     return 0
+
+
+def _require_claude_profile_for_new_session() -> None:
+    preview = capture_claude_profile()
+    if preview.get("config_dir"):
+        return
+    expected = preview.get("expected_config_dir") or "$HOME/.claude-accounts/<your Claude account email>"
+    raise DomainError(
+        "work_claude_profile_required",
+        "A Claude agent runs in its own account folder. Quit this session and start it with "
+        f'env CLAUDE_CONFIG_DIR="{expected}" claude (the start line on the board\'s Connect a machine panel); '
+        "the first start in a new folder asks for that account's login once.",
+        status=409,
+        details={"reason": preview.get("reason", ""), "expected_config_dir": preview.get("expected_config_dir", "")},
+    )
 
 
 def _limit_state_identity(
