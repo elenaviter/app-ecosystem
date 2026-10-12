@@ -449,7 +449,7 @@ class _OldBoard:
 
 def _old_board_adapter():
     adapter = SimpleNamespace(client=_OldBoard(), _runtime_account_error_state={}, config=SimpleNamespace(worker_name="w"))
-    adapter._account_action = lambda **kw: ProblemBoardHostRelayAdapter._account_action(adapter, **kw)
+    adapter._account_action = lambda payload, send: ProblemBoardHostRelayAdapter._account_action(adapter, payload, send)
     return adapter
 
 
@@ -461,7 +461,8 @@ def test_an_older_board_gets_the_w310_form_and_no_heartbeat_is_lost():
             "state": "reported", "source": "session-profile", "profile_state": "verified", "observed_at": "t",
         },
     }
-    assert asyncio.run(adapter._account_action(action="worker.heartbeat", payload=payload)) == {"ok": True}
+    send = lambda: adapter.client.action(object_ref="work:worker:self", action="worker.heartbeat", payload=payload)  # noqa: E731
+    assert asyncio.run(adapter._account_action(payload, send)) == {"ok": True}
     assert adapter._runtime_account_error_state["legacy_evidence"] is True
     assert adapter.client.calls[-1]["evidence"] == {"state": "reported", "source": "host-report", "observed_at": "t"}
 
@@ -485,7 +486,11 @@ def test_other_refusals_are_not_swallowed():
 
     adapter = SimpleNamespace(client=Refusing(), _runtime_account_error_state={}, config=SimpleNamespace(worker_name="w"))
     with pytest.raises(DomainError) as caught:
-        asyncio.run(ProblemBoardHostRelayAdapter._account_action(adapter, action="worker.heartbeat", payload={}))
+        asyncio.run(
+            ProblemBoardHostRelayAdapter._account_action(
+                adapter, {}, lambda: adapter.client.action(object_ref="work:worker:self", action="worker.heartbeat", payload={})
+            )
+        )
     assert caught.value.code == "work_worker_unavailable"
 
 
