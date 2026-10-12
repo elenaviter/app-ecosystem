@@ -192,7 +192,9 @@ On each machine, `pb worker connect-project` sets up the agent's clones:
   any other helper first, so a Keychain login of another account never
   answers;
 - it sets the commit identity to the agent's alias and the owner's My Card
-  commit email.
+  commit email;
+- it stamps the clone with the Card's GitHub account and the project
+  (`pb.githubAccount`, `pb.projectRef`), from the key's fresh answer.
 
 A machine where the owner has no GitHub key yet still works over SSH with its
 deploy keys, as before ([add a machine](add-a-machine.md)).
@@ -261,6 +263,66 @@ it. A clone's origin may be github.com over HTTPS or SSH, or the
 ([add a machine](add-a-machine.md)). Any other host names no GitHub
 repository, and the key is still issued only for a repository on the project
 card.
+
+## The Card's account, forced on pb's side (W762)
+
+The operator, 2026-10-12: "for pb workers their side must be forced to work
+with the account as configured in connection hub for the operator card". pb
+enforces this itself; a machine's own git or gh routing is at most a safety
+net.
+
+Five things are kept apart:
+
+- **Commit identity:** the clone's `user.name` (the agent's alias) and
+  `user.email` (the Card's commit email). It decides whose commits these are on
+  GitHub.
+- **The Card's authentication:** the token Connection Hub issues for one
+  command. It is never stored or printed, and it is what GitHub checks.
+- **Non-secret metadata:** the recorded identity and the clone's
+  `pb.githubAccount` / `pb.projectRef` stamp. Anyone on the machine can edit
+  them, so they are never proof on their own.
+- **A machine's safety net:** for example a host gh wrapper or git hooks.
+  pb never relies on it.
+- **Operating-system isolation:** not provided. Agents running as one user can
+  reach that user's files.
+
+What pb does:
+
+- **A fresh identity, never a recorded one.** `pb worker workspace-report
+  --set-identity` asks the Card's key and writes its email and account, or
+  refuses (`identity_refresh_unavailable`). It never reapplies the last
+  recorded email. A project whose Card has no GitHub key route keeps the
+  project's email, and only while none of its clones is stamped.
+- **Clones follow the Card.** Every successful key issue brings the clone the
+  command runs in up to the Card's identity, only if that clone belongs to the
+  same project. A Card change therefore reaches existing clones without
+  recloning, and their work is untouched. A worktree that overrides
+  `user.email` is refused (`clone_identity_overridden`).
+- **The token is proven.** Connection Hub's `login` is the connected account's
+  stored name, so before `gh` runs and before a push, pb asks GitHub which
+  account the token acts as (`GET /user`). It refuses on any other answer
+  (`card_account_mismatch`), and when that cannot be confirmed
+  (`card_account_unverified`).
+- **The real gh.** `pb worker gh` runs gh from its install locations, never
+  from `PATH` and never a script. A wrapper that swaps `GH_TOKEN` (for example
+  one that routes a machine's own accounts) therefore cannot replace the Card's
+  token.
+- **Pushes are checked first.** In a clone that is stamped, or that pb's helper
+  answers, `pb worker push` (with or without `--owner-key-only`) refuses
+  before pushing when:
+  - the clone is unstamped (`clone_unstamped`);
+  - a remote does not push over HTTPS;
+  - another credential helper or an `extraheader` could answer
+    (`clone_credential_override`);
+  - the key, the stamp or the email is not the Card's (`card_account_mismatch`);
+  - a new commit is not authored and committed with the Card's email
+    (`push_commit_identity_mismatch`). Commits the remote already has are not
+    checked.
+
+Every check compares against the Card of the agent's own project. No account
+name is fixed: the account the operator links on a project's Card is the one
+its agents act as. For example, one operator's Quickstart and KDCube
+Maintenance Cards name `kdcube-agents`.
 
 ## The board's decision: a signed question
 
@@ -335,6 +397,13 @@ Nothing on the agent's machine needs cleaning: it never stored a GitHub token.
 | `project_github_board_update_required` | The board predates this feature. | Deploy the current board. |
 | `project_person_my_card_property_self_only` | Another person's managed My settings were targeted. | The owner changes their own My Card. |
 | `managed_card_edit_route_unavailable` | The managed settings save has no configured project route. | The operator configures the managed Card save; no direct fallback is made. |
+| `identity_refresh_unavailable` | `--set-identity` could not read the Card's identity fresh; nothing was written. | Retry when Connection Hub answers. |
+| `card_account_mismatch` | The token, the clone's stamp or its email is not the Card's. | Rerun once, since the clone is brought up to the Card; if it repeats, the operator reconnects GitHub on the Card. |
+| `card_account_unverified` | GitHub did not confirm which account the token acts as. | Retry; nothing ran. |
+| `clone_unstamped` | A Card-managed clone has no `pb.githubAccount`. | `pb worker workspace-report --set-identity`. |
+| `clone_credential_override` | Another credential helper or an `extraheader` could answer for github.com. | Remove it from the clone's config. |
+| `clone_identity_overridden` | A worktree sets its own `user.email`. | Remove the worktree override. |
+| `push_commit_identity_mismatch` | New commits are not authored and committed with the Card's email. | Fix those commits' author and committer (amend or rebase) before pushing. |
 
 A push that GitHub itself refuses:
 - **403 on an owner:** the App is not installed there or not on that

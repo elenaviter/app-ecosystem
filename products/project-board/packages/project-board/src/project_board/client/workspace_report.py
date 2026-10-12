@@ -229,6 +229,7 @@ def clone_identity(
     email: str,
     *,
     set_identity: bool = False,
+    stamp: Mapping[str, str] | None = None,
     timeout: float = 15.0,
     git: GitRunner = _run_git,
 ) -> str:
@@ -237,12 +238,12 @@ def clone_identity(
     Reads what a commit here would use (repository, then user and system
     config), so a personal global identity that nothing overrides reads as
     ``differs``. With ``set_identity`` both values are written to the clone's
-    own config first.
+    own config first, with the Card's ``stamp`` (W762) when one is given.
     """
 
     try:
         if set_identity:
-            for key, value in (("user.name", name), ("user.email", email)):
+            for key, value in (("user.name", name), ("user.email", email), *dict(stamp or {}).items()):
                 if git(["config", "--local", key, value], folder, timeout).returncode != 0:
                     return "unset"
         values = []
@@ -268,6 +269,7 @@ def build_workspace_report(
     resolve_host: HostResolver | None = None,
     identity: tuple[str, str] | None = None,
     set_identity: bool = False,
+    stamp: Mapping[str, str] | None = None,
     reasons: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """The report. ``reasons`` gives an unreachable alias a better reason than the folder's (W304 finding 19)."""
@@ -291,7 +293,13 @@ def build_workspace_report(
         # W368: only a clone of its own (not unreachable) has an identity to read or set.
         if identity and all(identity) and row["state"] != "unreachable":
             row["identity"] = clone_identity(
-                workspace / alias, identity[0], identity[1], set_identity=set_identity, timeout=timeout, git=git
+                workspace / alias,
+                identity[0],
+                identity[1],
+                set_identity=set_identity,
+                stamp=stamp,
+                timeout=timeout,
+                git=git,
             )
         rows.append(row)
     return {"revision": int(revision), "reported_at": reported_at, "repositories": rows}
