@@ -1240,6 +1240,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="The operator confirms the session has exited; --apply refuses without it.",
     )
     profile_command.add_argument(
+        "--with-login",
+        action="store_true",
+        help=(
+            "Keep this machine's login of the same account in the profile (copied locally, never shown); "
+            "refused for another account or where the login is not a file."
+        ),
+    )
+    profile_command.add_argument(
         "--with-memory",
         action="store_true",
         help="Also copy the project folder's memory, once the operator confirmed it is this agent's.",

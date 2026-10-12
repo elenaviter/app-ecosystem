@@ -829,3 +829,82 @@ def test_rollback_refuses_a_manifest_path_outside_the_profile(home):
     assert caught.value.code == "work_claude_profile_path_invalid"
     assert (source / "settings.json").exists()
     assert (target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()
+
+
+# -- same machine, same account login (operator, 2026-10-12, via the coordinator) ---------
+
+from project_board.client.claude_profile_migration import preserve_login  # noqa: E402
+
+TOKEN = '{"claudeAiOauth": {"accessToken": "test-access-not-real", "refreshToken": "test-refresh-not-real"}}'
+
+
+def _global_login(home: Path, account_id: str) -> Path:
+    source = home / ".claude"
+    source.mkdir(exist_ok=True)
+    (home / ".claude.json").write_text(
+        json.dumps({
+            "oauthAccount": {"accountUuid": account_id, "emailAddress": "ana@example.com"},
+            "hasCompletedOnboarding": True,
+            "projects": {"/private": {"history": ["not copied"]}},
+        }),
+        encoding="utf-8",
+    )
+    (source / ".credentials.json").write_text(TOKEN, encoding="utf-8")
+    return source
+
+
+def test_the_same_accounts_login_is_kept_in_its_profile(home):
+    source = _global_login(home, ACCOUNT_A)
+    target = home / ".claude-accounts" / "ana@example.com"
+    result = preserve_login(source=source, target=target, account_id=ACCOUNT_A)
+    assert result == {"login": "copied", "account_id": ACCOUNT_A}
+    assert TOKEN not in json.dumps(result)
+    assert (target / ".credentials.json").read_text(encoding="utf-8") == TOKEN
+    assert oct((target / ".credentials.json").stat().st_mode & 0o777) == "0o600"
+    seeded = json.loads((target / ".claude.json").read_text(encoding="utf-8"))
+    assert seeded == {
+        "oauthAccount": {"accountUuid": ACCOUNT_A, "emailAddress": "ana@example.com"},
+        "hasCompletedOnboarding": True,
+    }
+    # The profile now reads as this account.
+    assert cp.read_profile_account(target)["account_id"] == ACCOUNT_A
+    # Again: nothing changes.
+    assert preserve_login(source=source, target=target, account_id=ACCOUNT_A) == {"login": "present"}
+
+
+def test_another_accounts_login_is_never_copied(home):
+    source = _global_login(home, ACCOUNT_B)
+    target = home / ".claude-accounts" / "ana@example.com"
+    with pytest.raises(DomainError) as caught:
+        preserve_login(source=source, target=target, account_id=ACCOUNT_A)
+    assert caught.value.code == "work_claude_profile_login_other_account"
+    assert not (target / ".credentials.json").exists()
+
+
+def test_a_profile_with_its_own_login_keeps_it(home):
+    source = _global_login(home, ACCOUNT_A)
+    target = home / ".claude-accounts" / "ana@example.com"
+    target.mkdir(parents=True)
+    (target / ".credentials.json").write_text("its own", encoding="utf-8")
+    with pytest.raises(DomainError) as caught:
+        preserve_login(source=source, target=target, account_id=ACCOUNT_A)
+    assert caught.value.code == "work_claude_profile_login_exists"
+    assert (target / ".credentials.json").read_text(encoding="utf-8") == "its own"
+
+
+def test_a_keychain_login_asks_for_a_login_instead(home):
+    source = _global_login(home, ACCOUNT_A)
+    (source / ".credentials.json").unlink()  # macOS keeps it in the Keychain
+    with pytest.raises(DomainError) as caught:
+        preserve_login(source=source, target=home / ".claude-accounts" / "ana@example.com", account_id=ACCOUNT_A)
+    assert caught.value.code == "work_claude_profile_login_not_a_file"
+
+
+def test_the_credential_never_reaches_the_migration_manifest(home):
+    source = _legacy_folder(home)
+    _global_login(home, ACCOUNT_A)
+    target = home / ".claude-accounts" / "ana@example.com"
+    apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+    preserve_login(source=source, target=target, account_id=ACCOUNT_A)
+    manifest = (target / ".pb-migrations" / f"{SESSION_A}.json").read_text(encoding="utf-8")
+    assert ".credentials.json" not in manifest and "test-access" not in manifest

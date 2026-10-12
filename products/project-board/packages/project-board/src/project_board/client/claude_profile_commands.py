@@ -20,7 +20,7 @@ from typing import Any
 from ..contract.errors import DomainError
 from ..contract.worker_identity import WorkerSessionIdentity
 from . import claude_profile as cp
-from .claude_profile_migration import apply_migration, plan_migration, rollback_migration
+from .claude_profile_migration import apply_migration, plan_migration, preserve_login, rollback_migration
 from .host_config import HostRelayConfig, set_worker_claude_profile
 from .resume_command import build_session_resume_command
 from .store import SharedFieldStore
@@ -138,6 +138,9 @@ def claude_profile_command(args: Any, *, config_path: Path, home: Path | None = 
             session_stopped=bool(getattr(args, "session_stopped", False)),
             with_memory=with_memory,
         )
+        if getattr(args, "with_login", False):
+            # Same machine, same account only: preserve_login refuses anything else.
+            result["login"] = preserve_login(source=source, target=target, account_id=binding.get("account_id", ""))
         return {**result, "next": _next_after_migration(target), **_resume_line(channel)}
     if action == "rollback":
         return rollback_migration(target=target, session_id=session_id)

@@ -140,9 +140,18 @@ person's yes.
    files, its file checkpoints and task lists. The project folder's memory is
    shared by every session that ran in that folder, so it comes along only with
    `--with-memory`, after the person confirms it is this agent's. It never
-   copies a login, `.claude.json`, settings, plugins, `CLAUDE.md`, agents,
-   commands, or another agent's history; the profile's settings hold only what
-   step 3 installed. Each copy is checked against the original by hash. The originals
+   copies settings, plugins, `CLAUDE.md`, agents, commands, or another agent's
+   history; the profile's settings hold only what step 3 installed.
+
+   `--with-login` keeps this machine's login of the same account, so no new
+   login is needed (on a machine nobody can log in at, such as a server, this
+   is the way). It is refused unless the machine's current login is the
+   account this agent is bound to, and unless the profile has no login of its
+   own. The credential file is copied on this machine only, mode 0600, and
+   never shown; the profile's `.claude.json` gets only that account's public
+   fields. On macOS the login is in the Keychain, not a file, so there the
+   person logs in once instead. A login is never copied into another
+   account's folder or to another machine. Each copy is checked against the original by hash. The originals
    stay in `~/.claude`: they are the backup. An interrupted `--apply` can be
    run again and copies only what is missing. Neither folder may be reached
    through a symbolic link, and none may sit between a folder and a copied
@@ -151,8 +160,10 @@ person's yes.
 
 6. **Resume it with the line `--apply` printed, or the card's Resume** (person).
    The line is complete: folder, program path, the same session ID, working
-   folder and flags. The first resume in a new folder asks for that account's
-   login once (macOS: the Keychain entry is per folder).
+   folder and flags. Without `--with-login`, the first resume in a new folder
+   asks for that account's login once (macOS: the Keychain entry is per
+   folder). Remote agents run in tmux: attach to the agent's tmux session and
+   start the line there.
 
 7. **Check** (agent, in the resumed session):
 
@@ -178,7 +189,8 @@ pb worker claude-profile rollback --runtime-session-id <session-id>
 ```
 
 removes exactly the files `--apply` created, then the folders it created when
-they are empty, and never a folder tree. Once the agent has run in the new
+they are empty, and never a folder tree. A login kept with `--with-login` is
+that account's own and stays. Once the agent has run in the new
 folder its history there differs from the copy, and rollback refuses rather
 than lose it. A rolled-back agent is moved again with `migrate --apply`; its
 originals are still in `~/.claude`.

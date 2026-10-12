@@ -14,9 +14,19 @@ Copied, and only these:
                                        confirmed it belongs to this agent
   file-history/<session>/              its file checkpoints
   todos/<session>-*.json               its task lists
-Never copied: `.claude.json`, credential files, settings, plugins, other
-sessions' files. The profile gets its own login and the Problem Board skill
-and settings are installed into it separately.
+Never copied: settings, plugins, other sessions' files. The Problem Board
+skill and settings are installed into the profile separately.
+
+The login is kept only on request (``with_login``), and only on the same
+machine for the same account (operator, 2026-10-12, through the coordinator:
+migration must preserve each existing same-account Claude login locally,
+including Spark, where nobody can log in again). The source folder's login
+must be the account the profile is bound to; then its credential file is
+copied as it is, mode 0600, never read into output, a log or the manifest,
+and the profile's `.claude.json` is seeded with only that account's public
+fields. One login is never copied into another account's folder, and nothing
+leaves the machine. On macOS the login is in the Keychain, not a file: there
+the person logs in once in the new folder instead.
 
 Every apply writes a manifest of what it created, before and after each
 file, so an interrupted copy is known. A rollback removes only those files,
@@ -46,6 +56,9 @@ from ..contract.errors import DomainError
 from .io import atomic_write_json, utc_now
 
 MANIFEST_DIR = ".pb-migrations"
+CREDENTIAL_FILE = ".credentials.json"
+# The public fields of a login a profile's .claude.json is seeded with.
+_ACCOUNT_KEYS = ("oauthAccount", "hasCompletedOnboarding")
 # A transcript written this recently belongs to a session that is still running.
 QUIET_SECONDS = 120
 _NEVER = (".claude.json", ".credentials.json")
@@ -181,6 +194,91 @@ def plan_migration(
         "transcript_quiet_seconds": int(age),
         "blockers": blockers,
     }
+
+
+def _login_record(source: Path) -> Path:
+    """The `.claude.json` that names the source folder's login."""
+
+    # The default folder keeps it beside itself, ~/.claude.json; any other
+    # configuration folder keeps it inside.
+    return source.parent / ".claude.json" if source.name == ".claude" else source / ".claude.json"
+
+
+def _same_bytes(left: Path, right: Path) -> bool:
+    return left.is_file() and right.is_file() and _sha256(left) == _sha256(right)
+
+
+def _write_new(path: Path, write: Any) -> None:
+    """Create ``path`` (mode 0600) through a fresh temporary name; never replace a file."""
+
+    handle, partial_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.pb-partial-")
+    partial = Path(partial_name)
+    try:
+        with os.fdopen(handle, "wb") as stream:
+            write(stream)
+        os.chmod(partial, 0o600)
+        if path.exists() or path.is_symlink():
+            raise _refuse("work_claude_profile_conflict", f"{path.name} appeared in the profile during the copy.")
+        os.replace(partial, path)
+    finally:
+        if partial.exists():
+            partial.unlink()
+
+
+def preserve_login(*, source: str | Path, target: str | Path, account_id: str) -> dict[str, Any]:
+    """Keep this machine's login of one account in that account's profile.
+
+    Refused unless the source folder's login is ``account_id`` (the account
+    the profile is bound to), the credential is a file, and the profile has no
+    login of its own yet. The credential bytes are copied, never parsed or
+    returned.
+    """
+
+    source_dir = _real_root(Path(source).expanduser(), what="source")
+    target_dir = _real_root(Path(target).expanduser(), what="profile")
+    if not account_id:
+        raise _refuse("work_claude_profile_unbound", "The profile is not bound to an account.")
+    record_path = _login_record(source_dir)
+    try:
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise _refuse("work_claude_profile_login_unknown", f"{record_path} cannot be read.") from exc
+    account = record.get("oauthAccount") if isinstance(record, Mapping) else None
+    if not isinstance(account, Mapping) or account.get("accountUuid") != account_id:
+        raise _refuse(
+            "work_claude_profile_login_other_account",
+            "The source folder is logged in to another account; its login is not copied. "
+            "Log the profile in with its own account instead.",
+        )
+    credential = _inside(source_dir, CREDENTIAL_FILE)
+    if not credential.is_file():
+        raise _refuse(
+            "work_claude_profile_login_not_a_file",
+            "This machine keeps the login outside the folder (macOS: in the Keychain). "
+            "Log in once in the new folder instead.",
+        )
+    target_credential = _inside(target_dir, CREDENTIAL_FILE)
+    target_record = _inside(target_dir, ".claude.json")
+    if target_credential.exists() or target_credential.is_symlink():
+        if _same_bytes(credential, target_credential):
+            return {"login": "present"}
+        raise _refuse(
+            "work_claude_profile_login_exists",
+            "The profile already has its own login; it is kept and nothing was copied.",
+        )
+    if target_record.exists() or target_record.is_symlink():
+        raise _refuse(
+            "work_claude_profile_login_exists",
+            "The profile already has its own .claude.json; it is kept and nothing was copied.",
+        )
+    target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    seed = {key: record[key] for key in _ACCOUNT_KEYS if key in record}
+    _write_new(target_record, lambda stream: stream.write(json.dumps(seed, indent=2).encode("utf-8")))
+    with credential.open("rb") as original:
+        _write_new(target_credential, lambda stream: shutil.copyfileobj(original, stream))
+    if not _same_bytes(credential, target_credential):
+        raise _refuse("work_claude_profile_copy_mismatch", "The login changed while it was copied.")
+    return {"login": "copied", "account_id": account_id}
 
 
 def _manifest_path(target: Path, session_id: str) -> Path:
@@ -352,6 +450,7 @@ def rollback_migration(*, target: str | Path, session_id: str) -> dict[str, Any]
 
 __all__ = [
     "apply_migration",
+    "preserve_login",
     "plan_migration",
     "rollback_migration",
     "session_files",
