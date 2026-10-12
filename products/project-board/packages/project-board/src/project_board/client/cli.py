@@ -5189,16 +5189,23 @@ def _card_push_refusal(
     if stamp.lower() != token.login.lower() or email != token.commit_email:
         return (f"this clone acts as {stamp or '-'} <{email or '-'}> but the Card names "
                 f"{token.login} <{token.commit_email}> (card_account_mismatch)")
-    after = push_args[push_args.index(remote) + 1:] if remote in push_args else []
-    # What this push can send: its refspecs' sources, and the refs its flags name.
-    flags = {"--all": "--branches", "--branches": "--branches", "--mirror": "--all", "--tags": "--tags"}
-    sources = [flags[arg] for arg in push_args if arg in flags]
-    sources += [spec.split(":", 1)[0].lstrip("+") for spec in after if not spec.startswith("-")]
-    if not sources:
-        sources = ["HEAD"]
+    selections = _push_selections(remote, push_args, git_out)
+    if isinstance(selections, str):
+        return selections
     wrong: list[str] = []
-    for source in [value for value in dict.fromkeys(sources) if value]:
-        for line in git_out("log", "--format=%h %ae %ce", source, "--not", f"--remotes={remote}").splitlines():
+    for selection in selections:
+        try:
+            found = subprocess.run(
+                ["git", "log", "--format=%h %ae %ce", *selection, "--not", f"--remotes={remote}"],
+                capture_output=True, text=True, timeout=30, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            found = None
+        # A log that could not be read is never "no new commits" (Root's review of 1ee2b202).
+        if found is None or found.returncode != 0:
+            return (f"the commits this push sends could not be read ({' '.join(selection)}); "
+                    "nothing was pushed (push_selection_unverified)")
+        for line in found.stdout.splitlines():
             short, author, committer = (line.split(" ") + ["", "", ""])[:3]
             if author != token.commit_email or committer != token.commit_email:
                 wrong.append(f"{short} {author}/{committer}")
@@ -5206,6 +5213,42 @@ def _card_push_refusal(
         return ("new commits are not authored and committed as the Card's email "
                 f"{token.commit_email}: {', '.join(wrong[:10])} (push_commit_identity_mismatch)")
     return ""
+
+
+def _push_selections(remote: str, push_args: list[str], git_out: Callable[..., str]) -> list[list[str]] | str:
+    """The `git log` revision selections for every ref this push can send, or a named refusal (W762).
+
+    Covers what git itself would send: the command's refspecs, or else the
+    remote's configured `remote.<name>.push` (and `mirror`), or else the
+    current branch (`push.default=matching` sends every matching branch);
+    `--all`/`--branches`/`--mirror`/`--tags` flags; a wildcard source through
+    `--glob`. A selection that cannot be resolved this way is refused.
+    """
+
+    flags = {"--all": ["--branches"], "--branches": ["--branches"], "--mirror": ["--all"], "--tags": ["--tags"]}
+    selections = [flags[arg] for arg in push_args if arg in flags]
+    after = push_args[push_args.index(remote) + 1:] if remote in push_args else []
+    specs = [spec for spec in after if not spec.startswith("-")]
+    if not specs and not selections:
+        if git_out("config", "--bool", "--get", f"remote.{remote}.mirror") == "true":
+            return [["--all"]]
+        specs = [spec for spec in git_out("config", "--get-all", f"remote.{remote}.push").split("\n") if spec]
+        if not specs:
+            matching = git_out("config", "--get", "push.default") == "matching"
+            return [["--branches"]] if matching else [["HEAD"]]
+    for spec in specs:
+        source = spec.split(":", 1)[0].lstrip("+")
+        if not source:
+            continue  # a deletion sends no commits
+        if source.startswith("^"):
+            return f"negative refspec {spec} is not checked by pb; push without it (push_selection_unsupported)"
+        if "*" in source:
+            if not source.startswith("refs/"):
+                return f"wildcard refspec {spec} must name full refs/...; nothing was pushed (push_selection_unsupported)"
+            selections.append([f"--glob={source}"])
+        else:
+            selections.append([source])
+    return selections or [["HEAD"]]
 
 
 # How recent the owner key's last answer must be for a failed push to name it.
