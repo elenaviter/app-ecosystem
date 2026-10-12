@@ -40,11 +40,15 @@ def _isolated_git(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
 
 
-def _clone(tmp_path: Path, name: str = "clone", *, origin: str = f"https://github.com/{REPO}.git") -> Path:
+def _clone(tmp_path: Path, name: str = "clone", *, origin: str = f"https://github.com/{REPO}.git",
+           helper: str = HELPER) -> Path:
     folder = tmp_path / name
     folder.mkdir()
     _git("init", "-q", "-b", "main", cwd=folder)
     _git("remote", "add", "origin", origin, cwd=folder)
+    if helper:
+        _git("config", "--replace-all", "credential.https://github.com.helper", "", cwd=folder)
+        _git("config", "--add", "credential.https://github.com.helper", helper, cwd=folder)
     _git("config", "user.name", "agent@host", cwd=folder)
     _git("config", "user.email", "old@example.test", cwd=folder)
     (folder / "a.txt").write_text("a\n", encoding="utf-8")
@@ -111,7 +115,7 @@ def test_a_fresh_key_brings_this_projects_clone_to_the_card_and_keeps_its_work(t
     (clone / "a.txt").write_text("changed\n", encoding="utf-8")
     before = _digest(clone)
 
-    cli._refresh_clone_stamp(PROJECT, _token(), str(clone))  # noqa: SLF001
+    cli._refresh_clone_stamp(PROJECT, _token(), str(clone), helper=HELPER)  # noqa: SLF001
 
     assert _config(clone, "user.email") == "card@example.test"
     assert _config(clone, "pb.githubAccount") == "card-account"
@@ -119,7 +123,9 @@ def test_a_fresh_key_brings_this_projects_clone_to_the_card_and_keeps_its_work(t
     assert _digest(clone) == before, "status, diff, index, HEAD and user.name are unchanged"
 
     # A changed Card reaches the same clone; the Card is the authority, whatever its account is called.
-    cli._refresh_clone_stamp(PROJECT, _token(login="elenaviter", email="personal@example.test"), str(clone))  # noqa: SLF001
+    cli._refresh_clone_stamp(  # noqa: SLF001
+        PROJECT, _token(login="elenaviter", email="personal@example.test"), str(clone), helper=HELPER
+    )
     assert (_config(clone, "pb.githubAccount"), _config(clone, "user.email")) == ("elenaviter", "personal@example.test")
 
 
@@ -129,11 +135,23 @@ def test_one_card_never_stamps_another_projects_clone_or_an_unrelated_repository
     _git("config", "pb.githubAccount", "other-account", cwd=other)
     unrelated = _clone(tmp_path, "unrelated", origin="https://github.com/example-org/elsewhere.git")
 
-    cli._refresh_clone_stamp(PROJECT, _token(), str(other))  # noqa: SLF001
-    cli._refresh_clone_stamp(PROJECT, _token(), str(unrelated))  # noqa: SLF001
+    cli._refresh_clone_stamp(PROJECT, _token(), str(other), helper=HELPER)  # noqa: SLF001
+    cli._refresh_clone_stamp(PROJECT, _token(), str(unrelated), helper=HELPER)  # noqa: SLF001
 
     assert (_config(other, "pb.githubAccount"), _config(other, "user.email")) == ("other-account", "old@example.test")
     assert (_config(unrelated, "pb.githubAccount"), _config(unrelated, "user.email")) == ("", "old@example.test")
+
+
+def test_a_refresh_never_rewrites_a_clone_another_session_answers(tmp_path):
+    """Root's review of 2b4a948b: same project and repository is not enough; it must be this worker's clone."""
+
+    theirs = _clone(tmp_path, "theirs", helper=HELPER.replace("s1", "s2"))
+    _git("config", "pb.projectRef", PROJECT, cwd=theirs)
+    cli._refresh_clone_stamp(PROJECT, _token(), str(theirs), helper=HELPER)  # noqa: SLF001
+    assert (_config(theirs, "pb.githubAccount"), _config(theirs, "user.email")) == ("", "old@example.test")
+    no_helper = _clone(tmp_path, "no-helper", helper="")
+    cli._refresh_clone_stamp(PROJECT, _token(), str(no_helper), helper=HELPER)  # noqa: SLF001
+    assert _config(no_helper, "user.email") == "old@example.test"
 
 
 def test_a_worktree_that_overrides_the_email_is_refused_not_silently_kept(tmp_path):
@@ -142,14 +160,12 @@ def test_a_worktree_that_overrides_the_email_is_refused_not_silently_kept(tmp_pa
     _git("config", "--worktree", "user.email", "override@example.test", cwd=clone)
 
     with pytest.raises(GitHubKeyRefused) as refused:
-        cli._refresh_clone_stamp(PROJECT, _token(), str(clone))  # noqa: SLF001
+        cli._refresh_clone_stamp(PROJECT, _token(), str(clone), helper=HELPER)  # noqa: SLF001
     assert refused.value.code == "clone_identity_overridden"
 
 
 def _stamped(tmp_path: Path) -> Path:
     clone = _clone(tmp_path)
-    _git("config", "--replace-all", "credential.https://github.com.helper", "", cwd=clone)
-    _git("config", "--add", "credential.https://github.com.helper", HELPER, cwd=clone)
     _git("config", "pb.githubAccount", "card-account", cwd=clone)
     _git("config", "pb.projectRef", PROJECT, cwd=clone)
     _git("config", "user.email", "card@example.test", cwd=clone)
@@ -162,6 +178,9 @@ def _refusal(clone: Path, monkeypatch, *, token: GitHubToken | None = None, veri
     class Session:
         def __init__(self, args):
             pass
+
+        def helper(self):
+            return HELPER
 
         def token(self, repository):
             return token or _token()
@@ -198,6 +217,7 @@ def test_an_unstamped_clone_or_a_second_credential_never_pushes(tmp_path, monkey
     assert "clone_credential_override" in _refusal(clone, monkeypatch)
 
     _git("config", "--unset-all", "credential.https://github.com.helper", "gh auth", cwd=clone)
+    assert _refusal(clone, monkeypatch) == ""
     _git("config", "http.https://github.com/.extraheader", "AUTHORIZATION: basic x", cwd=clone)
     assert "clone_credential_override" in _refusal(clone, monkeypatch)
 
@@ -269,7 +289,7 @@ def test_a_plain_push_from_a_card_managed_clone_is_checked_too(tmp_path, monkeyp
 
 
 def test_a_clone_outside_any_card_route_keeps_its_plain_push(tmp_path, monkeypatch):
-    clone = _clone(tmp_path, origin="git@github.com:example-org/deploy-only.git")
+    clone = _clone(tmp_path, origin="git@github.com:example-org/deploy-only.git", helper="")
     pushed: list[list[str]] = []
     monkeypatch.setattr(cli.subprocess, "call", lambda argv, *a, **k: pushed.append(list(argv)) or 0)
     monkeypatch.chdir(clone)

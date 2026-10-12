@@ -4908,18 +4908,33 @@ def _git_text(folder: str, *command: str) -> str:
     return found.stdout.strip() if found.returncode == 0 else ""
 
 
-def _refresh_clone_stamp(project_ref: str, token: GitHubToken, folder: str = ".") -> None:
+def _active_github_helpers(folder: str) -> list[str]:
+    """The credential helpers git would ask for github.com here: those after the last reset."""
+
+    try:
+        found = subprocess.run(["git", "-C", folder, "config", "--get-all", "credential.https://github.com.helper"],
+                               capture_output=True, text=True, timeout=10, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    values = found.stdout.split("\n")[:-1] if found.returncode == 0 else []
+    if "" in values:
+        values = values[len(values) - values[::-1].index(""):]
+    return [value for value in values if value]
+
+
+def _refresh_clone_stamp(project_ref: str, token: GitHubToken, folder: str = ".", *, helper: str = "") -> None:
     """Bring the clone the command runs in up to the Card's fresh identity (W762).
 
-    Only a clone of this project: stamped with this project, or unstamped with
-    an origin that is the repository the key was issued for. A clone stamped
-    for another project is left alone, so one Card never stamps another's.
+    Only this worker's clone of this project: git there asks exactly this
+    session's helper (so another worker's or inviter's clone is never
+    rewritten), and it is stamped with this project, or unstamped with an
+    origin that is the repository the key was issued for.
     """
 
-    if not (token.login and token.commit_email):
+    if not (token.login and token.commit_email and helper):
         return
     top = _git_text(folder, "rev-parse", "--show-toplevel")
-    if not top:
+    if not top or _active_github_helpers(top) != [helper]:
         return
     stamped = _git_text(top, "config", "--local", "--get", STAMP_PROJECT_KEY)
     if stamped and stamped != project_ref:
@@ -5018,7 +5033,7 @@ class _GitHubKeySession:
                 commit_email=token.commit_email,
             )
             # W762: the clone this command runs in follows the Card's fresh identity.
-            _refresh_clone_stamp(self.project_ref, token)
+            _refresh_clone_stamp(self.project_ref, token, helper=self.helper())
         return token
 
 
@@ -5154,14 +5169,17 @@ def _card_push_refusal(
     if not git_out("config", "--get", STAMP_ACCOUNT_KEY):
         return ("this clone carries no Card account (clone_unstamped): run "
                 "`pb worker workspace-report --set-identity`, or ask the coordinator")
-    helpers = git_out("config", "--get-all", "credential.https://github.com.helper").split("\n")
-    active = helpers[len(helpers) - 1 - helpers[::-1].index(""):] if "" in helpers else helpers
-    active = [helper for helper in active if helper]
-    extra = git_out("config", "--get-regexp", r"^http\..*extraheader$")
-    if len(active) != 1 or not active[0].startswith("!pb worker git-credential") or extra:
-        return "another credential can answer for github.com in this clone (clone_credential_override)"
     try:
         session = _GitHubKeySession(args)
+    except Exception as exc:  # noqa: BLE001 - refused by name
+        code, _availability = classify_failure(exc)
+        return f"{str(getattr(exc, 'message', '') or code)} ({code})"
+    # Exactly this session's helper, so the key proven here is the one git uses.
+    extra = git_out("config", "--get-regexp", r"^http\..*extraheader$")
+    if _active_github_helpers(".") != [session.helper()] or extra:
+        return ("another credential, or another session's helper, can answer for github.com in this clone "
+                "(clone_credential_override)")
+    try:
         token = session.token(repository_name(url))
         asyncio.run(verified_login(token))
     except Exception as exc:  # noqa: BLE001 - refused by name, never the token
@@ -5171,10 +5189,15 @@ def _card_push_refusal(
     if stamp.lower() != token.login.lower() or email != token.commit_email:
         return (f"this clone acts as {stamp or '-'} <{email or '-'}> but the Card names "
                 f"{token.login} <{token.commit_email}> (card_account_mismatch)")
-    sources = [spec.split(":", 1)[0].lstrip("+") for spec in push_args[push_args.index(remote) + 1:]
-               if not spec.startswith("-")] or ["HEAD"]
+    after = push_args[push_args.index(remote) + 1:] if remote in push_args else []
+    # What this push can send: its refspecs' sources, and the refs its flags name.
+    flags = {"--all": "--branches", "--branches": "--branches", "--mirror": "--all", "--tags": "--tags"}
+    sources = [flags[arg] for arg in push_args if arg in flags]
+    sources += [spec.split(":", 1)[0].lstrip("+") for spec in after if not spec.startswith("-")]
+    if not sources:
+        sources = ["HEAD"]
     wrong: list[str] = []
-    for source in [value for value in sources if value]:
+    for source in [value for value in dict.fromkeys(sources) if value]:
         for line in git_out("log", "--format=%h %ae %ce", source, "--not", f"--remotes={remote}").splitlines():
             short, author, committer = (line.split(" ") + ["", "", ""])[:3]
             if author != token.commit_email or committer != token.commit_email:
