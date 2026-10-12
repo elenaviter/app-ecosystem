@@ -33,6 +33,10 @@ from connection_hub.delegated_credentials.conversation_target_policy import (
 
 AGENT_DESCRIPTOR_ISSUER_KIND = "kdcube_agent_descriptor"
 AGENT_DESCRIPTOR_ACCEPTANCE_KIND = "kdcube_agent_descriptor"
+# A person-edited descriptor Control Card owns its choices. Bundle props can
+# seed a new Card, but a later descriptor refresh must not replay an old seed
+# over a successful Card Save.
+AGENT_DESCRIPTOR_CARD_EDIT_PROVENANCE_KEY = "agent_descriptor_card_edited"
 
 NAMED_SERVICES_CATEGORY = "named_services"
 NAMED_SERVICE_OPERATIONS_CATEGORY = "named_service_operations"
