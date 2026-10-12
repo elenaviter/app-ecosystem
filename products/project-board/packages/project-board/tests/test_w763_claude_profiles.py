@@ -1151,3 +1151,31 @@ def test_a_running_relay_sees_the_session_start_elsewhere_and_come_back(home, mo
     back = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder_a)}, home=home, existing=elsewhere)
     assert ProblemBoardHostRelayAdapter.rebind_claude_profile(adapter, back) is True
     assert asyncio.run(adapter._runtime_account_reader()).profile_state == cp.VERIFIED
+
+
+@pytest.mark.parametrize("wrong_start", ["other", "global"])
+def test_coordinator_probe_started_elsewhere_is_not_verified(tmp_path, wrong_start):
+    """The coordinator's review probe (2026-10-12): a retained binding is not proof of the actual start."""
+
+    home = tmp_path / "home"
+    a = _profile(home, "ana@example.com", ACCOUNT_A)
+    b = _profile(home, "bob@example.com", ACCOUNT_B)
+    first = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(a), "PATH": ""}, home=home)
+    env = {"CLAUDE_CONFIG_DIR": str(b), "PATH": ""} if wrong_start == "other" else {"PATH": ""}
+    again = cp.capture_binding(environ=env, home=home, existing=first)
+    assert again["config_dir"] == str(a)
+    assert cp.profile_state(again, home=home) == (cp.MISMATCH, {})
+
+
+def test_coordinator_probe_capture_change_reaches_a_running_adapter(tmp_path):
+    from dataclasses import make_dataclass
+
+    home = tmp_path / "home"
+    a = _profile(home, "ana@example.com", ACCOUNT_A)
+    b = _profile(home, "bob@example.com", ACCOUNT_B)
+    first = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(a), "PATH": ""}, home=home)
+    again = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(b), "PATH": ""}, home=home, existing=first)
+    Config = make_dataclass("Config", [("runtime_kind", str), ("claude_profile", dict)])
+    adapter = SimpleNamespace(config=Config("claude-code", first))
+    assert ProblemBoardHostRelayAdapter.rebind_claude_profile(adapter, again)
+    assert adapter.config.claude_profile["captured_config_dir"] == str(b)
