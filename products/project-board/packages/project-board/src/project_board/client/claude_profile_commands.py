@@ -131,7 +131,13 @@ def claude_profile_command(args: Any, *, config_path: Path, home: Path | None = 
                 "dry_run": True,
                 **plan_migration(source=source, target=target, session_id=session_id, with_memory=with_memory),
             }
-        result = apply_migration(source=source, target=target, session_id=session_id, with_memory=with_memory)
+        result = apply_migration(
+            source=source,
+            target=target,
+            session_id=session_id,
+            session_stopped=bool(getattr(args, "session_stopped", False)),
+            with_memory=with_memory,
+        )
         return {**result, "next": _next_after_migration(target), **_resume_line(channel)}
     if action == "rollback":
         return rollback_migration(target=target, session_id=session_id)

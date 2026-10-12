@@ -1235,6 +1235,11 @@ def build_parser() -> argparse.ArgumentParser:
     profile_command.add_argument("--source", help="The folder the session ran in (default ~/.claude).")
     profile_command.add_argument("--apply", action="store_true", help="Copy; without it nothing is written.")
     profile_command.add_argument(
+        "--session-stopped",
+        action="store_true",
+        help="The operator confirms the session has exited; --apply refuses without it.",
+    )
+    profile_command.add_argument(
         "--with-memory",
         action="store_true",
         help="Also copy the project folder's memory, once the operator confirmed it is this agent's.",

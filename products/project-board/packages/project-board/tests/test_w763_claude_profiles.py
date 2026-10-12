@@ -561,7 +561,7 @@ def test_a_dry_run_lists_only_the_sessions_own_files_and_writes_nothing(home):
 def test_apply_copies_verifies_and_never_touches_credentials_or_originals(home):
     source = _legacy_folder(home)
     target = home / ".claude-accounts" / "ana@example.com"
-    result = apply_migration(source=source, target=target, session_id=SESSION_A)
+    result = apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
     assert result["verified"] == {"files": 4, "state": "verified"}
     assert (target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").read_text() == '{"turn": 1}\n'
     assert not (target / ".credentials.json").exists()
@@ -569,7 +569,7 @@ def test_apply_copies_verifies_and_never_touches_credentials_or_originals(home):
     assert not (target / "projects" / "-Users-ana-work" / f"{SESSION_B}.jsonl").exists()
     assert (source / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()
     # A retry is a no-op that verifies again.
-    again = apply_migration(source=source, target=target, session_id=SESSION_A)
+    again = apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
     assert again["copy"] == 0 and again["present"] == 4
 
 
@@ -578,7 +578,9 @@ def test_a_running_session_is_not_migrated(home):
     transcript = source / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl"
     os.utime(transcript, None)  # written just now
     with pytest.raises(DomainError) as caught:
-        apply_migration(source=source, target=home / ".claude-accounts" / "ana@example.com", session_id=SESSION_A)
+        apply_migration(
+            source=source, target=home / ".claude-accounts" / "ana@example.com", session_id=SESSION_A, session_stopped=True
+        )
     assert caught.value.code == "work_claude_profile_migration_blocked"
     assert "session_running" in caught.value.details["blockers"]
 
@@ -590,7 +592,7 @@ def test_a_different_file_already_in_the_profile_stops_everything(home):
     conflict.parent.mkdir(parents=True)
     conflict.write_text("- a different memory\n", encoding="utf-8")
     with pytest.raises(DomainError) as caught:
-        apply_migration(source=source, target=target, session_id=SESSION_A, with_memory=True)
+        apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True, with_memory=True)
     assert caught.value.details["conflicts"] == ["projects/-Users-ana-work/memory/MEMORY.md"]
     assert not (target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()
 
@@ -600,7 +602,7 @@ def test_rollback_removes_only_what_the_migration_created(home):
     target = home / ".claude-accounts" / "ana@example.com"
     target.mkdir(parents=True)
     (target / ".claude.json").write_text("{}", encoding="utf-8")  # the profile's own login stays
-    apply_migration(source=source, target=target, session_id=SESSION_A)
+    apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
     result = rollback_migration(target=target, session_id=SESSION_A)
     assert result["removed"] == 4
     assert (target / ".claude.json").exists()
@@ -611,7 +613,7 @@ def test_rollback_removes_only_what_the_migration_created(home):
 def test_rollback_refuses_once_the_session_ran_in_the_profile(home):
     source = _legacy_folder(home)
     target = home / ".claude-accounts" / "ana@example.com"
-    apply_migration(source=source, target=target, session_id=SESSION_A)
+    apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
     transcript = target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl"
     transcript.write_text('{"turn": 1}\n{"turn": 2}\n', encoding="utf-8")
     with pytest.raises(DomainError) as caught:
@@ -741,3 +743,89 @@ def test_a_new_claude_session_without_its_account_folder_does_not_enroll():
         cli._require_claude_profile_for_new_session()
     assert caught.value.code == "work_claude_profile_required"
     assert "env CLAUDE_CONFIG_DIR=" in str(caught.value)
+
+
+
+def test_nothing_is_copied_without_the_operators_word_that_the_session_stopped(home):
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    with pytest.raises(DomainError) as caught:
+        apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=False)
+    assert caught.value.code == "work_claude_profile_session_not_confirmed_stopped"
+    assert not target.exists()
+
+
+def test_a_link_inside_the_sessions_files_stops_the_copy(home, tmp_path):
+    source = _legacy_folder(home)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("not this session's", encoding="utf-8")
+    (source / "file-history" / SESSION_A / "linked").symlink_to(outside)
+    with pytest.raises(DomainError) as caught:
+        plan_migration(source=source, target=home / ".claude-accounts" / "ana@example.com", session_id=SESSION_A)
+    assert caught.value.code == "work_claude_profile_path_link"
+
+
+def test_a_profile_folder_behind_a_link_is_refused(home, tmp_path):
+    source = _legacy_folder(home)
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    (home / ".claude-accounts").mkdir()
+    (home / ".claude-accounts" / "ana@example.com").symlink_to(real)
+    with pytest.raises(DomainError) as caught:
+        apply_migration(
+            source=source, target=home / ".claude-accounts" / "ana@example.com", session_id=SESSION_A, session_stopped=True
+        )
+    assert caught.value.code == "work_claude_profile_path_link"
+    assert list(real.iterdir()) == []
+
+
+def test_an_existing_partial_file_is_never_replaced(home):
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    old = target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl.pb-partial"
+    old.parent.mkdir(parents=True)
+    old.write_text("someone else's", encoding="utf-8")
+    apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+    assert old.read_text(encoding="utf-8") == "someone else's"
+
+
+def test_rollback_after_an_interrupted_copy_removes_its_partial_file(home, monkeypatch):
+    import project_board.client.claude_profile_migration as migration
+
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    calls = {"n": 0}
+    real_copy = migration.shutil.copy2
+
+    def interrupted(src, dst, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            Path(dst).write_text("half", encoding="utf-8")
+            raise KeyboardInterrupt
+        return real_copy(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(migration.shutil, "copy2", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+    manifest = json.loads((target / ".pb-migrations" / f"{SESSION_A}.json").read_text(encoding="utf-8"))
+    assert len(manifest["created"]) == 1 and len(manifest["pending"]) == 1
+    partial = target / manifest["pending"][0]["partial"]
+    assert partial.exists()
+    rollback_migration(target=target, session_id=SESSION_A)
+    assert not partial.exists()
+    assert not (target / "projects").exists()
+
+
+def test_rollback_refuses_a_manifest_path_outside_the_profile(home):
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    apply_migration(source=source, target=target, session_id=SESSION_A, session_stopped=True)
+    manifest_path = target / ".pb-migrations" / f"{SESSION_A}.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["created"].append({"path": "../../.claude/settings.json", "sha256": "0" * 64})
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(DomainError) as caught:
+        rollback_migration(target=target, session_id=SESSION_A)
+    assert caught.value.code == "work_claude_profile_path_invalid"
+    assert (source / "settings.json").exists()
+    assert (target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()

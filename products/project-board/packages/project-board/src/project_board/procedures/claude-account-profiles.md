@@ -125,11 +125,13 @@ person's yes.
 
    ```bash
    pb worker claude-profile migrate --runtime-session-id <session-id>
-   pb worker claude-profile migrate --runtime-session-id <session-id> --apply
+   pb worker claude-profile migrate --runtime-session-id <session-id> --apply --session-stopped
    ```
 
    The first line writes nothing: it lists each file, `copy`, `present` (same
-   file already there) or `conflict`, and `blockers`. `session_running` means
+   file already there) or `conflict`, and `blockers`. `--session-stopped` is
+   the person's word from step 4 that the agent has exited; without it nothing
+   is copied. `session_running` means
    the history was written in the last two minutes; `conflict` means the folder
    already holds a different file of that name. Either stops `--apply` before
    anything is copied.
@@ -142,7 +144,10 @@ person's yes.
    commands, or another agent's history; the profile's settings hold only what
    step 3 installed. Each copy is checked against the original by hash. The originals
    stay in `~/.claude`: they are the backup. An interrupted `--apply` can be
-   run again and copies only what is missing.
+   run again and copies only what is missing. Neither folder may be reached
+   through a symbolic link, and none may sit between a folder and a copied
+   file; each copy goes to a new temporary name first and never replaces an
+   existing file.
 
 6. **Resume it with the line `--apply` printed, or the card's Resume** (person).
    The line is complete: folder, program path, the same session ID, working
