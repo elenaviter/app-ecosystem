@@ -67,3 +67,30 @@ def test_unfiltered_signature_still_sees_every_worker_and_new_work(tmp_path, mon
     _entry(queue, "pending", "worker-b", "new-ready", 300)
     assert queue.work_signature() == (2, 300_000_000_000, 2, 1)
     assert queue.work_signature(worker_names=["worker-b"]) == (1, 300_000_000_000, 1, 1)
+
+
+@pytest.mark.parametrize("worker_count", [1, 8, 16])
+@pytest.mark.parametrize("rows", [0, 4], ids=["idle", "busy"])
+def test_one_round_of_addressed_checks_scales_with_sessions_not_all_worker_pairs(
+    tmp_path, monkeypatch, worker_count, rows
+):
+    queue = CoordinateQueue(tmp_path)
+    workers = [f"worker-{index:02}" for index in range(worker_count)]
+    for worker in workers:
+        for state in ("pending", "leased"):
+            (queue.root / state / worker).mkdir(parents=True, exist_ok=True)
+            for index in range(rows):
+                _entry(queue, state, worker, f"entry-{index}", 100)
+    scans = []
+    real = os.scandir
+
+    def counted(path):
+        scans.append(Path(path))
+        return real(path)
+
+    monkeypatch.setattr(os, "scandir", counted)
+    for worker in workers:
+        assert queue.work_signature(worker_names=[worker]) == (
+            rows, 100_000_000_000 if rows else 0, rows, rows
+        )
+    assert len(scans) == 2 * worker_count, "per-session checks walked every worker's queue"

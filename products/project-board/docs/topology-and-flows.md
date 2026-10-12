@@ -339,6 +339,16 @@ recovery keep the same readiness rules. This reduces per-channel scan work,
 but does not by itself establish live CPU usage or delivery under arbitrary
 host pressure.
 
+Coordinate requests still use the durable per-worker pending/leased queue.
+A channel already draining a request does not start a second drain; queued
+requests remain pending until that channel can serve them. Other channels are
+checked independently. The addressed-scan change does not alter request
+deadlines, lease ownership, expiry, or fresh Card/session dispatch fences.
+Bounded synthetic transport tests exercise queued bursts across 8 and 16
+sessions beside owned disk writes, with one transport deliberately held.
+Those tests establish retention and delivery within their explicit bounds,
+not a guarantee under arbitrary host saturation or network failure.
+
 ### Why the two runtimes wake differently
 
 The two runtimes cannot share one wake, because each admits a new model turn
