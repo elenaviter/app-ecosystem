@@ -1079,3 +1079,40 @@ def test_the_next_steps_promise_a_login_only_when_none_was_kept(tmp_path):
     fresh = " ".join(_next_after_migration(tmp_path, login_kept=False))
     assert "login of the account was kept" in kept and "asks for that account's login" not in kept
     assert "asks for that account's login once" in fresh
+
+
+@pytest.mark.parametrize("retry_first", [False, True])
+def test_an_equal_content_racing_file_survives_rollback_with_or_without_a_retry(tmp_path, monkeypatch, retry_first):
+    """The coordinator's review probe (2026-10-12), both variants: rollback never deletes it."""
+
+    import os as _os
+
+    import project_board.client.claude_profile_migration as migration
+
+    session = "11111111-2222-4333-8444-555555555555"
+    source = tmp_path / "old-profile"
+    original = source / "projects" / "synthetic-project" / f"{session}.jsonl"
+    original.parent.mkdir(parents=True)
+    original.write_bytes(b'{"synthetic": true}\n')
+    _os.utime(original, (1, 1))
+    target = tmp_path / "new-profile"
+    racing = target / original.relative_to(source)
+    real_copy = migration.shutil.copy2
+    creator = {}
+
+    def copy_then_equal_content_race(src, dst, *args, **kwargs):
+        result = real_copy(src, dst, *args, **kwargs)
+        if Path(src) == original:
+            racing.write_bytes(original.read_bytes())
+            creator["inode"] = racing.stat().st_ino
+        return result
+
+    monkeypatch.setattr(migration.shutil, "copy2", copy_then_equal_content_race)
+    with pytest.raises(DomainError) as caught:
+        migration.apply_migration(source=source, target=target, session_id=session, session_stopped=True)
+    assert caught.value.code == "work_claude_profile_conflict"
+    monkeypatch.setattr(migration.shutil, "copy2", real_copy)
+    if retry_first:
+        migration.apply_migration(source=source, target=target, session_id=session, session_stopped=True)
+    migration.rollback_migration(target=target, session_id=session)
+    assert racing.exists() and racing.stat().st_ino == creator["inode"]
