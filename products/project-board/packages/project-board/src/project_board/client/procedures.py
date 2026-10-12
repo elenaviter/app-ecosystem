@@ -225,10 +225,12 @@ def source_package() -> dict[str, Any]:
     return {key: value for key, value in package.items() if key != "contents"}
 
 
-def _target_path(target: str, root: Path) -> Path:
+def _target_path(target: str, root: Path, claude_root: Path | None = None) -> Path:
+    # W763: a Claude profile reads its skills from its own configuration
+    # directory, never from ~/.claude, so the skill goes where the profile is.
     destinations = {
         "codex": root / ".codex" / "skills" / PROCEDURE_ID / "SKILL.md",
-        "claude-code": root / ".claude" / "skills" / PROCEDURE_ID / "SKILL.md",
+        "claude-code": (claude_root or root / ".claude") / "skills" / PROCEDURE_ID / "SKILL.md",
     }
     clean = str(target or "").strip().lower()
     path = destinations.get(clean)
@@ -241,13 +243,13 @@ def _target_path(target: str, root: Path) -> Path:
 
 
 def _target_destinations(
-    targets: Sequence[str], root: Path
+    targets: Sequence[str], root: Path, claude_root: Path | None = None
 ) -> list[tuple[str, Path]]:
     destinations: list[tuple[str, Path]] = []
     seen: set[str] = set()
     for raw in targets:
         target = str(raw or "").strip().lower()
-        destination = _target_path(target, root)
+        destination = _target_path(target, root, claude_root)
         if target in seen:
             continue
         seen.add(target)
@@ -920,14 +922,42 @@ def _changed_since_previous(release_root: Path) -> dict[str, Any]:
     return {"changed_since_revision": previous_revision, "changed_files": changed}
 
 
+def claude_config_root(
+    home: str | Path | None = None,
+    claude_config_dir: str | Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> Path:
+    """The Claude configuration directory an install or check is for (W763).
+
+    An explicit directory first; else the session's own `CLAUDE_CONFIG_DIR`
+    when no other home was named; else `<home>/.claude`.
+    """
+
+    if claude_config_dir:
+        selected = Path(claude_config_dir).expanduser()
+        if not selected.is_absolute():
+            raise DomainError(
+                "work_agent_procedure_path_invalid",
+                "The Claude configuration directory must be an absolute path.",
+                details={"claude_config_dir": str(claude_config_dir)},
+            )
+        return Path(os.path.abspath(selected))
+    env = os.environ if environ is None else environ
+    started = str(env.get("CLAUDE_CONFIG_DIR") or "").strip()
+    if home is None and started and Path(started).expanduser().is_absolute():
+        return Path(os.path.abspath(Path(started).expanduser()))
+    return _home_path(home) / ".claude"
+
+
 def verify_agent_procedure(
-    targets: Sequence[str], *, home: str | Path | None = None
+    targets: Sequence[str], *, home: str | Path | None = None, claude_config_dir: str | Path | None = None
 ) -> list[dict[str, Any]]:
     root = _home_path(home)
     package = _read_source_package()
     return [
         _verify_destination(target, destination, package)
-        for target, destination in _target_destinations(targets, root)
+        for target, destination in _target_destinations(targets, root, claude_config_root(home, claude_config_dir))
     ]
 
 
@@ -980,10 +1010,11 @@ def install_agent_procedure(
     force: bool = False,
     allow_downgrade: bool = False,
     installed_by: Mapping[str, Any] | None = None,
+    claude_config_dir: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     root = _home_path(home)
     package = _read_source_package()
-    destinations = _target_destinations(targets, root)
+    destinations = _target_destinations(targets, root, claude_config_root(home, claude_config_dir))
 
     def reject_unsafe_paths() -> None:
         for _, destination in destinations:

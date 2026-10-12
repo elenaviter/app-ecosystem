@@ -76,6 +76,7 @@ from .host_config import (
 )
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
 from .runtime_account import read_host_login, read_runtime_account
+from .claude_profile import SessionAccount, read_session_account, resume_profile
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
@@ -746,6 +747,8 @@ class RelayConfig:
     workspace: str = ""
     # W304 finding 29: how the runtime was actually started, captured at listen.
     runtime_launch: Mapping[str, Any] = field(default_factory=dict)
+    # W763: the Claude account profile this session is bound to.
+    claude_profile: Mapping[str, Any] = field(default_factory=dict)
 
     def repository_mapping(self) -> dict[str, Any]:
         return repository_entries(self.source_repositories, self.source_read_roots)
@@ -906,6 +909,7 @@ class RelayConfig:
             ),
             workspace=str(worker.get("working_directory") or "").strip(),
             runtime_launch=dict(worker.get("runtime_launch") or {}) if isinstance(worker.get("runtime_launch"), Mapping) else {},
+            claude_profile=dict(worker.get("claude_profile") or {}) if isinstance(worker.get("claude_profile"), Mapping) else {},
         )
 
     @classmethod
@@ -951,6 +955,7 @@ class RelayConfig:
                 worker_name=channel.worker_name,
             )[0],
             runtime_launch=dict(getattr(channel, "runtime_launch", {}) or {}),
+            claude_profile=dict(getattr(channel, "claude_profile", {}) or {}),
         )
 
     @classmethod
@@ -1255,6 +1260,25 @@ class _JournalRefreshWorker:
             raise asyncio.CancelledError
 
 
+def _legacy_account_evidence(payload: dict[str, Any]) -> bool:
+    """Rewrite session-profile evidence into the W310 host-report form; True when it changed.
+
+    The account stays only when the profile verified it; a mismatch or an
+    unreadable profile stays an account-less sample, so the downgrade never
+    attributes another account.
+    """
+
+    evidence = payload.get("runtime_account_evidence")
+    if not isinstance(evidence, Mapping) or evidence.get("source") != "session-profile":
+        return False
+    payload["runtime_account_evidence"] = {
+        "state": evidence.get("state"),
+        "source": "host-report",
+        "observed_at": evidence.get("observed_at"),
+    }
+    return True
+
+
 class ProblemBoardHostRelayAdapter:
     adapter_id = "problem-board"
 
@@ -1358,6 +1382,8 @@ class ProblemBoardHostRelayAdapter:
         # The LOCAL journal mapping gap this cycle found, if any, so a journal
         # view in the same cycle refuses with the cause instead of "unbound".
         self._journal_mapping_gap: dict[str, Any] | None = None
+        # W763: set once the board refused session-profile account evidence.
+        self._legacy_account_evidence = False
 
     async def _runtime_account(
         self,
@@ -1379,7 +1405,20 @@ class ProblemBoardHostRelayAdapter:
                 "observed_at": utc_now(),
             }
         try:
-            account = normalize_runtime_account(await self._runtime_account_reader())
+            sample = await self._runtime_account_reader()
+            if isinstance(sample, SessionAccount):
+                # W763: read from the session's own profile; a mismatch or an
+                # unreadable profile attributes no account at all.
+                account = normalize_runtime_account(sample.account) if sample.account else {}
+                evidence = {
+                    "state": "reported" if account else "missing",
+                    "source": "session-profile",
+                    "profile_state": sample.profile_state,
+                    "observed_at": utc_now(),
+                }
+                self._runtime_account_error_state["code"] = ""
+                return account, evidence
+            account = normalize_runtime_account(sample)
         except DomainError as exc:
             definitely_missing = exc.code in {
                 "work_runtime_account_missing",
@@ -1410,6 +1449,30 @@ class ProblemBoardHostRelayAdapter:
         payload["runtime_account_evidence"] = evidence
         if account:
             payload["runtime_account"] = account
+        if self._legacy_account_evidence:
+            _legacy_account_evidence(payload)
+
+    async def _account_action(self, *, action: str, payload: dict[str, Any]) -> Any:
+        """Publish or heartbeat; a board that predates W763 gets the evidence it reads.
+
+        A board without session-profile evidence refuses the whole call over
+        its unknown field. Once refused, this relay sends the W310 form from
+        then on, so a client installed before its board loses no heartbeat.
+        """
+
+        try:
+            return await self.client.action(object_ref="work:worker:self", action=action, payload=payload)
+        except DomainError as exc:
+            if exc.code != "work_runtime_account_evidence_invalid" or not _legacy_account_evidence(payload):
+                raise
+            if not self._legacy_account_evidence:
+                logger.warning(
+                    "Problem Board board predates session-profile account evidence; sending the host-report form "
+                    "worker_name=%s",
+                    self.config.worker_name,
+                )
+            self._legacy_account_evidence = True
+            return await self.client.action(object_ref="work:worker:self", action=action, payload=payload)
 
     def _trace_stage(self, stage: str, *, operation: str):
         return self._trace.stage(
@@ -2244,11 +2307,7 @@ class ProblemBoardHostRelayAdapter:
         ][-20:]
         if completed:
             payload["relay_degraded_intervals"] = completed
-        response = await self.client.action(
-            object_ref="work:worker:self",
-            action="worker.publish",
-            payload=payload,
-        )
+        response = await self._account_action(action="worker.publish", payload=payload)
         self._published_interval = interval
         remote = _object_result(response)
         self._record_attendance_observation(remote)
@@ -3187,6 +3246,7 @@ class ProblemBoardHostRelayAdapter:
             runtime_session_id=self.config.runtime_session_id,
             working_directory=self.config.workspace or self.config.working_directory,
             launch=self.config.runtime_launch,
+            profile=resume_profile(self.config.claude_profile),
         )
         command = str(generated["command"])
         await self.client.action(
@@ -4612,10 +4672,8 @@ class ProblemBoardHostRelayAdapter:
                     "attendance.heartbeat",
                     operation="worker.heartbeat",
                 ):
-                    heartbeat_response = await self.client.action(
-                        object_ref="work:worker:self",
-                        action="worker.heartbeat",
-                        payload=heartbeat_payload,
+                    heartbeat_response = await self._account_action(
+                        action="worker.heartbeat", payload=heartbeat_payload
                     )
             except DomainError as exc:
                 if exc.code != "work_worker_not_linked":
@@ -4932,9 +4990,7 @@ class ProblemBoardHostRelayAdapter:
         await self._add_runtime_account(heartbeat_payload)
         try:
             return _object_result(
-                await self.client.action(
-                    object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
-                )
+                await self._account_action(action="worker.heartbeat", payload=heartbeat_payload)
             ), None
         except DomainError as exc:
             if exc.code != "work_worker_unavailable":
@@ -4947,9 +5003,7 @@ class ProblemBoardHostRelayAdapter:
         if registration["remote"].get("pool_status") == "limbo":
             return {}, registration
         return _object_result(
-            await self.client.action(
-                object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
-            )
+            await self._account_action(action="worker.heartbeat", payload=heartbeat_payload)
         ), registration
 
     def _listener_sessions(self) -> list[dict[str, Any]]:
@@ -6663,8 +6717,12 @@ class ProblemBoardRelaySupervisor:
                 field=SharedFieldStore(host.field_root),
                 client=client,
                 trace=self._trace,
-                runtime_account_reader=lambda: read_runtime_account(
-                    channel.runtime_kind
+                # W763: a Claude session's own profile, never the global
+                # login, once the session is bound to one.
+                runtime_account_reader=(
+                    (lambda: read_session_account(channel.claude_profile))
+                    if channel.runtime_kind == "claude-code" and channel.claude_profile.get("config_dir")
+                    else (lambda: read_runtime_account(channel.runtime_kind))
                 ),
                 outbox_drain_lock=self._outbox_drain_lock(
                     channel.worker_name

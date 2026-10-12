@@ -34,3 +34,16 @@ def _no_host_git_config(monkeypatch):
 
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
     monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+
+
+@pytest.fixture(autouse=True)
+def _no_session_claude_profile(monkeypatch):
+    """A test never sees the Claude profile of the session that runs it (W763).
+
+    `pb procedure install` and the status line read `CLAUDE_CONFIG_DIR` as this
+    session's own profile; a suite run from a profile-bound session would
+    otherwise install into, or attribute usage to, that real profile. A test
+    that needs the variable sets it with ``monkeypatch.setenv``.
+    """
+
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)

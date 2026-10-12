@@ -36,22 +36,31 @@ At the machine: a terminal tab
 
 ```bash
 ALIAS=<name>@<machine>
-mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion
+ACCOUNT=<your Claude account email>
+mkdir -p ~/.kdcube/pb/workspaces/$ALIAS "$HOME/.claude-accounts/$ACCOUNT" && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/$ACCOUNT" claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion
 ```
 
 Over ssh: in tmux
 
 ```bash
 ALIAS=<name>@<machine>
-tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+ACCOUNT=<your Claude account email>
+tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS '$HOME/.claude-accounts/$ACCOUNT' && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR='$HOME/.claude-accounts/$ACCOUNT' claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
 tmux attach -t "$ALIAS"
 ```
 
 and says "Use the problem-board-worker skill. Help me set up Problem Board on
 this machine, then enroll this session as a Problem Board worker with alias
-<name>@<machine>", with the same name as in ALIAS. Edit only the ALIAS line,
-for example ana@mint. Use letters, digits, '-' and '@': tmux does not allow
-'.' and ':' in a session name. This session sets the machine up and then enrolls: whatever
+<name>@<machine>", with the same name as in ALIAS. Edit only the ALIAS and
+ACCOUNT lines, for example ana@mint and ana@example.com. Use letters, digits,
+'-' and '@' in ALIAS: tmux does not allow '.' and ':' in a session name. ACCOUNT is the Claude
+account the agent works under: its folder `~/.claude-accounts/<email>` holds
+that account's own login, settings, skill and history, and the first start in
+a new folder asks for that login once. When pb is installed on this machine,
+install the skill into that folder with `pb procedure install --target
+claude-code` from this session (it installs into the session's own
+`CLAUDE_CONFIG_DIR`); `pb worker listen` checks that the folder is logged in to
+the ACCOUNT account, and `pb worker claude-profile status` shows it. This session sets the machine up and then enrolls: whatever
 session enrolls becomes the worker. `--add-dir ~/.kdcube` lets it read the
 client's state, `--dangerously-skip-permissions` lets it work without a person
 at the keyboard, and `--disallowedTools AskUserQuestion` makes it ask through
@@ -444,13 +453,13 @@ prompt tool, so every question for the operator goes through the board
 (collaboration Rule 11):
 
 ```bash
-cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude \
+cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && env CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/$ACCOUNT" claude \
   --add-dir "$HOME/.kdcube" \
   --dangerously-skip-permissions \
   --disallowedTools AskUserQuestion
 ```
 
-That is the official start command for every agent; `claude --resume <session-uuid>` with the same flags resumes one. A person follows [enroll an agent](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/enroll-an-agent.md), which also gives the Codex command.
+That is the official start command for every agent; the agent's card gives the complete resume line, which names the same account folder and the absolute `claude` program. A person follows [enroll an agent](repo:app-ecosystem/products/project-board/packages/project-board/src/project_board/procedures/enroll-an-agent.md), which also gives the Codex command.
 
 The flag applies to that one session, and the user's other Claude Code
 sessions keep their prompts. A session that is already running picks it up on

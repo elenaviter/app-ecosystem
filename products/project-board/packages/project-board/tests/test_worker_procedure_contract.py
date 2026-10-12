@@ -32,6 +32,7 @@ OPERATIONAL_PROCEDURE_ROOT = PACKAGE_ROOT / "src" / "project_board" / "procedure
 OPERATIONAL_PROCEDURES = {
     "add-a-worker-host.md",
     "agent-worker.md",
+    "claude-account-profiles.md",
     "create-a-project.md",
     "first-time-setup.md",
     "install-update-rollback.md",
@@ -1080,7 +1081,8 @@ def test_operator_input_goes_through_the_board_not_a_terminal_prompt() -> None:
     first_run = _words(_read("references/first-run.md"))
     # The official start command carries the flag (operator, 2026-09-26).
     assert "--disallowedTools AskUserQuestion" in first_run
-    assert "`claude --resume <session-uuid>` with the same flags resumes one" in first_run
+    # W763: the card's resume line names the account folder and the absolute program.
+    assert "the agent's card gives the complete resume line, which names the same account folder" in first_run
 
 
 def test_coordinator_checks_a_silent_worker_instead_of_waiting() -> None:
@@ -1872,7 +1874,7 @@ def test_the_official_command_starts_an_agent_session():
     # Operator, 2026-09-26: the person-facing enroll page, exactly this simple.
     enroll = " ".join((PROCEDURE_ROOT.parent / "enroll-an-agent.md").read_text(encoding="utf-8").split())
     assert "## 1. Create the agent's workspace, then start it" in enroll
-    assert 'cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && claude --add-dir "$HOME/.kdcube" --dangerously-skip-permissions --disallowedTools AskUserQuestion' in enroll
+    assert 'cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && env CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/$ACCOUNT" claude --add-dir "$HOME/.kdcube" --dangerously-skip-permissions --disallowedTools AskUserQuestion' in enroll
     assert 'codex -C "$HOME/.kdcube/pb/workspaces/$ALIAS" --sandbox danger-full-access --ask-for-approval never --search' in enroll
     assert "## 2. Enroll it to the pool" in enroll and "`pb worker authorize <profile> --device`" in enroll
     assert "## 3. Connect it to your project" in enroll

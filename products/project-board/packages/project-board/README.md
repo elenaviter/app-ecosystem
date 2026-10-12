@@ -93,8 +93,14 @@ KDCube deployment with Connection Hub, and `pb` connects to it.
 ```bash
 python3 -m venv ~/.local/share/project-board-bootstrap
 ~/.local/share/project-board-bootstrap/bin/pip install --upgrade project-board
-~/.local/share/project-board-bootstrap/bin/pb procedure install --target claude-code
+ACCOUNT=<your Claude account email>
+~/.local/share/project-board-bootstrap/bin/pb procedure install --target claude-code --claude-config-dir "$HOME/.claude-accounts/$ACCOUNT"
 ```
+
+The install puts the worker skill and the two settings a worker needs (the
+status line command that reports usage, and the Stop hook that keeps its inbox
+watch running) into that account's own Claude folder: a Claude session reads
+them from its folder only, never from `~/.claude`.
 
 For Codex, use `--target codex`. To install from source instead, replace the
 second line with one command that installs the four packages from your App
@@ -118,7 +124,8 @@ At the machine: a terminal tab
 
 ```bash
 ALIAS=<name>@<machine>
-mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion
+ACCOUNT=<your Claude account email>
+mkdir -p ~/.kdcube/pb/workspaces/$ALIAS "$HOME/.claude-accounts/$ACCOUNT" && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/$ACCOUNT" claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion
 ```
 
 For Codex, the second line is instead:
@@ -131,7 +138,8 @@ Over ssh: in tmux
 
 ```bash
 ALIAS=<name>@<machine>
-tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+ACCOUNT=<your Claude account email>
+tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS '$HOME/.claude-accounts/$ACCOUNT' && cd ~/.kdcube/pb/workspaces/$ALIAS && env CLAUDE_CONFIG_DIR='$HOME/.claude-accounts/$ACCOUNT' claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
 tmux attach -t "$ALIAS"
 ```
 
@@ -140,6 +148,15 @@ For Codex, the `tmux new-session` line is instead:
 ```bash
 tmux new-session -d -s "$ALIAS" "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && codex -C ~/.kdcube/pb/workspaces/$ALIAS --sandbox danger-full-access --ask-for-approval never --search"
 ```
+
+`ACCOUNT` is the email of the Claude account this agent works under. Each
+account has its own folder, `~/.claude-accounts/<email>`, with its own login,
+settings, skill and history, so agents of two accounts can run side by side on
+one machine. The first start in a new folder asks for that account's Claude
+login once; log in with the account whose email you put in ACCOUNT. `env …
+claude` starts the real program, so a shell function or alias called `claude`
+cannot switch the folder. The agent checks at enrollment that the folder is
+logged in to that account and says so when it is not.
 
 `--dangerously-skip-permissions` (for Codex, `--sandbox danger-full-access
 --ask-for-approval never`) lets the agent run commands without stopping to ask
@@ -154,8 +171,8 @@ Then say:
 
 > Use the problem-board-worker skill. Help me set up Problem Board on this machine, then enroll this session as a Problem Board worker with alias <name>@<machine>
 
-Edit only the ALIAS line, for example ana@mint. Use letters, digits, '-' and
-'@': tmux does not allow '.' and ':' in a session name. Say the same name to
+Edit only the ALIAS and ACCOUNT lines, for example ana@mint and ana@example.com. Use letters, digits, '-' and
+'@' in ALIAS: tmux does not allow '.' and ':' in a session name. Say the same name to
 the agent. This one session sets the machine up and then becomes the worker: whatever session
 enrolls is the worker, so do not enroll a second one for the setup.
 

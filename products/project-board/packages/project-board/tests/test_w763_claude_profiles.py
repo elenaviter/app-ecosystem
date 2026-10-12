@@ -1,0 +1,714 @@
+"""Each Claude session reports and resumes under its own account profile (W763).
+
+Operator, 2026-10-12: "we agreed earlier that we will capture email per
+session. and that email will be profile name. each agent session belong to
+specific account and we store this information already. so you will be able
+to go to proper profile folder to get the usage on that account".
+
+Two sessions on one host can run under two accounts through
+`CLAUDE_CONFIG_DIR`. The host's global login says nothing about either, a
+profile is named by its account email, the account ID in the profile's own
+`.claude.json` is what is verified, and a resume line names the profile and
+the absolute executable so that no shell function called `claude` can change
+it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import shlex
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from project_board.client import claude_profile as cp
+from project_board.client import host_config
+from project_board.client.procedures import claude_config_root
+from project_board.client.relay import ProblemBoardHostRelayAdapter
+from project_board.client.resume_command import build_session_resume_command
+from project_board.contract.errors import DomainError
+from project_board.contract.worker_identity import WorkerSessionIdentity
+
+SESSION_A = "1815da0e-8302-499b-b371-ba3a3a7fe17c"
+SESSION_B = "2a2f3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+ACCOUNT_A = "aaaaaaaa-1111-4222-8333-444444444444"
+ACCOUNT_B = "bbbbbbbb-1111-4222-8333-444444444444"
+ACCOUNT_GLOBAL = "cccccccc-1111-4222-8333-444444444444"
+
+
+def _login(folder: Path, account_id: str, email: str) -> Path:
+    """A profile folder logged in to one account: public fields only, as Claude writes them."""
+
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": account_id, "emailAddress": email, "organizationUuid": "org-1"}}),
+        encoding="utf-8",
+    )
+    return folder
+
+
+@pytest.fixture
+def home(tmp_path: Path) -> Path:
+    root = tmp_path / "home"
+    root.mkdir()
+    # The host's global login belongs to a third account: it must never leak
+    # into a bound session's report.
+    (root / ".claude.json").write_text(
+        json.dumps({"oauthAccount": {"accountUuid": ACCOUNT_GLOBAL, "emailAddress": "global@example.com"}}),
+        encoding="utf-8",
+    )
+    return root
+
+
+def _profile(home: Path, email: str, account_id: str) -> Path:
+    return _login(home / ".claude-accounts" / email, account_id, email)
+
+
+# -- naming ---------------------------------------------------------------
+
+
+def test_profile_folder_is_named_by_the_account_email(home):
+    assert cp.profile_dir_for_email("Ana@Example.com", home=home) == home / ".claude-accounts" / "ana@example.com"
+
+
+@pytest.mark.parametrize(
+    "email",
+    ["", "ana", "../ana@example.com", "a/b@example.com", "ana @example.com", "ana@example", ".ana@example.com",
+     "ana@exa..mple.com", "ana@example.com\nx"],
+)
+def test_an_email_that_is_not_one_plain_address_is_refused(home, email):
+    with pytest.raises(DomainError) as caught:
+        cp.profile_dir_for_email(email, home=home)
+    assert caught.value.code == "work_claude_profile_email_invalid"
+
+
+# -- binding at enrollment --------------------------------------------------
+
+
+def test_a_session_started_in_its_account_folder_is_bound_and_registered(home):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder), "PATH": ""}, home=home)
+    assert binding["config_dir"] == str(folder)
+    assert binding["email"] == "ana@example.com"
+    assert binding["account_id"] == ACCOUNT_A
+    assert binding["bound_by"] == "session-capture"
+    assert cp.read_registry(home)[ACCOUNT_A]["config_dir"] == str(folder)
+
+
+def test_a_session_on_the_global_login_is_left_for_the_operator_to_map(home):
+    binding = cp.capture_binding(environ={}, home=home)
+    assert binding["state"] == cp.UNBOUND
+    assert binding["reason"] == "started_without_profile"
+    assert "config_dir" not in binding and "account_id" not in binding
+
+
+def test_a_folder_not_named_by_its_account_is_not_bound(home):
+    # The colleague's layout: ~/.claude-work holds the account's login.
+    folder = _login(home / ".claude-work", ACCOUNT_A, "ana@example.com")
+    binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    assert binding["state"] == cp.UNBOUND
+    assert binding["reason"] == "started_folder_is_not_the_account_folder"
+    assert binding["expected_config_dir"] == str(home / ".claude-accounts" / "ana@example.com")
+
+
+def test_a_new_start_never_switches_a_confirmed_binding(home):
+    folder_a = _profile(home, "ana@example.com", ACCOUNT_A)
+    folder_b = _profile(home, "bob@example.com", ACCOUNT_B)
+    first = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder_a)}, home=home)
+    again = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder_b)}, home=home, existing=first)
+    assert again["config_dir"] == str(folder_a)
+    assert again["account_id"] == ACCOUNT_A
+    assert again["capture"] == "differs_from_binding"
+
+
+def test_a_folder_mapped_to_another_account_is_refused_not_rebound(home):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    # Another account logs in inside the same folder.
+    _login(folder, ACCOUNT_B, "ana@example.com")
+    binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    assert binding["state"] == cp.UNBOUND
+    assert binding["reason"] == "work_claude_profile_folder_mapped"
+    assert cp.read_registry(home)[ACCOUNT_A]["config_dir"] == str(folder)
+
+
+def test_a_changed_account_email_keeps_its_registered_folder(home):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    _login(folder, ACCOUNT_A, "ana.new@example.com")
+    binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    assert binding["config_dir"] == str(folder)
+    assert not (home / ".claude-accounts" / "ana.new@example.com").exists()
+
+
+def test_operator_binding_of_a_legacy_session_uses_its_stored_email(home):
+    binding = cp.bind_session(email="Ana@Example.com", account_id=ACCOUNT_A, executable="/opt/bin/claude", home=home)
+    assert binding["config_dir"] == str(home / ".claude-accounts" / "ana@example.com")
+    assert binding["bound_by"] == "operator"
+    # Until the operator logs that folder in, the account is not verified.
+    assert cp.profile_state(binding, home=home) == (cp.UNREADABLE, {})
+
+
+def test_enrolling_again_keeps_the_binding_and_a_state_change_keeps_it_too(tmp_path, home):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    host = host_config.initialize_host_config(
+        target_id="target",
+        endpoint="https://runtime.example/mcp",
+        tenant="tenant",
+        platform_project="project",
+        host_id="host-one",
+        allowed_roots=[str(tmp_path)],
+        source_repositories={},
+        config_path=tmp_path / "relay.json",
+        state_root=tmp_path / "state",
+    )
+    identity = WorkerSessionIdentity.create("claude-code", SESSION_A)
+    channel = host_config.enroll_worker_channel(
+        host.path,
+        identity=identity,
+        profile="problem-board-claude-one",
+        authorized=True,
+        claude_profile=lambda existing: cp.capture_binding(
+            environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home, existing=existing
+        ),
+    )
+    assert channel.claude_profile["account_id"] == ACCOUNT_A
+    # A later start on the global login never drops or switches the binding.
+    again = host_config.enroll_worker_channel(
+        host.path,
+        identity=identity,
+        authorized=True,
+        claude_profile=lambda existing: cp.capture_binding(environ={}, home=home, existing=existing),
+    )
+    assert again.claude_profile["config_dir"] == str(folder)
+    assert again.claude_profile["capture"] == "differs_from_binding"
+    changed = host_config.set_worker_channel_state(host.path, identity=identity, state="disabled")
+    assert changed.claude_profile["config_dir"] == str(folder)
+    loaded = host_config.HostRelayConfig.load(host.path).worker(identity)
+    assert loaded.claude_profile["account_id"] == ACCOUNT_A
+
+
+def test_the_channel_record_round_trips_its_binding():
+    row = {
+        "runtime_kind": "claude-code",
+        "runtime_session_id": SESSION_A,
+        "profile": "p1",
+        "claude_profile": {"config_dir": "/x/.claude-accounts/ana@example.com", "account_id": ACCOUNT_A},
+        "runtime_launch": {"argv": ["claude"]},
+    }
+    channel = host_config.WorkerChannelConfig.from_mapping(row)
+    assert channel.to_mapping()["claude_profile"] == row["claude_profile"]
+    from dataclasses import replace
+
+    assert replace(channel, state="disabled").to_mapping()["claude_profile"] == row["claude_profile"]
+
+
+# -- account and usage per session -------------------------------------------
+
+
+def test_two_concurrent_profiles_each_report_their_own_account_never_the_global_login(home):
+    a = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(_profile(home, "ana@example.com", ACCOUNT_A))}, home=home)
+    b = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(_profile(home, "bob@example.com", ACCOUNT_B))}, home=home)
+    state_a, account_a = cp.profile_state(a, home=home)
+    state_b, account_b = cp.profile_state(b, home=home)
+    assert (state_a, account_a["account_id"]) == (cp.VERIFIED, ACCOUNT_A)
+    assert (state_b, account_b["account_id"]) == (cp.VERIFIED, ACCOUNT_B)
+    # Logging the global login in and out changes neither.
+    (home / ".claude.json").unlink()
+    assert cp.profile_state(a, home=home)[1]["account_id"] == ACCOUNT_A
+
+
+def test_a_profile_logged_in_to_another_account_attributes_nothing(home):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    _login(folder, ACCOUNT_B, "bob@example.com")
+    assert cp.profile_state(binding, home=home) == (cp.MISMATCH, {})
+
+
+def test_an_unbound_or_unreadable_profile_attributes_nothing(home):
+    assert cp.profile_state({}, home=home) == (cp.UNBOUND, {})
+    binding = {"config_dir": str(home / ".claude-accounts" / "gone@example.com"), "account_id": ACCOUNT_A}
+    assert cp.profile_state(binding, home=home) == (cp.UNREADABLE, {})
+
+
+SAMPLE = {"observed_at": "2026-10-12T20:00:00Z", "week_used_percentage": 40}
+
+
+def _no_host_login():
+    raise AssertionError("a profile session never reads the host's global login")
+
+
+def test_usage_from_a_bound_session_names_its_verified_profile_account(home):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    state = cp.qualify_profile_limit_state(
+        SAMPLE, binding, host_login=_no_host_login, environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home
+    )
+    assert state["account_id"] == ACCOUNT_A
+    assert state["account_source"] == "session_profile"
+
+
+@pytest.mark.parametrize("started", ["other", "global"])
+def test_usage_from_a_process_outside_the_bound_profile_names_no_account(home, started):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    other = _profile(home, "bob@example.com", ACCOUNT_B)
+    environ = {"CLAUDE_CONFIG_DIR": str(other)} if started == "other" else {}
+    state = cp.qualify_profile_limit_state(SAMPLE, binding, host_login=_no_host_login, environ=environ, home=home)
+    assert "account_id" not in state
+
+
+def test_usage_from_a_mismatched_profile_names_no_account(home):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    _login(folder, ACCOUNT_B, "bob@example.com")
+    state = cp.qualify_profile_limit_state(
+        SAMPLE, binding, host_login=_no_host_login, environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home
+    )
+    assert "account_id" not in state
+
+
+def test_usage_from_an_unbound_global_session_keeps_the_w310_inference(home):
+    login = {"account_id": ACCOUNT_GLOBAL, "changed_at": "2026-10-12T19:00:00Z"}
+    state = cp.qualify_profile_limit_state(SAMPLE, {}, host_login=lambda: login, environ={}, home=home)
+    assert state["account_id"] == ACCOUNT_GLOBAL
+    assert state["account_source"] == "host_login_file"
+
+
+def _adapter(reader):
+    return SimpleNamespace(
+        _runtime_account_reader=reader,
+        _runtime_account_error_state={},
+        config=SimpleNamespace(worker_name="w"),
+    )
+
+
+def test_relay_reports_a_bound_session_as_its_own_profile(home):
+    binding = cp.capture_binding(
+        environ={"CLAUDE_CONFIG_DIR": str(_profile(home, "ana@example.com", ACCOUNT_A))}, home=home
+    )
+    adapter = _adapter(lambda: cp.read_session_account(binding, home=home))
+    account, evidence = asyncio.run(ProblemBoardHostRelayAdapter._runtime_account(adapter))
+    assert account["account_id"] == ACCOUNT_A
+    assert evidence["state"] == "reported"
+    assert evidence["source"] == "session-profile"
+    assert evidence["profile_state"] == cp.VERIFIED
+
+
+def test_relay_reports_a_mismatched_profile_as_missing_with_the_reason(home):
+    folder = _profile(home, "ana@example.com", ACCOUNT_A)
+    binding = cp.capture_binding(environ={"CLAUDE_CONFIG_DIR": str(folder)}, home=home)
+    _login(folder, ACCOUNT_B, "bob@example.com")
+    adapter = _adapter(lambda: cp.read_session_account(binding, home=home))
+    account, evidence = asyncio.run(ProblemBoardHostRelayAdapter._runtime_account(adapter))
+    assert account == {}
+    assert (evidence["state"], evidence["source"], evidence["profile_state"]) == (
+        "missing", "session-profile", cp.MISMATCH,
+    )
+
+
+# -- resume lines ---------------------------------------------------------------
+
+
+def _fake_claude(bin_dir: Path) -> Path:
+    """An executable named claude that prints the profile it was given and its arguments."""
+
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    exe = bin_dir / "claude"
+    exe.write_text('#!/bin/sh\nprintf "dir=%s\\n" "$CLAUDE_CONFIG_DIR"\nprintf "arg=%s\\n" "$@"\n', encoding="utf-8")
+    exe.chmod(0o755)
+    return exe
+
+
+def _resume(tmp_path: Path, email: str, *, tmux: str = "") -> tuple[dict, Path, Path]:
+    exe = _fake_claude(tmp_path / "local bin")
+    profile = tmp_path / "accounts dir" / email
+    profile.mkdir(parents=True, exist_ok=True)
+    cwd = tmp_path / "work space"
+    cwd.mkdir(exist_ok=True)
+    launch = {"argv": ["claude", "--add-dir", "~/.kdcube", "--dangerously-skip-permissions"], "cwd": str(cwd)}
+    if tmux:
+        launch["tmux_session"] = tmux
+    built = build_session_resume_command(
+        runtime_kind="claude-code",
+        runtime_session_id=SESSION_A,
+        launch=launch,
+        profile={"config_dir": str(profile), "executable": str(exe)},
+    )
+    return built, profile, exe
+
+
+def _run(line: str, *, prelude: str = "", env: dict | None = None) -> str:
+    result = subprocess.run(
+        ["bash", "-c", f"{prelude}\n{line}"], capture_output=True, text=True, env={**os.environ, **(env or {})},
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout
+
+
+def test_the_resume_line_names_the_profile_and_the_absolute_executable(tmp_path):
+    built, profile, exe = _resume(tmp_path, "ana@example.com")
+    assert built["argv"][:3] == ["env", f"CLAUDE_CONFIG_DIR={profile}", str(exe)]
+    assert built["argv"][3:5] == ["--resume", SESSION_A]
+    assert built["profile_dir"] == str(profile)
+    assert built["command"].startswith(f"cd {shlex.quote(str(tmp_path / 'work space'))} && env ")
+
+
+def test_the_resume_line_survives_a_shell_function_and_an_opposite_caller_profile(tmp_path):
+    built, profile, _exe = _resume(tmp_path, "ana@example.com")
+    # The colleague's routing function, and a caller already in another profile.
+    function = 'claude() { CLAUDE_CONFIG_DIR="$HOME/.claude-personal" command claude "$@"; }'
+    out = _run(built["command"], prelude=function, env={"CLAUDE_CONFIG_DIR": "/somewhere/else"})
+    assert f"dir={profile}" in out
+    assert f"arg={SESSION_A}" in out
+    assert "arg=--dangerously-skip-permissions" in out
+
+
+def test_the_tmux_inner_line_is_one_argument_carrying_the_same_profile(tmp_path):
+    built, profile, _exe = _resume(tmp_path, "ana@example.com", tmux="ana-mint")
+    first, attach = built["command"].split("\n")
+    words = shlex.split(first)
+    assert words[:5] == ["tmux", "new-session", "-d", "-s", "ana-mint"]
+    assert len(words) == 6
+    assert attach == "tmux attach -t ana-mint"
+    # What tmux hands its shell, run with the same hostile function in place.
+    out = _run(words[5], prelude='claude() { CLAUDE_CONFIG_DIR=/wrong command claude "$@"; }')
+    assert f"dir={profile}" in out
+
+
+def test_two_profiles_in_the_same_folder_resume_under_their_own_profiles(tmp_path):
+    ana, ana_profile, _ = _resume(tmp_path, "ana@example.com")
+    bob, bob_profile, _ = _resume(tmp_path, "bob@example.com")
+    assert f"dir={ana_profile}" in _run(ana["command"])
+    assert f"dir={bob_profile}" in _run(bob["command"])
+
+
+@pytest.mark.parametrize("executable", ["claude", "bin/claude", "/usr/bin/sh", "/opt/x/claude\nrm"])
+def test_an_executable_that_is_not_an_absolute_claude_is_refused(tmp_path, executable):
+    with pytest.raises(DomainError) as caught:
+        build_session_resume_command(
+            runtime_kind="claude-code",
+            runtime_session_id=SESSION_A,
+            working_directory=str(tmp_path),
+            profile={"config_dir": str(tmp_path / "p"), "executable": executable},
+        )
+    assert caught.value.code == "work_session_resume_executable_invalid"
+
+
+def test_an_unbound_legacy_session_keeps_the_plain_line(tmp_path):
+    built = build_session_resume_command(
+        runtime_kind="claude-code", runtime_session_id=SESSION_A, working_directory=str(tmp_path), profile=None
+    )
+    assert built["argv"][:3] == ["claude", "--resume", SESSION_A]
+    assert built["profile_dir"] == ""
+    assert cp.resume_profile({"state": cp.UNBOUND}) is None
+
+
+def test_codex_lines_never_carry_a_claude_profile(tmp_path):
+    built = build_session_resume_command(
+        runtime_kind="codex",
+        runtime_session_id=SESSION_B,
+        working_directory=str(tmp_path),
+        profile={"config_dir": str(tmp_path / "p"), "executable": "/opt/claude"},
+    )
+    assert built["argv"][:3] == ["codex", "resume", SESSION_B]
+
+
+def test_the_stable_executable_is_the_path_entry_not_its_resolved_version(tmp_path):
+    versions = tmp_path / "versions"
+    _fake_claude(versions)
+    link_dir = tmp_path / "bin"
+    link_dir.mkdir()
+    (link_dir / "claude").symlink_to(versions / "claude")
+    assert cp.claude_executable(str(link_dir)) == str(link_dir / "claude")
+
+
+# -- skill and settings per profile ----------------------------------------------
+
+
+def test_installs_go_to_the_sessions_own_profile(tmp_path):
+    folder = tmp_path / ".claude-accounts" / "ana@example.com"
+    assert claude_config_root(None, environ={"CLAUDE_CONFIG_DIR": str(folder)}) == folder
+    assert claude_config_root(tmp_path, environ={"CLAUDE_CONFIG_DIR": str(folder)}) == tmp_path / ".claude"
+    assert claude_config_root(tmp_path, str(folder)) == folder
+    with pytest.raises(DomainError):
+        claude_config_root(None, "relative/dir")
+
+
+class _OldBoard:
+    """A board from before W763: refuses session-profile evidence, accepts the W310 form."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def action(self, *, object_ref, action, payload):
+        self.calls.append({"action": action, "evidence": dict(payload.get("runtime_account_evidence") or {})})
+        if (payload.get("runtime_account_evidence") or {}).get("source") == "session-profile":
+            raise DomainError("work_runtime_account_evidence_invalid", "unsupported fields")
+        return {"ok": True}
+
+
+def _old_board_adapter():
+    adapter = SimpleNamespace(client=_OldBoard(), _legacy_account_evidence=False, config=SimpleNamespace(worker_name="w"))
+    adapter._account_action = lambda **kw: ProblemBoardHostRelayAdapter._account_action(adapter, **kw)
+    return adapter
+
+
+def test_an_older_board_gets_the_w310_form_and_no_heartbeat_is_lost():
+    adapter = _old_board_adapter()
+    payload = {
+        "runtime_account": {"account_id": ACCOUNT_A},
+        "runtime_account_evidence": {
+            "state": "reported", "source": "session-profile", "profile_state": "verified", "observed_at": "t",
+        },
+    }
+    assert asyncio.run(adapter._account_action(action="worker.heartbeat", payload=payload)) == {"ok": True}
+    assert adapter._legacy_account_evidence is True
+    assert adapter.client.calls[-1]["evidence"] == {"state": "reported", "source": "host-report", "observed_at": "t"}
+
+
+def test_the_w310_form_of_a_mismatch_still_names_no_account():
+    payload = {
+        "runtime_account_evidence": {
+            "state": "missing", "source": "session-profile", "profile_state": "mismatch", "observed_at": "t",
+        },
+    }
+    from project_board.client.relay import _legacy_account_evidence
+
+    assert _legacy_account_evidence(payload) is True
+    assert payload == {"runtime_account_evidence": {"state": "missing", "source": "host-report", "observed_at": "t"}}
+
+
+def test_other_refusals_are_not_swallowed():
+    class Refusing:
+        async def action(self, **_):
+            raise DomainError("work_worker_unavailable", "gone")
+
+    adapter = SimpleNamespace(client=Refusing(), _legacy_account_evidence=False, config=SimpleNamespace(worker_name="w"))
+    with pytest.raises(DomainError) as caught:
+        asyncio.run(ProblemBoardHostRelayAdapter._account_action(adapter, action="worker.heartbeat", payload={}))
+    assert caught.value.code == "work_worker_unavailable"
+
+
+def test_the_skill_and_settings_install_into_a_new_profile_folder(tmp_path):
+    from project_board.client.claude_settings import merge_claude_code_settings
+    from project_board.client.procedures import install_agent_procedure, verify_agent_procedure
+
+    home = tmp_path / "home"
+    home.mkdir()
+    folder = home / ".claude-accounts" / "ana@example.com"
+    installed = install_agent_procedure(["claude-code"], home=home, claude_config_dir=folder)
+    assert (folder / "skills" / "problem-board-worker" / "SKILL.md").is_file()
+    assert not (home / ".claude" / "skills").exists()
+    assert installed
+    [verified] = verify_agent_procedure(["claude-code"], home=home, claude_config_dir=folder)
+    assert verified["state"] == "current"
+    merge_claude_code_settings(home, pb="/opt/pb/bin/pb", config_dir=folder)
+    settings = json.loads((folder / "settings.json").read_text(encoding="utf-8"))
+    assert "limit-state" in settings["statusLine"]["command"]
+    assert not (home / ".claude" / "settings.json").exists()
+
+
+# -- migration of a legacy session -------------------------------------------------
+
+from project_board.client.claude_profile_migration import (  # noqa: E402
+    apply_migration,
+    plan_migration,
+    rollback_migration,
+)
+
+OLD = 1_000_000.0  # file times far before "now", so the session counts as stopped
+
+
+def _legacy_folder(home: Path) -> Path:
+    source = home / ".claude"
+    project = source / "projects" / "-Users-ana-work"
+    (project / SESSION_A / "subagents").mkdir(parents=True)
+    (project / f"{SESSION_A}.jsonl").write_text('{"turn": 1}\n', encoding="utf-8")
+    (project / SESSION_A / "subagents" / "agent-1.jsonl").write_text("{}\n", encoding="utf-8")
+    (project / "memory").mkdir()
+    (project / "memory" / "MEMORY.md").write_text("- a memory\n", encoding="utf-8")
+    # Another session in the same project folder: never moved with this one.
+    (project / f"{SESSION_B}.jsonl").write_text('{"other": 1}\n', encoding="utf-8")
+    (source / "file-history" / SESSION_A).mkdir(parents=True)
+    (source / "file-history" / SESSION_A / "f1").write_text("v1", encoding="utf-8")
+    (source / "todos").mkdir()
+    (source / "todos" / f"{SESSION_A}-agent-{SESSION_A}.json").write_text("[]", encoding="utf-8")
+    (source / ".credentials.json").write_text('{"secret": "never"}', encoding="utf-8")
+    (source / "settings.json").write_text("{}", encoding="utf-8")
+    for path in source.rglob("*"):
+        os.utime(path, (OLD, OLD))
+    return source
+
+
+def test_a_dry_run_lists_only_the_sessions_own_files_and_writes_nothing(home):
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    plan = plan_migration(source=source, target=target, session_id=SESSION_A)
+    paths = {row["path"] for row in plan["files"]}
+    assert paths == {
+        f"projects/-Users-ana-work/{SESSION_A}.jsonl",
+        f"projects/-Users-ana-work/{SESSION_A}/subagents/agent-1.jsonl",
+        "projects/-Users-ana-work/memory/MEMORY.md",
+        f"file-history/{SESSION_A}/f1",
+        f"todos/{SESSION_A}-agent-{SESSION_A}.json",
+    }
+    assert plan["blockers"] == []
+    assert not target.exists()
+
+
+def test_apply_copies_verifies_and_never_touches_credentials_or_originals(home):
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    result = apply_migration(source=source, target=target, session_id=SESSION_A)
+    assert result["verified"] == {"files": 5, "state": "verified"}
+    assert (target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").read_text() == '{"turn": 1}\n'
+    assert not (target / ".credentials.json").exists()
+    assert not (target / "settings.json").exists()
+    assert not (target / "projects" / "-Users-ana-work" / f"{SESSION_B}.jsonl").exists()
+    assert (source / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()
+    # A retry is a no-op that verifies again.
+    again = apply_migration(source=source, target=target, session_id=SESSION_A)
+    assert again["copy"] == 0 and again["present"] == 5
+
+
+def test_a_running_session_is_not_migrated(home):
+    source = _legacy_folder(home)
+    transcript = source / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl"
+    os.utime(transcript, None)  # written just now
+    with pytest.raises(DomainError) as caught:
+        apply_migration(source=source, target=home / ".claude-accounts" / "ana@example.com", session_id=SESSION_A)
+    assert caught.value.code == "work_claude_profile_migration_blocked"
+    assert "session_running" in caught.value.details["blockers"]
+
+
+def test_a_different_file_already_in_the_profile_stops_everything(home):
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    conflict = target / "projects" / "-Users-ana-work" / "memory" / "MEMORY.md"
+    conflict.parent.mkdir(parents=True)
+    conflict.write_text("- a different memory\n", encoding="utf-8")
+    with pytest.raises(DomainError) as caught:
+        apply_migration(source=source, target=target, session_id=SESSION_A)
+    assert caught.value.details["conflicts"] == ["projects/-Users-ana-work/memory/MEMORY.md"]
+    assert not (target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()
+
+
+def test_rollback_removes_only_what_the_migration_created(home):
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    target.mkdir(parents=True)
+    (target / ".claude.json").write_text("{}", encoding="utf-8")  # the profile's own login stays
+    apply_migration(source=source, target=target, session_id=SESSION_A)
+    result = rollback_migration(target=target, session_id=SESSION_A)
+    assert result["removed"] == 5
+    assert (target / ".claude.json").exists()
+    assert not (target / "projects").exists()
+    assert (source / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl").exists()
+
+
+def test_rollback_refuses_once_the_session_ran_in_the_profile(home):
+    source = _legacy_folder(home)
+    target = home / ".claude-accounts" / "ana@example.com"
+    apply_migration(source=source, target=target, session_id=SESSION_A)
+    transcript = target / "projects" / "-Users-ana-work" / f"{SESSION_A}.jsonl"
+    transcript.write_text('{"turn": 1}\n{"turn": 2}\n', encoding="utf-8")
+    with pytest.raises(DomainError) as caught:
+        rollback_migration(target=target, session_id=SESSION_A)
+    assert caught.value.code == "work_claude_profile_rollback_conflict"
+    assert transcript.exists()
+
+
+# -- operator commands -------------------------------------------------------------------
+
+
+def _host_with_session(tmp_path: Path, *, stored_email: str = "", stored_id: str = ""):
+    from project_board.client.store import SharedFieldStore
+
+    host = host_config.initialize_host_config(
+        target_id="target",
+        endpoint="https://runtime.example/mcp",
+        tenant="tenant",
+        platform_project="project",
+        host_id="host-one",
+        allowed_roots=[str(tmp_path)],
+        source_repositories={},
+        config_path=tmp_path / "relay.json",
+        state_root=tmp_path / "state",
+    )
+    identity = WorkerSessionIdentity.create("claude-code", SESSION_A)
+    channel = host_config.enroll_worker_channel(
+        host.path, identity=identity, profile="problem-board-claude-one", authorized=True,
+        runtime_launch={"argv": ["claude", "--add-dir", "~/.kdcube"], "cwd": str(tmp_path)},
+    )
+    if stored_email:
+        field = SharedFieldStore(host_config.HostRelayConfig.load(host.path).field_root)
+        field.register_worker(
+            worker_name=channel.worker_name,
+            runtime_kind="claude-code",
+            capabilities=[],
+            authority_label="test",
+            worker_identity=channel.worker_identity,
+            runtime_session_id=SESSION_A,
+        )
+        field.record_worker_board_record(
+            channel.worker_name, {"runtime_account": {"account_id": stored_id, "email": stored_email}}
+        )
+    return host.path
+
+
+def _args(command: str, **values):
+    defaults = {"runtime_session_id": SESSION_A, "email": "", "confirm": False, "source": "", "apply": False}
+    return SimpleNamespace(claude_profile_command=command, **{**defaults, **values})
+
+
+def test_status_proposes_the_folder_of_the_stored_email_for_a_legacy_session(tmp_path, home):
+    from project_board.client.claude_profile_commands import claude_profile_command
+
+    path = _host_with_session(tmp_path, stored_email="Ana@Example.com", stored_id=ACCOUNT_A)
+    status = claude_profile_command(_args("status"), config_path=path, home=home)
+    [row] = status["sessions"]
+    assert row["profile_state"] == cp.UNBOUND
+    assert row["proposed_config_dir"] == str(home / ".claude-accounts" / "ana@example.com")
+
+
+def test_bind_needs_the_operators_confirmation(tmp_path, home):
+    from project_board.client.claude_profile_commands import claude_profile_command
+
+    path = _host_with_session(tmp_path, stored_email="ana@example.com", stored_id=ACCOUNT_A)
+    with pytest.raises(DomainError) as caught:
+        claude_profile_command(_args("bind", email="ana@example.com"), config_path=path, home=home)
+    assert caught.value.code == "work_claude_profile_confirmation_required"
+
+
+def test_bind_by_stored_email_gives_a_complete_resume_line(tmp_path, home, monkeypatch):
+    from project_board.client.claude_profile_commands import claude_profile_command
+
+    monkeypatch.setattr(cp, "claude_executable", lambda path_env=None: "/opt/claude/bin/claude")
+    path = _host_with_session(tmp_path, stored_email="ana@example.com", stored_id=ACCOUNT_A)
+    result = claude_profile_command(_args("bind", email="ana@example.com", confirm=True), config_path=path, home=home)
+    folder = home / ".claude-accounts" / "ana@example.com"
+    assert result["bound"]["config_dir"] == str(folder)
+    # Not verified until the operator logs that folder in.
+    assert result["bound"]["profile_state"] == cp.UNREADABLE
+    assert f"CLAUDE_CONFIG_DIR={folder}" in result["resume_command"]
+    assert f"/opt/claude/bin/claude --resume {SESSION_A}" in result["resume_command"]
+    _login(folder, ACCOUNT_A, "ana@example.com")
+    [row] = claude_profile_command(_args("status"), config_path=path, home=home)["sessions"]
+    assert row["profile_state"] == cp.VERIFIED
+
+
+def test_bind_to_an_email_the_board_does_not_know_needs_that_folders_login(tmp_path, home):
+    from project_board.client.claude_profile_commands import claude_profile_command
+
+    path = _host_with_session(tmp_path, stored_email="ana@example.com", stored_id=ACCOUNT_A)
+    with pytest.raises(DomainError) as caught:
+        claude_profile_command(_args("bind", email="bob@example.com", confirm=True), config_path=path, home=home)
+    assert caught.value.code == "work_claude_profile_account_unknown"
+    _login(home / ".claude-accounts" / "bob@example.com", ACCOUNT_B, "bob@example.com")
+    result = claude_profile_command(_args("bind", email="bob@example.com", confirm=True), config_path=path, home=home)
+    assert result["bound"]["profile_state"] == cp.VERIFIED
