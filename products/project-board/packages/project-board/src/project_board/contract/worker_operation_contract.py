@@ -36,6 +36,18 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
         "description": "Set the project's revisioned repository preset.",
         "grants": ("work:coordinate",),
     },
+    # W805/W815 (operator, 2026-10-13: "i have to be able to delete the project. and the warning must be shown
+    # before that."): a project owner or admin person deletes the project in three phases; never an agent.
+    "project.delete": {
+        "description": (
+            "Delete the project (archive or permanent) in three phases: preview the exact proposal and its "
+            "warning, confirm it by digest and the project title, then read its status. A project owner or "
+            "admin person only; an agent is never admitted."
+        ),
+        # The managed work:admin, like project.cards.manage: only the server's set-role path grants it, so no
+        # member or agent Card can ever hold it (op-assist, W815 review).
+        "grants": ("work:admin",),
+    },
     "project.set_commit_identity": {
         "description": (
             "Set the email every agent of the project commits with, as "
@@ -601,6 +613,7 @@ PROBLEM_BOARD_OPERATIONS_BY_KIND: dict[str, tuple[str, ...]] = {
         "project.cards.manage",
         "project.set_journal_home",
         "project.set_repositories",
+        "project.delete",
         "project.set_commit_identity",
         "project.set_files",
         "project.files.edit",
