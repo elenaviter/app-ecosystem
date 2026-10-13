@@ -6206,6 +6206,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         csrf=False,
         **_api_visibility("project_operation_authorize"),
     )
+    @request_counters.counted("project_operation_authorize")
     async def project_operation_authorize(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -6240,6 +6241,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         csrf=False,
         **_api_visibility("project_operations_authorize"),
     )
+    @request_counters.counted("project_operations_authorize")
     async def project_operations_authorize(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -8943,6 +8945,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
 
     @api(method="POST", alias="project_operation_authorize_for_person", route="operations",
          **_api_visibility("project_operation_authorize_for_person"))
+    @request_counters.counted("project_operation_authorize_for_person")
     async def project_operation_authorize_for_person(
         self,
         data: Optional[Dict[str, Any]] = None,
