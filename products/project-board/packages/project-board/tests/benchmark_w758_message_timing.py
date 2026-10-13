@@ -49,6 +49,21 @@ async def run(args):
     current_process = worker.DataBusBundleWorker._process_claim
     current_invoke = worker.DataBusBundleWorker._invoke_handler
     current_reply = types.DataBusReply.event
+    if args.red:
+        # Keep the new test harness/gates, but replace the actual producer
+        # methods with the frozen originals. Expected: missing observations.
+        FederatedDataBusClient.request = old_client
+        worker.DataBusBundleWorker._invoke_handler = old_invoke
+        types.DataBusReply.event = old_reply
+        import pytest
+
+        return pytest.main([
+            str(ae / "packages/app-foundation/tests/test_data_bus_client.py") + "::test_timing_observers_are_per_request_and_payload_free",
+            str(ae / "packages/app-foundation/tests/test_data_bus_client.py") + "::test_timing_observer_failure_does_not_change_success",
+            str(kd / (prefix + "../tests/data_bus/test_timing.py")) + "::test_actual_reply_boundary_and_redaction",
+            str(kd / (prefix + "../tests/data_bus/test_timing.py")) + "::test_real_handler_preparation_direct_reply_partial_order",
+            "-q", "--tb=short",
+        ])
     disabled = timing.MemoryCapture()
     enabled = timing.MemoryCapture()
     expiry = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
@@ -60,10 +75,13 @@ async def run(args):
     class Socket:
         connected = True
 
+        def on(self, event, handler):
+            pass
+
         async def call(self, event, data, timeout):
             await asyncio.sleep(0.1)
             message_id = data["messages"][0]["message_id"]
-            bus._pending[message_id].set_result(clients.DataBusOutcome(message_id=message_id, status="ok", data={}, subject="s", object_ref="o"))
+            bus._pending[message_id].set_result(clients.DataBusOutcome(message_id=message_id, status="ok", data={}, subject="s", object_ref="o", error=None, envelope={}))
             return {"status": "accepted", "accepted": [{"message_id": message_id}]}
 
     from app_foundation.data_bus import DataBusClaim as ClientClaim
@@ -147,4 +165,5 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ae-root", required=True)
     parser.add_argument("--kd-root", required=True)
-    asyncio.run(run(parser.parse_args()))
+    parser.add_argument("--red", action="store_true", help="Run named new behavioral tests on frozen original producer methods; expected nonzero.")
+    raise SystemExit(asyncio.run(run(parser.parse_args())))
