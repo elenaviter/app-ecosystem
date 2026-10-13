@@ -44,7 +44,9 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
             "warning, confirm it by digest and the project title, then read its status. A project owner or "
             "admin person only; an agent is never admitted."
         ),
-        "grants": ("work:coordinate",),
+        # The managed work:admin, like project.cards.manage: only the server's set-role path grants it, so no
+        # member or agent Card can ever hold it (op-assist, W815 review).
+        "grants": ("work:admin",),
     },
     "project.set_commit_identity": {
         "description": (

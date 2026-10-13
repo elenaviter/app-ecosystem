@@ -1031,6 +1031,8 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
 # them. Only fields a refusal is known for are listed: a field missing from
 # this table is checked by the service, never guessed here.
 PROBLEM_BOARD_OPERATION_REQUIRED: dict[str, tuple[str, ...]] = {
+    # W815: every phase names the project, its request and the phase; the rest depends on the phase.
+    "project.delete": ("project_ref", "request_id", "phase"),
     "project.role.get": ("role",),
     "project.role.manage": ("role", "expected_revision"),
     "project.role.handover.decide": ("handover_ref", "decision", "expected_revision"),
