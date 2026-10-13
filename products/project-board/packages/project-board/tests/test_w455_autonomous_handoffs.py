@@ -227,14 +227,19 @@ def test_each_actor_hands_on_along_the_route_including_to_the_operator() -> None
 
 
 def test_the_skill_names_the_always_on_rules_the_workspace_keeps() -> None:
-    """Operator, 2026-10-03: no self-written PB rules. Operator, 2026-10-13 (W802): the rules live only in this
-    skill; the workspace AGENTS.md / CLAUDE.md hold only the project's own files."""
+    """Operator, 2026-10-03: no self-written PB rules. Operator, 2026-10-13 (W802): the workspace AGENTS.md /
+    CLAUDE.md hold only the project's own files. Operator, 2026-10-13 (W804): "A. although codexes have no
+    memories. but then codexes simply in the skill": Claude Code keeps the rules as revision-tagged memory
+    entries, Codex through the skill itself."""
     skill = _words("SKILL.md")
     assert "## Always-On Rules" in skill
     assert "## Keep The Critical Requirements As Memories" not in skill
-    assert "tagged `source: problem-board-worker <installed revision>`" not in skill
-    assert "These rules are this skill's own and live only here: keep no memory copy of them" in skill
-    assert "pb copies them nowhere." in skill
+    assert "\"A. although codexes have no memories. but then codexes simply in the skill\"" in skill
+    assert "(Claude Code's memory directory) saves each rule below as one memory entry, tagged `source: problem-board-worker <installed revision>`" in skill
+    assert "replaces the whole set when the installed revision changes" in skill
+    assert "A runtime with none (Codex) keeps them through this skill itself" in skill
+    assert "keep no memory copy of them" not in skill
+    assert "pb copies them nowhere: no workspace file carries them." in skill
     assert "`pb procedure install --workspaces`" not in skill  # operator: "--workspaces should be itself removed"
     assert "\"CLAUDE.md / AGENTS.md made from project file (which we have multiple of them).\"" in skill
     assert "do not save your own versions of Problem Board workflow rules" in skill
