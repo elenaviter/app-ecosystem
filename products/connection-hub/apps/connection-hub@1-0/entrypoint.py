@@ -5689,6 +5689,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         csrf=True,
         **_api_visibility("project_agent_card_add_operations"),
     )
+    @request_counters.counted("project_agent_card_add_operations")
     async def project_agent_card_add_operations(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -6785,6 +6786,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         csrf=True,
         **_api_visibility("delegated_access_add_operations"),
     )
+    @request_counters.counted("delegated_access_add_operations")
     async def delegated_access_add_operations(
         self,
         data: Optional[Dict[str, Any]] = None,
