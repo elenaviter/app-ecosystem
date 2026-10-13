@@ -39,7 +39,7 @@ from service_foundation.coordination.participant_answer import sign_participant_
 
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
 from ..project_authorization import (
-    PROJECT_AGENT_CARD_UPDATE, PROJECT_CONTROL_CREATE, PROJECT_CONTROL_UPDATE, PROJECT_INVITATION_CONTROL_CREATE, PROJECT_INVITATION_CONTROL_REVOKE, PROJECT_INVITATION_CONTROL_UPDATE, PROJECT_PERSON_CONTROL_BIND_PROJECT,
+    PROJECT_AGENT_CARD_UPDATE, PROJECT_CONTROL_CREATE, PROJECT_CONTROL_UPDATE, PROJECT_DELETE, PROJECT_INVITATION_CONTROL_CREATE, PROJECT_INVITATION_CONTROL_REVOKE, PROJECT_INVITATION_CONTROL_UPDATE, PROJECT_PERSON_CONTROL_BIND_PROJECT,
     PROJECT_PERSON_CONTROL_CREATE, PROJECT_PERSON_CONTROL_REVOKE, PROJECT_PERSON_CONTROL_UPDATE, LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest,
     LifecyclePlanStep, ProjectAuthorizationError,
 )
@@ -80,7 +80,9 @@ UPDATE_STEPS = {"revoke": PROJECT_INVITATION_CONTROL_REVOKE, "attach": PROJECT_P
                 # W638: the project's own Control and a project agent Card take a host-authorized selection.
                 "reselect_project_control": PROJECT_CONTROL_UPDATE,
                 "reselect_agent_card": PROJECT_AGENT_CARD_UPDATE,
-                "reselect_invitation_control": PROJECT_INVITATION_CONTROL_UPDATE}
+                "reselect_invitation_control": PROJECT_INVITATION_CONTROL_UPDATE,
+                # W813: a deleted project's own Control P is retired, only by the host's project.delete decision.
+                "retire_project_control": PROJECT_DELETE}
 
 # W639: agent attendance/profile decisions use this same authorized PLAN.
 from ..agent_lifecycle_plan import AGENT_UPDATE_STEPS
