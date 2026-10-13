@@ -49,21 +49,6 @@ async def run(args):
     current_process = worker.DataBusBundleWorker._process_claim
     current_invoke = worker.DataBusBundleWorker._invoke_handler
     current_reply = types.DataBusReply.event
-    if args.red:
-        # Keep the new test harness/gates, but replace the actual producer
-        # methods with the frozen originals. Expected: missing observations.
-        FederatedDataBusClient.request = old_client
-        worker.DataBusBundleWorker._invoke_handler = old_invoke
-        types.DataBusReply.event = old_reply
-        import pytest
-
-        return pytest.main([
-            str(ae / "packages/app-foundation/tests/test_data_bus_client.py") + "::test_timing_observers_are_per_request_and_payload_free",
-            str(ae / "packages/app-foundation/tests/test_data_bus_client.py") + "::test_timing_observer_failure_does_not_change_success",
-            str(kd / (prefix + "../tests/data_bus/test_timing.py")) + "::test_actual_reply_boundary_and_redaction",
-            str(kd / (prefix + "../tests/data_bus/test_timing.py")) + "::test_real_handler_preparation_direct_reply_partial_order",
-            "-q", "--tb=short",
-        ])
     disabled = timing.MemoryCapture()
     enabled = timing.MemoryCapture()
     expiry = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
@@ -161,9 +146,29 @@ async def run(args):
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
+def run_red(args):
+    # pytest must run outside an already-running event loop. Only original
+    # producer methods are substituted; the new gates/tests remain intact.
+    ae, kd = Path(args.ae_root), Path(args.kd_root)
+    prefix = "app/ai-app/src/kdcube-ai-app/kdcube_ai_app/apps/chat/sdk/runtime/data_bus/"
+    FederatedDataBusClient.request = baseline(ae, "6d9d45336fd6cda7d8c2d41435329b7ab8dc3d6b", "packages/app-foundation/src/app_foundation/data_bus/client.py", "FederatedDataBusClient", "request", vars(clients))
+    worker.DataBusBundleWorker._invoke_handler = baseline(kd, "f8845c720981a8427ad5850afd91aa9e94647620", prefix + "worker.py", "DataBusBundleWorker", "_invoke_handler", vars(worker))
+    types.DataBusReply.event = baseline(kd, "f8845c720981a8427ad5850afd91aa9e94647620", prefix + "types.py", "DataBusReply", "event", vars(types))
+    import pytest
+
+    return pytest.main([
+        str(ae / "packages/app-foundation/tests/test_data_bus_client.py") + "::test_timing_observers_are_per_request_and_payload_free",
+        str(ae / "packages/app-foundation/tests/test_data_bus_client.py") + "::test_timing_observer_failure_does_not_change_success",
+        str(kd / (prefix + "../tests/data_bus/test_timing.py")) + "::test_actual_reply_boundary_and_redaction",
+        str(kd / (prefix + "../tests/data_bus/test_timing.py")) + "::test_real_handler_preparation_direct_reply_partial_order",
+        "-q", "--tb=short",
+    ])
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--ae-root", required=True)
     parser.add_argument("--kd-root", required=True)
     parser.add_argument("--red", action="store_true", help="Run named new behavioral tests on frozen original producer methods; expected nonzero.")
-    raise SystemExit(asyncio.run(run(parser.parse_args())))
+    args = parser.parse_args()
+    raise SystemExit(run_red(args) if args.red else asyncio.run(run(args)))
