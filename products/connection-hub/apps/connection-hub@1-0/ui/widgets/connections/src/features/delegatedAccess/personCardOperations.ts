@@ -57,12 +57,34 @@ function declaredPersonOperations(option: DelegatedAccessResourceOption): Set<st
  *  also card does not decide we still show them"): it is SHOWN, never hidden. ``person_undecided`` marks it
  *  so Save keeps the grants it needs exactly as the Card holds them. */
 function managedUndecided<T extends { name: string }>(
-  operation: T, members: Set<string> | null,
-): T & { managed: true; person_undecided: true; in_effect?: boolean } {
+  operation: T, members: Set<string> | null, agents: Set<string> | null = null,
+): T & { managed: true; person_undecided: true; in_effect?: boolean; agent_only?: true } {
   // W748 (operator, live 2026-10-11 17:46Z: "read is not ticked btw"): the tick shows whether the operation is
   // IN EFFECT for the person, so a membership read every member holds is ticked whatever the Card holds.
   return { ...operation, managed: true, person_undecided: true,
-    ...(members ? { in_effect: members.has(operation.name) } : {}) };
+    ...(members ? { in_effect: members.has(operation.name) } : {}),
+    ...(agents?.has(operation.name) ? { agent_only: true as const } : {}) };
+}
+
+/** W775 (operator, 2026-10-13: "fold the agent-only tools under \"Agent-only tools (not for people)\" without
+ *  the amber INACTIVE warning. << b) - yes"): the operations only an agent's own channel calls, as the
+ *  application declares them (`person_agent_operations`); null when it declares none. Never a list kept here. */
+function agentOperations(option: DelegatedAccessResourceOption | undefined): Set<string> | null {
+  return Array.isArray(option?.person_agent_operations) && option.person_agent_operations.length
+    ? new Set(option.person_agent_operations) : null;
+}
+
+/** W775: whether an outer operation of this catalog row is agent-only on a person's Card. */
+export function agentOnlyOnPersonCard(option: DelegatedAccessResourceOption | undefined, operation: string): boolean {
+  return agentOperations(option)?.has(operation) === true;
+}
+
+/** W775: a person's Card rows split for display: the agent-only ones fold away, the rest render as before. */
+export function splitAgentOnly<T extends { agent_only?: boolean }>(operations: T[]): { regular: T[]; agentOnly: T[] } {
+  return {
+    regular: operations.filter((operation) => operation.agent_only !== true),
+    agentOnly: operations.filter((operation) => operation.agent_only === true),
+  };
 }
 
 /** W748: the operations every member holds by membership, as the application declares them; null when it
@@ -84,11 +106,12 @@ function aliasOperation(name: string): string {
 export function resourceForPersonCard(option: DelegatedAccessResourceOption): DelegatedAccessResourceOption {
   const declared = declaredPersonOperations(option);
   const members = memberOperations(option);
+  const agents = agentOperations(option);
   return {
     ...option,
     ...(option.operations ? { operations: option.operations.map((operation) => {
       const decided = offeredOnPersonCard(operation) && (!declared || declared.has(operation.name));
-      return decided ? operation : managedUndecided(operation, members);
+      return decided ? operation : managedUndecided(operation, members, agents);
     }) } : {}),
     ...(option.named_services ? { named_services: option.named_services.map(namespaceForPersonCard) } : {}),
   };
@@ -162,10 +185,11 @@ export function resourcesForPersonMyCard(options: DelegatedAccessResourceOption[
     if (declaredPersonOperations(option)) return resourceForPersonCard(option);
     if (!option.operations?.some((operation) => !offeredOnPersonCard(operation))) return option;
     const members = memberOperations(option);
+    const agents = agentOperations(option);
     return {
       ...option,
       operations: option.operations.map((operation) => (
-        offeredOnPersonCard(operation) ? operation : managedUndecided(operation, members))),
+        offeredOnPersonCard(operation) ? operation : managedUndecided(operation, members, agents))),
     };
   });
 }
