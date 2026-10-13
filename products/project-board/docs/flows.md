@@ -1,7 +1,7 @@
 ---
 id: project-board-flows
 title: Problem Board Flows
-summary: The main Problem Board flows end to end, in short: a person is invited and joins, an agent is added to a project, a work item goes from assignment to done, a project status report is previewed and published, and a runtime window is announced, paused for and closed.
+summary: The main Problem Board flows end to end, in short: a person is invited and joins, an agent is added to a project, the project Control Card follows the service catalog, a work item goes from assignment to done, a project status report is previewed and published, and a runtime window is announced, paused for and closed.
 tags:
   - project-board
   - flows
@@ -16,6 +16,8 @@ keywords:
   - publish
   - runtime window
   - all-clear
+  - catalog drift
+  - project Control Card
 see_also:
   - ./README.md
   - ./concepts.md
@@ -27,7 +29,7 @@ see_also:
 
 # Problem Board Flows
 
-Five flows cover most of what happens on a project. Each is told end to end
+Six flows cover most of what happens on a project. Each is told end to end
 in a few steps, with a link to the page that has the detail. The transport
 underneath (relay, mail, wake) is drawn in
 [Topology and flows](topology-and-flows.md).
@@ -121,6 +123,45 @@ owner or project admin presses Remove from this project
 4. **Afterwards.** The agent stays on the Project Card as "Unlinked", under
    its alias, and its owner can add it again from the pool card (**Add to
    project**).
+
+## The project Control Card follows the catalog
+
+```text
+project created
+  -> its Control Card (P) holds every operation of the active catalog
+catalog gains an operation
+  -> an owner or admin opens the project
+  -> the board reads P from Connection Hub, with P's drift
+  -> P is saved once: + the new operations, - the ones the catalog dropped
+```
+
+1. **At creation.** P is created with every operation the active catalog
+   offers for the board, with the grants they need. Nothing else is ever
+   added wholesale (operator, 2026-10-13, W807: "B. only when project is
+   first created all is added automatically").
+2. **What is new.** Each save of P records every operation the catalog
+   offered at that moment, selected or not. Connection Hub compares that
+   record with the active catalog and reports, with P, the operations offered
+   now and not at P's last save (`catalog_drift.added`) and the selected ones
+   the catalog no longer offers (`removed_operations`). An operation an admin
+   deliberately removed from P was offered at that save, so it is not new and
+   is never added back.
+3. **Who triggers it.** A fresh read of P by a project owner or admin: opening
+   the Project dialog, or the board's periodic fresh read when an owner or
+   admin has the project open. A member's or an agent's read never writes.
+4. **The save.** The board saves P through the same Card transaction as a
+   manual P edit, in the name of that owner or admin: it adds the new
+   operations with the grants they need and drops the removed ones, fenced
+   on P's revision and on the catalog version the drift was read under. Only
+   the board's own service changes; P's other services are kept as they are.
+   One request per P revision and catalog version, so a retry repeats it
+   rather than saving twice.
+5. **Never in the way.** A refused or failed save (another edit won the race,
+   the catalog moved again, Connection Hub unreachable) never fails the
+   read. It is logged and tried again at most once per five minutes per
+   project. When nothing is new, nothing is written.
+
+See [Cards](cards.md#the-project-control-card-and-an-agents-card).
 
 ## A work item: assign to done
 
