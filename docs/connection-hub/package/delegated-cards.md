@@ -2065,7 +2065,24 @@ card:
 | `changed` | A relevant resource, claim, outer operation, or named operation changed, including a selected operation whose descriptor changed on its own authority. |
 | `no_relevant_change` | The global catalog advanced without changing anything represented by this card. |
 | `baseline_missing` | The card predates `catalog_version`, or its referenced durable version document is confirmed absent, so exact additions since the previous Save cannot be identified. |
-| `unavailable` | Complete cached `active.json`, or a historical version required for drift, cannot be obtained from Redis or restored from committed durable state; or a catalog document fails content-hash validation. Editing authority is disabled; create/update and governed calls return `503 temporarily_unavailable` when the unavailable document is required for their decision. |
+| `unavailable` | Complete cached `active.json`, or a historical version required for drift, cannot be obtained from Redis or restored from committed durable state; or a catalog document fails content-hash validation. The comparison is unavailable, not a claim that the Card is current. Create/update and governed calls remain closed when the unavailable document is required for their decision. |
+
+`catalog_drift.current_version` is the active catalog the Hub read for the
+editor, not the Card's older saved `catalog_version`. When a historical
+baseline read fails **after** the active catalog was obtained, the unavailable
+drift retains that known active pin and its failure reason. Confirmed absence
+of a historical baseline is different: normal drift reports
+`baseline_confirmed_absent` and the active pin. When the active catalog itself
+cannot be read, unavailable drift contains no invented current version.
+The same preservation applies to a refreshed precondition-conflict response.
+An unrelated Control Card resource-offer read failure returns no offers but
+does not replace a completed drift comparison or its pin.
+
+Preserving this render pin does not establish that the historical comparison
+succeeded and does not authorize a Save. The server still requires the exact
+rendered-active pin and checks current Card and catalog state before comparing
+or changing a Card. A pin equal only to the Card's older saved catalog is not
+accepted as current. This rule changes no widget behaviour.
 
 The drift object contains ready-to-render `removed` and `added` entries.
 Removed selected entries stay visible as disabled/stale rows and are already

@@ -3744,7 +3744,7 @@ class AutomationAccessService:
                 active, owner_subject=existing.grantor_subject
             )
             refreshed["catalog_drift"] = (
-                drift_unavailable(reason)
+                drift_unavailable(reason, current_version=_clean(getattr(active, "version", "")))
                 if reason
                 else card_drift(
                     card=existing,
@@ -3760,7 +3760,9 @@ class AutomationAccessService:
                 existing.access_id,
                 exc_info=True,
             )
-            refreshed["catalog_drift"] = drift_unavailable("catalog_unavailable")
+            refreshed["catalog_drift"] = drift_unavailable(
+                "catalog_unavailable", current_version=_clean(getattr(active, "version", ""))
+            )
         return {
             "ok": False,
             "error": "delegated_access_precondition_failed",
@@ -3810,7 +3812,7 @@ class AutomationAccessService:
                 baselines[version] = await self._baseline_document(version)
             document, reason = baselines[version]
             if reason:
-                out[record.access_id] = drift_unavailable(reason)
+                out[record.access_id] = drift_unavailable(reason, current_version=active.version)
                 continue
             out[record.access_id] = card_drift(
                 card=record,
@@ -7371,6 +7373,11 @@ class AutomationAccessService:
                 [record], owner_subject=record.grantor_subject
             )
             view["catalog_drift"] = drift.get(record.access_id, {})
+        except (CardUnavailable, CatalogUnavailable):
+            view["catalog_drift"] = drift_unavailable("catalog_unavailable")
+        # Offers are a separate read. Their failure must not erase a drift
+        # comparison and active render pin that already succeeded.
+        try:
             options = await self.resource_options(
                 user,
                 _delegable_grants=_delegable_grants,
@@ -7393,7 +7400,6 @@ class AutomationAccessService:
                 reachable=None,
             )
         except (CardUnavailable, CatalogUnavailable):
-            view["catalog_drift"] = drift_unavailable("catalog_unavailable")
             view["resource_offers"] = []
         view["credential_delivery"] = "credentialless"
         view["credential_reach"] = "multi_resource"
