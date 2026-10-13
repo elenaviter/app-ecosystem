@@ -49,6 +49,7 @@ from connection_hub.delegated_credentials.project_authorization import (
     LifecyclePlanAuthorization,
     LifecyclePlanAuthorizationRequest,
     LifecyclePlanStep,
+    PROJECT_DELETE,
     PROJECT_PERSON_CONTROL_REVOKE,
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
@@ -454,6 +455,51 @@ def _require_project_parent(
     if locator is not None and (locator.control_id != parent.access_id
                                 or locator.holder_subject != parent.grantor_subject):
         raise CardLifecyclePlanRefused("project_control_locator_mismatch")
+
+
+PROJECT_RETIREMENT_PROVENANCE = "retired_by_project_deletion"
+
+
+def retired_project_control(
+    original: CardAuthority, *, project_ref: str, decision: ProjectAuthorizationDecision,
+    actor_subject: str, request_id: str, now: int,
+) -> CardAuthority | None:
+    """W813: P, the deleted project's own Control, revoked; ``None`` when it already is (a replay).
+
+    Only the project host's ``project.delete`` decision for this exact project retires it, and only the
+    exact P its stored link names (the decision's ``project_control`` locator): an arbitrary Control is
+    never turned into P, and a P already revoked by this same project's retirement is not written twice.
+    """
+    if (not decision.allowed or decision.operation != PROJECT_DELETE or decision.project_ref != project_ref
+            or decision.target_subject != project_ref or decision.actor_subject != actor_subject
+            or decision.request_id != request_id):
+        raise CardLifecyclePlanRefused("card_plan_authorization_invalid", 403)
+    expected_id = control_card_id_for_issuer("application", project_ref, grantor_subject=original.grantor_subject)
+    if (original.access_id != expected_id or original.issuer_kind != "application"
+            or original.issuer_ref != project_ref):
+        raise CardLifecyclePlanRefused("project_control_not_exact")
+    if original.control_card is not None:
+        raise CardLifecyclePlanRefused("project_control_not_root")
+    locator = decision.project_control
+    if locator is None:
+        raise CardLifecyclePlanRefused("project_control_locator_missing")
+    if locator.control_id != original.access_id or locator.holder_subject != original.grantor_subject:
+        raise CardLifecyclePlanRefused("project_control_locator_mismatch")
+    if original.state == CARD_STATE_REVOKED:
+        # Scoped replay: only a P this project's own retirement revoked counts as already applied.
+        audit = dict(original.provenance or {}).get(PROJECT_RETIREMENT_PROVENANCE) or {}
+        if audit.get("project_ref") != project_ref:
+            raise CardLifecyclePlanRefused("card_plan_revoke_not_active")
+        return None
+    if original.state != CARD_STATE_ACTIVE:
+        raise CardLifecyclePlanRefused("card_plan_revoke_not_active")
+    candidate = replace_state(original, CARD_STATE_REVOKED)
+    provenance = dict(candidate.provenance or {})
+    provenance[PROJECT_RETIREMENT_PROVENANCE] = {
+        "schema": "connection-hub.project-retirement.v1", "project_ref": project_ref,
+        "actor_subject": actor_subject, "request_id": request_id, "at": now,
+    }
+    return dataclasses.replace(candidate, provenance=provenance)
 
 
 async def plan_card_lifecycle(
@@ -945,6 +991,19 @@ async def plan_card_lifecycle(
             except ProjectInvitationControlError:
                 invitation_identity = None
             target = _required_text(raw["target_subject"], "card_plan_target_invalid")
+            if raw["kind"] == "retire_project_control":
+                # W813: P is fenced at its exact revision, never read-current, and has no parent.
+                if "parent" in raw or read_current or target != scope:
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                candidate = retired_project_control(
+                    original, project_ref=scope, decision=decision, actor_subject=actor,
+                    request_id=request_id, now=now)
+                if candidate is None:
+                    already_applied += 1
+                    continue
+                members.append(group_member(original=original, candidate=candidate, action="revoke"))
+                originals[(subject_hash, access_id)] = original.to_dict()
+                continue
             if raw["kind"] == "set_person_properties":
                 from .my_card_person_properties_plan import build_person_settings_update, settings_update_valid
                 if not settings_update_valid(raw):
