@@ -486,9 +486,10 @@ def retired_project_control(
     if locator.control_id != original.access_id or locator.holder_subject != original.grantor_subject:
         raise CardLifecyclePlanRefused("project_control_locator_mismatch")
     if original.state == CARD_STATE_REVOKED:
-        # Scoped replay: only a P this project's own retirement revoked counts as already applied.
+        # Scoped replay: only the same retirement request (the host's attempt-bound request_id) counts as
+        # already applied; a P revoked any other way, or by another request, is not this request's success.
         audit = dict(original.provenance or {}).get(PROJECT_RETIREMENT_PROVENANCE) or {}
-        if audit.get("project_ref") != project_ref:
+        if audit.get("project_ref") != project_ref or audit.get("request_id") != request_id:
             raise CardLifecyclePlanRefused("card_plan_revoke_not_active")
         return None
     if original.state != CARD_STATE_ACTIVE:
