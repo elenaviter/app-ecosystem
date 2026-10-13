@@ -64,6 +64,16 @@ The Data Bus client API is under `app_foundation.data_bus`:
   and waits until the transport task has ended;
 - `request(...)` distinguishes ingress acceptance from the handler's
   correlated terminal result;
+- `request(..., timing_observer=...)` optionally calls a synchronous local
+  observer with immutable `RequestTiming` values: existing UUID, fixed phase,
+  UTC boundary and elapsed local monotonic seconds only. The default is no
+  observer. It never passes payloads, subjects, object refs, credentials,
+  idempotency keys, results or exception text. Observer exceptions (including
+  observer cancellation) cannot replace the request result or cancellation;
+  accidentally async observers are not scheduled. Non-UUID legacy IDs remain
+  supported by transport but are not observed. Consumers must supply their
+  own nonblocking, bounded admission gate. `client.wait.resumed` means the
+  awaiting caller resumed, not the exact wire-arrival timestamp;
 - `wait_for_event(...)` receives application push events that are not replies
   to an in-flight request.
 

@@ -450,6 +450,9 @@ def build_parser() -> argparse.ArgumentParser:
             "An empty value clears it. The operator's choice per host."
         ),
     )
+    timing = command.add_mutually_exclusive_group()
+    timing.add_argument("--message-timing-until", help="Opt in to bounded UUID timing until this UTC ISO timestamp, at most 15 minutes away; activation requires a coordinated diagnostic window.")
+    timing.add_argument("--message-timing-off", action="store_true", help="Disable bounded UUID timing (the default).")
     command.add_argument(
         "--agent-workspace-root",
         default=None,
@@ -2233,6 +2236,7 @@ def _host_view(config: HostRelayConfig) -> dict[str, Any]:
             "poll_interval_seconds": config.reconcile_ceiling_seconds,
             "idle_poll_interval_seconds": config.idle_reconcile_ceiling_seconds,
             "diagnostics": diagnostics,
+            "message_timing": {"enabled": config.message_timing.enabled, "expires_at": config.message_timing.expires_at},
         },
         "connection_hub": {
             "state_root": str(config.connection_hub_state_root or ""),
@@ -2408,6 +2412,8 @@ def _host_command(args: Any) -> dict[str, Any]:
             workspace_sweep_auto_apply=getattr(args, "workspace_sweep_auto_apply", None),
             workspace_sweep_protected=getattr(args, "workspace_sweep_protect", None),
             backup_root=getattr(args, "backup_root", None),
+            message_timing_until=getattr(args, "message_timing_until", None),
+            message_timing_off=bool(getattr(args, "message_timing_off", False)),
             remove_disabled_channels=bool(getattr(args, "remove_disabled_channels", False)),
         )
         view = _host_view(updated)
@@ -7502,6 +7508,7 @@ async def _relay(args: Any) -> Any:
                         f"card:{profile.access_id}"
                     ),
                     github_key=github_key,
+                    message_timing=host_config.message_timing,
                 )
             finally:
                 await data_bus.close()

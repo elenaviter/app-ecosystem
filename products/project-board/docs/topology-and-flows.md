@@ -24,6 +24,34 @@ need is kept here, with the client that implements it.
 
 ## Complete Topology
 
+### Opt-in Data Bus UUID timing
+
+Normal operation remains unchanged and timing is off by default. A separately
+authorized diagnostic window can configure this host with
+`pb host configure --message-timing-until <UTC-ISO-timestamp>`; the timestamp
+must be no more than 15 minutes away. `--message-timing-off` disables it.
+`pb host inspect` shows the typed `relay.message_timing` configuration.
+These commands do not themselves grant installation, restart or live tracing
+authority. An expired configuration stays disabled; reconnects do not renew it.
+
+The client observes only known `worker.heartbeat` and `control.pull` operations
+and reuses their existing transport UUIDs. Records contain a fixed schema and
+phase, operation, validated UUID, numeric attempt, UTC boundary, monotonic
+elapsed seconds and drop counters. They contain no payloads, headers, URLs,
+Card/session/actor/object identifiers, idempotency keys or raw exceptions.
+Attempt numbers distinguish local retries of the same UUID; ingress acceptance
+is not the final outcome, and caller resume is not wire-arrival time.
+
+All channels share a process-lifetime maximum of 100 sampled request attempts.
+The existing relay log owner receives records only after strict admission:
+512 bytes including a 128-byte formatter reserve and a cumulative 256 KiB
+capture budget, before its general 4 MiB queue. Queue refusal is counted, not
+retried or awaited. Budgets do not refill when a writer drains or a channel
+reconnects. No new task, thread, timer, executor or remote diagnostic write is
+created. Missing log owners drop observations; there is no synchronous fallback.
+The module `project_board.client.message_timing` owns these gates rather than
+the existing broader turn summaries in `relay_trace`.
+
 ```text
 REMOTE: KDCube deployment
 
