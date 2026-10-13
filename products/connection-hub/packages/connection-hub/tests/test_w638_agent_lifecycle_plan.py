@@ -264,3 +264,29 @@ async def test_profile_keys_on_a_non_profile_agent_step_are_refused_by_the_plann
     result = await plan_card_lifecycle(_Host(parent, agent), project_ref=PROJECT, creations=[], updates=[update],
         actor_subject=ACTOR, actor_kind="caller", request_id=REQUEST, authorization=_authorization(ATTACH_AGENT, parent))
     assert result == {"ok": False, "error": "card_plan_update_invalid", "status": 400}, result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [ATTACH_AGENT, DETACH_AGENT])
+async def test_w776_problem_board_names_the_agent_by_its_card(kind):
+    """W776: live Problem Board sends card:<access id>, the agent's worker principal."""
+    parent, agent = _parent(), _agent()
+    if kind == DETACH_AGENT:
+        agent = await build_agent_lifecycle_update(None, original=agent,
+            update=_update(ATTACH_AGENT, agent), active=None, decision=_decision(ATTACH_AGENT, parent),
+            project_ref=PROJECT, actor_subject=ACTOR, request_id=REQUEST, now=1, parent=parent)
+        agent = CardAuthority.from_mapping(agent["member"]["candidate"])
+    by_card = "card:" + agent.access_id
+    update = {**_update(kind, agent), "target_subject": by_card}
+    decision = dataclasses.replace(_decision(kind, parent), target_subject=by_card)
+    built = await build_agent_lifecycle_update(None, original=agent, update=update, active=None,
+        decision=decision, project_ref=PROJECT, actor_subject=ACTOR, request_id=REQUEST, now=2,
+        parent=parent if kind == ATTACH_AGENT else None)
+    assert built["member"]["action"] == ("attach" if kind == ATTACH_AGENT else "detach")
+    for foreign in ("card:other-card", "card:", "integration:other-worker"):
+        with pytest.raises(DecisionRefused):
+            await build_agent_lifecycle_update(None, original=agent,
+                update={**update, "target_subject": foreign}, active=None,
+                decision=dataclasses.replace(decision, target_subject=foreign), project_ref=PROJECT,
+                actor_subject=ACTOR, request_id=REQUEST, now=1,
+                parent=parent if kind == ATTACH_AGENT else None)
