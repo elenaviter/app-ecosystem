@@ -37,7 +37,10 @@ RULES_HEADING = "## Always-On Rules"
 LINK_DIR = ".problem-board"
 LINK_NAME = "project-instructions.md"
 CLAUDE_RUNTIMES = frozenset({"claude-code"})
-STATES = ("ok", "missing", "edited", "stale", "project_instructions_missing", "workspace_is_git_worktree")
+STATES = (
+    "ok", "missing", "edited", "stale", "project_instructions_missing", "workspace_is_git_worktree",
+    "workspace_git_check_failed",
+)
 
 
 def always_on_rules(skill_text: str) -> list[str]:
@@ -87,7 +90,12 @@ def render_block(revision: str, body: str) -> str:
     return f"{BEGIN} rev={revision} -->\n{body}\n{END}"
 
 
-def _in_git_work_tree(path: Path) -> bool:
+def _git_refusal(path: Path) -> str:
+    """The named state that refuses this folder, or "" to write: inside a git work tree, or git unanswerable.
+
+    Fails closed: a folder git cannot be asked about is not written (op-assist, W779 review).
+    """
+
     probe = path
     while not probe.exists() and probe != probe.parent:
         probe = probe.parent
@@ -97,8 +105,10 @@ def _in_git_work_tree(path: Path) -> bool:
             capture_output=True, text=True, timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return False
-    return result.returncode == 0 and result.stdout.strip() == "true"
+        return "workspace_git_check_failed"
+    if result.returncode == 0 and result.stdout.strip() == "true":
+        return "workspace_is_git_worktree"
+    return ""
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -158,8 +168,9 @@ def verify_workspace_instructions(
     """Per file: ok, missing, edited or stale; plus the project link and the git-work-tree refusal."""
 
     root = Path(workspace)
-    if _in_git_work_tree(root):
-        return {"workspace": str(root), "state": "workspace_is_git_worktree", "files": {}}
+    refusal = _git_refusal(root)
+    if refusal:
+        return {"workspace": str(root), "state": refusal, "files": {}}
     plan = _plan(root, runtime_kind, always_on_rules(skill_text), project_instructions)
     files = {name: _file_state(root / name, revision, body) for name, body in plan["files"].items()}
     link = root / LINK_DIR / LINK_NAME
@@ -173,24 +184,32 @@ def verify_workspace_instructions(
 
 
 def ensure_workspace_instructions(
-    workspace: str | Path, *, runtime_kind: str, revision: str, skill_text: str, project_instructions: str = "",
+    workspace: str | Path, *, runtime_kind: str, revision: str, skill_text: str,
+    project_instructions: str | None = None,
 ) -> dict[str, Any]:
-    """Write or refresh the managed blocks (and the project link); report what changed."""
+    """Write or refresh the managed blocks (and the project link); report what changed.
+
+    ``project_instructions`` None: the project is not known here (install, listen), so an existing link stays.
+    A path: link it. "" : the project is known and has no instructions file, so a link left from an earlier
+    project is removed (op-assist, W779 review).
+    """
 
     root = Path(workspace)
     if not str(workspace):
         raise DomainError("work_workspace_unknown", "This session has no workspace to write the rules into.")
-    if _in_git_work_tree(root):
-        return {"workspace": str(root), "state": "workspace_is_git_worktree", "written": []}
-    target = str(project_instructions or "")
-    if target and not Path(target).is_file():
-        target = ""
+    refusal = _git_refusal(root)
+    if refusal:
+        return {"workspace": str(root), "state": refusal, "written": []}
     link = root / LINK_DIR / LINK_NAME
-    if not target and link.is_symlink() and link.exists():
-        # Install time knows no project; the link `pb worker listen` made stays.
-        target = os.readlink(link)
-    plan = _plan(root, runtime_kind, always_on_rules(skill_text), target)
     written: list[str] = []
+    if project_instructions is None:
+        target = os.readlink(link) if link.is_symlink() and link.exists() else ""
+    else:
+        target = str(project_instructions) if project_instructions and Path(project_instructions).is_file() else ""
+        if not target and link.is_symlink():
+            link.unlink()
+            written.append(f"{LINK_DIR}/{LINK_NAME} (removed)")
+    plan = _plan(root, runtime_kind, always_on_rules(skill_text), target)
     if target and (not link.is_symlink() or os.readlink(link) != target):
         _atomic_symlink(link, target)
         written.append(f"{LINK_DIR}/{LINK_NAME}")

@@ -21,7 +21,7 @@ SKILL = source_path().read_text(encoding="utf-8")
 REV = str(source_package()["revision"])
 
 
-def _ensure(folder, kind="claude-code", rev=REV, project=""):
+def _ensure(folder, kind="claude-code", rev=REV, project=None):
     return wi.ensure_workspace_instructions(
         folder, runtime_kind=kind, revision=rev, skill_text=SKILL, project_instructions=project,
     )
@@ -166,3 +166,28 @@ def test_configured_workspaces_skip_disabled_agents_and_other_kinds(tmp_path, mo
     monkeypatch.setattr(host_config, "agent_workspace", lambda config, **kw: (str(tmp_path / kw["alias"]), "", ""))
     assert wi.configured_workspaces(config, ["claude-code"]) == [(str(tmp_path / "a1"), "claude-code")]
     assert wi.runtime_kind_of(config, str(tmp_path / "a3")) == "codex"
+
+
+def test_a_known_project_without_instructions_removes_an_earlier_projects_link(tmp_path):
+    # op-assist, W779 review: a link to the previous project's file must not survive a project change.
+    old = tmp_path / "old.md"
+    old.write_text("old project\n", encoding="utf-8")
+    workspace = tmp_path / "ws"
+    _ensure(workspace, project=str(old))
+    state = _ensure(workspace, project="")
+    link = workspace / wi.LINK_DIR / wi.LINK_NAME
+    assert not link.is_symlink() and not link.exists()
+    assert f"{wi.LINK_DIR}/{wi.LINK_NAME} (removed)" in state["written"]
+    agents = (workspace / "AGENTS.md").read_text(encoding="utf-8")
+    assert "none recorded" in agents and f"@{wi.LINK_DIR}" not in agents
+
+
+def test_a_folder_git_cannot_be_asked_about_is_not_written(tmp_path, monkeypatch):
+    def broken(*args, **kwargs):
+        raise OSError("git unavailable")
+
+    monkeypatch.setattr(wi.subprocess, "run", broken)
+    state = _ensure(tmp_path)
+    assert state["state"] == "workspace_git_check_failed" and state["written"] == []
+    assert not (tmp_path / "AGENTS.md").exists()
+    assert _verify(tmp_path)["state"] == "workspace_git_check_failed"

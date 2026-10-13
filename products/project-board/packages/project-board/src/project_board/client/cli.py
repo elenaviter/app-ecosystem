@@ -6884,7 +6884,8 @@ def _worker_project_context(
     rules = _workspace_rules(
         workspace,
         str(getattr(channel, "runtime_kind", "") or ""),
-        instructions_target({**journal, **files_fields}),
+        # Known project files decide the link, "" removing one left from another project; unknown keeps it.
+        instructions_target({**journal, **files_fields}) if files.get("known") or journal else None,
     ) if on_host else {}
     if files.get("known"):
         card_fields: dict[str, Any] = {"project_card": "known", "project_goal": files["goal"]}
@@ -7037,7 +7038,7 @@ def _procedure_targets(args: Any) -> tuple[list[str], str]:
     return [kind for kind in PROCEDURE_TARGETS if kind in kinds], "host_channels"
 
 
-def _workspace_rules(workspace: str, runtime_kind: str, project_instructions: str = "") -> dict[str, Any]:
+def _workspace_rules(workspace: str, runtime_kind: str, project_instructions: str | None = None) -> dict[str, Any]:
     """W779: refresh the always-on rules block in this agent's workspace; never fails the calling command."""
 
     from .procedures import source_package, source_path
