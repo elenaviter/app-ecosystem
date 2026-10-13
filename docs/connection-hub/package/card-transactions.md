@@ -221,9 +221,10 @@ whole request, so no edit value is repeated.
   - A P already revoked by this same project's retirement request is already
     applied (no write); a P revoked any other way, or by another request, is
     refused `card_plan_revoke_not_active`.
-  - The host sends P alone in the first chunk, then the people (`remove_person`,
-    C and My together), invitations (`revoke`) and agents (`detach_agent`) in
-    chunks of at most 8, each at its frozen revision. A Card that moved since
+  - The host sends P alone in the first chunk, then agents (`detach_agent`),
+    invitations (`revoke`) and people (`remove_person`, C and My together; the
+    actor and the owner last), in chunks of at most 8, each at its frozen
+    revision. A Card that moved since
     is refused `card_changed` and is never retired at its new revision. The
     host owns that order and its recovery; the PB side is not active until
     project deletion ships (W805).
