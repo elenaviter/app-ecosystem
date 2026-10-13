@@ -57,6 +57,18 @@ revised one rehearsal round at a time. What every worker does, from it:
   states the exact head, the files the change request lists and the files you
   read, and suite inputs (interpreter, dependencies, overlays, variables), so
   the counts can be compared at all.
+- **A contract its consumer checks at import is reviewed and merged with that
+  consumer.** When a change adds, removes or renames an operation in App
+  Ecosystem's operation contract or catalog (`worker_operation_contract.py`,
+  or any contract the Applications board checks when it loads), the review
+  evidence includes the Applications suite run against that exact App
+  Ecosystem head, and the change merges only together with, or after, the
+  Applications change that handles it, never App Ecosystem alone. Why: on
+  2026-10-13 W815 added `project.delete` to the contract and was approved on
+  the App Ecosystem suite alone (2274 passed); Applications'
+  `operation_dispatch.py` checks at import that every declared operation has
+  a handler, so its fixtures failed once App Ecosystem main moved ahead, and
+  the merge was reverted (acdbb4f2) until W805's handler lands (W820).
 - **A `completed` report submits the source for review** at an exact head and
   change request, and its could-not-verify names what is still to come (merge,
   activation). Approval, merge, activation and whole-item acceptance are
