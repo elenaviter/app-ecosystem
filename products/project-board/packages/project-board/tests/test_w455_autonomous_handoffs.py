@@ -227,15 +227,16 @@ def test_each_actor_hands_on_along_the_route_including_to_the_operator() -> None
 
 
 def test_the_skill_names_the_always_on_rules_the_workspace_keeps() -> None:
-    """Operator, 2026-10-03: no self-written PB rules. Operator, 2026-10-13 (W779): the rules live in the
-    workspace's AGENTS.md (and a CLAUDE.md importing it), written from this list, not in memories."""
+    """Operator, 2026-10-03: no self-written PB rules. Operator, 2026-10-13 (W802): the rules live only in this
+    skill; the workspace AGENTS.md / CLAUDE.md hold only the project's own files."""
     skill = _words("SKILL.md")
     assert "## Always-On Rules" in skill
     assert "## Keep The Critical Requirements As Memories" not in skill
     assert "tagged `source: problem-board-worker <installed revision>`" not in skill
-    assert "workspace must get this in form of AGENTS.md so this works for other type of agents." in skill
-    assert "`pb procedure install --workspaces` and `pb worker listen` write them" in skill
-    assert "This list is the only source of these rules: keep no memory copy of them" in skill
+    assert "These rules are this skill's own and live only here: keep no memory copy of them" in skill
+    assert "pb copies them nowhere." in skill
+    assert "`pb procedure install --workspaces`" not in skill  # operator: "--workspaces should be itself removed"
+    assert "\"CLAUDE.md / AGENTS.md made from project file (which we have multiple of them).\"" in skill
     assert "do not save your own versions of Problem Board workflow rules" in skill
     assert "goes to the coordinator as a procedure change (collaboration Rule 14), never into private memory" in skill
     section = skill[skill.index("## Always-On Rules"):skill.index("## Read pb Output")]

@@ -1,22 +1,26 @@
-"""The always-on Problem Board rules in an agent's own workspace (W779).
+"""An agent workspace's AGENTS.md / CLAUDE.md, made only from its project's files (W802).
 
 Operator, 2026-10-13: "workspace must get this in form of AGENTS.md so this
 works for other type of agents. and if this is claude agent than simply
-additionally also the CLAUDE.md which imports AGENTS.md".
+additionally also the CLAUDE.md which imports AGENTS.md" (W779), then, after
+the first new agent enrolled (W802): "not sure actually why we promise the
+CLAUDE.md and AGENTS.md will be written. that is wrong.", "CLAUDE.md /
+AGENTS.md made from project file (which we have multiple of them).", "and in
+case of new project even NONE" and "the folders must be aliases".
 
-A skill is loaded once and summarised away at compaction; a workspace
-CLAUDE.md is re-read from disk after compaction, and AGENTS.md is the file
-Codex reads. So the few rules an agent must never lose live in a managed
-block of the workspace's AGENTS.md. A Claude workspace additionally gets a
-CLAUDE.md whose managed block imports it. The six rules are SKILL.md's own
-"Always-On Rules" list, copied byte for byte: SKILL.md stays their only
-source. The project's instructions file is linked into the workspace, never
-copied.
+So ``pb worker context`` writes one managed block into the workspace's
+AGENTS.md from the project's files list, and only the files present in this
+agent's clones: the instructions, facts and environment files (an ``@``
+import for Claude, a path to read for Codex) and the further files with their
+descriptions (read when the description fits). A Claude Code workspace also
+gets a CLAUDE.md whose managed block imports AGENTS.md. Nothing is written at
+enrollment, and a project that lists no files (or none present yet) has no
+block: an earlier block is removed. A workspace is always ``<root>/<alias>``;
+without an alias nothing is written.
 
-Every write is atomic (a temporary file in the same folder, then a replace).
-Text outside the markers belongs to the user and is never changed. A
-workspace inside a git work tree is never written: a managed file there is
-one ``git add`` away from a commit.
+Every write is atomic. Text outside the markers belongs to the user and is
+never changed; a file left with nothing else is removed. A workspace inside a
+git work tree, or one git cannot be asked about, is never written.
 """
 
 from __future__ import annotations
@@ -26,75 +30,52 @@ import re
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping
-
-from ..contract.errors import DomainError
+from typing import Any, Iterable, Mapping
 
 BEGIN = "<!-- problem-board:begin"
 END = "<!-- problem-board:end -->"
-_BLOCK = re.compile(r"<!-- problem-board:begin rev=(?P<rev>[^ >]*) -->\n(?P<body>.*?)\n<!-- problem-board:end -->", re.S)
-RULES_HEADING = "## Always-On Rules"
-LINK_DIR = ".problem-board"
-LINK_NAME = "project-instructions.md"
+_BLOCK = re.compile(r"\n*<!-- problem-board:begin [^>]*-->\n.*?\n<!-- problem-board:end -->\n?", re.S)
+_BLOCK_BODY = re.compile(r"<!-- problem-board:begin (?P<marker>[^>]*)-->\n(?P<body>.*?)\n<!-- problem-board:end -->", re.S)
+# W779's block (the pb rules, "rev=") and its single instructions link are retired by W802.
+LEGACY_LINK = Path(".problem-board") / "project-instructions.md"
 CLAUDE_RUNTIMES = frozenset({"claude-code"})
-STATES = (
-    "ok", "missing", "edited", "stale", "project_instructions_missing", "workspace_is_git_worktree",
-    "workspace_git_check_failed",
-)
+PURPOSES = (("instructions", "Instructions"), ("facts", "Facts"), ("environment", "Environment"))
 
 
-def always_on_rules(skill_text: str) -> list[str]:
-    """SKILL.md's numbered Always-On Rules, exactly as written there."""
-
-    lines = skill_text.splitlines()
-    try:
-        start = lines.index(RULES_HEADING)
-    except ValueError as exc:
-        raise DomainError("work_workspace_rules_missing", "SKILL.md has no Always-On Rules section.") from exc
-    rules: list[str] = []
-    for line in lines[start + 1:]:
-        if line.startswith("## "):
-            break
-        if re.match(r"^[1-9][0-9]*\. ", line):
-            rules.append(line)
-    if not rules:
-        raise DomainError("work_workspace_rules_missing", "SKILL.md's Always-On Rules list is empty.")
-    return rules
+def _present(files: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    return [row for row in files if str(row.get("state") or "") == "present" and row.get("alias") and row.get("path")]
 
 
-def project_pointer(runtime_kind: str, linked: bool) -> str:
-    """The line naming the project's instructions: an import for Claude, a path to read for others."""
+def render_body(files: Iterable[Mapping[str, Any]], runtime_kind: str) -> str:
+    """The block for the files present in this agent's clones; "" when there are none."""
 
-    target = f"{LINK_DIR}/{LINK_NAME}"
-    if not linked:
-        return "Project instructions: none recorded for this workspace's project."
-    if runtime_kind in CLAUDE_RUNTIMES:
-        return f"Project instructions (imported):\n@{target}"
-    return f"Project instructions: read `{target}` at the start of every session."
-
-
-def render_body(rules: list[str], runtime_kind: str, linked: bool) -> str:
-    return "\n".join([
-        "# Problem Board: always-on rules (managed; edit nothing between the markers)",
+    present = _present(files)
+    if not present:
+        return ""
+    claude = runtime_kind in CLAUDE_RUNTIMES
+    lines = [
+        "# Project files (managed by pb from the project card; edit nothing between the markers)",
         "",
-        "The full procedure is the problem-board-worker skill. Before any act whose rule text is not in "
-        "your context, read that rule's file in the skill's references first.",
-        "",
-        *rules,
-        "",
-        project_pointer(runtime_kind, linked),
-    ])
-
-
-def render_block(revision: str, body: str) -> str:
-    return f"{BEGIN} rev={revision} -->\n{body}\n{END}"
+        "Read the project's own files before you work. Paths are in this workspace.",
+    ]
+    for purpose, label in PURPOSES:
+        row = next((item for item in present if item.get("purpose") == purpose), None)
+        if row is None:
+            continue
+        local = f"{row['alias']}/{row['path']}"
+        lines += ["", f"## {label}: `{local}`"]
+        lines.append(f"@{local}" if claude else f"Read `{local}` at the start of every session.")
+    further = [item for item in present if not item.get("purpose")]
+    if further:
+        lines += ["", "## Further files (read one when its description fits the task)"]
+        for row in further:
+            description = str(row.get("description") or "").strip()
+            lines.append(f"- `{row['alias']}/{row['path']}`" + (f": {description}" if description else ""))
+    return "\n".join(lines)
 
 
 def _git_refusal(path: Path) -> str:
-    """The named state that refuses this folder, or "" to write: inside a git work tree, or git unanswerable.
-
-    Fails closed: a folder git cannot be asked about is not written (op-assist, W779 review).
-    """
+    """The named state that refuses this folder, or "" to write; fails closed when git cannot answer."""
 
     probe = path
     while not probe.exists() and probe != probe.parent:
@@ -125,148 +106,90 @@ def _atomic_write(path: Path, text: str) -> None:
         raise
 
 
-def _atomic_symlink(link: Path, target: str) -> None:
-    link.parent.mkdir(parents=True, exist_ok=True)
-    temporary = link.parent / f".{link.name}.{os.getpid()}.tmp"
-    temporary.unlink(missing_ok=True)
-    os.symlink(target, temporary)
-    os.replace(temporary, link)
+def _without_block(text: str) -> str:
+    return _BLOCK.sub("\n", text).strip("\n")
 
 
-def _with_block(existing: str, block: str) -> str:
-    """The file with its managed block replaced, or appended when it has none; user text untouched."""
+def _set(path: Path, block: str) -> bool:
+    """Put ``block`` (or no block) into ``path``; user text stays; an empty file is removed. True when changed."""
 
-    if _BLOCK.search(existing):
-        return _BLOCK.sub(lambda _: block, existing, count=1)
-    if not existing:
-        return block + "\n"
-    return existing.rstrip("\n") + "\n\n" + block + "\n"
-
-
-def _file_state(path: Path, revision: str, body: str) -> str:
-    if not path.exists():
-        return "missing"
-    found = _BLOCK.search(path.read_text(encoding="utf-8"))
-    if found is None:
-        return "missing"
-    if found.group("rev") != revision:
-        return "stale"
-    return "ok" if found.group("body") == body else "edited"
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    user = _without_block(existing)
+    if block:
+        updated = (user + "\n\n" if user else "") + block + "\n"
+    else:
+        updated = (user + "\n") if user else ""
+    if updated == existing:
+        return False
+    if updated:
+        _atomic_write(path, updated)
+    else:
+        path.unlink(missing_ok=True)
+    return True
 
 
-def _plan(workspace: Path, runtime_kind: str, rules: list[str], project_instructions: str) -> dict[str, Any]:
-    linked = bool(project_instructions)
-    files = {"AGENTS.md": render_body(rules, runtime_kind, linked)}
-    if runtime_kind in CLAUDE_RUNTIMES:
-        files["CLAUDE.md"] = "@AGENTS.md"
-    return {"files": files, "linked": linked}
+def _block(marker: str, body: str) -> str:
+    return f"{BEGIN} {marker} -->\n{body}\n{END}"
 
 
-def verify_workspace_instructions(
-    workspace: str | Path, *, runtime_kind: str, revision: str, skill_text: str, project_instructions: str = "",
+def ensure_project_files_block(
+    workspace: str | Path, *, alias: str, runtime_kind: str, project_id: str, files_revision: int,
+    files: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """Per file: ok, missing, edited or stale; plus the project link and the git-work-tree refusal."""
+    """Write, refresh or remove the workspace's managed block from the project's files; report what changed."""
 
     root = Path(workspace)
-    refusal = _git_refusal(root)
-    if refusal:
-        return {"workspace": str(root), "state": refusal, "files": {}}
-    plan = _plan(root, runtime_kind, always_on_rules(skill_text), project_instructions)
-    files = {name: _file_state(root / name, revision, body) for name, body in plan["files"].items()}
-    link = root / LINK_DIR / LINK_NAME
-    link_state = "none"
-    if project_instructions or link.is_symlink():
-        link_state = "ok" if link.is_symlink() and link.exists() else "project_instructions_missing"
-    worst = next((files[name] for name in files if files[name] != "ok"), "ok")
-    if worst == "ok" and link_state == "project_instructions_missing":
-        worst = link_state
-    return {"workspace": str(root), "state": worst, "files": files, "project_instructions": link_state}
-
-
-def ensure_workspace_instructions(
-    workspace: str | Path, *, runtime_kind: str, revision: str, skill_text: str,
-    project_instructions: str | None = None,
-) -> dict[str, Any]:
-    """Write or refresh the managed blocks (and the project link); report what changed.
-
-    ``project_instructions`` None: the project is not known here (install, listen), so an existing link stays.
-    A path: link it. "" : the project is known and has no instructions file, so a link left from an earlier
-    project is removed (op-assist, W779 review).
-    """
-
-    root = Path(workspace)
-    if not str(workspace):
-        raise DomainError("work_workspace_unknown", "This session has no workspace to write the rules into.")
+    if not alias or root.name != alias:
+        return {"workspace": str(root), "state": "workspace_is_not_an_alias_folder", "written": []}
     refusal = _git_refusal(root)
     if refusal:
         return {"workspace": str(root), "state": refusal, "written": []}
-    link = root / LINK_DIR / LINK_NAME
+    body = render_body(files, runtime_kind)
+    marker = f"project={project_id} files_revision={int(files_revision)}"
     written: list[str] = []
-    if project_instructions is None:
-        target = os.readlink(link) if link.is_symlink() and link.exists() else ""
-    else:
-        target = str(project_instructions) if project_instructions and Path(project_instructions).is_file() else ""
-        if not target and link.is_symlink():
-            link.unlink()
-            written.append(f"{LINK_DIR}/{LINK_NAME} (removed)")
-    plan = _plan(root, runtime_kind, always_on_rules(skill_text), target)
-    if target and (not link.is_symlink() or os.readlink(link) != target):
-        _atomic_symlink(link, target)
-        written.append(f"{LINK_DIR}/{LINK_NAME}")
-    for name, body in plan["files"].items():
+    if (root / LEGACY_LINK).is_symlink():
+        (root / LEGACY_LINK).unlink()
+        written.append(f"{LEGACY_LINK} (removed)")
+    agents = _block(marker, body) if body else ""
+    if (root / "AGENTS.md").exists() or agents:
+        if _set(root / "AGENTS.md", agents):
+            written.append("AGENTS.md" if agents else "AGENTS.md (block removed)")
+    claude = _block(marker, "@AGENTS.md") if body and runtime_kind in CLAUDE_RUNTIMES else ""
+    if (root / "CLAUDE.md").exists() or claude:
+        if _set(root / "CLAUDE.md", claude):
+            written.append("CLAUDE.md" if claude else "CLAUDE.md (block removed)")
+    return {"workspace": str(root), "state": "written" if body else "none", "written": written}
+
+
+def remove_legacy_rules(workspace: str | Path) -> dict[str, Any]:
+    """Remove only W779's pb-rules blocks and instructions link; a project-files block stays."""
+
+    root = Path(workspace)
+    refusal = _git_refusal(root)
+    if refusal:
+        return {"workspace": str(root), "state": refusal, "written": []}
+    written: list[str] = []
+    for name in ("AGENTS.md", "CLAUDE.md"):
         path = root / name
-        existing = path.read_text(encoding="utf-8") if path.exists() else ""
-        updated = _with_block(existing, render_block(revision, body))
-        if updated != existing:
-            _atomic_write(path, updated)
-            written.append(name)
-    state = verify_workspace_instructions(
-        root, runtime_kind=runtime_kind, revision=revision, skill_text=skill_text, project_instructions=target,
-    )
-    return {**state, "written": written}
-
-
-def configured_workspaces(config: Any, kinds: list[str]) -> list[tuple[str, str]]:
-    """Each enabled agent on this host of the given kinds: its workspace folder and runtime kind."""
-
-    from .host_config import agent_workspace
-
-    found: list[tuple[str, str]] = []
-    for channel in getattr(config, "workers", ()) or ():
-        if channel.state == "disabled" or channel.runtime_kind not in kinds:
+        if not path.exists():
             continue
-        folder = agent_workspace(
-            config,
-            recorded=str(getattr(channel, "working_directory", "") or ""),
-            alias=str(getattr(channel, "worker_alias", "") or ""),
-            worker_name=channel.worker_name,
-        )[0]
-        if folder and (folder, channel.runtime_kind) not in found:
-            found.append((folder, channel.runtime_kind))
-    return found
+        text = path.read_text(encoding="utf-8")
+        legacy = [m for m in _BLOCK_BODY.finditer(text) if m.group("marker").startswith("rev=")]
+        if not legacy:
+            continue
+        kept = text
+        for match in legacy:
+            kept = kept.replace(match.group(0), "")
+        kept = re.sub(r"\n{3,}", "\n\n", kept).strip("\n")
+        if kept:
+            _atomic_write(path, kept + "\n")
+        else:
+            path.unlink()
+        written.append(f"{name} (pb rules block removed)")
+    if (root / LEGACY_LINK).is_symlink():
+        (root / LEGACY_LINK).unlink()
+        written.append(f"{LEGACY_LINK} (removed)")
+    return {"workspace": str(root), "state": "ok", "written": written}
 
 
-def runtime_kind_of(config: Any, workspace: str) -> str:
-    """The runtime kind of the agent whose workspace this is; a CLAUDE.md alone says claude-code."""
-
-    target = Path(workspace).resolve()
-    for folder, kind in configured_workspaces(config, ["codex", "claude-code"]) if config else []:
-        if Path(folder).resolve() == target:
-            return kind
-    return "claude-code" if (target / "CLAUDE.md").exists() else "codex"
-
-
-def instructions_target(context: Mapping[str, Any]) -> str:
-    """The project's instructions file in this agent's clone: its instructions file, else its environment file."""
-
-    for field in ("local_project_instructions", "local_project_environment"):
-        value = str(context.get(field) or "")
-        if value and Path(value).is_file():
-            return value
-    return ""
-
-
-__all__ = [
-    "always_on_rules", "configured_workspaces", "ensure_workspace_instructions", "instructions_target",
-    "render_block", "render_body", "runtime_kind_of", "verify_workspace_instructions",
-]
+__all__ = ["ensure_project_files_block", "remove_legacy_rules", "render_body"]
