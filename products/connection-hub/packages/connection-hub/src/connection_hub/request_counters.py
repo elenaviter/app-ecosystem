@@ -8,7 +8,12 @@ With no observer set (the default) every call is a cheap no-op. A harness sets o
 each Hub operation scope then hands it one snapshot when it ends::
 
     {"surface": "hub", "caller": "<hub operation>", "counts": {...}, "phases_ms": {...},
-     "wall_ms": float, "cpu_ms": float}
+     "wall_ms": float, "process_cpu_ms": float}
+
+``process_cpu_ms`` is the WHOLE PROCESS's CPU time while this operation's scope was open, including every
+concurrent operation's work. Never attribute it to this operation and never sum it across snapshots; the
+harness's CPU metric is process CPU-seconds over the workload divided by completed operations (Mint, W819
+review: a sleeping operation reported another operation's CPU, and summing double-counted it).
 
 A snapshot names the operation and counts only: never a principal, Card, key, secret or request id.
 """
@@ -50,7 +55,8 @@ class _Scope:
         return {"surface": "hub", "caller": self.caller, "counts": dict(self.counts),
                 "phases_ms": {name: round(ms, 3) for name, ms in self.phases_ms.items()},
                 "wall_ms": round((time.monotonic() - self.wall) * 1000.0, 3),
-                "cpu_ms": round((time.process_time() - self.cpu) * 1000.0, 3)}
+                # Whole-process CPU during the scope: not this operation's, never to be summed.
+                "process_cpu_ms": round((time.process_time() - self.cpu) * 1000.0, 3)}
 
 
 def set_observer(observer: Observer | None) -> None:

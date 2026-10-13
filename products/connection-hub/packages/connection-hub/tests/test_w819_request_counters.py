@@ -43,7 +43,7 @@ def test_one_snapshot_per_operation_with_actual_counts_and_no_identifiers(snapsh
     assert snapshot["surface"] == "hub" and snapshot["caller"] == "card_version"
     assert snapshot["counts"] == {"participant_callers_build": 1, "secret_resolve": 4, "read_authorize": 1}
     assert snapshot["phases_ms"] == {"read_authorize": 12.5}
-    assert set(snapshot) == {"surface", "caller", "counts", "phases_ms", "wall_ms", "cpu_ms"}
+    assert set(snapshot) == {"surface", "caller", "counts", "phases_ms", "wall_ms", "process_cpu_ms"}
 
 
 def test_a_nested_scope_counts_into_the_outer_operation(snapshots):
@@ -98,3 +98,28 @@ async def test_the_person_control_read_answers_the_same_and_reports_its_phases()
     assert snapshot["counts"]["person_control_read"] == 1
     assert {"read_authorize", "edit_authorize", "view"} <= set(snapshot["phases_ms"])
     assert all(ms >= 0 for ms in snapshot["phases_ms"].values())
+
+
+def test_concurrent_operations_never_mix_their_counts(snapshots):
+    """Mint's W819 review: each operation's own scope; concurrent tasks never count into each other."""
+    async def operation(caller, resolves, pause):
+        with rc.operation_scope(caller):
+            for _ in range(resolves):
+                rc.count("secret_resolve")
+                await asyncio.sleep(pause)
+
+    async def run():
+        await asyncio.gather(operation("card_version", 3, 0.01), operation("card_census_read", 5, 0.005))
+
+    asyncio.run(run())
+    by_caller = {snapshot["caller"]: snapshot["counts"] for snapshot in snapshots}
+    assert by_caller == {"card_version": {"secret_resolve": 3}, "card_census_read": {"secret_resolve": 5}}
+
+
+def test_process_cpu_is_labelled_whole_process_and_not_per_operation(snapshots):
+    """A sleeping operation's snapshot names process CPU, never an operation CPU field to attribute or sum."""
+    with rc.operation_scope("card_version"):
+        sum(range(200_000))
+    (snapshot,) = snapshots
+    assert "cpu_ms" not in snapshot and snapshot["process_cpu_ms"] >= 0
+    assert "Never attribute it to this operation and never sum it across snapshots" in " ".join(rc.__doc__.split())
