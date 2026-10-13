@@ -207,6 +207,36 @@ whole request, so no edit value is repeated.
     (`card_plan_role_operation_unknown`).
   - An unchanged Card stays a read.
   - The Hub knows nothing about roles or admins.
+- **A deleted project's Control (`retire_project_control`, W813).** One
+  `updates` entry: `kind`, `target_subject` (the project ref), `access_id`
+  (P's id), `subject_hash`, and P's exact `original_revision`, never 0
+  (read-current) and never a `parent`. Its step is `project.delete`, and the
+  host's decision must name that operation, this project as target, the actor
+  and the request, with the `project_control` locator naming exactly this P.
+  - The Hub checks that the Card is the project's own root Control (its id
+    derives from `application` + project + holder, no parent) and revokes it.
+    The revision carries the audit `retired_by_project_deletion: {schema:
+    connection-hub.project-retirement.v1, project_ref, actor_subject,
+    request_id, at}`.
+  - A P already revoked by this same project's retirement request is already
+    applied (no write); a P revoked any other way, or by another request, is
+    refused `card_plan_revoke_not_active`.
+  - The host sends P alone in the first chunk, then agents (`detach_agent`),
+    invitations (`revoke`) and people (`remove_person`, C and My together; the
+    actor and the owner last), in chunks of at most 8, each at its frozen
+    revision. A Card that moved since
+    is refused `card_changed` and is never retired at its new revision. The
+    host owns that order and its recovery; the PB side is not active until
+    project deletion ships (W805).
+- **The host keeps P following the catalog (W807).** Problem Board itself
+  starts an ordinary `reselect_project_control` STAGE, with no Hub-forwarded
+  edit, when an owner's or admin's read of P shows operations new to the
+  catalog. Its input is this Hub's drift of P: `catalog_drift.added.outer_operations`
+  (offered now, not at P's last save, from P's `resource_acceptance`) and
+  `resources[r].removed_operations`. It is fenced on P's revision and on
+  `expected_catalog_version` like any P edit, so a moved catalog refuses
+  `stage_catalog_moved`. The Hub is unchanged; the host's selection is bounded
+  by its delegable grants as always.
 - **Already applied (v6.3 item 6).** When every update of a STAGE already
   holds (each `role_selection` Card already equals its target, each
   `remove_person` Card sent with `original_revision: 0`, or fenced at exactly

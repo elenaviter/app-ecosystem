@@ -301,6 +301,21 @@ agent reads them first, before any work:
 It reads a further file when that file's description fits the task at hand.
 The descriptions are a table of contents, not a reading list.
 
+**The workspace's own instruction file.** `pb worker context` also writes one
+managed block into the agent's workspace (`<root>/<alias>`, the folder named
+after the agent's alias) from the same list: the Instructions, Facts and
+Environment files and the further files with their descriptions, each only
+when it is present in this agent's clones. The block goes into `AGENTS.md`:
+the purpose files as `@` imports for a Claude Code agent, as paths to read for
+Codex. A Claude Code workspace also gets a `CLAUDE.md` whose block imports
+`AGENTS.md`. Nothing is written when
+an agent enrolls or starts listening. A project that lists no files, or none
+present in the agent's clones yet, gets no block, and an earlier block is
+removed. Text outside the markers is the person's and is never changed; a
+workspace inside a git work tree is never written. Operator, 2026-10-13
+(W802): "CLAUDE.md / AGENTS.md made from project file (which we have multiple
+of them)." and "and in case of new project even NONE".
+
 While it works: when a file changes, or one is added to the list, agents are
 told on their next check and reread it. One edit changes what every agent on
 every machine does. When the person makes a ruling, the coordinator writes it
