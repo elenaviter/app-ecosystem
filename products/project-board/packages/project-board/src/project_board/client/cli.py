@@ -756,6 +756,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--detail", action="store_true",
         help="Brief output lists the package manifest and every changed file, not only the verdict.",
     )
+    command.add_argument(
+        "--workspace",
+        action="append",
+        default=[],
+        help="Also check this agent workspace's managed AGENTS.md (and CLAUDE.md) block; repeatable.",
+    )
+    command.add_argument(
+        "--workspaces", action="store_true",
+        help="Also check the managed block in every enabled agent workspace on this host.",
+    )
     command = procedure_commands.add_parser(
         "install", help="Install the complete package as a local coding-agent skill."
     )
@@ -775,6 +785,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-downgrade",
         action="store_true",
         help="Install a package older than the installed revision on purpose.",
+    )
+    command.add_argument(
+        "--workspaces", action="store_true",
+        help=(
+            "Also write the always-on rules into a managed block of every enabled agent "
+            "workspace's AGENTS.md (and CLAUDE.md for Claude Code) on this host."
+        ),
     )
 
     command = worker_commands.add_parser(
@@ -5819,6 +5836,9 @@ def _worker_command(args: Any) -> dict[str, Any]:
             # Its sessions start there; a session started elsewhere still
             # works from it, never from where it was started.
             result["workspace"] = channel.working_directory
+            rules = _workspace_rules(_agent_workspace_for(config, identity), identity.runtime_kind)
+            if rules:
+                result["workspace_instructions"] = rules
             if not is_inside(Path.cwd(), channel.working_directory):
                 result["workspace_note"] = (
                     f"Your workspace is {channel.working_directory}: create it if needed, work "
@@ -6858,6 +6878,14 @@ def _worker_project_context(
     # instructions, facts and environment refs, and the label/value facts retire.
     files = field.read_project_files(parsed.object_id) if on_host else {"known": False}
     files_fields: dict[str, Any] = files_context(workspace, files) if files.get("known") else {}
+    # W779: the workspace's always-on rules block, linking this project's instructions file.
+    from .workspace_instructions import instructions_target
+
+    rules = _workspace_rules(
+        workspace,
+        str(getattr(channel, "runtime_kind", "") or ""),
+        instructions_target({**journal, **files_fields}),
+    ) if on_host else {}
     if files.get("known"):
         card_fields: dict[str, Any] = {"project_card": "known", "project_goal": files["goal"]}
     else:
@@ -6877,6 +6905,7 @@ def _worker_project_context(
         **card_fields,
         "workspace": workspace,
         "workspace_source": workspace_source,
+        **({"workspace_instructions": rules} if rules else {}),
         **(
             {"workspace_note": f"{outside_note} Work from {workspace}: create it if needed, clone the project's repositories into it, and start this agent's sessions there."}
             if outside_note and workspace
@@ -7008,6 +7037,60 @@ def _procedure_targets(args: Any) -> tuple[list[str], str]:
     return [kind for kind in PROCEDURE_TARGETS if kind in kinds], "host_channels"
 
 
+def _workspace_rules(workspace: str, runtime_kind: str, project_instructions: str = "") -> dict[str, Any]:
+    """W779: refresh the always-on rules block in this agent's workspace; never fails the calling command."""
+
+    from .procedures import source_package, source_path
+    from .workspace_instructions import ensure_workspace_instructions
+
+    if not workspace or runtime_kind not in PROCEDURE_TARGETS:
+        return {}
+    try:
+        state = ensure_workspace_instructions(
+            workspace,
+            runtime_kind=runtime_kind,
+            revision=str(source_package().get("revision") or ""),
+            skill_text=source_path().read_text(encoding="utf-8"),
+            project_instructions=project_instructions,
+        )
+    except (DomainError, OSError) as exc:
+        return {"state": "not_written", "reason": getattr(exc, "code", type(exc).__name__)}
+    return {key: state[key] for key in ("state", "written", "project_instructions") if key in state}
+
+
+def _procedure_workspaces(args: Any, kinds: list[str], package: Mapping[str, Any], *, write: bool) -> list[dict[str, Any]]:
+    """W779: write or check the always-on rules block in agent workspaces.
+
+    Install with ``--workspaces`` writes every enabled agent workspace on this host of the installed kinds.
+    Verify checks the folders named by ``--workspace``, and with ``--workspaces`` every enabled one.
+    """
+
+    from .procedures import source_path
+    from .workspace_instructions import (
+        configured_workspaces,
+        ensure_workspace_instructions,
+        runtime_kind_of,
+        verify_workspace_instructions,
+    )
+
+    named = [str(item) for item in (getattr(args, "workspace", None) or [])]
+    if not named and not getattr(args, "workspaces", False):
+        return []
+    try:
+        config = HostRelayConfig.load(resolve_host_config_path(getattr(args, "config", None)))
+    except (DomainError, OSError, ValueError):
+        config = None
+    folders = [(folder, runtime_kind_of(config, folder)) for folder in named]
+    if getattr(args, "workspaces", False) and config is not None:
+        folders += [row for row in configured_workspaces(config, kinds) if row not in folders]
+    skill_text = source_path().read_text(encoding="utf-8")
+    act = ensure_workspace_instructions if write else verify_workspace_instructions
+    return [
+        act(folder, runtime_kind=kind, revision=str(package.get("revision") or ""), skill_text=skill_text)
+        for folder, kind in folders
+    ]
+
+
 def _procedure_command(args: Any) -> dict[str, Any]:
     from .procedures import (
         install_agent_procedure,
@@ -7037,6 +7120,15 @@ def _procedure_command(args: Any) -> dict[str, Any]:
         verified = verify_agent_procedure(
             targets, home=args.home, claude_config_dir=getattr(args, "claude_config_dir", None)
         )
+        workspaces = _procedure_workspaces(args, targets, package, write=False)
+        if workspaces and any(row["state"] != "ok" for row in workspaces):
+            raise DomainError(
+                "work_workspace_instructions_not_current",
+                "One or more agent workspaces lack the current always-on rules block; run "
+                "`pb procedure install --target <kind> --workspaces`.",
+                status=409,
+                details={"package": package, "workspaces": workspaces},
+            )
         if any(row["state"] != "current" for row in verified):
             raise DomainError(
                 "work_agent_procedure_verification_failed",
@@ -7056,6 +7148,8 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             "targets_from": targets_from,
             "verified": verified,
         }
+        if workspaces:
+            result["workspaces"] = workspaces
         if getattr(args, "detail", False):
             result["detail"] = True
         return result
@@ -7090,6 +7184,8 @@ def _procedure_command(args: Any) -> dict[str, Any]:
             "package": package,
             "installed": installed,
         }
+        if getattr(args, "workspaces", False):
+            result["workspaces"] = _procedure_workspaces(args, list(args.target or []), package, write=True)
         if switched:
             # The switch already pointed ~/.local/bin/pb at the new release.
             result["switched"] = switched
