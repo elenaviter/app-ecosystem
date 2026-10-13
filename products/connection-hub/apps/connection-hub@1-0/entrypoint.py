@@ -30,6 +30,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.telegram import (
 )
 from kdcube_ai_app.apps.chat.sdk.config import get_secret, get_settings, set_bundle_prop
 from connection_hub.concurrency import bounded_gather
+from connection_hub import request_counters
 from connection_hub.authenticators.models import RequestEnvelope
 from connection_hub.authority_registry_config import (
     authority_registry_config,
@@ -1920,6 +1921,7 @@ async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
     from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_operation
 
     async def resolve(reference: str) -> str:
+        request_counters.count("secret_resolve")  # W819: actual resolves, for W812's harness
         return await _bundle_secret_value(entrypoint, secret_path=reference,
                                           trace_scope="card-transaction-participant", warn_missing=False)
 
@@ -1927,6 +1929,7 @@ async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
         # A peer's transaction authority is a public operation it authenticates by proof.
         return await call_bundle_operation(route="public", **kwargs)
 
+    request_counters.count("participant_callers_build")
     return await build_participant_callers(
         _connections_config(entrypoint), resolve_secret=resolve, call=call,
         card_store=getattr(persistence, "card_store", None), card_service=getattr(persistence, "card_service", None))
@@ -4450,6 +4453,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
     # ── direct protected-service admission ──────────────────────────────────
 
     @api(method="POST", alias="card_transaction_participant", route="public")
+    @request_counters.counted("card_transaction_participant")
     async def card_transaction_participant(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -4504,6 +4508,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_census_read", route="public")
+    @request_counters.counted("card_census_read")
     async def card_census_read(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -4538,6 +4543,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_read_collection_register", route="public")
+    @request_counters.counted("card_read_collection_register")
     async def card_read_collection_register(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -4576,6 +4582,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_lifecycle_plan", route="public")
+    @request_counters.counted("card_lifecycle_plan")
     async def card_lifecycle_plan(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -4624,6 +4631,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return answer
 
     @api(method="POST", alias="card_version", route="public")
+    @request_counters.counted("card_version")
     async def card_version(
         self,
         data: Optional[Dict[str, Any]] = None,
