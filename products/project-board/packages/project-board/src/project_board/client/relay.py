@@ -102,9 +102,9 @@ from .relay_failures import (
 from .local_state_maintenance import run_local_state_maintenance
 from .relay_channel_status import ChannelStatusBook, write_channel_status
 from .project_connect import github_repository
+from .project_file_source import ProjectFileSource
 from .project_file_edit import FILE_EDIT_KIND, apply_file_edit
-from .project_files import file_state
-from .read_roots import READ_ROOTS_STATE, head_commit
+from .read_roots import READ_ROOTS_STATE
 from .local_store import last_read_summaries
 from .outbox_drain import RelayOutboxDrainServer
 from .outbox_store import OutboxStore
@@ -1316,6 +1316,13 @@ class ProblemBoardHostRelayAdapter:
         self.config = config
         self.field = field
         self.client = client
+        # W794: a control the board queues is served at once, not at the end of the next attendance turn.
+        # Project adapters are rebuilt every discovery turn over the same client: the hook is keyed by project
+        # (the newest adapter replaces the last) and the pull lock lives on the client, one per project.
+        self._immediate_pull: asyncio.Task[Any] | None = None
+        set_event_hook = getattr(client, "set_event_hook", None)
+        if callable(set_event_hook) and config.project_id and config.project_id != "attendance":
+            set_event_hook(f"problem-board.controls:{config.project_id}", self._on_push_event)
         # Files cross the network by signed HTTP links, never inside a
         # control: outbound through an upload slot the control plane mints,
         # inbound by fetching the operator's signed download link. Both are
@@ -2389,6 +2396,47 @@ class ProblemBoardHostRelayAdapter:
             relay_degraded_intervals=intervals,
         )
 
+    def _pull_lock(self) -> asyncio.Lock:
+        locks = getattr(self.client, "_problem_board_pull_locks", None)
+        if not isinstance(locks, dict):
+            locks = {}
+            try:
+                setattr(self.client, "_problem_board_pull_locks", locks)
+            except AttributeError:  # a client that takes no attributes: one lock per adapter
+                pass
+        return locks.setdefault(self.config.project_id, asyncio.Lock())
+
+    def _on_push_event(self, event: Mapping[str, Any]) -> None:
+        """W794: a ``control.available`` push for this project pulls and serves controls now (one pull at a time).
+
+        Operator, 2026-10-13: "why requesting the doc should care if coord busy or no at all". A project file
+        view waited for the end of an attendance turn (35 to 110 s); the board already pushes when it queues.
+        """
+
+        data = event.get("data") if isinstance(event.get("data"), Mapping) else event
+        if str(data.get("kind") or "") != "control.available":
+            return
+        refs = data.get("refs") if isinstance(data.get("refs"), Mapping) else {}
+        if str(refs.get("project_ref") or "") != f"work:project:{self.config.project_id}":
+            return
+        if self._immediate_pull is not None and not self._immediate_pull.done():
+            return
+        try:
+            self._immediate_pull = asyncio.get_running_loop().create_task(self._pull_controls_now())
+        except RuntimeError:  # no running loop: the next turn pulls
+            self._immediate_pull = None
+
+    async def _pull_controls_now(self) -> dict[str, int]:
+        try:
+            async with self._pull_lock():
+                return await self._pull_controls()
+        except Exception as exc:  # noqa: BLE001 - the attendance turn pulls again
+            logger.warning(
+                "Problem Board relay immediate control pull failed worker=%s code=%s",
+                self.config.worker_name, getattr(exc, "code", "") or type(exc).__name__,
+            )
+            return {}
+
     async def _pull_controls(self, *, project_ref: str | None = None) -> dict[str, int]:
         requested_project_ref = (
             f"work:project:{self.config.project_id}"
@@ -3180,6 +3228,14 @@ class ProblemBoardHostRelayAdapter:
         )
         return await publish(result)
 
+    def _project_file_source(self) -> ProjectFileSource:
+        """W794: this machine's per-project copies of the listed files, beside the host's field, outside agent workspaces."""
+
+        source = getattr(self, "_file_source", None)
+        if source is None:
+            source = self._file_source = ProjectFileSource(Path(self.field.root).parent / "project-files")
+        return source
+
     async def _serve_file_view(self, control: Mapping[str, Any]) -> str:
         """Publish one listed project file from this agent's clone, stamped with its commit (W370).
 
@@ -3219,22 +3275,40 @@ class ProblemBoardHostRelayAdapter:
             for row in listed.get("files") or []
         ):
             raise DomainError("file_not_listed", "This host's project files list does not name that file.")
-        local, state = file_state(self.config.workspace, alias, path)
-        if state == "not_cloned":
-            raise DomainError("repository_not_cloned", f"This agent has no clone of {alias} yet.")
-        if state == "missing":
-            raise DomainError("file_missing", f"{path} is not in this agent's clone of {alias}.")
-        clone = Path(self.config.workspace) / alias
-        target = Path(local).resolve()
-        # A listed path never reads outside its clone, links included.
-        if clone.resolve() not in target.parents:
-            raise DomainError("file_not_listed", "The listed path leaves its repository.")
-        raw = target.read_bytes()
-        if len(raw) > FILE_VIEW_MAX_BYTES:
+        # W794 (operator, 2026-10-13: "we need the machine with coordinator and its credential"; "last one" =
+        # "A"): served from this machine's own per-project copy, never an agent's clone, at the default
+        # branch's newest commit, with the coordinator Card's GitHub key held by this relay process.
+        repositories = self.field.read_project_repositories(self.config.project_id)
+        url = next(
+            (str(row.get("url") or "") for row in repositories.get("repositories") or [] if row.get("alias") == alias),
+            "",
+        )
+        repository = github_repository(url)
+        issuer = getattr(self.client, "github_key", None)
+        if not repository:
+            raise DomainError("repository_not_on_github", f"{alias} is not a GitHub repository this machine can read.")
+        if issuer is None:
+            raise DomainError("github_key_unavailable", "This relay has no GitHub key path for the coordinator's Card.")
+
+        async def token(name: str) -> str:
+            try:
+                issued = await issuer(project_ref, name)
+            except Exception as exc:  # noqa: BLE001 - the refusal is named on the view, never the token
+                raise DomainError(
+                    "github_key_refused",
+                    f"Connection Hub gave the coordinator no GitHub key for {name}: "
+                    f"{getattr(exc, 'code', '') or type(exc).__name__}.",
+                ) from exc
+            return str(getattr(issued, "token", "") or "")
+
+        content, source_commit = await self._project_file_source().read(
+            project_id=self.config.project_id, alias=alias, repository=repository, path=path, token=token,
+        )
+        if len(content.encode("utf-8")) > FILE_VIEW_MAX_BYTES:
             raise DomainError(
-                "file_too_large", f"{path} is {len(raw)} bytes; a file view carries at most {FILE_VIEW_MAX_BYTES}."
+                "file_too_large",
+                f"{path} is {len(content.encode('utf-8'))} bytes; a file view carries at most {FILE_VIEW_MAX_BYTES}.",
             )
-        content = raw.decode("utf-8", errors="replace")
         await self.client.action(
             object_ref=view_ref,
             action="journal.view.publish",
@@ -3245,7 +3319,7 @@ class ProblemBoardHostRelayAdapter:
                 "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "repository_journal_ref": repository_ref,
                 "next_cursor": "",
-                "source_commit": head_commit(clone),
+                "source_commit": source_commit,
             },
         )
         return view_ref
@@ -4766,7 +4840,8 @@ class ProblemBoardHostRelayAdapter:
             "attendance.controls",
             operation="control.pull",
         ):
-            controls = await self._pull_controls()
+            async with self._pull_lock():
+                controls = await self._pull_controls()
         await run_off_loop(self._report_dead_notification_path, executor=self._store_thread())
         outbox = await self._flush_outbox()
         return {

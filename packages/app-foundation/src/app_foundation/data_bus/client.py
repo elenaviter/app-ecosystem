@@ -406,6 +406,7 @@ class FederatedDataBusClient:
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
             maxsize=max(1, int(event_queue_size))
         )
+        self._event_hooks: dict[str, Callable[[dict[str, Any]], None]] = {}
         self._connected = asyncio.Event()
         self._close_lock = asyncio.Lock()
         self._closed = False
@@ -937,7 +938,24 @@ class FederatedDataBusClient:
         ):
             self._reconnect_task = asyncio.create_task(self._reconnect())
 
+    def set_event_hook(self, key: str, hook: Callable[[dict[str, Any]], None] | None) -> None:
+        """Call ``hook`` with every queued push event as it arrives, beside the queue ``wait_for_event`` reads.
+
+        One hook per ``key``: setting it again replaces it, ``None`` removes it. A hook must not block; it may
+        schedule work. A failing hook is logged and never stops delivery.
+        """
+
+        if hook is None:
+            self._event_hooks.pop(key, None)
+        else:
+            self._event_hooks[key] = hook
+
     def _queue_event(self, event: Mapping[str, Any]) -> None:
+        for hook in list(getattr(self, "_event_hooks", {}).values()):
+            try:
+                hook(dict(event))
+            except Exception:  # noqa: BLE001 - a hook never stops delivery
+                logger.exception("Data Bus event hook failed")
         if self._events.full():
             try:
                 self._events.get_nowait()

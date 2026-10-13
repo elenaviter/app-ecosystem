@@ -473,6 +473,13 @@ class ProblemBoardDataBusClient:
     async def wait_for_event(self, timeout_seconds: float) -> dict[str, Any] | None:
         return await self.client.wait_for_event(timeout_seconds)
 
+    def set_event_hook(self, key: str, hook: Any) -> None:
+        """W794: forward a keyed push hook to the Data Bus client (see FederatedDataBusClient.set_event_hook)."""
+
+        setter = getattr(self.client, "set_event_hook", None)
+        if callable(setter):
+            setter(key, hook)
+
 
 __all__ = [
     "ProblemBoardDataBusClient",
