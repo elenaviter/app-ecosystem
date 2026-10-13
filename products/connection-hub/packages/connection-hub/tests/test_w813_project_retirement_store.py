@@ -134,3 +134,31 @@ async def test_a_stale_base_is_refused_at_stage(tmp_path):
     await service.commit(moved, subject_hash=subject_hash, expected_revision=p.card_revision, now=NOW)
     refused = await _call(operation, "stage", updates=_update(p, subject_hash))
     assert refused["kind"] == "refused" and refused["code"] == "card_changed", refused
+
+
+@pytest.mark.asyncio
+async def test_a_lost_publish_answer_recovers_forward_and_p_stays_revoked(tmp_path):
+    """codex-main (W805): P's PUBLISH answer is lost after the durable pointer move. OUTCOME with STAGE's links
+    shows P published and current at its new version; a repeated PUBLISH writes nothing (txn_unknown); nothing
+    is compensated, no new request is needed, and an unrelated Card is unchanged."""
+    store, operation, p, retired, subject_hash = await _world(tmp_path)
+    service = store._w813_service
+    from test_w578_card_lifecycle_plan import _c
+
+    unrelated = _c(p)
+    unrelated_hash = subject_hash_for(unrelated.grantor_subject)
+    await service.commit(unrelated, subject_hash=unrelated_hash, expected_revision=0, now=NOW)
+
+    staged = await _call(operation, "stage", updates=_update(p, subject_hash))
+    assert staged["kind"] == "staged"
+    await _call(operation, "publish")  # the answer is lost: PB never reads it
+    outcome = await _call(operation, "outcome", links=staged["members"])
+    [member] = outcome["members"]
+    assert outcome["kind"] == "outcome" and outcome["state"] == "published"
+    assert member["current"] is True and member["version"] == p.card_revision + 1
+    # The same PUBLISH again finds no marker (it was consumed): PB reads OUTCOME, never re-stages or compensates.
+    assert await _call(operation, "publish") == {"kind": "refused", "code": "txn_unknown", "status": 404}
+    current = (await store.read_current_authority(subject_hash=subject_hash, access_id=p.access_id))[1]
+    assert current.state == CARD_STATE_REVOKED and current.card_revision == p.card_revision + 1
+    assert (await store.read_current_authority(subject_hash=unrelated_hash,
+                                               access_id=unrelated.access_id))[1] == unrelated
