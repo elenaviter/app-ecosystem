@@ -127,6 +127,12 @@ async def test_a_replay_after_publish_is_already_applied_but_only_for_this_proje
     # A P revoked any other way is not this retirement's success.
     other = await _plan(_Host(revoked), [_retire(revoked)], locator=_locator(revoked))
     assert other["ok"] is False and other["error"] == "card_plan_revoke_not_active"
+    # Nor is a P another request revoked (a different attempt or chunk id).
+    foreign = dataclasses.replace(stamped, provenance={
+        **dict(stamped.provenance or {}),
+        PROJECT_RETIREMENT_PROVENANCE: {**stamped.provenance[PROJECT_RETIREMENT_PROVENANCE], "request_id": "other"}})
+    other_request = await _plan(_Host(foreign), [_retire(foreign)], locator=_locator(foreign))
+    assert other_request["ok"] is False and other_request["error"] == "card_plan_revoke_not_active"
 
 
 @pytest.mark.asyncio
