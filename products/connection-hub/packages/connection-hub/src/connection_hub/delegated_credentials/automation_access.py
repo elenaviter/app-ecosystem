@@ -4089,6 +4089,9 @@ class AutomationAccessService:
                     getattr(resource, "person_card_operations", ()) or ())) else {}),
                 **({"person_member_operations": list(member_ops)} if (member_ops := tuple(
                     getattr(resource, "person_member_operations", ()) or ())) else {}),
+                # W775: agent-only operations; a person's editor folds them away, an agent's is unchanged.
+                **({"person_agent_operations": list(agent_ops)} if (agent_ops := tuple(
+                    getattr(resource, "person_agent_operations", ()) or ())) else {}),
                 "operations": [
                     {
                         "name": tool.name,

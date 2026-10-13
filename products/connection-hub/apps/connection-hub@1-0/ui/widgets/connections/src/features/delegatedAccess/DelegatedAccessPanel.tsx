@@ -188,9 +188,9 @@ import {
   projectPersonControlCoordinates,
 } from './projectPersonControl';
 import {
-  catalogDriftForPersonCard, hiddenHeldGrants, namedServicesShownOnPersonCard, namedServicesShownOnPersonMyCard,
+  agentOnlyOnPersonCard, catalogDriftForPersonCard, hiddenHeldGrants, namedServicesShownOnPersonCard, namedServicesShownOnPersonMyCard,
   notOfferedOnPersonCard, resourcesForPersonCard, resourcesForPersonMyCard,
-  visibleOperations,
+  splitAgentOnly, visibleOperations,
 } from './personCardOperations';
 import { callerEditNote, cardOwnerView, controlIssuerLabel, isPersonIssuer, personControlCardHolder, personControlCardTitle, providerAccountsSummary, readableCardLabel } from './cardLabels';
 import { detailedCardOffersEdit } from './cardActions';
@@ -4528,7 +4528,10 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
               </span>
             </summary>
             <div className="edit-section__body resource-grants resource-operations">
-              {renderOperationGroups(visibleOperations(resourceOption.operations), (operation) => operation.group, resourceOption.operation_groups, (operation) => {
+              {(() => {
+                // W775: on a person's Card the agent-only operations fold away; everything else renders as before.
+                const { regular, agentOnly } = splitAgentOnly(visibleOperations(resourceOption.operations));
+                const renderOperation = (operation: (typeof regular)[number]) => {
                 const selected = (editResourceOperations[resource] || []).includes(operation.name);
                 const alreadyGranted = editGrantedOperations(item, resource).includes(operation.name);
                 const policy = invocationPolicyFor(item, resource, operation.name);
@@ -4538,7 +4541,9 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 const diffState: CompositionRowState = composition
                   ? compositionRowState(selected, controlSelected, composition.mode)
                   : 'absent';
-                const excludedByControl = controlCapsCaller
+                // W775: an agent-only operation on a person's Card is not the person's to allow; no Control warning.
+                const excludedByControl = operation.agent_only !== true
+                  && controlCapsCaller
                   && !authorityAllowsOuterOperation(
                     linkedControl?.control_authority || {}, resource, operation.name,
                   );
@@ -4637,7 +4642,19 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                     ) : null}
                   </div>
                 );
-              })}
+                };
+                return (
+                  <>
+                    {renderOperationGroups(regular, (operation) => operation.group, resourceOption.operation_groups, renderOperation)}
+                    {agentOnly.length ? (
+                      <details className="agent-only-operations">
+                        <summary>Agent-only tools (not for people)</summary>
+                        <div className="agent-only-operations__body">{agentOnly.map(renderOperation)}</div>
+                      </details>
+                    ) : null}
+                  </>
+                );
+              })()}
             </div>
           </details>
         ) : null}
@@ -5336,13 +5353,20 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const controlLabel = linkedControl?.binding
       ? controlIssuerLabel(linkedControl.binding, issuerViewer)
       : 'Control Card';
-    const controlCappedTools = linkedControl?.state === 'active'
+    // W775: on a person's Card (its project Control Card or its own My Card, never an agent's) an agent-only
+    // operation is folded away and never counted as an inactive selection.
+    const personsCard = Boolean(projectPersonControl) || Boolean(!residentCapabilityCard
+      && record.control_card?.binding && linkedControlOpenTarget(record, record.control_card.binding)?.targetSubject);
+    const controlCappedTools = (linkedControl?.state === 'active'
       && linkedControl.composition_mode !== 'or'
       && linkedControl.control_authority
       ? outerOperationsExcludedByControl(
           pendingCallerAuthority(record), linkedControl.control_authority,
         )
-      : [];
+      : []).filter(({ resource, operation }) => !(personsCard && agentOnlyOnPersonCard(
+      catalogRowFor(catalogResources, resource, (key) => (record.catalog_row_by_resource || {})[key] || key),
+      operation,
+    )));
     const compositionMode: ControlCompositionMode = linkedControl?.composition_mode === 'or'
       ? 'or'
       : 'and';
