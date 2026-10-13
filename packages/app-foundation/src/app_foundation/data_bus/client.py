@@ -11,9 +11,11 @@ import time
 import uuid
 import weakref
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping
 
 from .credentials import DataBusCredential, DelegatedCardCredential
+from .timing import RequestTiming, RequestTimingObserver, RequestTimingPhase
 
 
 SocketFactory = Callable[[], Any]
@@ -1363,6 +1365,7 @@ class FederatedDataBusClient:
         idempotency_key: str,
         message_id: str | None = None,
         timeout_seconds: float | None = None,
+        timing_observer: RequestTimingObserver | None = None,
     ) -> DataBusOutcome:
         if not self.connected:
             raise DataBusClientError(
@@ -1379,9 +1382,35 @@ class FederatedDataBusClient:
         accepted = False
         sent_on = self.socket
         sent_token = self._active_socket_token
+        timing_started = time.monotonic() if timing_observer is not None else 0.0
+
+        def observe(phase: RequestTimingPhase) -> None:
+            if timing_observer is None:
+                return
+            try:
+                # Existing callers may use non-UUID request IDs. They continue
+                # to work, but such IDs must never enter this diagnostic path.
+                diagnostic_id = str(uuid.UUID(resolved_message_id))
+                observation = RequestTiming(
+                    message_id=diagnostic_id,
+                    phase=phase,
+                    utc=datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                    elapsed_seconds=max(0.0, time.monotonic() - timing_started),
+                )
+                returned = timing_observer(observation)
+                # An accidentally async observer is not scheduled or awaited.
+                if inspect.iscoroutine(returned):
+                    returned.close()
+            except (Exception, asyncio.CancelledError):
+                # Diagnostic failure, including observer cancellation, cannot
+                # cancel or replace the business operation's result.
+                pass
+
         try:
+            observe(RequestTimingPhase.START)
             waited_from = time.monotonic()
             try:
+                observe(RequestTimingPhase.SEND)
                 ack = await sent_on.call(
                     "data_bus.publish",
                     {
@@ -1407,6 +1436,7 @@ class FederatedDataBusClient:
                 ):
                     raise
                 if future.done() and not future.cancelled():
+                    observe(RequestTimingPhase.OUTCOME)
                     return future.result()
                 evidence = self._wait_evidence(
                     disconnects_at_start=disconnects_at_start,
@@ -1449,6 +1479,7 @@ class FederatedDataBusClient:
                 )
             )
             if not accepted:
+                observe(RequestTimingPhase.REJECTED)
                 rejected = acknowledgement.get("rejected")
                 details = {
                     "message_id": resolved_message_id,
@@ -1467,6 +1498,7 @@ class FederatedDataBusClient:
                 raise DataBusIngressRejected(
                     "data_bus_ingress_rejected", message, details=details
                 )
+            observe(RequestTimingPhase.ACK)
             outcome_timeout = (
                 self.outcome_timeout_seconds
                 if timeout_seconds is None
@@ -1474,9 +1506,11 @@ class FederatedDataBusClient:
             )
             waited_from = time.monotonic()
             try:
-                return await asyncio.wait_for(
+                outcome = await asyncio.wait_for(
                     asyncio.shield(future), timeout=outcome_timeout
                 )
+                observe(RequestTimingPhase.OUTCOME)
+                return outcome
             except asyncio.TimeoutError as exc:
                 raise DataBusOutcomeUnknown(
                     message_id=resolved_message_id,
@@ -1488,10 +1522,20 @@ class FederatedDataBusClient:
                         timeout_seconds=outcome_timeout,
                     ),
                 ) from exc
+        except DataBusOutcomeUnknown:
+            observe(RequestTimingPhase.UNKNOWN)
+            raise
+        except asyncio.CancelledError:
+            observe(RequestTimingPhase.CANCELLED)
+            raise
+        except Exception:
+            observe(RequestTimingPhase.FAILED)
+            raise
         finally:
             self._pending.pop(resolved_message_id, None)
             if not future.done():
                 future.cancel()
+            observe(RequestTimingPhase.FINISH)
 
     async def wait_for_event(self, timeout_seconds: float) -> dict[str, Any] | None:
         expiry = self._client_side_expiry

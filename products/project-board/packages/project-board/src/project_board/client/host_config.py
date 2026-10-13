@@ -16,6 +16,14 @@ from ..contract.worker_identity import (
 from .agent_session import default_profile_name
 from .io import atomic_write_json, component, exclusive_lock, read_json, utc_now
 from .journals import repository_entries, repository_entry
+from .message_timing import MessageTimingConfig
+
+
+def _message_timing_config(value: Any) -> MessageTimingConfig:
+    try:
+        return MessageTimingConfig.from_mapping(value)
+    except ValueError as exc:
+        raise DomainError("work_relay_config_invalid", str(exc)) from exc
 
 
 HOST_CONFIG_SCHEMA = "problem-board.host-relay-config.v2"
@@ -291,6 +299,7 @@ class HostRelayConfig:
     # folder per project with its manifest (``pb host configure
     # --backup-root``). Unset, nothing is created: the operator chooses it.
     backup_root: str = ""
+    message_timing: MessageTimingConfig = MessageTimingConfig()
 
     @property
     def effective_agent_workspace_root(self) -> str:
@@ -481,6 +490,7 @@ class HostRelayConfig:
                 if str(item).strip()
             ),
             backup_root=str((value.get("backups") or {}).get("root") or ""),
+            message_timing=_message_timing_config(relay.get("message_timing")),
         )
         approved_roots = [Path(root) for root in result.allowed_roots]
         for alias, repository in (
@@ -762,6 +772,8 @@ def update_host_config(
     workspace_sweep_auto_apply: bool | None = None,
     workspace_sweep_protected: Sequence[str] | None = None,
     backup_root: str | Path | None = None,
+    message_timing_until: str | None = None,
+    message_timing_off: bool = False,
     remove_disabled_channels: bool = False,
 ) -> HostRelayConfig:
     """Apply one explicit, non-secret host configuration revision."""
@@ -898,6 +910,11 @@ def update_host_config(
                 value["backups"] = {**dict(value.get("backups") or {}), "root": str(chosen)}
             else:
                 value.pop("backups", None)
+        if message_timing_until is not None or message_timing_off:
+            value["relay"]["message_timing"] = {
+                "enabled": not message_timing_off,
+                "expires_at": "" if message_timing_off else message_timing_until,
+            }
         value["updated_at"] = utc_now()
         updated = HostRelayConfig.from_mapping(value, path=path)
         atomic_write_json(path, value)
