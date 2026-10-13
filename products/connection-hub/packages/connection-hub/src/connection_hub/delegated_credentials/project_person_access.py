@@ -12,6 +12,8 @@ import logging
 import time
 from typing import Any, Callable, Iterable, Mapping
 
+from connection_hub import request_counters
+
 from connection_hub.agent_account_scope import normalize_account_scope
 from connection_hub.delegated_credentials.cards.model import (
     CARD_STATE_ACTIVE,
@@ -441,9 +443,11 @@ class ProjectPersonControlLifecycle:
         # Live 2026-10-09 (operator: "waiting 10 seconds for card retrieval is unacceptable"): the read's
         # authorization and the viewer's edit question are independent policy-port questions, so they are
         # asked together instead of one after the other; the view needs only the read's decision.
-        async with shared_membership_scope():
-            return await self._get(viewer=viewer, actor_subject=actor_subject, project_ref=project_ref,
-                                   target_subject=target_subject, request_id=request_id)
+        # W819: one counted Hub operation for W812's harness (a no-op without an observer).
+        with request_counters.operation_scope("project_person_control_get"):
+            async with shared_membership_scope():
+                return await self._get(viewer=viewer, actor_subject=actor_subject, project_ref=project_ref,
+                                       target_subject=target_subject, request_id=request_id)
 
     async def _get(
         self,
@@ -456,6 +460,7 @@ class ProjectPersonControlLifecycle:
     ) -> dict[str, Any]:
         started = time.monotonic()
         timings: dict[str, float] = {}
+        request_counters.count("person_control_read")
 
         async def timed(name: str, call):
             begin = time.monotonic()
@@ -463,6 +468,7 @@ class ProjectPersonControlLifecycle:
                 return await call
             finally:
                 timings[name] = (time.monotonic() - begin) * 1000.0
+                request_counters.phase(name, timings[name])
 
         async def ask_edit() -> dict[str, Any]:
             # The question is created inside the task, so a task retired before it starts creates nothing.
