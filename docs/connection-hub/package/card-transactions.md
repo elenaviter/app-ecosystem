@@ -196,14 +196,18 @@ whole request, so no edit value is repeated.
     invitation Card is never overwritten.
 - **A role change's Cards (`role_selection`).** One `updates` entry per Card (C, or
   C and My): `kind`, `target_subject`, `access_id`, `subject_hash`,
-  `original_revision: 0`, the PB `resource`, and either `add_grants` and
-  `add_operations` (a promotion) or `remove_operations` plus `operation_grants`
-  (a demotion). PB sends a fixed policy delta, never Card content.
+  `original_revision: 0`, the PB `resource`, and `add_grants` and
+  `add_operations` (a promotion), or `remove_operations` plus `operation_grants`
+  (a demotion), or both in one entry (W810: a demotion that also adds the
+  member defaults a Card misses). PB sends a fixed policy delta, never Card
+  content. An operation is never both removed and added, and any removal carries
+  `operation_grants`.
   - The Hub reads the current Card (its version becomes the base), applies the
     delta to that one resource, and builds the candidate with the ordinary
     reselect builder.
-  - A demotion recomputes the resource's grants from the remaining operations
-    through PB's map. An operation missing from it is refused
+  - With a removal, the operations become (current minus removed) plus added,
+    and the Hub recomputes the resource's grants over that whole set through
+    PB's map. An operation missing from it is refused
     (`card_plan_role_operation_unknown`).
   - An unchanged Card stays a read.
   - The Hub knows nothing about roles or admins.
