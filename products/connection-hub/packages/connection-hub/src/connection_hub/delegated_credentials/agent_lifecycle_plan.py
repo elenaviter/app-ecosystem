@@ -173,11 +173,13 @@ async def build_agent_lifecycle_update(host: Any, *, original: CardAuthority,
             or decision.target_subject != update["target_subject"]
             or decision.request_id != request_id):
         raise _refuse("agent_plan_authorization_invalid")
+    # W776: Problem Board names an agent by its Card, card:<access id> (its worker
+    # registry principal); the Card's own delegate subject stays accepted.
     if (original.state != CARD_STATE_ACTIVE or original.card_kind not in {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}
             or not original.delegate_subject.startswith("integration:")
             or original.delegate_subject == original.grantor_subject
             or original.source not in {"oauth", "agent"}
-            or update["target_subject"] != original.delegate_subject
+            or update["target_subject"] not in {original.delegate_subject, "card:" + original.access_id}
             or update["access_id"] != original.access_id
             or update["subject_hash"] != subject_hash_for(original.grantor_subject)
             or type(update["original_revision"]) is not int
