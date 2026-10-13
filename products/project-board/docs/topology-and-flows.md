@@ -330,6 +330,25 @@ finishes, including on cancellation. Recovery scans that can move files and all
 store writes remain on the serialized store path. Synthetic isolation tests
 are not a live equal-load acceptance capture or authorization to restart a host.
 
+Coordinate readiness checks with an explicit worker selection enumerate only
+those workers' pending and leased directories, rather than walking every
+worker's queue and filtering afterward. An unfiltered check still sees every
+worker. Each check reads the current directory entries and timestamps; it
+caches no queue or authorization state. Deferred requests and expired-lease
+recovery keep the same readiness rules. This reduces per-channel scan work,
+but does not by itself establish live CPU usage or delivery under arbitrary
+host pressure.
+
+Coordinate requests still use the durable per-worker pending/leased queue.
+A channel already draining a request does not start a second drain; queued
+requests remain pending until that channel can serve them. Other channels are
+checked independently. The addressed-scan change does not alter request
+deadlines, lease ownership, expiry, or fresh Card/session dispatch fences.
+Bounded synthetic transport tests exercise queued bursts across 8 and 16
+sessions beside owned disk writes, with one transport deliberately held.
+Those tests establish retention and delivery within their explicit bounds,
+not a guarantee under arbitrary host saturation or network failure.
+
 ### Why the two runtimes wake differently
 
 The two runtimes cannot share one wake, because each admits a new model turn
