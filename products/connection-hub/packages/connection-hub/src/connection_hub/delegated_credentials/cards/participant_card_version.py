@@ -29,6 +29,7 @@ participant answer under ``AnswerContract.CARD_VERSION``), refusals included.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
@@ -50,6 +51,8 @@ from .lifecycle_plan_operation import MAX_REQUEST_BYTES, MAX_STEPS, _Refused as 
 from .model import CARD_STATE_ACTIVE, CardAuthority
 from .participant_effects import ParticipantEffectRefused
 from .participant_operation import MAX_SKEW_SECONDS, ParticipantCaller
+
+_LOGGER = logging.getLogger("connection_hub.delegated_cards.participant_card_version")
 
 OPERATION = "card_version"
 REQUEST_SCHEMA = "card-version-request.v1"
@@ -486,6 +489,10 @@ class CardVersionOperation:
                 raise _AlreadyApplied
             if code == "card_plan_catalog_moved":  # W723: the reviewed catalog is no longer the active one
                 raise CardVersionRefused("stage_catalog_moved")
+            # W768: name the planner's own fixed refusal code, never request content, so a
+            # collapsed edit_invalid says which check refused it.
+            _LOGGER.warning("card_version stage refused by the planner: txn=%s code=%s",
+                            txn, code if isinstance(code, str) and re.fullmatch(r"[a-z0-9_]{1,80}", code) else "-")
             raise CardVersionRefused("storage_unavailable" if code in _UNAVAILABLE else "edit_invalid")
         plan = planned["plan"]
         catalog = data["catalog"]

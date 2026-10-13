@@ -617,6 +617,47 @@ def _grantor_authority(
     return out
 
 
+def _carried_application_roles(existing: Any) -> set[str]:
+    """The platform roles the stored Card's application-operations policy already holds (W768)."""
+    try:
+        policy = application_operation_role_policy(
+            dict(existing.properties or {}),
+            resource_grants=dict(existing.resource_grants or {}),
+        )
+    except ApplicationOperationPolicyError:
+        return set()  # an unreadable stored policy carries nothing
+    if policy is None:
+        return set()
+    return {policy.default_role, *policy.operation_roles.values()}
+
+
+def _application_part_unchanged(
+    existing: Any,
+    *,
+    properties: Mapping[str, Any],
+    resource_grants: Mapping[str, Any],
+    resource_operations: Mapping[str, Any],
+) -> bool:
+    """True when a save keeps the stored Card's application policy and selects no new application operation (W768)."""
+    try:
+        before = application_operation_role_policy(
+            dict(existing.properties or {}),
+            resource_grants=dict(existing.resource_grants or {}),
+        )
+        after = application_operation_role_policy(properties, resource_grants=resource_grants)
+    except ApplicationOperationPolicyError:
+        return False
+    if before is None or after is None:
+        return False
+    if (before.default_role, dict(before.operation_roles)) != (after.default_role, dict(after.operation_roles)):
+        return False
+    stored = {_clean(value) for value in _as_list(
+        dict(existing.resource_operations or {}).get(APPLICATION_API_RESOURCE)) if _clean(value)}
+    selected = {_clean(value) for value in _as_list(
+        resource_operations.get(APPLICATION_API_RESOURCE)) if _clean(value)}
+    return selected <= stored
+
+
 def _application_role_policy(
     *,
     properties: Mapping[str, Any],
@@ -5534,12 +5575,31 @@ class AutomationAccessService:
                     + "."
                 ),
             })
+        # W768: as for grants (W296), a save bounded by its project host is not
+        # refused for the application roles the stored Card already carries,
+        # when it leaves its application-operations part exactly as stored: the
+        # same default role, the same per-operation roles, and no newly selected
+        # application operation. Without this, no project-bounded save of a Card
+        # whose policy holds a platform role (the project Control's super-admin
+        # default) could ever succeed, whatever the person ticked. Any change to
+        # that part is checked against the bound alone, as before.
+        delegable_roles = (
+            set(delegable_grants) | _carried_application_roles(existing)
+            if _delegable_grants is not None
+            and _application_part_unchanged(
+                existing,
+                properties=selected_properties,
+                resource_grants=selected_resource_grants,
+                resource_operations=selected_resource_operations,
+            )
+            else delegable_grants
+        )
         try:
             _application_role_policy(
                 properties=selected_properties,
                 resource_grants=selected_resource_grants,
                 resource_operations=selected_resource_operations,
-                delegable_roles=delegable_grants,
+                delegable_roles=delegable_roles,
                 allowed_roles=catalog_config.resource_grants(
                     APPLICATION_API_RESOURCE
                 ),
