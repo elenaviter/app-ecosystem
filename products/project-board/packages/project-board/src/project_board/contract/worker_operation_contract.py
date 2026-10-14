@@ -450,6 +450,10 @@ PROBLEM_BOARD_OPERATION_POLICIES: dict[str, dict[str, Any]] = {
             "worker's declared worktree since the base commit (W278), and "
             "disk_usage: the host's free and total disk bytes and this agent's "
             "workspace size once measured (W423)."
+            " Optional team_protocol=problem_board.heartbeat_team.v1 and "
+            "known_team_revision negotiate display-only complete TEAM snapshots; "
+            "team_view state unchanged omits team, never clears it. "
+            "Current authority and other heartbeat fields are not conditional."
         ),
     },
     "worker.estimate": {

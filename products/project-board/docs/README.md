@@ -106,6 +106,9 @@ and operates a machine:
 - [Delivery guarantees](delivery.md): what an agent and an operator can rely
   on when mail travels between the board, the relay and a session, and what
   each delivery symptom means and what to do.
+- [Conditional heartbeat TEAM](heartbeat-team.md): display-only content
+  identities, coherent local snapshots, reconnect/rollback recovery and the
+  unchanged-hit/byte/CPU qualification boundary.
 - [Add a machine for your agents](add-a-machine.md): what a person does, and
   what they hand their agent, to put agents on another computer.
 - [`relay.template.json`](relay.template.json): the shape of a host relay

@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 
 from .card_refusal import actionable_card_refusal
+from project_board.client.heartbeat_team import TeamRequest, TeamSnapshots
 from .limit_state import qualify_limit_state, session_with_limit_state, wake_deferred_until
 from .limit_state import merge_codex_quota, codex_limit_state
 from .codex_quota import (
@@ -1312,10 +1313,13 @@ class ProblemBoardHostRelayAdapter:
         workspace_sizes: WorkspaceSizes | None = None,
         worktree_observer: WorktreeObserverCache | None = None,
         store_executor: Executor | None = None,
+        team_snapshots: TeamSnapshots | None = None,
     ) -> None:
         self.config = config
         self.field = field
         self.client = client
+        # Children share one process-memory pair owner across attendance cycles.
+        self._team_snapshots = team_snapshots if team_snapshots is not None else TeamSnapshots()
         # W794: a control the board queues is served at once, not at the end of the next attendance turn.
         # Project adapters are rebuilt every discovery turn over the same client: the hook is keyed by project
         # (the newest adapter replaces the last) and the pull lock lives on the client, one per project.
@@ -1716,6 +1720,9 @@ class ProblemBoardHostRelayAdapter:
                     for item in value.get("attendances") or []
                     if isinstance(item, Mapping) and item.get("project_ref")
                 ]
+                self._heartbeat_teams().retain_projects({
+                    str(item["project_ref"]) for item in self._attendance_cache["items"]
+                })
         if value.get("worker_alias"):
             self._attendance_cache["worker_alias"] = str(value["worker_alias"])
         if "host_retirements" in value:
@@ -1726,6 +1733,7 @@ class ProblemBoardHostRelayAdapter:
             ]
 
     def _invalidate_cached_project(self, project_ref: str) -> None:
+        self._heartbeat_teams().forget(project_ref)
         self._attendance_cache["initialized"] = False
         self._attendance_cache["items"] = [
             dict(item)
@@ -4644,10 +4652,13 @@ class ProblemBoardHostRelayAdapter:
             <= 0
         )
         heartbeat_payload: dict[str, Any] = {}
+        team_request = None
         if heartbeat_sent:
+            team_request = self._heartbeat_teams().begin(project_ref, self._team_context())
             heartbeat_payload = {
                 "availability": "available",
                 "project_ref": project_ref,
+                **team_request.payload(),
             }
             if session_delta is not None:
                 heartbeat_payload["agent_sessions"] = session_delta
@@ -4670,7 +4681,23 @@ class ProblemBoardHostRelayAdapter:
             "workspace_report": workspace_report,
             "heartbeat_sent": heartbeat_sent,
             "heartbeat_payload": heartbeat_payload,
+            "team_request": team_request,
         }
+
+    def _heartbeat_teams(self) -> TeamSnapshots:
+        # Narrow tests/one-shot adapters may be built without __init__.
+        snapshots = getattr(self, "_team_snapshots", None)
+        if snapshots is None:
+            snapshots = self._team_snapshots = TeamSnapshots()
+        return snapshots
+
+    def _team_context(self) -> tuple[Any, ...] | None:
+        client = getattr(self, "client", None)
+        generation = getattr(client, "connection_generation", None)
+        if type(generation) is not int or generation < 1 or not getattr(client, "connected", False):
+            return None
+        return (id(client), generation, self.config.worker_name, self.config.worker_identity,
+                self.config.connection_hub_profile, getattr(client, "partition_ref", ""))
 
     def _record_project_heartbeat_result(
         self,
@@ -4701,20 +4728,21 @@ class ProblemBoardHostRelayAdapter:
         self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
         self._record_attendance_observation(heartbeat_result)
         self._materialize_attended_project(heartbeat_result)
-        # The team travels with every project heartbeat so a worker can
-        # address a teammate from its packet without asking the control
-        # plane. Runtime identity, when the board reports it, remains
-        # nested on that authoritative roster. Replacing the snapshot
-        # means an omitted model or account is never inherited or made up.
-        if isinstance(heartbeat_result.get("team"), list):
-            try:
-                self.field.sync_project_team(
-                    self.config.project_id, heartbeat_result["team"]
-                )
-            except DomainError:
-                # The project is not materialized here yet; the next cycle
-                # after its materialize control lands stores the team.
-                pass
+        # Retain exactly the display snapshot whose content token was sent.
+        # Complete replacements clear omitted fields; empty means clear.
+        teams = self._heartbeat_teams()
+        request = prepared.get("team_request")
+        context = self._team_context()
+        if not isinstance(request, TeamRequest):
+            teams.forget(project_ref)
+            request = teams.begin(project_ref, None)
+            context = None
+        try:
+            teams.apply(request, heartbeat_result, context=context,
+                        materialize=lambda team: self.field.sync_project_team(self.config.project_id, team))
+        except DomainError:
+            # No token survives a failed materialization; next request is full.
+            pass
         # Who acts as coordinator now (W313): the holder, not the first
         # labelled teammate. Absent from a board that predates it.
         if isinstance(heartbeat_result.get("coordinator"), Mapping):
@@ -4783,6 +4811,7 @@ class ProblemBoardHostRelayAdapter:
                         ),
                     )
             except DomainError as exc:
+                self._heartbeat_teams().forget(project_ref)
                 if exc.code != "work_worker_not_linked":
                     raise
                 self._invalidate_cached_project(project_ref)
@@ -5110,6 +5139,7 @@ class ProblemBoardHostRelayAdapter:
                 raise
         # Re-register with the interval already advertised so the recovery does
         # not cost a second publish for the interval alone.
+        self._heartbeat_teams().retain_projects(set())
         interval = self._published_interval
         self._published_interval = None
         registration = await self._publish_worker(reconcile_ceiling_seconds=interval)
@@ -5340,6 +5370,7 @@ class ProblemBoardHostRelayAdapter:
                 workspace_sizes=self._workspace_sizes,
                 worktree_observer=self._worktree_observer,
                 store_executor=self._store_thread(),
+                team_snapshots=self._heartbeat_teams(),
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
