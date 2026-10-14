@@ -1080,9 +1080,19 @@ async def plan_card_lifecycle(
                 if selection is None:
                     already_applied += 1  # unchanged: the Card stays a read, never a synthetic revision
                     continue
-                built = await build_existing_card_selection_update(
-                    host, original=original, selection=selection, active=active, decision=decision,
-                    project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now)
+                try:
+                    built = await build_existing_card_selection_update(
+                        host, original=original, selection=selection, active=active, decision=decision,
+                        project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id,
+                        now=now)
+                except DecisionRefused as exc:
+                    # W810: an added operation the active catalog does not declare is dropped by the
+                    # resolution, so a Card that already holds everything grantable of the target resolves
+                    # back to itself. For a role change that is already applied, never a refusal.
+                    if getattr(exc, "reason", str(exc)) != "card_plan_selection_unchanged":
+                        raise
+                    already_applied += 1
+                    continue
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
