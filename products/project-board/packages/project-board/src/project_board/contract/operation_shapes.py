@@ -88,6 +88,17 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                                                            '(optional)',
                                                    'expected_revision': 'integer; 0 creates the '
                                                                         'first binding'}},
+    'project.delete': {   'description': 'Delete the project: preview the exact proposal and its warning, '
+                                         'confirm it by proposal digest and the exact project title, or read '
+                                         'its status. A project owner or admin person only; never an agent.',
+                          'object_ref': 'work:project:<project_id>',
+                          'payload': {   'project_ref': 'work:project:<project_id>',
+                                         'request_id': 'a stable id for this deletion request',
+                                         'phase': 'preview | confirm | status',
+                                         'mode': 'archive | permanent (preview and confirm)',
+                                         'backup_retention': '{"purge_after_days": null or days} (preview and confirm)',
+                                         'proposal_digest': "the preview's lowercase SHA-256 (confirm)",
+                                         'confirmation_title': 'the exact project title, as typed (confirm)'}},
     'project.set_repositories': {   'description': "Replace the project's repository preset under "
                                                    "its current revision. The journal home's alias "
                                                    'must be present with the journal role.',
@@ -1020,6 +1031,8 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
 # them. Only fields a refusal is known for are listed: a field missing from
 # this table is checked by the service, never guessed here.
 PROBLEM_BOARD_OPERATION_REQUIRED: dict[str, tuple[str, ...]] = {
+    # W815: every phase names the project, its request and the phase; the rest depends on the phase.
+    "project.delete": ("project_ref", "request_id", "phase"),
     "project.role.get": ("role",),
     "project.role.manage": ("role", "expected_revision"),
     "project.role.handover.decide": ("handover_ref", "decision", "expected_revision"),
