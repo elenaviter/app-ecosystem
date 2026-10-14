@@ -93,6 +93,18 @@ UPDATE_STEPS.update(AGENT_UPDATE_STEPS)
 Planner = Callable[..., Awaitable[Mapping[str, Any]]]
 
 
+def update_step_operation(update: Mapping[str, Any]) -> str:
+    """The host operation that authorizes one update (its kind's, with one target-shaped exception).
+
+    W850: a ``role_selection`` naming the Card itself (``target_subject == access_id``) is a project agent
+    Card's add-only follow, authorized as that agent Card's update; a person's target is always the person,
+    never a Card id, so the person path keeps ``project.person_control.update``.
+    """
+    if update["kind"] == "role_selection" and update.get("target_subject") == update.get("access_id"):
+        return PROJECT_AGENT_CARD_UPDATE
+    return UPDATE_STEPS[update["kind"]]
+
+
 def plan_request_digest(request: Mapping[str, Any]) -> str:
     """The shared helper's digest of exactly the unsigned request fields, under the closed PLAN contract."""
     return shared_request_digest({name: request[name] for name in REQUEST_FIELDS}, contract=AnswerContract.PLAN)
@@ -138,7 +150,7 @@ def plan_steps(creations: list[Mapping[str, Any]], updates: list[Mapping[str, An
     for index, update in enumerate(updates):
         if update.get("kind") not in UPDATE_STEPS or not _bounded(update.get("target_subject")):
             raise _Refused("card_plan_request_invalid", 400)
-        steps.append(LifecyclePlanStep(ref=f"update:{index}", operation=UPDATE_STEPS[update["kind"]],
+        steps.append(LifecyclePlanStep(ref=f"update:{index}", operation=update_step_operation(update),
                                        target_subject=update["target_subject"]))
     return tuple(steps)
 
@@ -262,4 +274,4 @@ class CardLifecyclePlanOperation:
 
 
 __all__ = ["ANSWER_SCHEMA", "CREATION_STEPS", "CardLifecyclePlanOperation", "OPERATION", "REQUEST_FIELDS",
-           "REQUEST_SCHEMA", "UPDATE_STEPS", "plan_request_digest", "plan_steps"]
+           "REQUEST_SCHEMA", "UPDATE_STEPS", "plan_request_digest", "plan_steps", "update_step_operation"]
