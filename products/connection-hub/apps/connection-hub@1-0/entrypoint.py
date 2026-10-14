@@ -6746,9 +6746,15 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     expected_card_revision=_expected_card_revision(payload),
                 )
             else:
+                async def authorize_agent_card(access_id: str, project_ref: str) -> Any:
+                    # W727: the owner's Save of a bound agent Card changes it only as its project allows.
+                    agent_cards = await self._project_agent_card_access(request)
+                    return await agent_cards.authorize_write(user, access_id=access_id, project_ref=project_ref)
+
                 _result = await access_service.update_access(
                     user,
                     access_id=_access_id_for_log,
+                    _authorize_agent_card=authorize_agent_card,
                     # W737: omitted stays omitted (an Accept-only save changes no selection).
                     resource_grants=(
                         dict(payload.get("resource_grants") or {})
