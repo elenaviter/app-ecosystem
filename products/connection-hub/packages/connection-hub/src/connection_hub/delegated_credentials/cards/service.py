@@ -436,7 +436,12 @@ class DelegatedCardService:
                 answer = await card_version_publish(self._store, txn=txn, run_effect=run_effect, binding=binding)
             except BaseException:
                 for access_id in marked:
-                    try:  # the marker goes; readers then restore whatever durable state stands
+                    try:
+                        member = next(m for m in marker["members"] if m["access_id"] == access_id)
+                        current = await self._store.read_current(subject_hash=member["subject_hash"],
+                                                                 access_id=access_id)
+                        if current is not None and current.revision_name == member["revision_name"]:
+                            continue  # W756: never clear the cache fence of an unfinished publication.
                         await self._cache.finalize_removal(access_id, mutation_id=mutation_id)
                     except Exception:  # noqa: BLE001 - an unreleased marker only expires; readers stay closed
                         pass
@@ -470,6 +475,12 @@ class DelegatedCardService:
         upsert names no base; PUBLISH itself then refuses a current other than the one STAGE observed). A
         projection older than it (left by a PUBLISH before this fix) is first brought up to it."""
         access_id = member["access_id"]
+        pointer = await self._store.read_current(subject_hash=member["subject_hash"], access_id=access_id)
+        if pointer is not None and pointer.revision_name == member["revision_name"]:
+            # Our own pointer-before-marker retry must progress despite the
+            # durable effect fence. No incomplete authority is reconciled here;
+            # every resolver checks that durable fence, even on a cache hit.
+            return
         current = await self._store.read_current_authority(subject_hash=member["subject_hash"], access_id=access_id)
         try:
             await self._reconcile(access_id=access_id, current=current, moment=int(time.time()))

@@ -1044,3 +1044,24 @@ async def test_apply_profile_with_a_malformed_revision_is_a_bad_request(entrypoi
     assert result["ok"] is False
     assert result["error"] == "invalid_delegated_access_request"
     assert entrypoint.service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_the_screens_update_hands_the_project_policy_to_update_access(entrypoint):
+    # W727 (live 14 Oct 10:35:47Z): the owner's Save of a bound agent Card is decided by its project's policy.
+    asked = []
+
+    class AgentCards:
+        async def authorize_write(self, user, *, access_id, project_ref):
+            asked.append((user["user_id"], access_id, project_ref))
+            return {"ok": False, "error": "denied"}
+
+    async def agent_card_access(_request):
+        return AgentCards()
+
+    entrypoint.instance._project_agent_card_access = agent_card_access
+    await entrypoint.module.ConnectionHubEntrypoint.delegated_access_update(
+        entrypoint.instance, data={"access_id": "aut_1", "resource_grants": {"res": ["use"]}})
+    authorize = entrypoint.service.calls[-1]["_authorize_agent_card"]
+    assert await authorize("aut_1", "work:project:synthetic") == {"ok": False, "error": "denied"}
+    assert asked == [("google:1", "aut_1", "work:project:synthetic")]

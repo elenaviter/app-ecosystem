@@ -237,14 +237,16 @@ def install_pg_mode(set_attr):
         write_pointer, write_marker = store.write_pointer_document, store.write_marker_document
         delete_marker = store.delete_marker_document
 
-        async def locked_pointer(*, subject_hash, access_id, document):
+        async def locked_pointer(*, subject_hash, access_id, document, card_version_txn=""):
             if current_lock_session() is not None:
-                return await write_pointer(subject_hash=subject_hash, access_id=access_id, document=document)
+                return await write_pointer(subject_hash=subject_hash, access_id=access_id, document=document,
+                                           card_version_txn=card_version_txn)
             _audit_unlocked_write("pointer")
             async with fixture_lock(lock_path=store.root / ".fixture-lock", resource_id=f"delegated-card:{access_id}",
                                     operation="test-fixture", wait_seconds=5.0):
                 await store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
-                return await write_pointer(subject_hash=subject_hash, access_id=access_id, document=document)
+                return await write_pointer(subject_hash=subject_hash, access_id=access_id, document=document,
+                                           card_version_txn=card_version_txn)
 
         async def locked_marker(write, txn, *args):
             if current_lock_session() is not None:

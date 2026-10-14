@@ -85,6 +85,9 @@ export interface DelegatedAccessOperationOption {
   /** W748: for such an operation, whether it is in effect for the person (a membership operation); absent when
    *  the application declares no membership operations (the tick then shows what the Card holds). */
   in_effect?: boolean;
+  /** W775: on a person's Card, an operation only an agent's own channel calls (the application's
+   *  `person_agent_operations`): folded under "Agent-only tools (not for people)", never warned about. */
+  agent_only?: boolean;
 }
 
 /** One operation group a service declares, in display order (W260). */
@@ -149,6 +152,8 @@ export interface DelegatedAccessResourceOption {
   person_card_operations?: string[];
   /** W748: the operations every member holds by membership, whatever their Card holds (shown ticked, disabled). */
   person_member_operations?: string[];
+  /** W775: the operations only an agent's own channel calls; a person's Card folds them away. */
+  person_agent_operations?: string[];
   resource_selection?: boolean;
   selectable_resources?: string[];
   selector_type?: string;
@@ -480,6 +485,9 @@ export interface DelegatedAccessCreateResult {
   managed_card_edit?: { state?: string; card_revision?: number; transaction_id?: string };
   /** W727: 'card_committed_policy_pending' when the Card committed and its invocation policy did not. */
   outcome?: string;
+  /** W755: the whole new Card equals the stored revision; nothing was written. */
+  unchanged?: boolean;
+  card_revision?: number;
   access_id?: string;
   access_token?: string;
   authorization_header?: string;

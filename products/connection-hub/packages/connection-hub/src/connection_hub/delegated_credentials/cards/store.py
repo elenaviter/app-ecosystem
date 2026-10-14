@@ -108,7 +108,7 @@ class DelegatedCardStore(Protocol):
     ) -> CardCurrentPointer: ...
 
     async def advance_current(
-        self, *, subject_hash: str, pointer: CardCurrentPointer
+        self, *, subject_hash: str, pointer: CardCurrentPointer, card_version_txn: str = ""
     ) -> None: ...
 
     async def list_card_ids(self, *, subject_hash: str) -> list[str]: ...
@@ -221,9 +221,12 @@ class BundleStorageDelegatedCardStore:
                                                            document=hint)
         return None if document == ABSENT_POINTER else document
 
-    async def write_pointer_document(self, *, subject_hash: str, access_id: str, document: dict | None) -> None:
+    async def write_pointer_document(self, *, subject_hash: str, access_id: str, document: dict | None,
+                                     card_version_txn: str = "") -> None:
         """Replace (or with None remove) the Card's pointer. b-core: the row CAS first, then the file hint."""
         path = self.current_path(subject_hash=subject_hash, access_id=access_id)
+        from .card_version_reservation import assert_base_available
+        await assert_base_available(self, subject_hash=subject_hash, access_id=access_id, own_txn=card_version_txn)
         if self.card_rows is not None:
             from .pointer_authority import ABSENT_POINTER
 
@@ -369,6 +372,13 @@ class BundleStorageDelegatedCardStore:
         # W661 v6.2: a staged Card version is history only once its txn is published (D2: "not yet final
         # version does not work until theres final arrives").
         version_marker = await read_json_or_none(path.with_suffix(".card-version.json"))
+        if version_marker is None:
+            # W756: the old publisher removed sidecars before its effects.
+            # The immutable record still binds this version to that transaction.
+            record = await self.read_version_record(subject_hash=subject_hash, access_id=access_id,
+                                                    revision_name=revision_name)
+            if record is not None and record.get("txn"):
+                version_marker = {"txn": record["txn"]}
         if version_marker is not None:
             from .transaction_store import card_version_revision_committed
             return await card_version_revision_committed(self, version_marker, subject_hash=subject_hash,
@@ -395,6 +405,13 @@ class BundleStorageDelegatedCardStore:
             raise CardStorageError("lifecycle_revision_binding_invalid")
         return receipt["state"] == "committed"
 
+    async def assert_current_version_readable(self, *, subject_hash: str, access_id: str,
+                                              current: Any = None) -> None:
+        """The durable CardVersion serving fence, also used by cache hits."""
+        from .transaction_store import assert_current_version_readable
+        await assert_current_version_readable(self, subject_hash=subject_hash, access_id=access_id,
+                                              current=current)
+
     async def read_current_authority(
         self, *, subject_hash: str, access_id: str, consult_decision: bool = True
     ) -> tuple[CardCurrentPointer, CardAuthority] | None:
@@ -408,6 +425,8 @@ class BundleStorageDelegatedCardStore:
         )
         if pointer is None:
             return None
+        await self.assert_current_version_readable(subject_hash=subject_hash, access_id=access_id,
+                                                  current=pointer)
         payload = await self._read_revision_payload(
             subject_hash=subject_hash,
             access_id=access_id,
@@ -457,11 +476,13 @@ class BundleStorageDelegatedCardStore:
             updated_at=updated_at,
         )
 
-    async def advance_current(self, *, subject_hash: str, pointer: CardCurrentPointer) -> None:
+    async def advance_current(self, *, subject_hash: str, pointer: CardCurrentPointer,
+                              card_version_txn: str = "") -> None:
         from .lifecycle_store import assert_pointer_replaceable
-        await assert_pointer_replaceable(self, subject_hash=subject_hash, access_id=pointer.access_id)
+        await assert_pointer_replaceable(self, subject_hash=subject_hash, access_id=pointer.access_id,
+                                         card_version_txn=card_version_txn)
         await self.write_pointer_document(subject_hash=subject_hash, access_id=pointer.access_id,
-                                          document=pointer.to_dict())
+                                          document=pointer.to_dict(), card_version_txn=card_version_txn)
 
     async def list_card_ids(self, *, subject_hash: str) -> list[str]:
         names = await list_child_names(self.grantor_path(subject_hash))

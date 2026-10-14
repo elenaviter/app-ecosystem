@@ -482,11 +482,16 @@ def card_drift(
     }
 
 
-def drift_unavailable(reason: str = "") -> dict[str, Any]:
-    """Editing authority is disabled: the comparison could not be made."""
+def drift_unavailable(reason: str = "", *, current_version: str = "") -> dict[str, Any]:
+    """The comparison failed; retain an active catalog already read, if any.
+
+    The pin does not claim a successful historical comparison or grant any
+    authority. An unreadable active catalog supplies no version.
+    """
     return {
         "status": DRIFT_UNAVAILABLE,
         "reason": _clean(reason) or "catalog_unavailable",
+        **({"current_version": _clean(current_version)} if _clean(current_version) else {}),
     }
 
 

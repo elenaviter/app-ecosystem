@@ -26,6 +26,11 @@ ANSWER_FIELDS = ECHO_FIELDS | {"schema", "direction", "audience", "request_diges
 CENSUS_REQUEST_FIELDS = frozenset({"schema", "request_echo", "scope", "persons", "include_catalog"})
 CENSUS_ECHO_FIELDS = CENSUS_REQUEST_FIELDS - {"schema"}
 CENSUS_ANSWER_FIELDS = CENSUS_ECHO_FIELDS | {"schema", "direction", "audience", "request_digest", "result"}
+# W814 (EApp): one managed project's invitation Controls, enumerated by the Hub; the caller names no list.
+INVITATION_CENSUS_REQUEST_FIELDS = frozenset({"schema", "request_echo", "scope"})
+INVITATION_CENSUS_ECHO_FIELDS = INVITATION_CENSUS_REQUEST_FIELDS - {"schema"}
+INVITATION_CENSUS_ANSWER_FIELDS = INVITATION_CENSUS_ECHO_FIELDS | {"schema", "direction", "audience",
+                                                                  "request_digest", "result"}
 # W578: a Card lifecycle plan request and its signed answer (Connection Hub's card_lifecycle_plan).
 PLAN_REQUEST_FIELDS = frozenset({
     "schema", "request_echo", "scope", "actor_subject", "actor_kind", "request_id", "creations", "updates",
@@ -77,6 +82,7 @@ class AnswerContract(Enum):
     PLAN = "plan"
     COLLECTION = "collection"
     CARD_VERSION = "card_version"
+    INVITATION_CENSUS = "invitation_census"
 
 
 def _fields(contract: AnswerContract) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
@@ -90,6 +96,9 @@ def _fields(contract: AnswerContract) -> tuple[frozenset[str], frozenset[str], f
         return COLLECTION_REQUEST_FIELDS, COLLECTION_ECHO_FIELDS, COLLECTION_ANSWER_FIELDS
     if contract is AnswerContract.CARD_VERSION:
         return CARD_VERSION_REQUEST_FIELDS, CARD_VERSION_ECHO_FIELDS, CARD_VERSION_ANSWER_FIELDS
+    if contract is AnswerContract.INVITATION_CENSUS:
+        return (INVITATION_CENSUS_REQUEST_FIELDS, INVITATION_CENSUS_ECHO_FIELDS,
+                INVITATION_CENSUS_ANSWER_FIELDS)
     raise ParticipantAnswerRefused("answer_configuration_invalid")
 
 

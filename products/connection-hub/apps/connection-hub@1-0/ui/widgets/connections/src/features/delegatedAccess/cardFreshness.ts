@@ -35,6 +35,13 @@ export function pinAfterRefusal(pin: number | null): number | null {
   return pin;
 }
 
+/** W755 (operator diagram, 2026-10-11): "identical ──► ok "nothing to save" (no new revision)". */
+export const NOTHING_TO_SAVE_MESSAGE = 'Nothing to save: this Card already holds these choices.';
+
+export function isNothingToSave(result: { ok?: boolean; unchanged?: boolean } | null | undefined): boolean {
+  return Boolean(result) && result?.ok !== false && result?.unchanged === true;
+}
+
 /** A successful save moves the pin to the revision the server wrote. */
 export function pinAfterSave(pin: number | null, saved: { card_revision?: number } | null | undefined): number | null {
   return saved?.card_revision ?? pin;

@@ -211,9 +211,22 @@ def test_context_and_the_workspace_report_give_the_owners_email_once_the_key_ans
     assert after["email"] == OWNER_EMAIL and after["source"] == "owner_github_key"
     assert f"git -C {workspace / 'applications'} config user.email {OWNER_EMAIL}" in after["commands"]
 
+    # W762: --set-identity never writes the recorded email; it asks the Card's key fresh. Unavailable: refused.
+    def unavailable(args, project_ref):
+        raise DomainError("identity_refresh_unavailable", "Connection Hub did not answer.")
+
+    monkeypatch.setattr(cli, "_fresh_card_identity", unavailable)
+    with pytest.raises(DomainError) as refused:
+        _cli(identity, "workspace-report", "--project-ref", "work:project:" + PROJECT_ID, "--set-identity")
+    assert refused.value.code == "identity_refresh_unavailable"
+    assert _config(workspace / "applications", "user.email") != OWNER_EMAIL, "the recorded email is not reapplied"
+
+    monkeypatch.setattr(cli, "_fresh_card_identity", lambda args, project_ref: (OWNER_EMAIL, "owner"))
     report = _cli(identity, "workspace-report", "--project-ref", "work:project:" + PROJECT_ID, "--set-identity")
     assert report["commit_identity"] == {"name": ALIAS, "email": OWNER_EMAIL}
     assert _config(workspace / "applications", "user.email") == OWNER_EMAIL
+    assert _config(workspace / "applications", "pb.githubAccount") == "owner"
+    assert _config(workspace / "applications", "pb.projectRef") == "work:project:" + PROJECT_ID
 
 
 def test_issuing_the_key_records_the_owners_login_and_email_never_the_token(tmp_path, monkeypatch):

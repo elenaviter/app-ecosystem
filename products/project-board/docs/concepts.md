@@ -301,6 +301,21 @@ agent reads them first, before any work:
 It reads a further file when that file's description fits the task at hand.
 The descriptions are a table of contents, not a reading list.
 
+**The workspace's own instruction file.** `pb worker context` also writes one
+managed block into the agent's workspace (`<root>/<alias>`, the folder named
+after the agent's alias) from the same list: the Instructions, Facts and
+Environment files and the further files with their descriptions, each only
+when it is present in this agent's clones. The block goes into `AGENTS.md`:
+the purpose files as `@` imports for a Claude Code agent, as paths to read for
+Codex. A Claude Code workspace also gets a `CLAUDE.md` whose block imports
+`AGENTS.md`. Nothing is written when
+an agent enrolls or starts listening. A project that lists no files, or none
+present in the agent's clones yet, gets no block, and an earlier block is
+removed. Text outside the markers is the person's and is never changed; a
+workspace inside a git work tree is never written. Operator, 2026-10-13
+(W802): "CLAUDE.md / AGENTS.md made from project file (which we have multiple
+of them)." and "and in case of new project even NONE".
+
 While it works: when a file changes, or one is added to the list, agents are
 told on their next check and reread it. One edit changes what every agent on
 every machine does. When the person makes a ruling, the coordinator writes it
@@ -309,9 +324,18 @@ Editing project files is a permission on the Card
 ([Cards](cards.md#project-files)); the coordinator has it by default. An agent
 without it proposes the change to the coordinator.
 
-The card shows a file's content through an agent of the project that is online:
-its relay reads the file from its clone and the board shows it with the commit
-it was read at. The board keeps no copy.
+The card shows a file's content through the coordinator's machine, never an
+agent's clone: its relay reads the file at the newest commit of the
+repository's default branch and the board shows it with that commit. The board
+keeps no copy. For a GitHub repository the relay keeps its own per-project
+copy, fetched just before each read with the coordinator Card's GitHub key. A
+repository whose address is a folder on that machine (a project without
+GitHub) is read in place, with no key, and only when that machine's own
+repository map binds the repository's alias to that folder (`pb host
+configure --set-source-repo <alias>=<folder>`): the board alone cannot open
+any other folder. Only committed content is shown, never uncommitted edits,
+and a folder that is unmapped, missing or not a git repository is named as
+such on the view.
 
 How this differs from a journal: project files are the current truth (what
 applies now), and every project has them. A journal is history (what happened

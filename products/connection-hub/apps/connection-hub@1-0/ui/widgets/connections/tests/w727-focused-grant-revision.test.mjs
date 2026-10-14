@@ -8,7 +8,7 @@ import test from 'node:test'
 import { agentGrantWirePayload } from '../src/features/delegatedAccess/agentGrantPayload.ts'
 import { pinAfterCommit } from '../src/features/delegatedAccess/cardFreshness.ts'
 import { focusedGrantArgs } from '../src/features/delegatedAccess/invocationChoice.ts'
-import { resumeFor, runFocusedGrants } from '../src/features/delegatedAccess/focusedGrantRecovery.ts'
+import { isPolicyPending } from '../src/features/delegatedAccess/focusedGrantRecovery.ts'
 
 const panel = readFileSync(
   new URL('../src/features/delegatedAccess/DelegatedAccessPanel.tsx', import.meta.url),
@@ -44,118 +44,20 @@ test('a grant without a pinned revision sends exactly the old payload', () => {
   assert.ok(!('expected_card_revision' in before))
 })
 
-test('the panel builds every focused grant on the pin and runs them through the resumable orchestration', () => {
+// W755 (operator, 2026-10-11: "WHY ITS NOT A PART"): the Save no longer sends focused grants. It sends the whole
+// Card once with the policy of every operation it adds, and the Card and its policies commit together.
+test('a Save is one request: the whole Card with each addition\'s policy, no focused grants', () => {
   const save = panel.slice(panel.indexOf('const saveEdit = async'), panel.indexOf('// The full delegable catalog'))
-  assert.match(save, /resumeFor\(editResume\.current, item\.access_id, baseKey\)/)
-  // The pending exact replay comes before any base Save (CodeApp, 15:30Z).
-  assert.ok(save.indexOf('if (stopped(await grants([]))) return;') < save.indexOf('if (!skipBase) {'))
-  assert.match(save, /if \(!skipBase\) \{[^]*?dispatch\(updateDelegatedAccess\(/)
-  assert.match(save, /runFocusedGrants\(\{[^]*?\{ expectedCardRevision: pin \?\? undefined \}[^]*?pin: editBaseRevision,[^]*?pinAfter: pinAfterCommit,/)
-  assert.match(panel, /editResume\.current = null;[^]*?editResume\.current = null;/) // reset on Edit and on close
+  assert.equal((save.match(/updateDelegatedAccess\(\{/g) || []).length, 1)
+  assert.doesNotMatch(save, /runFocusedGrants|resumeFor|grantAgentAccess/)
+  assert.match(save, /invocationModes,/)
+  assert.doesNotMatch(save, /isPolicyPending/)
 })
 
-// CodeApp's W727 return (15:19Z): the panel's Retry Save after card_committed_policy_pending sent a new base Save
-// on the old pin and a new change id. The real orchestration (runFocusedGrants + resumeFor) is driven here.
-const partial = (revision) => ({ ok: false, status: 503, error: 'delegated_invocation_policy_unavailable',
-  outcome: 'card_committed_policy_pending', access_id: 'person-my-card', access: { card_revision: revision } })
-const ok = (revision) => ({ ok: true, managed_card_edit: { state: 'committed', card_revision: revision },
-  access: { card_revision: revision } })
-
-function editor() {
-  const pin = { current: 26 }
-  let resume = null
-  let nonce = 0
-  const sent = []
-  const bases = []
-  const order = []
-  const save = async ({ baseKey, additions, answers }) => {
-    // The panel's order (saveEdit): the pending exact replay, then the base Save if its draft part changed,
-    // then the additions not yet made.
-    const step = resumeFor(resume, 'person-my-card', baseKey)
-    const progress = { accessId: 'person-my-card', baseKey: step.resume?.baseKey ?? baseKey,
-      completed: [...(step.resume?.completed || [])], pending: step.resume?.pending || null }
-    const run = (list) => runFocusedGrants({
-      progress, additions: list, pin, pinAfter: pinAfterCommit,
-      build: ({ resource, operation, mode }, current) => focusedGrantArgs(
-        { ...identity(operation), resource, changeId: `edit:${operation}:${++nonce}` }, mode, ['use'],
-        { expectedCardRevision: current ?? undefined }),
-      send: async (args) => {
-        const wire = agentGrantWirePayload(args)
-        sent.push(wire)
-        order.push('grant:' + wire.resource_operations.svc[0])
-        const answer = answers.shift()
-        if (answer instanceof Error) throw answer
-        return answer
-      },
-    })
-    if (progress.pending) {
-      resume = progress
-      const replayed = await run([])
-      if (replayed.state !== 'done') return replayed
-    }
-    if (!step.skipBase) {
-      bases.push(pin.current)
-      order.push('base')
-      pin.current = pinAfterCommit(pin.current, ok(pin.current + 1)) // the managed base Save's answer
-    }
-    progress.baseKey = baseKey
-    resume = progress
-    const outcome = await run(additions)
-    if (outcome.state === 'done') resume = null
-    return outcome
-  }
-  return { pin, sent, bases, order, save }
-}
-
-test('Retry Save after a policy-pending grant replays that exact grant and never resends the base Save', async () => {
-  const e = editor()
-  const additions = [{ resource: 'svc', operation: 'a', mode: 'always' }, { resource: 'svc', operation: 'b', mode: 'once' }]
-  const first = await e.save({ baseKey: 'draft-1', additions, answers: [ok(28), partial(29)] })
-  assert.equal(first.state, 'policy_pending')
-  assert.equal(e.pin.current, 29) // the Card moved; the pin follows it
-  assert.deepEqual(e.bases, [26])
-  const pendingWire = e.sent[1]
-  assert.equal(pendingWire.expected_card_revision, 28)
-  // Retry Save. The refreshed Card already holds a and b, so the draft has no additions left.
-  const retry = await e.save({ baseKey: 'draft-1', additions: [], answers: [ok(29)] })
-  assert.equal(retry.state, 'done')
-  assert.deepEqual(e.bases, [26]) // no second base Save
-  assert.deepEqual(e.sent[2], pendingWire) // the same change id and revision: the project replays its decision
-  assert.equal(e.pin.current, 29)
-})
-
-test('a retry before the Card is reloaded still sends only the missing grants after the exact replay', async () => {
-  const e = editor()
-  const additions = [{ resource: 'svc', operation: 'a', mode: 'always' }, { resource: 'svc', operation: 'b', mode: 'once' },
-    { resource: 'svc', operation: 'c', mode: 'always' }]
-  await e.save({ baseKey: 'draft-1', additions, answers: [ok(28), partial(29)] })
-  const retry = await e.save({ baseKey: 'draft-1', additions, answers: [ok(29), ok(30)] })
-  assert.equal(retry.state, 'done')
-  assert.deepEqual(e.sent.map((wire) => wire.resource_operations.svc[0]), ['a', 'b', 'b', 'c'])
-  assert.equal(e.sent[3].expected_card_revision, 29)
-  assert.deepEqual(e.bases, [26])
-})
-
-test('a changed draft replays the pending grant first, then sends its base Save on the advanced pin', async () => {
-  // CodeApp (15:30Z): a new base Save before the replay would change the selection the request id is derived from.
-  const e = editor()
-  const additions = [{ resource: 'svc', operation: 'b', mode: 'once' }]
-  await e.save({ baseKey: 'draft-1', additions, answers: [partial(28)] })
-  const retry = await e.save({ baseKey: 'draft-2', additions: [], answers: [ok(28)] })
-  assert.equal(retry.state, 'done')
-  assert.deepEqual(e.order, ['base', 'grant:b', 'grant:b', 'base'])
-  assert.deepEqual(e.sent[1], e.sent[0]) // the exact replay, before the second base Save
-  assert.deepEqual(e.bases, [26, 28])
-})
-
-test('a refused grant (nothing written) keeps the pin and resumes with the next Save, without a base Save', async () => {
-  const e = editor()
-  const additions = [{ resource: 'svc', operation: 'a', mode: 'always' }]
-  const refused = await e.save({ baseKey: 'draft-1', additions, answers: [new Error('managed_card_edit_aborted')] })
-  assert.equal(refused.state, 'refused')
-  assert.equal(e.pin.current, 27)
-  const retry = await e.save({ baseKey: 'draft-1', additions, answers: [ok(28)] })
-  assert.equal(retry.state, 'done')
-  assert.deepEqual(e.bases, [26])
-  assert.equal(e.sent[1].expected_card_revision, 27)
+// The agent-request approval flow still recognises a policy-pending grant answer.
+test('a policy-pending answer is recognised; anything else is not', () => {
+  assert.equal(isPolicyPending({ ok: false, outcome: 'card_committed_policy_pending' }), true)
+  assert.equal(isPolicyPending({ ok: false, error: 'x' }), false)
+  assert.equal(isPolicyPending({ ok: true, outcome: 'card_committed_policy_pending' }), false)
+  assert.equal(isPolicyPending(null), false)
 })

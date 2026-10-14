@@ -40,6 +40,7 @@ _CONTRACT_CODES = {
 
 # Store-state refusals raised as CardStorageError (shared with the Hub-local writers) and their contract code.
 _STORE_REFUSALS = {
+    "card_version_base_reserved": "card_changed",  # W756: refused before PB can decide a competing Save
     "card_version_effects_pending": "effects_pending",  # a predecessor's effects are not recorded yet (D3)
     "card_version_unresolved": "storage_unavailable",  # a partly published group (phase 2): fail closed
 }

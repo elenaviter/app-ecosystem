@@ -127,12 +127,17 @@ async def test_a_project_control_is_not_a_role_target():
     assert plan["ok"] is False and plan["error"] == "card_plan_update_scope_invalid"
 
 
-def test_only_the_closed_one_direction_shape_is_accepted():
+def test_only_the_closed_shape_is_accepted():
     _, control, _ = _world()
     good_add = _role(control, add_grants=["work:admin"])
     good_remove = _role(control, remove_operations=["a"], operation_grants={"b": ["g"]})
+    # W810: a demotion may remove and add in one update, with the map that recomputes its grants.
+    good_both = _role(control, remove_operations=["a"], add_operations=["b"], add_grants=["g"],
+                      operation_grants={"b": ["g"]})
     assert role_update_shape_valid(good_add) and role_update_shape_valid(good_remove)
-    for bad in ({**good_add, "remove_operations": ["a"], "operation_grants": {}},  # both directions
+    assert role_update_shape_valid(good_both)
+    for bad in ({**good_both, "operation_grants": None},  # a removal always carries PB's map
+                {**good_both, "add_operations": ["a", "b"]},  # an operation both removed and added
                 {**good_add, "original_revision": 3},  # PB never sends a version it would have had to read
                 {**good_add, "add_grants": [], "add_operations": []},  # no direction
                 {**good_add, "operation_grants": {}},  # a map only for a removal
@@ -147,3 +152,93 @@ def test_a_demotion_map_may_declare_every_pb_operation():
     assert role_update_shape_valid(_role(control, remove_operations=["project.op1"], operation_grants=every))
     assert not role_update_shape_valid(_role(control, remove_operations=["a"],
                                              operation_grants={f"op{i}": ["g"] for i in range(257)}))
+
+
+MEMBER = ["project.read", "project.problems.edit"]
+
+
+@pytest.mark.asyncio
+async def test_a_demotion_removes_and_adds_in_one_update_and_recomputes_grants_after_both():
+    """W810: an incomplete admin (admin operations, but missing a member default) is demoted to exactly
+    the member set on C and My in one save: remove the admin operations and add the missing defaults."""
+    project, control, my = _world()
+    incomplete = {"resource_grants": {**control.resource_grants, PB: ("work:admin",)},
+                  "resource_operations": {**control.resource_operations, PB: tuple(MINIMUM)}}
+    control, my = dataclasses.replace(control, **incomplete), dataclasses.replace(my, **incomplete)
+    updates = [_role(card, remove_operations=MINIMUM, add_operations=MEMBER,
+                     add_grants=sorted({g for op in MEMBER for g in GRANTS[op]}), operation_grants=GRANTS)
+               for card in (control, my)]
+    plan = await _plan(_Host(project, control, my), updates)
+    assert plan["ok"] is True, plan
+    after = _after(plan)
+    for card in (control, my):
+        _, new = after[card.access_id]
+        assert set(new.resource_operations[PB]) == set(MEMBER)  # exactly the member set
+        assert set(new.resource_grants[PB]) == {"work:read", "work:write"}  # work:admin recomputed away
+        assert new.resource_grants["other"] == ("x:read",) and new.resource_operations["other"] == ("x.list",)
+
+
+@pytest.mark.asyncio
+async def test_a_combined_delta_still_never_guesses_a_grant():
+    project, control, my = _world()
+    plan = await _plan(_Host(project, control, my),
+                       [_role(control, remove_operations=["project.cards.manage"], add_operations=["project.x"],
+                              operation_grants={"project.read": ["work:read"]})])
+    assert plan == {"ok": False, "error": "card_plan_role_operation_unknown", "status": 409}
+
+
+@pytest.mark.asyncio
+async def test_a_combined_delta_already_in_place_is_named_already_applied():
+    project, control, my = _world()
+    member = {"resource_grants": {**control.resource_grants, PB: ("work:read", "work:write")},
+              "resource_operations": {**control.resource_operations, PB: tuple(MEMBER)}}
+    control = dataclasses.replace(control, **member)
+    plan = await _plan(_Host(project, control, my),
+                       [_role(control, remove_operations=MINIMUM, add_operations=MEMBER,
+                              add_grants=["work:read", "work:write"], operation_grants=GRANTS)])
+    assert plan["ok"] is False and plan["error"] == "card_plan_already_applied"
+
+
+class _CatalogHost(_Host):
+    """Resolves like the live catalog: an operation the catalog does not declare is dropped."""
+
+    def __init__(self, *cards, declared):
+        super().__init__(*cards)
+        self.declared = set(declared)
+
+    async def _resolve_card_authority(self, **kwargs):
+        operations = {resource: tuple(op for op in values if resource != PB or op in self.declared)
+                      for resource, values in (kwargs["resource_operations"] or {}).items()}
+        return await super()._resolve_card_authority(**{**kwargs, "resource_operations": operations})
+
+
+@pytest.mark.asyncio
+async def test_a_demotion_whose_added_defaults_the_catalog_does_not_declare_is_already_applied():
+    """W810 regression (Mint, 04:18Z): a member-shaped C demoted again asks to add member defaults the
+    active catalog does not declare. The resolution drops them, the candidate equals the stored Card,
+    and the role change is already applied, never card_plan_selection_unchanged."""
+    project, control, my = _world()
+    member = {"resource_grants": {**control.resource_grants, PB: ("work:read",)},
+              "resource_operations": {**control.resource_operations, PB: ("project.read",)},
+              "catalog_version": "catalog-v2"}  # already on the active catalog, as live after one demotion
+    control = dataclasses.replace(control, **member)
+    grants = {**GRANTS, "project.undeclared": ["work:read"]}
+    plan = await _plan(_CatalogHost(project, control, my, declared={"project.read"}),
+                       [_role(control, remove_operations=MINIMUM, add_operations=["project.read", "project.undeclared"],
+                              add_grants=["work:read"], operation_grants=grants)])
+    assert plan["ok"] is False and plan["error"] == "card_plan_already_applied", plan
+
+
+@pytest.mark.asyncio
+async def test_a_partly_undeclared_demotion_still_writes_what_the_catalog_declares():
+    project, control, my = _world()
+    admin = {"resource_grants": {**control.resource_grants, PB: ("work:read", "work:admin")},
+             "resource_operations": {**control.resource_operations, PB: ("project.read", *MINIMUM)}}
+    control = dataclasses.replace(control, **admin)
+    grants = {**GRANTS, "project.undeclared": ["work:read"]}
+    plan = await _plan(_CatalogHost(project, control, my, declared={"project.read", *MINIMUM}),
+                       [_role(control, remove_operations=MINIMUM, add_operations=["project.read", "project.undeclared"],
+                              add_grants=["work:read"], operation_grants=grants)])
+    assert plan["ok"] is True, plan
+    _, new = _after(plan)[control.access_id]
+    assert new.resource_operations[PB] == ("project.read",)  # the admin operations removed, undeclared dropped

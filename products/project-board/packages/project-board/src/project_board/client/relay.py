@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Event
@@ -32,6 +32,7 @@ except ImportError:  # pragma: no cover - the relay runtime is a host-side depen
 
 
 from .card_refusal import actionable_card_refusal
+from project_board.client.heartbeat_team import TeamRequest, TeamSnapshots
 from .limit_state import qualify_limit_state, session_with_limit_state, wake_deferred_until
 from .limit_state import merge_codex_quota, codex_limit_state
 from .codex_quota import (
@@ -76,6 +77,7 @@ from .host_config import (
 )
 from .authorization import PROFILE_METADATA_ABSENT, authorization_observation
 from .runtime_account import read_host_login, read_runtime_account
+from .claude_profile import SessionAccount, read_session_account, resume_profile
 from .coordinate_queue import COORDINATE_LEASE_LOST, CoordinateQueue
 from .credential_refusal import credential_refused
 from .relay_pacing import HANDSHAKE_TIMEOUT_REASON, PACING_FILENAME, RelayPacing
@@ -100,10 +102,10 @@ from .relay_failures import (
 )
 from .local_state_maintenance import run_local_state_maintenance
 from .relay_channel_status import ChannelStatusBook, write_channel_status
-from .project_connect import github_repository
+from .project_connect import github_repository, local_path
+from .project_file_source import ProjectFileSource
 from .project_file_edit import FILE_EDIT_KIND, apply_file_edit
-from .project_files import file_state
-from .read_roots import READ_ROOTS_STATE, head_commit
+from .read_roots import READ_ROOTS_STATE
 from .local_store import last_read_summaries
 from .outbox_drain import RelayOutboxDrainServer
 from .outbox_store import OutboxStore
@@ -746,6 +748,8 @@ class RelayConfig:
     workspace: str = ""
     # W304 finding 29: how the runtime was actually started, captured at listen.
     runtime_launch: Mapping[str, Any] = field(default_factory=dict)
+    # W763: the Claude account profile this session is bound to.
+    claude_profile: Mapping[str, Any] = field(default_factory=dict)
 
     def repository_mapping(self) -> dict[str, Any]:
         return repository_entries(self.source_repositories, self.source_read_roots)
@@ -906,6 +910,7 @@ class RelayConfig:
             ),
             workspace=str(worker.get("working_directory") or "").strip(),
             runtime_launch=dict(worker.get("runtime_launch") or {}) if isinstance(worker.get("runtime_launch"), Mapping) else {},
+            claude_profile=dict(worker.get("claude_profile") or {}) if isinstance(worker.get("claude_profile"), Mapping) else {},
         )
 
     @classmethod
@@ -951,6 +956,7 @@ class RelayConfig:
                 worker_name=channel.worker_name,
             )[0],
             runtime_launch=dict(getattr(channel, "runtime_launch", {}) or {}),
+            claude_profile=dict(getattr(channel, "claude_profile", {}) or {}),
         )
 
     @classmethod
@@ -1255,6 +1261,35 @@ class _JournalRefreshWorker:
             raise asyncio.CancelledError
 
 
+def _binding_key(binding: Mapping[str, Any] | None) -> tuple[str, ...]:
+    # The capture is part of it: a session that started in another folder must
+    # reach a running relay as a mismatch, and its return as a match.
+    value = binding or {}
+    return tuple(
+        str(value.get(key) or "")
+        for key in ("config_dir", "account_id", "executable", "capture", "captured_config_dir")
+    )
+
+
+def _legacy_account_evidence(payload: dict[str, Any]) -> bool:
+    """Rewrite session-profile evidence into the W310 host-report form; True when it changed.
+
+    The account stays only when the profile verified it; a mismatch or an
+    unreadable profile stays an account-less sample, so the downgrade never
+    attributes another account.
+    """
+
+    evidence = payload.get("runtime_account_evidence")
+    if not isinstance(evidence, Mapping) or evidence.get("source") != "session-profile":
+        return False
+    payload["runtime_account_evidence"] = {
+        "state": evidence.get("state"),
+        "source": "host-report",
+        "observed_at": evidence.get("observed_at"),
+    }
+    return True
+
+
 class ProblemBoardHostRelayAdapter:
     adapter_id = "problem-board"
 
@@ -1278,10 +1313,20 @@ class ProblemBoardHostRelayAdapter:
         workspace_sizes: WorkspaceSizes | None = None,
         worktree_observer: WorktreeObserverCache | None = None,
         store_executor: Executor | None = None,
+        team_snapshots: TeamSnapshots | None = None,
     ) -> None:
         self.config = config
         self.field = field
         self.client = client
+        # Children share one process-memory pair owner across attendance cycles.
+        self._team_snapshots = team_snapshots if team_snapshots is not None else TeamSnapshots()
+        # W794: a control the board queues is served at once, not at the end of the next attendance turn.
+        # Project adapters are rebuilt every discovery turn over the same client: the hook is keyed by project
+        # (the newest adapter replaces the last) and the pull lock lives on the client, one per project.
+        self._immediate_pull: asyncio.Task[Any] | None = None
+        set_event_hook = getattr(client, "set_event_hook", None)
+        if callable(set_event_hook) and config.project_id and config.project_id != "attendance":
+            set_event_hook(f"problem-board.controls:{config.project_id}", self._on_push_event)
         # Files cross the network by signed HTTP links, never inside a
         # control: outbound through an upload slot the control plane mints,
         # inbound by fetching the operator's signed download link. Both are
@@ -1379,7 +1424,20 @@ class ProblemBoardHostRelayAdapter:
                 "observed_at": utc_now(),
             }
         try:
-            account = normalize_runtime_account(await self._runtime_account_reader())
+            sample = await self._runtime_account_reader()
+            if isinstance(sample, SessionAccount):
+                # W763: read from the session's own profile; a mismatch or an
+                # unreadable profile attributes no account at all.
+                account = normalize_runtime_account(sample.account) if sample.account else {}
+                evidence = {
+                    "state": "reported" if account else "missing",
+                    "source": "session-profile",
+                    "profile_state": sample.profile_state,
+                    "observed_at": utc_now(),
+                }
+                self._runtime_account_error_state["code"] = ""
+                return account, evidence
+            account = normalize_runtime_account(sample)
         except DomainError as exc:
             definitely_missing = exc.code in {
                 "work_runtime_account_missing",
@@ -1410,6 +1468,49 @@ class ProblemBoardHostRelayAdapter:
         payload["runtime_account_evidence"] = evidence
         if account:
             payload["runtime_account"] = account
+        if self._runtime_account_error_state.get("legacy_evidence"):
+            _legacy_account_evidence(payload)
+
+    def rebind_claude_profile(self, binding: Mapping[str, Any]) -> bool:
+        """Take a binding the operator changed on this host; True when it changed (W763).
+
+        The session stays open: only the resume line and the account read
+        follow the new binding, from the next cycle on.
+        """
+
+        if _binding_key(self.config.claude_profile) == _binding_key(binding):
+            return False
+        self.config = replace(self.config, claude_profile=dict(binding))
+        if self.config.runtime_kind == "claude-code":
+            self._runtime_account_reader = lambda: read_session_account(self.config.claude_profile)
+        return True
+
+    async def _account_action(self, payload: dict[str, Any], send: Any) -> Any:
+        """Publish or heartbeat; a board that predates W763 gets the evidence it reads.
+
+        ``send`` makes the call itself, so every operation the relay issues
+        stays a literal at its call site, where the worker profile contract
+        enumerates them. A board without session-profile evidence refuses the
+        whole call over its unknown field. Once refused, this relay rewrites
+        ``payload`` (which ``send`` sends) to the W310 form, sends it again,
+        and keeps that form from then on, so a client installed before its
+        board loses no heartbeat.
+        """
+
+        try:
+            return await send()
+        except DomainError as exc:
+            if exc.code != "work_runtime_account_evidence_invalid" or not _legacy_account_evidence(payload):
+                raise
+            # Shared with the per-project adapters, which are rebuilt every poll.
+            if not self._runtime_account_error_state.get("legacy_evidence"):
+                logger.warning(
+                    "Problem Board board predates session-profile account evidence; sending the host-report form "
+                    "worker_name=%s",
+                    self.config.worker_name,
+                )
+            self._runtime_account_error_state["legacy_evidence"] = True
+            return await send()
 
     def _trace_stage(self, stage: str, *, operation: str):
         return self._trace.stage(
@@ -1619,6 +1720,9 @@ class ProblemBoardHostRelayAdapter:
                     for item in value.get("attendances") or []
                     if isinstance(item, Mapping) and item.get("project_ref")
                 ]
+                self._heartbeat_teams().retain_projects({
+                    str(item["project_ref"]) for item in self._attendance_cache["items"]
+                })
         if value.get("worker_alias"):
             self._attendance_cache["worker_alias"] = str(value["worker_alias"])
         if "host_retirements" in value:
@@ -1629,6 +1733,7 @@ class ProblemBoardHostRelayAdapter:
             ]
 
     def _invalidate_cached_project(self, project_ref: str) -> None:
+        self._heartbeat_teams().forget(project_ref)
         self._attendance_cache["initialized"] = False
         self._attendance_cache["items"] = [
             dict(item)
@@ -2244,10 +2349,9 @@ class ProblemBoardHostRelayAdapter:
         ][-20:]
         if completed:
             payload["relay_degraded_intervals"] = completed
-        response = await self.client.action(
-            object_ref="work:worker:self",
-            action="worker.publish",
-            payload=payload,
+        response = await self._account_action(
+            payload,
+            lambda: self.client.action(object_ref="work:worker:self", action="worker.publish", payload=payload),
         )
         self._published_interval = interval
         remote = _object_result(response)
@@ -2299,6 +2403,47 @@ class ProblemBoardHostRelayAdapter:
             reconcile_ceiling_seconds=self._published_interval,
             relay_degraded_intervals=intervals,
         )
+
+    def _pull_lock(self) -> asyncio.Lock:
+        locks = getattr(self.client, "_problem_board_pull_locks", None)
+        if not isinstance(locks, dict):
+            locks = {}
+            try:
+                setattr(self.client, "_problem_board_pull_locks", locks)
+            except AttributeError:  # a client that takes no attributes: one lock per adapter
+                pass
+        return locks.setdefault(self.config.project_id, asyncio.Lock())
+
+    def _on_push_event(self, event: Mapping[str, Any]) -> None:
+        """W794: a ``control.available`` push for this project pulls and serves controls now (one pull at a time).
+
+        Operator, 2026-10-13: "why requesting the doc should care if coord busy or no at all". A project file
+        view waited for the end of an attendance turn (35 to 110 s); the board already pushes when it queues.
+        """
+
+        data = event.get("data") if isinstance(event.get("data"), Mapping) else event
+        if str(data.get("kind") or "") != "control.available":
+            return
+        refs = data.get("refs") if isinstance(data.get("refs"), Mapping) else {}
+        if str(refs.get("project_ref") or "") != f"work:project:{self.config.project_id}":
+            return
+        if self._immediate_pull is not None and not self._immediate_pull.done():
+            return
+        try:
+            self._immediate_pull = asyncio.get_running_loop().create_task(self._pull_controls_now())
+        except RuntimeError:  # no running loop: the next turn pulls
+            self._immediate_pull = None
+
+    async def _pull_controls_now(self) -> dict[str, int]:
+        try:
+            async with self._pull_lock():
+                return await self._pull_controls()
+        except Exception as exc:  # noqa: BLE001 - the attendance turn pulls again
+            logger.warning(
+                "Problem Board relay immediate control pull failed worker=%s code=%s",
+                self.config.worker_name, getattr(exc, "code", "") or type(exc).__name__,
+            )
+            return {}
 
     async def _pull_controls(self, *, project_ref: str | None = None) -> dict[str, int]:
         requested_project_ref = (
@@ -3091,6 +3236,14 @@ class ProblemBoardHostRelayAdapter:
         )
         return await publish(result)
 
+    def _project_file_source(self) -> ProjectFileSource:
+        """W794: this machine's per-project copies of the listed files, beside the host's field, outside agent workspaces."""
+
+        source = getattr(self, "_file_source", None)
+        if source is None:
+            source = self._file_source = ProjectFileSource(Path(self.field.root).parent / "project-files")
+        return source
+
     async def _serve_file_view(self, control: Mapping[str, Any]) -> str:
         """Publish one listed project file from this agent's clone, stamped with its commit (W370).
 
@@ -3130,22 +3283,63 @@ class ProblemBoardHostRelayAdapter:
             for row in listed.get("files") or []
         ):
             raise DomainError("file_not_listed", "This host's project files list does not name that file.")
-        local, state = file_state(self.config.workspace, alias, path)
-        if state == "not_cloned":
-            raise DomainError("repository_not_cloned", f"This agent has no clone of {alias} yet.")
-        if state == "missing":
-            raise DomainError("file_missing", f"{path} is not in this agent's clone of {alias}.")
-        clone = Path(self.config.workspace) / alias
-        target = Path(local).resolve()
-        # A listed path never reads outside its clone, links included.
-        if clone.resolve() not in target.parents:
-            raise DomainError("file_not_listed", "The listed path leaves its repository.")
-        raw = target.read_bytes()
-        if len(raw) > FILE_VIEW_MAX_BYTES:
-            raise DomainError(
-                "file_too_large", f"{path} is {len(raw)} bytes; a file view carries at most {FILE_VIEW_MAX_BYTES}."
+        # W794 (operator, 2026-10-13: "we need the machine with coordinator and its credential"; "last one" =
+        # "A"): served from this machine's own per-project copy, never an agent's clone, at the default
+        # branch's newest commit, with the coordinator Card's GitHub key held by this relay process.
+        repositories = self.field.read_project_repositories(self.config.project_id)
+        url = next(
+            (str(row.get("url") or "") for row in repositories.get("repositories") or [] if row.get("alias") == alias),
+            "",
+        )
+        repository = github_repository(url)
+        issuer = getattr(self.client, "github_key", None)
+        # W848 (operator, 2026-10-14: "B: the client reads local repositories directly << of course this! this is
+        # special type of project. where we do not have any github"): a repository at a path on this machine is
+        # read in place, at its default branch's newest commit, with no GitHub key.
+        local = "" if repository else local_path(url)
+        if local:
+            # Confined to this host's own repository map for the alias, never a path the board alone names: the
+            # board's URL may say which mapped root, but cannot open any other repository on this machine.
+            mapped = {Path(root).expanduser().resolve() for name, root in self.config.source_repositories if name == alias}
+            mapped |= {Path(root).expanduser().resolve() for name, root, _ in self.config.source_read_roots if name == alias}
+            if Path(local).expanduser().resolve() not in mapped:
+                raise DomainError(
+                    "repository_not_mapped",
+                    f"{alias} is not a repository this machine's repository map names at that address.",
+                )
+            content, source_commit = await self._project_file_source().read_local(
+                repository_path=local, path=path, max_bytes=FILE_VIEW_MAX_BYTES,
             )
-        content = raw.decode("utf-8", errors="replace")
+            return await self._publish_file_view(view_ref, repository_ref, path, content, source_commit)
+        if not repository:
+            raise DomainError("repository_not_on_github", f"{alias} is not a GitHub repository this machine can read.")
+        if issuer is None:
+            raise DomainError("github_key_unavailable", "This relay has no GitHub key path for the coordinator's Card.")
+
+        async def token(name: str) -> str:
+            try:
+                issued = await issuer(project_ref, name)
+            except Exception as exc:  # noqa: BLE001 - the refusal is named on the view, never the token
+                raise DomainError(
+                    "github_key_refused",
+                    f"Connection Hub gave the coordinator no GitHub key for {name}: "
+                    f"{getattr(exc, 'code', '') or type(exc).__name__}.",
+                ) from exc
+            return str(getattr(issued, "token", "") or "")
+
+        content, source_commit = await self._project_file_source().read(
+            project_id=self.config.project_id, alias=alias, repository=repository, path=path, token=token,
+        )
+        return await self._publish_file_view(view_ref, repository_ref, path, content, source_commit)
+
+    async def _publish_file_view(
+        self, view_ref: str, repository_ref: str, path: str, content: str, source_commit: str,
+    ) -> str:
+        if len(content.encode("utf-8")) > FILE_VIEW_MAX_BYTES:
+            raise DomainError(
+                "file_too_large",
+                f"{path} is {len(content.encode('utf-8'))} bytes; a file view carries at most {FILE_VIEW_MAX_BYTES}.",
+            )
         await self.client.action(
             object_ref=view_ref,
             action="journal.view.publish",
@@ -3156,7 +3350,7 @@ class ProblemBoardHostRelayAdapter:
                 "content_hash": hashlib.sha256(content.encode("utf-8")).hexdigest(),
                 "repository_journal_ref": repository_ref,
                 "next_cursor": "",
-                "source_commit": head_commit(clone),
+                "source_commit": source_commit,
             },
         )
         return view_ref
@@ -3187,6 +3381,7 @@ class ProblemBoardHostRelayAdapter:
             runtime_session_id=self.config.runtime_session_id,
             working_directory=self.config.workspace or self.config.working_directory,
             launch=self.config.runtime_launch,
+            profile=resume_profile(self.config.claude_profile),
         )
         command = str(generated["command"])
         await self.client.action(
@@ -4480,10 +4675,13 @@ class ProblemBoardHostRelayAdapter:
             <= 0
         )
         heartbeat_payload: dict[str, Any] = {}
+        team_request = None
         if heartbeat_sent:
+            team_request = self._heartbeat_teams().begin(project_ref, self._team_context())
             heartbeat_payload = {
                 "availability": "available",
                 "project_ref": project_ref,
+                **team_request.payload(),
             }
             if session_delta is not None:
                 heartbeat_payload["agent_sessions"] = session_delta
@@ -4506,7 +4704,23 @@ class ProblemBoardHostRelayAdapter:
             "workspace_report": workspace_report,
             "heartbeat_sent": heartbeat_sent,
             "heartbeat_payload": heartbeat_payload,
+            "team_request": team_request,
         }
+
+    def _heartbeat_teams(self) -> TeamSnapshots:
+        # Narrow tests/one-shot adapters may be built without __init__.
+        snapshots = getattr(self, "_team_snapshots", None)
+        if snapshots is None:
+            snapshots = self._team_snapshots = TeamSnapshots()
+        return snapshots
+
+    def _team_context(self) -> tuple[Any, ...] | None:
+        client = getattr(self, "client", None)
+        generation = getattr(client, "connection_generation", None)
+        if type(generation) is not int or generation < 1 or not getattr(client, "connected", False):
+            return None
+        return (id(client), generation, self.config.worker_name, self.config.worker_identity,
+                self.config.connection_hub_profile, getattr(client, "partition_ref", ""))
 
     def _record_project_heartbeat_result(
         self,
@@ -4537,20 +4751,21 @@ class ProblemBoardHostRelayAdapter:
         self._acknowledge_workspace_report(project_ref, workspace_report, heartbeat_result)
         self._record_attendance_observation(heartbeat_result)
         self._materialize_attended_project(heartbeat_result)
-        # The team travels with every project heartbeat so a worker can
-        # address a teammate from its packet without asking the control
-        # plane. Runtime identity, when the board reports it, remains
-        # nested on that authoritative roster. Replacing the snapshot
-        # means an omitted model or account is never inherited or made up.
-        if isinstance(heartbeat_result.get("team"), list):
-            try:
-                self.field.sync_project_team(
-                    self.config.project_id, heartbeat_result["team"]
-                )
-            except DomainError:
-                # The project is not materialized here yet; the next cycle
-                # after its materialize control lands stores the team.
-                pass
+        # Retain exactly the display snapshot whose content token was sent.
+        # Complete replacements clear omitted fields; empty means clear.
+        teams = self._heartbeat_teams()
+        request = prepared.get("team_request")
+        context = self._team_context()
+        if not isinstance(request, TeamRequest):
+            teams.forget(project_ref)
+            request = teams.begin(project_ref, None)
+            context = None
+        try:
+            teams.apply(request, heartbeat_result, context=context,
+                        materialize=lambda team: self.field.sync_project_team(self.config.project_id, team))
+        except DomainError:
+            # No token survives a failed materialization; next request is full.
+            pass
         # Who acts as coordinator now (W313): the holder, not the first
         # labelled teammate. Absent from a board that predates it.
         if isinstance(heartbeat_result.get("coordinator"), Mapping):
@@ -4612,12 +4827,14 @@ class ProblemBoardHostRelayAdapter:
                     "attendance.heartbeat",
                     operation="worker.heartbeat",
                 ):
-                    heartbeat_response = await self.client.action(
-                        object_ref="work:worker:self",
-                        action="worker.heartbeat",
-                        payload=heartbeat_payload,
+                    heartbeat_response = await self._account_action(
+                        heartbeat_payload,
+                        lambda: self.client.action(
+                            object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
+                        ),
                     )
             except DomainError as exc:
+                self._heartbeat_teams().forget(project_ref)
                 if exc.code != "work_worker_not_linked":
                     raise
                 self._invalidate_cached_project(project_ref)
@@ -4675,7 +4892,8 @@ class ProblemBoardHostRelayAdapter:
             "attendance.controls",
             operation="control.pull",
         ):
-            controls = await self._pull_controls()
+            async with self._pull_lock():
+                controls = await self._pull_controls()
         await run_off_loop(self._report_dead_notification_path, executor=self._store_thread())
         outbox = await self._flush_outbox()
         return {
@@ -4932,8 +5150,11 @@ class ProblemBoardHostRelayAdapter:
         await self._add_runtime_account(heartbeat_payload)
         try:
             return _object_result(
-                await self.client.action(
-                    object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
+                await self._account_action(
+                    heartbeat_payload,
+                    lambda: self.client.action(
+                        object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
+                    ),
                 )
             ), None
         except DomainError as exc:
@@ -4941,14 +5162,18 @@ class ProblemBoardHostRelayAdapter:
                 raise
         # Re-register with the interval already advertised so the recovery does
         # not cost a second publish for the interval alone.
+        self._heartbeat_teams().retain_projects(set())
         interval = self._published_interval
         self._published_interval = None
         registration = await self._publish_worker(reconcile_ceiling_seconds=interval)
         if registration["remote"].get("pool_status") == "limbo":
             return {}, registration
         return _object_result(
-            await self.client.action(
-                object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
+            await self._account_action(
+                heartbeat_payload,
+                lambda: self.client.action(
+                    object_ref="work:worker:self", action="worker.heartbeat", payload=heartbeat_payload
+                ),
             )
         ), registration
 
@@ -5168,6 +5393,7 @@ class ProblemBoardHostRelayAdapter:
                 workspace_sizes=self._workspace_sizes,
                 worktree_observer=self._worktree_observer,
                 store_executor=self._store_thread(),
+                team_snapshots=self._heartbeat_teams(),
             )
             project = await adapter._poll_project_once(agent_sessions=sessions)
             if project.get("attendance") == "linked":
@@ -6663,8 +6889,12 @@ class ProblemBoardRelaySupervisor:
                 field=SharedFieldStore(host.field_root),
                 client=client,
                 trace=self._trace,
-                runtime_account_reader=lambda: read_runtime_account(
-                    channel.runtime_kind
+                # W763: a Claude session's own profile, never the global
+                # login, once the session is bound to one.
+                runtime_account_reader=(
+                    (lambda: read_session_account(channel.claude_profile))
+                    if channel.runtime_kind == "claude-code"
+                    else (lambda: read_runtime_account(channel.runtime_kind))
                 ),
                 outbox_drain_lock=self._outbox_drain_lock(
                     channel.worker_name
@@ -7350,6 +7580,10 @@ class ProblemBoardRelaySupervisor:
                 },
             )
         session = self._sessions.get(channel.worker_name)
+        rebind = getattr(getattr(session, "adapter", None), "rebind_claude_profile", None)
+        if callable(rebind):
+            # W763: a binding confirmed on this host since the session opened.
+            rebind(channel.claude_profile)
         # The Card fingerprint reads the profile file: off the event loop
         # (W456 criterion 4, dev-main 2026-10-05: that read held it 3.2 s).
         if session is not None and not self._session_matches(

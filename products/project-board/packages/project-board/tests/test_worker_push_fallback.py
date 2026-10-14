@@ -53,6 +53,8 @@ def _setup(tmp_path: Path, monkeypatch, *, code: str, availability: bool, age_se
     )
     monkeypatch.setattr(cli, "_GitHubKeySession", lambda args: session)
     monkeypatch.setattr(cli, "repository_name", lambda url: REPO)
+    # W762's Card checks are tested in test_w762_card_account; here the push itself.
+    monkeypatch.setattr(cli, "_card_push_refusal", lambda *a, **k: "")
     monkeypatch.chdir(clone)
     return deploy, clone
 

@@ -10,6 +10,11 @@ the person's current C or My, applies the delta to that one resource, and builds
 the candidate through the ordinary reselect builder, so catalog resolution, the
 person Control's audit and its snapshot are exactly those of any selection edit.
 The Hub learns nothing about roles or admins: it applies the sets it is given.
+
+W810: one update may also remove and add at once (a demotion removes the admin
+operations and adds the member defaults the Card misses). The operations become
+(current - remove) | add, and the grants are recomputed from PB's declared map
+over that whole set, so a removal and an addition never race in two saves.
 """
 
 from __future__ import annotations
@@ -32,7 +37,11 @@ def _names(value: Any) -> bool:
 
 
 def role_update_shape_valid(raw: Mapping[str, Any]) -> bool:
-    """The closed shape: one direction per update (add for a promotion, remove for a demotion)."""
+    """The closed shape: add (a promotion), remove, or remove and add together (a demotion, W810).
+
+    Any removal carries PB's declared operation-to-grant map; an add-only update carries none.
+    An operation is never both removed and added.
+    """
     if set(raw) != ROLE_KEYS or raw.get("original_revision") != 0:
         return False
     if type(raw.get("resource")) is not str or not raw["resource"]:
@@ -41,7 +50,9 @@ def role_update_shape_valid(raw: Mapping[str, Any]) -> bool:
         return False
     adding, removing = bool(raw["add_grants"] or raw["add_operations"]), bool(raw["remove_operations"])
     grants = raw["operation_grants"]
-    if adding == removing:
+    if not (adding or removing):
+        return False
+    if set(raw["remove_operations"]) & set(raw["add_operations"]):
         return False
     if removing:
         return (isinstance(grants, Mapping) and len(grants) <= _MAX_OPERATIONS
@@ -56,12 +67,15 @@ def role_selection(original: CardAuthority, update: Mapping[str, Any]) -> dict[s
     operations = {key: sorted(values) for key, values in (original.resource_operations or {}).items()}
     before = (list(grants.get(resource, [])), list(operations.get(resource, [])))
     if update["remove_operations"]:
-        kept = sorted(set(operations.get(resource, ())) - set(update["remove_operations"]))
+        kept = sorted((set(operations.get(resource, ())) - set(update["remove_operations"]))
+                      | set(update["add_operations"]))
         missing = [op for op in kept if op not in update["operation_grants"]]
         if missing:
             raise DecisionRefused("card_plan_role_operation_unknown")  # never guess a grant
         operations[resource] = kept
-        grants[resource] = sorted({grant for op in kept for grant in update["operation_grants"][op]})
+        # Recomputed over the whole final set, after the removal and the addition (W810).
+        grants[resource] = sorted({grant for op in kept for grant in update["operation_grants"][op]}
+                                  | set(update["add_grants"]))
     else:
         grants[resource] = sorted(set(grants.get(resource, ())) | set(update["add_grants"]))
         operations[resource] = sorted(set(operations.get(resource, ())) | set(update["add_operations"]))

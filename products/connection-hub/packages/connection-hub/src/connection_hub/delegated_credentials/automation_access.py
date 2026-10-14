@@ -617,6 +617,47 @@ def _grantor_authority(
     return out
 
 
+def _carried_application_roles(existing: Any) -> set[str]:
+    """The platform roles the stored Card's application-operations policy already holds (W768)."""
+    try:
+        policy = application_operation_role_policy(
+            dict(existing.properties or {}),
+            resource_grants=dict(existing.resource_grants or {}),
+        )
+    except ApplicationOperationPolicyError:
+        return set()  # an unreadable stored policy carries nothing
+    if policy is None:
+        return set()
+    return {policy.default_role, *policy.operation_roles.values()}
+
+
+def _application_part_unchanged(
+    existing: Any,
+    *,
+    properties: Mapping[str, Any],
+    resource_grants: Mapping[str, Any],
+    resource_operations: Mapping[str, Any],
+) -> bool:
+    """True when a save keeps the stored Card's application policy and selects no new application operation (W768)."""
+    try:
+        before = application_operation_role_policy(
+            dict(existing.properties or {}),
+            resource_grants=dict(existing.resource_grants or {}),
+        )
+        after = application_operation_role_policy(properties, resource_grants=resource_grants)
+    except ApplicationOperationPolicyError:
+        return False
+    if before is None or after is None:
+        return False
+    if (before.default_role, dict(before.operation_roles)) != (after.default_role, dict(after.operation_roles)):
+        return False
+    stored = {_clean(value) for value in _as_list(
+        dict(existing.resource_operations or {}).get(APPLICATION_API_RESOURCE)) if _clean(value)}
+    selected = {_clean(value) for value in _as_list(
+        resource_operations.get(APPLICATION_API_RESOURCE)) if _clean(value)}
+    return selected <= stored
+
+
 def _application_role_policy(
     *,
     properties: Mapping[str, Any],
@@ -2582,11 +2623,57 @@ class AutomationAccessService:
             return {**result, "access": current["access"]}
         return result
 
+    async def _whole_card_save_preflight(
+        self, *, record: AutomationAccessRecord, kind: str, expected_card_revision: Any,
+        expected_catalog_version: Any, selection: Mapping[str, Any], properties: Any = None,
+        label: Any = None, composition_mode: Any = None, accepted_operations: Any = None,
+        invocation_modes: Any = None,
+    ) -> tuple[AutomationAccessRecord, dict[str, Any], bool, dict[str, Any]]:
+        """Fresh pins -> concrete selection -> own diff. No prepare, marker or PB call."""
+        from .whole_card_save import (
+            WholeCardSaveRefused, check_card_pin, check_catalog_pin, normalize_selection,
+            same_selection, added_invocation_modes, checked_properties,
+        )
+        try:
+            loaded = await self._load_record_any_state(record.access_id, grantor_subject=record.grantor_subject)
+        except CardUnavailable:
+            raise WholeCardSaveRefused("delegated_cards_unavailable", 503) from None
+        if loaded is None:
+            raise WholeCardSaveRefused("managed_card_edit_revision_changed")
+        record = loaded[0]
+        check_card_pin(record, expected_card_revision)  # before reading any catalog or considering equality
+        try:
+            active = await self._active_catalog()
+        except CatalogUnavailable:
+            raise WholeCardSaveRefused("delegated_catalog_unavailable", 503) from None
+        version = self._version_of(active)
+        check_catalog_pin(expected_catalog_version, version)
+        config = await self._catalog_config(active, owner_subject=record.grantor_subject)
+        selected = normalize_selection(record, selection, config=config)
+        if properties is not None:
+            selected["properties"] = checked_properties(record, properties, own_my=kind == "person_my")
+        candidate = replace_fields(record, resource_operations=selected.get(
+            "resource_operations", record.resource_operations))
+        modes = added_invocation_modes(original=record, candidate=candidate, config=config,
+            modes=invocation_modes, policy_bearing=kind in {"person_my", "agent_card", "caller_card"})
+        unchanged = same_selection(record, selected, label=label, composition_mode=composition_mode)
+        if unchanged and accepted_operations:
+            from .agent_capability_control import preserve_descriptor_acceptance
+            from .catalog.descriptors import next_resource_acceptance
+            acceptance = next_resource_acceptance(
+                resources=selected.get("resource_grants", record.resource_grants),
+                row_for=lambda resource: self._configured_resource(resource, config=config),
+                catalog_version=version, selected_operations=candidate.resource_operations,
+                previous=record.resource_acceptance, accepted_operations=accepted_operations)
+            unchanged = preserve_descriptor_acceptance(record.resource_acceptance, acceptance) == record.resource_acceptance
+        return record, selected, unchanged, modes
+
     async def _forward_person_control_edit(
         self, user: Mapping[str, Any], *, project_ref: str, target_subject: str, request_id: str,
         selection: Mapping[str, Any], expected_card_revision: int | None, properties: Any,
         composition_mode: str | None, accepted_operations: Mapping[str, Any] | None = None,
         expected_catalog_version: str | None = None, label: str | None = None,
+        _screen_save: bool = False,
     ) -> dict[str, Any] | None:
         """The managed person-Control edit, made by the project's own transaction (W723: with its acceptance).
 
@@ -2597,6 +2684,22 @@ class AutomationAccessService:
         actor_subject = _subject_from_user(user)
         if forwarder is None or not _clean(target_subject) or not actor_subject:
             return None
+        if _screen_save or expected_catalog_version is not None:
+            from .managed_card_edit_forward import managed_card_location
+            access_id, grantor = managed_card_location("person_control", project_ref=project_ref,
+                                                       ref=_clean(target_subject))
+            current = await self._load_record_any_state(access_id, grantor_subject=grantor)
+            if current is None:
+                return {"ok": False, "error": "managed_card_edit_revision_changed", "status": 409}
+            try:
+                _, selection, unchanged, _ = await self._whole_card_save_preflight(
+                    record=current[0], kind="person_control", expected_card_revision=expected_card_revision,
+                    expected_catalog_version=expected_catalog_version, selection=selection, properties=properties,
+                    label=label, composition_mode=composition_mode, accepted_operations=accepted_operations)
+            except ManagedCardEditError as exc:
+                return exc.to_dict()
+            if unchanged:
+                return {"ok": True, "unchanged": True}
         if label is not None:
             from .managed_card_edit_forward import managed_card_location
             try:
@@ -2718,6 +2821,23 @@ class AutomationAccessService:
         actor_subject = _subject_from_user(user)
         if forwarder is None or not actor_subject or (kind == "agent_card" and record.control_card is None):
             return None
+        whole_selection = whole_modes = None
+        if changes.get("_screen_save") or changes.get("expected_catalog_version") is not None:
+            try:
+                record, whole_selection, unchanged, whole_modes = await self._whole_card_save_preflight(
+                    record=record, kind=kind, expected_card_revision=changes.get("expected_card_revision"),
+                    expected_catalog_version=changes.get("expected_catalog_version"),
+                    selection={field: changes[field] for field in
+                        ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
+                        if changes.get(field) is not None},
+                    properties=changes.get("properties"), label=changes.get("label"),
+                    composition_mode=changes.get("composition_mode"),
+                    accepted_operations=changes.get("accepted_operations"),
+                    invocation_modes=changes.get("invocation_modes"))
+            except ManagedCardEditError as exc:
+                return exc.to_dict()
+            if unchanged:
+                return {"ok": True, "unchanged": True}
         composition_mode = label = None
         stored_mode = record.composition_mode
         if kind == "project_control" and changes.get("composition_mode") is not None:
@@ -2752,6 +2872,8 @@ class AutomationAccessService:
         selection = {field: changes[field] for field in
                      ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
                      if changes.get(field) is not None}
+        if whole_selection is not None:
+            selection = whole_selection
         if (kind == "project_control" and not selection and not changes.get("accepted_operations")
                 and composition_mode is None and label is None):
             if revision != record.card_revision:
@@ -2765,7 +2887,7 @@ class AutomationAccessService:
                 access_id=record.access_id, subject_hash=subject_hash_for(record.grantor_subject),
                 accepted_operations=changes.get("accepted_operations"),
                 expected_catalog_version=changes.get("expected_catalog_version"),
-                composition_mode=composition_mode, label=label)
+                composition_mode=composition_mode, label=label, invocation_modes=whole_modes)
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
@@ -2799,11 +2921,54 @@ class AutomationAccessService:
         return await self._forward_agent_card_edit(user, record=record, project_ref=_clean(record.issuer_ref),
                                                    request_id=request_id, changes=changes, kind="project_control")
 
+    async def _forward_owner_agent_card_save(
+        self, user: Mapping[str, Any], *, record: AutomationAccessRecord, request_id: str | None,
+        authorize_agent_card: Callable[[str, str], Awaitable[Any]] | None, changes: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        """W727: the owner's Save of their own project-linked agent Card, made by that project's transaction.
+
+        Live 14 Oct 10:35:47Z: the Cards screen sends the owner's Save of their agent Card as an ordinary
+        update (projectAgentCardUpdateTarget is null for via "owner"). It forwarded only a managed P (W638) and
+        the caller's own My Card (W724), so a bound agent Card fell through to the direct write and W578
+        refused it (card_transactions_direct_write_refused). As the focused grant already does
+        (_forward_managed_grant), the project bound in the Card's own control_card decides through
+        ``authorize_agent_card``, and the Save goes as one managed agent_card edit. None when Card transactions
+        are off, the Card is not a bound agent Card, or no project policy is given: the caller keeps its path
+        (and W578 its refusal).
+        """
+        if self._managed_direct_write_refused() is None or record.control_card is None:
+            return None
+        if self._managed_project_control_refused(record) is not None:
+            return None  # the project's own Control (P) has its own forward (W638)
+        from .managed_card_edit_forward import managed_my_card_owner
+        if managed_my_card_owner(card_authority_from_record(record)) is not None:
+            return None  # a My Card (W724)
+        project_ref = _clean(record.control_card.issuer_ref)
+        if not project_ref or authorize_agent_card is None:
+            return None
+        decision = await authorize_agent_card(record.access_id, project_ref)
+        if isinstance(decision, dict):
+            return decision  # the project host's own refusal
+        if not request_id:
+            # One stable id per Save (actor, Card, the revision it was read at, the selection sent), so a
+            # retried Save replays the project's one decision and never makes a second.
+            selection = {field: changes[field] for field in
+                         ("resource_grants", "resource_operations", "named_service_operations", "account_scope")
+                         if changes.get(field) is not None}
+            digest = hashlib.sha256(json.dumps(
+                [_subject_from_user(user), record.access_id, changes.get("expected_card_revision"), selection],
+                sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
+            request_id = "agent-card-save:" + digest[:48]
+        return await self._forward_agent_card_edit(user, record=record, project_ref=project_ref,
+                                                   request_id=request_id, changes=changes)
+
     async def _forward_own_my_card_edit(
         self, user: Mapping[str, Any], *, record: AutomationAccessRecord, request_id: str | None,
         expected_card_revision: int | None, selection: Mapping[str, Any], properties: Any,
         composition_mode: str | None, label: str | None, accepted_operations: Mapping[str, Any] | None,
         expected_catalog_version: str | None = None,
+        invocation_modes: Mapping[str, Any] | None = None,
+        _screen_save: bool = False,
     ) -> dict[str, Any] | None:
         """W724: a person's Save of their OWN project My Card, made by the project's own transaction.
 
@@ -2823,6 +2988,19 @@ class AutomationAccessService:
         actor_subject = _subject_from_user(user)
         if forwarder is None or not actor_subject or person != actor_subject:
             return None
+        if _screen_save or expected_catalog_version is not None:
+            from .managed_card_edit_forward import ManagedCardEditError
+            try:
+                record, selection, unchanged_save, invocation_modes = await self._whole_card_save_preflight(
+                    record=record, kind="person_my", expected_card_revision=expected_card_revision,
+                    expected_catalog_version=expected_catalog_version, selection=selection, properties=properties,
+                    label=label, composition_mode=composition_mode, accepted_operations=accepted_operations,
+                    invocation_modes=invocation_modes)
+            except ManagedCardEditError as exc:
+                return exc.to_dict()
+            if unchanged_save:
+                return {"ok": True, "unchanged": True}
+            properties = None  # validated full copy is already in this single signed selection
         unchanged = (("properties", dict(record.properties or {}), properties),
                      ("composition_mode", record.composition_mode or "and",
                       None if composition_mode is None else (composition_mode or "and")))
@@ -2838,7 +3016,7 @@ class AutomationAccessService:
         if not request_id:
             digest = hashlib.sha256(json.dumps(
                 [actor_subject, record.access_id, expected_card_revision, selection, accepted_operations or {},
-                 expected_catalog_version or ""],
+                 expected_catalog_version or "", label, invocation_modes or {}],
                 sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")).hexdigest()
             request_id = "my-card-save:" + digest[:48]
         from .managed_card_edit_forward import ManagedCardEditError, managed_card_edit_body
@@ -2847,7 +3025,7 @@ class AutomationAccessService:
                 request_id=request_id, kind="person_my", principal_key="user:" + actor_subject,
                 original_revision=expected_card_revision, selection=selection,
                 accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version,
-                label=label)
+                label=label, invocation_modes=invocation_modes)
             outcome = await forwarder.forward(body)
         except ManagedCardEditError as exc:
             return exc.to_dict()
@@ -3163,6 +3341,7 @@ class AutomationAccessService:
         caller_write: CallerWrite | None = None,
         pre_gate: tuple[Any, Any] | None = None,
         effects: Sequence[Mapping[str, Any]] = (),
+        require_transaction: bool = False,
     ) -> None:
         persistence = self._cards()
         persist = persistence.persist
@@ -3201,7 +3380,7 @@ class AutomationAccessService:
             coordinated = await self._coordinated_write(
                 record, authority, expected_revision=expected_revision, caller_write=caller_write,
                 gate=guard.get("before_commit"), witness=witness, effects=effects)
-            if effects and not coordinated:
+            if (effects or require_transaction) and not coordinated:
                 # Effects exist only inside the protocol: never dropped silently.
                 raise CardConflict("card_effects_unroutable")
         except BaseException:
@@ -3606,7 +3785,7 @@ class AutomationAccessService:
                 active, owner_subject=existing.grantor_subject
             )
             refreshed["catalog_drift"] = (
-                drift_unavailable(reason)
+                drift_unavailable(reason, current_version=_clean(getattr(active, "version", "")))
                 if reason
                 else card_drift(
                     card=existing,
@@ -3622,7 +3801,9 @@ class AutomationAccessService:
                 existing.access_id,
                 exc_info=True,
             )
-            refreshed["catalog_drift"] = drift_unavailable("catalog_unavailable")
+            refreshed["catalog_drift"] = drift_unavailable(
+                "catalog_unavailable", current_version=_clean(getattr(active, "version", ""))
+            )
         return {
             "ok": False,
             "error": "delegated_access_precondition_failed",
@@ -3672,7 +3853,7 @@ class AutomationAccessService:
                 baselines[version] = await self._baseline_document(version)
             document, reason = baselines[version]
             if reason:
-                out[record.access_id] = drift_unavailable(reason)
+                out[record.access_id] = drift_unavailable(reason, current_version=active.version)
                 continue
             out[record.access_id] = card_drift(
                 card=record,
@@ -3949,6 +4130,9 @@ class AutomationAccessService:
                     getattr(resource, "person_card_operations", ()) or ())) else {}),
                 **({"person_member_operations": list(member_ops)} if (member_ops := tuple(
                     getattr(resource, "person_member_operations", ()) or ())) else {}),
+                # W775: agent-only operations; a person's editor folds them away, an agent's is unchanged.
+                **({"person_agent_operations": list(agent_ops)} if (agent_ops := tuple(
+                    getattr(resource, "person_agent_operations", ()) or ())) else {}),
                 "operations": [
                     {
                         "name": tool.name,
@@ -5437,12 +5621,31 @@ class AutomationAccessService:
                     + "."
                 ),
             })
+        # W768: as for grants (W296), a save bounded by its project host is not
+        # refused for the application roles the stored Card already carries,
+        # when it leaves its application-operations part exactly as stored: the
+        # same default role, the same per-operation roles, and no newly selected
+        # application operation. Without this, no project-bounded save of a Card
+        # whose policy holds a platform role (the project Control's super-admin
+        # default) could ever succeed, whatever the person ticked. Any change to
+        # that part is checked against the bound alone, as before.
+        delegable_roles = (
+            set(delegable_grants) | _carried_application_roles(existing)
+            if _delegable_grants is not None
+            and _application_part_unchanged(
+                existing,
+                properties=selected_properties,
+                resource_grants=selected_resource_grants,
+                resource_operations=selected_resource_operations,
+            )
+            else delegable_grants
+        )
         try:
             _application_role_policy(
                 properties=selected_properties,
                 resource_grants=selected_resource_grants,
                 resource_operations=selected_resource_operations,
-                delegable_roles=delegable_grants,
+                delegable_roles=delegable_roles,
                 allowed_roles=catalog_config.resource_grants(
                     APPLICATION_API_RESOURCE
                 ),
@@ -5969,6 +6172,8 @@ class AutomationAccessService:
         expected_card_revision: int | None = None,
         expected_catalog_version: str | None = None,
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
+        invocation_modes: Mapping[str, Any] | None = None,
+        _screen_save: bool = False,
         properties: Mapping[str, Any] | None = None,
         composition_mode: str | None = None,
         _delegable_grants: Iterable[str] | None = None,
@@ -5987,6 +6192,7 @@ class AutomationAccessService:
         _caller_actor_subject: str = "",
         _application_write: bool = False,
         _person_control: bool = False,
+        _authorize_agent_card: Callable[[str, str], Awaitable[Any]] | None = None,
     ) -> dict[str, Any]:
         """Edit a card's authority IN PLACE, whatever family issued it.
 
@@ -6033,7 +6239,8 @@ class AutomationAccessService:
                          "properties": properties, "composition_mode": composition_mode, "label": label,
                          "expected_card_revision": expected_card_revision,
                          "accepted_operations": accepted_operations,
-                         "expected_catalog_version": expected_catalog_version})
+                         "expected_catalog_version": expected_catalog_version,
+                         "invocation_modes": invocation_modes, "_screen_save": _screen_save})
             return forwarded if forwarded is not None else refused
         own_my = await self._forward_own_my_card_edit(
             user, record=existing, request_id=request_id, expected_card_revision=expected_card_revision,
@@ -6042,9 +6249,51 @@ class AutomationAccessService:
                 ("named_service_operations", named_service_operations), ("account_scope", account_scope),
             ) if value is not None},
             properties=properties, composition_mode=composition_mode, label=label,
-            accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version)
+            accepted_operations=accepted_operations, expected_catalog_version=expected_catalog_version,
+            invocation_modes=invocation_modes, _screen_save=_screen_save)
         if own_my is not None:
             return own_my
+        if not _caller_actor_subject:
+            # W727 (live 14 Oct 10:35:47Z): the owner's whole Save of their own project-linked agent Card.
+            owner_agent = await self._forward_owner_agent_card_save(
+                user, record=existing, request_id=request_id, authorize_agent_card=_authorize_agent_card,
+                changes={"resource_grants": resource_grants, "resource_operations": resource_operations,
+                         "named_service_operations": named_service_operations, "account_scope": account_scope,
+                         "properties": properties, "composition_mode": composition_mode, "label": label,
+                         "expected_card_revision": expected_card_revision,
+                         "accepted_operations": accepted_operations,
+                         "expected_catalog_version": expected_catalog_version,
+                         "invocation_modes": invocation_modes, "_screen_save": _screen_save})
+            if owner_agent is not None:
+                return owner_agent
+        local_whole_save = _screen_save or invocation_modes is not None
+        local_modes: dict[str, Any] = {}
+        if local_whole_save:
+            from .managed_card_edit_forward import ManagedCardEditError
+            try:
+                existing, selected, unchanged_save, local_modes = await self._whole_card_save_preflight(
+                    record=existing, kind="control" if _record_is_credentialless(existing) else "caller_card",
+                    expected_card_revision=expected_card_revision, expected_catalog_version=expected_catalog_version,
+                    selection={field: value for field, value in (
+                        ("resource_grants", resource_grants), ("resource_operations", resource_operations),
+                        ("named_service_operations", named_service_operations), ("account_scope", account_scope))
+                        if value is not None}, properties=properties, label=label, composition_mode=composition_mode,
+                    accepted_operations=accepted_operations, invocation_modes=invocation_modes)
+            except ManagedCardEditError as exc:
+                return exc.to_dict()
+            if unchanged_save:
+                return {"ok": True, "unchanged": True}
+            if getattr(self, "_card_coordinator", None) is None:
+                return {"ok": False, "error": "whole_card_save_transaction_unavailable", "status": 503,
+                        "message": "This Card's whole-Save transaction is unavailable. Your draft is kept."}
+            # Reuse the existing one-participant Card transaction and its
+            # durable decision; never discard choices or use a direct fallback.
+            resource_grants = selected.get("resource_grants", existing.resource_grants)
+            resource_operations = selected.get("resource_operations", existing.resource_operations)
+            named_service_operations = selected.get(
+                "named_service_operations", existing.named_service_operations.to_stored())
+            account_scope = selected.get("account_scope", existing.account_scope)
+            properties = selected.get("properties", existing.properties)
         if resource_grants is None:
             # W737: only the managed forwards above read an omitted selection as "unchanged"; a direct
             # write still replaces the record exactly, as before.
@@ -6387,6 +6636,28 @@ class AutomationAccessService:
         if _record_transform is not None:
             updated = _record_transform(existing, updated)
         del remaining
+        save_effects: list[dict[str, Any]] = []
+        if local_whole_save:
+            from .whole_card_save import WholeCardSaveRefused, added_invocation_modes
+            from .oauth_issuance import IssuanceRefused
+            try:
+                # Bind choices to the actually resolved candidate, not merely
+                # the submitted map. Every policy is a reserve-only STAGE effect.
+                local_modes = added_invocation_modes(
+                    original=existing, candidate=updated, config=catalog_config,
+                    modes=local_modes, policy_bearing=not _record_is_credentialless(existing))
+                if local_modes:
+                    save_effects = await self._oauth_policy_effects(
+                        grantor=grantor_subject, candidate=updated,
+                        resource_operations={resource: list(choices) for resource, choices in local_modes.items()},
+                        invocation_policies=local_modes)
+            except WholeCardSaveRefused as exc:
+                return exc.to_dict()
+            except IssuanceRefused as exc:
+                unavailable = exc.reason == "issuance_invocation_policies_unavailable"
+                return {"ok": False, "error": "invocation_policy_unavailable" if unavailable
+                        else "invocation_modes_invalid", "status": 503 if unavailable else 400,
+                        "message": "The permission choices were not saved. Your draft is kept."}
         try:
             before_commit, issuer_request = await self._issuer_before_commit(
                 existing, user, action="update",
@@ -6415,7 +6686,8 @@ class AutomationAccessService:
         gate_digest = (issuer_request or caller_request).change_digest if before_commit is not None else ""
         try:
             guard = {"before_commit": before_commit, "expected_issuer_digest": gate_digest} if before_commit is not None else {}
-            await self._persist_record(updated, expected_revision=existing.card_revision, **guard)
+            await self._persist_record(updated, expected_revision=existing.card_revision,
+                                       effects=save_effects, require_transaction=local_whole_save, **guard)
         except (IssuerWriteRefused, CallerWriteRefused) as exc:
             outcome = await self._issuer_outcome(issuer_request, state="refused", card_revision=existing.card_revision)
             outcome.update(await caller_write_outcome(getattr(self, "_caller_writers", None), caller_request,
@@ -7159,6 +7431,11 @@ class AutomationAccessService:
                 [record], owner_subject=record.grantor_subject
             )
             view["catalog_drift"] = drift.get(record.access_id, {})
+        except (CardUnavailable, CatalogUnavailable):
+            view["catalog_drift"] = drift_unavailable("catalog_unavailable")
+        # Offers are a separate read. Their failure must not erase a drift
+        # comparison and active render pin that already succeeded.
+        try:
             options = await self.resource_options(
                 user,
                 _delegable_grants=_delegable_grants,
@@ -7181,7 +7458,6 @@ class AutomationAccessService:
                 reachable=None,
             )
         except (CardUnavailable, CatalogUnavailable):
-            view["catalog_drift"] = drift_unavailable("catalog_unavailable")
             view["resource_offers"] = []
         view["credential_delivery"] = "credentialless"
         view["credential_reach"] = "multi_resource"
@@ -7696,6 +7972,7 @@ class AutomationAccessService:
         label: str | None = None,
         expected_card_revision: int | None = None,
         expected_catalog_version: str | None = None,
+        _screen_save: bool = False,
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
         request_id: str | None = None,
         _delegable_grants: Iterable[str] | None = None,
@@ -7743,7 +8020,7 @@ class AutomationAccessService:
                          "properties": properties, "composition_mode": composition_mode, "label": label,
                          "expected_card_revision": expected_card_revision,
                          "accepted_operations": accepted_operations,
-                         "expected_catalog_version": expected_catalog_version})
+                         "expected_catalog_version": expected_catalog_version, "_screen_save": _screen_save})
             return forwarded if forwarded is not None else refused
         updated = await self.update_access(
             user,
@@ -7777,6 +8054,7 @@ class AutomationAccessService:
             label=label,
             expected_card_revision=expected_card_revision,
             expected_catalog_version=expected_catalog_version,
+            _screen_save=_screen_save,
             accepted_operations=accepted_operations,
             _delegable_grants=_delegable_grants,
             _record_transform=_record_transform,
@@ -7919,6 +8197,7 @@ class AutomationAccessService:
         label: str | None = None,
         expected_card_revision: int | None = None,
         expected_catalog_version: str | None = None,
+        _screen_save: bool = False,
         accepted_operations: Mapping[str, Iterable[str]] | None = None,
     ) -> dict[str, Any]:
         """Replace one live or pending project selection under host policy."""
@@ -7940,7 +8219,7 @@ class AutomationAccessService:
                          "properties": properties, "composition_mode": composition_mode, "label": label,
                          "expected_card_revision": expected_card_revision,
                          "accepted_operations": accepted_operations,
-                         "expected_catalog_version": expected_catalog_version})
+                         "expected_catalog_version": expected_catalog_version, "_screen_save": _screen_save})
             return refused if forwarded is None else forwarded
         if refused is not None:
             # W723 (live W705, 11 Oct): the person's "Accept update" decisions travel with the selection.
@@ -7952,7 +8231,7 @@ class AutomationAccessService:
                 ) if value is not None},
                 expected_card_revision=expected_card_revision, properties=properties,
                 composition_mode=composition_mode, accepted_operations=accepted_operations,
-                expected_catalog_version=expected_catalog_version, label=label)
+                expected_catalog_version=expected_catalog_version, label=label, _screen_save=_screen_save)
             if forwarded is None:
                 return refused
             return await self._with_current_person_control(

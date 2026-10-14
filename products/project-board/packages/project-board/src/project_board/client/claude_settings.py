@@ -204,11 +204,17 @@ def _invalid(path: Path, reason: str) -> DomainError:
     )
 
 
-def merge_claude_code_settings(home: str | Path, *, pb: str | None = None) -> dict[str, Any]:
-    """Add or update the worker's status line and hooks in ``<home>/.claude/settings.json``, keeping the rest."""
+def merge_claude_code_settings(
+    home: str | Path, *, pb: str | None = None, config_dir: str | Path | None = None
+) -> dict[str, Any]:
+    """Add or update the worker's status line and hooks in ``<home>/.claude/settings.json``, keeping the rest.
+
+    ``config_dir`` is the Claude profile folder whose ``settings.json`` it is
+    (W763): a profile reads its own settings, never ``~/.claude``'s.
+    """
 
     pb_path = pb or pb_command()
-    path = Path(home) / SETTINGS_RELATIVE_PATH
+    path = Path(config_dir) / "settings.json" if config_dir else Path(home) / SETTINGS_RELATIVE_PATH
     target = path
     if path.is_symlink():
         target = Path(os.path.realpath(path))

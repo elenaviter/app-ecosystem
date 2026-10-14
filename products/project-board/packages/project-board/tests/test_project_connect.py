@@ -421,8 +421,9 @@ WORKER_INTRO = (
     "Over ssh, use tmux, so the agent keeps running when the connection drops."
 )
 WORKER_TAB = (
-    "mkdir -p ~/.kdcube/pb/workspaces/$ALIAS && cd ~/.kdcube/pb/workspaces/$ALIAS && "
-    "claude --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+    'mkdir -p "$HOME/.kdcube/pb/workspaces/$ALIAS" "$HOME/.claude-accounts/$ACCOUNT" && '
+    'cd "$HOME/.kdcube/pb/workspaces/$ALIAS" && env CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/$ACCOUNT" '
+    'claude --add-dir "$HOME/.kdcube" --dangerously-skip-permissions --disallowedTools AskUserQuestion'
 )
 
 

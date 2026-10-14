@@ -90,7 +90,7 @@ def test_u4_agent_workspaces_live_under_kdcube():
     assert "--allow-root /home/<user>/.kdcube/pb/workspaces" in HOST
     assert 'W="$HOME/.kdcube/pb/workspaces/<alias>"' in HOST
     assert "mkdir -p ~/.kdcube/pb/workspaces && chmod 700 ~/.kdcube/pb/workspaces" in HOST
-    assert 'exec claude ${1:+--resume "$1"} --add-dir "$W"' in HOST
+    assert 'exec env CLAUDE_CONFIG_DIR="$HOME/.claude-accounts/<account-email>" claude ${1:+--resume "$1"}' in HOST
     assert "An existing host keeps its old folders until a planned move." in HOST
     collaboration = _words(PROCEDURES / "problem-board-worker" / "references" / "collaboration.md")
     assert "worktree add --detach ~/.kdcube/pb/workspaces/<alias>/<repo> origin/main" in collaboration

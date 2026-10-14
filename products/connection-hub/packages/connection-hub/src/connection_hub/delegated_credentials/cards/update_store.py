@@ -90,9 +90,11 @@ async def retire(store, receipt):
                            txn=receipt["transaction_id"])
 
 
-async def assert_replaceable(store, *, subject_hash, access_id):
+async def assert_replaceable(store, *, subject_hash, access_id, card_version_txn=""):
     if not hasattr(store, "root"):
         return
+    from .card_version_reservation import assert_base_available
+    await assert_base_available(store, subject_hash=subject_hash, access_id=access_id, own_txn=card_version_txn)
     # W661 (EMain 16:57Z; operator: "never nothing is being scanned"): the Card's own in-flight file, one
     # direct read, replaces the listing of issuer-updates/active.
     from .inflight import assert_no_inflight

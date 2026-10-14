@@ -11,9 +11,11 @@ import time
 import uuid
 import weakref
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Mapping
 
 from .credentials import DataBusCredential, DelegatedCardCredential
+from .timing import RequestTiming, RequestTimingObserver, RequestTimingPhase
 
 
 SocketFactory = Callable[[], Any]
@@ -404,6 +406,7 @@ class FederatedDataBusClient:
         self._events: asyncio.Queue[dict[str, Any]] = asyncio.Queue(
             maxsize=max(1, int(event_queue_size))
         )
+        self._event_hooks: dict[str, Callable[[dict[str, Any]], None]] = {}
         self._connected = asyncio.Event()
         self._close_lock = asyncio.Lock()
         self._closed = False
@@ -935,7 +938,24 @@ class FederatedDataBusClient:
         ):
             self._reconnect_task = asyncio.create_task(self._reconnect())
 
+    def set_event_hook(self, key: str, hook: Callable[[dict[str, Any]], None] | None) -> None:
+        """Call ``hook`` with every queued push event as it arrives, beside the queue ``wait_for_event`` reads.
+
+        One hook per ``key``: setting it again replaces it, ``None`` removes it. A hook must not block; it may
+        schedule work. A failing hook is logged and never stops delivery.
+        """
+
+        if hook is None:
+            self._event_hooks.pop(key, None)
+        else:
+            self._event_hooks[key] = hook
+
     def _queue_event(self, event: Mapping[str, Any]) -> None:
+        for hook in list(getattr(self, "_event_hooks", {}).values()):
+            try:
+                hook(dict(event))
+            except Exception:  # noqa: BLE001 - a hook never stops delivery
+                logger.exception("Data Bus event hook failed")
         if self._events.full():
             try:
                 self._events.get_nowait()
@@ -1363,6 +1383,7 @@ class FederatedDataBusClient:
         idempotency_key: str,
         message_id: str | None = None,
         timeout_seconds: float | None = None,
+        timing_observer: RequestTimingObserver | None = None,
     ) -> DataBusOutcome:
         if not self.connected:
             raise DataBusClientError(
@@ -1379,9 +1400,35 @@ class FederatedDataBusClient:
         accepted = False
         sent_on = self.socket
         sent_token = self._active_socket_token
+        timing_started = time.monotonic() if timing_observer is not None else 0.0
+
+        def observe(phase: RequestTimingPhase) -> None:
+            if timing_observer is None:
+                return
+            try:
+                # Existing callers may use non-UUID request IDs. They continue
+                # to work, but such IDs must never enter this diagnostic path.
+                diagnostic_id = str(uuid.UUID(resolved_message_id))
+                observation = RequestTiming(
+                    message_id=diagnostic_id,
+                    phase=phase,
+                    utc=datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+                    elapsed_seconds=max(0.0, time.monotonic() - timing_started),
+                )
+                returned = timing_observer(observation)
+                # An accidentally async observer is not scheduled or awaited.
+                if inspect.iscoroutine(returned):
+                    returned.close()
+            except (Exception, asyncio.CancelledError):
+                # Diagnostic failure, including observer cancellation, cannot
+                # cancel or replace the business operation's result.
+                pass
+
         try:
+            observe(RequestTimingPhase.START)
             waited_from = time.monotonic()
             try:
+                observe(RequestTimingPhase.SEND)
                 ack = await sent_on.call(
                     "data_bus.publish",
                     {
@@ -1407,6 +1454,7 @@ class FederatedDataBusClient:
                 ):
                     raise
                 if future.done() and not future.cancelled():
+                    observe(RequestTimingPhase.OUTCOME)
                     return future.result()
                 evidence = self._wait_evidence(
                     disconnects_at_start=disconnects_at_start,
@@ -1449,6 +1497,7 @@ class FederatedDataBusClient:
                 )
             )
             if not accepted:
+                observe(RequestTimingPhase.REJECTED)
                 rejected = acknowledgement.get("rejected")
                 details = {
                     "message_id": resolved_message_id,
@@ -1467,6 +1516,7 @@ class FederatedDataBusClient:
                 raise DataBusIngressRejected(
                     "data_bus_ingress_rejected", message, details=details
                 )
+            observe(RequestTimingPhase.ACK)
             outcome_timeout = (
                 self.outcome_timeout_seconds
                 if timeout_seconds is None
@@ -1474,9 +1524,11 @@ class FederatedDataBusClient:
             )
             waited_from = time.monotonic()
             try:
-                return await asyncio.wait_for(
+                outcome = await asyncio.wait_for(
                     asyncio.shield(future), timeout=outcome_timeout
                 )
+                observe(RequestTimingPhase.OUTCOME)
+                return outcome
             except asyncio.TimeoutError as exc:
                 raise DataBusOutcomeUnknown(
                     message_id=resolved_message_id,
@@ -1488,10 +1540,20 @@ class FederatedDataBusClient:
                         timeout_seconds=outcome_timeout,
                     ),
                 ) from exc
+        except DataBusOutcomeUnknown:
+            observe(RequestTimingPhase.UNKNOWN)
+            raise
+        except asyncio.CancelledError:
+            observe(RequestTimingPhase.CANCELLED)
+            raise
+        except Exception:
+            observe(RequestTimingPhase.FAILED)
+            raise
         finally:
             self._pending.pop(resolved_message_id, None)
             if not future.done():
                 future.cancel()
+            observe(RequestTimingPhase.FINISH)
 
     async def wait_for_event(self, timeout_seconds: float) -> dict[str, Any] | None:
         expiry = self._client_side_expiry

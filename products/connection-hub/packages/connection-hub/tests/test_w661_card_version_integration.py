@@ -16,6 +16,7 @@ import pytest
 from connection_hub.delegated_credentials.cards import transaction_store as tx
 from connection_hub.delegated_credentials.cards.card_version_port import ServiceCardVersionStore
 from connection_hub.delegated_credentials.cards.participant_card_version import CardVersionRefused
+from connection_hub.delegated_credentials.cards.store import CardStorageError
 from connection_hub.delegated_credentials.catalog.reservations import catalog_version_digest
 from test_card_transaction_store import SUBJECT_HASH, _setup
 import test_w661_card_version_operation as p2
@@ -142,31 +143,33 @@ OTHER = "txn-" + "b" * 40
 
 
 @pytest.mark.asyncio
-async def test_a_stale_publish_is_refused_card_changed(tmp_path):
+async def test_a_competing_stage_is_refused_before_it_could_decide(tmp_path):
     store, operation, before, after = await _world(tmp_path)
     await _call(operation, "stage", updates=_update(before))
-    await _call(operation, "stage", txn=OTHER, updates=_update(before))
-    await _call(operation, "publish", txn=OTHER)
-    assert (await _call(operation, "publish"))["code"] == "card_changed"
+    assert (await _call(operation, "stage", txn=OTHER, updates=_update(before)))["code"] == "card_changed"
+    assert not tx.card_version_marker_path(store, OTHER).exists()
+    assert (await _call(operation, "publish", txn=OTHER))["code"] == "txn_unknown"
+    assert (await _call(operation, "publish"))["kind"] == "published"
+    assert await _current(store, before) == after
 
 
 @pytest.mark.asyncio
 async def test_rolling_back_a_loser_after_the_winner_published_answers_rolled_back(tmp_path):
     store, operation, before, after = await _world(tmp_path)
-    loser = await _call(operation, "stage", updates=_update(before))
-    await _call(operation, "stage", txn=OTHER, updates=_update(before))
-    await _call(operation, "publish", txn=OTHER)
-    assert await _call(operation, "rollback", links=loser["members"]) == {"kind": "rollback", "state": "rolled_back"}
+    winner = await _call(operation, "stage", updates=_update(before))
+    assert (await _call(operation, "stage", txn=OTHER, updates=_update(before)))["code"] == "card_changed"
+    await _call(operation, "publish")
+    assert await _call(operation, "rollback", txn=OTHER, links=[]) == {"kind": "rollback", "state": "unknown_txn"}
     assert await _current(store, before) == after
 
 
 @pytest.mark.asyncio
 async def test_rolling_back_a_loser_before_the_winner_publishes_leaves_the_winner_whole(tmp_path):
     store, operation, before, after = await _world(tmp_path)
-    loser = await _call(operation, "stage", updates=_update(before))
-    await _call(operation, "stage", txn=OTHER, updates=_update(before))
-    assert await _call(operation, "rollback", links=loser["members"]) == {"kind": "rollback", "state": "rolled_back"}
-    assert (await _call(operation, "publish", txn=OTHER))["kind"] == "published"
+    winner = await _call(operation, "stage", updates=_update(before))
+    assert (await _call(operation, "stage", txn=OTHER, updates=_update(before)))["code"] == "card_changed"
+    assert await _call(operation, "rollback", txn=OTHER, links=[]) == {"kind": "rollback", "state": "unknown_txn"}
+    assert (await _call(operation, "publish"))["kind"] == "published"
     assert await _current(store, before) == after  # today: CardStorageError current_revision_missing
 
 
@@ -193,12 +196,14 @@ async def test_a_successor_is_refused_while_a_predecessors_effect_is_pending_and
                                     host=p2._Host(effects=[effect]), handles=handles)
     staged = await _call(operation, "stage", updates=_update(before))
     assert (await _call(operation, "publish"))["code"] == "effects_pending"
-    assert await _current(store, before) == after  # the pointer moved; the credential stays fail-closed
+    with pytest.raises(CardStorageError, match="card_version_effects_pending"):
+        await _current(store, before)  # no incomplete new Card is readable
     successor = "txn-" + "c" * 40
     assert (await _call(operation, "stage", txn=successor, updates=_update(before)))["code"] == "effects_pending"
     assert await _call(operation, "rollback", links=staged["members"]) == {
         "kind": "rollback", "state": "already_published"}
     assert [call[0] for call in handles.calls] == ["advance"]
+    assert await _current(store, before) == after
 
 
 @pytest.mark.asyncio
@@ -240,12 +245,14 @@ async def test_an_invitation_recreate_racing_another_save_is_refused_card_change
     operation, _, _ = p2._operation(planner=p2._Planner(plan), store=card_versions)
     staged = await _call(operation, "stage", updates=_update(before))
     assert staged["members"][0]["base_version"] == before.card_revision
-    # Another save of the same Card lands between the invitation's STAGE and its PUBLISH.
+    # The recreate holds its base before DECIDE: another Save cannot win this window.
     other = "txn-" + "d" * 40
-    await _call(operation, "stage", txn=other, updates=_update(before))
-    await _call(operation, "publish", txn=other)
-    assert (await _call(operation, "publish"))["code"] == "card_changed"
+    assert (await _call(operation, "stage", txn=other, updates=_update(before)))["code"] == "card_changed"
+    assert not tx.card_version_marker_path(store, other).exists()
+    # A genuine pre-decision ABORT releases the base; only then may another Save stage.
     assert await _call(operation, "rollback", links=staged["members"]) == {"kind": "rollback", "state": "rolled_back"}
+    assert (await _call(operation, "stage", txn=other, updates=_update(before)))["kind"] == "staged"
+    assert (await _call(operation, "publish", txn=other))["kind"] == "published"
     # The inviter's retry plans again from the current version and overwrites.
     current = await _current(store, before)
     retry_plan = _plan(current, replace_card(current))

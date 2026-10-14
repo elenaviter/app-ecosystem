@@ -106,12 +106,11 @@ async def test_stage_refuses_a_moved_base_and_publish_refuses_a_card_changed_aft
         await _stage(service, [(SUBJECT_HASH, before.access_id, 2, replace(after, card_revision=3))])
     await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
     other = replace(before, card_revision=2, label="another save")
-    await service.commit(other, subject_hash=SUBJECT_HASH, expected_revision=1, now=NOW)
-    with pytest.raises(tx.CardTransactionRefused, match="card_changed"):
-        await service.publish_card_version(txn=TXN)
-    assert await _current(store, before) == other  # the lost-update fence: the other save stands
-    assert await service.rollback_card_version(txn=TXN) == "rolled_back"
-    assert await _current(store, before) == other
+    with pytest.raises(CardStorageError, match="card_version_base_reserved"):
+        await service.commit(other, subject_hash=SUBJECT_HASH, expected_revision=1, now=NOW)
+    assert await _current(store, before) == before
+    await service.publish_card_version(txn=TXN)
+    assert await _current(store, before) == after  # W756: the first STAGE owns its base before DECIDE.
 
 
 @pytest.mark.asyncio
@@ -227,7 +226,8 @@ async def test_a_publish_stopped_between_pointer_and_marker_is_published_by_roll
     from connection_hub.delegated_credentials.cards.model import CardCurrentPointer
     async with service._critical_section(subject_hash=SUBJECT_HASH, access_id=before.access_id):  # a writer's cut
         await store.advance_current(subject_hash=SUBJECT_HASH,
-                                    pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
+                                    pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]),
+                                    card_version_txn=TXN)
     assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
     assert await service.rollback_card_version(txn=TXN) == "already_published"
     assert not tx.card_version_marker_path(store, TXN).exists()  # finished, so only the version remains
@@ -273,7 +273,9 @@ async def test_effects_run_once_each_pending_until_done_and_never_again(tmp_path
         return "applied"
     with pytest.raises(tx.CardTransactionRefused, match="effects_pending"):
         await service.publish_card_version(txn=TXN)  # no executor: the flip is done, effects are pending
-    assert await _current(store, before) == after
+    # W756 supersedes pointer-only visibility: not Saved until every effect is recorded.
+    with pytest.raises(CardStorageError, match="card_version_effects_pending"):
+        await _current(store, before)
     with pytest.raises(RuntimeError):
         await service.publish_card_version(txn=TXN, run_effect=flaky)
     assert runs == ["k1", "k2"]
@@ -683,9 +685,8 @@ async def test_a_hub_local_operation_in_flight_on_the_card_refuses_publish_by_on
 async def test_a_writer_finalizes_a_stopped_publish_so_its_rollback_never_deletes_published_history(tmp_path,
                                                                                                     monkeypatch,
                                                                                                     successor):
-    """D3 (EMain; Infra's K2 cut, successor_before_recovery): A writes current.json, its `published` marker write
-    fails, the lock is released. The next writer of that Card first records A as published, then builds v3; A's
-    later ROLLBACK answers already_published and A's version stays as history."""
+    """W756: after a pointer-before-marker cut, only A re-drives and releases its reservation.
+    A successor is refused until then; later ROLLBACK never removes A's published history."""
     store, service, before, after = await _setup(tmp_path)
     answer = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)])
     staged = (await tx.read_card_version_marker(store, TXN))["members"][0]["revision_name"]
@@ -701,15 +702,19 @@ async def test_a_writer_finalizes_a_stopped_publish_so_its_rollback_never_delete
     monkeypatch.setattr(tx, "_write_card_version_marker", real)
     assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
     v3 = replace(after, card_revision=3, label="successor")
+    with pytest.raises(CardStorageError, match="card_version_base_reserved"):
+        if successor == "stage":
+            await _stage(service, [(SUBJECT_HASH, before.access_id, 2, v3)], txn="w661-txn-" + "d" * 32)
+        else:
+            await service.commit(v3, subject_hash=SUBJECT_HASH, expected_revision=2, now=NOW)
+    await service.publish_card_version(txn=TXN)
     if successor == "stage":
         await _stage(service, [(SUBJECT_HASH, before.access_id, 2, v3)], txn="w661-txn-" + "d" * 32)
         await service.publish_card_version(txn="w661-txn-" + "d" * 32)
     else:
         await service.commit(v3, subject_hash=SUBJECT_HASH, expected_revision=2, now=NOW)
     assert await _current(store, before) == v3
-    assert (await tx.read_card_version_marker(store, TXN))["state"] == "published"  # finalized, left for A
-    assert await service.rollback_card_version(txn=TXN) == "already_published"  # even without its links
-    assert not tx.card_version_marker_path(store, TXN).exists()  # A's own ROLLBACK removed it
+    assert not tx.card_version_marker_path(store, TXN).exists()
     assert await service.rollback_card_version(txn=TXN, links=_links(answer), at=WHEN) == "already_published"
     assert staged in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
     assert await store.read_revision(subject_hash=SUBJECT_HASH, access_id=before.access_id,
@@ -747,34 +752,37 @@ async def test_a_reader_sees_the_new_version_once_current_names_it_even_before_t
     assert await _current(store, before) == before
     async with service._critical_section(subject_hash=SUBJECT_HASH, access_id=before.access_id):  # a writer's cut
         await store.advance_current(subject_hash=SUBJECT_HASH,
-                                    pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]))
+                                    pointer=CardCurrentPointer.from_mapping(marker["members"][0]["pointer"]),
+                                    card_version_txn=TXN)
     assert (await tx.read_card_version_marker(store, TXN))["state"] == "staged"
     assert await _current(store, before) == after
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("schedule", ["loser_rolls_back_first", "loser_rolls_back_after", "loser_publishes_after"])
-async def test_two_saves_with_the_same_version_content_and_time_never_share_a_version_file(tmp_path, schedule):
-    """B1 (Spark App 17:29Z; EMain 17:30Z): the file name carries the txn, so one file belongs to one txn."""
+async def test_one_same_base_stage_wins_and_the_loser_never_has_a_version(tmp_path, schedule):
+    """W756 strengthens B1: a competing same-base STAGE refuses before it can DECIDE or create a file."""
     store, service, before, after = await _setup(tmp_path)
     loser, winner = TXN, "w661-txn-" + "e" * 32
-    a = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], txn=loser)
     b = await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], txn=winner)
-    names = [(await tx.read_card_version_marker(store, t))["members"][0]["revision_name"] for t in (loser, winner)]
-    assert names[0] != names[1] and a == b  # the same link {card, version, checksum}, two files
+    names = _revision_files(store, before)
+    with pytest.raises(CardStorageError, match="card_version_base_reserved"):
+        await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], txn=loser)
+    assert _revision_files(store, before) == names
+    assert await tx.read_card_version_marker(store, loser) is None
+    winner_name = (await tx.read_card_version_marker(store, winner))["members"][0]["revision_name"]
     if schedule == "loser_rolls_back_first":
-        assert await service.rollback_card_version(txn=loser) == "rolled_back"
+        assert await service.rollback_card_version(txn=loser) == "unknown_txn"
         await service.publish_card_version(txn=winner)
     else:
         await service.publish_card_version(txn=winner)
         if schedule == "loser_rolls_back_after":
-            assert await service.rollback_card_version(txn=loser) == "rolled_back"  # never already_published
-            assert await service.rollback_card_version(txn=loser, links=_links(a), at=WHEN) == "unknown_txn"
+            assert await service.rollback_card_version(txn=loser) == "unknown_txn"
         else:
-            with pytest.raises(tx.CardTransactionRefused, match="card_changed"):  # the lost-update fence holds
+            with pytest.raises(tx.CardTransactionRefused, match="txn_unknown"):
                 await service.publish_card_version(txn=loser)
     assert await _current(store, before) == after  # the winner's version is readable
-    assert names[1] in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
+    assert winner_name in await store.list_revision_names(subject_hash=SUBJECT_HASH, access_id=before.access_id)
     assert await service.rollback_card_version(txn=winner, links=_links(b), at=WHEN) == "already_published"
 
 
@@ -811,8 +819,9 @@ async def test_a_publish_holding_an_executor_still_refuses_and_never_runs_anothe
     b = "w661-txn-" + "b" * 32
     other = replace(after, label="B's edit")
     await _stage(service, [(SUBJECT_HASH, before.access_id, 1, after)], effects=[{"kind": "handle_binding", "key": "a"}])
-    await _stage(service, [(SUBJECT_HASH, before.access_id, 1, other)], txn=b, effects=[{"kind": "handle_binding",
-                                                                                       "key": "b"}])
+    with pytest.raises(CardStorageError, match="card_version_base_reserved"):
+        await _stage(service, [(SUBJECT_HASH, before.access_id, 1, other)], txn=b,
+                     effects=[{"kind": "handle_binding", "key": "b"}])
     with pytest.raises(tx.CardTransactionRefused, match="effects_pending"):
         await service.publish_card_version(txn=TXN)  # A's pointer moved; its effect is not recorded
     ran = []
@@ -820,13 +829,13 @@ async def test_a_publish_holding_an_executor_still_refuses_and_never_runs_anothe
     async def apply(effect, marker):
         ran.append((marker["txn"], effect["key"]))
         return "applied"
-    with pytest.raises(CardStorageError, match="card_version_effects_pending"):
+    with pytest.raises(tx.CardTransactionRefused, match="txn_unknown"):
         await service.publish_card_version(txn=b, run_effect=apply)
     assert ran == []  # B never ran A's effect
     assert (await tx.read_card_version_marker(store, TXN))["effect_outcomes"] == {}
     assert await service.rollback_card_version(txn=TXN, run_effect=apply) == "already_published"
     assert ran == [(TXN, "a")]
-    with pytest.raises(tx.CardTransactionRefused, match="card_changed"):  # then B meets the ordinary fence
+    with pytest.raises(tx.CardTransactionRefused, match="txn_unknown"):
         await service.publish_card_version(txn=b, run_effect=apply)
 
 

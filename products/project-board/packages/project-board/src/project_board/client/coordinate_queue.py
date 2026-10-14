@@ -809,13 +809,22 @@ class CoordinateQueue:
 
         def paths_for(state: str) -> tuple[Path, ...]:
             root = self.root / state
+            # An addressed channel must not enumerate every other worker's
+            # queue before filtering. This runs repeatedly in both the local
+            # wake scanner and per-channel coordinate checks. Read each
+            # addressed directory afresh; this is scope, not a state cache.
+            if selected:
+                paths: list[Path] = []
+                for worker_name in sorted(selected):
+                    try:
+                        paths.extend((root / worker_name).glob("*.json"))
+                    except OSError:
+                        continue
+                return tuple(paths)
             try:
-                paths = tuple(root.glob("*/*.json"))
+                return tuple(root.glob("*/*.json"))
             except OSError:
                 return ()
-            if not selected:
-                return paths
-            return tuple(path for path in paths if path.parent.name in selected)
 
         pending = paths_for("pending")
         leased = paths_for("leased")

@@ -46,7 +46,10 @@ test('all three operation lists render through the declared groups', () => {
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   // W667: both editor lists render only the visible operations (a person's Card hides what it does not decide).
   assert.match(panel, /renderOperationGroups\(visibleOperations\(item\.operations\), \(operation\) => operation\.group, item\.operation_groups,/)
-  assert.match(panel, /renderOperationGroups\(visibleOperations\(resourceOption\.operations\), \(operation\) => operation\.group, resourceOption\.operation_groups,/)
+  // W775: the visible ones split first; the agent-only ones (a person's Card) fold away, the rest go through the groups.
+  assert.match(panel, /splitAgentOnly\(visibleOperations\(resourceOption\.operations\)\)/)
+  assert.match(panel, /renderOperationGroups\(regular, \(operation\) => operation\.group, resourceOption\.operation_groups,/)
+  assert.match(panel, /<summary>Agent-only tools \(not for people\)<\/summary>/)
   const catalog = source('src/features/delegatedAccess/DelegatedResourceCatalog.tsx')
   // W739: the named-service list draws every shown row, managed ones included, through the groups.
   assert.match(catalog, /renderOperationGroups\(shownRows, \(row\) => row\.group, namespace\.operation_groups,/)

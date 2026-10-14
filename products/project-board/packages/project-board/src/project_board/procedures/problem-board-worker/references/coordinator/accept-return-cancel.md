@@ -174,3 +174,13 @@ it, in the order of the act.
    Cut a revision only for a changed procedure payload, never again for the
    same one. Why: on 2026-10-02 approved heads waited for one coordinator
    thread while reviewers and gates were idle (W466).
+8. **Merge a contract change only with its consumer.** Before merging a
+   change to App Ecosystem's operation contract or catalog, or any contract
+   the Applications board checks when it loads, check that the Applications
+   change that handles it is merged already or is merged in the same window,
+   and that the gate ran the Applications suite against that exact App
+   Ecosystem head ([source and review](../source-and-review.md)). Otherwise
+   hold the App Ecosystem merge and say on the item which change it waits
+   for. Why: on 2026-10-13 W815 (`project.delete`) was merged alone, the
+   Applications fixtures failed at import, and main was reverted (acdbb4f2)
+   until W805 lands (W820).

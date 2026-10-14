@@ -170,6 +170,7 @@ class Connector:
         github_key: Callable[[str], Any] | None = None,
         helper: str = "",
         alias_name: str = "",
+        project_ref: str = "",
     ) -> None:
         self.machine = machine
         self.workspace = workspace
@@ -186,6 +187,9 @@ class Connector:
         self.alias_name = alias_name
         self._key_state: dict[str, str] = {}
         self.commit_email = ""
+        # W762: the Card's GitHub account, stamped with the project in each clone.
+        self.account = ""
+        self.project_ref = project_ref
 
     # -- the GitHub key (W371) -------------------------------------------
 
@@ -205,10 +209,17 @@ class Connector:
                 else:
                     self._key_state[repo] = "ready"
                     self.commit_email = self.commit_email or str(getattr(token, "commit_email", "") or "")
+                    self.account = self.account or str(getattr(token, "login", "") or "")
         return self._key_state[repo]
 
     def _key_config(self, folder: Path) -> None:
-        for step in clone_config(self.helper, name=self.alias_name, email=self.commit_email):
+        for step in clone_config(
+            self.helper,
+            name=self.alias_name,
+            email=self.commit_email,
+            account=self.account,
+            project_ref=self.project_ref,
+        ):
             self._git(step, folder)
 
     def _set_deploy_remote(self, folder: Path, url: str) -> None:

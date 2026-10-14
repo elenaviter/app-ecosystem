@@ -21,6 +21,9 @@ from project_board.client.resume_command import RECONSTRUCTED, build_session_res
 from project_board.client.runtime_launch import Probes, capture, sanitize
 
 SESSION = "1815da0e-8302-499b-b371-ba3a3a7fe17c"
+# W763: every Claude agent runs in its account folder; the line names it.
+PROFILE = {"config_dir": "/home/ana/.claude-accounts/ana@example.com", "executable": "/home/ana/.local/bin/claude"}
+ENV = "env CLAUDE_CONFIG_DIR=/home/ana/.claude-accounts/ana@example.com /home/ana/.local/bin/claude"
 
 
 class FakeProbes(Probes):
@@ -89,13 +92,15 @@ def test_every_value_is_bounded():
 
 def test_resume_is_the_captured_line_with_the_switch_added():
     launch = {"argv": CLAUDE_LINE, "cwd": "/home/ana/.kdcube/pb/workspaces/ana@mint", "tmux_session": ""}
-    built = build_session_resume_command(runtime_kind="claude-code", runtime_session_id=SESSION, launch=launch)
+    built = build_session_resume_command(
+        runtime_kind="claude-code", runtime_session_id=SESSION, launch=launch, profile=PROFILE
+    )
     assert built["source"] == "captured"
     assert built["command"] == (
-        f"cd /home/ana/.kdcube/pb/workspaces/ana@mint && claude --resume {SESSION} "
+        f"cd /home/ana/.kdcube/pb/workspaces/ana@mint && {ENV} --resume {SESSION} "
         "--add-dir /home/ana/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
     )
-    assert f"claude --resume {SESSION}" in built["command"]  # the board's check
+    assert f"claude --resume {SESSION}" in built["command"]
 
     codex = build_session_resume_command(
         runtime_kind="codex", runtime_session_id=SESSION,
@@ -108,19 +113,23 @@ def test_resume_is_the_captured_line_with_the_switch_added():
 
 def test_in_tmux_the_command_starts_the_same_tmux_session():
     launch = {"argv": CLAUDE_LINE, "cwd": "/home/ana/ws", "tmux_session": "ana@mint"}
-    built = build_session_resume_command(runtime_kind="claude-code", runtime_session_id=SESSION, launch=launch)
+    built = build_session_resume_command(
+        runtime_kind="claude-code", runtime_session_id=SESSION, launch=launch, profile=PROFILE
+    )
     first, second = built["command"].split("\n")
-    assert first.startswith("tmux new-session -d -s ana@mint 'cd /home/ana/ws && claude --resume ")
+    assert first.startswith(f"tmux new-session -d -s ana@mint 'cd /home/ana/ws && {ENV} --resume ")
     assert second == "tmux attach -t ana@mint"
     assert f"claude --resume {SESSION}" in built["command"]
 
 
 def test_without_a_capture_the_documented_line_is_marked_reconstructed_and_no_roots_are_listed():
-    claude = build_session_resume_command(runtime_kind="claude-code", runtime_session_id=SESSION, working_directory="/tmp")
+    claude = build_session_resume_command(
+        runtime_kind="claude-code", runtime_session_id=SESSION, working_directory="/tmp", profile=PROFILE
+    )
     assert claude["source"] == "reconstructed"
     assert claude["command"].split("\n")[0] == RECONSTRUCTED
     assert claude["command"].split("\n")[1] == (
-        f"cd {Path('/tmp').resolve()} && claude --resume {SESSION} --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
+        f"cd {Path('/tmp').resolve()} && {ENV} --resume {SESSION} --add-dir ~/.kdcube --dangerously-skip-permissions --disallowedTools AskUserQuestion"
     )
     codex = build_session_resume_command(runtime_kind="codex", runtime_session_id=SESSION, working_directory="/tmp")
     assert codex["command"].split("\n")[1] == (

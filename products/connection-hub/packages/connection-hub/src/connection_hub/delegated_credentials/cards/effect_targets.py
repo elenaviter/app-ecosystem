@@ -248,9 +248,7 @@ class CredentialIssueTarget:
         raw = await self._card_store.read_pointer_document(subject_hash=subject_hash, access_id=access_id)
         if (isinstance(raw, Mapping) and raw.get("schema") == tx.TRANSACTION_POINTER_SCHEMA
                 and raw.get("transaction_id") == binding.transaction_id):
-            pointer = CardCurrentPointer.from_mapping(receipt["after"])
-            authority = await self._card_store.read_revision(
-                subject_hash=subject_hash, access_id=access_id, revision_name=pointer.revision_name)
+            authority = await tx._effect_candidate(self._card_store, receipt)
         else:
             current = await self._card_store.read_current_authority(subject_hash=subject_hash, access_id=access_id)
             authority = None if current is None else current[1]

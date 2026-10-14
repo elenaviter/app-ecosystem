@@ -139,7 +139,7 @@ test('an embedded access-card summon refreshes authority before opening its edit
 
   const panel = source('src/features/delegatedAccess/DelegatedAccessPanel.tsx')
   assert.match(panel, /if \(!updated \|\| updated\.ok === false\)/)
-  assert.match(panel, /Your draft is still here/)
+  assert.match(panel, /Your draft is (still here|kept)/)
   assert.doesNotMatch(panel, /updated\?\.status === 409 && updated\.access\) startEdit/)
   assert.match(panel, /className="error form-actions__error"/)
 })
@@ -301,14 +301,14 @@ test('an ungranted operation offers one atomic once-or-always grant, chosen besi
   assert.doesNotMatch(grantPendingBody, /setDelegatedInvocationPolicy|setOperationInvocationPolicy/)
 
   // Ordinary editing: a granted operation keeps its labeled live control; an
-  // added one gets the choice, the save waits for it, and the card update
-  // carries only the operations already granted (each added one goes through
-  // the focused grant with its mode).
+  // added one gets the choice and the save waits for it. W755: the one card
+  // update carries every selected operation, additions included, with the
+  // policy chosen for each addition (no separate focused grant).
   assert.match(panel, /<InvocationPolicyControl\n\s*operation=\{operation\.name\}/)
   assert.match(panel, /\) : selected \? \(\n(?:.*\n){3}\s*<OperationInvocationChoice/)
   assert.match(panel, /disabled=\{busy \|\| editSaveProblems\(item\)\.length > 0 \|\| Boolean\(cardSaveBlockedReason\(item, focusedViewer\)\)\}/)
-  assert.match(panel, /Object\.entries\(splits\)\.map\(\(\[resource, split\]\) => \[resource, split\.kept\]\)/)
-  assert.match(panel, /changeId: editChangeId\(item\.access_id, operation, randomNonce\(\)\)/)
+  assert.match(panel, /resource, \[\.\.\.split\.kept, \.\.\.split\.focused\.map\(\(\{ operation \}\) => operation\)\]\]\)/)
+  assert.match(panel, /invocationModes\[resource\] = \{ \.\.\.\(invocationModes\[resource\] \|\| \{\}\), \[operation\]: mode \};/)
 
   const controls = source('src/features/delegatedAccess/InvocationControls.tsx')
   assert.match(controls, /aria-label=\{`Invocation policy for \$\{operation\}`\}/)
@@ -584,25 +584,28 @@ test('a card edits several resources under one stable identity: sections, add, r
   assert.match(panel, /acceptedOperations: editAcceptedOperations,/)
   assert.match(panel, /const initialProblems = editSaveProblems\(item\);/)
   assert.match(panel, /setEditActionError\(initialProblems/)
-  assert.match(panel, /\$\{operation\} was not added/)
+  assert.match(panel, /choose Once or Every time for each operation you added/)
   assert.match(panel, /editActionError \|\| delegatedAccessError \|\| problemText/)
   assert.match(panel, /const createAuthorityResources = useMemo/)
   assert.match(panel, /resourceSelectionHasAuthority\(/)
   assert.doesNotMatch(panel, /Object\.entries\(effectiveResourceGrants\)\.filter\(\(\[, grants\]\) => grants\.length > 0\)/)
   assert.match(panel, /Keep this complete draft open so/)
 
-  // Identity validation precedes the ordinary card update. Otherwise a Card
-  // can be partially changed before the UI discovers that its focused grants
-  // cannot be addressed.
+  // W755 (operator, 2026-10-11: "WHY ITS NOT A PART"): one Save is one request, the whole Card with the
+  // policy of every operation it adds; no per-operation grant and no resume of a partly finished Save.
   const saveBody = panel.slice(panel.indexOf('const saveEdit = async'), panel.indexOf('// The full delegable catalog'))
-  assert.ok(saveBody.indexOf('focusedAdditions.length && !item.client_id') < saveBody.indexOf('updateDelegatedAccess({'))
-  assert.match(saveBody, /The card changes were saved, but \$\{operation\} was not added/)
-  const partialFailure = saveBody.slice(
-    saveBody.indexOf('The card changes were saved, but'),
+  assert.equal((saveBody.match(/updateDelegatedAccess\(\{/g) || []).length, 1)
+  assert.doesNotMatch(saveBody, /grantAgentAccess|runFocusedGrants|resumeFor/)
+  assert.match(saveBody, /invocationModes,/)
+  // The Card and its policies commit together, so no answer means "saved, policy pending": no resume path.
+  assert.doesNotMatch(saveBody, /isPolicyPending|Press Save again/)
+  // An unchanged Card keeps the editor and its draft open and says so (operator diagram: "nothing to save").
+  const nothingToSave = saveBody.slice(
+    saveBody.indexOf('if (isNothingToSave(updated))'),
     saveBody.indexOf('clearEditState()'),
   )
-  assert.match(partialFailure, /dispatch\(loadDelegatedAccess\(\)\)/)
-  assert.doesNotMatch(partialFailure, /clearEditState\(\)/)
+  assert.match(nothingToSave, /setEditSaveNotice\(NOTHING_TO_SAVE_MESSAGE\);\s+return;/)
+  assert.doesNotMatch(nothingToSave, /clearEditState\(\)|loadDelegatedAccess/)
   // The drift review is per resource and never rendered for a resource being added.
   assert.match(panel, /state=\{item\.catalog_drift\?\.resources\?\.\[resource\]\}/)
   assert.match(panel, /\{!isNew \? \(\n\s*<ResourceDriftReview/)
