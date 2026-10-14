@@ -86,7 +86,7 @@ exchanged as a change request against the integration ref.
   operator-final item (`review_requirement.kind` operator) the service
   refuses that, and on a `qualified` item an accept closes it as Done. So ask
   the coordinator to make such an item operator-final (W414, 2026-09-30).
-  [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
+  [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-closing)
   owns the rule.
 - **The merger the item's route names, or the coordinator when none is
   named, merges after approval**, with no further acknowledgement

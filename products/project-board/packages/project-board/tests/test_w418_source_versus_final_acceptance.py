@@ -30,7 +30,10 @@ def test_the_contract_carries_the_operator_requirement():
 
 def test_the_review_page_owns_source_approval_versus_final_acceptance():
     page = PRODUCT / "docs" / "review.md"
-    assert "## Source approval and final acceptance" in page.read_text(encoding="utf-8")
+    text = page.read_text(encoding="utf-8")
+    # W853: the heading says closing; the old anchor stays for existing links.
+    assert "## Source approval and closing" in text
+    assert '<a id="source-approval-and-final-acceptance"></a>' in text
     review = _words(page)
     assert "`review.accept` is final acceptance" in review
     assert "Source approval, a verdict that the submitted source and its evidence are right, is not a board decision." in review
@@ -45,7 +48,7 @@ def test_the_review_page_owns_source_approval_versus_final_acceptance():
 def test_the_coordinator_and_the_reviewer_apply_it():
     coordinator = _words(PROCEDURES / "coordinator.md")
     assert 'set `review_requirement` to `{"kind": "operator"}` when you create or route it' in coordinator
-    assert "Never accept such an item as done on source alone" in coordinator
+    assert "Never close such an item as done on source alone" in coordinator  # W853: "close", never "accept"
     collaboration = _words(PROCEDURES / "collaboration.md")
     assert "**A source verdict is not final acceptance.**" in collaboration
     assert "ask the coordinator to make such an item operator-final" in collaboration
