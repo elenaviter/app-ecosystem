@@ -2,7 +2,7 @@ import { FormEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState 
 import { useAppDispatch, useAppSelector } from '../../app/hooks';
 import { PaneGroup } from '../../components/Pane';
 import { CopyButton, DoorRef } from '../../components/CopyControls';
-import { mergeBundleProps, operationUrl, publicMcpUrl } from '../../api/client';
+import { operationUrl, publicMcpUrl } from '../../api/client';
 import { subscribeConnectionHubEvents } from '../../api/dataBus';
 import { DelegatedResourceCatalog, operationRows } from './DelegatedResourceCatalog';
 import { MANAGED_GRANT_NOTE, MANAGED_OPERATION_NOTE, managedGrantsOf, withManagedGrantsAsHeld } from './managedGrants';
@@ -12,7 +12,6 @@ import {
 } from './ApplicationApiCatalog';
 import { ConversationTargetPicker } from './ConversationTargetPicker';
 import {
-  CONVERSATION_TARGETS_PROPERTY,
   cardConversationTargets,
   withConversationTargets,
 } from './conversationTargets';
@@ -37,7 +36,6 @@ import {
 } from './agentCardLifecycle';
 import {
   APPLICATION_API_RESOURCE,
-  APPLICATION_OPERATION_POLICY_PROPERTY,
   PLATFORM_ROLE_PREFIX,
   applicationOperationPropertiesForSelection,
   applicationOperationRolePolicy,
@@ -3403,30 +3401,8 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
       setEditActionError('Save was not applied: this Control Card has no exact application descriptor target.');
       return;
     }
-    if (descriptorTarget) {
-      const persistedProperties = Object.fromEntries(
-        [APPLICATION_OPERATION_POLICY_PROPERTY, CONVERSATION_TARGETS_PROPERTY]
-          .filter((name) => name in selectedProperties)
-          .map((name) => [name, selectedProperties[name]]),
-      );
-      try {
-        await mergeBundleProps(descriptorTarget.application, {
-          agent_capability_control_overrides: {
-            [descriptorTarget.agent]: [{
-              schema: 'kdcube.agent_capability_control_override.v1',
-              capability_defaults: selectedProperties[AGENT_CAPABILITY_DEFAULTS_PROPERTY],
-              resource_grants: routedKept,
-              resource_operations: savedResourceOperations,
-              named_service_operations: keptNamedServiceOperations,
-              properties: persistedProperties,
-            }],
-          },
-        });
-      } catch (error) {
-        setEditActionError(`Save was not applied to the application descriptor: ${String(error || 'request refused')}`);
-        return;
-      }
-    }
+    // A descriptor Control Card is the saved authority. Bundle props only
+    // seed it; writing props here would split this Save into two outcomes.
     let updated;
     const projectPersonControl = projectPersonControlCoordinates(item);
     const projectAgentCard = projectAgentCardUpdateTarget(item);
