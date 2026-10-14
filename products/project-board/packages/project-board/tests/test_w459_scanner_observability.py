@@ -14,11 +14,12 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from argparse import Namespace
 from pathlib import Path
 
 import pytest
 
-from project_board.client import relay_channel_status
+from project_board.client import cli, relay_channel_status, render
 from project_board.client.local_work_scanner import COUNTERS, LocalWorkScanner, LocalWorkScannerClosed
 from project_board.client.relay_channel_status import (
     SCANNER_FIELDS,
@@ -29,7 +30,9 @@ from project_board.client.relay_channel_status import (
 )
 from project_board.client.render import _local_work_scanner_line
 
-from relay_helpers import Attendance, supervisor_with_fake_channels, two_channel_host
+from project_board.client.store import SharedFieldStore
+
+from relay_helpers import Attendance, make_host, supervisor_with_fake_channels, two_channel_host
 
 HOLD_LIMIT_SECONDS = 4.0
 
@@ -157,6 +160,16 @@ def test_the_snapshot_carries_only_the_scanners_known_numbers_and_keeps_the_chan
     assert ChannelStatusBook().take_snapshot().get("local_work_scanner") is None, "no scanner, no block"
 
 
+def test_a_bool_or_a_negative_number_in_a_counter_is_not_written():
+    # Review of 4af67f04 (N1, N2): only plain non-negative numbers, and closed as a bool, reach the file.
+    stats = {**dict.fromkeys(COUNTERS, 1), "scans_started": True, "scans_joined": -1, "in_flight": 0,
+             "scanner_threads_alive": 1, "last_scan_ms": -0.5, "max_scan_ms": 2.0, "closed": 1}
+    block = ChannelStatusBook().take_snapshot(local_work_scanner=stats)["local_work_scanner"]
+    assert "scans_started" not in block and "scans_joined" not in block and "last_scan_ms" not in block
+    assert "closed" not in block, "closed must be a bool"
+    assert block["waits_cancelled"] == 1 and block["max_scan_ms"] == 2.0 and block["in_flight"] == 0
+
+
 def test_an_older_snapshot_without_the_block_reads_as_not_recorded(tmp_path):
     config = tmp_path / "relay.json"
     write_channel_status(config, ChannelStatusBook().take_snapshot())
@@ -204,3 +217,42 @@ def test_inspect_prints_the_scanner_counters():
     assert line == ("local-work scanner: started 4 · joined 9 · cancelled waits 7 · completed 4 · failed 0 · "
                     "refused after close 0 · in flight 0 · threads 1 · last 210.4 ms · max 1880.0 ms · "
                     "recorded 2026-10-10T10:00:00Z")
+
+
+def _inspect(tmp_path, *, scanner):
+    """The real ``pb worker inspect`` command on a test host, and its brief rendering."""
+    host, identity, _channel = make_host(tmp_path)
+    field = SharedFieldStore(host.field_root)
+    field.initialize(field_id="w459-inspect")
+    field.register_worker(worker_name=identity.worker_name, worker_identity=identity.worker_identity,
+                          runtime_kind=identity.runtime_kind, runtime_session_id=identity.runtime_session_id,
+                          capabilities=[], authority_label="connection-hub:test-profile",
+                          control_plane_state="published")
+    if scanner is not None:
+        book = ChannelStatusBook()
+        book.note_turn(identity.worker_name, "succeeded")
+        write_channel_status(host.path, book.take_snapshot(local_work_scanner=scanner))
+    result = cli._worker_command(Namespace(  # noqa: SLF001
+        command="worker", worker_command="inspect", runtime_kind=identity.runtime_kind,
+        runtime_session_id=identity.runtime_session_id, config=str(host.path)))
+    return result, render._render_inspect(result)  # noqa: SLF001
+
+
+def test_pb_worker_inspect_reads_the_written_counters_and_prints_them(tmp_path):
+    # Review of 4af67f04 (claude-test@eg-home): the inspect wiring itself was untested.
+    counters = {**dict.fromkeys(COUNTERS, 0), "scans_started": 2, "scans_joined": 5, "waits_cancelled": 4,
+                "scans_completed": 2, "in_flight": 0, "scanner_threads_alive": 1, "last_scan_ms": 3.5,
+                "max_scan_ms": 9.0, "closed": False, "secret": "token-shaped-value"}
+    result, lines = _inspect(tmp_path, scanner=counters)
+    shown = result["channel"]["local_work_scanner"]
+    assert shown == {**{key: value for key, value in counters.items() if key != "secret"},
+                     "recorded_at": shown["recorded_at"]} and shown["recorded_at"]
+    assert lines.count(_local_work_scanner_line(shown)) == 1
+    assert "local-work scanner: started 2 · joined 5 · cancelled waits 4 · completed 2" in "\n".join(lines)
+    assert "token-shaped-value" not in json.dumps(result) and "token-shaped-value" not in "\n".join(lines)
+
+
+def test_pb_worker_inspect_says_not_recorded_without_a_snapshot(tmp_path):
+    result, lines = _inspect(tmp_path, scanner=None)
+    assert result["channel"]["local_work_scanner"] == {}
+    assert "local-work scanner: not recorded yet" in lines
