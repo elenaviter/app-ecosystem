@@ -102,7 +102,7 @@ from .relay_failures import (
 )
 from .local_state_maintenance import run_local_state_maintenance
 from .relay_channel_status import ChannelStatusBook, write_channel_status
-from .project_connect import github_repository
+from .project_connect import github_repository, local_path
 from .project_file_source import ProjectFileSource
 from .project_file_edit import FILE_EDIT_KIND, apply_file_edit
 from .read_roots import READ_ROOTS_STATE
@@ -3293,6 +3293,24 @@ class ProblemBoardHostRelayAdapter:
         )
         repository = github_repository(url)
         issuer = getattr(self.client, "github_key", None)
+        # W848 (operator, 2026-10-14: "B: the client reads local repositories directly << of course this! this is
+        # special type of project. where we do not have any github"): a repository at a path on this machine is
+        # read in place, at its default branch's newest commit, with no GitHub key.
+        local = "" if repository else local_path(url)
+        if local:
+            # Confined to this host's own repository map for the alias, never a path the board alone names: the
+            # board's URL may say which mapped root, but cannot open any other repository on this machine.
+            mapped = {Path(root).expanduser().resolve() for name, root in self.config.source_repositories if name == alias}
+            mapped |= {Path(root).expanduser().resolve() for name, root, _ in self.config.source_read_roots if name == alias}
+            if Path(local).expanduser().resolve() not in mapped:
+                raise DomainError(
+                    "repository_not_mapped",
+                    f"{alias} is not a repository this machine's repository map names at that address.",
+                )
+            content, source_commit = await self._project_file_source().read_local(
+                repository_path=local, path=path, max_bytes=FILE_VIEW_MAX_BYTES,
+            )
+            return await self._publish_file_view(view_ref, repository_ref, path, content, source_commit)
         if not repository:
             raise DomainError("repository_not_on_github", f"{alias} is not a GitHub repository this machine can read.")
         if issuer is None:
@@ -3312,6 +3330,11 @@ class ProblemBoardHostRelayAdapter:
         content, source_commit = await self._project_file_source().read(
             project_id=self.config.project_id, alias=alias, repository=repository, path=path, token=token,
         )
+        return await self._publish_file_view(view_ref, repository_ref, path, content, source_commit)
+
+    async def _publish_file_view(
+        self, view_ref: str, repository_ref: str, path: str, content: str, source_commit: str,
+    ) -> str:
         if len(content.encode("utf-8")) > FILE_VIEW_MAX_BYTES:
             raise DomainError(
                 "file_too_large",
