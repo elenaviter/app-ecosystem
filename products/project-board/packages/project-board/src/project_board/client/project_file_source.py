@@ -15,6 +15,13 @@ read with ``git show <commit>:<path>``, never from a working tree.
 The GitHub token reaches git only through the environment of the git child
 and a ``GIT_ASKPASS`` script that reads it from there: never in argv, the
 remote URL, ``.git/config``, a file or a log. One lock per project clone.
+
+W848 (operator, 2026-10-14, on the project-file view of a repository with
+no GitHub: "B: the client reads local repositories directly << of course
+this! this is special type of project. where we do not have any github"):
+a repository whose URL is a path on this machine is read in place by
+``read_local``, with no clone, no fetch and no key, at its default branch's
+newest commit (the branch its HEAD names), never from its working tree.
 """
 
 from __future__ import annotations
@@ -109,6 +116,55 @@ class ProjectFileSource:
             detail = err.decode("utf-8", errors="replace").strip().splitlines()[-1:] or [""]
             raise DomainError("fetch_failed", f"git {args[0]} failed: {detail[0][:300]}")
         return out.decode("utf-8", errors="replace")
+
+    async def read_local(self, *, repository_path: str, path: str) -> tuple[str, str]:
+        """W848: a listed file of a repository on this machine, at its default branch's newest commit."""
+
+        relative = listed_path(path)
+        root = Path(repository_path).expanduser()
+        if not root.is_absolute() or not root.is_dir():
+            raise DomainError("repository_path_missing", f"{repository_path} is not a folder on this machine.")
+        root = root.resolve()
+        try:
+            git_dir = Path((await self._local_git(["rev-parse", "--absolute-git-dir"], cwd=root)).strip()).resolve()
+        except DomainError as exc:
+            raise DomainError("repository_not_git", f"{repository_path} is not a git repository.") from exc
+        # The folder itself must be the repository (or a bare one), not a folder inside another repository.
+        if git_dir not in (root / ".git", root):
+            raise DomainError("repository_not_git", f"{repository_path} is not the top of a git repository.")
+        head = (await self._local_git(["symbolic-ref", "--quiet", "HEAD"], cwd=root, check=False)).strip()
+        if not head.startswith("refs/heads/"):
+            raise DomainError("repository_read_failed", f"{repository_path} has no default branch (its HEAD is detached).")
+        branch = head[len("refs/heads/"):]
+        try:
+            commit = (await self._local_git(["rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], cwd=root)).strip()
+        except DomainError as exc:
+            raise DomainError("file_missing", f"{branch} of {repository_path} has no commit yet.") from exc
+        if not (await self._local_git(["ls-tree", "--name-only", commit, "--", relative], cwd=root)).strip():
+            raise DomainError("file_missing", f"{relative} is not on {branch} of {repository_path}.")
+        # The committed blob, raw: no working tree, no textconv, no filter.
+        content = await self._local_git(["cat-file", "blob", f"{commit}:{relative}"], cwd=root)
+        return content, commit
+
+    async def _local_git(self, args: list[str], *, cwd: Path, check: bool = True) -> str:
+        env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+        # Read-only on the folder: no lazy fetch from a promisor remote, no fsmonitor hook, no index refresh.
+        env.update({"GIT_CONFIG_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0", "GIT_NO_LAZY_FETCH": "1",
+                    "GIT_OPTIONAL_LOCKS": "0"})
+        process = await asyncio.create_subprocess_exec(
+            "git", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never", *args,
+            cwd=str(cwd), env=env, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            out, err = await asyncio.wait_for(process.communicate(), GIT_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError as exc:
+            process.kill()
+            await process.wait()
+            raise DomainError("repository_read_failed", f"git {args[0]} did not finish within {GIT_TIMEOUT_SECONDS} s.") from exc
+        if check and process.returncode != 0:
+            detail = err.decode("utf-8", errors="replace").strip().splitlines()[-1:] or [""]
+            raise DomainError("repository_read_failed", f"git {args[0]} failed: {detail[0][:300]}")
+        return out.decode("utf-8", errors="replace") if process.returncode == 0 else ""
 
     async def read(
         self, *, project_id: str, alias: str, repository: str, path: str, token: TokenProvider,

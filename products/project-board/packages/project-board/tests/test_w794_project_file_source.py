@@ -139,3 +139,57 @@ def test_an_unreachable_remote_is_a_named_failure(tmp_path):
         asyncio.run(source.read(project_id="p1", alias="apps", repository="owner/proj", path="a.md", token=_token))
     assert caught.value.code == "fetch_failed"
     assert TOKEN not in str(caught.value)
+
+
+# W848 (operator, 2026-10-14: "B: the client reads local repositories directly << of course this! this is special
+# type of project. where we do not have any github"): a repository on this machine is read in place.
+
+
+def _local(source: ProjectFileSource, repository: Path, path: str = "docs/env.md"):
+    return asyncio.run(source.read_local(repository_path=str(repository), path=path))
+
+
+def test_a_local_repository_serves_its_default_branchs_newest_commit(tmp_path, upstream):
+    source = _source(tmp_path)
+    content, commit = _local(source, upstream)
+    assert content == "# Env v1\n" and commit == _git(upstream, "rev-parse", "HEAD").strip()
+    (upstream / "docs" / "env.md").write_text("# Env v2\n", encoding="utf-8")
+    _git(upstream, "commit", "-qam", "two")
+    content, newer = _local(source, upstream)
+    assert content == "# Env v2\n" and newer != commit
+    assert not (tmp_path / "runtime" / "project-files").exists()  # no clone, no askpass, nothing written
+
+
+def test_uncommitted_and_staged_edits_are_not_served(tmp_path, upstream):
+    source = _source(tmp_path)
+    (upstream / "docs" / "env.md").write_text("# Staged\n", encoding="utf-8")
+    _git(upstream, "add", "docs/env.md")
+    (upstream / "docs" / "env.md").write_text("# Working tree\n", encoding="utf-8")
+    (upstream / "docs" / "new.md").write_text("untracked\n", encoding="utf-8")
+    assert _local(source, upstream)[0] == "# Env v1\n"
+    with pytest.raises(DomainError) as raised:
+        _local(source, upstream, "docs/new.md")
+    assert raised.value.code == "file_missing"
+
+
+def test_a_local_bare_repository_is_read(tmp_path, upstream):
+    assert _local(_source(tmp_path), tmp_path / "remote" / "owner" / "proj.git")[0] == "# Env v1\n"
+
+
+def test_a_local_repository_that_cannot_be_read_is_a_named_refusal(tmp_path, upstream):
+    source = _source(tmp_path)
+
+    def code(repository: str, path: str = "docs/env.md") -> str:
+        with pytest.raises(DomainError) as raised:
+            asyncio.run(source.read_local(repository_path=repository, path=path))
+        return raised.value.code
+
+    assert code(str(tmp_path / "missing")) == "repository_path_missing"
+    assert code("relative/path") == "repository_path_missing"
+    (tmp_path / "plain").mkdir()
+    assert code(str(tmp_path / "plain")) == "repository_not_git"
+    assert code(str(upstream / "docs")) == "repository_not_git"  # a folder inside a repository is not one
+    assert code(str(upstream), "../secret.md") == "file_not_listed"
+    assert code(str(upstream), ".git/config") == "file_not_listed"
+    _git(upstream, "checkout", "-q", "--detach")
+    assert code(str(upstream)) == "repository_read_failed"
