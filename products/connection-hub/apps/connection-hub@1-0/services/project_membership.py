@@ -7,6 +7,15 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from connection_hub.authorities import (
+    AGENT_CARD,
+    CONTROL_CARD,
+    CREDENTIAL_RELEASE,
+    MEMBERSHIP,
+    AuthorityConfig,
+    AuthorityConfigError,
+    authorities_from_mapping,
+)
 from connection_hub.bundle_operations import (
     BundleOperationResultError,
     normalize_bundle_operation_result,
@@ -41,6 +50,42 @@ from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import (
 
 
 BundleOperationCaller = Callable[..., Awaitable[Mapping[str, Any]]]
+
+
+def _named_authorities(entrypoint: Any) -> dict[str, AuthorityConfig] | None:
+    """W374: the descriptor's named ``authorities``, or None to read the legacy block.
+
+    A non-empty ``authorities`` block replaces ``project_membership.provider``
+    entirely; the two are never mixed. An invalid block raises by name.
+    """
+
+    props = getattr(entrypoint, "bundle_props", None)
+    configured = props.get("authorities") if isinstance(props, Mapping) else None
+    if configured is None or (isinstance(configured, Mapping) and not configured):
+        return None
+    return authorities_from_mapping(configured)
+
+
+def _named_authority(entrypoint: Any, name: str) -> tuple[bool, AuthorityConfig | None]:
+    """(True, the authority or None) when authorities are named, (False, None) for legacy.
+
+    Raises AuthorityConfigError for an invalid block or a kind this release cannot call.
+    """
+
+    named = _named_authorities(entrypoint)
+    if named is None:
+        return False, None
+    authority = named.get(name)
+    if authority is not None:
+        authority.require_supported()
+    return True, authority
+
+
+def _legacy_provider(entrypoint: Any) -> Mapping[str, Any]:
+    props = getattr(entrypoint, "bundle_props", None)
+    raw = props.get("project_membership") if isinstance(props, Mapping) else None
+    provider = raw.get("provider") if isinstance(raw, Mapping) else None
+    return provider if isinstance(provider, Mapping) else {}
 
 LOGGER = logging.getLogger("kdcube.connection_hub.project_membership")
 
@@ -209,21 +254,28 @@ def descriptor_agent_card_port(
     *,
     caller: BundleOperationCaller = call_bundle_operation,
 ) -> BundleOperationAgentCardAuthorizer | RefusingAgentCardAuthorizationPort:
-    """The agent Card question goes to the project membership provider's bundle.
+    """The agent Card question goes to the ``agent_card`` authority (W374).
 
-    ``project_membership.provider.agent_card_operation`` names the operation;
-    without a provider bundle it fails closed.
+    Without named authorities, ``project_membership.provider.agent_card_operation``
+    names the operation as before; without a bundle it fails closed.
     """
 
-    props = getattr(entrypoint, "bundle_props", None)
-    raw = props.get("project_membership") if isinstance(props, Mapping) else None
-    provider = raw.get("provider") if isinstance(raw, Mapping) else None
-    bundle_id = clean_text(provider.get("bundle_id")) if isinstance(provider, Mapping) else ""
+    try:
+        named, authority = _named_authority(entrypoint, AGENT_CARD)
+    except AuthorityConfigError as exc:
+        return RefusingAgentCardAuthorizationPort(exc.reason)
+    if named:
+        bundle_id = authority.bundle_id if authority is not None else ""
+        operation = authority.operation if authority is not None else ""
+    else:
+        provider = _legacy_provider(entrypoint)
+        bundle_id = clean_text(provider.get("bundle_id"))
+        operation = clean_text(provider.get("agent_card_operation"))
     if not bundle_id:
         return RefusingAgentCardAuthorizationPort("project_agent_card_provider_not_configured")
     return BundleOperationAgentCardAuthorizer(
         bundle_id=bundle_id,
-        operation=clean_text(provider.get("agent_card_operation")) or DEFAULT_AGENT_CARD_OPERATION,
+        operation=operation or DEFAULT_AGENT_CARD_OPERATION,
         caller=caller,
     )
 
@@ -287,21 +339,28 @@ def descriptor_control_card_port(
     *,
     caller: BundleOperationCaller = call_bundle_operation,
 ) -> BundleOperationControlCardAuthorizer | RefusingProjectControlCardAuthorizationPort:
-    """The project Control Card question goes to the project membership provider's bundle.
+    """The Control Card question goes to the ``control_card`` authority (W374).
 
-    ``project_membership.provider.control_card_operation`` names the operation;
-    without a provider bundle it fails closed.
+    Without named authorities, ``project_membership.provider.control_card_operation``
+    names the operation as before; without a bundle it fails closed.
     """
 
-    props = getattr(entrypoint, "bundle_props", None)
-    raw = props.get("project_membership") if isinstance(props, Mapping) else None
-    provider = raw.get("provider") if isinstance(raw, Mapping) else None
-    bundle_id = clean_text(provider.get("bundle_id")) if isinstance(provider, Mapping) else ""
+    try:
+        named, authority = _named_authority(entrypoint, CONTROL_CARD)
+    except AuthorityConfigError as exc:
+        return RefusingProjectControlCardAuthorizationPort(exc.reason)
+    if named:
+        bundle_id = authority.bundle_id if authority is not None else ""
+        operation = authority.operation if authority is not None else ""
+    else:
+        provider = _legacy_provider(entrypoint)
+        bundle_id = clean_text(provider.get("bundle_id"))
+        operation = clean_text(provider.get("control_card_operation"))
     if not bundle_id:
         return RefusingProjectControlCardAuthorizationPort("project_control_card_provider_not_configured")
     return BundleOperationControlCardAuthorizer(
         bundle_id=bundle_id,
-        operation=clean_text(provider.get("control_card_operation")) or DEFAULT_CONTROL_CARD_OPERATION,
+        operation=operation or DEFAULT_CONTROL_CARD_OPERATION,
         caller=caller,
     )
 
@@ -320,6 +379,17 @@ class RefusingProjectAuthorizationPort:
 
 
 def project_membership_config(entrypoint: Any) -> ProjectMembershipConfig:
+    """The ``membership`` named authority, else the legacy block read exactly as before.
+
+    Raises ProjectAuthorizationError by name for an invalid configuration.
+    """
+
+    try:
+        named = _named_authorities(entrypoint)
+    except AuthorityConfigError as exc:
+        raise ProjectAuthorizationError(exc.reason) from None
+    if named is not None:
+        return ProjectMembershipConfig.from_authority(named.get(MEMBERSHIP))
     props = getattr(entrypoint, "bundle_props", None)
     raw = props.get("project_membership") if isinstance(props, Mapping) else None
     return ProjectMembershipConfig.from_mapping(raw)
@@ -372,7 +442,9 @@ class BundleOperationGitHubAuthorizer:
         resolve_secret: SecretResolver,
         operation: str = GITHUB_AUTHORIZE_OPERATION,
         caller: BundleOperationCaller = call_bundle_operation,
+        config_error: str = "",
     ) -> None:
+        self._config_error = clean_text(config_error)
         self._bundle_id = clean_text(bundle_id)
         self._secret_ref = clean_text(secret_ref)
         self._resolve_secret = resolve_secret
@@ -387,6 +459,10 @@ class BundleOperationGitHubAuthorizer:
             "error": "project_github_peer_proof_not_configured",
             "message": "GitHub access waits for the board peer proof.",
         }
+        if self._config_error:
+            # W374: an invalid authorities block refuses by its own name.
+            return {"ok": False, "error": self._config_error,
+                    "message": "GitHub access waits for a valid credential_release authority."}
         if not self._bundle_id or not self._secret_ref:
             return not_configured
         secret = clean_text(await self._resolve_secret(self._secret_ref))
@@ -460,22 +536,34 @@ def descriptor_github_authorizer(
     resolve_secret: SecretResolver,
     caller: BundleOperationCaller = call_bundle_operation,
 ) -> BundleOperationGitHubAuthorizer:
-    """The GitHub question goes to the project membership provider's bundle.
+    """The GitHub question goes to the ``credential_release`` authority (W374).
 
-    ``project_membership.provider.github_authorize_operation`` names the
-    operation and ``peer_proof_secret_ref`` the shared secret; without
-    either it refuses by name.
+    Without named authorities, ``project_membership.provider`` names the
+    operation (``github_authorize_operation``) and ``peer_proof_secret_ref``
+    the shared secret, as before; without either it refuses by name.
     """
 
-    props = getattr(entrypoint, "bundle_props", None)
-    raw = props.get("project_membership") if isinstance(props, Mapping) else None
-    provider = raw.get("provider") if isinstance(raw, Mapping) else None
-    provider = provider if isinstance(provider, Mapping) else {}
+    try:
+        named, authority = _named_authority(entrypoint, CREDENTIAL_RELEASE)
+    except AuthorityConfigError as exc:
+        return BundleOperationGitHubAuthorizer(
+            bundle_id="", secret_ref="", resolve_secret=resolve_secret, caller=caller,
+            config_error=exc.reason,
+        )
+    if named:
+        bundle_id = authority.bundle_id if authority is not None else ""
+        secret_ref = authority.peer_proof_secret_ref if authority is not None else ""
+        operation = authority.operation if authority is not None else ""
+    else:
+        provider = _legacy_provider(entrypoint)
+        bundle_id = clean_text(provider.get("bundle_id"))
+        secret_ref = clean_text(provider.get("peer_proof_secret_ref"))
+        operation = clean_text(provider.get("github_authorize_operation"))
     return BundleOperationGitHubAuthorizer(
-        bundle_id=clean_text(provider.get("bundle_id")),
-        secret_ref=clean_text(provider.get("peer_proof_secret_ref")),
+        bundle_id=bundle_id,
+        secret_ref=secret_ref,
         resolve_secret=resolve_secret,
-        operation=clean_text(provider.get("github_authorize_operation")) or GITHUB_AUTHORIZE_OPERATION,
+        operation=operation or GITHUB_AUTHORIZE_OPERATION,
         caller=caller,
     )
 

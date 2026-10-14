@@ -176,6 +176,26 @@ class ProjectMembershipConfig:
             ),
         )
 
+    @classmethod
+    def from_authority(cls, authority: Any) -> "ProjectMembershipConfig":
+        """W374: the ``membership`` named authority, or none configured."""
+
+        from connection_hub.authorities import AuthorityConfigError
+
+        if authority is None:
+            return cls()
+        try:
+            authority.require_supported()
+        except AuthorityConfigError as exc:
+            raise ProjectAuthorizationError(exc.reason) from None
+        if bool(authority.bundle_id) != bool(authority.operation):
+            raise ProjectAuthorizationError("project_membership_provider_invalid")
+        return cls(
+            provider_bundle_id=authority.bundle_id,
+            provider_operation=authority.operation,
+            administrative_roles=tuple(authority.administrative_roles),
+        )
+
     @property
     def provider_configured(self) -> bool:
         return bool(self.provider_bundle_id and self.provider_operation)
