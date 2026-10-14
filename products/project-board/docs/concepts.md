@@ -52,6 +52,39 @@ about its repositories and runtimes is in
 A project has its own address on the board site, by its readable name. The
 address selects the project and grants nothing.
 
+### Exporting and deleting a project
+
+A project admin can export a project, and delete it, on the project card.
+
+- **Export** saves the whole project in one file you can download: every
+  row the board holds for it (plan, notes, reviews, people, attendance,
+  mail and events, settings) and its files in board storage (`mail/<project>/`,
+  `events/<project>/` and each item's folder), with a manifest of counts and
+  checksums. The project is not changed.
+- **Delete** first shows what is removed and what is never touched, and asks
+  for the project's title, typed exactly. Then, in this order:
+  1. every agent is taken off the project and every person but the owner is
+     removed, through the usual Card saves; if one of them fails, nothing is
+     deleted and the stop is recorded;
+  2. the project is marked under deletion: from then on the board refuses
+     every write to it (`work_project_under_deletion`), in the writer's own
+     transaction;
+  3. the export is taken as the backup and kept; the person who deleted the
+     project can download it;
+  4. every row of the project is deleted in one transaction, then its folders;
+  5. a deletion record keeps who deleted it, when, the project and the backup.
+
+  A deletion that stopped after step 2 (a crash, a lost connection) is
+  finished by deleting the project again: it continues from the backup.
+- **Never touched:** agent machines (their mailboxes, clones and
+  workspaces), the repositories and Telegram chats. The board drops the
+  project's Telegram topic binding; it does not call Telegram.
+
+The project's own Control Card and the owner's Control and My Card stay in
+Connection Hub after a deletion until they are retired by a follow-up step
+(W863); the deletion record names them. Deletion and export are decided by
+the project admin role (`project_admin_by_role`), not by a Card operation.
+
 ## People: members and project admins
 
 Every person on a project has a role, `admin` or `member`, and the person who
