@@ -1891,6 +1891,23 @@ def _relay_turns_line(turns: Any) -> str:
     )
 
 
+def _local_work_scanner_line(scanner: Any) -> str:
+    """W459 C4: the relay's local-work scanner counters, as the relay last wrote them."""
+
+    if not isinstance(scanner, Mapping) or not scanner.get("recorded_at"):
+        return "local-work scanner: not recorded yet"
+    return (
+        "local-work scanner: started {} · joined {} · cancelled waits {} · completed {} · failed {} · "
+        "refused after close {} · in flight {} · threads {} · last {} ms · max {} ms{} · recorded {}"
+    ).format(
+        *(scanner.get(name, "-") for name in (
+            "scans_started", "scans_joined", "waits_cancelled", "scans_completed", "scans_failed",
+            "scans_refused_closed", "in_flight", "scanner_threads_alive", "last_scan_ms", "max_scan_ms")),
+        " · closed" if scanner.get("closed") is True else "",
+        scanner.get("recorded_at"),
+    )
+
+
 def _render_inspect(result: Mapping[str, Any]) -> list[str]:
     session = result.get("session") or {}
     worker = result.get("worker") or {}
@@ -1907,6 +1924,7 @@ def _render_inspect(result: Mapping[str, Any]) -> list[str]:
         f"worker: {channel.get('worker_name') or worker.get('worker_name')} · alias {channel.get('alias') or '-'}",
         f"channel: {channel.get('state')} · authorization {authorization.get('state')} · worker authorization {(worker.get('authorization') or {}).get('state')}",
         _relay_turns_line(channel.get("relay_turns")),
+        _local_work_scanner_line(channel.get("local_work_scanner")),
         f"session: {session.get('state')} · heartbeat age {session.get('heartbeat_age_seconds')} s",
         "inbox check: {} · age {} s · overdue by {} s · interval {} s".format(
             session.get("inbox_check_state"),

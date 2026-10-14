@@ -66,7 +66,7 @@ from .prose_arguments import (
 )
 from .commands import load_json
 from .relay_pacing import channel_pending_refusal, channel_reconnect_state
-from .relay_channel_status import channel_status
+from .relay_channel_status import channel_status, local_work_scanner_status
 from .coordinate_contract import coordinate_contract, require_coordinate_shape
 from .coordinate_recovery import (
     RECEIPT_READ_OPERATION,
@@ -6125,6 +6125,8 @@ def _worker_command(args: Any) -> dict[str, Any]:
         # W456 criterion 6: this channel's last attendance poll, last success
         # and backoff, as the relay last wrote them (recorded_at says when).
         status = channel_status(path, identity.worker_name) or {}
+        # W459 C4: the host relay's local-work scanner counters, from the same snapshot.
+        channel_row["local_work_scanner"] = local_work_scanner_status(path) or {}
         channel_row["relay_turns"] = {
             "last_attendance_poll_at": str(status.get("last_attendance_poll_at") or ""),
             "last_success_at": str(status.get("last_success_at") or ""),
