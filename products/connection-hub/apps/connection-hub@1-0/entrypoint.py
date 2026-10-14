@@ -368,6 +368,7 @@ CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     # nonce; the browser session is discarded (``del request``) and never
     # establishes authority (test_w502_peer_endpoints_ignore_the_browser_session).
     "card_census_read",
+    "card_invitation_census_read",
     "card_lifecycle_plan",
     "card_read_collection_register",
     "card_transaction_participant",
@@ -4505,6 +4506,43 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             enabled=card_transactions_enabled(_connections_config(self)), clock=time.time,
             nonce_prefix=f"connection-hub:{tenant}:{project}:card-participant:nonce:",
             after_authentication=compose_after_authentication)
+        return await operation.answer(payload)
+
+    @api(method="POST", alias="card_invitation_census_read", route="public")
+    @request_counters.counted("card_invitation_census_read")
+    async def card_invitation_census_read(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W814: a signed read of ONE managed project's invitation Controls, enumerated by the Hub.
+
+        Same peer authentication and scope entitlement as card_census_read. The caller names only the
+        scope; the Hub lists the project's partition and answers every invitation Control with its exact
+        revision and state, or refuses the whole read (a staged Card, an invalid identity).
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] invitation census callers unavailable")
+            return unavailable
+        if not built.callers:
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        from connection_hub.delegated_credentials.cards.invitation_census_read import (
+            CardInvitationCensusReadOperation,
+        )
+        operation = CardInvitationCensusReadOperation(
+            callers=built.callers, card_store=persistence.card_store, nonces=redis, clock=time.time,
+            nonce_prefix=f"connection-hub:{tenant}:{project}:card-invitation-census:nonce:")
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_census_read", route="public")
