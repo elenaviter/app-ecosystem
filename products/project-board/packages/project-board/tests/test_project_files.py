@@ -277,8 +277,15 @@ def test_a_repository_at_a_local_path_is_read_in_place_without_a_github_key(tmp_
     # special type of project. where we do not have any github"): the project's repository URL is a path here.
     identity, field, config, workspace, adapter, board = _setup(tmp_path, monkeypatch, files=FILES)
     client = ViewClient()  # no github_key path at all
+    local = workspace / "applications"
+    other = tmp_path / "other-project"
     scoped = relay.ProblemBoardHostRelayAdapter(
-        config=dataclasses.replace(config, project_id=PROJECT_ID, workspace=str(workspace)), field=field, client=client
+        config=dataclasses.replace(
+            config, project_id=PROJECT_ID, workspace=str(workspace),
+            # This host's own map: the only local repositories a file view may read.
+            source_repositories=(("applications", str(local)), ("other", str(other))),
+        ),
+        field=field, client=client,
     )
     scoped._file_source = relay.ProjectFileSource(tmp_path / "machine" / "project-files")  # noqa: SLF001
     import subprocess
@@ -289,7 +296,6 @@ def test_a_repository_at_a_local_path_is_read_in_place_without_a_github_key(tmp_
             cwd=str(cwd), check=True, capture_output=True, text=True,
         ).stdout
 
-    local = workspace / "applications"
     head = git(local, "rev-parse", "HEAD").strip()
     monkeypatch.setattr(
         field, "read_project_repositories",
@@ -312,16 +318,33 @@ def test_a_repository_at_a_local_path_is_read_in_place_without_a_github_key(tmp_
             asyncio.run(scoped._serve_file_view(_view_control("applications", "docs/project-facts.md")))  # noqa: SLF001
         return raised.value.code
 
-    assert refused(str(tmp_path / "gone")) == "repository_path_missing"
+    # W848 review (Mint): a path the board names but this host's map does not bind to the alias is refused,
+    # without the host path in the message: another repository on this machine, another alias's root, a missing one.
+    _git("clone", "-q", str(local), str(other), cwd=tmp_path)
+    assert refused(str(other)) == "repository_not_mapped"
+    assert refused(str(tmp_path / "gone")) == "repository_not_mapped"
+    monkeypatch.setattr(
+        field, "read_project_repositories",
+        lambda project_id: {"repositories": [{"alias": "applications", "url": str(other)}]},
+    )
+    with pytest.raises(DomainError) as raised:
+        asyncio.run(scoped._serve_file_view(_view_control("applications", "docs/project-facts.md")))  # noqa: SLF001
+    assert raised.value.code == "repository_not_mapped" and str(tmp_path) not in str(raised.value)
     monkeypatch.setattr(
         field, "read_project_repositories",
         lambda project_id: {"repositories": [{"alias": "applications", "url": f"file://{local}"}]},
     )
     asyncio.run(scoped._serve_file_view(_view_control("applications", "docs/project-facts.md")))  # noqa: SLF001
     assert client.calls[-1]["payload"]["content"] == "# Facts\n"
-    plain = tmp_path / "plain"
-    plain.mkdir()
-    assert refused(str(plain)) == "repository_not_git"
+    # A mapped root that is gone or is not a repository is named as such.
+    other_git = other / ".git"
+    import shutil
+
+    shutil.rmtree(other_git)
+    scoped.config = dataclasses.replace(scoped.config, source_repositories=(("applications", str(other)),))
+    assert refused(str(other)) == "repository_not_git"
+    shutil.rmtree(other)
+    assert refused(str(other)) == "repository_path_missing"
     # A remote that is neither GitHub nor a path keeps W794's refusal.
     assert refused("https://gitlab.example.com/owner/x.git") == "repository_not_on_github"
 

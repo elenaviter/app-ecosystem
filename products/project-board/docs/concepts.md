@@ -330,9 +330,12 @@ repository's default branch and the board shows it with that commit. The board
 keeps no copy. For a GitHub repository the relay keeps its own per-project
 copy, fetched just before each read with the coordinator Card's GitHub key. A
 repository whose address is a folder on that machine (a project without
-GitHub) is read in place, with no key: only committed content is shown, never
-uncommitted edits, and a folder that is missing or is not a git repository is
-named as such on the view.
+GitHub) is read in place, with no key, and only when that machine's own
+repository map binds the repository's alias to that folder (`pb host
+configure --set-source-repo <alias>=<folder>`): the board alone cannot open
+any other folder. Only committed content is shown, never uncommitted edits,
+and a folder that is unmapped, missing or not a git repository is named as
+such on the view.
 
 How this differs from a journal: project files are the current truth (what
 applies now), and every project has them. A journal is history (what happened

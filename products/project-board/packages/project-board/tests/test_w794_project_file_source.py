@@ -193,3 +193,13 @@ def test_a_local_repository_that_cannot_be_read_is_a_named_refusal(tmp_path, ups
     assert code(str(upstream), ".git/config") == "file_not_listed"
     _git(upstream, "checkout", "-q", "--detach")
     assert code(str(upstream)) == "repository_read_failed"
+
+
+def test_a_local_folder_or_an_oversized_file_is_refused_before_it_is_read(tmp_path, upstream):
+    source = _source(tmp_path)
+    with pytest.raises(DomainError) as raised:
+        _local(source, upstream, "docs")
+    assert raised.value.code == "file_missing"
+    with pytest.raises(DomainError) as raised:
+        asyncio.run(source.read_local(repository_path=str(upstream), path="docs/env.md", max_bytes=3))
+    assert raised.value.code == "file_too_large"

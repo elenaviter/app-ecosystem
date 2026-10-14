@@ -117,8 +117,11 @@ class ProjectFileSource:
             raise DomainError("fetch_failed", f"git {args[0]} failed: {detail[0][:300]}")
         return out.decode("utf-8", errors="replace")
 
-    async def read_local(self, *, repository_path: str, path: str) -> tuple[str, str]:
-        """W848: a listed file of a repository on this machine, at its default branch's newest commit."""
+    async def read_local(self, *, repository_path: str, path: str, max_bytes: int | None = None) -> tuple[str, str]:
+        """W848: a listed file of a repository on this machine, at its default branch's newest commit.
+
+        The caller has already confined ``repository_path`` to a root this host's own repository map binds.
+        """
 
         relative = listed_path(path)
         root = Path(repository_path).expanduser()
@@ -140,8 +143,12 @@ class ProjectFileSource:
             commit = (await self._local_git(["rev-parse", "--verify", "--quiet", f"{head}^{{commit}}"], cwd=root)).strip()
         except DomainError as exc:
             raise DomainError("file_missing", f"{branch} of {repository_path} has no commit yet.") from exc
-        if not (await self._local_git(["ls-tree", "--name-only", commit, "--", relative], cwd=root)).strip():
-            raise DomainError("file_missing", f"{relative} is not on {branch} of {repository_path}.")
+        entry = (await self._local_git(["ls-tree", commit, "--", relative], cwd=root)).strip()
+        if entry.split(None, 2)[1:2] != ["blob"]:
+            raise DomainError("file_missing", f"{relative} is not a file on {branch} of {repository_path}.")
+        size = int((await self._local_git(["cat-file", "-s", f"{commit}:{relative}"], cwd=root)).strip() or 0)
+        if max_bytes is not None and size > max_bytes:
+            raise DomainError("file_too_large", f"{relative} is {size} bytes; a file view carries at most {max_bytes}.")
         # The committed blob, raw: no working tree, no textconv, no filter.
         content = await self._local_git(["cat-file", "blob", f"{commit}:{relative}"], cwd=root)
         return content, commit

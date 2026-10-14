@@ -3298,7 +3298,18 @@ class ProblemBoardHostRelayAdapter:
         # read in place, at its default branch's newest commit, with no GitHub key.
         local = "" if repository else local_path(url)
         if local:
-            content, source_commit = await self._project_file_source().read_local(repository_path=local, path=path)
+            # Confined to this host's own repository map for the alias, never a path the board alone names: the
+            # board's URL may say which mapped root, but cannot open any other repository on this machine.
+            mapped = {Path(root).expanduser().resolve() for name, root in self.config.source_repositories if name == alias}
+            mapped |= {Path(root).expanduser().resolve() for name, root, _ in self.config.source_read_roots if name == alias}
+            if Path(local).expanduser().resolve() not in mapped:
+                raise DomainError(
+                    "repository_not_mapped",
+                    f"{alias} is not a repository this machine's repository map names at that address.",
+                )
+            content, source_commit = await self._project_file_source().read_local(
+                repository_path=local, path=path, max_bytes=FILE_VIEW_MAX_BYTES,
+            )
             return await self._publish_file_view(view_ref, repository_ref, path, content, source_commit)
         if not repository:
             raise DomainError("repository_not_on_github", f"{alias} is not a GitHub repository this machine can read.")
