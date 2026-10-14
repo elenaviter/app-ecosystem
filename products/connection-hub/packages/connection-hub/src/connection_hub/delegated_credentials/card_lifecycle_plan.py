@@ -57,6 +57,7 @@ from connection_hub.delegated_credentials.project_authorization import (
 from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import (
     CREATION_STEPS,
     UPDATE_STEPS,
+    update_step_operation,
 )
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
     PROJECT_PERSON_MY_CARD_ISSUER_KIND,
@@ -555,7 +556,7 @@ async def plan_card_lifecycle(
             if not isinstance(raw, Mapping) or raw.get("kind") not in UPDATE_STEPS:
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             steps.append(LifecyclePlanStep(
-                ref=f"update:{index}", operation=UPDATE_STEPS[raw["kind"]],
+                ref=f"update:{index}", operation=update_step_operation(raw),
                 target_subject=_required_text(raw.get("target_subject"), "card_plan_target_invalid"),
             ))
         try:
@@ -1076,6 +1077,46 @@ async def plan_card_lifecycle(
                 )
                 if not role_update_shape_valid(raw):
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                if target == access_id:
+                    # W850 (operator, 2026-10-14: "A. Only agents that join a project from now on."): a project
+                    # agent Card that follows its role takes the role's new operations, add-only. Only an active
+                    # agent Card bound under this project's Control, and only a resource it already holds.
+                    from connection_hub.delegated_credentials.managed_card_selection_plan import (
+                        build_managed_card_selection_update, managed_target_kind,
+                    )
+                    if raw["remove_operations"] or raw["operation_grants"] is not None:
+                        raise CardLifecyclePlanRefused("card_plan_agent_follow_add_only", 400)
+                    from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT, CARD_KIND_AUTOMATION
+                    try:
+                        managed_target_kind(original, project_ref=scope, kind="agent_card")
+                    except DecisionRefused:
+                        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid") from None
+                    # A person's C is also bound under P: only an agent's own Card follows a role (W639's check).
+                    if (original.card_kind not in {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}
+                            or not original.delegate_subject.startswith("integration:")
+                            or original.delegate_subject == original.grantor_subject
+                            or original.source not in {"oauth", "agent"}):
+                        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid")
+                    if raw["resource"] not in (original.resource_grants or {}):
+                        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid")
+                    selection = role_selection(original, raw)
+                    if selection is None:
+                        already_applied += 1  # the Card already holds every operation: a read, no revision
+                        continue
+                    try:
+                        built = await build_managed_card_selection_update(
+                            host, original=original, kind="agent_card", selection=selection, active=active,
+                            decision=decision, project_ref=scope, actor_subject=actor, request_id=request_id,
+                            now=now)
+                    except DecisionRefused as exc:
+                        # An added operation the active catalog does not declare resolves away (W810).
+                        if getattr(exc, "reason", str(exc)) != "card_plan_selection_unchanged":
+                            raise
+                        already_applied += 1
+                        continue
+                    members.append(built["member"])
+                    originals[(subject_hash, access_id)] = original.to_dict()
+                    continue
                 selection = role_selection(original, raw)
                 if selection is None:
                     already_applied += 1  # unchanged: the Card stays a read, never a synthetic revision
