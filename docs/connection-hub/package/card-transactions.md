@@ -427,7 +427,8 @@ in its own transaction. The managed Cards are a person Control bound under a
 project's Control (`project_person_control_update` for a person), a pending
 invitation's Control, a project agent Card, the project's Control (P), and
 (W724) a person's own project My Card (`update_access` by its owner). A
-focused grant on a My Card or an agent Card is forwarded too (W727, below).
+focused grant on a My Card or an agent Card is forwarded too (W727, below), and
+so is the owner's own whole Save of a project-linked agent Card (W727, below).
 
 - **What travels.** `{schema: managed-card-edit.v1, actor_subject, project_ref,
   request_id, target: {kind, principal_key, original_revision}, selection}`,
@@ -560,6 +561,21 @@ OAuth client's Card is prolonged through its binding's caller-writer policy (W58
 manual bearer bound under a project Control is not reissued: a reissue replaces the Card's credentials,
 which W578 refuses for a bound Card (`card_transactions_direct_write_refused`). Unlink it from the project
 first, then reissue it.
+
+**The owner's Save of their own project-linked agent Card (W727, live 14 Oct
+2026)** goes out as the owner's ordinary `delegated_access_update`. The screen
+takes the `project_agent_card_update` path only for another person's agent;
+`projectAgentCardUpdateTarget` is null for `via: owner`. `update_access`
+therefore forwards it after the P and own-My forwards: when Card transactions
+are on and the Card is an agent Card bound under a project Control (not a My
+Card and not the P), the project named by the Card's own `control_card`
+decides through `ProjectAgentCardAccess.authorize_write`, and the Save goes as
+one `agent_card` managed edit with the screen's whole-Save fields. A Save
+without a route request id gets a stable one (`agent-card-save:` plus a digest
+of actor, Card, the revision read and the selection), so a retried Save
+replays the project's one decision. A project admin's `project_agent_card_update`
+already forwards on its own; its fallback write (with `_caller_actor_subject`)
+is never forwarded a second time.
 
 **A focused grant ("add permission", W727)** is the Cards screen's
 `delegated_agent_grant_create` for one newly ticked operation, sent after the
