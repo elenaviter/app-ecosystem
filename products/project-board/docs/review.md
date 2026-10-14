@@ -280,7 +280,7 @@ their Telegram.
   assignee edit only on their instruction, quoted on the item. Its designated
   agent reviewer may still return it. A requirement
   carried on the assignment takes precedence over the item's. See
-  [Source approval and final acceptance](#source-approval-and-final-acceptance).
+  [Source approval and closing](#source-approval-and-closing).
 
   Every write that sets the requirement (create, import, publish and
   `plan.item.update`) accepts only those two kinds and refuses any other
@@ -356,7 +356,9 @@ Handing returned work to someone else is a separate act: release it with
 `assignment.return` and its reason, then `assignment.assign` to the new
 owner. Each step advances the ownership version.
 
-## Source approval and final acceptance
+<a id="source-approval-and-final-acceptance"></a>
+
+## Source approval and closing
 
 `review.accept` is final acceptance: the item's whole acceptance holds. Source
 approval, a verdict that the submitted source and its evidence are right, is

@@ -30,7 +30,7 @@ Part of [coordinator](../coordinator.md).
    not have any accept! ... simply put it to done and assign to one who made
    it last"). On their instruction, quoted on the item, you may make that same
    edit for them. Never close such an item as done on source alone (W414,
-   2026-09-30). [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
+   2026-09-30). [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-closing)
    owns the rule.
 
    Name a change's delivery state with one of these words, each with its own
