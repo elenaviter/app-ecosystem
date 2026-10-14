@@ -15,7 +15,8 @@ PROCEDURES = PRODUCT / "packages" / "project-board" / "src" / "project_board" / 
 # What a person is told to do that their item dialog does not have.
 LEAKS = re.compile(
     r"press(?:es)?\W+accept|click\W+accept|only you can accept|their accept is final|"
-    r"requires a person to accept|the person (?:obtains the live proof and )?accepts",
+    r"requires a person to accept|the person (?:obtains the live proof and )?accepts|"
+    r"\bplease\W+accept\b|accept\W+it\W+on\W+the\W+board",
     re.IGNORECASE,
 )
 
@@ -26,14 +27,30 @@ def _paragraphs():
             yield path, paragraph
 
 
+def _forbidden_by_name(paragraph: str, match: re.Match[str]) -> bool:
+    """The wording is named only to forbid it: quoted, with "never" earlier in the same sentence."""
+
+    quoted = paragraph[match.start() - 1:match.start()] == '"'
+    sentence = re.split(r"[.!?]\s", paragraph[:match.start()])[-1]
+    return quoted and "never" in sentence.lower()
+
+
 def test_no_doc_or_procedure_tells_a_person_to_press_accept():
-    # A paragraph may name the wording only to forbid it.
     found = [
-        f"{path.relative_to(PRODUCT)}: {LEAKS.search(paragraph).group(0)!r}"
+        f"{path.relative_to(PRODUCT)}: {match.group(0)!r}"
         for path, paragraph in _paragraphs()
-        if LEAKS.search(paragraph) and "never" not in paragraph.lower()
+        for match in LEAKS.finditer(paragraph)
+        if not _forbidden_by_name(paragraph, match)
     ]
     assert found == []
+
+
+def test_a_leak_beside_an_unrelated_never_is_still_found():
+    # Mint's W853 review: an exemption for any paragraph that says "never" let a leak through.
+    paragraph = 'Never close such an item on source alone. Ask the person to press Accept on the board.'
+    assert [m.group(0) for m in LEAKS.finditer(paragraph) if not _forbidden_by_name(paragraph, m)] == ["press Accept"]
+    named = 'Their dialog has no Accept, so never write "press Accept" to them.'
+    assert [m for m in LEAKS.finditer(named) if not _forbidden_by_name(named, m)] == []
 
 
 def test_closing_an_operator_reviewed_item_is_named_as_status_and_assignee():
