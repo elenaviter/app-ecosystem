@@ -13,6 +13,7 @@ import pytest
 
 from connection_hub.delegated_credentials.card_lifecycle_plan import plan_card_lifecycle
 from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import CardLifecyclePlanOperation
+from connection_hub.delegated_credentials.cards.participant_card_version import REFUSALS
 from connection_hub.delegated_credentials.cards.store import subject_hash_for
 from test_w578_lifecycle_plan_operation import _Port, _request as plan_request, _verified as verified_plan
 from test_w661_card_version_operation import _operation, _request, _verified
@@ -107,7 +108,7 @@ async def test_card_version_role_noop_cannot_disclose_a_foreign_target(card_kind
     request = _request(scope=scope, actor_subject=ACTOR,
                        updates=[_role(card, target_subject=target, add_grants=["work:read"])])
     result = _verified(await operation.answer(request), request)
-    assert result == {"kind": "refused", "code": "edit_invalid", "status": 409}, result
+    assert result == {"kind": "refused", "code": "edit_invalid", "status": REFUSALS["edit_invalid"]}, result
     assert len(operation._nonces.keys) == 1  # authenticated refusal consumes just its documented nonce
     _assert_only_existing_reads(host, card, before)
 
@@ -206,7 +207,7 @@ async def test_every_existing_target_stage_class_refuses_another_projects_scope(
     operation, _, _ = _operation(host=host, planner=plan_card_lifecycle, store=_NoStageStore())
     request = _request(scope=OTHER_PROJECT, actor_subject=actor, updates=[updates[path]])
     assert _verified(await operation.answer(request), request) == {
-        "kind": "refused", "code": "edit_invalid", "status": 409}
+        "kind": "refused", "code": "edit_invalid", "status": REFUSALS["edit_invalid"]}
     assert len(operation._nonces.keys) == 1
     assert len(host.card_reads) == 1 and host.catalog_reads == 1
     assert host.config_reads == 0 and host.calls == [] and host.writes == 0
@@ -233,7 +234,7 @@ async def test_stage_creation_cannot_use_a_foreign_issuer_or_parent(kind):
     operation, _, _ = _operation(host=host, planner=plan_card_lifecycle, store=_NoStageStore())
     request = _request(scope=OTHER_PROJECT, actor_subject=ACTOR, updates=[], creations=[creations[kind]])
     assert _verified(await operation.answer(request), request) == {
-        "kind": "refused", "code": "edit_invalid", "status": 409}
+        "kind": "refused", "code": "edit_invalid", "status": REFUSALS["edit_invalid"]}
     assert host.config_reads == 0 and host.calls == [] and host.writes == 0
 
 
@@ -307,7 +308,7 @@ def _snapshot(store):
     ("publish", False), ("rollback", False), ("outcome", False), ("compensate", False),
     ("rollback", True), ("outcome", True), ("compensate", True),
 ])
-async def test_signed_recovery_binds_marker_or_published_version_without_writes(tmp_path, op, published):
+async def test_signed_recovery_never_returns_or_changes_foreign_versions(tmp_path, op, published):
     from test_w661_card_version_integration import _world as store_world, _call, _update
     from connection_hub.delegated_credentials.cards import transaction_store as tx
     from test_w661_card_version_operation import TXN
@@ -320,8 +321,16 @@ async def test_signed_recovery_binds_marker_or_published_version_without_writes(
     snapshot = _snapshot(store)
     nonce_count = len(operation._nonces.keys)
     kwargs = {} if op == "publish" else {"links": staged["members"]}
-    assert await _call(operation, op, scope=OTHER_PROJECT, **kwargs) == {
-        "kind": "refused", "code": "request_scope_invalid", "status": 403}
+    if op == "compensate" and not published:
+        # No published version of this txn is current, so neither scope can
+        # restore it. The existing superseded refusal returns no Card/link
+        # data. Do not rename it just to manufacture another scope-code diff.
+        expected = {"kind": "refused", "code": "compensation_superseded", "status": 409}
+        assert await _call(operation, op, **kwargs) == expected
+        nonce_count += 1
+    else:
+        expected = {"kind": "refused", "code": "request_scope_invalid", "status": 403}
+    assert await _call(operation, op, scope=OTHER_PROJECT, **kwargs) == expected
     assert _snapshot(store) == snapshot and len(operation._nonces.keys) == nonce_count + 1
 
 
