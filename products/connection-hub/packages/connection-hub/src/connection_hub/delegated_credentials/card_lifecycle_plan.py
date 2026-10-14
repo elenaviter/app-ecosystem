@@ -1086,17 +1086,11 @@ async def plan_card_lifecycle(
                     )
                     if raw["remove_operations"] or raw["operation_grants"] is not None:
                         raise CardLifecyclePlanRefused("card_plan_agent_follow_add_only", 400)
-                    from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT, CARD_KIND_AUTOMATION
                     try:
+                        # A person's C is also bound under P: the target check takes only an agent's own Card.
                         managed_target_kind(original, project_ref=scope, kind="agent_card")
                     except DecisionRefused:
                         raise CardLifecyclePlanRefused("card_plan_update_scope_invalid") from None
-                    # A person's C is also bound under P: only an agent's own Card follows a role (W639's check).
-                    if (original.card_kind not in {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}
-                            or not original.delegate_subject.startswith("integration:")
-                            or original.delegate_subject == original.grantor_subject
-                            or original.source not in {"oauth", "agent"}):
-                        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid")
                     if raw["resource"] not in (original.resource_grants or {}):
                         raise CardLifecyclePlanRefused("card_plan_update_scope_invalid")
                     selection = role_selection(original, raw)

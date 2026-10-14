@@ -515,7 +515,12 @@ under a Control. Only its selection travels; a changed label, composition or
 properties refuses before anything is sent. The host plans it with
 `reselect_agent_card` (`managed_card_selection_plan.py`), which accepts only a
 Card bound directly under the scope's project Control, and its display kind is
-`agent_card`. `reselect_project_control` plans an edit of the project Control
+`agent_card`. The binding alone never decides it (W852): `managed_target_kind`
+also requires an agent's own Card (kind agent or automation, an `integration:`
+delegate that is not its owner, source oauth or agent), read from the Card the
+plan already loaded, so a person's C or My Card, whatever binding row the host
+sends, refuses `card_plan_agent_card_target_not_agent` with no extra read and no
+write. W850's role follow of an agent Card goes through the same check. `reselect_project_control` plans an edit of the project Control
 itself under `project.control.update`.
 
 **Removing a person from the Hub's Cards screen (W728).** While enabled, `project_person_control_revoke`
