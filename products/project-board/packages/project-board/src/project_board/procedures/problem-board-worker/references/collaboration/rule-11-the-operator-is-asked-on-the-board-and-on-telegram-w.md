@@ -49,7 +49,8 @@ no Accept, Return or verdict button, and none is added for this. So the
 decision is always written as:
 
 - write what you found, and your decision, in **Notes**;
-- if it is fine, set **Status** to **Done** and save;
+- if it is fine, set **Status** to **Done**, set **Assignee** to whoever
+  worked it last, and save;
 - if it is not, set **Status** to **Working**, choose the agent in
   **Assignee**, and say in Notes what differs.
 
@@ -57,7 +58,11 @@ Never name a control the dialog does not have. Why: the operator, 2026-10-04,
 "there's no such thing as "Accept"? there's the status change and assignment
 ... you keep recommend me what i do not have and do not want to have", and
 "i want to be able to change the status and put assignee. i do not want any
-"accept" and other 100 buttons please".
+"accept" and other 100 buttons please". So never write "press Accept" or "only
+you can accept it" to a person, in mail, an item field or a terminal (W853,
+operator, 2026-10-14: "i do not have any accept! stop talking in this terms. i
+have change status. and you too. simply put it to done and assign to one who
+made it last. this is how we change the status of tasks").
 
 Write them so the operator can act from the item alone, with no other
 message. The `decision` or `question` message names the item and points
