@@ -10,7 +10,10 @@ hold open at once (each held Card section is one open lock file).
 from __future__ import annotations
 
 import contextlib
+import os
 import resource
+import sys
+from pathlib import Path
 
 import pytest
 
@@ -32,9 +35,46 @@ class _Held:
     concurrently and released, and a refusal that acquires nothing).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, root) -> None:
+        self.root = root
         self.held = self.peak = self.entered = 0
-        self.peak_descriptors = 0  # the process's open descriptors while the most sections were held
+        self.expected = 0  # the read set's size: the lock descriptors are counted when that many are held
+        self.peak_lock_descriptors = 0  # descriptors open on the store's lock files while all were held
+
+
+def _path_of(directory: str, name: str) -> str:
+    if directory == "/proc/self/fd":
+        return os.readlink(f"{directory}/{name}")
+    import fcntl
+
+    raw = fcntl.fcntl(int(name), getattr(fcntl, "F_GETPATH", 50), b"\0" * 1024)  # macOS
+    return raw.split(b"\0", 1)[0].decode("utf-8", "replace")
+
+
+def _lock_descriptors(root) -> int:
+    """Descriptors this process holds open on files under the Card store's root, the lock files among them.
+
+    W857 (Mint, 2026-10-14): the process-wide count also counts the PG/Redis pool sockets R+P mode opens
+    during the prepare, so a whole-process baseline failed there. A socket or pipe has no path under the
+    store root; a held Card section's lock file has.
+    """
+
+    prefix = str(Path(root).resolve()) + os.sep
+    for directory in ("/proc/self/fd", "/dev/fd"):
+        try:
+            names = os.listdir(directory)
+        except OSError:
+            continue
+        count = 0
+        for name in names:
+            try:
+                path = _path_of(directory, name)
+            except (OSError, ValueError):
+                continue  # the listing's own descriptor, closed by now, or one without a path
+            if path and str(Path(path).resolve()).startswith(prefix):
+                count += 1
+        return count
+    pytest.skip(f"no descriptor listing on {sys.platform}")
 
 
 async def _real_lock_setup(tmp_path):
@@ -50,16 +90,16 @@ async def _real_lock_setup(tmp_path):
     from connection_hub.delegated_credentials.cards.service import DelegatedCardService
     from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
 
-    probe = _Held()
+    probe = _Held(tmp_path)
 
     @contextlib.asynccontextmanager
     async def counted(**kwargs):
         async with _kdcube_card_mutation_lock(**kwargs) as held:
             probe.held += 1
             probe.entered += 1
-            if probe.held > probe.peak:
-                probe.peak = probe.held
-                probe.peak_descriptors = card_service._open_descriptors()
+            probe.peak = max(probe.peak, probe.held)
+            if probe.expected and probe.held == probe.expected:
+                probe.peak_lock_descriptors = _lock_descriptors(probe.root)
             try:
                 yield held
             finally:
@@ -151,16 +191,18 @@ async def test_a_read_set_of_a_full_project_prepares_on_the_real_store_when_the_
     if hard != resource.RLIM_INFINITY and hard < needed:
         pytest.skip(f"the hard open-file limit {hard} is below the {needed} this case needs")
     store, service, probe = await _real_lock_setup(tmp_path)
-    descriptors_before = card_service._open_descriptors()
+    probe.expected = len(reads)
+    locks_before = _lock_descriptors(tmp_path)
     with _soft_nofile(max(needed, soft)):
         receipt = await service.stage_read_set_transaction(transaction_id=RS, intent_digest=INTENT,
                                                            participant="project", reads=reads, catalog="")
     assert receipt["state"] == "prepared" and len(receipt["reads"]) == len(reads)
     # Every read's production section was held at the same time, then all were released: no section and
-    # no descriptor outlives the prepare (the flocks are closed, not leaked).
+    # no lock descriptor outlives the prepare (the flocks are closed, not leaked). Only descriptors on the
+    # store's files are counted: R+P mode's PG/Redis pool sockets are not lock descriptors (W857).
     assert probe.peak >= len(reads) and probe.held == 0
-    assert probe.peak_descriptors - descriptors_before >= len(reads), "each held section holds a descriptor"
-    assert card_service._open_descriptors() <= descriptors_before
+    assert probe.peak_lock_descriptors - locks_before >= len(reads), "each held section holds a lock descriptor"
+    assert _lock_descriptors(tmp_path) <= locks_before
     for read in reads[:: len(reads) // 10]:  # every read is fenced for this transaction
         owner = await tx._live_read_fence(store, subject_hash=read["subject_hash"], access_id=read["access_id"])
         assert owner is not None and owner["transaction_id"] == RS
@@ -195,3 +237,37 @@ async def test_without_the_preflight_the_real_locks_exhaust_descriptors_mid_stac
     assert await tx.read_receipt(store, RS) is None
     # Part-way: some production sections were held at once, fewer than the set, and every one was released.
     assert 0 < probe.peak < len(reads) and probe.held == 0
+
+
+@pytest.mark.asyncio
+async def test_the_lock_descriptor_count_sees_a_leaked_lock_and_not_a_socket(tmp_path):
+    # W857: the count the full-project case relies on fails on a leaked lock file and ignores a socket,
+    # which is what R+P mode's PG/Redis pools add during the prepare.
+    import socket
+
+    reads = _absent_reads(8)
+    store, service, probe = await _real_lock_setup(tmp_path)
+    locks_before = _lock_descriptors(tmp_path)
+    leaked = []
+    real_counted = service._mutation_lock if hasattr(service, "_mutation_lock") else None
+
+    @contextlib.asynccontextmanager
+    async def leaking(**kwargs):
+        async with real_counted(**kwargs) as held:
+            lock_path = Path(tmp_path) / f"leaked-{len(leaked)}.lock"
+            leaked.append(open(lock_path, "a"))  # a section that forgets to close its lock file
+            yield held
+
+    assert real_counted is not None, "the service keeps the lock it was given"
+    service._mutation_lock = leaking
+    pool = [socket.socket() for _ in range(5)]
+    try:
+        await service.stage_read_set_transaction(transaction_id=RS, intent_digest=INTENT,
+                                                 participant="project", reads=reads, catalog="")
+        assert _lock_descriptors(tmp_path) - locks_before == len(reads), "every leaked lock file is seen"
+    finally:
+        for handle in leaked:
+            handle.close()
+        for sock in pool:
+            sock.close()
+    assert _lock_descriptors(tmp_path) <= locks_before
