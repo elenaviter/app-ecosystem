@@ -96,11 +96,16 @@ allows.
   revoked, not active, unreadable or being updated, the agent's guarded calls
   are refused; nothing falls back to the agent's Card alone. Revoking the
   Control Card closes every agent linked to it at once.
-- **New operations (drift).** When the service catalog gains operations, the
-  Control Card shows them as new and leaves them unselected until a project
-  admin saves them. Under AND they are therefore withheld from every agent
-  until then; an operation removed from the catalog cannot be used even if an
-  older Card revision names it.
+- **New operations (drift).** A new project's Control Card holds every
+  operation of the catalog. When the catalog later gains operations, the
+  Control Card takes them on automatically the next time a project owner or
+  admin opens the project ([the flow](flows.md#the-project-control-card-follows-the-catalog)).
+  An operation an admin removed from the Control Card stays removed, and an
+  operation removed from the catalog leaves it and cannot be used even if an
+  older Card revision names it. Operator, 2026-10-13 (W807): "B. only when
+  project is first created all is added automatically". Other Cards (a
+  person's Control and My Card, an agent's Card) still show new operations
+  as new and leave them unselected until someone with the right saves them.
 - **The refusal names it.** An operation the agent's Card holds but the
   Control Card withholds is refused with
   `work_worker_operation_withheld_by_control_card`, which names the Control

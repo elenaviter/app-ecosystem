@@ -49,6 +49,7 @@ from connection_hub.delegated_credentials.project_authorization import (
     LifecyclePlanAuthorization,
     LifecyclePlanAuthorizationRequest,
     LifecyclePlanStep,
+    PROJECT_DELETE,
     PROJECT_PERSON_CONTROL_REVOKE,
     ProjectAuthorizationDecision,
     ProjectAuthorizationError,
@@ -56,6 +57,7 @@ from connection_hub.delegated_credentials.project_authorization import (
 from connection_hub.delegated_credentials.cards.lifecycle_plan_operation import (
     CREATION_STEPS,
     UPDATE_STEPS,
+    update_step_operation,
 )
 from connection_hub.delegated_credentials.project_identity_lifecycle import (
     PROJECT_PERSON_MY_CARD_ISSUER_KIND,
@@ -456,6 +458,52 @@ def _require_project_parent(
         raise CardLifecyclePlanRefused("project_control_locator_mismatch")
 
 
+PROJECT_RETIREMENT_PROVENANCE = "retired_by_project_deletion"
+
+
+def retired_project_control(
+    original: CardAuthority, *, project_ref: str, decision: ProjectAuthorizationDecision,
+    actor_subject: str, request_id: str, now: int,
+) -> CardAuthority | None:
+    """W813: P, the deleted project's own Control, revoked; ``None`` when it already is (a replay).
+
+    Only the project host's ``project.delete`` decision for this exact project retires it, and only the
+    exact P its stored link names (the decision's ``project_control`` locator): an arbitrary Control is
+    never turned into P, and a P already revoked by this same project's retirement is not written twice.
+    """
+    if (not decision.allowed or decision.operation != PROJECT_DELETE or decision.project_ref != project_ref
+            or decision.target_subject != project_ref or decision.actor_subject != actor_subject
+            or decision.request_id != request_id):
+        raise CardLifecyclePlanRefused("card_plan_authorization_invalid", 403)
+    expected_id = control_card_id_for_issuer("application", project_ref, grantor_subject=original.grantor_subject)
+    if (original.access_id != expected_id or original.issuer_kind != "application"
+            or original.issuer_ref != project_ref):
+        raise CardLifecyclePlanRefused("project_control_not_exact")
+    if original.control_card is not None:
+        raise CardLifecyclePlanRefused("project_control_not_root")
+    locator = decision.project_control
+    if locator is None:
+        raise CardLifecyclePlanRefused("project_control_locator_missing")
+    if locator.control_id != original.access_id or locator.holder_subject != original.grantor_subject:
+        raise CardLifecyclePlanRefused("project_control_locator_mismatch")
+    if original.state == CARD_STATE_REVOKED:
+        # Scoped replay: only the same retirement request (the host's attempt-bound request_id) counts as
+        # already applied; a P revoked any other way, or by another request, is not this request's success.
+        audit = dict(original.provenance or {}).get(PROJECT_RETIREMENT_PROVENANCE) or {}
+        if audit.get("project_ref") != project_ref or audit.get("request_id") != request_id:
+            raise CardLifecyclePlanRefused("card_plan_revoke_not_active")
+        return None
+    if original.state != CARD_STATE_ACTIVE:
+        raise CardLifecyclePlanRefused("card_plan_revoke_not_active")
+    candidate = replace_state(original, CARD_STATE_REVOKED)
+    provenance = dict(candidate.provenance or {})
+    provenance[PROJECT_RETIREMENT_PROVENANCE] = {
+        "schema": "connection-hub.project-retirement.v1", "project_ref": project_ref,
+        "actor_subject": actor_subject, "request_id": request_id, "at": now,
+    }
+    return dataclasses.replace(candidate, provenance=provenance)
+
+
 async def plan_card_lifecycle(
     host: Any,
     *,
@@ -508,7 +556,7 @@ async def plan_card_lifecycle(
             if not isinstance(raw, Mapping) or raw.get("kind") not in UPDATE_STEPS:
                 raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
             steps.append(LifecyclePlanStep(
-                ref=f"update:{index}", operation=UPDATE_STEPS[raw["kind"]],
+                ref=f"update:{index}", operation=update_step_operation(raw),
                 target_subject=_required_text(raw.get("target_subject"), "card_plan_target_invalid"),
             ))
         try:
@@ -945,6 +993,19 @@ async def plan_card_lifecycle(
             except ProjectInvitationControlError:
                 invitation_identity = None
             target = _required_text(raw["target_subject"], "card_plan_target_invalid")
+            if raw["kind"] == "retire_project_control":
+                # W813: P is fenced at its exact revision, never read-current, and has no parent.
+                if "parent" in raw or read_current or target != scope:
+                    raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                candidate = retired_project_control(
+                    original, project_ref=scope, decision=decision, actor_subject=actor,
+                    request_id=request_id, now=now)
+                if candidate is None:
+                    already_applied += 1
+                    continue
+                members.append(group_member(original=original, candidate=candidate, action="revoke"))
+                originals[(subject_hash, access_id)] = original.to_dict()
+                continue
             if raw["kind"] == "set_person_properties":
                 from .my_card_person_properties_plan import build_person_settings_update, settings_update_valid
                 if not settings_update_valid(raw):
@@ -1016,13 +1077,63 @@ async def plan_card_lifecycle(
                 )
                 if not role_update_shape_valid(raw):
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
+                if target == access_id:
+                    # W850 (operator, 2026-10-14: "A. Only agents that join a project from now on."): a project
+                    # agent Card that follows its role takes the role's new operations, add-only. Only an active
+                    # agent Card bound under this project's Control, and only a resource it already holds.
+                    from connection_hub.delegated_credentials.managed_card_selection_plan import (
+                        build_managed_card_selection_update, managed_target_kind,
+                    )
+                    if raw["remove_operations"] or raw["operation_grants"] is not None:
+                        raise CardLifecyclePlanRefused("card_plan_agent_follow_add_only", 400)
+                    from connection_hub.delegated_credentials.cards.identity import CARD_KIND_AGENT, CARD_KIND_AUTOMATION
+                    try:
+                        managed_target_kind(original, project_ref=scope, kind="agent_card")
+                    except DecisionRefused:
+                        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid") from None
+                    # A person's C is also bound under P: only an agent's own Card follows a role (W639's check).
+                    if (original.card_kind not in {CARD_KIND_AGENT, CARD_KIND_AUTOMATION}
+                            or not original.delegate_subject.startswith("integration:")
+                            or original.delegate_subject == original.grantor_subject
+                            or original.source not in {"oauth", "agent"}):
+                        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid")
+                    if raw["resource"] not in (original.resource_grants or {}):
+                        raise CardLifecyclePlanRefused("card_plan_update_scope_invalid")
+                    selection = role_selection(original, raw)
+                    if selection is None:
+                        already_applied += 1  # the Card already holds every operation: a read, no revision
+                        continue
+                    try:
+                        built = await build_managed_card_selection_update(
+                            host, original=original, kind="agent_card", selection=selection, active=active,
+                            decision=decision, project_ref=scope, actor_subject=actor, request_id=request_id,
+                            now=now)
+                    except DecisionRefused as exc:
+                        # An added operation the active catalog does not declare resolves away (W810).
+                        if getattr(exc, "reason", str(exc)) != "card_plan_selection_unchanged":
+                            raise
+                        already_applied += 1
+                        continue
+                    members.append(built["member"])
+                    originals[(subject_hash, access_id)] = original.to_dict()
+                    continue
                 selection = role_selection(original, raw)
                 if selection is None:
                     already_applied += 1  # unchanged: the Card stays a read, never a synthetic revision
                     continue
-                built = await build_existing_card_selection_update(
-                    host, original=original, selection=selection, active=active, decision=decision,
-                    project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now)
+                try:
+                    built = await build_existing_card_selection_update(
+                        host, original=original, selection=selection, active=active, decision=decision,
+                        project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id,
+                        now=now)
+                except DecisionRefused as exc:
+                    # W810: an added operation the active catalog does not declare is dropped by the
+                    # resolution, so a Card that already holds everything grantable of the target resolves
+                    # back to itself. For a role change that is already applied, never a refusal.
+                    if getattr(exc, "reason", str(exc)) != "card_plan_selection_unchanged":
+                        raise
+                    already_applied += 1
+                    continue
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
@@ -1062,9 +1173,12 @@ async def plan_card_lifecycle(
             if raw["kind"] == "remove_person":
                 if "parent" in raw:
                     raise CardLifecyclePlanRefused("card_plan_update_invalid", 400)
-                if read_current and original.state == CARD_STATE_REVOKED:
+                if original.state == CARD_STATE_REVOKED:
                     # W661 v6.3 item 6: the same-request retry of a removal whose PUBLISH already happened. The
                     # Card is exactly this person's (checked as if active), already revoked: nothing to write.
+                    # W743: the same for a Control revoked outside a removal while the person stayed a member,
+                    # fenced (above) at exactly that revoked revision (the W728 route): the removal
+                    # still ends the membership and My Card, and nothing revokes the Control twice.
                     removed_person_card(replace_state(original, CARD_STATE_ACTIVE), project_ref=scope,
                                         target_subject=target, decision=decision, actor_subject=actor,
                                         request_id=request_id, now=now)

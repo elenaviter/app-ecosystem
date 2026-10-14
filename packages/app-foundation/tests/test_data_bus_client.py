@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import socket
 import time
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Callable
 
@@ -20,6 +21,7 @@ from app_foundation.data_bus import (
     DataBusOutcomeUnknown,
     FederatedDataBusClient,
     HandshakeAttempt,
+    RequestTimingPhase,
 )
 
 
@@ -1322,3 +1324,90 @@ async def test_failure_text_is_never_copied_only_the_status_digits(caplog) -> No
     assert "error_status=401" in text
     for canary in ("synthetic-secret-canary", "tok-canary", "Authorization", "access_token"):
         assert canary not in text
+
+
+class _TimingSocket(_Socket):
+    async def call(self, event, data, timeout):
+        request_id = data["messages"][0]["message_id"]
+        await asyncio.sleep(0)
+        await self.emit_service({
+            "type": "kdcube.data_bus.result",
+            "data": {"message_id": request_id, "subject": "subject", "data": {"ok": True}},
+        })
+        return {"status": "accepted", "accepted": [{"message_id": request_id}]}
+
+
+@pytest.mark.asyncio
+async def test_timing_observers_are_per_request_and_payload_free():
+    from dataclasses import asdict
+
+    client = await _client(_TimingSocket())
+    ids = [str(uuid.uuid4()) for _ in range(8)]
+    observations = {request_id: [] for request_id in ids}
+    try:
+        results = await asyncio.gather(*[
+            client.request(subject="subject", object_ref="object-marker", payload={"marker": "payload-marker"},
+                           idempotency_key="idempotency-marker", message_id=request_id,
+                           timing_observer=observations[request_id].append)
+            for request_id in ids
+        ])
+        assert all(result.message_id in ids for result in results)
+        for request_id, events in observations.items():
+            assert [value.phase for value in events] == [RequestTimingPhase.START, RequestTimingPhase.SEND, RequestTimingPhase.ACK, RequestTimingPhase.OUTCOME, RequestTimingPhase.FINISH]
+            assert all(value.message_id == request_id for value in events)
+            assert [value.elapsed_seconds for value in events] == sorted(value.elapsed_seconds for value in events)
+            assert all(set(asdict(value)) == {"message_id", "phase", "utc", "elapsed_seconds"} for value in events)
+            assert "marker" not in repr(events)
+        assert not client._pending
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exception", [RuntimeError("observer-marker"), asyncio.CancelledError()])
+async def test_timing_observer_failure_does_not_change_success(exception):
+    def observe(value):
+        raise exception
+
+    client = await _client(_TimingSocket())
+    try:
+        result = await client.request(subject="subject", object_ref="object", payload={}, idempotency_key="key", message_id=str(uuid.uuid4()), timing_observer=observe)
+        assert result.data == {"ok": True}
+        assert not client._pending
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_timing_preserves_real_cancellation_and_cleanup():
+    entered = asyncio.Event()
+
+    class Waiting(_Socket):
+        async def call(self, event, data, timeout):
+            entered.set()
+            await asyncio.Event().wait()
+
+    client = await _client(Waiting())
+    events = []
+    request = asyncio.create_task(client.request(subject="subject", object_ref="object", payload={}, idempotency_key="key", message_id=str(uuid.uuid4()), timing_observer=events.append))
+    try:
+        await entered.wait()
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert [value.phase for value in events][-2:] == [RequestTimingPhase.CANCELLED, RequestTimingPhase.FINISH]
+        assert not client._pending
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_non_uuid_requests_are_unchanged_but_not_observed():
+    client = await _client(_TimingSocket())
+    events = []
+    try:
+        result = await client.request(subject="subject", object_ref="object", payload={}, idempotency_key="key", message_id="legacy-id", timing_observer=events.append)
+        assert result.message_id == "legacy-id"
+        assert not events
+    finally:
+        await client.close()

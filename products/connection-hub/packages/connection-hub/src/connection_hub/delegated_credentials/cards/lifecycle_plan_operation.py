@@ -39,7 +39,7 @@ from service_foundation.coordination.participant_answer import sign_participant_
 
 from ..admission import AdmissionRequest, ServiceProof, verify_admission_request
 from ..project_authorization import (
-    PROJECT_AGENT_CARD_UPDATE, PROJECT_CONTROL_CREATE, PROJECT_CONTROL_UPDATE, PROJECT_INVITATION_CONTROL_CREATE, PROJECT_INVITATION_CONTROL_REVOKE, PROJECT_INVITATION_CONTROL_UPDATE, PROJECT_PERSON_CONTROL_BIND_PROJECT,
+    PROJECT_AGENT_CARD_UPDATE, PROJECT_CONTROL_CREATE, PROJECT_CONTROL_UPDATE, PROJECT_DELETE, PROJECT_INVITATION_CONTROL_CREATE, PROJECT_INVITATION_CONTROL_REVOKE, PROJECT_INVITATION_CONTROL_UPDATE, PROJECT_PERSON_CONTROL_BIND_PROJECT,
     PROJECT_PERSON_CONTROL_CREATE, PROJECT_PERSON_CONTROL_REVOKE, PROJECT_PERSON_CONTROL_UPDATE, LifecyclePlanAuthorization, LifecyclePlanAuthorizationRequest,
     LifecyclePlanStep, ProjectAuthorizationError,
 )
@@ -80,7 +80,9 @@ UPDATE_STEPS = {"revoke": PROJECT_INVITATION_CONTROL_REVOKE, "attach": PROJECT_P
                 # W638: the project's own Control and a project agent Card take a host-authorized selection.
                 "reselect_project_control": PROJECT_CONTROL_UPDATE,
                 "reselect_agent_card": PROJECT_AGENT_CARD_UPDATE,
-                "reselect_invitation_control": PROJECT_INVITATION_CONTROL_UPDATE}
+                "reselect_invitation_control": PROJECT_INVITATION_CONTROL_UPDATE,
+                # W813: a deleted project's own Control P is retired, only by the host's project.delete decision.
+                "retire_project_control": PROJECT_DELETE}
 
 # W639: agent attendance/profile decisions use this same authorized PLAN.
 from ..agent_lifecycle_plan import AGENT_UPDATE_STEPS
@@ -89,6 +91,18 @@ UPDATE_STEPS.update(AGENT_UPDATE_STEPS)
 # planner(host, *, project_ref, creations, updates, actor_subject, actor_kind, request_id, authorization)
 #   -> {"ok": True, "plan": {...}} or {"ok": False, "error": <code>}
 Planner = Callable[..., Awaitable[Mapping[str, Any]]]
+
+
+def update_step_operation(update: Mapping[str, Any]) -> str:
+    """The host operation that authorizes one update (its kind's, with one target-shaped exception).
+
+    W850: a ``role_selection`` naming the Card itself (``target_subject == access_id``) is a project agent
+    Card's add-only follow, authorized as that agent Card's update; a person's target is always the person,
+    never a Card id, so the person path keeps ``project.person_control.update``.
+    """
+    if update["kind"] == "role_selection" and update.get("target_subject") == update.get("access_id"):
+        return PROJECT_AGENT_CARD_UPDATE
+    return UPDATE_STEPS[update["kind"]]
 
 
 def plan_request_digest(request: Mapping[str, Any]) -> str:
@@ -136,7 +150,7 @@ def plan_steps(creations: list[Mapping[str, Any]], updates: list[Mapping[str, An
     for index, update in enumerate(updates):
         if update.get("kind") not in UPDATE_STEPS or not _bounded(update.get("target_subject")):
             raise _Refused("card_plan_request_invalid", 400)
-        steps.append(LifecyclePlanStep(ref=f"update:{index}", operation=UPDATE_STEPS[update["kind"]],
+        steps.append(LifecyclePlanStep(ref=f"update:{index}", operation=update_step_operation(update),
                                        target_subject=update["target_subject"]))
     return tuple(steps)
 
@@ -260,4 +274,4 @@ class CardLifecyclePlanOperation:
 
 
 __all__ = ["ANSWER_SCHEMA", "CREATION_STEPS", "CardLifecyclePlanOperation", "OPERATION", "REQUEST_FIELDS",
-           "REQUEST_SCHEMA", "UPDATE_STEPS", "plan_request_digest", "plan_steps"]
+           "REQUEST_SCHEMA", "UPDATE_STEPS", "plan_request_digest", "plan_steps", "update_step_operation"]

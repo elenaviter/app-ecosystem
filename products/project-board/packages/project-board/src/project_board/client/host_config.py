@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import urlsplit
@@ -16,6 +16,14 @@ from ..contract.worker_identity import (
 from .agent_session import default_profile_name
 from .io import atomic_write_json, component, exclusive_lock, read_json, utc_now
 from .journals import repository_entries, repository_entry
+from .message_timing import MessageTimingConfig
+
+
+def _message_timing_config(value: Any) -> MessageTimingConfig:
+    try:
+        return MessageTimingConfig.from_mapping(value)
+    except ValueError as exc:
+        raise DomainError("work_relay_config_invalid", str(exc)) from exc
 
 
 HOST_CONFIG_SCHEMA = "problem-board.host-relay-config.v2"
@@ -169,6 +177,10 @@ class WorkerChannelConfig:
     # How the runtime was actually started (W304 finding 29): {argv, cwd,
     # tmux_session, captured_at}, captured at `pb worker listen`.
     runtime_launch: Mapping[str, Any] = field(default_factory=dict)
+    # W763: the Claude account profile this session is bound to
+    # ({config_dir, email, account_id, executable, bound_by, bound_at}) or
+    # why it is not ({state, reason}); see claude_profile.
+    claude_profile: Mapping[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, Any]) -> "WorkerChannelConfig":
@@ -217,6 +229,7 @@ class WorkerChannelConfig:
             state=state,
             working_directory=working_directory,
             runtime_launch=dict(value.get("runtime_launch") or {}) if isinstance(value.get("runtime_launch"), Mapping) else {},
+            claude_profile=dict(value.get("claude_profile") or {}) if isinstance(value.get("claude_profile"), Mapping) else {},
         )
         return result
 
@@ -236,6 +249,7 @@ class WorkerChannelConfig:
                 else {}
             ),
             **({"runtime_launch": dict(self.runtime_launch)} if self.runtime_launch else {}),
+            **({"claude_profile": dict(self.claude_profile)} if self.claude_profile else {}),
         }
 
 
@@ -285,6 +299,7 @@ class HostRelayConfig:
     # folder per project with its manifest (``pb host configure
     # --backup-root``). Unset, nothing is created: the operator chooses it.
     backup_root: str = ""
+    message_timing: MessageTimingConfig = MessageTimingConfig()
 
     @property
     def effective_agent_workspace_root(self) -> str:
@@ -475,6 +490,7 @@ class HostRelayConfig:
                 if str(item).strip()
             ),
             backup_root=str((value.get("backups") or {}).get("root") or ""),
+            message_timing=_message_timing_config(relay.get("message_timing")),
         )
         approved_roots = [Path(root) for root in result.allowed_roots]
         for alias, repository in (
@@ -756,6 +772,8 @@ def update_host_config(
     workspace_sweep_auto_apply: bool | None = None,
     workspace_sweep_protected: Sequence[str] | None = None,
     backup_root: str | Path | None = None,
+    message_timing_until: str | None = None,
+    message_timing_off: bool = False,
     remove_disabled_channels: bool = False,
 ) -> HostRelayConfig:
     """Apply one explicit, non-secret host configuration revision."""
@@ -892,6 +910,11 @@ def update_host_config(
                 value["backups"] = {**dict(value.get("backups") or {}), "root": str(chosen)}
             else:
                 value.pop("backups", None)
+        if message_timing_until is not None or message_timing_off:
+            value["relay"]["message_timing"] = {
+                "enabled": not message_timing_off,
+                "expires_at": "" if message_timing_off else message_timing_until,
+            }
         value["updated_at"] = utc_now()
         updated = HostRelayConfig.from_mapping(value, path=path)
         atomic_write_json(path, value)
@@ -1013,6 +1036,12 @@ def agent_workspace(
     return derived, ("host_root" if derived else ""), note
 
 
+def _next_claude_profile(update: Any, current: Mapping[str, Any]) -> dict[str, Any]:
+    if callable(update):
+        update = update(dict(current))
+    return dict(update) if update else dict(current)
+
+
 def enroll_worker_channel(
     config_path: str | Path,
     *,
@@ -1023,7 +1052,12 @@ def enroll_worker_channel(
     authorized: bool = False,
     working_directory: str = "",
     runtime_launch: Mapping[str, Any] | None = None,
+    claude_profile: Any = None,
 ) -> WorkerChannelConfig:
+    """Record this session's channel. ``claude_profile`` is a binding, or a
+    callable given the existing binding that returns the new one (W763), so a
+    capture never switches a confirmed profile."""
+
     path = Path(config_path).expanduser().resolve()
     lock = path.with_suffix(f"{path.suffix}.lock")
     with exclusive_lock(lock):
@@ -1092,6 +1126,7 @@ def enroll_worker_channel(
             working_directory=selected_working_directory,
             # A new capture replaces the old; none keeps what the host had.
             runtime_launch=dict(runtime_launch) if runtime_launch else (dict(existing.runtime_launch) if existing else {}),
+            claude_profile=_next_claude_profile(claude_profile, existing.claude_profile if existing else {}),
         )
         rows = [
             worker.to_mapping()
@@ -1137,21 +1172,41 @@ def set_worker_channel_state(
                 status=409,
                 details={"expected_state": expected, "current_state": existing.state},
             )
-        updated = WorkerChannelConfig(
-            runtime_kind=existing.runtime_kind,
-            runtime_session_id=existing.runtime_session_id,
-            worker_identity=existing.worker_identity,
-            worker_name=existing.worker_name,
-            profile=existing.profile,
-            worker_alias=existing.worker_alias,
-            capabilities=existing.capabilities,
-            state=normalized,
-            working_directory=existing.working_directory,
-        )
+        # Only the state changes: the launch line and profile binding stay (W763).
+        updated = replace(existing, state=normalized)
         value["workers"] = [
             updated.to_mapping()
             if worker.worker_identity == identity.worker_identity
             else worker.to_mapping()
+            for worker in config.workers
+        ]
+        value["updated_at"] = utc_now()
+        atomic_write_json(path, value)
+        return updated
+
+
+def set_worker_claude_profile(
+    config_path: str | Path,
+    *,
+    identity: WorkerSessionIdentity,
+    binding: Mapping[str, Any],
+) -> WorkerChannelConfig:
+    """Record an operator-confirmed Claude profile binding for one enrolled session (W763 [10])."""
+
+    path = Path(config_path).expanduser().resolve()
+    with exclusive_lock(path.with_suffix(f"{path.suffix}.lock")):
+        value = read_json(path)
+        config = HostRelayConfig.from_mapping(value, path=path)
+        existing = config.worker(identity)
+        if existing is None:
+            raise DomainError(
+                "work_relay_worker_not_enrolled",
+                "This session is not enrolled on this host.",
+                status=404,
+            )
+        updated = replace(existing, claude_profile=dict(binding))
+        value["workers"] = [
+            updated.to_mapping() if worker.worker_identity == identity.worker_identity else worker.to_mapping()
             for worker in config.workers
         ]
         value["updated_at"] = utc_now()
@@ -1172,6 +1227,7 @@ __all__ = [
     "initialize_host_config",
     "resolve_host_config_path",
     "set_worker_channel_state",
+    "set_worker_claude_profile",
     "target_pointer_path",
     "update_host_config",
 ]

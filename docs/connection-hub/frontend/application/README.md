@@ -318,7 +318,13 @@ account at call time.
     renaming and accepting a changed descriptor need nothing beyond it. The
     refusal (`delegated_access_grants_not_delegable`) names those grants; on
     a person's Control Card it also carries the project host's reason
-    (`reason`, from the membership answer's `delegation_bound`).
+    (`reason`, from the membership answer's `delegation_bound`). The same
+    holds for the platform roles of the Card's application-operations
+    policy (`kdcube.application_operations`): a role the stored policy
+    already carries stays (the project Control Card carries
+    `kdcube:role:super-admin`), and only a role the save adds is refused
+    (`application_roles_not_delegable`). When the Hub refuses a STAGE for a
+    planner reason, it logs that reason's code beside the transaction.
   - **The save runs without the acting person's platform roles.** A Card
     offering a resource that only a role may choose (an admin-only resource)
     cannot be saved on this path; the creator's own path is unaffected.

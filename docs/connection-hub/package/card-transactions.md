@@ -16,6 +16,7 @@ hold before it is switched on. Everything here is **off by default**:
 | Catalog reservation | `catalog/reservations.py` | `catalog-active:<sha256(canonical {content_hash, version})>` = 1 holds the active catalog. `ensure_delegated_catalog` refuses `catalog_reserved` (retryable) meanwhile. |
 | Participant endpoint | `card_transaction_participant` (route public) | Another application's coordinator drives `prepare`, `finish`, `read_pending` and `list_prepared`. Every authenticated answer is signed. |
 | Census read | `card_census_read` (route public) | A signed, optimistic read of a project's person Cards, their full Control chains and the active catalog, for the initiator's business check. |
+| Invitation census | `card_invitation_census_read` (route public) | A signed read of ONE managed project's invitation Controls, enumerated by the Hub from the project's partition (the caller names only the scope): each Card's exact revision and state (`pending`, `withdrawn`, `redeemed`), sorted, with a `root` digest. A staged invitation Card or an invitation-issuer Card whose identity does not name this project refuses the whole read. Proves the set as of the read; holding it until a decision is the caller's (its read set, its own invite fence, W578's refusal of direct writes). Same peer authentication and `census_scope_prefix` entitlement as the census read (W814). |
 | Lifecycle plan | `card_lifecycle_plan` (route public) | A signed, non-writing plan of one Card lifecycle change (a new project's P, C and My; a person joining; an invitation's redemption): the exact Card candidates the initiator freezes into its transaction. Same peer authentication as the census read; a caller plans only under its descriptor's `plan_scope_prefix`. |
 | Card version save | `card_version` (route public), `cards/participant_card_version.py` | W661: Problem Board's STAGE, PUBLISH and ROLLBACK of one Card save. See "Saving a Card version" below. |
 | Plan authorization | `cards/lifecycle_plan_authorization.py` | Before planning, the Hub asks the calling application's own host (`project_lifecycle_plan_authorize` on its authority bundle) for one decision per step. The body is `actor_subject`, `project_ref`, `request_id`, the plan's `request_digest` and the ordered `steps`, signed with the descriptor's authority request signer under protocol `card-lifecycle-plan-authorize.v1`. A missing, extra, repeated or mismatched step, or a step decision for another plan's digest, refuses the plan. |
@@ -196,21 +197,56 @@ whole request, so no edit value is repeated.
     invitation Card is never overwritten.
 - **A role change's Cards (`role_selection`).** One `updates` entry per Card (C, or
   C and My): `kind`, `target_subject`, `access_id`, `subject_hash`,
-  `original_revision: 0`, the PB `resource`, and either `add_grants` and
-  `add_operations` (a promotion) or `remove_operations` plus `operation_grants`
-  (a demotion). PB sends a fixed policy delta, never Card content.
+  `original_revision: 0`, the PB `resource`, and `add_grants` and
+  `add_operations` (a promotion), or `remove_operations` plus `operation_grants`
+  (a demotion), or both in one entry (W810: a demotion that also adds the
+  member defaults a Card misses). PB sends a fixed policy delta, never Card
+  content. An operation is never both removed and added, and any removal carries
+  `operation_grants`.
   - The Hub reads the current Card (its version becomes the base), applies the
     delta to that one resource, and builds the candidate with the ordinary
     reselect builder.
-  - A demotion recomputes the resource's grants from the remaining operations
-    through PB's map. An operation missing from it is refused
+  - With a removal, the operations become (current minus removed) plus added,
+    and the Hub recomputes the resource's grants over that whole set through
+    PB's map. An operation missing from it is refused
     (`card_plan_role_operation_unknown`).
   - An unchanged Card stays a read.
   - The Hub knows nothing about roles or admins.
+- **A deleted project's Control (`retire_project_control`, W813).** One
+  `updates` entry: `kind`, `target_subject` (the project ref), `access_id`
+  (P's id), `subject_hash`, and P's exact `original_revision`, never 0
+  (read-current) and never a `parent`. Its step is `project.delete`, and the
+  host's decision must name that operation, this project as target, the actor
+  and the request, with the `project_control` locator naming exactly this P.
+  - The Hub checks that the Card is the project's own root Control (its id
+    derives from `application` + project + holder, no parent) and revokes it.
+    The revision carries the audit `retired_by_project_deletion: {schema:
+    connection-hub.project-retirement.v1, project_ref, actor_subject,
+    request_id, at}`.
+  - A P already revoked by this same project's retirement request is already
+    applied (no write); a P revoked any other way, or by another request, is
+    refused `card_plan_revoke_not_active`.
+  - The host sends P alone in the first chunk, then agents (`detach_agent`),
+    invitations (`revoke`) and people (`remove_person`, C and My together; the
+    actor and the owner last), in chunks of at most 8, each at its frozen
+    revision. A Card that moved since
+    is refused `card_changed` and is never retired at its new revision. The
+    host owns that order and its recovery; the PB side is not active until
+    project deletion ships (W805).
+- **The host keeps P following the catalog (W807).** Problem Board itself
+  starts an ordinary `reselect_project_control` STAGE, with no Hub-forwarded
+  edit, when an owner's or admin's read of P shows operations new to the
+  catalog. Its input is this Hub's drift of P: `catalog_drift.added.outer_operations`
+  (offered now, not at P's last save, from P's `resource_acceptance`) and
+  `resources[r].removed_operations`. It is fenced on P's revision and on
+  `expected_catalog_version` like any P edit, so a moved catalog refuses
+  `stage_catalog_moved`. The Hub is unchanged; the host's selection is bounded
+  by its delegable grants as always.
 - **Already applied (v6.3 item 6).** When every update of a STAGE already
   holds (each `role_selection` Card already equals its target, each
-  `remove_person` Card sent with `original_revision: 0` is already revoked and
-  is that person's C or My in this scope), and the STAGE creates nothing, the
+  `remove_person` Card sent with `original_revision: 0`, or fenced at exactly
+  its current revision (W743), is already revoked and is that person's C or My
+  in this scope), and the STAGE creates nothing, the
   Hub writes nothing, records no txn, and answers the signed result
   `{kind: already_applied}`. This is the same-request retry after a PUBLISH
   whose answer PB lost: PB then commits the role or membership change under
@@ -391,7 +427,8 @@ in its own transaction. The managed Cards are a person Control bound under a
 project's Control (`project_person_control_update` for a person), a pending
 invitation's Control, a project agent Card, the project's Control (P), and
 (W724) a person's own project My Card (`update_access` by its owner). A
-focused grant on a My Card or an agent Card is forwarded too (W727, below).
+focused grant on a My Card or an agent Card is forwarded too (W727, below), and
+so is the owner's own whole Save of a project-linked agent Card (W727, below).
 
 - **What travels.** `{schema: managed-card-edit.v1, actor_subject, project_ref,
   request_id, target: {kind, principal_key, original_revision}, selection}`,
@@ -488,7 +525,10 @@ acceptance travels). `original_revision` is the person's Control revision the Hu
 derived from the actor, project, person and that revision, so a retry replays the host's one decision. A
 retry whose first answer was lost reads the Control after the host's removal revoked it, one revision on. The
 removal at the revision read is sent first, as always, also for a member whose Control was revoked some other
-way; the host's answer stands (today it refuses that case `work_card_transaction_hub_edit_invalid`, W743). Only if the host refuses it as `removal_target_invalid` and the Control is revoked does the Hub
+way. For that member the planner reads the revoked Control, fenced at the revision sent, as already applied
+(W743): the host's one decision ends the membership and revokes My Card only, and Control is not revoked again.
+With both Cards already revoked the Hub writes no Card and answers the signed `already_applied`, and the host
+still ends the membership once. Only if the host refuses it as `removal_target_invalid` and the Control is revoked does the Hub
 send the first body again (the revision before, its request id); the host replays that only from the request's
 own audit row, else its refusal stands. A re-invited person's later removal, or another admin's, is a new
 request id. The
@@ -521,6 +561,21 @@ OAuth client's Card is prolonged through its binding's caller-writer policy (W58
 manual bearer bound under a project Control is not reissued: a reissue replaces the Card's credentials,
 which W578 refuses for a bound Card (`card_transactions_direct_write_refused`). Unlink it from the project
 first, then reissue it.
+
+**The owner's Save of their own project-linked agent Card (W727, live 14 Oct
+2026)** goes out as the owner's ordinary `delegated_access_update`. The screen
+takes the `project_agent_card_update` path only for another person's agent;
+`projectAgentCardUpdateTarget` is null for `via: owner`. `update_access`
+therefore forwards it after the P and own-My forwards: when Card transactions
+are on and the Card is an agent Card bound under a project Control (not a My
+Card and not the P), the project named by the Card's own `control_card`
+decides through `ProjectAgentCardAccess.authorize_write`, and the Save goes as
+one `agent_card` managed edit with the screen's whole-Save fields. A Save
+without a route request id gets a stable one (`agent-card-save:` plus a digest
+of actor, Card, the revision read and the selection), so a retried Save
+replays the project's one decision. A project admin's `project_agent_card_update`
+already forwards on its own; its fallback write (with `_caller_actor_subject`)
+is never forwarded a second time.
 
 **A focused grant ("add permission", W727)** is the Cards screen's
 `delegated_agent_grant_create` for one newly ticked operation, sent after the

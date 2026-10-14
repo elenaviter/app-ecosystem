@@ -146,6 +146,10 @@ class OAuthDelegatedResourceConfig:
     # whatever their Card holds. A person's Card editor shows them ticked ("in effect for you"),
     # disabled; any other operation no person Card decides shows unticked. Presentation only.
     person_member_operations: tuple[str, ...] = ()
+    # W775: the operations only an agent's own channel calls (the application's declaration). A person's Card
+    # editor folds them away under "Agent-only tools (not for people)" with no Control warning; an agent's
+    # Card is unchanged. Presentation only, outside every digest; never a selection or save rule.
+    person_agent_operations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -628,6 +632,13 @@ def _person_member_operations(raw: Any, tools: tuple[Any, ...], decided: tuple[s
     return tuple(tool.name for tool in tools if tool.name in declared)
 
 
+def _person_agent_operations(raw: Any, tools: tuple[Any, ...], person: tuple[str, ...]) -> tuple[str, ...]:
+    """W775: the declared agent-only operations, in catalog order, among the resource's own tools and never one
+    a person's Card decides or a member holds (an operation a person may call is never folded away)."""
+    declared = set(_coerce_string_tuple(raw)) - set(person)
+    return tuple(tool.name for tool in tools if tool.name in declared)
+
+
 def _managed_grants(raw: Any, grants: tuple[str, ...]) -> tuple[str, ...]:
     """A resource's application-managed grants: declared, and only among the resource's own grants."""
     declared = set(_coerce_string_tuple(raw))
@@ -706,6 +717,10 @@ def _parse_resources(raw: Any) -> tuple[OAuthDelegatedResourceConfig, ...]:
                 person_member_operations=_person_member_operations(
                     item.get("person_member_operations"), tools,
                     _person_card_operations(item.get("person_card_operations"), tools)),
+                person_agent_operations=_person_agent_operations(
+                    item.get("person_agent_operations"), tools,
+                    (*_person_card_operations(item.get("person_card_operations"), tools),
+                     *_coerce_string_tuple(item.get("person_member_operations")))),
             )
         )
     return tuple(out)

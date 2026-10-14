@@ -24,11 +24,25 @@ from test_card_transaction_store import INTENT, NOW, SUBJECT_HASH, Decisions, _a
 RS = "f" * 64
 
 
+class _Held:
+    """Counts the PRODUCTION lock's sections as they are entered and left; it never replaces the lock.
+
+    ``peak`` is how many sections were held at the same time, ``held`` how many are held now and
+    ``entered`` how many were ever entered (W646 return, codex-infra 2026-10-14: show the sections held
+    concurrently and released, and a refusal that acquires nothing).
+    """
+
+    def __init__(self) -> None:
+        self.held = self.peak = self.entered = 0
+        self.peak_descriptors = 0  # the process's open descriptors while the most sections were held
+
+
 async def _real_lock_setup(tmp_path):
     """The filesystem Card store with the PRODUCTION mutation lock: one held flock per section.
 
     The shared _setup binds a no-op lock, which would not hold any descriptor and so
-    could not exercise this ceiling (CodeApp's review, 2026-10-08).
+    could not exercise this ceiling (CodeApp's review, 2026-10-08). Each section here still enters
+    the SDK's own ``_kdcube_card_mutation_lock`` (one flock, one descriptor); ``_Held`` only counts it.
     """
     from kdcube_ai_app.apps.chat.sdk.integrations.connection_hub.delegated_credentials.cards.service import (
         _kdcube_card_mutation_lock,
@@ -36,11 +50,27 @@ async def _real_lock_setup(tmp_path):
     from connection_hub.delegated_credentials.cards.service import DelegatedCardService
     from connection_hub.delegated_credentials.cards.store import BundleStorageDelegatedCardStore
 
+    probe = _Held()
+
+    @contextlib.asynccontextmanager
+    async def counted(**kwargs):
+        async with _kdcube_card_mutation_lock(**kwargs) as held:
+            probe.held += 1
+            probe.entered += 1
+            if probe.held > probe.peak:
+                probe.peak = probe.held
+                probe.peak_descriptors = card_service._open_descriptors()
+            try:
+                yield held
+            finally:
+                probe.held -= 1
+
     store = BundleStorageDelegatedCardStore(tmp_path)
     tx.bind_transaction_decisions(store, Decisions())
-    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=_kdcube_card_mutation_lock)
+    service = DelegatedCardService(store=store, cache=_Cache(), mutation_lock=counted)
     await service.commit(_authority(), subject_hash=SUBJECT_HASH, expected_revision=0, now=NOW)
-    return store, service
+    probe.peak = probe.entered = 0  # count only the read set below, not the setup commit
+    return store, service, probe
 
 
 def _absent_reads(count: int, *, access_len: int = 0) -> list[dict]:
@@ -120,11 +150,17 @@ async def test_a_read_set_of_a_full_project_prepares_on_the_real_store_when_the_
     needed = len(reads) + card_service.LOCK_FD_RESERVE + 64
     if hard != resource.RLIM_INFINITY and hard < needed:
         pytest.skip(f"the hard open-file limit {hard} is below the {needed} this case needs")
-    store, service = await _real_lock_setup(tmp_path)
+    store, service, probe = await _real_lock_setup(tmp_path)
+    descriptors_before = card_service._open_descriptors()
     with _soft_nofile(max(needed, soft)):
         receipt = await service.stage_read_set_transaction(transaction_id=RS, intent_digest=INTENT,
                                                            participant="project", reads=reads, catalog="")
     assert receipt["state"] == "prepared" and len(receipt["reads"]) == len(reads)
+    # Every read's production section was held at the same time, then all were released: no section and
+    # no descriptor outlives the prepare (the flocks are closed, not leaked).
+    assert probe.peak >= len(reads) and probe.held == 0
+    assert probe.peak_descriptors - descriptors_before >= len(reads), "each held section holds a descriptor"
+    assert card_service._open_descriptors() <= descriptors_before
     for read in reads[:: len(reads) // 10]:  # every read is fenced for this transaction
         owner = await tx._live_read_fence(store, subject_hash=read["subject_hash"], access_id=read["access_id"])
         assert owner is not None and owner["transaction_id"] == RS
@@ -133,11 +169,12 @@ async def test_a_read_set_of_a_full_project_prepares_on_the_real_store_when_the_
 @pytest.mark.asyncio
 async def test_a_read_set_over_the_process_budget_is_refused_and_leaves_nothing(tmp_path):
     reads = _absent_reads(400)
-    store, service = await _real_lock_setup(tmp_path)
+    store, service, probe = await _real_lock_setup(tmp_path)
     with _soft_nofile(256):
         with pytest.raises(tx.CardTransactionRefused, match="card_read_set_lock_budget_exceeded"):
             await service.stage_read_set_transaction(transaction_id=RS, intent_digest=INTENT,
                                                      participant="project", reads=reads, catalog="")
+    assert probe.entered == 0 and probe.held == 0, "refused before acquiring any production section"
     assert await tx.read_receipt(store, RS) is None
     owner = await tx._live_read_fence(store, subject_hash=reads[0]["subject_hash"], access_id=reads[0]["access_id"])
     assert owner is None
@@ -148,7 +185,7 @@ async def test_without_the_preflight_the_real_locks_exhaust_descriptors_mid_stac
     # Proves the sections really hold one descriptor each: with the budget check
     # bypassed, the production lock stack runs out of descriptors part-way through.
     reads = _absent_reads(400)
-    store, service = await _real_lock_setup(tmp_path)
+    store, service, probe = await _real_lock_setup(tmp_path)
     monkeypatch.setattr(card_service, "_require_lock_budget", lambda _sections: None)
     with _soft_nofile(256):
         with pytest.raises(OSError) as exc:
@@ -156,3 +193,5 @@ async def test_without_the_preflight_the_real_locks_exhaust_descriptors_mid_stac
                                                      participant="project", reads=reads, catalog="")
     assert exc.value.errno == 24  # EMFILE: too many open files
     assert await tx.read_receipt(store, RS) is None
+    # Part-way: some production sections were held at once, fewer than the set, and every one was released.
+    assert 0 < probe.peak < len(reads) and probe.held == 0

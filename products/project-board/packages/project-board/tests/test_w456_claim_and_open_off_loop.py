@@ -123,6 +123,31 @@ def _states(field):
     }
 
 
+BOUND = 10.0  # seconds; a wait that runs out fails with a message instead of hanging the suite
+
+
+async def _drained(adapter, bound=BOUND):
+    """Wait until every release/settle task has finished AND left ``_outbox_finishes``.
+
+    W846: a finished task leaves the set only through its done callback, which needs a turn of the loop.
+    ``await asyncio.gather(*finished)`` does not give one: since Python 3.12 gather completes eagerly
+    when every child is already done, so a loop over it spun forever whenever the test resumed between
+    a release finishing and its ``discard`` callback running (8 hangs in 90 runs). This waits only on
+    tasks still pending and otherwise yields one turn, under a bound.
+    """
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + bound
+    while adapter._outbox_finishes:
+        remaining = deadline - loop.time()
+        assert remaining > 0, f"outbox finishes still pending after {bound}s: {adapter._outbox_finishes!r}"
+        pending = [task for task in adapter._outbox_finishes if not task.done()]
+        if pending:
+            await asyncio.wait(pending, timeout=remaining)
+        else:
+            await asyncio.sleep(0)  # let the finished tasks' done callbacks remove them
+
+
 def test_a_claim_cancelled_while_its_thread_runs_leaves_nothing_claimed(field, monkeypatch):
     _pending(field, "local:test:cancel-1")
     _pending(field, "local:test:cancel-2")
@@ -143,26 +168,31 @@ def test_a_claim_cancelled_while_its_thread_runs_leaves_nothing_claimed(field, m
             claimed.set()
 
     monkeypatch.setattr(type(field), "pull_outbox", slow_claim_done)
+    released = threading.Event()
+    original_release = type(field).release_outbox_claims
+
+    def release_done(self, *args, **kwargs):
+        try:
+            return original_release(self, *args, **kwargs)
+        finally:
+            released.set()
+
+    monkeypatch.setattr(type(field), "release_outbox_claims", release_done)
     adapter = _adapter(field)
 
     async def scenario():
         flush = asyncio.ensure_future(adapter._flush_outbox_unlocked())
-        while not started.is_set():
-            await asyncio.sleep(0.01)
+        assert await asyncio.to_thread(started.wait, BOUND), f"the claim thread did not start within {BOUND}s"
         flush.cancel()
         try:
             await flush
         except asyncio.CancelledError:
             pass
         # The thread finishes its claim; its done callback starts the release.
-        while not claimed.is_set():
-            await asyncio.sleep(0.01)
-        for _ in range(50):
-            if adapter._outbox_finishes:
-                break
-            await asyncio.sleep(0.01)
-        while adapter._outbox_finishes:
-            await asyncio.gather(*list(adapter._outbox_finishes), return_exceptions=True)
+        assert await asyncio.to_thread(claimed.wait, BOUND), f"the claim thread did not finish within {BOUND}s"
+        # Its done callback starts the release in a thread: wait for that real event, then drain.
+        assert await asyncio.to_thread(released.wait, BOUND), f"the cancelled claim was not released within {BOUND}s"
+        await _drained(adapter)
 
     asyncio.run(scenario())
     assert _states(field) == {"pending": 2, "leased": 0}, "the cancelled claim returned every row"

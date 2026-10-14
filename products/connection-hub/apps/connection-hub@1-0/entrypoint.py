@@ -30,6 +30,7 @@ from kdcube_ai_app.apps.chat.sdk.integrations.telegram import (
 )
 from kdcube_ai_app.apps.chat.sdk.config import get_secret, get_settings, set_bundle_prop
 from connection_hub.concurrency import bounded_gather
+from connection_hub import request_counters
 from connection_hub.authenticators.models import RequestEnvelope
 from connection_hub.authority_registry_config import (
     authority_registry_config,
@@ -367,6 +368,7 @@ CSRF_EXEMPT_PUBLIC_POST_ALIASES = frozenset({
     # nonce; the browser session is discarded (``del request``) and never
     # establishes authority (test_w502_peer_endpoints_ignore_the_browser_session).
     "card_census_read",
+    "card_invitation_census_read",
     "card_lifecycle_plan",
     "card_read_collection_register",
     "card_transaction_participant",
@@ -1920,6 +1922,7 @@ async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
     from kdcube_ai_app.apps.chat.sdk.infra.bundle_operations import call_bundle_operation
 
     async def resolve(reference: str) -> str:
+        request_counters.count("secret_resolve")  # W819: actual resolves, for W812's harness
         return await _bundle_secret_value(entrypoint, secret_path=reference,
                                           trace_scope="card-transaction-participant", warn_missing=False)
 
@@ -1927,6 +1930,7 @@ async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
         # A peer's transaction authority is a public operation it authenticates by proof.
         return await call_bundle_operation(route="public", **kwargs)
 
+    request_counters.count("participant_callers_build")
     return await build_participant_callers(
         _connections_config(entrypoint), resolve_secret=resolve, call=call,
         card_store=getattr(persistence, "card_store", None), card_service=getattr(persistence, "card_service", None))
@@ -4450,6 +4454,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
     # ── direct protected-service admission ──────────────────────────────────
 
     @api(method="POST", alias="card_transaction_participant", route="public")
+    @request_counters.counted("card_transaction_participant")
     async def card_transaction_participant(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -4503,7 +4508,45 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             after_authentication=compose_after_authentication)
         return await operation.answer(payload)
 
+    @api(method="POST", alias="card_invitation_census_read", route="public")
+    @request_counters.counted("card_invitation_census_read")
+    async def card_invitation_census_read(
+        self,
+        data: Optional[Dict[str, Any]] = None,
+        request: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """W814: a signed read of ONE managed project's invitation Controls, enumerated by the Hub.
+
+        Same peer authentication and scope entitlement as card_census_read. The caller names only the
+        scope; the Hub lists the project's partition and answers every invitation Control with its exact
+        revision and state, or refuses the whole read (a staged Card, an invalid identity).
+        """
+        del request
+        payload = _payload(data, **kwargs)
+        unavailable = {"ok": False, "status": 503, "error": {"code": "card_participant_unavailable"}}
+        redis = getattr(self, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+        persistence = await _delegated_card_persistence(self, redis)
+        if persistence is None:
+            return unavailable
+        try:
+            built = await _card_participant_callers(self, persistence)
+        except Exception:  # noqa: BLE001 - never internal text to a peer
+            LOGGER.exception("[connection-hub.card-transactions] invitation census callers unavailable")
+            return unavailable
+        if not built.callers:
+            return unavailable
+        tenant, project = _runtime_tenant_project(self)
+        from connection_hub.delegated_credentials.cards.invitation_census_read import (
+            CardInvitationCensusReadOperation,
+        )
+        operation = CardInvitationCensusReadOperation(
+            callers=built.callers, card_store=persistence.card_store, nonces=redis, clock=time.time,
+            nonce_prefix=f"connection-hub:{tenant}:{project}:card-invitation-census:nonce:")
+        return await operation.answer(payload)
+
     @api(method="POST", alias="card_census_read", route="public")
+    @request_counters.counted("card_census_read")
     async def card_census_read(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -4538,6 +4581,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_read_collection_register", route="public")
+    @request_counters.counted("card_read_collection_register")
     async def card_read_collection_register(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -4576,6 +4620,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         return await operation.answer(payload)
 
     @api(method="POST", alias="card_lifecycle_plan", route="public")
+    @request_counters.counted("card_lifecycle_plan")
     async def card_lifecycle_plan(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -4624,6 +4669,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             return answer
 
     @api(method="POST", alias="card_version", route="public")
+    @request_counters.counted("card_version")
     async def card_version(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -5681,6 +5727,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         csrf=True,
         **_api_visibility("project_agent_card_add_operations"),
     )
+    @request_counters.counted("project_agent_card_add_operations")
     async def project_agent_card_add_operations(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -6197,6 +6244,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         csrf=False,
         **_api_visibility("project_operation_authorize"),
     )
+    @request_counters.counted("project_operation_authorize")
     async def project_operation_authorize(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -6231,6 +6279,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         csrf=False,
         **_api_visibility("project_operations_authorize"),
     )
+    @request_counters.counted("project_operations_authorize")
     async def project_operations_authorize(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -6697,9 +6746,15 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
                     expected_card_revision=_expected_card_revision(payload),
                 )
             else:
+                async def authorize_agent_card(access_id: str, project_ref: str) -> Any:
+                    # W727: the owner's Save of a bound agent Card changes it only as its project allows.
+                    agent_cards = await self._project_agent_card_access(request)
+                    return await agent_cards.authorize_write(user, access_id=access_id, project_ref=project_ref)
+
                 _result = await access_service.update_access(
                     user,
                     access_id=_access_id_for_log,
+                    _authorize_agent_card=authorize_agent_card,
                     # W737: omitted stays omitted (an Accept-only save changes no selection).
                     resource_grants=(
                         dict(payload.get("resource_grants") or {})
@@ -6777,6 +6832,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         csrf=True,
         **_api_visibility("delegated_access_add_operations"),
     )
+    @request_counters.counted("delegated_access_add_operations")
     async def delegated_access_add_operations(
         self,
         data: Optional[Dict[str, Any]] = None,
@@ -8933,6 +8989,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
 
     @api(method="POST", alias="project_operation_authorize_for_person", route="operations",
          **_api_visibility("project_operation_authorize_for_person"))
+    @request_counters.counted("project_operation_authorize_for_person")
     async def project_operation_authorize_for_person(
         self,
         data: Optional[Dict[str, Any]] = None,

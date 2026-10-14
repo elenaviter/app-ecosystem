@@ -8,6 +8,8 @@ refused, and never reaches the decision store.
 
 from __future__ import annotations
 
+import inspect
+
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -172,7 +174,8 @@ async def test_w502_read_collection_registration_ignores_the_browser_session(ent
 @pytest.mark.asyncio
 async def test_w651_registration_receives_the_card_services_collection_lock(entrypoint, monkeypatch):
     """The production endpoint passes persistence.card_service.collection_section into the operation."""
-    module = type(entrypoint).card_read_collection_register.__globals__  # the fixture instance's own module
+    # The fixture instance's own module (unwrapped past W819's counting decorator).
+    module = inspect.unwrap(type(entrypoint).card_read_collection_register).__globals__
     built = []
     real = module["CardReadCollectionOperation"]
 
@@ -188,7 +191,8 @@ async def test_w651_registration_receives_the_card_services_collection_lock(entr
 @pytest.mark.asyncio
 async def test_w651_registration_without_a_collection_lock_is_unavailable(entrypoint, monkeypatch):
     """Never seal without the lock retention takes: no provider, a 503 before any request handling."""
-    module = type(entrypoint).card_read_collection_register.__globals__  # the fixture instance's own module
+    # The fixture instance's own module (unwrapped past W819's counting decorator).
+    module = inspect.unwrap(type(entrypoint).card_read_collection_register).__globals__
 
     async def persistence(_entrypoint, _redis):
         return SimpleNamespace(card_store=object(), card_service=object())

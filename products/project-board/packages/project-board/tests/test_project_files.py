@@ -8,7 +8,8 @@ project record and ``files_edit_allowed`` (this worker's Card check of
 ``project.files.edit``) on the heartbeat. ``pb worker context`` turns the list
 into this agent's local paths with a state; the purpose files decide the
 instructions, facts and environment refs; connect-project names what is
-missing; the relay serves the card's view of a listed file from its clone.
+missing; the relay serves the card's view of a listed file from its own
+per-project copy at the default branch's newest commit (W794).
 """
 
 from __future__ import annotations
@@ -188,12 +189,53 @@ def _view_control(alias: str, path: str, *, repository_ref: str | None = None) -
     return {"kind": "project.file.read", "project_ref": PROJECT_REF, "payload": payload, "payload_hash": content_hash(payload)}
 
 
-def test_the_relay_serves_a_listed_file_from_its_clone_stamped_with_the_commit(tmp_path, monkeypatch):
+class KeyedViewClient(ViewClient):
+    """A board client whose Connection Hub path issues the coordinator Card's GitHub key (W794)."""
+
+    def __init__(self, *, refuse: bool = False) -> None:
+        super().__init__()
+        self.refuse = refuse
+        self.issued: list[tuple[str, str]] = []
+
+    async def github_key(self, project_ref: str, repository: str):
+        self.issued.append((project_ref, repository))
+        if self.refuse:
+            raise DomainError("work_github_use_denied", "The Card does not hold project.github.use.")
+        return type("Token", (), {"token": "ghu_w794_test_token"})()
+
+
+def _machine_copy(tmp_path, workspace, monkeypatch, scoped):
+    """W794: the relay reads its own per-project copy; the test's GitHub is the clone's local remote."""
+
+    from project_board.client.project_file_source import ProjectFileSource
+
+    import subprocess
+
+    def git(cwd, *args):
+        return subprocess.run(["git", *args], cwd=str(cwd), check=True, capture_output=True, text=True).stdout
+
+    remote = Path(git(workspace / "applications", "remote", "get-url", "origin").strip())
+    git(remote, "config", "uploadpack.allowFilter", "true")
+    git(remote, "config", "uploadpack.allowAnySHA1InWant", "true")
+    monkeypatch.setattr(relay, "github_repository", lambda url: "owner/applications" if url else "")
+    base = tmp_path / "github"
+    (base / "owner").mkdir(parents=True)
+    os.symlink(remote, base / "owner" / "applications.git")
+    scoped._file_source = ProjectFileSource(tmp_path / "machine" / "project-files", remote_base=f"file://{base}/")  # noqa: SLF001
+    return remote
+
+
+def test_the_relay_serves_a_listed_file_from_its_own_copy_at_the_default_branch_head(tmp_path, monkeypatch):
+    # W794 (operator, 2026-10-13: "we need the machine with coordinator and its credential"; "last one" = "A"):
+    # the coordinator machine's own copy, fetched before the read, never the agent's clone or working tree.
     identity, field, config, workspace, adapter, board = _setup(tmp_path, monkeypatch, files=FILES)
-    client = ViewClient()
+    client = KeyedViewClient()
     scoped = relay.ProblemBoardHostRelayAdapter(
         config=dataclasses.replace(config, project_id=PROJECT_ID, workspace=str(workspace)), field=field, client=client
     )
+    remote = _machine_copy(tmp_path, workspace, monkeypatch, scoped)
+    # The agent's clone is dirty and behind: it must not matter.
+    (workspace / "applications" / "docs" / "project-facts.md").write_text("# Local edit\n", encoding="utf-8")
     view_ref = asyncio.run(scoped._serve_file_view(_view_control("applications", "docs/project-facts.md")))  # noqa: SLF001
     [call] = client.calls
     assert call["object_ref"] == view_ref and call["action"] == "journal.view.publish"
@@ -201,8 +243,12 @@ def test_the_relay_serves_a_listed_file_from_its_clone_stamped_with_the_commit(t
     assert published["content"] == "# Facts\n"
     assert published["content_hash"] == hashlib.sha256(b"# Facts\n").hexdigest()
     assert published["repository_journal_ref"] == "repo:applications/docs/project-facts.md"
-    head = relay.head_commit(workspace / "applications")
+    import subprocess
+
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(remote), check=True, capture_output=True, text=True).stdout.strip()
     assert published["source_commit"] == head and len(head) == 40
+    assert client.issued == [(PROJECT_REF, "owner/applications")]
+    assert "ghu_w794_test_token" not in repr(published)
 
     def refused(control) -> str:
         with pytest.raises(DomainError) as raised:
@@ -211,20 +257,96 @@ def test_the_relay_serves_a_listed_file_from_its_clone_stamped_with_the_commit(t
 
     assert refused(_view_control("applications", "README.md")) == "file_not_listed"
     assert refused(_view_control("applications", "docs/not-here.md")) == "file_missing"
-    assert refused(_view_control("kdcube", "docs/environment.md")) == "repository_not_cloned"
     assert refused(_view_control("applications", "docs/project-facts.md", repository_ref="repo:applications/x.md")) == "file_not_listed"
 
-    # A listed path that is a link out of the clone is never read.
-    notes = workspace / "applications" / "docs" / "release-notes.md"
-    notes.unlink()
-    outside = tmp_path / "secret.txt"
-    outside.write_text("secret", encoding="utf-8")
-    os.symlink(outside, notes)
-    assert refused(_view_control("applications", "docs/release-notes.md")) == "file_not_listed"
-    # And a file over the view's size is refused by name.
-    notes.unlink()
-    notes.write_bytes(b"x" * (relay.FILE_VIEW_MAX_BYTES + 1))
-    assert refused(_view_control("applications", "docs/release-notes.md")) == "file_too_large"
+
+def test_a_coordinator_card_without_the_github_key_is_a_named_refusal(tmp_path, monkeypatch):
+    identity, field, config, workspace, adapter, board = _setup(tmp_path, monkeypatch, files=FILES)
+    scoped = relay.ProblemBoardHostRelayAdapter(
+        config=dataclasses.replace(config, project_id=PROJECT_ID, workspace=str(workspace)), field=field,
+        client=KeyedViewClient(refuse=True),
+    )
+    _machine_copy(tmp_path, workspace, monkeypatch, scoped)
+    with pytest.raises(DomainError) as raised:
+        asyncio.run(scoped._serve_file_view(_view_control("applications", "docs/project-facts.md")))  # noqa: SLF001
+    assert raised.value.code == "github_key_refused" and "work_github_use_denied" in str(raised.value)
+
+
+def test_a_repository_at_a_local_path_is_read_in_place_without_a_github_key(tmp_path, monkeypatch):
+    # W848 (operator, 2026-10-14: "B: the client reads local repositories directly << of course this! this is
+    # special type of project. where we do not have any github"): the project's repository URL is a path here.
+    identity, field, config, workspace, adapter, board = _setup(tmp_path, monkeypatch, files=FILES)
+    client = ViewClient()  # no github_key path at all
+    local = workspace / "applications"
+    other = tmp_path / "other-project"
+    scoped = relay.ProblemBoardHostRelayAdapter(
+        config=dataclasses.replace(
+            config, project_id=PROJECT_ID, workspace=str(workspace),
+            # This host's own map: the only local repositories a file view may read.
+            source_repositories=(("applications", str(local)), ("other", str(other))),
+        ),
+        field=field, client=client,
+    )
+    scoped._file_source = relay.ProjectFileSource(tmp_path / "machine" / "project-files")  # noqa: SLF001
+    import subprocess
+
+    def git(cwd, *args):
+        return subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", *args],
+            cwd=str(cwd), check=True, capture_output=True, text=True,
+        ).stdout
+
+    head = git(local, "rev-parse", "HEAD").strip()
+    monkeypatch.setattr(
+        field, "read_project_repositories",
+        lambda project_id: {"repositories": [{"alias": "applications", "url": str(local)}]},
+    )
+    # An uncommitted edit in the folder is not what the view shows.
+    (local / "docs" / "project-facts.md").write_text("# Uncommitted\n", encoding="utf-8")
+    view_ref = asyncio.run(scoped._serve_file_view(_view_control("applications", "docs/project-facts.md")))  # noqa: SLF001
+    [call] = client.calls
+    assert call["object_ref"] == view_ref and call["payload"]["content"] == "# Facts\n"
+    assert call["payload"]["source_commit"] == head
+    assert not (tmp_path / "machine" / "project-files").exists()  # no clone is made
+
+    def refused(url: str) -> str:
+        monkeypatch.setattr(
+            field, "read_project_repositories",
+            lambda project_id: {"repositories": [{"alias": "applications", "url": url}]},
+        )
+        with pytest.raises(DomainError) as raised:
+            asyncio.run(scoped._serve_file_view(_view_control("applications", "docs/project-facts.md")))  # noqa: SLF001
+        return raised.value.code
+
+    # W848 review (Mint): a path the board names but this host's map does not bind to the alias is refused,
+    # without the host path in the message: another repository on this machine, another alias's root, a missing one.
+    _git("clone", "-q", str(local), str(other), cwd=tmp_path)
+    assert refused(str(other)) == "repository_not_mapped"
+    assert refused(str(tmp_path / "gone")) == "repository_not_mapped"
+    monkeypatch.setattr(
+        field, "read_project_repositories",
+        lambda project_id: {"repositories": [{"alias": "applications", "url": str(other)}]},
+    )
+    with pytest.raises(DomainError) as raised:
+        asyncio.run(scoped._serve_file_view(_view_control("applications", "docs/project-facts.md")))  # noqa: SLF001
+    assert raised.value.code == "repository_not_mapped" and str(tmp_path) not in str(raised.value)
+    monkeypatch.setattr(
+        field, "read_project_repositories",
+        lambda project_id: {"repositories": [{"alias": "applications", "url": f"file://{local}"}]},
+    )
+    asyncio.run(scoped._serve_file_view(_view_control("applications", "docs/project-facts.md")))  # noqa: SLF001
+    assert client.calls[-1]["payload"]["content"] == "# Facts\n"
+    # A mapped root that is gone or is not a repository is named as such.
+    other_git = other / ".git"
+    import shutil
+
+    shutil.rmtree(other_git)
+    scoped.config = dataclasses.replace(scoped.config, source_repositories=(("applications", str(other)),))
+    assert refused(str(other)) == "repository_not_git"
+    shutil.rmtree(other)
+    assert refused(str(other)) == "repository_path_missing"
+    # A remote that is neither GitHub nor a path keeps W794's refusal.
+    assert refused("https://gitlab.example.com/owner/x.git") == "repository_not_on_github"
 
 
 def test_a_host_that_allows_journal_views_allows_file_views(tmp_path, monkeypatch):
@@ -309,3 +431,68 @@ def test_the_procedures_explain_project_files_in_the_operators_words():
     assert "writes it into Facts" in coordinator and "rulings live in project files" in coordinator
     for piece in ("`instructions.md`", "`facts.md`", "`environment.md`", "A journal is optional.", "**Project files**"):
         assert piece in create, piece
+
+
+class HookedClient(ViewClient):
+    """A Data Bus client that keeps the relay's keyed push hooks (W794)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.hooks: dict[str, Any] = {}
+
+    def set_event_hook(self, key, hook) -> None:
+        if hook is None:
+            self.hooks.pop(key, None)
+        else:
+            self.hooks[key] = hook
+
+
+def _available(project_ref: str = PROJECT_REF) -> dict[str, Any]:
+    return {"type": "problem_board.worker.event.v1", "data": {"kind": "control.available", "refs": {"project_ref": project_ref}}}
+
+
+def test_a_queued_control_is_pulled_at_once_not_at_the_end_of_the_turn(tmp_path, monkeypatch):
+    # W794 (operator, 2026-10-13: "why requesting the doc should care if coord busy or no at all"): the board's
+    # control.available push pulls and serves controls now, while the attendance turn may still be running.
+    identity, field, config, workspace, adapter, board = _setup(tmp_path, monkeypatch, files=FILES)
+    client = HookedClient()
+    scoped_config = dataclasses.replace(config, project_id=PROJECT_ID, workspace=str(workspace))
+    first = relay.ProblemBoardHostRelayAdapter(config=scoped_config, field=field, client=client)
+    second = relay.ProblemBoardHostRelayAdapter(config=scoped_config, field=field, client=client)
+    # Adapters are rebuilt every discovery turn: one hook per project, the newest.
+    assert list(client.hooks) == [f"problem-board.controls:{PROJECT_ID}"]
+    assert client.hooks[f"problem-board.controls:{PROJECT_ID}"] == second._on_push_event  # noqa: SLF001
+    pulls: list[str] = []
+    release = asyncio.Event()
+
+    async def pull(*, project_ref=None):
+        pulls.append(project_ref or "project")
+        await release.wait()
+        return {}
+
+    monkeypatch.setattr(second, "_pull_controls", pull)
+
+    async def scenario():
+        turn_lock = second._pull_lock()  # noqa: SLF001
+        assert turn_lock is first._pull_lock()  # noqa: SLF001 - one lock per project on the client
+        hook = client.hooks[f"problem-board.controls:{PROJECT_ID}"]
+        hook({"data": {"kind": "mail.available", "refs": {"project_ref": PROJECT_REF}}})
+        hook(_available("work:project:another-project"))
+        assert second._immediate_pull is None  # noqa: SLF001
+        hook(_available())
+        hook(_available())  # one pull in flight at a time
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert pulls == ["project"]
+        release.set()
+        await second._immediate_pull  # noqa: SLF001
+
+    asyncio.run(scenario())
+    assert pulls == ["project"]
+
+
+def test_the_attendance_channel_registers_no_push_hook(tmp_path, monkeypatch):
+    identity, field, config, workspace, adapter, board = _setup(tmp_path, monkeypatch, files=FILES)
+    client = HookedClient()
+    relay.ProblemBoardHostRelayAdapter(config=dataclasses.replace(config, project_id="attendance"), field=field, client=client)
+    assert client.hooks == {}

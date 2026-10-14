@@ -18,6 +18,7 @@ from app_foundation.data_bus import (
 from ..contract.errors import DomainError
 from ..contract.operation_outcomes import require_successful_operation_envelope
 from .relay_failures import is_timeout_error, safe_target
+from .message_timing import MESSAGE_TIMINGS, MessageTimingConfig
 
 
 logger = logging.getLogger(__name__)
@@ -198,8 +199,11 @@ class ProblemBoardDataBusClient:
         *,
         partition_ref: str,
         github_key: Callable[[str, str], Awaitable[Any]] | None = None,
+        message_timing: MessageTimingConfig | None = None,
     ) -> None:
         self.client = client
+        if message_timing is not None:
+            MESSAGE_TIMINGS.configure(message_timing)
         # W371: the owner's GitHub key for (project_ref, repository), asked of Connection
         # Hub with this channel's Card; None where the relay has no Card bearer.
         self.github_key = github_key
@@ -211,6 +215,11 @@ class ProblemBoardDataBusClient:
     @property
     def connected(self) -> bool:
         return self.client.connected
+
+    @property
+    def connection_generation(self) -> int:
+        """Public socket epoch; display snapshots cannot span reconnects."""
+        return getattr(self.client, "connection_generation", 0)
 
     async def wait_until_connected(self, timeout_seconds: float) -> bool:
         """Wait for the socket's own reconnect, up to ``timeout_seconds``."""
@@ -329,6 +338,8 @@ class ProblemBoardDataBusClient:
         message_id, idempotency_key = attempt
         started = time.monotonic()
         request_scope = "project" if value.get("project_ref") else "worker"
+        observer = MESSAGE_TIMINGS.observer(action, message_id)
+        diagnostic_options = {"timing_observer": observer} if observer is not None else {}
         try:
             outcome = await self.client.request(
                 subject=self.subject,
@@ -340,6 +351,7 @@ class ProblemBoardDataBusClient:
                 },
                 idempotency_key=idempotency_key,
                 message_id=message_id,
+                **diagnostic_options,
             )
         except DataBusOutcomeUnknown as exc:
             if not transport_request_id:
@@ -465,6 +477,13 @@ class ProblemBoardDataBusClient:
 
     async def wait_for_event(self, timeout_seconds: float) -> dict[str, Any] | None:
         return await self.client.wait_for_event(timeout_seconds)
+
+    def set_event_hook(self, key: str, hook: Any) -> None:
+        """W794: forward a keyed push hook to the Data Bus client (see FederatedDataBusClient.set_event_hook)."""
+
+        setter = getattr(self.client, "set_event_hook", None)
+        if callable(setter):
+            setter(key, hook)
 
 
 __all__ = [

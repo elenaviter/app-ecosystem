@@ -24,6 +24,34 @@ need is kept here, with the client that implements it.
 
 ## Complete Topology
 
+### Opt-in Data Bus UUID timing
+
+Normal operation remains unchanged and timing is off by default. A separately
+authorized diagnostic window can configure this host with
+`pb host configure --message-timing-until <UTC-ISO-timestamp>`; the timestamp
+must be no more than 15 minutes away. `--message-timing-off` disables it.
+`pb host inspect` shows the typed `relay.message_timing` configuration.
+These commands do not themselves grant installation, restart or live tracing
+authority. An expired configuration stays disabled; reconnects do not renew it.
+
+The client observes only known `worker.heartbeat` and `control.pull` operations
+and reuses their existing transport UUIDs. Records contain a fixed schema and
+phase, operation, validated UUID, numeric attempt, UTC boundary, monotonic
+elapsed seconds and drop counters. They contain no payloads, headers, URLs,
+Card/session/actor/object identifiers, idempotency keys or raw exceptions.
+Attempt numbers distinguish local retries of the same UUID; ingress acceptance
+is not the final outcome, and caller resume is not wire-arrival time.
+
+All channels share a process-lifetime maximum of 100 sampled request attempts.
+The existing relay log owner receives records only after strict admission:
+512 bytes including a 128-byte formatter reserve and a cumulative 256 KiB
+capture budget, before its general 4 MiB queue. Queue refusal is counted, not
+retried or awaited. Budgets do not refill when a writer drains or a channel
+reconnects. No new task, thread, timer, executor or remote diagnostic write is
+created. Missing log owners drop observations; there is no synchronous fallback.
+The module `project_board.client.message_timing` owns these gates rather than
+the existing broader turn summaries in `relay_trace`.
+
 ```text
 REMOTE: KDCube deployment
 
@@ -329,6 +357,25 @@ remain unchanged. Notification locks remain held until each thread-backed call
 finishes, including on cancellation. Recovery scans that can move files and all
 store writes remain on the serialized store path. Synthetic isolation tests
 are not a live equal-load acceptance capture or authorization to restart a host.
+
+Coordinate readiness checks with an explicit worker selection enumerate only
+those workers' pending and leased directories, rather than walking every
+worker's queue and filtering afterward. An unfiltered check still sees every
+worker. Each check reads the current directory entries and timestamps; it
+caches no queue or authorization state. Deferred requests and expired-lease
+recovery keep the same readiness rules. This reduces per-channel scan work,
+but does not by itself establish live CPU usage or delivery under arbitrary
+host pressure.
+
+Coordinate requests still use the durable per-worker pending/leased queue.
+A channel already draining a request does not start a second drain; queued
+requests remain pending until that channel can serve them. Other channels are
+checked independently. The addressed-scan change does not alter request
+deadlines, lease ownership, expiry, or fresh Card/session dispatch fences.
+Bounded synthetic transport tests exercise queued bursts across 8 and 16
+sessions beside owned disk writes, with one transport deliberately held.
+Those tests establish retention and delivery within their explicit bounds,
+not a guarantee under arbitrary host saturation or network failure.
 
 ### Why the two runtimes wake differently
 

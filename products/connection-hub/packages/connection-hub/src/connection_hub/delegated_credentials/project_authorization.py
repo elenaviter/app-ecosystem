@@ -26,6 +26,9 @@ PROJECT_PERSON_CONTROL_BIND_PROJECT = "project.person_control.bind_project"
 PROJECT_CONTROL_CREATE = "project.control.create"
 # W638: the project host's own edit of its project Control and its agent Cards.
 PROJECT_CONTROL_UPDATE = "project.control.update"
+# W813 (W805, operator 2026-10-13: "i have to be able to delete the project"): a deleted project's own
+# Control P is retired by the project host's authenticated project.delete decision, and only by it.
+PROJECT_DELETE = "project.delete"
 PROJECT_AGENT_CARD_UPDATE = "project.agent_card.update"
 # W639: an agent Card joins, leaves or takes a profile in the project's own transaction.
 PROJECT_AGENT_CARD_ATTACH = "project.agent_card.attach"
@@ -73,6 +76,7 @@ PROJECT_PERSON_CONTROL_OPERATIONS = frozenset(
         PROJECT_PERSON_CONTROL_BIND_PROJECT,
         PROJECT_CONTROL_CREATE,
         PROJECT_CONTROL_UPDATE,
+        PROJECT_DELETE,
         PROJECT_AGENT_CARD_UPDATE,
         PROJECT_AGENT_CARD_ATTACH,
         PROJECT_AGENT_CARD_DETACH,
@@ -835,6 +839,7 @@ __all__ = [
     "LifecyclePlanStep",
     "MAX_LIFECYCLE_PLAN_STEPS",
     "PROJECT_CONTROL_CREATE",
+    "PROJECT_DELETE",
     "ProjectControlLocator",
     "PROJECT_BOARD_RESTARTING",
     "PROJECT_MEMBERSHIP_PROVIDER_NOT_READY",
