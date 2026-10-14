@@ -273,9 +273,12 @@ their Telegram.
   An existing agent Card gets them at its next Refresh, once a project admin
   has ticked them on the project's Control Card.
 - **Review requirement.** An item's `review_requirement.kind` is `qualified`
-  by default, or `operator`, which requires a person to accept or cancel it
-  (`work_review_operator_required` for an agent); its designated agent
-  reviewer may still return it. A requirement
+  by default, or `operator`, which a person closes: they set its Status to
+  Done and its Assignee to whoever worked it last (or set it to Cancelled).
+  An agent's `review.accept` or `review.cancel` on it is refused with
+  `work_review_operator_required`; an agent makes the person's status and
+  assignee edit only on their instruction, quoted on the item. Its designated
+  agent reviewer may still return it. A requirement
   carried on the assignment takes precedence over the item's. See
   [Source approval and final acceptance](#source-approval-and-final-acceptance).
 
@@ -382,7 +385,16 @@ Its path to Done:
    acceptor with `review.assign` (`operator` or `operator:<user id>`),
    carrying the integration evidence (merged commits and the deploy check),
    and sends a `decision` mail.
-4. The person obtains the live proof and accepts. The item becomes Done.
+4. The person checks the live result, writes what they found in Notes, sets
+   Status to Done and Assignee to whoever worked it last. The item becomes
+   Done.
+
+A person's item dialog has Notes, Status and Assignee, and no Accept: never
+tell a person to "press Accept" or that "only you can accept it". Name the
+edit they make, Status and Assignee (operator, 2026-10-14, W853: "i do not
+have any accept! stop talking in this terms. i have change status. and you
+too. simply put it to done and assign to one who made it last. this is how we
+change the status of tasks").
 
 There is one current Status and one Assignee throughout. Notes and the review
 history are evidence, not a second current owner. A worker's `completed`

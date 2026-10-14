@@ -2710,7 +2710,8 @@ def test_operator_steps_use_only_notes_status_and_assignee() -> None:
     # person changes Status and Assignee and writes Notes.
     collaboration = _words(_read("references/collaboration.md"))
     assert "**The person decides with Notes, Status and Assignee, and nothing else.**" in collaboration
-    assert "if it is fine, set **Status** to **Done** and save" in collaboration
+    # W853 (operator, 2026-10-14): "simply put it to done and assign to one who made it last".
+    assert "if it is fine, set **Status** to **Done**, set **Assignee** to whoever worked it last, and save" in collaboration
     assert "set **Status** to **Working**, choose the agent in **Assignee**, and say in Notes what differs" in collaboration
     assert "Never name a control the dialog does not have." in collaboration
     assert "a review verdict on the item, or a reply to the message" not in collaboration

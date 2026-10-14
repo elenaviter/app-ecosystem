@@ -23,8 +23,14 @@ Part of [coordinator](../coordinator.md).
    returned with `review.return` as usual. After the
    verified deploy, route the Review to the person with `review.assign`
    (`operator` or `operator:<user id>`, with the merged commits and the
-   deploy check) and a `decision` mail; their accept is final. Never accept
-   such an item as done on source alone (W414, 2026-09-30). [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
+   deploy check) and a `decision` mail. The person closes it: Status Done and
+   Assignee the worker who did it last, and that edit is final. Their dialog
+   has no Accept, so never write "press Accept" or "only you can accept" to
+   them; name the Status and Assignee edit (W853, operator, 2026-10-14: "i do
+   not have any accept! ... simply put it to done and assign to one who made
+   it last"). On their instruction, quoted on the item, you may make that same
+   edit for them. Never close such an item as done on source alone (W414,
+   2026-09-30). [Review](repo:app-ecosystem/products/project-board/docs/review.md#source-approval-and-final-acceptance)
    owns the rule.
 
    Name a change's delivery state with one of these words, each with its own
@@ -36,7 +42,7 @@ Part of [coordinator](../coordinator.md).
    | integrated | the head is on `main` and the merged tree is proven (Merge, step 3) |
    | installed | per host and provider, the `pb source status` and `pb procedure verify` receipts |
    | live | the activation receipt and its verification |
-   | operator-accepted | the operator's decision on the item |
+   | operator-closed | the person set Status Done on the item (or you did, on their quoted instruction) |
 5. `review.accept`, `review.return` and `review.cancel` take the item
    `work_ref` looked up from `project.plan.item`, its `expected_revision`, and
    an `idempotency_key` you generate for this decision. Return and cancel take
