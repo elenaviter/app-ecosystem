@@ -32,7 +32,8 @@ P_ID = control_card_id_for_issuer("application", PROJECT_REF, grantor_subject=CR
 def _agent_of(owner, *, holder):
     from test_project_person_control import _authority
     return dataclasses.replace(_authority(), access_id="agent-card-same-owner", grantor_subject=owner,
-        issuer_kind="", issuer_ref="", issuer_label="", source="agent", card_kind="agent", card_revision=1,
+        delegate_subject="integration:synthetic-agent", issuer_kind="", issuer_ref="", issuer_label="", source="agent",
+        card_kind="agent", card_revision=1,
         properties={}, control_card=ControlCardBinding(control_id=P_ID, issuer_ref=PROJECT_REF,
             issuer_kind="application", control_revision=1, holder_subject=holder))
 
@@ -84,6 +85,7 @@ async def test_a_same_owner_agent_save_plans_with_card_transactions_on(tmp_path,
     p = (await h.store.read_current_authority(subject_hash=subject_hash_for(CREATOR), access_id=p_id))[1]
     agent = dataclasses.replace(p, access_id="agent-card-same-owner", grantor_subject=CREATOR, issuer_kind="",
         issuer_ref="", issuer_label="", source="agent", card_kind="agent", card_revision=1, properties={},
+        delegate_subject="integration:synthetic-agent",
         control_card=ControlCardBinding(control_id=p_id, issuer_ref=PROJECT_REF, issuer_kind="application",
                                         control_revision=p.card_revision, holder_subject=""))
     await h.cards.commit(agent, subject_hash=subject_hash_for(CREATOR), expected_revision=0, now=int(time.time()))

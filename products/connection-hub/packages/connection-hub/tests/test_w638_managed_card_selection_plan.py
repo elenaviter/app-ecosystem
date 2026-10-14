@@ -31,6 +31,7 @@ def project_control():
 
 def agent_card(parent):
     return replace(parent, access_id="agent-card-1", grantor_subject="synthetic-owner", issuer_kind="", issuer_ref="",
+        delegate_subject="integration:synthetic-agent",
         source="agent", card_kind="agent", control_card=ControlCardBinding(control_id=parent.access_id,
             issuer_kind="application", issuer_ref=PROJECT, control_revision=parent.card_revision,
             holder_subject=CREATOR))

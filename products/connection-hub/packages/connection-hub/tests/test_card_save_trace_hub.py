@@ -110,7 +110,7 @@ def test_the_committed_hub_code_set_covers_the_card_save_modules():
     found = set()
     for name in ("managed_card_edit_forward.py", "project_authorization.py", "cards/lifecycle_plan_authorization.py",
                  "cards/lifecycle_plan_operation.py", "card_lifecycle_plan.py", "agent_lifecycle_plan.py",
-                 "existing_card_selection_plan.py"):
+                 "existing_card_selection_plan.py", "managed_card_selection_plan.py"):
         text = (root / name).read_text(encoding="utf-8")
         found.update(code for code in re.findall(
             r'"((?:card|agent|project|lifecycle|control|managed_card_edit|delegated|catalog|resource)_[a-z0-9_]+)"', text)
