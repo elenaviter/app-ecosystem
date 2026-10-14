@@ -216,6 +216,11 @@ class ProblemBoardDataBusClient:
     def connected(self) -> bool:
         return self.client.connected
 
+    @property
+    def connection_generation(self) -> int:
+        """Public socket epoch; display snapshots cannot span reconnects."""
+        return getattr(self.client, "connection_generation", 0)
+
     async def wait_until_connected(self, timeout_seconds: float) -> bool:
         """Wait for the socket's own reconnect, up to ``timeout_seconds``."""
 
