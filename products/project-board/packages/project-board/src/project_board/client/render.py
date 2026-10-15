@@ -2621,6 +2621,7 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
             item.get("updated_at") or item.get("item_updated_at") or "-",
         )
     )
+    lines.extend(_item_review_hold_lines(item))
     summary = _without_title_prefix(item.get("summary"), item.get("title"))
     description = " ".join(str(item.get("description") or "").split())
     # A summary that only restates the start of the description is not
@@ -2766,6 +2767,44 @@ def _render_plan_item(operation: str, item: Mapping[str, Any]) -> list[str]:
 # The item brief previews prose this far; `pb worker item-read` prints it whole.
 _ITEM_PROSE_BYTES = 320
 _ITEM_ACCEPTANCE_BYTES = 200
+
+
+def _item_review_hold_lines(item: Mapping[str, Any]) -> list[str]:
+    """The current hold beside item status/revision, not the full checklist."""
+
+    review = item.get("review")
+    hold = review.get("hold") if isinstance(review, Mapping) else None
+    if not isinstance(hold, Mapping) or not hold:
+        return ["review.hold: none"]
+    due_at = hold.get("due_at") or "not reported"
+    overdue = ""
+    try:
+        due = datetime.fromisoformat(str(due_at).replace("Z", "+00:00"))
+    except ValueError:
+        pass
+    else:
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=timezone.utc)
+        if due < datetime.now(timezone.utc):
+            overdue = " (overdue)"
+    lines = [
+        "review.hold: waiting_on {} · due_at {}{}".format(
+            hold.get("waiting_on") or "not reported", due_at, overdue,
+        )
+    ]
+    if _present(hold.get("set_at")):
+        lines[0] += f" · set_at {hold['set_at']}"
+    if _present(hold.get("reason")):
+        reason = " ".join(str(hold["reason"]).split())
+        label = (
+            "review.hold.reason preview (clipped)"
+            if len(reason.encode("utf-8")) > _ITEM_PROSE_BYTES
+            else "review.hold.reason"
+        )
+        lines.append(f"{label}: {_preview(reason, maximum_bytes=_ITEM_PROSE_BYTES)}")
+        # _clipped_item_fields includes review, and the item footer prints the
+        # full-read command, whenever any review value exceeds its prose bound.
+    return lines
 
 
 def _clipped_item_fields(item: Mapping[str, Any]) -> list[str]:
