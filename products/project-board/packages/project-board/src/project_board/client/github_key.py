@@ -212,9 +212,13 @@ async def issue_token(*, post: Post, url: str, bearer: str, project_ref: str, re
     if not isinstance(result, Mapping):
         result = {}
     if status == 404:
+        # The route has shipped since W371; a 404 now means Connection Hub is not loaded or not reachable (a
+        # platform restart, the public address down), so it is an availability failure the caller retries.
         raise GitHubKeyRefused(
             "github_key_route_missing",
-            "Connection Hub on this platform has no GitHub key route yet; it needs the W371 release.",
+            "Connection Hub did not answer the GitHub key route (HTTP 404). The platform may be restarting or "
+            "its public address may be down; retry in a minute.",
+            availability=True,
         )
     if status in (401, 403) and not result.get("error"):
         raise GitHubKeyRefused("github_key_card_refused", "Connection Hub refused this agent's Card.")

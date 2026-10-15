@@ -75,6 +75,16 @@ def test_refusals_are_named(status, body, code):
     assert refused.value.code == code
 
 
+def test_a_404_from_the_key_route_is_an_availability_failure_with_a_plain_message():
+    # 2026-10-15: a chat-proc restart answered 404 before the Hub bundle loaded, and the message blamed a missing
+    # W371 release, which shipped long ago. A 404 is now reported as Connection Hub not answering, to retry.
+    with pytest.raises(GitHubKeyRefused) as refused:
+        asyncio.run(issue_token(post=_post(404, {}, []), url="u", bearer="b", project_ref="p", repository="o/r"))
+    assert refused.value.code == "github_key_route_missing" and refused.value.availability is True
+    assert refused.value.message.startswith("Connection Hub did not answer the GitHub key route (HTTP 404).")
+    assert "retry in a minute" in refused.value.message and "W371" not in refused.value.message
+
+
 def test_the_credential_helper_answers_only_github_repositories_on_the_card():
     request = parse_credential_request("protocol=https\nhost=github.com\npath=example-org/app-ecosystem.git\n\n")
     assert credential_repository(request, ON_CARD) == "example-org/app-ecosystem"

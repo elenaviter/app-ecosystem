@@ -4932,8 +4932,8 @@ def _workspace_report_command(
 
 
 # Refusals meaning the Card has no GitHub key route at all (not a failure of one).
-_NO_CARD_KEY_ROUTE = frozenset({"github_not_linked", "commit_email_not_set", "repository_not_on_card",
-                                "github_key_route_missing"})
+# A 404 from the key route is an availability failure (a platform restart), retried, never one of these.
+_NO_CARD_KEY_ROUTE = frozenset({"github_not_linked", "commit_email_not_set", "repository_not_on_card"})
 
 
 def _fresh_card_identity(args: Any, project_ref: str) -> tuple[str, str]:
