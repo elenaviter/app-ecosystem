@@ -1578,7 +1578,11 @@ the legacy block is read exactly as before. `kind: https` is reserved for an
 external authority and refused as `authority_kind_unsupported` until it is
 implemented. An unknown name, kind, field, or role list is refused as
 `authority_name_unknown`, `authority_kind_invalid`, `authority_config_invalid`,
-or `authority_administrative_roles_invalid`.
+or `authority_administrative_roles_invalid`. A named `agent_card`,
+`control_card` or `credential_release` authority must name both `bundle_id`
+and `operation`; one missing either is refused as `authority_target_incomplete`.
+The legacy block's default operation names are never applied to a named
+authority.
 
 Missing actor membership, a non-administrative project role, mismatched
 evidence, and an unbound resolver return named denials. Live-person create,

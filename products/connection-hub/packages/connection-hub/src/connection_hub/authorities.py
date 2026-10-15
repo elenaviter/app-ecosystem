@@ -94,6 +94,13 @@ class AuthorityConfig:
         if self.kind != AUTHORITY_KIND_APP_OPERATION:
             raise AuthorityConfigError("authority_kind_unsupported")
 
+    def require_callable(self) -> None:
+        """A port's authority names both its bundle and its operation; nothing is defaulted."""
+
+        self.require_supported()
+        if not (self.bundle_id and self.operation):
+            raise AuthorityConfigError("authority_target_incomplete")
+
 
 def authorities_from_mapping(value: Any) -> dict[str, AuthorityConfig]:
     """Parse the descriptor's ``authorities`` block; unknown names are refused."""

@@ -69,7 +69,9 @@ def _named_authorities(entrypoint: Any) -> dict[str, AuthorityConfig] | None:
 def _named_authority(entrypoint: Any, name: str) -> tuple[bool, AuthorityConfig | None]:
     """(True, the authority or None) when authorities are named, (False, None) for legacy.
 
-    Raises AuthorityConfigError for an invalid block or a kind this release cannot call.
+    Raises AuthorityConfigError for an invalid block, a kind this release cannot
+    call, or a named authority missing its bundle or operation: the legacy
+    default operation names apply to the legacy block only.
     """
 
     named = _named_authorities(entrypoint)
@@ -77,7 +79,7 @@ def _named_authority(entrypoint: Any, name: str) -> tuple[bool, AuthorityConfig 
         return False, None
     authority = named.get(name)
     if authority is not None:
-        authority.require_supported()
+        authority.require_callable()
     return True, authority
 
 

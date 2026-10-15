@@ -156,3 +156,26 @@ def test_invalid_authority_configuration_is_refused_by_name(block, reason) -> No
 def test_roles_read_the_same_as_the_legacy_block() -> None:
     parsed = authorities_from_mapping({"membership": {"administrative_roles": "Owner, admin  owner"}})
     assert parsed["membership"].administrative_roles == ("admin", "owner")
+
+
+@pytest.mark.parametrize("target", [{"bundle_id": BOARD}, {"operation": "project_agent_card_authorize"}, {}])
+def test_an_incomplete_named_authority_is_refused_never_given_a_default_operation(target) -> None:
+    """Review of #819: a named port authority without its operation bound the legacy default."""
+
+    incomplete = {"authorities": {name: dict(target) for name in ("agent_card", "control_card", "credential_release")}}
+    module = _module()
+    entrypoint = _entrypoint(incomplete)
+    for port in (module.descriptor_agent_card_port(entrypoint), module.descriptor_control_card_port(entrypoint)):
+        assert getattr(port, "_bundle_id", None) is None
+        assert port._reason == "authority_target_incomplete"
+    github = module.descriptor_github_authorizer(entrypoint, resolve_secret=_secret)
+    answer = asyncio.run(github(access_id="a", grantor_subject="s", project_ref="p", repository="r"))
+    assert answer["error"] == "authority_target_incomplete"
+
+
+def test_the_legacy_block_keeps_its_default_operations() -> None:
+    legacy_defaults = {"project_membership": {"provider": {"bundle_id": BOARD, "peer_proof_secret_ref": SECRET_REF}}}
+    bindings = _bindings(legacy_defaults)
+    assert bindings["agent_card"] == (BOARD, "project_agent_card_authorize")
+    assert bindings["control_card"] == (BOARD, "project_control_card_authorize")
+    assert bindings["credential_release"][:3] == (BOARD, "project_agent_github_authorize", SECRET_REF)
