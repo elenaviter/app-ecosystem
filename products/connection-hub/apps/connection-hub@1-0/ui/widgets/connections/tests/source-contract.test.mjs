@@ -318,10 +318,10 @@ test('an ungranted operation offers one atomic once-or-always grant, chosen besi
   // An existing grant with no stored policy runs every time. The compact
   // live-policy control shows that effective state directly (W872: through
   // policySwitchView, which also shows a click's pending mode at once).
-  assert.match(controls, /policySwitchView\(\n\s*policy, pendingMode, busy, onceDisabled,/)
+  assert.match(controls, /policySwitchView\(\n\s*policy, draftMode, busy, onceDisabled,/)
   const choice = source('src/features/delegatedAccess/invocationChoice.ts')
-  assert.match(choice, /const mode = policy\?\.mode \|\| null;/)
-  assert.match(choice, /const shown: InvocationMode = pendingMode \|\| mode \|\| 'always';/)
+  assert.match(choice, /const stored: InvocationMode = policy\?\.mode \|\| 'always';/)
+  assert.match(choice, /const shown: InvocationMode = draftMode \|\| stored;/)
 
   const css = source('src/styles.css')
   for (const cls of ['.outer-operation-editor--policy', '.tool-choice', '.pending-operation-policy']) {

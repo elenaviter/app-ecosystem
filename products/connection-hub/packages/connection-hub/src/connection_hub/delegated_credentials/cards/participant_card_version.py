@@ -582,8 +582,10 @@ class CardVersionOperation:
             bearing = (update["kind"] == "reselect_agent_card"
                        or update["kind"] == "reselect" and original.issuer_kind == PROJECT_PERSON_MY_CARD_ISSUER_KIND)
             try:
+                # W872: a held operation's switched mode travels with the save and is its own policy effect.
                 modes = added_invocation_modes(original=original, candidate=candidate, config=config,
-                                               modes=update.get("invocation_modes"), policy_bearing=bearing)
+                                               modes=update.get("invocation_modes"), policy_bearing=bearing,
+                                               held_modes=True)
             except WholeCardSaveRefused as exc:
                 raise CardVersionRefused(exc.reason) from None
             if not modes:

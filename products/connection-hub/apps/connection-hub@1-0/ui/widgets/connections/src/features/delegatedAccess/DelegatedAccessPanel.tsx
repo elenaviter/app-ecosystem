@@ -88,6 +88,7 @@ import {
   submittedInvocationModes,
   withDefaultInvocationModes,
   type InvocationMode,
+  heldModeChanges,
 } from './invocationChoice';
 import {
   isBroadSecretResource,
@@ -142,7 +143,6 @@ import {
   loadDelegatedAccess,
   renewDelegatedAccess,
   revokeDelegatedAccess,
-  setDelegatedInvocationPolicy,
   updateAgentCapabilitySelection,
   updateDelegatedAccess,
   loadProjectAgentCard,
@@ -322,11 +322,6 @@ function PendingStatus({ status }: { status: PendingSelectionStatus }) {
       ? 'pending'
       : 'required';
   return <span className="pending-selection-status" data-state={state}>{status}</span>;
-}
-
-/** W872: one key per held operation whose mode a click is writing. */
-export function policyModeKey(accessId: string, resource: string, operation: string): string {
-  return `${accessId}\n${resource}\n${operation}`;
 }
 
 function invocationPolicyFor(
@@ -1238,8 +1233,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
   // focused transaction (see invocationChoice.ts): set afterwards, the
   // operation would run as "always" until the policy call landed.
   const [editInvocationModes, setEditInvocationModes] = useState<Record<string, InvocationMode>>({});
-  // W872: the mode a click on a held operation is writing, shown at once; cleared when Connection Hub answers.
-  const [pendingPolicyModes, setPendingPolicyModes] = useState<Record<string, InvocationMode>>({});
   // Resources this edit adds to or removes from the card, and the changed
   // descriptors it accepts. All three are submitted with Save; nothing
   // changes authority until then.
@@ -2976,38 +2969,6 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     ));
   };
 
-  const setOperationInvocationPolicy = async (
-    item: DelegatedAccessRecord,
-    resource: string,
-    operation: string,
-    mode: 'always' | 'once',
-    expectedRevision: number,
-  ) => {
-    // W872: the switch commits on click (no Save). It shows the chosen mode at once, and a refusal is shown,
-    // never swallowed: before, a refused or slow write looked like a dead switch and Save said "Nothing to save".
-    const key = policyModeKey(item.access_id, resource, operation);
-    setPendingPolicyModes((current) => ({ ...current, [key]: mode }));
-    setEditActionError('');
-    try {
-      await dispatch(setDelegatedInvocationPolicy({
-        accessId: item.access_id,
-        resource,
-        operation,
-        mode,
-        expectedRevision,
-      })).unwrap();
-    } catch (error) {
-      setEditActionError(`${operation} was not switched to ${mode === 'once' ? 'Once' : 'Every time'}: `
-        + `Connection Hub did not apply it (${String(error || 'request refused')}).`);
-    } finally {
-      setPendingPolicyModes((current) => {
-        const next = { ...current };
-        delete next[key];
-        return next;
-      });
-    }
-  };
-
   const toggleEditNamedServiceOperation = (
     resource: string,
     namespace: string,
@@ -3290,6 +3251,20 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     }
   };
 
+  // W872: the held operations whose mode this edit switched; sent with Save and listed before it.
+  const editHeldModeChanges = (item: DelegatedAccessRecord) => {
+    if (item.source === 'control') return [];
+    const held: Record<string, string[]> = {};
+    Object.entries(editResourceOperations).forEach(([resource, operations]) => {
+      if (resource === APPLICATION_API_RESOURCE) return;
+      const granted = new Set(editGrantedOperations(item, resource));
+      held[resource] = (operations || []).filter((operation) => granted.has(operation));
+    });
+    return heldModeChanges(
+      (resource, operation) => invocationPolicyFor(item, resource, operation), held, editInvocationModes,
+    );
+  };
+
   const saveEdit = async (item: DelegatedAccessRecord) => {
     // W587: a stale edit is refused here; no request leaves the browser.
     if (staleEdit(editBaseRevision.current, item.card_revision, editRefusedStale)) {
@@ -3370,6 +3345,11 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
     const invocationModes: Record<string, Record<string, InvocationMode>> = {};
     focusedAdditions.forEach(({ resource, operation, mode }) => {
       invocationModes[resource] = { ...(invocationModes[resource] || {}), [operation]: mode };
+    });
+    // W872 (operator, 2026-10-15: "only when i press save someting can be asked"): the mode the person switched on
+    // an operation the Card keeps travels with this Save; the server writes it as the save's own policy effect.
+    editHeldModeChanges(item).forEach(({ resource, operation, to }) => {
+      invocationModes[resource] = { ...(invocationModes[resource] || {}), [operation]: to };
     });
     const savedResourceOperations = withManagedGrantsAsHeld(
       Object.fromEntries(Object.entries(splits).map(([resource, split]) => [
@@ -4606,14 +4586,13 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                       <InvocationPolicyControl
                         operation={operation.name}
                         policy={policy}
-                        pendingMode={pendingPolicyModes[policyModeKey(item.access_id, resource, operation.name)]}
+                        draftMode={editInvocationModes[`${resource}:${operation.name}`]}
                         busy={busy}
                         onceDisabled={isBroadSecretResource(resource)}
-                        onSet={(mode, expectedRevision) => {
-                          void setOperationInvocationPolicy(
-                            item, resource, operation.name, mode, expectedRevision,
-                          );
-                        }}
+                        // W872 (operator, 2026-10-15): a click changes only the draft; Save sends it.
+                        onSet={(mode) => setEditInvocationModes((current) => ({
+                          ...current, [`${resource}:${operation.name}`]: mode,
+                        }))}
                       />
                     ) : selected ? (
                       // Not granted yet: the choice travels with the grant (saveEdit) so
@@ -5636,6 +5615,15 @@ export function DelegatedAccessPanel({ openParams }: { openParams?: Record<strin
                 <button className="btn btn-ghost" type="button" disabled={busy} onClick={() => { void reloadEdit(record); }}>
                   Reload this Card
                 </button>
+              </div>
+            ) : null}
+            {editHeldModeChanges(record).length ? (
+              // W872: a switched mode is a pending change like a tick; Save sends it, Cancel drops it.
+              <div className="notice pending-mode-changes" role="status">
+                Changes when you press Save:{' '}
+                {editHeldModeChanges(record).map(({ operation, from, to }) => (
+                  `${operation}: ${from === 'once' ? 'Once' : 'Every time'} → ${to === 'once' ? 'Once' : 'Every time'}`
+                )).join('; ')}
               </div>
             ) : null}
             {editSaveNotice && !editActionError ? (

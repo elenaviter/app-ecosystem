@@ -2,8 +2,8 @@
  * The two invocation-policy controls of a card, each naming the operation it
  * belongs to so no control can be read as its neighbour's.
  *
- * `InvocationPolicyControl` changes the LIVE policy of an operation the card
- * already grants (one server call per click, with the policy's revision).
+ * `InvocationPolicyControl` switches the policy of an operation the card
+ * already grants in the edit draft; Save writes it (W872: no call on a click).
  * `OperationInvocationChoice` records the policy for an operation that is NOT
  * granted yet; the grant and the policy are then committed together by the
  * focused grant transaction. The two never render for the same operation.
@@ -11,45 +11,45 @@
 import type { DelegatedInvocationPolicy } from '../../api/types';
 import { INVOCATION_MODE_TEXT, policySwitchView, type InvocationMode } from './invocationChoice';
 
-/** W872: a click saves the mode at once (no Save needed); the person is told so. */
-export const POLICY_SAVED_ON_CLICK = 'Saved as soon as you click; no Save needed.';
+/** W872: a click only changes the draft; the mode is written when the person presses Save. */
+export const POLICY_SAVED_ON_SAVE = 'Changes when you press Save.';
 
 export function InvocationPolicyControl({
   operation,
   policy,
-  pendingMode,
+  draftMode,
   busy,
   onceDisabled = false,
   onSet,
 }: {
   operation: string;
   policy?: DelegatedInvocationPolicy;
-  /** W872: the mode a click is writing now; shown at once, before Connection Hub answers. */
-  pendingMode?: InvocationMode;
+  /** W872: the mode the person switched to in this edit, not saved yet. */
+  draftMode?: InvocationMode;
   busy: boolean;
   onceDisabled?: boolean;
-  onSet: (mode: InvocationMode, expectedRevision: number) => void;
+  /** Records the choice in the edit draft. It makes no request (operator, 2026-10-15). */
+  onSet: (mode: InvocationMode) => void;
 }) {
-  const { shown, saving, alwaysDisabled, onceDisabled: onceOff, used } = policySwitchView(
-    policy, pendingMode, busy, onceDisabled,
+  const { shown, changed, alwaysDisabled, onceDisabled: onceOff, used } = policySwitchView(
+    policy, draftMode, busy, onceDisabled,
   );
-  const onceAvailable = !saving && policy?.mode === 'once' && policy?.remaining === 1;
+  const onceAvailable = !draftMode && policy?.mode === 'once' && policy?.remaining === 1;
   return (
     <span className="operation-policy" data-operation={operation}>
       <span
-        className={`invocation-policy-control${saving ? ' invocation-policy-control--saving' : ''}`}
+        className={`invocation-policy-control${changed ? ' invocation-policy-control--changed' : ''}`}
         role="group"
         aria-label={`Invocation policy for ${operation}`}
-        aria-busy={saving}
       >
         <button
           type="button"
           className={shown === 'always' ? 'active' : ''}
           aria-pressed={shown === 'always'}
           aria-label={`${operation}: always`}
-          title={`Allow every ${operation} call while the card is active. ${POLICY_SAVED_ON_CLICK}`}
+          title={`Allow every ${operation} call while the card is active. ${POLICY_SAVED_ON_SAVE}`}
           disabled={alwaysDisabled}
-          onClick={() => onSet('always', policy?.revision || 0)}
+          onClick={() => onSet('always')}
         >
           Every time
         </button>
@@ -60,14 +60,14 @@ export function InvocationPolicyControl({
           aria-label={`${operation}: once`}
           title={onceDisabled
             ? 'Namespace and all-scope secret authority is reusable; choose Always or grant one exact key'
-            : `${onceAvailable ? `One ${operation} invocation remains` : `Allow the next ${operation} invocation once`}. ${POLICY_SAVED_ON_CLICK}`}
+            : `${onceAvailable ? `One ${operation} invocation remains` : `Allow the next ${operation} invocation once`}. ${POLICY_SAVED_ON_SAVE}`}
           disabled={onceOff}
-          onClick={() => onSet('once', policy?.revision || 0)}
+          onClick={() => onSet('once')}
         >
           Once
         </button>
-        {saving ? (
-          <small className="invocation-policy-control__saving" aria-live="polite">saving…</small>
+        {changed ? (
+          <small className="invocation-policy-control__changed">changed, not saved</small>
         ) : used ? (
           <small>used</small>
         ) : null}

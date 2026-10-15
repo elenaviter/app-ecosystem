@@ -2633,7 +2633,8 @@ class AutomationAccessService:
         """Fresh pins -> concrete selection -> own diff. No prepare, marker or PB call."""
         from .whole_card_save import (
             WholeCardSaveRefused, check_card_pin, check_catalog_pin, normalize_selection,
-            same_selection, added_invocation_modes, checked_properties,
+            same_selection, added_invocation_modes, checked_properties, held_mode_changes,
+            without_same_held_modes,
         )
         try:
             loaded = await self._load_record_any_state(record.access_id, grantor_subject=record.grantor_subject)
@@ -2656,8 +2657,24 @@ class AutomationAccessService:
         candidate = replace_fields(record, resource_operations=selected.get(
             "resource_operations", record.resource_operations))
         modes = added_invocation_modes(original=record, candidate=candidate, config=config,
-            modes=invocation_modes, policy_bearing=kind in {"person_my", "agent_card", "caller_card"})
-        unchanged = same_selection(record, selected, label=label, composition_mode=composition_mode)
+            modes=invocation_modes, policy_bearing=kind in {"person_my", "agent_card", "caller_card"},
+            held_modes=True)
+        if held_mode_changes(record, modes):
+            # W872 (Mint's review): an entry equal to the stored policy changes nothing and is dropped. One local
+            # read of this Card's policies, only when a held mode was sent; no Connection Hub round trip.
+            policies = getattr(self, "_invocation_policies", None)
+            if policies is None:
+                raise WholeCardSaveRefused("invocation_policy_unavailable", 503)
+            from connection_hub.invocation_policy import SURFACE_OUTER
+            stored = await policies.list_for_card(owner_subject=record.grantor_subject, access_id=record.access_id)
+            modes = without_same_held_modes(record, modes, {
+                (policy.authority.resource, policy.authority.operation): (policy.mode, policy.state)
+                for policy in stored
+                if policy.authority.surface == SURFACE_OUTER
+                and not policy.authority.provider_id and not policy.authority.account_id})
+        # W872: a mode the person switched on a held operation is a change of its own.
+        unchanged = (same_selection(record, selected, label=label, composition_mode=composition_mode)
+                     and not held_mode_changes(record, modes))
         if unchanged and accepted_operations:
             from .agent_capability_control import preserve_descriptor_acceptance
             from .catalog.descriptors import next_resource_acceptance
@@ -6654,7 +6671,7 @@ class AutomationAccessService:
                 # the submitted map. Every policy is a reserve-only STAGE effect.
                 local_modes = added_invocation_modes(
                     original=existing, candidate=updated, config=catalog_config,
-                    modes=local_modes, policy_bearing=not _record_is_credentialless(existing))
+                    modes=local_modes, policy_bearing=not _record_is_credentialless(existing), held_modes=True)
                 if local_modes:
                     save_effects = await self._oauth_policy_effects(
                         grantor=grantor_subject, candidate=updated,

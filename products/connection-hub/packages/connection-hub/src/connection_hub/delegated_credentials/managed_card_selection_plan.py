@@ -95,7 +95,7 @@ async def build_managed_card_selection_update(
     host: Any, *, original: CardAuthority, kind: str, selection: Mapping[str, Any], active: Any,
     decision: ProjectAuthorizationDecision, project_ref: str, actor_subject: str, request_id: str, now: int,
     accepted_operations: Mapping[str, Any] | None = None, composition_mode: str | None = None,
-    label: str | None = None,
+    label: str | None = None, allow_unchanged: bool = False,
 ) -> dict[str, Any]:
     """One exact P or agent-Card update from a host-authorized selection, without a write (W723: and its acceptance).
 
@@ -158,7 +158,8 @@ async def build_managed_card_selection_update(
         raise _refuse("card_plan_update_scope_invalid")  # an edit never moves a Card in the hierarchy
     before, after = original.to_dict(), candidate.to_dict()
     after["card_revision"] = before["card_revision"]
-    if after == before:
+    if after == before and not allow_unchanged:
+        # W872: see build_existing_card_selection_update.
         raise _refuse("card_plan_selection_unchanged")
     refusal = candidate_shape_refusal("update", original.to_dict(), candidate.to_dict())
     if refusal is not None:

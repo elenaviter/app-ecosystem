@@ -107,28 +107,37 @@ def normalize_selection(original: Any, selection: Mapping[str, Any], *, config: 
 
 
 def added_invocation_modes(*, original: Any, candidate: Any, config: Any, modes: Any,
-                           policy_bearing: bool) -> dict[str, dict[str, str]]:
+                           policy_bearing: bool, held_modes: bool = False) -> dict[str, dict[str, str]]:
     """Exactly one choice per net added policy-governed outer operation.
 
     Controls, the all-application API resource, and catalog application-owned
-    operations carry no invocation modes. Held, removed and unknown operation
-    keys refuse; they cannot reset/replenish a policy as a Save side effect.
+    operations carry no invocation modes. Removed and unknown operation keys
+    refuse. A held operation's key refuses too, unless ``held_modes``: W872
+    (operator, 2026-10-15: "when i click through the card during edit THIS MUST
+    NOT CAUSE NO ANY CALLS! ... only when i press save someting can be asked"),
+    the Card editor sends the mode the person switched on a held operation with
+    the Save, and it is written as that save's own policy effect. The editor
+    sends only the held operations whose mode the person changed.
     """
     try:
         submitted = invocation_modes_part(modes)
     except ManagedCardEditError as exc:
         raise WholeCardSaveRefused(exc.reason, exc.status) from None
     added = {}
+    held = set()
     if policy_bearing:
         for resource, names in candidate.resource_operations.items():
             if resource == "*":  # APPLICATION_API_RESOURCE: the application decides the role
                 continue
             row = config.card_selector_config(resource)
             owned = managed_operations(row)
-            new = sorted(set(names) - set(original.resource_operations.get(resource, ())) - owned)
+            kept = set(original.resource_operations.get(resource, ()))
+            new = sorted(set(names) - kept - owned)
             if new:
                 added[resource] = new
-    expected = {(resource, name) for resource, names in added.items() for name in names}
+            if held_modes:
+                held |= {(resource, name) for name in set(names) & kept - owned}
+    expected = {(resource, name) for resource, names in added.items() for name in names} | held
     supplied = {(resource, name) for resource, names in submitted.items() for name in names}
     if supplied - expected:
         raise WholeCardSaveRefused("invocation_modes_invalid", 400)
@@ -140,6 +149,30 @@ def added_invocation_modes(*, original: Any, candidate: Any, config: Any, modes:
             "Choose Once or Every time beside every added permission; your draft is kept.",
             missing_invocation_modes=missing)
     return submitted
+
+
+def held_mode_changes(original: Any, modes: Mapping[str, Any]) -> bool:
+    """W872: a submitted mode for an operation the Card already holds is a change of its own (a mode-only Save is
+    not "Nothing to save"). Pass modes through ``without_same_held_modes`` first."""
+    return any(name in set(original.resource_operations.get(resource, ()))
+               for resource, names in (modes or {}).items() for name in names)
+
+
+def without_same_held_modes(original: Any, modes: Mapping[str, Any],
+                            current: Mapping[tuple[str, str], tuple[str, str]]) -> dict[str, dict[str, str]]:
+    """W872 (Mint's review): drop a held operation's submitted mode that equals its stored policy, so the server never
+    builds a revision or re-arms Once from an entry that changes nothing. ``current`` maps (resource, operation) to
+    the stored (mode, state); no stored policy means Every time. Once on a consumed Once is a re-arm, kept."""
+    kept: dict[str, dict[str, str]] = {}
+    for resource, names in (modes or {}).items():
+        held = set(original.resource_operations.get(resource, ()))
+        for name, mode in names.items():
+            if name in held:
+                stored_mode, stored_state = current.get((resource, name), ("always", "available"))
+                if mode == stored_mode and not (mode == "once" and stored_state == "consumed"):
+                    continue
+            kept.setdefault(resource, {})[name] = mode
+    return kept
 
 
 def same_selection(original: Any, selection: Mapping[str, Any], *, label: Any = None,

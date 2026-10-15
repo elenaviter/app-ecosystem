@@ -235,25 +235,48 @@ export function submittedInvocationModes(
 }
 
 
-/** W872: what the held-operation switch shows and allows. The mode a click is writing (pending) is shown at once,
- *  before Connection Hub answers, and both buttons wait for that answer. */
+/** W872 (operator, 2026-10-15: "when i click through the card during edit THIS MUST NOT CAUSE NO ANY CALLS! i must
+ *  simply be able normally pick what i need! only when i press save someting can be asked"): what the switch of an
+ *  operation the Card already holds shows and allows. A click only records the draft mode; Save sends it. */
 export function policySwitchView(
   policy: { mode?: InvocationMode | null; remaining?: number | null } | null | undefined,
-  pendingMode: InvocationMode | undefined,
+  draftMode: InvocationMode | undefined,
   busy: boolean,
   onceBlocked = false,
-): { shown: InvocationMode; saving: boolean; alwaysDisabled: boolean; onceDisabled: boolean; used: boolean } {
-  const mode = policy?.mode || null;
-  const shown: InvocationMode = pendingMode || mode || 'always';
-  const saving = Boolean(pendingMode);
-  const onceAvailable = !saving && mode === 'once' && policy?.remaining === 1;
+): { shown: InvocationMode; changed: boolean; alwaysDisabled: boolean; onceDisabled: boolean; used: boolean } {
+  const stored: InvocationMode = policy?.mode || 'always';
+  const used = policy?.mode === 'once' && policy?.remaining === 0;
+  const shown: InvocationMode = draftMode || stored;
+  // A used Once is re-armed by choosing Once again; an armed one is already what Once means.
+  const onceIsCurrent = shown === 'once' && !(used && !draftMode);
   return {
     shown,
-    saving,
-    alwaysDisabled: busy || saving || shown === 'always',
-    onceDisabled: busy || saving || onceAvailable || onceBlocked,
-    used: !saving && mode === 'once' && policy?.remaining === 0,
+    changed: Boolean(draftMode) && (draftMode !== stored || (draftMode === 'once' && used)),
+    alwaysDisabled: busy || shown === 'always',
+    onceDisabled: busy || onceBlocked || onceIsCurrent,
+    used: used && !draftMode,
   };
+}
+
+/** W872: the held operations whose mode the draft changes, to send with Save and to list before it. A draft equal to
+ *  the stored mode is no change, except Once on a used Once (a re-arm). */
+export function heldModeChanges(
+  policyOf: (resource: string, operation: string) => { mode?: InvocationMode | null; remaining?: number | null } | undefined,
+  held: Record<string, string[]>,
+  draft: Record<string, InvocationMode>,
+): Array<{ resource: string; operation: string; from: InvocationMode; to: InvocationMode }> {
+  const changes: Array<{ resource: string; operation: string; from: InvocationMode; to: InvocationMode }> = [];
+  Object.entries(held).forEach(([resource, operations]) => {
+    operations.forEach((operation) => {
+      const to = draft[`${resource}:${operation}`];
+      if (!to) return;
+      const policy = policyOf(resource, operation);
+      const from: InvocationMode = policy?.mode || 'always';
+      const rearm = to === 'once' && policy?.mode === 'once' && policy?.remaining === 0;
+      if (to !== from || rearm) changes.push({ resource, operation, from, to });
+    });
+  });
+  return changes;
 }
 
 /** W872: a written policy replaces its row on every copy of the Card the page holds: the listed one and the
