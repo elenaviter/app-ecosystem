@@ -254,3 +254,39 @@ def test_issuing_the_key_records_the_owners_login_and_email_never_the_token(tmp_
     recorded = field.read_github_identity(identity.worker_name, PROJECT_ID)
     assert (recorded["login"], recorded["commit_email"]) == ("owner", OWNER_EMAIL)
     assert "ghu_secret" not in str(recorded)
+
+
+def test_a_404_from_the_key_route_refuses_set_identity_and_writes_nothing(tmp_path, monkeypatch):
+    # AE #813 (op-assist's note): a 404 is Connection Hub not answering (a platform restart), an availability
+    # failure. With no Card-stamped clone, --set-identity used to fall back to the project's email on it; it now
+    # refuses for a retry and writes no identity at all.
+    from project_board.client.github_key import issue_token
+
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "no-global"))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    identity, field, config, workspace = _host(tmp_path, monkeypatch)
+    remote = _remote(tmp_path / "remotes", "applications")
+    board = IdentityBoard(identity.worker_name, remote)
+    asyncio.run(relay.ProblemBoardHostRelayAdapter(config=config, field=field, client=board).poll_attendances_once())
+    field.sync_project_repositories(
+        PROJECT_ID,
+        [{"alias": "applications", "url": "git@github.com:example-org/applications.git", "role": "work"}],
+        revision=9,
+        commit_identity_email=EMAIL,
+    )
+    _git("clone", "-q", str(remote), str(workspace / "applications"), cwd=tmp_path)
+
+    async def not_found(url, payload, bearer):
+        return 404, {}
+
+    async def issue(self, repository):
+        return await issue_token(post=not_found, url="u", bearer="b", project_ref="work:project:" + PROJECT_ID,
+                                 repository=repository)
+
+    monkeypatch.setattr(cli._GitHubKeySession, "_issue", issue)  # noqa: SLF001
+    with pytest.raises(DomainError) as refused:
+        _cli(identity, "workspace-report", "--project-ref", "work:project:" + PROJECT_ID, "--set-identity")
+    assert refused.value.code == "identity_refresh_unavailable"
+    assert "github_key_route_missing" in str(refused.value)
+    for key in ("user.email", "user.name", "pb.githubAccount", "pb.projectRef"):
+        assert _config(workspace / "applications", key) == "", key
