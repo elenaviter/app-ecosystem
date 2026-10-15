@@ -75,8 +75,13 @@ existing decision authority remains available.
 A host that never enabled transactions has no such markers and is unaffected.
 
 CardVersion Saves use their own completion proof, not legacy Card receipts.
+The Hub binds this path directly to its guarded Card store, including the
+scope's activated PostgreSQL pointer/marker rows. It runs before constructing
+legacy persistence, participant callers or a decision coordinator: unavailable
+legacy authority must not block a completed CardVersion Save. Bare 64-hex
+legacy transaction ids still use their original decision-authority route.
 For a `COMMITTED` policy marker, the settler follows at most 64 immutable
-`version_record.base` links from that Card's current version, by exact name,
+`version_record.base` predecessor links from that Card's current version, by exact name,
 to find the marker's transaction. It derives OUTCOME's exact link, time and
 caller/scope binding from that version. The full Card checksum, revision,
 owner and access id must agree, the authoritative transaction marker must be
@@ -89,9 +94,14 @@ A request-supplied transaction-shaped change id or `COMMITTED` state alone
 is not proof. A change id can be request-supplied: retiring an already-applied
 COMMITTED marker applies no undecided effect, even for a forged id. PREPARED
 markers, incomplete publication, mismatched or missing evidence, and a
-transaction beyond the 64-version bound remain undecided. Recovery reads
-exact objects only and retains no additional Card
-snapshot, effect history or tombstone.
+transaction beyond the 64-predecessor bound remain undecided. For historical
+versions with no record or base, recovery may enumerate only that Card's own
+revision names, refusing beyond 256 directory entries or ambiguous revision
+numbers. It reads records only within the same 64-predecessor range and then
+runs the identical exact publication proof. Direct Card-service writes,
+including OAuth issuance/rotation, now record their own timestamp and base
+link, never the preceding version's transaction id. No additional Card
+snapshot, effect history or tombstone is retained.
 
 **How the Hub calls a host's signed operation.** This applies to plan
 authorization, the transaction authority fetch (`cards/authority_transport.py`)

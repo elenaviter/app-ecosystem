@@ -680,7 +680,8 @@ class DelegatedCardService:
                         expected_revision=expected_revision,
                     )
                     pointer = await self._commit_durable(
-                        authority=authority, subject_hash=subject_hash, mutation_id=mutation_id
+                        authority=authority, subject_hash=subject_hash, mutation_id=mutation_id,
+                        base=current[0] if current else None,
                     )
                 try:
                     installed = await self._cache.commit_projection(
@@ -1388,7 +1389,7 @@ class DelegatedCardService:
                     expected_revision=expected_revision,
                 )
                 pointer = await self._commit_durable(
-                    authority=revoked, subject_hash=subject_hash, mutation_id=mutation_id
+                    authority=revoked, subject_hash=subject_hash, mutation_id=mutation_id, base=current[0],
                 )
                 try:
                     installed = await self._cache.commit_tombstone(
@@ -1826,12 +1827,17 @@ class DelegatedCardService:
         )
 
     async def _commit_durable(
-        self, *, authority: CardAuthority, subject_hash: str, mutation_id: str
+        self, *, authority: CardAuthority, subject_hash: str, mutation_id: str,
+        base: CardCurrentPointer | None,
     ) -> CardCurrentPointer:
         moment = datetime.now(timezone.utc)
         try:
             pointer = await self._store.write_revision(
-                subject_hash=subject_hash, authority=authority, updated_at=moment
+                subject_hash=subject_hash, authority=authority, updated_at=moment,
+                # This direct writer (including OAuth issuance/rotation) owns
+                # its record. Never copy a previous CardVersion txn identity.
+                record={"txn": "", "base": base.revision_name if base else None,
+                        "at": moment.isoformat(), "actor": {"kind": "card-service"}},
             )
             await self._store.advance_current(subject_hash=subject_hash, pointer=pointer)
         except Exception as exc:
