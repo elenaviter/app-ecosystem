@@ -90,8 +90,11 @@ class PostgresAdmissionReplayClaimStore:
         )
 
     async def ensure_schema(self) -> None:
+        # W880: concurrent loads serialize schema setup (critical-section-README, pg_advisory_xact_lock).
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await connection.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                                         f"{self.schema}:connection-hub-admission-replay-schema")
                 await connection.execute(admission_replay_schema_sql(self.schema))
 
     async def claim(

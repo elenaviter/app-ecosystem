@@ -84,7 +84,10 @@ class PostgresCardHandleMetadataStore:
         self._bindings = PostgresCardHandleBindingAuthority(records=self._records)
 
     async def ensure_schema(self) -> None:
+        # W880: concurrent loads serialize schema setup (critical-section-README, pg_advisory_xact_lock).
         async with self._pool.acquire() as connection, connection.transaction():
+            await connection.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                                     f"{self.schema}:connection-hub-card-handle-schema")
             await connection.execute(card_handle_schema_sql(self.schema))
 
     async def read_current(self, access_id: str) -> CardHandleMetadata | None:
