@@ -30,6 +30,24 @@ def snapshot():
             "heartbeat_at": STAMP, "updated_at": STAMP}
 
 
+def board_shaped_snapshot():
+    """The real response's volatile paths, with synthetic display values only."""
+    value = snapshot()
+    disk = {"reported_at": STAMP, "host_free_bytes": 123456789012,
+            "host_total_bytes": 999999999999, "workspace_bytes": 2345}
+    row = value["team"][0]
+    row["disk_usage"].update(disk)
+    row["info_text"] = "synthetic display " * 100
+    value["team"] = [{**deepcopy(row), "worker_name": f"synthetic-{i}"} for i in range(13)]
+    value["disk_usage"] = deepcopy(disk)
+    value["self"]["disk_usage"] = deepcopy(disk)
+    value["runtime_account_observed_at"] = STAMP
+    value["store_reads"] = {"x/y~": {"at": STAMP, "ms": 2, "op": "read"}}
+    value["agent_sessions"] = [{"state": "waiting", "last_inbox_check_at": STAMP,
+        "relay_heartbeat_at": STAMP, "heartbeat_age_seconds": 1, "relay_heartbeat_age_seconds": 0}]
+    return value
+
+
 class HeartbeatReplyContractTests(unittest.TestCase):
     def full(self, value):
         response = encode_reply(value, protocol=REPLY_PROTOCOL, scope=SCOPE)
@@ -70,8 +88,73 @@ class HeartbeatReplyContractTests(unittest.TestCase):
         after["self"]["store_reads"]["x/y~"]["at"] = NEXT
         after["heartbeat_at"] = NEXT
         marker = self.delta(before, after)
-        self.assertNotIn("set", marker)
+        self.assertFalse("set" in marker, sorted(marker.get("set", {})))
         self.assertEqual(marker["observations"]["team"]["0"]["/runtime_account/observed_at"], NEXT)
+
+    def test_real_board_observation_churn_has_no_sets_and_fits_reply_budget(self):
+        before = board_shaped_snapshot()
+        after = deepcopy(before)
+        after["heartbeat_at"] = after["updated_at"] = NEXT
+        after["runtime_account_observed_at"] = NEXT
+        after["store_reads"]["x/y~"]["at"] = NEXT
+        for disk in [after["disk_usage"], after["self"]["disk_usage"],
+                     *[row["disk_usage"] for row in after["team"]]]:
+            disk["reported_at"] = NEXT
+            disk["host_free_bytes"] -= 12345
+        for row in after["team"]:
+            row["runtime_account"]["observed_at"] = NEXT
+        after["agent_sessions"][0].update(last_inbox_check_at=NEXT, relay_heartbeat_at=NEXT,
+                                         heartbeat_age_seconds=31, relay_heartbeat_age_seconds=1)
+        marker = self.delta(before, after)
+        self.assertFalse("set" in marker, sorted(marker.get("set", {})))
+        self.assertEqual(marker["observations"]["store_reads"][""], {"/x~1y~0/at": NEXT})
+        frame = {"operation": "worker.heartbeat", "state": "ok", "object": {"heartbeat_reply": marker}}
+        size = len(json.dumps(frame, ensure_ascii=False, sort_keys=True).encode())
+        # The real-shaped 13-member whole-group fixture is 6,564 bytes.
+        # Keep complete observation groups intact under an explicit 7 KB
+        # synthetic-frame budget; the live SDK envelope is a separate gate.
+        self.assertLess(size, 7000)
+        print(f"W877 real-shaped synthetic SDK-spaced reply_frame={size} budget=7000")
+
+    def test_each_new_observation_is_lossless_and_does_not_replace_its_section(self):
+        for name, container, key, changed in (
+            ("disk_usage", (), "reported_at", NEXT),
+            ("runtime_account_observed_at", (), None, NEXT),
+            ("store_reads", ("x/y~",), "at", NEXT),
+            ("agent_sessions", (0,), "last_inbox_check_at", NEXT),
+            ("agent_sessions", (0,), "relay_heartbeat_at", NEXT),
+            ("agent_sessions", (0,), "heartbeat_age_seconds", 31),
+            ("agent_sessions", (0,), "relay_heartbeat_age_seconds", 1),
+        ):
+            with self.subTest(section=name, key=key):
+                before = board_shaped_snapshot()
+                after = deepcopy(before)
+                if key is None:
+                    after[name] = changed
+                else:
+                    node = after[name]
+                    for component in container:
+                        node = node[component]
+                    node[key] = changed
+                marker = self.delta(before, after)
+                self.assertFalse("set" in marker, sorted(marker.get("set", {})))
+                self.assertIn(name, marker["observations"])
+
+    def test_new_observation_classification_keeps_semantic_changes_as_whole_sets(self):
+        for name, container, key, changed in (
+            ("team", (0, "limit_state"), "resets_at", NEXT),
+            ("agent_sessions", (0,), "state", "detached"),
+            ("disk_usage", (), "workspace_bytes", 4567),
+            ("store_reads", ("x/y~",), "ms", 3),
+        ):
+            with self.subTest(section=name, key=key):
+                before = board_shaped_snapshot()
+                after = deepcopy(before)
+                node = after[name]
+                for component in container:
+                    node = node[component]
+                node[key] = changed
+                self.assertEqual(self.delta(before, after)["set"][name], after[name])
 
     def test_observation_null_empty_and_absent(self):
         for replacement in (None, "", "absent"):
@@ -320,6 +403,20 @@ class HeartbeatReplyRelayTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.seen, [first, second])
         self.assertIn("known_reply", self.calls[1]["payload"])
         self.assertNotIn("heartbeat_reply", second)
+
+    async def test_full_and_delta_alias_results_reach_the_real_acknowledger(self):
+        recorded = []
+        self.adapter.field = SimpleNamespace(record_worker_alias_result=lambda *args: recorded.append(args))
+        request = {"alias": "synthetic-alias", "requested_at": STAMP}
+        for state in ("applied", "superseded", "refused"):
+            self.value["worker_alias_result"] = {"state": state, "alias": "synthetic-alias", "requested_at": STAMP}
+            result, _ = await self.beat(
+                lambda snapshot: self.adapter._acknowledge_alias_request(request, snapshot))
+            self.assertEqual(recorded[-1], ("test-worker", STAMP, self.value["worker_alias_result"]))
+            self.assertEqual(result, self.value)
+        self.assertNotIn("known_reply", self.calls[0]["payload"])
+        self.assertTrue(all("known_reply" in call["payload"] for call in self.calls[1:]))
+        self.assertEqual(len(recorded), 3)
 
     async def test_discovery_reconnect_and_rebuilt_adapter_require_coherent_pair(self):
         await self.beat()
