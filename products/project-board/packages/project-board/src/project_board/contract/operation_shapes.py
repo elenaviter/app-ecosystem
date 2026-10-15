@@ -58,6 +58,18 @@ PLAN_ITEM_CHANGE_FIELDS: dict[str, Any] = {
 # Identity, authored position and the assignee: each has its own operation.
 PLAN_ITEM_IMMUTABLE_FIELDS: tuple[str, ...] = ("item_id", "item_ref", "item_key", "ordinal", "assignee")
 
+# Create and update publish the same field types. Creation also accepts the
+# initial status; later status changes use their owning lifecycle operation.
+PLAN_ITEM_CREATE_FIELDS: dict[str, Any] = {
+    name: PLAN_ITEM_CHANGE_FIELDS[name]
+    for name in ("title", "description", "acceptance", "tags", "keywords", "depends_on", "attachment_refs")
+}
+PLAN_ITEM_CREATE_FIELDS["status"] = "string: initial lifecycle status (optional)"
+PLAN_ITEM_CREATE_FIELDS["item_key"] = (
+    "never send: create without item_key; the board assigns the next free W number "
+    "(work_item_key_allocated_by_board)"
+)
+
 PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.register': {   'description': 'Register a logical project ref and its signed-in '
                                            "owner; optionally bind the owner's canonical "
                                            'Git-backed journal home.',
@@ -284,8 +296,7 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                                            'item.item_key (work_item_key_allocated_by_board); a retry '
                                            'with the same idempotency key gets the same number.',
                             'object_ref': 'work:project:<project_id>',
-                            'payload': {   'item': 'plan-item source without item_key: title, description, '
-                                                   'acceptance, tags, keywords, status, depends_on',
+                            'payload': {   'item': PLAN_ITEM_CREATE_FIELDS,
                                            'idempotency_key': 'stable retry key'}},
     'plan.item.update': {   'description': 'Update one plan item under its current revision; new '
                                            'attachment_refs must be staged uploads. A review hold '
@@ -1098,6 +1109,7 @@ def operation_one_of(operation: str) -> tuple[tuple[str, ...], ...]:
 # as review_requirement (read as the default) and work.status.set review
 # (optional) are.
 _STRICT_OBJECTS: dict[str, frozenset[str]] = {
+    "plan.item.create": frozenset({"item"}),
     "plan.item.update": frozenset({"changes", "changes.review"}),
 }
 
@@ -1106,6 +1118,13 @@ _STRICT_OBJECTS: dict[str, frozenset[str]] = {
 # object, not a string placeholder for every field. Each is a valid call once
 # the angle-bracket values are filled in.
 _EXAMPLE_PAYLOADS: dict[str, dict[str, Any]] = {
+    "plan.item.create": {
+        "item": {
+            "title": "<title>", "acceptance": ["<acceptance>"],
+            "tags": [], "keywords": [], "depends_on": [], "attachment_refs": [],
+        },
+        "idempotency_key": "<idempotency_key>",
+    },
     "plan.item.update": {
         "work_ref": "<work_ref>",
         "expected_revision": 12,
@@ -1273,6 +1292,8 @@ def operation_call_problems(
         )
     if operation == "plan.item.create":
         item = payload.get("item")
+        if isinstance(item, Mapping):
+            problems.extend(_plan_item_create_problems(item))
         if isinstance(item, Mapping) and str(item.get("item_key") or "").strip():
             # W551, operator: every item is a W, and the board assigns the
             # next free number. A caller-chosen key would be refused there.
@@ -1308,6 +1329,32 @@ def operation_call_problems(
                     + ", ".join(CANONICAL_WORK_STATUSES) + "."
                 ),
             })
+    return problems
+
+
+def _plan_item_create_problems(item: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Validate create field types for the CLI preflight.
+
+    Validate rather than coerce: a string is iterable but is not a list of
+    criteria. Optional fields may be omitted, not supplied with another type.
+    Business rules and limits remain the service's responsibility.
+    """
+
+    problems: list[dict[str, str]] = []
+    for name, description in PLAN_ITEM_CREATE_FIELDS.items():
+        if name not in item or name == "item_key":
+            # The existing allocated_by_board guard owns this refusal.
+            continue
+        value = item[name]
+        is_list = description.startswith("list of")
+        valid = (
+            isinstance(value, list) and all(isinstance(child, str) for child in value)
+            if is_list else isinstance(value, str)
+        )
+        if not valid:
+            field = f"item.{name}"
+            expected = "a list of strings" if is_list else "a string"
+            problems.append({"field": field, "problem": "type", "message": f"{field} must be {expected}."})
     return problems
 
 
@@ -1440,6 +1487,7 @@ _require_complete_catalog()
 
 __all__ = [
     "PLAN_ITEM_CHANGE_FIELDS",
+    "PLAN_ITEM_CREATE_FIELDS",
     "PLAN_ITEM_IMMUTABLE_FIELDS",
     "PROBLEM_BOARD_OPERATION_REQUIRED",
     "PROBLEM_BOARD_OPERATION_SHAPES",

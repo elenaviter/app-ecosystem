@@ -1544,7 +1544,12 @@ def test_the_create_contract_says_the_board_numbers_the_item():
     contract = cli._coordinate_command(_args("plan.item.create", contract=True))["contract"]
     assert "next free W number" in contract["description"]
     assert "work_item_key_allocated_by_board" in contract["description"]
-    assert "without item_key" in contract["payload"]["item"]
+    # The item is now a typed object rather than one prose string. Preserve
+    # the numbering guidance at the field an agent would otherwise supply.
+    guidance = contract["payload"]["item"]["item_key"]
+    assert "without item_key" in guidance
+    assert "next free W number" in guidance
+    assert "work_item_key_allocated_by_board" in guidance
 
 
 def test_a_supplied_item_key_is_refused_locally_and_nothing_is_sent(submits, tmp_path):

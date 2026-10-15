@@ -41,6 +41,14 @@ deliberately instead of all at once.
 How a call reaches the board with the caller's Card is in
 [Architecture](architecture.md). Who edits which Card is in [Cards](cards.md).
 
+`pb coordinate plan.item.create --contract` shows the nested item field types.
+Supply `acceptance`, `tags`, `keywords`, `depends_on` and `attachment_refs` as
+lists of strings, not one string; omit an optional field or send an empty list.
+Malformed lists are refused with `work_coordinate_shape_invalid` before the
+CLI queues the call, and the board also guards older clients and browser calls
+before reserving a number or writing a body. Acceptance keeps its authored
+order and duplicate positions; create uses the same list limits as update.
+
 ## The actors
 
 | actor | who | Card |
