@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import hashlib
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
@@ -705,6 +706,7 @@ class ProjectIdentityLifecycle:
 
 
 MAX_BATCH_OPERATIONS = 2000
+_TIMING = logging.getLogger("kdcube.connection_hub.project_authorize")
 
 
 async def _authorize_many(lifecycle: "ProjectIdentityLifecycle",
@@ -723,13 +725,18 @@ async def _authorize_many(lifecycle: "ProjectIdentityLifecycle",
     if any(request.person_subject != person or request.project_ref != project for request in requests):
         raise ValueError("project_operation_batch_mixed")
     valid = [request for request in requests if not request.validation_reason()]
+    # W389: which read the decision waits on (the person's Card chain or the ACTIVE catalog); fixed fields only.
+    started = time.monotonic()
     resolution = (await lifecycle.resolve(project_ref=project, person_subject=person)) if valid else None
+    resolved = time.monotonic()
     catalog: ActiveCatalogCapabilities | None = None
     if valid:
         try:
             catalog = ActiveCatalogCapabilities(await lifecycle._host._active_catalog())
         except CatalogUnavailable:
             catalog = None
+    _TIMING.info("[connection-hub.project-authorize.decide] operations=%d resolve_ms=%.1f catalog_ms=%.1f",
+                 len(requests), (resolved - started) * 1000.0, (time.monotonic() - resolved) * 1000.0)
     decisions = []
     for request in requests:
         if request.validation_reason() or resolution is None:
