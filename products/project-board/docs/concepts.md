@@ -101,8 +101,14 @@ removing a person, authorized by the deletion record: only the person who
 deleted the project, and only the Cards that record names. If Connection Hub
 cannot be reached, the deletion still stands and the record keeps the
 retirement pending; the same person finishes it by deleting the project again.
-A person who joins between step 2 and step 3 keeps their Cards; they are not
-in the record.
+That retry reads the project Control Card's revision from Connection Hub again,
+so a revision that moved does not keep it refused.
+
+A person or agent who joins between step 2 and step 3 is found in the same
+transaction that would set the flag: the flag is not set, they are taken off
+like the others, and the flag is tried again. Someone who keeps joining stops the deletion before the flag
+(`work_project_delete_members_joined`); nothing is deleted. Once the flag is
+set nobody can join.
 
 ## People: members and project admins
 
