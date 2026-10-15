@@ -1039,7 +1039,8 @@ async def plan_card_lifecycle(
                 built = await build_existing_card_selection_update(
                     host, original=original, selection=raw["selection"], active=active, decision=decision,
                     project_ref=scope, target_subject=target, actor_subject=actor, request_id=request_id, now=now,
-                    accepted_operations=raw.get("accepted_operations"), label=raw.get("label"))
+                    accepted_operations=raw.get("accepted_operations"), label=raw.get("label"),
+                    allow_unchanged=_carries_held_mode(original, raw))
                 _require_protected_grants_kept(raw.get("protected_grants"), original, built["member"]["candidate"])
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
@@ -1062,7 +1063,8 @@ async def plan_card_lifecycle(
                           "reselect_invitation_control": "invitation_control"}[raw["kind"]],
                     project_ref=scope, actor_subject=actor, request_id=request_id, now=now,
                     accepted_operations=raw.get("accepted_operations"),
-                    composition_mode=raw.get("composition_mode"), label=raw.get("label"))
+                    composition_mode=raw.get("composition_mode"), label=raw.get("label"),
+                    allow_unchanged=_carries_held_mode(original, raw))
                 members.append(built["member"])
                 originals[(subject_hash, access_id)] = original.to_dict()
                 continue
@@ -1309,3 +1311,12 @@ async def plan_card_lifecycle(
 
 
 __all__ = ["build_application_control", "build_project_person_control", "plan_card_lifecycle"]
+
+
+def _carries_held_mode(original: Any, raw: Mapping[str, Any]) -> bool:
+    """W872: a reselect that switches the mode of an operation the Card already holds is a save of its own, even
+    when the Card's content is unchanged (the policy effect is the change)."""
+    from .whole_card_save import held_mode_changes
+
+    modes = raw.get("invocation_modes")
+    return isinstance(modes, Mapping) and held_mode_changes(original, modes)

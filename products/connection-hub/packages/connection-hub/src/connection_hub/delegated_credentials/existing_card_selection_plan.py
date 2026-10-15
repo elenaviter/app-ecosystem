@@ -114,6 +114,7 @@ async def build_existing_card_selection_update(
     now: int,
     accepted_operations: Mapping[str, Any] | None = None,
     label: str | None = None,
+    allow_unchanged: bool = False,
 ) -> dict[str, Any]:
     """Build one exact C/My update from a host-authorized selection, without a write.
 
@@ -207,7 +208,9 @@ async def build_existing_card_selection_update(
     before = original.to_dict()
     after = candidate.to_dict()
     after["card_revision"] = before["card_revision"]
-    if after == before:
+    if after == before and not allow_unchanged:
+        # W872: allow_unchanged when the update carries a mode for a held operation; the Card keeps its
+        # content and the save's policy effect is the change.
         raise _refuse("card_plan_selection_unchanged")
     if kind == "person_control":
         refusal = control_snapshot_refusal(candidate)
