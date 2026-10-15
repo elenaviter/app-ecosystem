@@ -126,7 +126,10 @@ class AuthenticatorStore:
         self.schema = schema_for_scope(tenant=self.tenant, project=self.project)
 
     async def ensure_schema(self) -> None:
-        async with self._pool.acquire() as con:
+        # W880: every Hub load runs this; one transaction under pg_advisory_xact_lock (critical-section-README).
+        async with self._pool.acquire() as con, con.transaction():
+            await con.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                              f"{self.schema}:connection-hub-authenticators-schema")
             await con.execute(_schema_sql(self.schema))
         LOGGER.info(
             "[connection-hub.authenticators] schema ensured tenant=%s project=%s schema=%s",

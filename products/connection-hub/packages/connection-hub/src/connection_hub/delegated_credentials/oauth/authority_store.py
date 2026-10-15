@@ -231,8 +231,12 @@ class PostgresOAuthAuthorityStore(IssuanceReservationStore):
         )
 
     async def ensure_schema(self) -> None:
+        """Idempotent bootstrap under pg_advisory_xact_lock, as KDCube's critical-section-README ("Database
+        Bootstrap Critical Section") prescribes: two Hub loads deadlocked here on 2026-10-15 (W880)."""
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await connection.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                                         f"{self.schema}:connection-hub-oauth-authority-schema")
                 await connection.execute(oauth_authority_schema_sql(self.schema))
                 await connection.execute(
                     profile_device_authority_schema_sql(self.schema)
