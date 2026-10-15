@@ -629,6 +629,19 @@ def _required(value: Any, field: str) -> str:
     return text
 
 
+# W875: the counts of a turn that pulled nothing because no catch-up was due.
+_NO_CONTROLS: dict[str, int] = {"controls_materialized": 0, "controls_refused": 0, "controls_deferred": 0}
+
+
+def _pushed_control_refs(event: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The refs of a ``control.available`` push, or None for any other event."""
+
+    data = event.get("data") if isinstance(event.get("data"), Mapping) else event
+    if str(data.get("kind") or "") != "control.available":
+        return None
+    return data.get("refs") if isinstance(data.get("refs"), Mapping) else {}
+
+
 def _object_result(response: Mapping[str, Any]) -> dict[str, Any]:
     value = response.get("object")
     if isinstance(value, Mapping):
@@ -1324,8 +1337,15 @@ class ProblemBoardHostRelayAdapter:
         # Project adapters are rebuilt every discovery turn over the same client: the hook is keyed by project
         # (the newest adapter replaces the last) and the pull lock lives on the client, one per project.
         self._immediate_pull: asyncio.Task[Any] | None = None
+        # W875 B2: the control refs pushed and not yet claimed ("" asks for a pull of the scope).
+        self._pushed_refs: set[str] = set()
+        # W875 B3: the hook is registered here, before any turn's catch-up pull, so a push that arrives during
+        # that pull is claimed after it (or finds it already served), never lost. Direct controls (discards,
+        # notices) carry no project_ref and are claimed by the attendance adapter's own hook.
         set_event_hook = getattr(client, "set_event_hook", None)
-        if callable(set_event_hook) and config.project_id and config.project_id != "attendance":
+        if callable(set_event_hook) and config.project_id == "attendance":
+            set_event_hook("problem-board.controls:direct", self._on_direct_push_event)
+        elif callable(set_event_hook) and config.project_id:
             set_event_hook(f"problem-board.controls:{config.project_id}", self._on_push_event)
         # Files cross the network by signed HTTP links, never inside a
         # control: outbound through an upload slot the control plane mints,
@@ -2415,37 +2435,93 @@ class ProblemBoardHostRelayAdapter:
         return locks.setdefault(self.config.project_id, asyncio.Lock())
 
     def _on_push_event(self, event: Mapping[str, Any]) -> None:
-        """W794: a ``control.available`` push for this project pulls and serves controls now (one pull at a time).
+        """W794, W875: a ``control.available`` push for this project claims that control now.
 
-        Operator, 2026-10-13: "why requesting the doc should care if coord busy or no at all". A project file
-        view waited for the end of an attendance turn (35 to 110 s); the board already pushes when it queues.
+        Operator, 2026-10-13: "why requesting the doc should care if coord busy or no at all". Operator,
+        2026-10-15 (W875), verbatim: "this pulling is wrong. we have data bus. why its pull if this must be push."
         """
 
-        data = event.get("data") if isinstance(event.get("data"), Mapping) else event
-        if str(data.get("kind") or "") != "control.available":
+        refs = _pushed_control_refs(event)
+        if refs is None or str(refs.get("project_ref") or "") != f"work:project:{self.config.project_id}":
             return
-        refs = data.get("refs") if isinstance(data.get("refs"), Mapping) else {}
-        if str(refs.get("project_ref") or "") != f"work:project:{self.config.project_id}":
+        self._claim_pushed(str(refs.get("control_ref") or ""))
+
+    def _on_direct_push_event(self, event: Mapping[str, Any]) -> None:
+        """W875: a pushed direct control (no project_ref: discards, attendance notices) is claimed in the direct scope."""
+
+        refs = _pushed_control_refs(event)
+        if refs is None or str(refs.get("project_ref") or ""):
             return
+        self._claim_pushed(str(refs.get("control_ref") or ""), project_ref="")
+
+    def _claim_pushed(self, control_ref: str, *, project_ref: str | None = None) -> None:
+        """Queue one pushed control for its claim; one task per adapter claims them in turn under the pull lock.
+
+        The claim is ``control.pull`` with ``control_ref`` (EMain, 2026-10-15: "GO with (i)"): the board leases
+        only that control under the pull's fence, so of two live sessions of one Card exactly one handles it.
+        A board without the field returns every available control of the scope, the W794 pull. A failed claim
+        is not retried here: the board pushes an unclaimed control again on the worker's heartbeat (W875 B1).
+        """
+
+        self._pushed_refs.add(control_ref)
         if self._immediate_pull is not None and not self._immediate_pull.done():
             return
         try:
-            self._immediate_pull = asyncio.get_running_loop().create_task(self._pull_controls_now())
-        except RuntimeError:  # no running loop: the next turn pulls
+            self._immediate_pull = asyncio.get_running_loop().create_task(
+                self._claim_pushed_controls(project_ref)
+            )
+        except RuntimeError:  # no running loop: the ref waits for the next push or catch-up
             self._immediate_pull = None
 
-    async def _pull_controls_now(self) -> dict[str, int]:
-        try:
-            async with self._pull_lock():
-                return await self._pull_controls()
-        except Exception as exc:  # noqa: BLE001 - the attendance turn pulls again
-            logger.warning(
-                "Problem Board relay immediate control pull failed worker=%s code=%s",
-                self.config.worker_name, getattr(exc, "code", "") or type(exc).__name__,
-            )
-            return {}
+    async def _claim_pushed_controls(self, project_ref: str | None) -> dict[str, int]:
+        served: dict[str, int] = {}
+        while self._pushed_refs:
+            # A pull of the whole scope ("") serves every pushed ref with it.
+            control_ref = "" if "" in self._pushed_refs else self._pushed_refs.pop()
+            if not control_ref:
+                self._pushed_refs.clear()
+            try:
+                async with self._pull_lock():
+                    counts = await self._pull_controls(project_ref=project_ref, control_ref=control_ref)
+            except Exception as exc:  # noqa: BLE001 - the board pushes it again (W875 B1)
+                logger.warning(
+                    "Problem Board relay pushed control claim failed worker=%s code=%s",
+                    self.config.worker_name, getattr(exc, "code", "") or type(exc).__name__,
+                )
+                continue
+            for key, value in counts.items():
+                served[key] = served.get(key, 0) + int(value or 0)
+        return served
 
-    async def _pull_controls(self, *, project_ref: str | None = None) -> dict[str, int]:
+    def _catch_up_due(self, scope: str) -> tuple[bool, int | None]:
+        """W875 B3: a scope is pulled once per Data Bus connection (cold start or reconnect), never per turn.
+
+        Pushes are at most once and a socket drop loses those sent meanwhile, so the first turn on each new
+        connection generation pulls the scope once. A client that reports no generation pulls every turn, as
+        before W875.
+        """
+
+        generation = getattr(self.client, "connection_generation", None)
+        if type(generation) is not int or generation < 1:
+            return True, None
+        return self._caught_up_generations().get(scope) != generation, generation
+
+    def _record_caught_up(self, scope: str, generation: int | None) -> None:
+        if generation is not None:
+            self._caught_up_generations()[scope] = generation
+
+    def _caught_up_generations(self) -> dict[str, int]:
+        # On the client, like the pull locks: project adapters are rebuilt every discovery turn.
+        caught = getattr(self.client, "_problem_board_caught_up", None)
+        if caught is None:
+            caught = {}
+            try:
+                setattr(self.client, "_problem_board_caught_up", caught)
+            except AttributeError:
+                caught = self.__dict__.setdefault("_problem_board_caught_up", {})
+        return caught
+
+    async def _pull_controls(self, *, project_ref: str | None = None, control_ref: str = "") -> dict[str, int]:
         requested_project_ref = (
             f"work:project:{self.config.project_id}"
             if project_ref is None
@@ -2459,6 +2535,7 @@ class ProblemBoardHostRelayAdapter:
                 "lease_owner": self.config.relay_id,
                 "lease_seconds": max(60, self.config.reconcile_ceiling_seconds * 3),
                 "limit": 20,
+                **({"control_ref": control_ref} if control_ref else {}),
             },
         )
         result = _object_result(response)
@@ -4888,12 +4965,17 @@ class ProblemBoardHostRelayAdapter:
             ) = await run_off_loop(
                 self._reconcile_assignments, heartbeat_result, executor=self._store_thread()
             )
-        with self._trace_stage(
-            "attendance.controls",
-            operation="control.pull",
-        ):
-            async with self._pull_lock():
-                controls = await self._pull_controls()
+        scope = f"work:project:{self.config.project_id}"
+        catch_up, generation = self._catch_up_due(scope)
+        controls = dict(_NO_CONTROLS)
+        if catch_up:
+            with self._trace_stage(
+                "attendance.controls",
+                operation="control.pull",
+            ):
+                async with self._pull_lock():
+                    controls = await self._pull_controls()
+            self._record_caught_up(scope, generation)
         await run_off_loop(self._report_dead_notification_path, executor=self._store_thread())
         outbox = await self._flush_outbox()
         return {
@@ -5357,11 +5439,16 @@ class ProblemBoardHostRelayAdapter:
                     discovery,
                     executor=self._store_thread(),
                 )
-        with self._trace_stage(
-            "attendance.controls",
-            operation="control.pull.discovery",
-        ):
-            direct_controls = await self._pull_controls(project_ref="")
+        catch_up, generation = self._catch_up_due("")
+        direct_controls = dict(_NO_CONTROLS)
+        if catch_up:
+            with self._trace_stage(
+                "attendance.controls",
+                operation="control.pull.discovery",
+            ):
+                async with self._pull_lock():
+                    direct_controls = await self._pull_controls(project_ref="")
+            self._record_caught_up("", generation)
         attendances = [
             dict(item)
             for item in self._attendance_cache.get("items") or []

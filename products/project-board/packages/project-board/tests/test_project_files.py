@@ -465,8 +465,8 @@ def test_a_queued_control_is_pulled_at_once_not_at_the_end_of_the_turn(tmp_path,
     pulls: list[str] = []
     release = asyncio.Event()
 
-    async def pull(*, project_ref=None):
-        pulls.append(project_ref or "project")
+    async def pull(*, project_ref=None, control_ref=""):
+        pulls.append(project_ref or control_ref or "project")
         await release.wait()
         return {}
 
@@ -491,8 +491,11 @@ def test_a_queued_control_is_pulled_at_once_not_at_the_end_of_the_turn(tmp_path,
     assert pulls == ["project"]
 
 
-def test_the_attendance_channel_registers_no_push_hook(tmp_path, monkeypatch):
+def test_the_attendance_channel_registers_only_the_direct_push_hook(tmp_path, monkeypatch):
+    # W875: direct controls (no project_ref) are claimed by the attendance adapter; projects keep their own hooks.
     identity, field, config, workspace, adapter, board = _setup(tmp_path, monkeypatch, files=FILES)
     client = HookedClient()
-    relay.ProblemBoardHostRelayAdapter(config=dataclasses.replace(config, project_id="attendance"), field=field, client=client)
-    assert client.hooks == {}
+    attendance = relay.ProblemBoardHostRelayAdapter(
+        config=dataclasses.replace(config, project_id="attendance"), field=field, client=client
+    )
+    assert client.hooks == {"problem-board.controls:direct": attendance._on_direct_push_event}  # noqa: SLF001

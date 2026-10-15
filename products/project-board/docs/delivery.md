@@ -545,6 +545,30 @@ fault and a Data Bus push still wake the cycle. If either server is down, no
 worker is served and the old wake on outbox and coordinate work returns, so the
 cycle stays the fallback.
 
+### Push and claim (W875 B)
+
+Operator, 2026-10-15 (W875), verbatim: "this pulling is wrong. we have data bus. why its pull if this must be push."
+
+- **A push is claimed, not answered with a pull.** The board's `control.available` push names the control
+  (`control_ref`). The relay claims exactly that control with `control.pull` plus `control_ref` (EMain, 2026-10-15:
+  "GO with (i)") and serves it through the same code as a pulled control. Pushes that arrive during a claim are
+  queued and claimed one by one after it. A push without a `control_ref` pulls the scope, as W794 did.
+- **Direct controls have their own hook.** Discards and attendance notices carry no `project_ref`. The attendance
+  adapter registers `problem-board.controls:direct` and claims them in the direct scope; each project adapter keeps
+  `problem-board.controls:<project_id>`.
+- **One catch-up pull per connection.** A turn pulls a scope (each project, and the direct scope) only when the
+  Data Bus client's `connection_generation` differs from the one that scope was last pulled on: at cold start and
+  after a reconnect, when pushes sent meanwhile were lost. The hooks are registered when the adapter is built,
+  before that pull (claude-ops, B3). A client that reports no generation pulls every turn, as before.
+- **An idle turn sends only its heartbeat.** Before W875 every turn of every channel sent two `control.pull`.
+- **A lost push is pushed again by the board** on the worker's heartbeat, a bounded number of times (Applications
+  `docs/worker-delivery-resilience.md`, "Push, Claim And Redelivery"). The relay keeps no retry timer.
+- **Mixed fleet.** A board without `control_ref` answers a claim with the scope's pull, which still uses the one
+  fence. A relay from before W875 keeps pulling every turn. The fence keeps a puller and a claimer from both handling
+  a control.
+
+Tests: `tests/test_w875_push_claim.py`.
+
 ### Turn accounting and the relay log owner (W461)
 
 On 2026-10-03 a 31.7 s channel turn could not be explained. Its slow-turn line
