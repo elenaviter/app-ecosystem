@@ -191,8 +191,9 @@ user or supervisor
   -> choose an attended project + stable worker + command
   -> authorize project membership and requested operation
   -> broker records pending control
-  -> PB emits a reference-only wake event to that worker-card partition
-  -> addressed relay sends control.pull through the live Data Bus
+  -> PB emits a reference-only wake event (control_ref) to that worker-card partition
+  -> addressed relay claims that control: control.pull with control_ref, through the live Data Bus
+     (W875; a scope is pulled whole only once per connection, at cold start or reconnect)
   -> Data Bus ingress acknowledges package acceptance
   -> PB handler checks card, selected grants, partition, operation, and project
   -> broker leases exact control to exact relay/worker/project

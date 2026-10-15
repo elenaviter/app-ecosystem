@@ -928,7 +928,9 @@ PROBLEM_BOARD_OPERATION_SHAPES: dict[str, dict[str, Any]] = {   'project.registe
                         'payload': {   'project_ref': 'work:project:<project_id>',
                                        'lease_owner': 'string',
                                        'lease_seconds': 'integer',
-                                       'limit': 'integer'}},
+                                       'limit': 'integer',
+                                       'control_ref': 'optional work:control:<ref>; claims only that '
+                                                      'pushed control (W875)'}},
     'control.acknowledge': {   'description': 'Acknowledge one leased control; KDCube erases its '
                                               'command body and retains the hash and receipt.',
                                'object_ref': 'work:control:<created-at>:<command-id>:<semantic-name>',
