@@ -112,7 +112,9 @@ class CardPolicyMarkerSettler:
         The committed policy marker is the policy-side effect witness. It is
         insufficient alone: derive OUTCOME's exact link, time and binding from
         that Card's immutable version, never a request or a directory scan.
-        Follow at most 64 immutable base links; never list versions. PREPARED,
+        Follow at most 64 immutable base links. A broken historical chain may
+        use a bounded, one-Card names inventory (256 directory entries).
+        PREPARED,
         an in-progress txn or missing/over-bound evidence stays undecided.
         The policy service rechecks the marker and policy under its own lock.
         A change id can be request-supplied: retiring an already-applied
@@ -127,18 +129,35 @@ class CardPolicyMarkerSettler:
         if current is None or await read_card_version_marker(store, txn) is not None:
             return False
         name, seen, record = current.revision_name, set(), None
-        for _ in range(CARD_VERSION_PROOF_LIMIT):
+        for _ in range(CARD_VERSION_PROOF_LIMIT + 1):
             if not isinstance(name, str) or not name or name in seen:
                 return False
             seen.add(name)
             record = await store.read_version_record(
                 subject_hash=subject_hash, access_id=access_id, revision_name=name,
             )
-            if not isinstance(record, Mapping):
-                return False
-            if record.get("txn") == txn:
+            if isinstance(record, Mapping) and record.get("txn") == txn:
                 break
-            name = record.get("base")
+            if not isinstance(record, Mapping) or not record.get("base"):
+                # OAuth renewals before predecessor metadata was preserved
+                # broke this chain. No project census or all-Card scan: names
+                # from this one owner/access only, bounded before sorting.
+                candidates = await store.policy_recovery_candidates(
+                    subject_hash=subject_hash, access_id=access_id,
+                    current_revision=current.card_revision,
+                    max_predecessors=CARD_VERSION_PROOF_LIMIT, max_entries=256,
+                )
+                for candidate in candidates:
+                    record = await store.read_version_record(
+                        subject_hash=subject_hash, access_id=access_id, revision_name=candidate,
+                    )
+                    if isinstance(record, Mapping) and record.get("txn") == txn:
+                        name = candidate
+                        break
+                else:
+                    return False
+                break
+            name = record["base"]
         else:
             return False
         card = await store.read_revision(
