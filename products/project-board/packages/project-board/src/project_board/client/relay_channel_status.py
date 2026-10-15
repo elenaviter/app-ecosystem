@@ -7,6 +7,10 @@ keeps the other two, per channel, in the relay's memory, and the relay writes a
 snapshot to ``relay-channels.json`` beside the host config at most every
 ``WRITE_INTERVAL_SECONDS``, in a thread: no file I/O on the event loop for it
 (criterion 4). The file holds times, outcomes and codes, never a secret.
+
+W459 C4: the same snapshot carries one ``local_work_scanner`` block, the relay's
+scanner counters (``LocalWorkScanner.stats``). Only the known numeric fields are
+written, so nothing else the scanner might hold can reach the file.
 """
 
 from __future__ import annotations
@@ -20,6 +24,26 @@ from typing import Any, Callable, Mapping
 CHANNEL_STATUS_FILENAME = "relay-channels.json"
 CHANNEL_STATUS_SCHEMA = "problem-board.relay-channel-status.v1"
 WRITE_INTERVAL_SECONDS = 15.0
+SCANNER_FIELDS = (
+    "scans_started", "scans_joined", "waits_cancelled", "scans_completed", "scans_failed",
+    "scans_refused_closed", "in_flight", "scanner_threads_alive", "last_scan_ms", "max_scan_ms", "closed",
+)
+
+
+def _scanner_block(stats: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The scanner's known numeric fields only; anything else is dropped."""
+
+    if not isinstance(stats, Mapping):
+        return None
+    block: dict[str, Any] = {}
+    for name in SCANNER_FIELDS:
+        value = stats.get(name)
+        if name == "closed":
+            if type(value) is bool:
+                block[name] = value
+        elif type(value) in (int, float) and value >= 0:
+            block[name] = value
+    return block
 
 
 def _iso(epoch: float | None) -> str:
@@ -58,13 +82,13 @@ class ChannelStatusBook:
     def due(self) -> bool:
         return self._changed and self._clock() - self._written_at >= WRITE_INTERVAL_SECONDS
 
-    def take_snapshot(self) -> dict[str, Any]:
+    def take_snapshot(self, *, local_work_scanner: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """The record to write now; marks it written."""
 
         now = self._clock()
         self._changed = False
         self._written_at = now
-        return {
+        snapshot = {
             "schema": CHANNEL_STATUS_SCHEMA,
             "recorded_at": _iso(now),
             "channels": {
@@ -78,6 +102,10 @@ class ChannelStatusBook:
                 for name, record in sorted(self._channels.items())
             },
         }
+        scanner = _scanner_block(local_work_scanner)
+        if scanner is not None:
+            snapshot["local_work_scanner"] = scanner
+        return snapshot
 
 
 def write_channel_status(config_path: str | Path, snapshot: Mapping[str, Any]) -> None:
@@ -105,10 +133,26 @@ def channel_status(config_path: str | Path, worker_name: str) -> dict[str, Any] 
     return {**dict(record), "recorded_at": str(data.get("recorded_at") or "")}
 
 
+def local_work_scanner_status(config_path: str | Path) -> dict[str, Any] | None:
+    """The relay's scanner counters as last written, with when; None when absent (W459 C4)."""
+
+    path = Path(config_path).expanduser().parent / CHANNEL_STATUS_FILENAME
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    block = _scanner_block(data.get("local_work_scanner") if isinstance(data, Mapping) else None)
+    if block is None:
+        return None
+    return {**block, "recorded_at": str(data.get("recorded_at") or "")}
+
+
 __all__ = [
     "CHANNEL_STATUS_FILENAME",
     "ChannelStatusBook",
+    "SCANNER_FIELDS",
     "WRITE_INTERVAL_SECONDS",
     "channel_status",
+    "local_work_scanner_status",
     "write_channel_status",
 ]

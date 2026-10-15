@@ -8669,7 +8669,7 @@ class ProblemBoardRelaySupervisor:
         running = self._channel_status_write
         if running is not None and not running.done():
             return
-        snapshot = self._channel_status.take_snapshot()
+        snapshot = self._channel_status.take_snapshot(local_work_scanner=self._local_work_scanner.stats())
         write = asyncio.ensure_future(
             asyncio.to_thread(write_channel_status, self.config_path, snapshot)
         )
