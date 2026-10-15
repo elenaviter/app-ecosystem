@@ -208,8 +208,8 @@ canonical Card permission rather than a second permission named after the page c
 | `project.report.archive` | Identity rule `person_views_people_only` |  |
 | `project.report.restore` | Identity rule `person_views_people_only` |  |
 | `project.report.delete` | Identity rule `person_views_people_only` |  |
-| `project.export` | Identity rule `project_admin_by_role` | A project admin, by project role (W805). |
-| `project.delete` | Identity rule `project_admin_by_role` | A project admin, by project role, after typing the title (W805). |
+| `project.export` | Identity rule `project_admin_by_role` | A person (never an agent) with the admin role AND project.control.update on their current Card hierarchy (W805). |
+| `project.delete` | Identity rule `project_admin_by_role` | A person (never an agent) with the admin role AND project.control.update on their current Card hierarchy, after typing the title (W805). |
 | `session.resume.request` | Identity rule `worker_pool_is_its_grantors` | Only an agent the caller owns. |
 | `session.resume.get` | Identity rule `person_views_people_only` |  |
 | `session.resume.close` | Identity rule `person_views_people_only` |  |
