@@ -10,12 +10,13 @@ import hashlib
 import hmac
 import json
 import pathlib
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, AsyncIterator, Dict, Mapping, Optional
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Mapping, Optional
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -1982,6 +1983,49 @@ async def _card_participant_callers(entrypoint: Any, persistence: Any) -> Any:
     return await build_participant_callers(
         _connections_config(entrypoint), resolve_secret=resolve, call=call,
         card_store=getattr(persistence, "card_store", None), card_service=getattr(persistence, "card_service", None))
+
+
+async def _project_authorization_service(entrypoint: Any) -> AutomationAccessService:
+    """W389: the service the project authorize operations read through, without the request-wide composition.
+
+    A decision reads only the person's Cards (Card persistence) and the ACTIVE catalog. The OAuth hosting,
+    issuer registries and Card-transaction binding that ``_automation_access_service`` builds are for writes
+    and OAuth; building them for every board view cost about 110 ms at the median (live, 2026-10-15). Every
+    decision is still read live, so nothing here can serve a stale Card.
+    """
+    tenant, project = _runtime_tenant_project(entrypoint)
+    redis = getattr(entrypoint, "redis", None) or get_async_redis_client(get_settings().REDIS_URL)
+    return AutomationAccessService(
+        redis=redis,
+        tenant=tenant,
+        project=project,
+        grant_store=await _oauth_grant_store(entrypoint),
+        authority_backend=_delegated_authority_config(entrypoint).backend,
+        config=await _delegated_oauth_config_from_entrypoint(entrypoint, None),
+        catalog_resolver=_delegated_catalog_resolver(entrypoint, redis),
+        card_persistence=await _delegated_card_persistence(entrypoint, redis),
+    )
+
+
+_AUTHORIZE_OUTCOME = re.compile(r"[a-z][a-z0-9_]{0,79}")
+
+
+async def _timed_project_authorize(entrypoint: Any, operations: int,
+                                   decide: Callable[[AutomationAccessService], Awaitable[Dict[str, Any]]]) -> Dict[str, Any]:
+    """One project authorize exchange, logged as its build and decide times (W389). Fixed codes only."""
+    started = time.monotonic()
+    service = await _project_authorization_service(entrypoint)
+    built = time.monotonic()
+    outcome = "error"
+    try:
+        answer = await decide(service)
+        error = str(answer.get("error") or "") if isinstance(answer, Mapping) else ""
+        outcome = "ok" if not error else (error if _AUTHORIZE_OUTCOME.fullmatch(error) else "refused")
+        return answer
+    finally:
+        ended = time.monotonic()
+        LOGGER.info("[connection-hub.project-authorize] operations=%d build_ms=%.1f decide_ms=%.1f outcome=%s",
+                    operations, (built - started) * 1000.0, (ended - built) * 1000.0, outcome)
 
 
 async def _automation_access_service(
@@ -6308,9 +6352,8 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await (
-            await _automation_access_service(self, request)
-        ).project_operation_authorize(
+        del request
+        return await _timed_project_authorize(self, 1, lambda service: service.project_operation_authorize(
             user,
             project_ref=str(payload.get("project_ref") or "").strip(),
             resource=str(payload.get("resource") or "").strip(),
@@ -6318,7 +6361,7 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
             required_grants=payload.get("required_grants", ()),
             request_resource=str(payload.get("request_resource") or "").strip(),
             surface=str(payload.get("surface") or "application").strip(),
-        )
+        ))
 
     @api(
         method="POST",
@@ -6343,15 +6386,17 @@ class ConnectionHubEntrypoint(BaseEntrypoint):
         user = _platform_user_payload(self, user_id=user_id)
         if not user:
             return {"ok": False, "error": "delegated_access_requires_authenticated_user"}
-        return await (
-            await _automation_access_service(self, request)
-        ).project_operations_authorize(
-            user,
-            project_ref=str(payload.get("project_ref") or "").strip(),
-            resource=str(payload.get("resource") or "").strip(),
-            operations=payload.get("operations"),
-            surface=str(payload.get("surface") or "application").strip(),
-        )
+        del request
+        operations = payload.get("operations")
+        return await _timed_project_authorize(
+            self, len(operations) if isinstance(operations, (list, tuple)) else 0,
+            lambda service: service.project_operations_authorize(
+                user,
+                project_ref=str(payload.get("project_ref") or "").strip(),
+                resource=str(payload.get("resource") or "").strip(),
+                operations=operations,
+                surface=str(payload.get("surface") or "application").strip(),
+            ))
 
     @api(
         method="POST",
