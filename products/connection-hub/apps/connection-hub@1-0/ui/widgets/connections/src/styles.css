@@ -1681,8 +1681,11 @@ code {
   text-decoration: underline;
 }
 
-.invocation-policy-control > small.invocation-policy-control__changed {
+.operation-policy .operation-policy__status.operation-policy__status--changed {
   color: var(--kind);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .invocation-policy-control--changed {

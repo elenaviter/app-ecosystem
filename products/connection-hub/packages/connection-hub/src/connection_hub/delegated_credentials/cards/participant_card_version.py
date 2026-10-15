@@ -83,7 +83,10 @@ REFUSALS = {"txn_closed": 409, "txn_unknown": 404, "card_changed": 409, "stage_c
             "card_version_link_mismatch": 409, "compensation_superseded": 409, "compensation_unsupported": 409,
             # S5 (EMain 18:27Z): the person sees why a manual edit was refused; a fixed code, no free text.
             "card_edit_admin_grant_role_only": 409, "invocation_mode_required": 409,
-            "invocation_modes_invalid": 400, "invocation_policy_unavailable": 503}
+            "invocation_modes_invalid": 400, "invocation_policy_unavailable": 503,
+            # W872 live (20:06Z): a policy whose earlier Card change is not settled yet is named as that, not as
+            # card_changed, so the editor can say what blocked the Save.
+            "invocation_policy_earlier_change_undecided": 409}
 # Store codes PB sees under the contract's name: a txn staged under another scope or caller is out of scope.
 _ALIASES = {"txn_scope_mismatch": "request_scope_invalid"}
 _CARD_CHANGED = frozenset({"card_plan_original_revision_changed", "card_plan_update_target_absent",
@@ -640,7 +643,9 @@ class CardVersionOperation:
                     owner_subject=payload["owner_subject"], authority=self._policy_authority(effect),
                     mode=payload["mode"], expected_revision=payload["expected_revision"],
                     change_id=f"{txn}:{effect['key']}"))
-            except InvocationPolicyConflict:
+            except InvocationPolicyConflict as exc:
+                if exc.reason == "invocation_policy_earlier_change_undecided":
+                    raise CardVersionRefused("invocation_policy_earlier_change_undecided") from None
                 raise CardVersionRefused("card_changed") from None
             return
         identity = await self._operation("binding_identity")(payload["access_id"])

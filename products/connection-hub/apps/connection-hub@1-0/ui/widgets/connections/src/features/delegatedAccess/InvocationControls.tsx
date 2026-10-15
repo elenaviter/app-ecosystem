@@ -66,12 +66,16 @@ export function InvocationPolicyControl({
         >
           Once
         </button>
-        {changed ? (
-          <small className="invocation-policy-control__changed">changed, not saved</small>
-        ) : used ? (
+        {!changed && used ? (
           <small>used</small>
         ) : null}
       </span>
+      {changed ? (
+        // W872 (operator: "text is badly visible under the once/always"): beside the switch, full size, not tucked under it.
+        <span className="operation-policy__status operation-policy__status--changed" aria-live="polite">
+          changed, not saved
+        </span>
+      ) : null}
     </span>
   );
 }

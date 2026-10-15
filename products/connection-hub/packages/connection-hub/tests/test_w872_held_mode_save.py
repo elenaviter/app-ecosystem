@@ -170,3 +170,26 @@ async def test_a_same_mode_held_entry_is_nothing_to_save_and_writes_no_policy(tm
     assert (policy.mode, policy.revision) == ("once", 1)
     card = (await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id))[1]
     assert card.card_revision == revision
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason, code", [
+    ("invocation_policy_earlier_change_undecided", "invocation_policy_earlier_change_undecided"),
+    ("invocation_policy_revision_moved", "card_changed"),
+])
+async def test_a_policy_prepare_conflict_is_named_when_an_earlier_change_is_undecided(tmp_path, monkeypatch, reason, code):
+    # W872 live, 2026-10-15 20:06Z: a mode-only Save met an earlier save's COMMITTED marker (W873) and was reported as
+    # card_changed ("The Card save was refused by the Hub."). The undecided case is now named; others stay card_changed.
+    from connection_hub.delegated_credentials.cards.participant_card_version import CardVersionRefused, REFUSALS
+    from connection_hub.invocation_policy.service import InvocationPolicyConflict
+    from test_w756_card_version_policies import TXN, setup
+
+    store, service, before, after, policies, operation, effects, prepare = await setup(tmp_path)
+
+    async def conflict(**kwargs):
+        raise InvocationPolicyConflict(reason)
+
+    monkeypatch.setattr(policies, "prepare_policy_change", conflict)
+    with pytest.raises(CardVersionRefused) as refused:
+        await operation._prepare(TXN, effects[0])
+    assert refused.value.code == code and REFUSALS[code] == 409
