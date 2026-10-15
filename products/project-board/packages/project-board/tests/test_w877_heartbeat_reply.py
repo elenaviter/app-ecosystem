@@ -188,5 +188,87 @@ class HeartbeatReplyContractTests(unittest.TestCase):
         print(f"W877 synthetic bytes: full={size(before)} request_echo={size(echo)} reply_frame={size(frame)}")
 
 
+class HeartbeatReplySnapshotTests(unittest.TestCase):
+    context = ("synthetic-client", 1, "synthetic-worker", "profile", "partition")
+
+    def setUp(self):
+        # The client package has the project's normal dependency closure.
+        # Keep pure contract selection runnable without claiming a client gate.
+        from project_board.client.heartbeat_reply import ReplySnapshots
+        self.ReplySnapshots = ReplySnapshots
+
+    def seed(self):
+        owner = self.ReplySnapshots()
+        request = owner.begin("p", self.context)
+        full = encode_reply(snapshot(), protocol=REPLY_PROTOCOL, scope=SCOPE)
+        owner.apply(request, full, context=self.context, materialize=lambda value: None)
+        return owner
+
+    def test_snapshot_and_echo_are_retained_together(self):
+        owner = self.seed()
+        request = owner.begin("p", self.context)
+        self.assertIn("known_reply", request.payload())
+        next_value = snapshot()
+        next_value["team"][0]["runtime_account"]["observed_at"] = NEXT
+        wire = encode_reply(next_value, protocol=REPLY_PROTOCOL, scope=SCOPE, known=request.payload()["known_reply"])
+        seen = []
+        self.assertEqual(owner.apply(request, wire, context=self.context, materialize=seen.append), next_value)
+        self.assertEqual(seen, [next_value])
+
+    def test_late_request_cannot_materialize(self):
+        owner = self.seed()
+        older = owner.begin("p", self.context)
+        newer = owner.begin("p", self.context)
+        full = encode_reply(snapshot(), protocol=REPLY_PROTOCOL, scope=SCOPE)
+        self.assertIsNone(owner.apply(older, full, context=self.context, materialize=lambda value: self.fail("late")))
+        self.assertEqual(owner.apply(newer, full, context=self.context, materialize=lambda value: None), snapshot())
+
+    def test_reconnect_and_changed_context_require_full(self):
+        for context in (("synthetic-client", 2), ("replacement-client", 1), None):
+            with self.subTest(context=context):
+                owner = self.seed()
+                old = owner.begin("p", self.context)
+                self.assertNotIn("known_reply", owner.begin("p", context).payload())
+                self.assertIsNone(owner.apply(old, snapshot(), context=context, materialize=lambda value: self.fail("old context")))
+
+    def test_materialization_failure_drops_knowledge_and_keeps_error(self):
+        owner = self.seed()
+        request = owner.begin("p", self.context)
+        error = RuntimeError("synthetic materializer failure")
+        def fail(value):
+            raise error
+        with self.assertRaises(RuntimeError) as raised:
+            owner.apply(request, encode_reply(snapshot(), protocol=REPLY_PROTOCOL, scope=SCOPE),
+                        context=self.context, materialize=fail)
+        self.assertIs(raised.exception, error)
+        self.assertNotIn("known_reply", owner.begin("p", self.context).payload())
+
+    def test_consumer_mutation_cannot_corrupt_retained_pair(self):
+        owner = self.ReplySnapshots()
+        request = owner.begin("p", self.context)
+        result = owner.apply(request, encode_reply(snapshot(), protocol=REPLY_PROTOCOL, scope=SCOPE),
+                             context=self.context, materialize=lambda value: value.clear())
+        result.clear()
+        self.assertEqual(owner.begin("p", self.context).baseline, snapshot())
+
+    def test_corruption_forgets_snapshot(self):
+        owner = self.seed()
+        owner._saved["p"].snapshot.clear()
+        self.assertNotIn("known_reply", owner.begin("p", self.context).payload())
+
+    def test_legacy_reply_clears_conditional_knowledge(self):
+        owner = self.seed()
+        request = owner.begin("p", self.context)
+        owner.apply(request, snapshot(), context=self.context, materialize=lambda value: None)
+        self.assertNotIn("known_reply", owner.begin("p", self.context).payload())
+
+    def test_unlink_during_materialization_does_not_revive_snapshot(self):
+        owner = self.seed()
+        request = owner.begin("p", self.context)
+        owner.apply(request, encode_reply(snapshot(), protocol=REPLY_PROTOCOL, scope=SCOPE),
+                    context=self.context, materialize=lambda value: owner.retain_projects(set()))
+        self.assertNotIn("known_reply", owner.begin("p", self.context).payload())
+
+
 if __name__ == "__main__":
     unittest.main()
