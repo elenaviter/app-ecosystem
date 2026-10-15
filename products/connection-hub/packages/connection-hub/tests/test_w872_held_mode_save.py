@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from connection_hub.delegated_credentials.whole_card_save import (
-    WholeCardSaveRefused, added_invocation_modes, held_mode_changes,
+    WholeCardSaveRefused, added_invocation_modes, held_mode_changes, without_same_held_modes,
 )
 from test_w756_local_whole_save import CHOICES, RESOURCE, SUBJECT_HASH, _authority, _world
 from test_w756_whole_card_diff import Catalog, original
@@ -90,7 +90,7 @@ async def _save(host, before, revision, modes, decisions=None):
     answer = await host.update_access({"user_id": before.grantor_subject}, access_id=before.access_id,
         resource_grants=before.resource_grants, resource_operations=_save.selection,
         expected_card_revision=revision, expected_catalog_version=before.catalog_version,
-        label="W872 save", _screen_save=True, invocation_modes=modes)
+        label=getattr(_save, "label", "W872 save"), _screen_save=True, invocation_modes=modes)
     if decisions is not None and answer.get("ok") and not answer.get("unchanged"):
         # FINISH the committed decision, as the coordinator does after a commit, before the next save.
         row = list(decisions.rows.values())[-1]
@@ -113,6 +113,7 @@ async def _held_world(tmp_path, start_mode):
                                   mode=start_mode)
     revision = (await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id))[1].card_revision
     _save.selection = after.resource_operations
+    _save.label = after.label  # the Card's own name: a save that sends it changes no label (truly mode-only)
     return host, store, decisions, before, after, policies, revision
 
 
@@ -130,16 +131,42 @@ async def test_a_mode_only_save_commits_the_policy_in_either_direction(tmp_path,
         other = await policies.get(owner_subject=before.grantor_subject, authority=_authority(after, operation))
         assert (other.mode, other.revision) == (start, 1)
     card = (await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id))[1]
-    assert card.resource_operations == after.resource_operations
+    assert card.resource_operations == after.resource_operations and card.label == after.label
 
 
 @pytest.mark.asyncio
 async def test_a_save_with_no_change_and_no_mode_is_still_nothing_to_save(tmp_path):
     host, store, decisions, before, after, policies = await _screen_world(tmp_path)
     _save.selection = after.resource_operations
+    _save.label = "W872 save"
     first = await _save(host, before, before.card_revision, {RESOURCE: CHOICES}, decisions)
     revision = (await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id))[1].card_revision
     assert first["ok"] is True
     again = await _save(host, before, revision, {})
     assert again == {"ok": True, "unchanged": True}
     assert decisions.decisions == ["committed"]
+
+
+def test_a_held_mode_equal_to_the_stored_policy_is_dropped_except_a_re_arm():
+    # Mint's review: the server does not rely on the editor sending only real changes.
+    held = original(resource_operations={"service": ("read", "write")})
+    current = {("service", "read"): ("once", "available"), ("service", "write"): ("once", "consumed")}
+    assert without_same_held_modes(held, {"service": {"read": "once"}}, current) == {}
+    assert without_same_held_modes(held, {"service": {"read": "always"}}, current) == {"service": {"read": "always"}}
+    # Once on a consumed Once re-arms it: a real change.
+    assert without_same_held_modes(held, {"service": {"write": "once"}}, current) == {"service": {"write": "once"}}
+    # No stored policy runs every time, so Every time on it changes nothing.
+    assert without_same_held_modes(original(), {"service": {"read": "always"}}, {}) == {}
+    # An addition's mode is never dropped.
+    assert without_same_held_modes(original(), {"service": {"write": "always"}}, {}) == {"service": {"write": "always"}}
+
+
+@pytest.mark.asyncio
+async def test_a_same_mode_held_entry_is_nothing_to_save_and_writes_no_policy(tmp_path):
+    host, store, decisions, before, after, policies, revision = await _held_world(tmp_path, "once")
+    answer = await _save(host, before, revision, {RESOURCE: {"one": "once"}}, decisions)
+    assert answer == {"ok": True, "unchanged": True}
+    policy = await policies.get(owner_subject=before.grantor_subject, authority=_authority(after, "one"))
+    assert (policy.mode, policy.revision) == ("once", 1)
+    card = (await store.read_current_authority(subject_hash=SUBJECT_HASH, access_id=before.access_id))[1]
+    assert card.card_revision == revision

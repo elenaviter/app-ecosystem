@@ -153,9 +153,26 @@ def added_invocation_modes(*, original: Any, candidate: Any, config: Any, modes:
 
 def held_mode_changes(original: Any, modes: Mapping[str, Any]) -> bool:
     """W872: a submitted mode for an operation the Card already holds is a change of its own (a mode-only Save is
-    not "Nothing to save")."""
+    not "Nothing to save"). Pass modes through ``without_same_held_modes`` first."""
     return any(name in set(original.resource_operations.get(resource, ()))
                for resource, names in (modes or {}).items() for name in names)
+
+
+def without_same_held_modes(original: Any, modes: Mapping[str, Any],
+                            current: Mapping[tuple[str, str], tuple[str, str]]) -> dict[str, dict[str, str]]:
+    """W872 (Mint's review): drop a held operation's submitted mode that equals its stored policy, so the server never
+    builds a revision or re-arms Once from an entry that changes nothing. ``current`` maps (resource, operation) to
+    the stored (mode, state); no stored policy means Every time. Once on a consumed Once is a re-arm, kept."""
+    kept: dict[str, dict[str, str]] = {}
+    for resource, names in (modes or {}).items():
+        held = set(original.resource_operations.get(resource, ()))
+        for name, mode in names.items():
+            if name in held:
+                stored_mode, stored_state = current.get((resource, name), ("always", "available"))
+                if mode == stored_mode and not (mode == "once" and stored_state == "consumed"):
+                    continue
+            kept.setdefault(resource, {})[name] = mode
+    return kept
 
 
 def same_selection(original: Any, selection: Mapping[str, Any], *, label: Any = None,
